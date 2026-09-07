@@ -48,6 +48,6 @@ filtering or publication ownership.
 
 ## Implementation
 
-[`vkr_skybox_system.c`](../../lib/src/renderer/systems/vkr_skybox_system.c),
-[`vkr_vulkan_ibl.c`](../../lib/src/renderer/vulkan/vkr_vulkan_ibl.c), and
-[`ibl/`](../../lib/src/renderer/shaders/metal/msl/ibl).
+[`vkr_skybox_system.c`](../../runtime/src/renderer/systems/vkr_skybox_system.c),
+[`vkr_vulkan_ibl.c`](../../renderer/src/vulkan/vkr_vulkan_ibl.c), and
+[`ibl/`](../../renderer/src/shaders/metal/msl/ibl).

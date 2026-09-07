@@ -1,7 +1,7 @@
 #include "vkr_sample_runtime.h"
 #include "core/vkr_subsystem_plan.h"
 
-#include "application.h"
+#include "application/vkr_standard_scene_runtime.h"
 #include "core/event.h"
 #include "core/input.h"
 #include "core/logger.h"
@@ -24,7 +24,7 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_ui_system.h"
-#include "renderer/vkr_renderer.h"
+#include "vkr_renderer.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -196,7 +196,7 @@ typedef struct State {
 
 vkr_global State *state = NULL;
 
-vkr_internal bool8_t application_metric_duration_seconds(
+vkr_internal bool8_t vkr_standard_scene_runtime_metric_duration_seconds(
     const VkrMetricsFrame *frame, VkrMetricId id, float64_t *out_value) {
   uint64_t mean_ns = 0;
   if (!out_value ||
@@ -215,14 +215,15 @@ vkr_internal bool8_t application_metric_duration_seconds(
  * happened to be current when the interval elapsed. Gating on the publication
  * serial keeps a repeated or dropped publication from being counted twice.
  */
-vkr_internal void application_accumulate_frame_time(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_accumulate_frame_time(
+    VkrStandardSceneRuntime *application) {
   VkrMetricsSnapshotView snapshot = {0};
   if (!vkr_metrics_snapshot_acquire(application->metrics, &snapshot)) {
     return;
   }
   float64_t frame_seconds = 0.0;
   if (snapshot.publication_serial != state->hud_last_publication_serial &&
-      application_metric_duration_seconds(
+      vkr_standard_scene_runtime_metric_duration_seconds(
           snapshot.frame, application->metric_ids.frame_wall, &frame_seconds)) {
     state->hud_last_publication_serial = snapshot.publication_serial;
     state->hud_frametime_sum += frame_seconds;
@@ -236,8 +237,8 @@ vkr_internal void application_accumulate_frame_time(Application *application) {
  *
  * Unknown values keep the provided default to avoid brittle automation.
  */
-vkr_internal bool8_t application_env_flag(const char *name,
-                                          bool8_t default_value) {
+vkr_internal bool8_t
+vkr_standard_scene_runtime_env_flag(const char *name, bool8_t default_value) {
   if (!name || name[0] == '\0') {
     return default_value;
   }
@@ -265,7 +266,8 @@ vkr_internal bool8_t application_env_flag(const char *name,
   }
 }
 
-vkr_internal const char *application_ibl_validation_mode_label(uint32_t mode) {
+vkr_internal const char *
+vkr_standard_scene_runtime_ibl_validation_mode_label(uint32_t mode) {
   switch (mode) {
   case 1u:
     return "IBL off";
@@ -279,8 +281,8 @@ vkr_internal const char *application_ibl_validation_mode_label(uint32_t mode) {
   }
 }
 
-vkr_internal void
-application_update_ibl_validation_controls(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_update_ibl_validation_controls(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
@@ -341,8 +343,8 @@ application_update_ibl_validation_controls(Application *application) {
   }
 }
 
-vkr_internal bool8_t application_capture_backend_allocator_stats(
-    Application *application, VkrAllocatorStatistics *out_stats) {
+vkr_internal bool8_t vkr_standard_scene_runtime_capture_backend_allocator_stats(
+    VkrStandardSceneRuntime *application, VkrAllocatorStatistics *out_stats) {
   if (!application || !out_stats) {
     return false_v;
   }
@@ -357,8 +359,8 @@ vkr_internal bool8_t application_capture_backend_allocator_stats(
   return true_v;
 }
 
-vkr_internal int64_t application_stat_delta(uint64_t current,
-                                            uint64_t baseline) {
+vkr_internal int64_t vkr_standard_scene_runtime_stat_delta(uint64_t current,
+                                                           uint64_t baseline) {
   if (current >= baseline) {
     return (int64_t)(current - baseline);
   }
@@ -366,7 +368,7 @@ vkr_internal int64_t application_stat_delta(uint64_t current,
 }
 
 vkr_internal const char *
-application_allocator_tag_name(VkrAllocatorMemoryTag tag) {
+vkr_standard_scene_runtime_allocator_tag_name(VkrAllocatorMemoryTag tag) {
   switch (tag) {
   case VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN:
     return "UNKNOWN";
@@ -401,15 +403,16 @@ application_allocator_tag_name(VkrAllocatorMemoryTag tag) {
   }
 }
 
-vkr_internal double application_bytes_to_mb(uint64_t bytes) {
+vkr_internal double vkr_standard_scene_runtime_bytes_to_mb(uint64_t bytes) {
   return (double)bytes / (double)MB(1);
 }
 
-vkr_internal double application_delta_bytes_to_mb(int64_t bytes) {
+vkr_internal double
+vkr_standard_scene_runtime_delta_bytes_to_mb(int64_t bytes) {
   return (double)bytes / (double)MB(1);
 }
-vkr_internal const char *
-application_gpu_allocation_owner_name(VkrGpuAllocationOwner owner) {
+vkr_internal const char *vkr_standard_scene_runtime_gpu_allocation_owner_name(
+    VkrGpuAllocationOwner owner) {
   switch (owner) {
   case VKR_GPU_ALLOCATION_OWNER_MESH:
     return "mesh";
@@ -437,9 +440,8 @@ application_gpu_allocation_owner_name(VkrGpuAllocationOwner owner) {
   }
 }
 
-vkr_internal bool8_t application_memory_text_append(char **write,
-                                                    size_t *remaining,
-                                                    const char *text) {
+vkr_internal bool8_t vkr_standard_scene_runtime_memory_text_append(
+    char **write, size_t *remaining, const char *text) {
   if (!write || !*write || !remaining || !text)
     return false_v;
   const size_t length = strlen(text);
@@ -452,10 +454,8 @@ vkr_internal bool8_t application_memory_text_append(char **write,
   return true_v;
 }
 
-vkr_internal bool8_t application_memory_text_append_size(char **write,
-                                                         size_t *remaining,
-                                                         const char *label,
-                                                         uint64_t bytes) {
+vkr_internal bool8_t vkr_standard_scene_runtime_memory_text_append_size(
+    char **write, size_t *remaining, const char *label, uint64_t bytes) {
   if (!write || !*write || !remaining || !label)
     return false_v;
   const size_t length =
@@ -467,7 +467,7 @@ vkr_internal bool8_t application_memory_text_append_size(char **write,
   return true_v;
 }
 
-vkr_internal void application_log_backend_allocator_breakdown(
+vkr_internal void vkr_standard_scene_runtime_log_backend_allocator_breakdown(
     const char *label, const VkrAllocatorStatistics *stats) {
   if (!label || !stats) {
     return;
@@ -480,7 +480,8 @@ vkr_internal void application_log_backend_allocator_breakdown(
        ++tag) {
     size_t line_len = vkr_allocator_format_size_to_buffer(
         write, remaining,
-        application_allocator_tag_name((VkrAllocatorMemoryTag)tag),
+        vkr_standard_scene_runtime_allocator_tag_name(
+            (VkrAllocatorMemoryTag)tag),
         stats->tagged_allocs[tag]);
     if (line_len == 0 || line_len >= remaining) {
       break;
@@ -496,8 +497,8 @@ vkr_internal void application_log_backend_allocator_breakdown(
 /**
  * @brief Logs physical device-memory and logical resource-owner telemetry.
  */
-vkr_internal void application_log_device_memory_stats(Application *application,
-                                                      const char *label) {
+vkr_internal void vkr_standard_scene_runtime_log_device_memory_stats(
+    VkrStandardSceneRuntime *application, const char *label) {
   if (!application || !label) {
     return;
   }
@@ -513,44 +514,47 @@ vkr_internal void application_log_device_memory_stats(Application *application,
            (unsigned long long)stats.peak_allocation_count,
            (unsigned long long)stats.total_allocation_count,
            (unsigned long long)stats.max_allocation_count,
-           application_bytes_to_mb(stats.live_bytes),
-           application_bytes_to_mb(stats.peak_bytes),
+           vkr_standard_scene_runtime_bytes_to_mb(stats.live_bytes),
+           vkr_standard_scene_runtime_bytes_to_mb(stats.peak_bytes),
            stats.live_totals_exact ? "yes" : "no");
   for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
     const VkrGpuAllocationOwnerTotals *totals = &stats.owners[owner];
     if (!totals->live_allocation_count && !totals->total_allocation_count)
       continue;
-    log_info(
-        "GPU_MEM   owner=%s allocations=live:%llu peak:%llu total:%llu "
-        "bytes=live:%.3fMB peak:%.3fMB total:%.3fMB",
-        application_gpu_allocation_owner_name((VkrGpuAllocationOwner)owner),
-        (unsigned long long)totals->live_allocation_count,
-        (unsigned long long)totals->peak_allocation_count,
-        (unsigned long long)totals->total_allocation_count,
-        application_bytes_to_mb(totals->live_bytes),
-        application_bytes_to_mb(totals->peak_bytes),
-        application_bytes_to_mb(totals->total_bytes));
+    log_info("GPU_MEM   owner=%s allocations=live:%llu peak:%llu total:%llu "
+             "bytes=live:%.3fMB peak:%.3fMB total:%.3fMB",
+             vkr_standard_scene_runtime_gpu_allocation_owner_name(
+                 (VkrGpuAllocationOwner)owner),
+             (unsigned long long)totals->live_allocation_count,
+             (unsigned long long)totals->peak_allocation_count,
+             (unsigned long long)totals->total_allocation_count,
+             vkr_standard_scene_runtime_bytes_to_mb(totals->live_bytes),
+             vkr_standard_scene_runtime_bytes_to_mb(totals->peak_bytes),
+             vkr_standard_scene_runtime_bytes_to_mb(totals->total_bytes));
   }
 
   for (uint32_t i = 0; i < stats.memory_type_count; ++i) {
     if (stats.live_count_by_type[i] == 0) {
       continue;
     }
-    log_info("GPU_MEM   type=%u heap=%u flags=0x%x count=%llu bytes=%.3fMB", i,
-             stats.heap_index_by_type[i], stats.property_flags_by_type[i],
-             (unsigned long long)stats.live_count_by_type[i],
-             application_bytes_to_mb(stats.live_bytes_by_type[i]));
+    log_info(
+        "GPU_MEM   type=%u heap=%u flags=0x%x count=%llu bytes=%.3fMB", i,
+        stats.heap_index_by_type[i], stats.property_flags_by_type[i],
+        (unsigned long long)stats.live_count_by_type[i],
+        vkr_standard_scene_runtime_bytes_to_mb(stats.live_bytes_by_type[i]));
   }
 
   for (uint32_t i = 0; i < stats.heap_count; ++i) {
     if (stats.heap_usage_valid) {
-      log_info("GPU_MEM   heap=%u size=%.3fMB usage=%.3fMB budget=%.3fMB", i,
-               application_bytes_to_mb(stats.heap_size_bytes[i]),
-               application_bytes_to_mb(stats.heap_usage_bytes[i]),
-               application_bytes_to_mb(stats.heap_budget_bytes[i]));
+      log_info(
+          "GPU_MEM   heap=%u size=%.3fMB usage=%.3fMB budget=%.3fMB", i,
+          vkr_standard_scene_runtime_bytes_to_mb(stats.heap_size_bytes[i]),
+          vkr_standard_scene_runtime_bytes_to_mb(stats.heap_usage_bytes[i]),
+          vkr_standard_scene_runtime_bytes_to_mb(stats.heap_budget_bytes[i]));
     } else {
-      log_info("GPU_MEM   heap=%u size=%.3fMB (usage unavailable)", i,
-               application_bytes_to_mb(stats.heap_size_bytes[i]));
+      log_info(
+          "GPU_MEM   heap=%u size=%.3fMB (usage unavailable)", i,
+          vkr_standard_scene_runtime_bytes_to_mb(stats.heap_size_bytes[i]));
     }
   }
 }
@@ -563,7 +567,8 @@ vkr_internal void application_log_device_memory_stats(Application *application,
  * load look different from allocation counts that keep climbing, and only the
  * series distinguishes them.
  */
-vkr_internal void application_dump_periodic_metrics(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_dump_periodic_metrics(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state || !state->metrics_dump_enabled) {
     return;
   }
@@ -574,41 +579,43 @@ vkr_internal void application_dump_periodic_metrics(Application *application) {
 
   char label[64];
   snprintf(label, sizeof(label), "tick%u@%.1fs", state->metrics_dump_index,
-           application->clock.elapsed);
+           application->host.clock.elapsed);
   state->metrics_dump_index++;
 
-  application_log_device_memory_stats(application, label);
+  vkr_standard_scene_runtime_log_device_memory_stats(application, label);
 
   VkrAllocatorStatistics stats = {0};
-  if (application_capture_backend_allocator_stats(application, &stats)) {
+  if (vkr_standard_scene_runtime_capture_backend_allocator_stats(application,
+                                                                 &stats)) {
     log_info(
         "CPU_ALLOC label=%s total=%.3fMB renderer=%.3fMB array=%.3fMB "
         "string=%.3fMB file=%.3fMB vulkan_state=%.3fMB texture_temp=%.3fMB",
-        label, application_bytes_to_mb(stats.total_allocated),
-        application_bytes_to_mb(
+        label, vkr_standard_scene_runtime_bytes_to_mb(stats.total_allocated),
+        vkr_standard_scene_runtime_bytes_to_mb(
             stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_RENDERER]),
-        application_bytes_to_mb(
+        vkr_standard_scene_runtime_bytes_to_mb(
             stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]),
-        application_bytes_to_mb(
+        vkr_standard_scene_runtime_bytes_to_mb(
             stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]),
-        application_bytes_to_mb(
+        vkr_standard_scene_runtime_bytes_to_mb(
             stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_FILE]),
-        application_bytes_to_mb(
+        vkr_standard_scene_runtime_bytes_to_mb(
             stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]),
-        application_bytes_to_mb(
+        vkr_standard_scene_runtime_bytes_to_mb(
             stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]));
   }
 }
 
-vkr_internal void application_log_backend_allocator_stats(
-    Application *application, const char *label,
+vkr_internal void vkr_standard_scene_runtime_log_backend_allocator_stats(
+    VkrStandardSceneRuntime *application, const char *label,
     const VkrAllocatorStatistics *baseline_stats) {
   if (!application || !label) {
     return;
   }
 
   VkrAllocatorStatistics stats = {0};
-  if (!application_capture_backend_allocator_stats(application, &stats)) {
+  if (!vkr_standard_scene_runtime_capture_backend_allocator_stats(application,
+                                                                  &stats)) {
     return;
   }
 
@@ -623,25 +630,25 @@ vkr_internal void application_log_backend_allocator_stats(
   if (!baseline_stats) {
     log_debug("SCENE_CPU_ALLOC label=%s total=%.3fMB renderer=%.3fMB "
               "vulkan_state=%.3fMB texture_temp=%.3fMB",
-              label, application_bytes_to_mb(total_bytes),
-              application_bytes_to_mb(renderer_bytes),
-              application_bytes_to_mb(vulkan_state_bytes),
-              application_bytes_to_mb(texture_temp_bytes));
+              label, vkr_standard_scene_runtime_bytes_to_mb(total_bytes),
+              vkr_standard_scene_runtime_bytes_to_mb(renderer_bytes),
+              vkr_standard_scene_runtime_bytes_to_mb(vulkan_state_bytes),
+              vkr_standard_scene_runtime_bytes_to_mb(texture_temp_bytes));
     if (state && state->scene_memory_verbose) {
-      application_log_backend_allocator_breakdown(label, &stats);
+      vkr_standard_scene_runtime_log_backend_allocator_breakdown(label, &stats);
     }
     return;
   }
 
-  const int64_t delta_total =
-      application_stat_delta(total_bytes, baseline_stats->total_allocated);
-  const int64_t delta_renderer = application_stat_delta(
+  const int64_t delta_total = vkr_standard_scene_runtime_stat_delta(
+      total_bytes, baseline_stats->total_allocated);
+  const int64_t delta_renderer = vkr_standard_scene_runtime_stat_delta(
       renderer_bytes,
       baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_RENDERER]);
-  const int64_t delta_vulkan_state = application_stat_delta(
+  const int64_t delta_vulkan_state = vkr_standard_scene_runtime_stat_delta(
       vulkan_state_bytes,
       baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]);
-  const int64_t delta_texture_temp = application_stat_delta(
+  const int64_t delta_texture_temp = vkr_standard_scene_runtime_stat_delta(
       texture_temp_bytes,
       baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]);
 
@@ -649,27 +656,28 @@ vkr_internal void application_log_backend_allocator_stats(
             "vulkan_state=%.3fMB texture_temp=%.3fMB delta_total=%+.3fMB "
             "delta_renderer=%+.3fMB delta_vulkan_state=%+.3fMB "
             "delta_texture_temp=%+.3fMB",
-            label, application_bytes_to_mb(total_bytes),
-            application_bytes_to_mb(renderer_bytes),
-            application_bytes_to_mb(vulkan_state_bytes),
-            application_bytes_to_mb(texture_temp_bytes),
-            application_delta_bytes_to_mb(delta_total),
-            application_delta_bytes_to_mb(delta_renderer),
-            application_delta_bytes_to_mb(delta_vulkan_state),
-            application_delta_bytes_to_mb(delta_texture_temp));
+            label, vkr_standard_scene_runtime_bytes_to_mb(total_bytes),
+            vkr_standard_scene_runtime_bytes_to_mb(renderer_bytes),
+            vkr_standard_scene_runtime_bytes_to_mb(vulkan_state_bytes),
+            vkr_standard_scene_runtime_bytes_to_mb(texture_temp_bytes),
+            vkr_standard_scene_runtime_delta_bytes_to_mb(delta_total),
+            vkr_standard_scene_runtime_delta_bytes_to_mb(delta_renderer),
+            vkr_standard_scene_runtime_delta_bytes_to_mb(delta_vulkan_state),
+            vkr_standard_scene_runtime_delta_bytes_to_mb(delta_texture_temp));
   if (state && state->scene_memory_verbose) {
-    application_log_backend_allocator_breakdown(label, &stats);
+    vkr_standard_scene_runtime_log_backend_allocator_breakdown(label, &stats);
   }
 }
 
 vkr_internal float64_t
-application_consume_scene_load_elapsed_seconds(Application *application) {
+vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state || !state->scene_load_timer_active) {
     return -1.0;
   }
 
   float64_t elapsed =
-      application->clock.elapsed - state->scene_load_start_time_seconds;
+      application->host.clock.elapsed - state->scene_load_start_time_seconds;
   if (elapsed < 0.0) {
     elapsed = 0.0;
   }
@@ -678,8 +686,9 @@ application_consume_scene_load_elapsed_seconds(Application *application) {
   return elapsed;
 }
 
-vkr_internal void application_ui_text_set(ApplicationUiText *destination,
-                                          String8 content) {
+vkr_internal void
+vkr_standard_scene_runtime_ui_text_set(ApplicationUiText *destination,
+                                       String8 content) {
   if (!destination || (!content.str && content.length > 0u)) {
     return;
   }
@@ -691,21 +700,22 @@ vkr_internal void application_ui_text_set(ApplicationUiText *destination,
   destination->length = length;
 }
 
-vkr_internal String8 application_ui_text_view(const ApplicationUiText *text) {
+vkr_internal String8
+vkr_standard_scene_runtime_ui_text_view(const ApplicationUiText *text) {
   return text ? (String8){.str = (uint8_t *)text->data, .length = text->length}
               : (String8){0};
 }
 
-vkr_internal void
-application_queue_world_text_update(Application *application, uint32_t text_id,
-                                    String8 content,
-                                    const VkrTransform *transform) {
+vkr_internal void vkr_standard_scene_runtime_queue_world_text_update(
+    VkrStandardSceneRuntime *application, uint32_t text_id, String8 content,
+    const VkrTransform *transform) {
   if (!application || text_id == VKR_INVALID_ID) {
     return;
   }
 
   for (uint32_t i = 0; i < application->world_text_update_count; ++i) {
-    ApplicationTextUpdate *slot = &application->world_text_updates[i];
+    VkrStandardSceneRuntimeTextUpdate *slot =
+        &application->world_text_updates[i];
     if (slot->text_id == text_id) {
       if (content.length > 0 || content.str) {
         slot->content = content;
@@ -718,12 +728,13 @@ application_queue_world_text_update(Application *application, uint32_t text_id,
     }
   }
 
-  if (application->world_text_update_count >= VKR_MAX_PENDING_TEXT_UPDATES) {
+  if (application->world_text_update_count >=
+      VKR_STANDARD_SCENE_RUNTIME_MAX_PENDING_TEXT_UPDATES) {
     log_warn("World text update queue full; dropping text %u", text_id);
     return;
   }
 
-  ApplicationTextUpdate update = {
+  VkrStandardSceneRuntimeTextUpdate update = {
       .text_id = text_id,
       .content = content,
       .has_transform = false_v,
@@ -753,8 +764,9 @@ typedef struct VkrViewportHitInfo {
 /**
  * @brief Compute viewport mapping info for world picking and gizmo rays.
  */
-vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
-    Application *application, int32_t mouse_x, int32_t mouse_y) {
+vkr_internal VkrViewportHitInfo
+vkr_standard_scene_runtime_get_viewport_hit_info(
+    VkrStandardSceneRuntime *application, int32_t mouse_x, int32_t mouse_y) {
   VkrViewportHitInfo info = {0};
   if (!application || !state) {
     return info;
@@ -765,9 +777,9 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
                                   VKR_RENDERER_SUBSYSTEM_EDITOR)) {
     VkrViewportMapping mapping = {0};
     VkrWindowPixelSize window_size =
-        vkr_window_get_pixel_size(&application->window);
-    if (application_editor_viewport_mapping(application, window_size.width,
-                                            window_size.height, &mapping)) {
+        vkr_window_get_pixel_size(&application->host.window);
+    if (vkr_standard_scene_runtime_editor_viewport_mapping(
+            application, window_size.width, window_size.height, &mapping)) {
       info.target_width = mapping.target_width;
       info.target_height = mapping.target_height;
       if (vkr_viewport_mapping_window_to_target_pixel(
@@ -783,7 +795,7 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
     }
   } else {
     VkrWindowPixelSize window_size =
-        vkr_window_get_pixel_size(&application->window);
+        vkr_window_get_pixel_size(&application->host.window);
     info.target_width = window_size.width;
     info.target_height = window_size.height;
     if (mouse_x >= 0 && mouse_y >= 0 && (uint32_t)mouse_x < window_size.width &&
@@ -804,9 +816,8 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
 /**
  * @brief Build a world-space ray from normalized displayed image coordinates.
  */
-vkr_internal bool8_t application_build_view_ray(VkrCamera *camera,
-                                                Vec2 position, Vec3 *out_origin,
-                                                Vec3 *out_dir) {
+vkr_internal bool8_t vkr_standard_scene_runtime_build_view_ray(
+    VkrCamera *camera, Vec2 position, Vec3 *out_origin, Vec3 *out_dir) {
   if (!camera || !out_origin || !out_dir) {
     return false_v;
   }
@@ -851,11 +862,9 @@ vkr_internal bool8_t application_build_view_ray(VkrCamera *camera,
  *
  * Returns false when the ray is parallel to the plane (no stable hit point).
  */
-vkr_internal bool8_t application_ray_plane_intersect(Vec3 ray_origin,
-                                                     Vec3 ray_dir,
-                                                     Vec3 plane_point,
-                                                     Vec3 plane_normal,
-                                                     Vec3 *out_point) {
+vkr_internal bool8_t vkr_standard_scene_runtime_ray_plane_intersect(
+    Vec3 ray_origin, Vec3 ray_dir, Vec3 plane_point, Vec3 plane_normal,
+    Vec3 *out_point) {
   if (!out_point) {
     return false_v;
   }
@@ -879,8 +888,8 @@ vkr_internal bool8_t application_ray_plane_intersect(Vec3 ray_origin,
  * @brief Pick a plane normal for axis dragging that stays stable near edge-on
  * views.
  */
-vkr_internal Vec3 application_gizmo_axis_plane_normal(const VkrCamera *camera,
-                                                      Vec3 axis) {
+vkr_internal Vec3 vkr_standard_scene_runtime_gizmo_axis_plane_normal(
+    const VkrCamera *camera, Vec3 axis) {
   Vec3 view_dir = vec3_normalize(camera->forward);
   float32_t view_axis = vec3_dot(view_dir, axis);
   Vec3 normal = vec3_sub(view_dir, vec3_scale(axis, view_axis));
@@ -893,7 +902,8 @@ vkr_internal Vec3 application_gizmo_axis_plane_normal(const VkrCamera *camera,
   return vec3_normalize(normal);
 }
 
-vkr_internal void application_clear_gizmo_handles(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_clear_gizmo_handles(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
@@ -905,7 +915,8 @@ vkr_internal void application_clear_gizmo_handles(Application *application) {
   state->gizmo_hot_handle = VKR_GIZMO_HANDLE_NONE;
 }
 
-vkr_internal void application_cancel_gizmo_pick(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_cancel_gizmo_pick(
+    VkrStandardSceneRuntime *application) {
   vkr_picking_cancel(&application->picking);
   state->gizmo_hover_pending = false_v;
   state->gizmo_drag.pending_pick = false_v;
@@ -914,12 +925,13 @@ vkr_internal void application_cancel_gizmo_pick(Application *application) {
   state->gizmo_drag.release_has_target_coords = false_v;
 }
 
-vkr_internal void application_clear_gizmo_selection(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_clear_gizmo_selection(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
 
-  application_cancel_gizmo_pick(application);
+  vkr_standard_scene_runtime_cancel_gizmo_pick(application);
   state->gizmo_drag.active = false_v;
   state->gizmo_edit_pending = false_v;
   state->selected_entity = VKR_ENTITY_ID_INVALID;
@@ -929,7 +941,7 @@ vkr_internal void application_clear_gizmo_selection(Application *application) {
   state->gizmo_drag.uses_text_pivot = false_v;
 }
 
-vkr_internal bool8_t application_world_text_entity_from_id(
+vkr_internal bool8_t vkr_standard_scene_runtime_world_text_entity_from_id(
     VkrScene *scene, uint32_t text_id, VkrEntityId *out_entity) {
   if (!scene || !scene->world || !out_entity) {
     return false_v;
@@ -966,8 +978,8 @@ vkr_internal bool8_t application_world_text_entity_from_id(
 /**
  * @brief Computes the centered local pivot for a text3d quad.
  */
-vkr_internal bool8_t application_text_pivot_local(SceneText3D *text,
-                                                  Vec3 *out_local) {
+vkr_internal bool8_t vkr_standard_scene_runtime_text_pivot_local(
+    SceneText3D *text, Vec3 *out_local) {
   if (!text || !out_local) {
     return false_v;
   }
@@ -980,8 +992,8 @@ vkr_internal bool8_t application_text_pivot_local(SceneText3D *text,
 /**
  * @brief Transforms a local text pivot into world space.
  */
-vkr_internal Vec3 application_text_pivot_world(const SceneTransform *transform,
-                                               Vec3 pivot_local) {
+vkr_internal Vec3 vkr_standard_scene_runtime_text_pivot_world(
+    const SceneTransform *transform, Vec3 pivot_local) {
   Mat4 world = transform->world;
   Vec4 pivot_world = mat4_mul_vec4(
       world, vec4_new(pivot_local.x, pivot_local.y, pivot_local.z, 1.0f));
@@ -993,7 +1005,7 @@ vkr_internal Vec3 application_text_pivot_world(const SceneTransform *transform,
  *
  * Uses parent space so child transforms preserve the pivot under hierarchy.
  */
-vkr_internal Vec3 application_text_origin_from_pivot(
+vkr_internal Vec3 vkr_standard_scene_runtime_text_origin_from_pivot(
     VkrScene *scene, const SceneTransform *transform, Vec3 pivot_world,
     Vec3 pivot_local, Vec3 scale, VkrQuat rotation) {
   Mat4 parent_world = mat4_identity();
@@ -1016,9 +1028,8 @@ vkr_internal Vec3 application_text_origin_from_pivot(
   return vec3_sub(pivot_parent, rotated_offset);
 }
 
-vkr_internal void
-application_sync_world_text_transform(Application *application, VkrScene *scene,
-                                      VkrEntityId entity) {
+vkr_internal void vkr_standard_scene_runtime_sync_world_text_transform(
+    VkrStandardSceneRuntime *application, VkrScene *scene, VkrEntityId entity) {
   if (!application || !scene || !scene->world) {
     return;
   }
@@ -1036,11 +1047,12 @@ application_sync_world_text_transform(Application *application, VkrScene *scene,
   VkrTransform text_transform = vkr_transform_from_position_scale_rotation(
       transform->position, transform->scale, transform->rotation);
 
-  application_queue_world_text_update(application, text->text_index,
-                                      (String8){0}, &text_transform);
+  vkr_standard_scene_runtime_queue_world_text_update(
+      application, text->text_index, (String8){0}, &text_transform);
 }
 
-vkr_internal void application_cancel_gizmo_edit(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_cancel_gizmo_edit(
+    VkrStandardSceneRuntime *application) {
   VkrScene *scene = application->active_scene;
   if (state->gizmo_edit_pending && scene) {
     vkr_scene_set_position(scene, state->gizmo_drag.entity,
@@ -1049,17 +1061,17 @@ vkr_internal void application_cancel_gizmo_edit(Application *application) {
                            state->gizmo_before.rotation);
     vkr_scene_set_scale(scene, state->gizmo_drag.entity,
                         state->gizmo_before.scale);
-    application_sync_world_text_transform(application, scene,
-                                          state->gizmo_drag.entity);
+    vkr_standard_scene_runtime_sync_world_text_transform(
+        application, scene, state->gizmo_drag.entity);
   }
   state->gizmo_edit_pending = false_v;
   state->gizmo_drag.active = false_v;
   state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
-  application_clear_gizmo_handles(application);
+  vkr_standard_scene_runtime_clear_gizmo_handles(application);
 }
 
-vkr_internal bool8_t application_request_picking(
-    Application *application, VkrPickingContext *picking,
+vkr_internal bool8_t vkr_standard_scene_runtime_request_picking(
+    VkrStandardSceneRuntime *application, VkrPickingContext *picking,
     const VkrViewportHitInfo *viewport_info) {
   if (!application || !picking || !viewport_info ||
       !viewport_info->has_target_coords || viewport_info->target_width == 0 ||
@@ -1080,9 +1092,9 @@ vkr_internal bool8_t application_request_picking(
 
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
-  if (!application_build_view_ray(camera, viewport_info->position,
-                                  &state->gizmo_drag.pick_ray_origin,
-                                  &state->gizmo_drag.pick_ray_direction))
+  if (!vkr_standard_scene_runtime_build_view_ray(
+          camera, viewport_info->position, &state->gizmo_drag.pick_ray_origin,
+          &state->gizmo_drag.pick_ray_direction))
     return false_v;
   state->pick_scene_generation = application->scene_generation;
   state->pick_selected_entity = state->selected_entity;
@@ -1091,9 +1103,9 @@ vkr_internal bool8_t application_request_picking(
   return true_v;
 }
 
-vkr_internal bool8_t
-application_gizmo_parent_frame(VkrScene *scene, const SceneTransform *transform,
-                               Mat4 *out_inverse, VkrQuat *out_rotation) {
+vkr_internal bool8_t vkr_standard_scene_runtime_gizmo_parent_frame(
+    VkrScene *scene, const SceneTransform *transform, Mat4 *out_inverse,
+    VkrQuat *out_rotation) {
   if (!transform || !transform->trs_editable ||
       fabsf(transform->scale.x) < 1e-6f || fabsf(transform->scale.y) < 1e-6f ||
       fabsf(transform->scale.z) < 1e-6f)
@@ -1128,8 +1140,8 @@ application_gizmo_parent_frame(VkrScene *scene, const SceneTransform *transform,
   return true_v;
 }
 
-vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
-                                                  VkrGizmoHandle handle) {
+vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
+    VkrStandardSceneRuntime *application, VkrGizmoHandle handle) {
   if (!application || !state || !state->has_selection) {
     return false_v;
   }
@@ -1144,15 +1156,16 @@ vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
       vkr_scene_get_transform(scene, state->selected_entity);
   Mat4 parent_inverse;
   VkrQuat parent_rotation;
-  if (!application_gizmo_parent_frame(scene, transform, &parent_inverse,
-                                      &parent_rotation))
+  if (!vkr_standard_scene_runtime_gizmo_parent_frame(
+          scene, transform, &parent_inverse, &parent_rotation))
     return false_v;
 
   Vec3 pivot_local = vec3_zero();
   bool8_t has_text_pivot = false_v;
   SceneText3D *text = vkr_scene_get_text3d(scene, state->selected_entity);
   if (text) {
-    has_text_pivot = application_text_pivot_local(text, &pivot_local);
+    has_text_pivot =
+        vkr_standard_scene_runtime_text_pivot_local(text, &pivot_local);
   }
 
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
@@ -1185,20 +1198,22 @@ vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
     if (!has_axis) {
       plane_normal = vec3_normalize(camera->forward);
     } else {
-      plane_normal = application_gizmo_axis_plane_normal(camera, axis);
+      plane_normal =
+          vkr_standard_scene_runtime_gizmo_axis_plane_normal(camera, axis);
     }
   }
 
   Vec3 world_position = mat4_position(transform->world);
   if (has_text_pivot) {
-    world_position = application_text_pivot_world(transform, pivot_local);
+    world_position =
+        vkr_standard_scene_runtime_text_pivot_world(transform, pivot_local);
   }
   const Vec3 ray_origin = state->gizmo_drag.pick_ray_origin;
   const Vec3 ray_dir = state->gizmo_drag.pick_ray_direction;
 
   Vec3 hit = vec3_zero();
-  if (!application_ray_plane_intersect(ray_origin, ray_dir, world_position,
-                                       plane_normal, &hit)) {
+  if (!vkr_standard_scene_runtime_ray_plane_intersect(
+          ray_origin, ray_dir, world_position, plane_normal, &hit)) {
     return false_v;
   }
 
@@ -1231,9 +1246,9 @@ vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
   return true_v;
 }
 
-vkr_internal void
-application_update_gizmo_drag(Application *application,
-                              const VkrViewportHitInfo *viewport_info) {
+vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
+    VkrStandardSceneRuntime *application,
+    const VkrViewportHitInfo *viewport_info) {
   if (!application || !state || !state->gizmo_drag.active || !viewport_info ||
       !viewport_info->has_target_coords) {
     return;
@@ -1241,14 +1256,14 @@ application_update_gizmo_drag(Application *application,
 
   VkrScene *scene = vkr_scene_handle_get_scene(state->scene_resource.as.scene);
   if (!scene) {
-    application_cancel_gizmo_edit(application);
+    vkr_standard_scene_runtime_cancel_gizmo_edit(application);
     return;
   }
 
   SceneTransform *transform =
       vkr_scene_get_transform(scene, state->gizmo_drag.entity);
   if (!transform) {
-    application_cancel_gizmo_edit(application);
+    vkr_standard_scene_runtime_cancel_gizmo_edit(application);
     return;
   }
 
@@ -1260,29 +1275,29 @@ application_update_gizmo_drag(Application *application,
                            state->gizmo_before.rotation);
     vkr_scene_set_scale(scene, state->gizmo_drag.entity,
                         state->gizmo_before.scale);
-    application_sync_world_text_transform(application, scene,
-                                          state->gizmo_drag.entity);
+    vkr_standard_scene_runtime_sync_world_text_transform(
+        application, scene, state->gizmo_drag.entity);
     return;
   }
 
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   if (!camera) {
-    application_cancel_gizmo_edit(application);
+    vkr_standard_scene_runtime_cancel_gizmo_edit(application);
     return;
   }
 
   Vec3 ray_origin = vec3_zero();
   Vec3 ray_dir = vec3_zero();
-  if (!application_build_view_ray(camera, viewport_info->position, &ray_origin,
-                                  &ray_dir)) {
+  if (!vkr_standard_scene_runtime_build_view_ray(
+          camera, viewport_info->position, &ray_origin, &ray_dir)) {
     return;
   }
 
   Vec3 hit = vec3_zero();
-  if (!application_ray_plane_intersect(ray_origin, ray_dir,
-                                       state->gizmo_drag.start_hit,
-                                       state->gizmo_drag.plane_normal, &hit)) {
+  if (!vkr_standard_scene_runtime_ray_plane_intersect(
+          ray_origin, ray_dir, state->gizmo_drag.start_hit,
+          state->gizmo_drag.plane_normal, &hit)) {
     return;
   }
 
@@ -1302,7 +1317,7 @@ application_update_gizmo_drag(Application *application,
 
     Vec3 local_pos = new_pivot;
     if (state->gizmo_drag.uses_text_pivot) {
-      local_pos = application_text_origin_from_pivot(
+      local_pos = vkr_standard_scene_runtime_text_origin_from_pivot(
           scene, transform, new_pivot, state->gizmo_drag.text_pivot_local,
           state->gizmo_drag.start_scale, state->gizmo_drag.start_rotation);
     } else {
@@ -1327,7 +1342,7 @@ application_update_gizmo_drag(Application *application,
       new_scale = vec3_scale(start, scale_factor);
     }
     if (state->gizmo_drag.uses_text_pivot) {
-      Vec3 local_pos = application_text_origin_from_pivot(
+      Vec3 local_pos = vkr_standard_scene_runtime_text_origin_from_pivot(
           scene, transform, state->gizmo_drag.start_world_position,
           state->gizmo_drag.text_pivot_local, new_scale,
           state->gizmo_drag.start_rotation);
@@ -1367,7 +1382,7 @@ application_update_gizmo_drag(Application *application,
     new_rotation = vkr_quat_normalize(new_rotation);
 
     if (state->gizmo_drag.uses_text_pivot) {
-      Vec3 local_pos = application_text_origin_from_pivot(
+      Vec3 local_pos = vkr_standard_scene_runtime_text_origin_from_pivot(
           scene, transform, state->gizmo_drag.start_world_position,
           state->gizmo_drag.text_pivot_local, state->gizmo_drag.start_scale,
           new_rotation);
@@ -1379,12 +1394,12 @@ application_update_gizmo_drag(Application *application,
   }
 
   if (updated) {
-    application_sync_world_text_transform(application, scene,
-                                          state->gizmo_drag.entity);
+    vkr_standard_scene_runtime_sync_world_text_transform(
+        application, scene, state->gizmo_drag.entity);
   }
 }
 
-vkr_internal bool8_t application_is_mtsdf_atlas(
+vkr_internal bool8_t vkr_standard_scene_runtime_is_mtsdf_atlas(
     const VkrFontSystem *font_system, VkrTextureHandle texture) {
   for (uint64_t i = 0u; i < font_system->fonts.length; ++i) {
     const VkrFont *font = &font_system->fonts.data[i];
@@ -1403,8 +1418,8 @@ vkr_internal bool8_t application_is_mtsdf_atlas(
   return false_v;
 }
 
-vkr_internal void application_apply_filter_mode(Application *application,
-                                                uint32_t mode_index) {
+vkr_internal void vkr_standard_scene_runtime_apply_filter_mode(
+    VkrStandardSceneRuntime *application, uint32_t mode_index) {
   if (!application || !state)
     return;
 
@@ -1430,7 +1445,8 @@ vkr_internal void application_apply_filter_mode(Application *application,
     VkrTextureHandle handle = {.id = tex->description.id,
                                .generation = tex->description.generation};
     // MTSDF reconstruction requires linear atlas filtering in every mode.
-    if (application_is_mtsdf_atlas(&application->assets.font_system, handle))
+    if (vkr_standard_scene_runtime_is_mtsdf_atlas(
+            &application->assets.font_system, handle))
       continue;
     VkrRendererError err = vkr_texture_system_update_sampler(
         texture_system, handle, entry.min_filter, entry.mag_filter,
@@ -1450,24 +1466,8 @@ vkr_internal void application_apply_filter_mode(Application *application,
   }
 }
 
-bool8_t application_on_event(Event *event, UserData user_data) {
-  return true_v;
-}
-
-bool8_t application_on_window_event(Event *event, UserData user_data) {
-  return true_v;
-}
-
-bool8_t application_on_key_event(Event *event, UserData user_data) {
-  return true_v;
-}
-
-bool8_t application_on_mouse_event(Event *event, UserData user_data) {
-  return true_v;
-}
-
-vkr_internal bool8_t
-application_try_activate_scene_resource(Application *application) {
+vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state ||
       state->scene_resource.type != VKR_RESOURCE_TYPE_SCENE) {
     return false_v;
@@ -1485,7 +1485,8 @@ application_try_activate_scene_resource(Application *application) {
     if (!state->scene_load_terminal_logged) {
       String8 err = vkr_renderer_get_error_string(state_error);
       float64_t elapsed =
-          application_consume_scene_load_elapsed_seconds(application);
+          vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
+              application);
       if (elapsed >= 0.0) {
         log_info("SCENE_LOAD_TIME result=failed seconds=%.3f ms=%.1f", elapsed,
                  elapsed * 1000.0);
@@ -1498,7 +1499,8 @@ application_try_activate_scene_resource(Application *application) {
   case VKR_RESOURCE_LOAD_STATE_CANCELED:
     if (!state->scene_load_terminal_logged) {
       float64_t elapsed =
-          application_consume_scene_load_elapsed_seconds(application);
+          vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
+              application);
       if (elapsed >= 0.0) {
         log_info("SCENE_LOAD_TIME result=canceled seconds=%.3f ms=%.1f",
                  elapsed, elapsed * 1000.0);
@@ -1539,7 +1541,7 @@ application_try_activate_scene_resource(Application *application) {
 
   state->scene_load_terminal_logged = false_v;
   if (application->active_scene != scene) {
-    application_clear_gizmo_selection(application);
+    vkr_standard_scene_runtime_clear_gizmo_selection(application);
     application->active_scene = scene;
     application->scene_generation = application->scene_generation == UINT64_MAX
                                         ? 1u
@@ -1556,7 +1558,8 @@ application_try_activate_scene_resource(Application *application) {
        scene swap. */
     vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
     float64_t elapsed =
-        application_consume_scene_load_elapsed_seconds(application);
+        vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
+            application);
     if (elapsed >= 0.0) {
       const VkrMaterialTextureStreamStats texture_stats =
           vkr_material_system_get_texture_stream_stats(
@@ -1570,7 +1573,7 @@ application_try_activate_scene_resource(Application *application) {
     }
     log_info("Activated scene '%s' after async load",
              string8_cstr(&scene_path));
-    application_log_backend_allocator_stats(
+    vkr_standard_scene_runtime_log_backend_allocator_stats(
         application, "load-ready",
         state->scene_load_stats_baseline_valid
             ? &state->scene_load_stats_baseline
@@ -1578,7 +1581,8 @@ application_try_activate_scene_resource(Application *application) {
     state->scene_load_stats_baseline_valid = false_v;
     // Captured at the same point as the allocator breakdown so the two can be
     // read together: one says how many bytes, the other how many allocations.
-    application_log_device_memory_stats(application, "load-ready");
+    vkr_standard_scene_runtime_log_device_memory_stats(application,
+                                                       "load-ready");
   }
 
   return true_v;
@@ -1587,14 +1591,15 @@ application_try_activate_scene_resource(Application *application) {
 /**
  * @brief Initialize scene system and load scene content.
  */
-vkr_internal void application_init_scene_system(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_init_scene_system(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
 
   String8 scene_path = state->scene_path;
   if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE) {
-    if (application_try_activate_scene_resource(application)) {
+    if (vkr_standard_scene_runtime_try_activate_scene_resource(application)) {
       return;
     }
 
@@ -1641,22 +1646,25 @@ vkr_internal void application_init_scene_system(Application *application) {
     return;
   }
   state->scene_load_stats_baseline_valid =
-      application_capture_backend_allocator_stats(
+      vkr_standard_scene_runtime_capture_backend_allocator_stats(
           application, &state->scene_load_stats_baseline);
   state->scene_load_timer_active = true_v;
-  state->scene_load_start_time_seconds = application->clock.elapsed;
-  application_log_backend_allocator_stats(application, "load-enqueue", NULL);
+  state->scene_load_start_time_seconds = application->host.clock.elapsed;
+  vkr_standard_scene_runtime_log_backend_allocator_stats(application,
+                                                         "load-enqueue", NULL);
 
   vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   // An async load is not ready the instant it is enqueued; activation is
-  // retried from application_update_scene. Not an error -- it is the normal
-  // path, and logging it as one made every capture look like a failure.
-  if (!application_try_activate_scene_resource(application)) {
+  // retried from vkr_standard_scene_runtime_update_scene. Not an error -- it is
+  // the normal path, and logging it as one made every capture look like a
+  // failure.
+  if (!vkr_standard_scene_runtime_try_activate_scene_resource(application)) {
     log_debug("Scene load enqueued; activation deferred until it completes");
   }
 }
 
-vkr_internal void application_unload_scene_system(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_unload_scene_system(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
@@ -1667,14 +1675,14 @@ vkr_internal void application_unload_scene_system(Application *application) {
     if (vkr_renderer_wait_idle(&application->renderer) !=
         VKR_RENDERER_ERROR_NONE) {
       application->last_renderer_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
-      bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
+      vkr_application_host_close(&application->host);
       return;
     }
     vkr_resource_system_unload(&state->scene_resource, scene_path);
     if (vkr_renderer_wait_idle(&application->renderer) !=
         VKR_RENDERER_ERROR_NONE) {
       application->last_renderer_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
-      bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
+      vkr_application_host_close(&application->host);
     }
   }
   state->scene_resource = (VkrResourceHandleInfo){0};
@@ -1685,7 +1693,7 @@ vkr_internal void application_unload_scene_system(Application *application) {
   vkr_scene_edit_reset(&state->edits,
                        &application->ui_system.retained_allocator, 0);
   state->gizmo_edit_pending = false_v;
-  application_clear_gizmo_selection(application);
+  vkr_standard_scene_runtime_clear_gizmo_selection(application);
   application->active_scene = NULL;
   application->scene_output_scale = 1.0f;
   application->editor_viewport.rendered_width = 0u;
@@ -1697,22 +1705,25 @@ vkr_internal void application_unload_scene_system(Application *application) {
                                       ? 1u
                                       : application->scene_generation + 1u;
   vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
-  application_log_backend_allocator_stats(application, "unload", NULL);
-  application_log_device_memory_stats(application, "unload");
+  vkr_standard_scene_runtime_log_backend_allocator_stats(application, "unload",
+                                                         NULL);
+  vkr_standard_scene_runtime_log_device_memory_stats(application, "unload");
 }
 
-vkr_internal void application_init_memory_text(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_init_memory_text(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
 
   state->memory_update_clock = vkr_clock_create();
   vkr_clock_start(&state->memory_update_clock);
-  application_ui_text_set(&state->memory_text,
-                          string8_lit("Memory metrics: pending"));
+  vkr_standard_scene_runtime_ui_text_set(
+      &state->memory_text, string8_lit("Memory metrics: pending"));
 }
 
-vkr_internal void application_update_memory_text(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_update_memory_text(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state ||
       !vkr_clock_interval_elapsed(&state->memory_update_clock,
                                   VKR_MEMORY_UPDATE_INTERVAL)) {
@@ -1740,32 +1751,32 @@ vkr_internal void application_update_memory_text(Application *application) {
   char *write = formatted;
   size_t remaining = sizeof(formatted);
   bool8_t complete =
-      application_memory_text_append(&write, &remaining,
-                                     "CPU allocator (tracked live)\n") &&
-      application_memory_text_append_size(&write, &remaining, "  Total",
-                                          cpu.total_allocated) &&
-      application_memory_text_append_size(
+      vkr_standard_scene_runtime_memory_text_append(
+          &write, &remaining, "CPU allocator (tracked live)\n") &&
+      vkr_standard_scene_runtime_memory_text_append_size(
+          &write, &remaining, "  Total", cpu.total_allocated) &&
+      vkr_standard_scene_runtime_memory_text_append_size(
           &write, &remaining, "  Renderer",
           cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_RENDERER]) &&
-      application_memory_text_append_size(
+      vkr_standard_scene_runtime_memory_text_append_size(
           &write, &remaining, "  Array",
           cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]) &&
-      application_memory_text_append_size(
+      vkr_standard_scene_runtime_memory_text_append_size(
           &write, &remaining, "  String",
           cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]) &&
-      application_memory_text_append_size(
+      vkr_standard_scene_runtime_memory_text_append_size(
           &write, &remaining, "  File",
           cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_FILE]) &&
-      application_memory_text_append_size(
+      vkr_standard_scene_runtime_memory_text_append_size(
           &write, &remaining, "  Vulkan state",
           cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]) &&
-      application_memory_text_append_size(
+      vkr_standard_scene_runtime_memory_text_append_size(
           &write, &remaining, "  Texture temp",
           cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]) &&
-      application_memory_text_append_size(&write, &remaining, "  Other",
-                                          cpu_other) &&
-      application_memory_text_append(&write, &remaining,
-                                     "\nGPU device memory\n");
+      vkr_standard_scene_runtime_memory_text_append_size(
+          &write, &remaining, "  Other", cpu_other) &&
+      vkr_standard_scene_runtime_memory_text_append(&write, &remaining,
+                                                    "\nGPU device memory\n");
 
   VkrDeviceMemoryStats gpu = {0};
   const bool8_t have_gpu =
@@ -1803,36 +1814,36 @@ vkr_internal void application_update_memory_text(Application *application) {
         gpu.owners[VKR_GPU_ALLOCATION_OWNER_SHADER].live_bytes +
         gpu.owners[VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN].live_bytes;
     complete =
-        application_memory_text_append_size(&write, &remaining, "  Committed",
-                                            gpu.live_bytes) &&
-        application_memory_text_append_size(
+        vkr_standard_scene_runtime_memory_text_append_size(
+            &write, &remaining, "  Committed", gpu.live_bytes) &&
+        vkr_standard_scene_runtime_memory_text_append_size(
             &write, &remaining, "  Committed peak", gpu.peak_bytes) &&
-        application_memory_text_append_size(&write, &remaining,
-                                            "  Logical live", logical_live) &&
-        application_memory_text_append_size(
+        vkr_standard_scene_runtime_memory_text_append_size(
+            &write, &remaining, "  Logical live", logical_live) &&
+        vkr_standard_scene_runtime_memory_text_append_size(
             &write, &remaining, "  Mesh",
             gpu.owners[VKR_GPU_ALLOCATION_OWNER_MESH].live_bytes) &&
-        application_memory_text_append_size(
+        vkr_standard_scene_runtime_memory_text_append_size(
             &write, &remaining, "  Texture",
             gpu.owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes) &&
-        application_memory_text_append_size(
+        vkr_standard_scene_runtime_memory_text_append_size(
             &write, &remaining, "  Font",
             gpu.owners[VKR_GPU_ALLOCATION_OWNER_FONT].live_bytes) &&
-        application_memory_text_append_size(
+        vkr_standard_scene_runtime_memory_text_append_size(
             &write, &remaining, "  Render graph",
             gpu.owners[VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH].live_bytes) &&
-        application_memory_text_append_size(&write, &remaining, "  Frame data",
-                                            frame_data) &&
-        application_memory_text_append_size(&write, &remaining, "  Transfer",
-                                            transfer) &&
-        application_memory_text_append_size(&write, &remaining,
-                                            "  Shader/target", shader_target) &&
-        application_memory_text_append_size(
+        vkr_standard_scene_runtime_memory_text_append_size(
+            &write, &remaining, "  Frame data", frame_data) &&
+        vkr_standard_scene_runtime_memory_text_append_size(
+            &write, &remaining, "  Transfer", transfer) &&
+        vkr_standard_scene_runtime_memory_text_append_size(
+            &write, &remaining, "  Shader/target", shader_target) &&
+        vkr_standard_scene_runtime_memory_text_append_size(
             &write, &remaining, "  Unknown",
             gpu.owners[VKR_GPU_ALLOCATION_OWNER_UNKNOWN].live_bytes);
   } else if (complete) {
-    complete = application_memory_text_append(&write, &remaining,
-                                              "  Metrics unavailable\n");
+    complete = vkr_standard_scene_runtime_memory_text_append(
+        &write, &remaining, "  Metrics unavailable\n");
   }
 
   if (!complete)
@@ -1844,12 +1855,13 @@ vkr_internal void application_update_memory_text(Application *application) {
   if (!content)
     return;
   MemCopy(content, formatted, content_length + 1u);
-  application_ui_text_set(&state->memory_text,
-                          (String8){.str = content, .length = content_length});
+  vkr_standard_scene_runtime_ui_text_set(
+      &state->memory_text, (String8){.str = content, .length = content_length});
 }
 
 /** Logs a paste-ready static camera block for a harness snapshot case. */
-vkr_internal void application_log_camera_snapshot(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_log_camera_snapshot(
+    VkrStandardSceneRuntime *application) {
   if (!application) {
     log_warn("Cannot capture camera snapshot without an application");
     return;
@@ -1887,8 +1899,9 @@ vkr_internal void application_log_camera_snapshot(Application *application) {
            camera->near_clip, camera->far_clip);
 }
 
-vkr_internal void application_handle_input(Application *application,
-                                           float64_t delta_time) {
+vkr_internal void
+vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
+                                        float64_t delta_time) {
   if (state == NULL || state->input_state == NULL) {
     log_error("State or input state is NULL");
     return;
@@ -1916,7 +1929,7 @@ vkr_internal void application_handle_input(Application *application,
   if (!application->ui_capture.keyboard &&
       input_is_key_up(state->input_state, KEY_L) &&
       input_was_key_down(state->input_state, KEY_L)) {
-    application_init_scene_system(application);
+    vkr_standard_scene_runtime_init_scene_system(application);
   }
 
   if (!application->ui_capture.keyboard &&
@@ -1927,7 +1940,7 @@ vkr_internal void application_handle_input(Application *application,
                "Save edits before unloading the scene.");
       log_warn("Save editor overrides before unloading the scene");
     } else
-      application_unload_scene_system(application);
+      vkr_standard_scene_runtime_unload_scene_system(application);
   }
 
   if (input_is_key_up(input_state, KEY_F4) &&
@@ -1935,14 +1948,14 @@ vkr_internal void application_handle_input(Application *application,
     uint32_t next_mode =
         (state->filter_mode_index + (uint32_t)ArrayCount(FILTER_MODES) - 1) %
         (uint32_t)ArrayCount(FILTER_MODES);
-    application_apply_filter_mode(application, next_mode);
+    vkr_standard_scene_runtime_apply_filter_mode(application, next_mode);
   }
 
   if (input_is_key_up(input_state, KEY_F5) &&
       input_was_key_down(input_state, KEY_F5)) {
     uint32_t next_mode =
         (state->filter_mode_index + 1) % (uint32_t)ArrayCount(FILTER_MODES);
-    application_apply_filter_mode(application, next_mode);
+    vkr_standard_scene_runtime_apply_filter_mode(application, next_mode);
   }
 
   state->ui.handle_input(state->ui.state, input_state);
@@ -1960,7 +1973,8 @@ vkr_internal void application_handle_input(Application *application,
       input_was_key_down(input_state, KEY_F8)) {
     state->ibl_validation_mode = (state->ibl_validation_mode + 1u) % 4u;
     log_info("IBL validation mode: %s",
-             application_ibl_validation_mode_label(state->ibl_validation_mode));
+             vkr_standard_scene_runtime_ibl_validation_mode_label(
+                 state->ibl_validation_mode));
   }
 
   if (input_is_key_up(input_state, KEY_F9) &&
@@ -1979,15 +1993,17 @@ vkr_internal void application_handle_input(Application *application,
 
   if (input_is_key_up(input_state, KEY_G) &&
       input_was_key_down(input_state, KEY_G)) {
-    application_log_camera_snapshot(application);
+    vkr_standard_scene_runtime_log_camera_snapshot(application);
   }
 
-  bool8_t camera_captured = vkr_window_is_mouse_captured(&application->window);
+  bool8_t camera_captured =
+      vkr_window_is_mouse_captured(&application->host.window);
   if (state->free_camera_held &&
       (!camera_captured || input_is_button_up(input_state, BUTTON_RIGHT) ||
-       application_editor_scene_rendering_stopped(application))) {
+       vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+           application))) {
     if (camera_captured)
-      vkr_window_set_mouse_capture(&application->window, false_v);
+      vkr_window_set_mouse_capture(&application->host.window, false_v);
     state->free_camera_held = false_v;
     state->free_camera_wheel_initialized = false_v;
     camera_captured = false_v;
@@ -2004,8 +2020,9 @@ vkr_internal void application_handle_input(Application *application,
       input_key_just_pressed(input_state, KEY_F3);
   if ((camera_tab || camera_shortcut) &&
       (camera_captured ||
-       !application_editor_scene_rendering_stopped(application))) {
-    vkr_window_set_mouse_capture(&application->window, !camera_captured);
+       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+           application))) {
+    vkr_window_set_mouse_capture(&application->host.window, !camera_captured);
     state->free_camera_held = false_v;
     camera_started = !camera_captured;
     state->free_camera_wheel_initialized = false_v;
@@ -2015,8 +2032,8 @@ vkr_internal void application_handle_input(Application *application,
   if (input_is_button_down(input_state, BUTTON_GAMEPAD_A) &&
       input_was_button_up(input_state, BUTTON_GAMEPAD_A)) {
     bool8_t should_capture =
-        !vkr_window_is_mouse_captured(&application->window);
-    vkr_window_set_mouse_capture(&application->window, should_capture);
+        !vkr_window_is_mouse_captured(&application->host.window);
+    vkr_window_set_mouse_capture(&application->host.window, should_capture);
     state->free_camera_held = false_v;
     camera_started = should_capture;
     if (should_capture) {
@@ -2027,8 +2044,8 @@ vkr_internal void application_handle_input(Application *application,
   }
 
   if (application->editor_viewport.enabled &&
-      !vkr_window_is_mouse_captured(&application->window) &&
-      !application_editor_scene_rendering_stopped(application) &&
+      !vkr_window_is_mouse_captured(&application->host.window) &&
+      !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
       !application->ui_capture.mouse && !application->ui_capture.text &&
       application->ui_system.mouse_input_layer == 0u &&
       application->ui_system.keyboard_input_layer == 0u &&
@@ -2040,9 +2057,10 @@ vkr_internal void application_handle_input(Application *application,
     input_get_button_press_position(input_state, BUTTON_RIGHT, &press_x,
                                     &press_y);
     const VkrViewportHitInfo hit =
-        application_get_viewport_hit_info(application, press_x, press_y);
+        vkr_standard_scene_runtime_get_viewport_hit_info(application, press_x,
+                                                         press_y);
     if (hit.has_target_coords) {
-      vkr_window_set_mouse_capture(&application->window, true_v);
+      vkr_window_set_mouse_capture(&application->host.window, true_v);
       state->free_camera_held = true_v;
       state->free_camera_use_gamepad = false_v;
       state->free_camera_wheel_initialized = false_v;
@@ -2057,7 +2075,7 @@ vkr_internal void application_handle_input(Application *application,
   /* Camera capture owns editor input. A previously focused Inspector button or
      a toolbar under the virtual pointer must not block movement. */
   if (application->editor_viewport.enabled &&
-      vkr_window_is_mouse_captured(&application->window)) {
+      vkr_window_is_mouse_captured(&application->host.window)) {
     application->ui_system.focused_id = VKR_UI_ID_NONE;
     application->ui_system.focused_is_text = false_v;
     application->ui_capture = (VkrUiInputCapture){0};
@@ -2069,9 +2087,9 @@ vkr_internal void application_handle_input(Application *application,
   if (camera_started)
     return;
 
-  if (!vkr_window_is_mouse_captured(&application->window) ||
+  if (!vkr_window_is_mouse_captured(&application->host.window) ||
       application->ui_capture.mouse || application->ui_capture.keyboard ||
-      application_editor_scene_rendering_stopped(application)) {
+      vkr_standard_scene_runtime_editor_scene_rendering_stopped(application)) {
     return;
   }
 
@@ -2180,15 +2198,16 @@ vkr_internal void application_handle_input(Application *application,
   }
 }
 
-vkr_internal void application_update_fps_text(Application *application,
-                                              float64_t delta_time) {
+vkr_internal void
+vkr_standard_scene_runtime_update_fps_text(VkrStandardSceneRuntime *application,
+                                           float64_t delta_time) {
   if (!application || !state) {
     return;
   }
 
   state->fps_accumulated_time += delta_time;
   state->fps_frame_count++;
-  application_accumulate_frame_time(application);
+  vkr_standard_scene_runtime_accumulate_frame_time(application);
 
   if (vkr_clock_interval_elapsed(&state->fps_update_clock,
                                  VKR_FPS_UPDATE_INTERVAL)) {
@@ -2247,14 +2266,14 @@ vkr_internal void application_update_fps_text(Application *application,
         frame_alloc, "FPS: %.1f\nFrametime: %.2f ms", state->current_fps,
         state->current_frametime * 1000.0);
     if (fps_text.length > 0) {
-      application_ui_text_set(&state->fps_text, fps_text);
+      vkr_standard_scene_runtime_ui_text_set(&state->fps_text, fps_text);
 
       String8 left_text = string8_create_formatted(
           frame_alloc, "Pos: x %.2f  y %.2f  z %.2f\nYaw %.2f  Pitch %.2f",
           camera->position.x, camera->position.y, camera->position.z,
           camera->yaw, camera->pitch);
       if (left_text.length > 0) {
-        application_ui_text_set(&state->left_text, left_text);
+        vkr_standard_scene_runtime_ui_text_set(&state->left_text, left_text);
       }
 
       {
@@ -2338,7 +2357,8 @@ vkr_internal void application_update_fps_text(Application *application,
           }
         }
         if (metrics_text.length > 0) {
-          application_ui_text_set(&state->metrics_text, metrics_text);
+          vkr_standard_scene_runtime_ui_text_set(&state->metrics_text,
+                                                 metrics_text);
         }
       }
     }
@@ -2351,14 +2371,15 @@ vkr_internal void application_update_fps_text(Application *application,
   }
 }
 
-vkr_internal void application_init_ui_texts(Application *application) {
+vkr_internal void
+vkr_standard_scene_runtime_init_ui_texts(VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
 
-  application_ui_text_set(&state->fps_text,
-                          string8_lit("FPS: 0.0\nFrametime: 0.0"));
-  application_ui_text_set(
+  vkr_standard_scene_runtime_ui_text_set(
+      &state->fps_text, string8_lit("FPS: 0.0\nFrametime: 0.0"));
+  vkr_standard_scene_runtime_ui_text_set(
       &state->left_text,
       string8_lit("Pos: x 0.0  y 0.0  z 0.0\nYaw 0.0  Pitch 0.0"));
 
@@ -2369,19 +2390,20 @@ vkr_internal void application_init_ui_texts(Application *application) {
   state->current_fps = 0.0;
   state->current_frametime = 0.0;
 
-  application_ui_text_set(&state->picked_object_text,
-                          string8_lit("Picked: none"));
+  vkr_standard_scene_runtime_ui_text_set(&state->picked_object_text,
+                                         string8_lit("Picked: none"));
   state->last_picked_object_id = 0;
-  application_ui_text_set(&state->metrics_text,
-                          string8_lit("World batches: 0\nShadow: 0"));
+  vkr_standard_scene_runtime_ui_text_set(
+      &state->metrics_text, string8_lit("World batches: 0\nShadow: 0"));
 
-  application_init_memory_text(application);
+  vkr_standard_scene_runtime_init_memory_text(application);
 }
 
 /**
  * @brief Initialize world content state.
  */
-vkr_internal void application_init_world_content(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_init_world_content(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
@@ -2394,13 +2416,14 @@ vkr_internal void application_init_world_content(Application *application) {
 /**
  * @brief Update scene system each frame.
  */
-vkr_internal void application_update_scene(Application *application,
-                                           float64_t delta_time) {
+vkr_internal void
+vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
+                                        float64_t delta_time) {
   if (!application || !state) {
     return;
   }
 
-  (void)application_try_activate_scene_resource(application);
+  (void)vkr_standard_scene_runtime_try_activate_scene_resource(application);
   if (!state->scene_resource.as.scene || !application->active_scene) {
     return;
   }
@@ -2425,14 +2448,14 @@ vkr_internal void application_update_scene(Application *application,
     SceneTransform *transform =
         scene ? vkr_scene_get_transform(scene, state->selected_entity) : NULL;
     if (!transform) {
-      application_clear_gizmo_selection(application);
+      vkr_standard_scene_runtime_clear_gizmo_selection(application);
       return;
     }
 
     Mat4 parent_inverse;
     VkrQuat parent_rotation;
-    if (!application_gizmo_parent_frame(scene, transform, &parent_inverse,
-                                        &parent_rotation)) {
+    if (!vkr_standard_scene_runtime_gizmo_parent_frame(
+            scene, transform, &parent_inverse, &parent_rotation)) {
       vkr_gizmo_system_clear_target(&application->gizmo_system);
       return;
     }
@@ -2440,8 +2463,9 @@ vkr_internal void application_update_scene(Application *application,
     SceneText3D *text = vkr_scene_get_text3d(scene, state->selected_entity);
     if (text) {
       Vec3 pivot_local = vec3_zero();
-      if (application_text_pivot_local(text, &pivot_local)) {
-        world_position = application_text_pivot_world(transform, pivot_local);
+      if (vkr_standard_scene_runtime_text_pivot_local(text, &pivot_local)) {
+        world_position =
+            vkr_standard_scene_runtime_text_pivot_world(transform, pivot_local);
       }
     }
 
@@ -2451,7 +2475,8 @@ vkr_internal void application_update_scene(Application *application,
   }
 }
 
-vkr_internal void application_finish_gizmo_edit(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
+    VkrStandardSceneRuntime *application) {
   if (state->gizmo_edit_pending) {
     VkrScene *scene = application->active_scene;
     VkrSceneEditValues after;
@@ -2477,18 +2502,19 @@ vkr_internal void application_finish_gizmo_edit(Application *application) {
   }
   state->gizmo_drag.active = false_v;
   state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
-  application_clear_gizmo_handles(application);
+  vkr_standard_scene_runtime_clear_gizmo_handles(application);
 }
 
-vkr_internal void
-application_capture_gizmo_release(const VkrViewportHitInfo *viewport_info) {
+vkr_internal void vkr_standard_scene_runtime_capture_gizmo_release(
+    const VkrViewportHitInfo *viewport_info) {
   state->gizmo_drag.released = true_v;
   state->gizmo_drag.release_has_target_coords =
       viewport_info->has_target_coords;
   state->gizmo_drag.release_position = viewport_info->position;
 }
 
-vkr_internal void application_update_picking(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_update_picking(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state || !state->input_state) {
     return;
   }
@@ -2501,11 +2527,11 @@ vkr_internal void application_update_picking(Application *application) {
   if ((state->gizmo_drag.pending_pick || state->gizmo_hover_pending) &&
       (state->pick_scene_generation != application->scene_generation ||
        state->pick_selected_entity.u64 != state->selected_entity.u64))
-    application_cancel_gizmo_pick(application);
+    vkr_standard_scene_runtime_cancel_gizmo_pick(application);
 
-  if (application_editor_scene_rendering_stopped(application) ||
+  if (vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
       input_is_key_down(state->input_state, KEY_ESCAPE) ||
-      vkr_window_is_mouse_captured(&application->window) ||
+      vkr_window_is_mouse_captured(&application->host.window) ||
       (application->ui_capture.mouse && !state->gizmo_drag.active &&
        !state->gizmo_drag.pending_pick)) {
     if (vkr_picking_is_pending(picking))
@@ -2532,13 +2558,14 @@ vkr_internal void application_update_picking(Application *application) {
   input_get_previous_mouse_position(state->input_state, &prev_mouse_x,
                                     &prev_mouse_y);
   VkrViewportHitInfo viewport_info =
-      application_get_viewport_hit_info(application, mouse_x, mouse_y);
+      vkr_standard_scene_runtime_get_viewport_hit_info(application, mouse_x,
+                                                       mouse_y);
   if (state->gizmo_drag.pending_pick && !left_down &&
       !state->gizmo_drag.released)
-    application_capture_gizmo_release(&viewport_info);
+    vkr_standard_scene_runtime_capture_gizmo_release(&viewport_info);
 
   if (state->gizmo_drag.active && left_down)
-    application_update_gizmo_drag(application, &viewport_info);
+    vkr_standard_scene_runtime_update_gizmo_drag(application, &viewport_info);
 
   if (click_pressed && state->gizmo_hover_pending) {
     vkr_picking_cancel(picking);
@@ -2551,15 +2578,17 @@ vkr_internal void application_update_picking(Application *application) {
     input_get_button_press_position(state->input_state, BUTTON_LEFT, &press_x,
                                     &press_y);
     const VkrViewportHitInfo press_info =
-        application_get_viewport_hit_info(application, press_x, press_y);
-    if (application_request_picking(application, picking, &press_info)) {
+        vkr_standard_scene_runtime_get_viewport_hit_info(application, press_x,
+                                                         press_y);
+    if (vkr_standard_scene_runtime_request_picking(application, picking,
+                                                   &press_info)) {
       state->gizmo_drag.pending_pick = true_v;
       state->gizmo_drag.pending_select = click_select;
       state->gizmo_drag.pick_position = press_info.position;
       state->gizmo_drag.released = false_v;
       state->gizmo_drag.release_has_target_coords = false_v;
       if (!left_down)
-        application_capture_gizmo_release(&viewport_info);
+        vkr_standard_scene_runtime_capture_gizmo_release(&viewport_info);
     }
   }
 
@@ -2568,7 +2597,8 @@ vkr_internal void application_update_picking(Application *application) {
       !state->gizmo_hover_pending && !vkr_picking_is_pending(picking) &&
       mouse_moved && !left_down && !right_down && !middle_down &&
       application->gizmo_system.visible) {
-    if (application_request_picking(application, picking, &viewport_info)) {
+    if (vkr_standard_scene_runtime_request_picking(application, picking,
+                                                   &viewport_info)) {
       state->gizmo_hover_pending = true_v;
     }
   }
@@ -2619,8 +2649,8 @@ vkr_internal void application_update_picking(Application *application) {
         VkrScene *scene =
             vkr_scene_handle_get_scene(state->scene_resource.as.scene);
         VkrEntityId text_entity = VKR_ENTITY_ID_INVALID;
-        if (scene && application_world_text_entity_from_id(scene, decoded.value,
-                                                           &text_entity)) {
+        if (scene && vkr_standard_scene_runtime_world_text_entity_from_id(
+                         scene, decoded.value, &text_entity)) {
           picked_entity = text_entity;
           picked_entity_valid = true_v;
           String8 name =
@@ -2647,7 +2677,8 @@ vkr_internal void application_update_picking(Application *application) {
             input_is_button_down(state->input_state, BUTTON_LEFT);
         if ((drag_button_down || state->gizmo_drag.released) &&
             handle != VKR_GIZMO_HANDLE_NONE) {
-          if (application_begin_gizmo_drag(application, handle)) {
+          if (vkr_standard_scene_runtime_begin_gizmo_drag(application,
+                                                          handle)) {
             vkr_gizmo_system_set_active_handle(&application->gizmo_system,
                                                handle);
             application->gizmo_system.mode = state->gizmo_drag.mode;
@@ -2657,10 +2688,12 @@ vkr_internal void application_update_picking(Application *application) {
                   .has_target_coords =
                       state->gizmo_drag.release_has_target_coords,
               };
-              application_update_gizmo_drag(application, &release_info);
-              application_finish_gizmo_edit(application);
+              vkr_standard_scene_runtime_update_gizmo_drag(application,
+                                                           &release_info);
+              vkr_standard_scene_runtime_finish_gizmo_edit(application);
             } else {
-              application_update_gizmo_drag(application, &viewport_info);
+              vkr_standard_scene_runtime_update_gizmo_drag(application,
+                                                           &viewport_info);
             }
             update_selection = false_v;
           }
@@ -2686,7 +2719,8 @@ vkr_internal void application_update_picking(Application *application) {
     if (picked_text.length > 0 &&
         result.object_id != state->last_picked_object_id) {
       state->last_picked_object_id = result.object_id;
-      application_ui_text_set(&state->picked_object_text, picked_text);
+      vkr_standard_scene_runtime_ui_text_set(&state->picked_object_text,
+                                             picked_text);
     }
 
     state->gizmo_drag.pending_select = false_v;
@@ -2713,7 +2747,8 @@ vkr_internal void application_update_picking(Application *application) {
  *
  * Uses the new scene-based text3d API instead of layer messages.
  */
-vkr_internal void application_update_world_text(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_update_world_text(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
@@ -2757,7 +2792,8 @@ vkr_internal void application_update_world_text(Application *application) {
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 }
 
-vkr_internal void application_poll_upload_wait_stats(Application *application) {
+vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
+    VkrStandardSceneRuntime *application) {
   if (!application || !state) {
     return;
   }
@@ -2840,12 +2876,13 @@ vkr_internal void application_poll_upload_wait_stats(Application *application) {
               (unsigned long long)wait_stats.queue_wait_idle_count,
               (unsigned long long)wait_stats.device_wait_idle_count);
     state->upload_wait_violation_seen = true_v;
-    application_close(application);
+    vkr_standard_scene_runtime_close(application);
   }
 }
 
-vkr_internal void application_update_ui(Application *application,
-                                        float64_t delta) {
+vkr_internal void
+vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
+                                     float64_t delta) {
   if (!application || !state || !state->input_state ||
       !application->ui_system.initialized) {
     return;
@@ -2855,27 +2892,27 @@ vkr_internal void application_update_ui(Application *application,
     /* Resolution recovery invalidates GPU picks, not scene-owned edits. */
     if (application->editor_viewport.scene_error != VKR_RENDERER_ERROR_NONE &&
         (state->gizmo_drag.pending_pick || state->gizmo_hover_pending))
-      application_cancel_gizmo_pick(application);
+      vkr_standard_scene_runtime_cancel_gizmo_pick(application);
     if (state->gizmo_edit_pending &&
-        application_editor_scene_rendering_stopped(application))
-      application_finish_gizmo_edit(application);
+        vkr_standard_scene_runtime_editor_scene_rendering_stopped(application))
+      vkr_standard_scene_runtime_finish_gizmo_edit(application);
     const bool8_t command =
         input_key_shortcut_modifier(state->input_state, KEY_P);
     const bool8_t escape =
         input_key_just_pressed(state->input_state, KEY_ESCAPE);
     if (escape ||
         (command && input_key_just_pressed(state->input_state, KEY_P))) {
-      vkr_window_set_mouse_capture(&application->window, false_v);
+      vkr_window_set_mouse_capture(&application->host.window, false_v);
       state->free_camera_held = false_v;
       state->free_camera_wheel_initialized = false_v;
       state->free_camera_use_gamepad = false_v;
     }
     if (escape) {
-      application_cancel_gizmo_pick(application);
-      application_clear_gizmo_handles(application);
+      vkr_standard_scene_runtime_cancel_gizmo_pick(application);
+      vkr_standard_scene_runtime_clear_gizmo_handles(application);
     }
     if (escape && state->gizmo_edit_pending)
-      application_cancel_gizmo_edit(application);
+      vkr_standard_scene_runtime_cancel_gizmo_edit(application);
   }
 
   /* Complete a released drag before UI commands can change selection or stop
@@ -2885,12 +2922,13 @@ vkr_internal void application_update_ui(Application *application,
     int32_t release_x, release_y;
     input_get_mouse_position(state->input_state, &release_x, &release_y);
     const VkrViewportHitInfo release_info =
-        application_get_viewport_hit_info(application, release_x, release_y);
+        vkr_standard_scene_runtime_get_viewport_hit_info(application, release_x,
+                                                         release_y);
     if (!state->gizmo_drag.released)
-      application_capture_gizmo_release(&release_info);
+      vkr_standard_scene_runtime_capture_gizmo_release(&release_info);
     if (state->gizmo_drag.active) {
-      application_update_gizmo_drag(application, &release_info);
-      application_finish_gizmo_edit(application);
+      vkr_standard_scene_runtime_update_gizmo_drag(application, &release_info);
+      vkr_standard_scene_runtime_finish_gizmo_edit(application);
     }
   }
 
@@ -2900,12 +2938,15 @@ vkr_internal void application_update_ui(Application *application,
   root.column_count = 1u;
   root.rows = &root_track;
   root.row_count = 1u;
-  if (!vkr_ui_begin(
-          &application->ui_system, &application->frame_allocator,
-          application_is_windowed(application) ? &application->window : NULL,
-          application->renderer.last_window_width,
-          application->renderer.last_window_height, state->input_state,
-          vkr_window_is_mouse_captured(&application->window), delta, &root)) {
+  if (!vkr_ui_begin(&application->ui_system, &application->frame_allocator,
+                    vkr_standard_scene_runtime_is_windowed(application)
+                        ? &application->host.window
+                        : NULL,
+                    application->renderer.last_window_width,
+                    application->renderer.last_window_height,
+                    state->input_state,
+                    vkr_window_is_mouse_captured(&application->host.window),
+                    delta, &root)) {
     application->ui_capture = (VkrUiInputCapture){0};
     return;
   }
@@ -2921,10 +2962,14 @@ vkr_internal void application_update_ui(Application *application,
       .input = state->input_state,
       .text =
           {
-              .camera = application_ui_text_view(&state->left_text),
-              .performance = application_ui_text_view(&state->fps_text),
-              .metrics = application_ui_text_view(&state->metrics_text),
-              .memory = application_ui_text_view(&state->memory_text),
+              .camera =
+                  vkr_standard_scene_runtime_ui_text_view(&state->left_text),
+              .performance =
+                  vkr_standard_scene_runtime_ui_text_view(&state->fps_text),
+              .metrics =
+                  vkr_standard_scene_runtime_ui_text_view(&state->metrics_text),
+              .memory =
+                  vkr_standard_scene_runtime_ui_text_view(&state->memory_text),
               .system =
                   string8_create_from_cstr((const uint8_t *)state->system_text,
                                            string_length(state->system_text)),
@@ -2957,10 +3002,10 @@ vkr_internal void application_update_ui(Application *application,
       .edits = &state->edits,
       .scene_edit = &scene_edit,
       .scene_only = application->editor_viewport.scene_only,
-      .mouse_captured = vkr_window_is_mouse_captured(&application->window),
+      .mouse_captured = vkr_window_is_mouse_captured(&application->host.window),
   };
   if (application->editor_viewport.enabled) {
-    frame.mapping_valid = application_editor_viewport_mapping(
+    frame.mapping_valid = vkr_standard_scene_runtime_editor_viewport_mapping(
         application, application->ui_system.target_width,
         application->ui_system.target_height, &frame.mapping);
   }
@@ -2984,9 +3029,9 @@ vkr_internal void application_update_ui(Application *application,
   if (state->gizmo_drag.active &&
       (scene_edit.action != VKR_SCENE_EDIT_NONE ||
        transport_action == VKR_SAMPLE_TRANSPORT_STOP_RENDERING))
-    application_finish_gizmo_edit(application);
+    vkr_standard_scene_runtime_finish_gizmo_edit(application);
   if (scene_edit.action == VKR_SCENE_EDIT_LOAD)
-    application_init_scene_system(application);
+    vkr_standard_scene_runtime_init_scene_system(application);
   if (scene_edit.action == VKR_SCENE_EDIT_UNLOAD ||
       scene_edit.action == VKR_SCENE_EDIT_RELOAD) {
     if (state->edits.revision != state->edits.saved_revision) {
@@ -2994,9 +3039,9 @@ vkr_internal void application_update_ui(Application *application,
                "Save edits before reloading or unloading.");
       log_warn("Save editor overrides before reloading or unloading");
     } else {
-      application_unload_scene_system(application);
+      vkr_standard_scene_runtime_unload_scene_system(application);
       if (scene_edit.action == VKR_SCENE_EDIT_RELOAD)
-        application_init_scene_system(application);
+        vkr_standard_scene_runtime_init_scene_system(application);
     }
   }
   VkrScene *scene = application->active_scene;
@@ -3004,8 +3049,8 @@ vkr_internal void application_update_ui(Application *application,
     switch (scene_edit.action) {
     case VKR_SCENE_EDIT_SELECT:
       if (vkr_scene_entity_alive(scene, scene_edit.entity)) {
-        application_cancel_gizmo_pick(application);
-        application_clear_gizmo_handles(application);
+        vkr_standard_scene_runtime_cancel_gizmo_pick(application);
+        vkr_standard_scene_runtime_clear_gizmo_handles(application);
         state->gizmo_drag.active = false_v;
         state->selected_entity = scene_edit.entity;
         state->has_selection = true_v;
@@ -3094,8 +3139,8 @@ vkr_internal void application_update_ui(Application *application,
     break;
   case VKR_SAMPLE_TRANSPORT_STOP_RENDERING:
     application->editor_viewport.scene_rendering_stopped = true_v;
-    if (vkr_window_is_mouse_captured(&application->window))
-      vkr_window_set_mouse_capture(&application->window, false_v);
+    if (vkr_window_is_mouse_captured(&application->host.window))
+      vkr_window_set_mouse_capture(&application->host.window, false_v);
     state->free_camera_held = false_v;
     state->free_camera_wheel_initialized = false_v;
     state->free_camera_use_gamepad = false_v;
@@ -3104,13 +3149,14 @@ vkr_internal void application_update_ui(Application *application,
     state->gizmo_drag.pending_pick = false_v;
     state->gizmo_drag.pending_select = false_v;
     state->gizmo_hover_pending = false_v;
-    application_clear_gizmo_handles(application);
+    vkr_standard_scene_runtime_clear_gizmo_handles(application);
     break;
   case VKR_SAMPLE_TRANSPORT_TOGGLE_CAMERA:
-    if (!application_editor_scene_rendering_stopped(application)) {
+    if (!vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+            application)) {
       const bool8_t captured =
-          vkr_window_is_mouse_captured(&application->window);
-      vkr_window_set_mouse_capture(&application->window, !captured);
+          vkr_window_is_mouse_captured(&application->host.window);
+      vkr_window_set_mouse_capture(&application->host.window, !captured);
       state->free_camera_held = false_v;
       state->scene_keyboard_focus = true_v;
       state->free_camera_wheel_initialized = false_v;
@@ -3122,8 +3168,9 @@ vkr_internal void application_update_ui(Application *application,
   }
 }
 
-static void application_project_ui(Application *application,
-                                   const VkrViewportMapping *mapping) {
+static void
+vkr_standard_scene_runtime_project_ui(VkrStandardSceneRuntime *application,
+                                      const VkrViewportMapping *mapping) {
   const VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
       .mapping = *mapping,
@@ -3133,14 +3180,18 @@ static void application_project_ui(Application *application,
       .scene = application->active_scene,
       .scene_generation = application->scene_generation,
       .scene_rendering_stopped =
-          application_editor_scene_rendering_stopped(application),
+          vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+              application),
   };
   state->ui.project_scene(state->ui.state, &frame);
 }
 
-void application_update(Application *application, float64_t delta) {
-  application_update_ui(application, delta);
-  application_handle_input(application, delta);
+vkr_internal void
+vkr_sample_runtime_update(void *state_ptr, VkrStandardSceneRuntime *application,
+                          float64_t delta) {
+  (void)state_ptr;
+  vkr_standard_scene_runtime_update_ui(application, delta);
+  vkr_standard_scene_runtime_handle_input(application, delta);
 
   if (!application->ui_capture.keyboard &&
       input_is_key_up(state->input_state, KEY_Q) &&
@@ -3162,25 +3213,25 @@ void application_update(Application *application, float64_t delta) {
               application->shadow_debug_mode);
   }
 
-  application_update_fps_text(application, delta);
-  application_update_memory_text(application);
+  vkr_standard_scene_runtime_update_fps_text(application, delta);
+  vkr_standard_scene_runtime_update_memory_text(application);
   if (application->editor_viewport.simulation_running)
-    application_update_world_text(application);
-  application_update_picking(application);
+    vkr_standard_scene_runtime_update_world_text(application);
+  vkr_standard_scene_runtime_update_picking(application);
   const float64_t scene_delta =
       application->editor_viewport.simulation_running ? delta : 0.0;
   application->editor_viewport.simulation_time += scene_delta;
-  application_update_scene(application, scene_delta);
-  application_update_ibl_validation_controls(application);
-  application_poll_upload_wait_stats(application);
-  application_dump_periodic_metrics(application);
+  vkr_standard_scene_runtime_update_scene(application, scene_delta);
+  vkr_standard_scene_runtime_update_ibl_validation_controls(application);
+  vkr_standard_scene_runtime_poll_upload_wait_stats(application);
+  vkr_standard_scene_runtime_dump_periodic_metrics(application);
 
   if (state->auto_close_enabled && !state->auto_close_requested &&
-      application->clock.elapsed >= state->auto_close_after_seconds) {
+      application->host.clock.elapsed >= state->auto_close_after_seconds) {
     state->auto_close_requested = true_v;
     log_info("Auto-close threshold reached (%.2fs), shutting down app loop",
              state->auto_close_after_seconds);
-    application_close(application);
+    vkr_standard_scene_runtime_close(application);
   }
 }
 
@@ -3246,61 +3297,67 @@ int vkr_sample_runtime_run(int argc, char **argv,
     }
   }
   const bool8_t rg_gpu_timing_enabled =
-      application_env_flag("VKR_RG_GPU_TIMING", false_v);
+      vkr_standard_scene_runtime_env_flag("VKR_RG_GPU_TIMING", false_v);
   const bool8_t submission_gpu_timing_enabled =
-      application_env_flag("VKR_GPU_SUBMISSION_TIMING", false_v);
-  const bool8_t metrics_event_subjects =
-      application_env_flag("VKR_METRICS_EVENT_SUBJECTS", false_v);
+      vkr_standard_scene_runtime_env_flag("VKR_GPU_SUBMISSION_TIMING", false_v);
+  const bool8_t metrics_event_subjects = vkr_standard_scene_runtime_env_flag(
+      "VKR_METRICS_EVENT_SUBJECTS", false_v);
   const bool8_t metal_validation_enabled =
-      application_env_flag("MTL_DEBUG_LAYER", false_v) ||
-      application_env_flag("MTL_SHADER_VALIDATION", false_v);
+      vkr_standard_scene_runtime_env_flag("MTL_DEBUG_LAYER", false_v) ||
+      vkr_standard_scene_runtime_env_flag("MTL_SHADER_VALIDATION", false_v);
 
-  ApplicationConfig application_config = {0};
-  application_config.title = runtime_config->title;
-  application_config.x = 100;
-  application_config.y = 100;
-  application_config.width = runtime_config->presentation.paneled ? 1280 : 800;
-  application_config.height = runtime_config->presentation.paneled ? 800 : 600;
-  application_config.app_arena_size = MB(1);
-  application_config.target_frame_rate = 0;
-  application_config.renderer_backend = renderer_backend;
-  application_config.render_scale = 1.0f;
-  application_config.upscale_mode = VKR_UPSCALE_MODE_SPATIAL;
+  VkrStandardSceneRuntimeConfig vkr_standard_scene_runtime_config = {0};
+  vkr_standard_scene_runtime_config.title = runtime_config->title;
+  vkr_standard_scene_runtime_config.x = 100;
+  vkr_standard_scene_runtime_config.y = 100;
+  vkr_standard_scene_runtime_config.width =
+      runtime_config->presentation.paneled ? 1280 : 800;
+  vkr_standard_scene_runtime_config.height =
+      runtime_config->presentation.paneled ? 800 : 600;
+  vkr_standard_scene_runtime_config.app_arena_size = MB(1);
+  vkr_standard_scene_runtime_config.target_frame_rate = 0;
+  vkr_standard_scene_runtime_config.renderer_backend = renderer_backend;
+  vkr_standard_scene_runtime_config.render_scale = 1.0f;
+  vkr_standard_scene_runtime_config.upscale_mode = VKR_UPSCALE_MODE_SPATIAL;
   if (renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
-    application_config.render_scale = 0.8f;
+    vkr_standard_scene_runtime_config.render_scale = 0.8f;
     if (!metal_validation_enabled) {
-      application_config.upscale_mode = VKR_UPSCALE_MODE_METALFX_TEMPORAL;
-      application_config.dynamic_resolution = (VkrDynamicResolutionConfig){
-          .min_scale = 0.334f,
-          .max_scale = 1.0f,
-          .target_frame_ms = 1000.0f / 75.0f,
-          .enabled = true_v,
-      };
+      vkr_standard_scene_runtime_config.upscale_mode =
+          VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+      vkr_standard_scene_runtime_config.dynamic_resolution =
+          (VkrDynamicResolutionConfig){
+              .min_scale = 0.334f,
+              .max_scale = 1.0f,
+              .target_frame_ms = 1000.0f / 75.0f,
+              .enabled = true_v,
+          };
     }
   }
   if (renderer_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN) {
-    application_config.render_scale = 2.0f / 3.0f;
-    application_config.upscale_mode = VKR_UPSCALE_MODE_FSR31;
+    vkr_standard_scene_runtime_config.render_scale = 2.0f / 3.0f;
+    vkr_standard_scene_runtime_config.upscale_mode = VKR_UPSCALE_MODE_FSR31;
   }
-  application_config.metrics_config = (VkrMetricsConfig){
+  vkr_standard_scene_runtime_config.metrics_config = (VkrMetricsConfig){
       .pass_gpu_timings = rg_gpu_timing_enabled,
       .submission_gpu_timings = submission_gpu_timing_enabled,
       .event_subjects = metrics_event_subjects,
   };
-  application_config.device_requirements = (VkrDeviceRequirements){
-      .supported_stages =
-          VKR_SHADER_STAGE_VERTEX_BIT | VKR_SHADER_STAGE_FRAGMENT_BIT,
-      .supported_queues = VKR_DEVICE_QUEUE_GRAPHICS_BIT |
-                          VKR_DEVICE_QUEUE_TRANSFER_BIT |
-                          VKR_DEVICE_QUEUE_PRESENT_BIT,
-      .allowed_device_types =
-          VKR_DEVICE_TYPE_DISCRETE_BIT | VKR_DEVICE_TYPE_INTEGRATED_BIT,
-      .supported_sampler_filters = VKR_SAMPLER_FILTER_ANISOTROPIC_BIT,
-  };
+  vkr_standard_scene_runtime_config.device_requirements =
+      (VkrDeviceRequirements){
+          .supported_stages =
+              VKR_SHADER_STAGE_VERTEX_BIT | VKR_SHADER_STAGE_FRAGMENT_BIT,
+          .supported_queues = VKR_DEVICE_QUEUE_GRAPHICS_BIT |
+                              VKR_DEVICE_QUEUE_TRANSFER_BIT |
+                              VKR_DEVICE_QUEUE_PRESENT_BIT,
+          .allowed_device_types =
+              VKR_DEVICE_TYPE_DISCRETE_BIT | VKR_DEVICE_TYPE_INTEGRATED_BIT,
+          .supported_sampler_filters = VKR_SAMPLER_FILTER_ANISOTROPIC_BIT,
+      };
 
-  Application application = {0};
-  if (!application_create(&application, &application_config)) {
-    fprintf(stderr, "Application creation failed\n");
+  VkrStandardSceneRuntime application = {0};
+  if (!vkr_standard_scene_runtime_create(&application,
+                                         &vkr_standard_scene_runtime_config)) {
+    fprintf(stderr, "VkrStandardSceneRuntime creation failed\n");
     return 1;
   }
   if (metal_validation_enabled &&
@@ -3324,17 +3381,17 @@ int vkr_sample_runtime_run(int argc, char **argv,
   }
 
   // Baseline before any scene loads: the renderer's own resident allocations.
-  application_log_device_memory_stats(&application, "startup");
+  vkr_standard_scene_runtime_log_device_memory_stats(&application, "startup");
 
   state = arena_alloc(application.app_arena, sizeof(State),
                       ARENA_MEMORY_TAG_STRUCT);
   state->stats_arena = arena_create(KB(1), KB(1));
   VkrAllocator app_alloc = {.ctx = application.app_arena};
   vkr_allocator_arena(&app_alloc);
-  state->input_state = &application.window.input_state;
+  state->input_state = &application.host.window.input_state;
   state->app_arena = application.app_arena;
-  state->event_arena = application.event_manager.arena;
-  state->event_manager = &application.event_manager;
+  state->event_arena = application.host.events.arena;
+  state->event_manager = &application.host.events;
   state->fps_update_clock = vkr_clock_create();
   state->memory_update_clock = vkr_clock_create();
   state->fps_accumulated_time = 0.0;
@@ -3343,12 +3400,12 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->current_frametime = 0.0;
   state->ui = runtime_config->ui;
   application.project_ui =
-      state->ui.project_scene ? application_project_ui : NULL;
+      state->ui.project_scene ? vkr_standard_scene_runtime_project_ui : NULL;
   if (strlen(PROJECT_SOURCE_DIR) + strlen(scene_path_arg) +
           sizeof(".editor.json") >
       sizeof(state->sidecar_path)) {
     arena_destroy(state->stats_arena);
-    application_shutdown(&application);
+    vkr_standard_scene_runtime_shutdown(&application);
     return 2;
   }
   state->scene_path =
@@ -3366,7 +3423,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
                             &application.ui_system)) {
     arena_destroy(state->stats_arena);
     state->stats_arena = NULL;
-    application_shutdown(&application);
+    vkr_standard_scene_runtime_shutdown(&application);
     return 6;
   }
   state->world_text_id = 0;
@@ -3440,9 +3497,10 @@ int vkr_sample_runtime_run(int argc, char **argv,
   // Headless metrics capture. Both knobs are opt-in so interactive runs are
   // unchanged; together with VKR_AUTOCLOSE_SECONDS they make a baseline
   // reproducible without a human driving the app.
-  if (scene_requested || application_env_flag("VKR_AUTOLOAD_SCENE", false_v)) {
+  if (scene_requested ||
+      vkr_standard_scene_runtime_env_flag("VKR_AUTOLOAD_SCENE", false_v)) {
     log_info("Auto-loading scene '%s'", scene_path_arg);
-    application_init_scene_system(&application);
+    vkr_standard_scene_runtime_init_scene_system(&application);
   }
 
   const char *metrics_interval_env = getenv("VKR_METRICS_INTERVAL_SECONDS");
@@ -3471,14 +3529,14 @@ int vkr_sample_runtime_run(int argc, char **argv,
     log_info("Metrics event subjects enabled via VKR_METRICS_EVENT_SUBJECTS");
   }
 
-  state->assert_no_upload_waits =
-      application_env_flag("VKR_ASSERT_NO_UPLOAD_WAITS", false_v);
+  state->assert_no_upload_waits = vkr_standard_scene_runtime_env_flag(
+      "VKR_ASSERT_NO_UPLOAD_WAITS", false_v);
   if (state->assert_no_upload_waits) {
     log_info("Upload wait assertion enabled via VKR_ASSERT_NO_UPLOAD_WAITS");
   }
 
   state->scene_memory_verbose =
-      application_env_flag("VKR_SCENE_MEM_VERBOSE", false_v);
+      vkr_standard_scene_runtime_env_flag("VKR_SCENE_MEM_VERBOSE", false_v);
   if (state->scene_memory_verbose) {
     log_info(
         "Verbose scene memory breakdown enabled via VKR_SCENE_MEM_VERBOSE");
@@ -3518,15 +3576,21 @@ int vkr_sample_runtime_run(int argc, char **argv,
            FILTER_MODES[state->filter_mode_index].label);
   log_info("IBL validation controls: F8=mode, F9/F10=intensity "
            "(start: %s x%.2f)",
-           application_ibl_validation_mode_label(state->ibl_validation_mode),
+           vkr_standard_scene_runtime_ibl_validation_mode_label(
+               state->ibl_validation_mode),
            state->ibl_validation_scalar);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
-  application_init_ui_texts(&application);
-  application_init_world_content(&application);
+  vkr_standard_scene_runtime_init_ui_texts(&application);
+  vkr_standard_scene_runtime_init_world_content(&application);
 
-  application_start(&application);
-  application_close(&application);
+  vkr_standard_scene_runtime_set_callbacks(
+      &application, &(VkrStandardSceneRuntimeCallbacks){
+                        .state = state,
+                        .update = vkr_sample_runtime_update,
+                    });
+  vkr_standard_scene_runtime_run(&application);
+  vkr_standard_scene_runtime_close(&application);
 
   if (state->upload_wait_fence_total > 0 ||
       state->upload_wait_queue_idle_total > 0 ||
@@ -3561,7 +3625,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
     }
   }
 
-  application_unload_scene_system(&application);
+  vkr_standard_scene_runtime_unload_scene_system(&application);
   if (application.last_renderer_error == VKR_RENDERER_ERROR_DEVICE_ERROR)
     exit_code = 5;
 
@@ -3573,7 +3637,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
       exit_code == 0)
     exit_code = 6;
 
-  application_shutdown(&application);
+  vkr_standard_scene_runtime_shutdown(&application);
 
   return exit_code;
 }

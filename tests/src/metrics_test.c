@@ -1,6 +1,6 @@
 #include "metrics_test.h"
 
-#include "renderer/vkr_renderer_metrics.h"
+#include "vkr_renderer_metrics.h"
 
 #include "core/vkr_metrics.h"
 #include "memory/arena.h"

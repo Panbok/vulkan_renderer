@@ -1,0 +1,35 @@
+/**
+ * @file vkr_editor_viewport.h
+ * @brief Editor viewport layout and packet helpers.
+ */
+#pragma once
+
+#include "defines.h"
+#include "vkr_frame_input.h"
+#include "vkr_viewport.h"
+
+/** Resolve an editor viewport from a dock-owned Y-down panel rectangle. */
+bool8_t vkr_editor_viewport_mapping_from_panel_rect(
+    Vec4 panel_rect_px, VkrViewportFitMode fit_mode, float32_t render_scale,
+    VkrViewportMapping *out_mapping);
+
+/** Resolve a panel mapping for an already-selected internal Scene extent. */
+bool8_t vkr_editor_viewport_mapping_from_panel_rect_and_target(
+    Vec4 panel_rect_px, VkrViewportFitMode fit_mode, uint32_t target_width,
+    uint32_t target_height, VkrViewportMapping *out_mapping);
+
+/**
+ * @brief Compute the viewport mapping for the standard editor layout.
+ *
+ * Uses the current fixed panel proportions. `render_scale` is clamped to the
+ * supported editor range before the offscreen target extent is resolved.
+ */
+bool8_t vkr_editor_viewport_compute_mapping(uint32_t window_width,
+                                            uint32_t window_height,
+                                            VkrViewportFitMode fit_mode,
+                                            float32_t render_scale,
+                                            VkrViewportMapping *out_mapping);
+
+/** Fill the editor compositor payload from an already-resolved mapping. */
+bool8_t vkr_editor_viewport_build_payload(const VkrViewportMapping *mapping,
+                                          VkrEditorPassPayload *out_payload);

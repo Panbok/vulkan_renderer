@@ -51,7 +51,7 @@ binding, or signed-distance effects such as outlines and glow.
 
 ## Code evidence
 
-- [frame text draw](../../lib/src/renderer/vkr_frame_input.h)
-- [Metal text shader](../../lib/src/renderer/shaders/metal/msl/text/default.metal)
-- [Vulkan text shader](../../lib/src/renderer/shaders/vulkan/slang/text/default.slang)
-- [cooked-atlas validation](../../lib/src/renderer/resources/loaders/cooked_font_loader.c)
+- [frame text draw](../../renderer/src/vkr_frame_input.h)
+- [Metal text shader](../../renderer/src/shaders/metal/msl/text/default.metal)
+- [Vulkan text shader](../../renderer/src/shaders/vulkan/slang/text/default.slang)
+- [cooked-atlas validation](../../runtime/src/renderer/resources/loaders/cooked_font_loader.c)

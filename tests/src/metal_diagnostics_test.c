@@ -1,6 +1,6 @@
 #include "metal_diagnostics_test.h"
 
-#include "renderer/metal/vkr_metal_diagnostics.h"
+#include "metal/vkr_metal_diagnostics.h"
 
 #include <assert.h>
 #include <stdio.h>

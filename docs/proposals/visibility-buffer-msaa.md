@@ -7,18 +7,18 @@ authority: proposal
 # Visibility-buffer MSAA
 
 Portable same-resolution temporal AA is implemented. Visibility-buffer MSAA is
-not: although [vkr_renderer.h](../../lib/src/renderer/vkr_renderer.h) defines
+not: although [vkr_renderer.h](../../renderer/src/vkr_renderer.h) defines
 sample counts, Vulkan rejects multisampled published textures in
-[vkr_vulkan_publisher.c](../../lib/src/renderer/vulkan/vkr_vulkan_publisher.c),
+[vkr_vulkan_publisher.c](../../renderer/src/vulkan/vkr_vulkan_publisher.c),
 and graph images currently require one sample in
-[vkr_vulkan_graph.c](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c).
+[vkr_vulkan_graph.c](../../renderer/src/vulkan/vkr_vulkan_graph.c).
 
 ## Current implementation baseline
 
 The existing temporal state is prepared and committed through
-[vkr_temporal.c](../../lib/src/renderer/vkr_temporal.c), while Vulkan records a
+[vkr_temporal.c](../../renderer/src/vkr_temporal.c), while Vulkan records a
 temporal-resolve compute pass in
-[vkr_vulkan_deferred.c](../../lib/src/renderer/vulkan/vkr_vulkan_deferred.c).
+[vkr_vulkan_deferred.c](../../renderer/src/vulkan/vkr_vulkan_deferred.c).
 The production deferred topology already includes GPU visibility, G-buffer
 resolve, lighting, transmission, HZB, and temporal compute passes; it must not
 gain an MSAA path that bypasses those consumers.

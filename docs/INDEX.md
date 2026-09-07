@@ -10,7 +10,28 @@ removed numbers are not reused.
 
 ## Build and run
 
-The app and editor are separate executables using `runtime/` and `renderer_lib`.
+Clangd uses `build_release/compile_commands.json`. Run `./build_release.sh` or
+`./build_editor.sh Release` after source moves or build-definition changes to
+refresh its include paths and compiler settings.
+
+The reusable-library entry points build a public example without the sample
+application, editor, tools, harness, or tests:
+
+```sh
+./build_lib.sh renderer
+./build_lib.sh runtime
+```
+
+`renderer` builds [examples/renderer/main.c](../examples/renderer/main.c) against
+`renderer_lib`. `runtime` builds [examples/host/main.c](../examples/host/main.c)
+against `vkr_runtime`. The script sets `VKR_BUILD_EXAMPLES=ON` and disables
+`VKR_BUILD_TOOLS`, `VKR_BUILD_APP`, `VKR_BUILD_EDITOR`, `VKR_BUILD_HARNESS`, and
+`VKR_BUILD_TESTS`; the renderer entry point also disables `VKR_BUILD_RUNTIME`.
+On Windows, use `build_lib.bat renderer` or `build_lib.bat runtime`. Native
+Vulkan execution for this split has not been run.
+
+The app and editor are separate executables using `vkr_runtime` and
+`vkr_sample_runtime`.
 Build through the repository wrappers, which compile shaders and asset cookers.
 Bakery runs mesh, font and texture cooker jobs:
 
@@ -18,6 +39,13 @@ Bakery runs mesh, font and texture cooker jobs:
 ./build_release.sh
 ./build_editor.sh Release
 ```
+
+After building the mesh cooker, regenerate mesh artifacts with
+`VKR_MESH_COOKER_BIN=./build_release/tools/vkr_mesh_cooker ./tools/cook_vkr_meshes.sh`.
+This also produces the main Bistro artifact with its scene-specific light
+ranges; runtime mesh loading accepts `.vkb`, not source OBJ/glTF/GLB. Small
+tracked harness scenes use cooked fixtures under `tests/fixtures/rendering`.
+
 
 On Windows, use `build_release.bat` or `build_editor.bat Release`. Set
 `VCPKG_ROOT` to your vcpkg checkout and install the font cooker's dependency:

@@ -4,7 +4,7 @@
 #include "platform/vkr_window_internal.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
 #include "renderer/systems/vkr_ui_system.h"
-#include "renderer/vkr_frame_input.h"
+#include "vkr_frame_input.h"
 
 vkr_global Arena *arena = NULL;
 vkr_global VkrAllocator allocator = {0};

@@ -1,8 +1,8 @@
 #include "metal_memory_test.h"
 
-#include "renderer/metal/internal/vkr_metal_packet_waits.h"
-#include "renderer/metal/vkr_metal_memory.h"
-#include "renderer/vkr_renderer.h"
+#include "metal/internal/vkr_metal_packet_waits.h"
+#include "metal/vkr_metal_memory.h"
+#include "vkr_renderer.h"
 
 #include <assert.h>
 #include <stdio.h>

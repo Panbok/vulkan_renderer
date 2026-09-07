@@ -308,11 +308,11 @@ placement or upload policy with explicit last-use ownership.
 
 ## Implementation
 
-[`vkr_gpu_memory.c`](../../lib/src/renderer/vkr_gpu_memory.c),
-[`vkr_gpu_slot_table.c`](../../lib/src/renderer/vkr_gpu_slot_table.c),
-[`vkr_asset_publisher.h`](../../lib/src/renderer/vkr_asset_publisher.h),
-[`vkr_render_assets.c`](../../lib/src/renderer/systems/vkr_render_assets.c),
-[`vkr_vulkan_memory.c`](../../lib/src/renderer/vulkan/vkr_vulkan_memory.c), and
-[`vkr_metal_memory.c`](../../lib/src/renderer/metal/vkr_metal_memory.c). The
-FSR bridge is in [`vkr_vulkan_fsr_sdk.cpp`](../../lib/src/renderer/vulkan/vkr_vulkan_fsr_sdk.cpp).
+[`vkr_gpu_memory.c`](../../renderer/src/vkr_gpu_memory.c),
+[`vkr_gpu_slot_table.c`](../../renderer/src/vkr_gpu_slot_table.c),
+[`vkr_asset_publisher.h`](../../renderer/src/vkr_asset_publisher.h),
+[`vkr_render_assets.c`](../../runtime/src/renderer/systems/vkr_render_assets.c),
+[`vkr_vulkan_memory.c`](../../renderer/src/vulkan/vkr_vulkan_memory.c), and
+[`vkr_metal_memory.c`](../../renderer/src/metal/vkr_metal_memory.c). The
+FSR bridge is in [`vkr_vulkan_fsr_sdk.cpp`](../../renderer/src/vulkan/vkr_vulkan_fsr_sdk.cpp).
 This record incorporates the surviving lifetime rules from former ADR-007/008.

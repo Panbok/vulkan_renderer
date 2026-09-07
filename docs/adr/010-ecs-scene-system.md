@@ -72,6 +72,6 @@ current ECS-to-mesh-manager synchronization a frame cost.
 
 ## Code evidence
 
-- [ECS](../../lib/src/core/vkr_entity.h)
-- [scene ownership and update](../../lib/src/renderer/systems/vkr_scene_system.c)
-- [retained mesh instances](../../lib/src/renderer/systems/vkr_mesh_manager.c)
+- [ECS](../../runtime/src/core/vkr_entity.h)
+- [scene ownership and update](../../runtime/src/renderer/systems/vkr_scene_system.c)
+- [retained mesh instances](../../runtime/src/renderer/systems/vkr_mesh_manager.c)

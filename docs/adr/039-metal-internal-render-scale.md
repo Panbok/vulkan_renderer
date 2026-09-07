@@ -55,8 +55,8 @@ measurements justify a different spatial filter.
 
 ## Implementation
 
-[`vkr_renderer.c`](../../lib/src/renderer/vkr_renderer.c),
-[`vkr_viewport.c`](../../lib/src/renderer/vkr_viewport.c),
-[`vkr_metal_packet_graph.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_graph.inc), and
-[`tonemap.metal`](../../lib/src/renderer/shaders/metal/msl/post/tonemap.metal).
+[`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
+[`vkr_viewport.c`](../../renderer/src/vkr_viewport.c),
+[`vkr_metal_packet_graph.inc`](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc), and
+[`tonemap.metal`](../../renderer/src/shaders/metal/msl/post/tonemap.metal).
 Vulkan FSR scale selection and output extent use [ADR-052](052-vulkan-fsr31-upscaling.md).

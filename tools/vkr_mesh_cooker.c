@@ -4,26 +4,54 @@
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
-#include "renderer/resources/loaders/vkr_mesh_cooked.h"
+#include "assets/vkr_mesh_cook_source.h"
 
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#define VKR_MESH_COOKER_MAX_LIGHT_RANGES 64u
 
 static void vkr_mesh_cooker_print_usage(const char *program) {
   fprintf(stderr,
           "Usage: %s --input <mesh.obj|mesh.gltf|mesh.glb> "
-          "--output <mesh.vkb>\n",
+          "--output <mesh.vkb> [--light-range <definition-name>=<meters>]...\n",
           program);
 }
 
 int main(int argc, char **argv) {
   const char *input = NULL;
   const char *output = NULL;
+  VkrSceneLightRangeOverride light_ranges[VKR_MESH_COOKER_MAX_LIGHT_RANGES] = {
+      0};
+  uint32_t light_range_count = 0u;
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
       input = argv[++i];
     } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
       output = argv[++i];
+    } else if (strcmp(argv[i], "--light-range") == 0 && i + 1 < argc) {
+      if (light_range_count == VKR_MESH_COOKER_MAX_LIGHT_RANGES) {
+        vkr_mesh_cooker_print_usage(argv[0]);
+        return 2;
+      }
+      const char *value = argv[++i];
+      const char *separator = strchr(value, '=');
+      char *range_end = NULL;
+      const float32_t range =
+          separator ? strtof(separator + 1, &range_end) : 0.0f;
+      if (!separator || separator == value || separator[1] == '\0' ||
+          range_end == separator + 1 || *range_end != '\0' ||
+          !isfinite(range) || range <= 0.0f) {
+        vkr_mesh_cooker_print_usage(argv[0]);
+        return 2;
+      }
+      light_ranges[light_range_count++] = (VkrSceneLightRangeOverride){
+          .light_name = string8_create(
+              (uint8_t *)value, (uint64_t)(separator - value)),
+          .range = range,
+      };
     } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       vkr_mesh_cooker_print_usage(argv[0]);
       return 0;
@@ -67,9 +95,9 @@ int main(int argc, char **argv) {
       string8_create((uint8_t *)output, (uint64_t)strlen(output));
   VkrMeshCookStats stats = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  bool8_t success =
-      vkr_mesh_cook_source(input_path, output_path, &source_allocator,
-                           &scratch_allocator, &stats, &error);
+  bool8_t success = vkr_mesh_cook_source_with_light_ranges(
+      input_path, output_path, light_ranges, light_range_count,
+      &source_allocator, &scratch_allocator, &stats, &error);
   if (success) {
     printf("cooked=%llu decoded=%llu vertices=%u indices=%u ranges=%u "
            "output=%s\n",

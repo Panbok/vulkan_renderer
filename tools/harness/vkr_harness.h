@@ -14,9 +14,9 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
-#include "renderer/vkr_bloom.h"
-#include "renderer/vkr_gtao.h"
-#include "renderer/vkr_renderer.h"
+#include "vkr_bloom.h"
+#include "vkr_gtao.h"
+#include "vkr_renderer.h"
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
 /**

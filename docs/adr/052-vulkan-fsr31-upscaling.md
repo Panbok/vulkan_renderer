@@ -252,10 +252,10 @@ The serial windowed profile is backend-neutral despite its historical filename.
 
 ## Implementation
 
-[`vkr_renderer.c`](../../lib/src/renderer/vkr_renderer.c),
+[`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
 [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json),
-[`fsr31.slang`](../../lib/src/renderer/shaders/vulkan/slang/post/fsr31.slang),
-[`vkr_vulkan_fsr.c`](../../lib/src/renderer/vulkan/vkr_vulkan_fsr.c),
-[`vkr_vulkan_fsr_sdk.cpp`](../../lib/src/renderer/vulkan/vkr_vulkan_fsr_sdk.cpp),
+[`fsr31.slang`](../../renderer/src/shaders/vulkan/slang/post/fsr31.slang),
+[`vkr_vulkan_fsr.c`](../../renderer/src/vulkan/vkr_vulkan_fsr.c),
+[`vkr_vulkan_fsr_sdk.cpp`](../../renderer/src/vulkan/vkr_vulkan_fsr_sdk.cpp),
 [`vkr_fsr.cmake`](../../cmake/vkr_fsr.cmake), and
 [`fidelityfx-sdk-1.1.4.md`](../../vendor/fidelityfx-sdk-1.1.4.md).

@@ -38,7 +38,7 @@ normal path unless results establish a workload-specific advantage.
 
 ## Code baseline
 
-- [mesh instances](../../lib/src/renderer/systems/vkr_mesh_manager.c)
-- [GPU geometry ABI](../../lib/src/renderer/vkr_gpu_abi.c)
-- [renderer draw diagnostics](../../lib/src/renderer/vkr_renderer.c)
-- [Vulkan frame graph](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c)
+- [mesh instances](../../runtime/src/renderer/systems/vkr_mesh_manager.c)
+- [GPU geometry ABI](../../renderer/src/vkr_gpu_abi.c)
+- [renderer draw diagnostics](../../renderer/src/vkr_renderer.c)
+- [Vulkan frame graph](../../renderer/src/vulkan/vkr_vulkan_graph.c)

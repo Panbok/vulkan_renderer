@@ -90,8 +90,8 @@ classification policy without weakening visibility correctness.
 
 ## Implementation
 
-[`vkr_visibility.c`](../../lib/src/renderer/vkr_visibility.c),
-[`vkr_gpu_abi.h`](../../lib/src/renderer/vkr_gpu_abi.h),
-[`vkr_vulkan_deferred.c`](../../lib/src/renderer/vulkan/vkr_vulkan_deferred.c),
-[`vkr_metal_packet_commands.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_commands.inc),
+[`vkr_visibility.c`](../../renderer/src/vkr_visibility.c),
+[`vkr_gpu_abi.h`](../../renderer/src/vkr_gpu_abi.h),
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c),
+[`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc),
 and [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json).

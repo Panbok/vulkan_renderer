@@ -25,15 +25,14 @@ else()
 endif()
 
 # The harness core exports renderer_lib transitively.
-target_link_libraries(vulkan_renderer_tester PRIVATE vkr_harness_core ktx)
-if(TARGET Vulkan::Vulkan)
-    target_link_libraries(vulkan_renderer_tester PRIVATE Vulkan::Vulkan)
-endif()
+find_package(Vulkan REQUIRED)
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_harness_core vkr_asset_cooking ktx Vulkan::Vulkan)
 
 target_include_directories(vulkan_renderer_tester
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/app/src
         ${CMAKE_SOURCE_DIR}/runtime/src
+        ${CMAKE_SOURCE_DIR}/vendor
         ${CMAKE_SOURCE_DIR}/tools
 )

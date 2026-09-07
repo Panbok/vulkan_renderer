@@ -383,7 +383,7 @@ that cannot be expressed by the existing panel-to-target mapping.
 
 ## Code evidence
 
-- [viewport mapping](../../lib/src/renderer/systems/vkr_editor_viewport.c)
-- [picking lifecycle](../../lib/src/renderer/systems/vkr_picking_system.c)
-- [gizmo IDs](../../lib/src/renderer/systems/vkr_gizmo_system.h)
+- [viewport mapping](../../runtime/src/renderer/systems/vkr_editor_viewport.c)
+- [picking lifecycle](../../runtime/src/renderer/systems/vkr_picking_system.c)
+- [gizmo IDs](../../runtime/src/renderer/systems/vkr_gizmo_system.h)
 - [editor interaction caller](../../runtime/src/vkr_sample_runtime.c)

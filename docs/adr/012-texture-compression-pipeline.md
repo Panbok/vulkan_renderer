@@ -47,5 +47,5 @@ needs legacy `.vkt` compatibility.
 ## Code evidence
 
 - [packer](../../tools/vkr_vkt_packer.cpp)
-- [selection and KTX2 load](../../lib/src/renderer/systems/vkr_texture_system.c)
-- [texture contract](../../lib/src/renderer/systems/vkr_texture_system.h)
+- [selection and KTX2 load](../../runtime/src/renderer/systems/vkr_texture_system.c)
+- [texture contract](../../runtime/src/renderer/systems/vkr_texture_system.h)

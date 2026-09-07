@@ -95,7 +95,7 @@ faults, or another backend gains an authorized temporal upscaler.
 
 ## Implementation
 
-[`vkr_dynamic_resolution.c`](../../lib/src/renderer/vkr_dynamic_resolution.c),
-[`vkr_metal_packet_setup.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_setup.inc),
-[`vkr_metal_packet_commands.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_commands.inc), and
-[`vkr_metal_packet_frame.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_frame.inc).
+[`vkr_dynamic_resolution.c`](../../renderer/src/vkr_dynamic_resolution.c),
+[`vkr_metal_packet_setup.inc`](../../renderer/src/metal/internal/vkr_metal_packet_setup.inc),
+[`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc), and
+[`vkr_metal_packet_frame.inc`](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc).

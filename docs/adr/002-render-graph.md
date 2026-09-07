@@ -102,10 +102,10 @@ before moving additional work under the graph.
 
 ## Implementation
 
-[`vkr_render_graph_frame.c`](../../lib/src/renderer/vkr_render_graph_frame.c),
-[`vkr_rg_json.c`](../../lib/src/renderer/vkr_rg_json.c),
-[`vkr_rg_compile.c`](../../lib/src/renderer/vkr_rg_compile.c),
+[`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c),
+[`vkr_rg_json.c`](../../renderer/src/vkr_rg_json.c),
+[`vkr_rg_compile.c`](../../renderer/src/vkr_rg_compile.c),
 [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json),
-[`vkr_vulkan_graph.c`](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c), and
-[`vkr_metal_packet_graph.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_graph.inc).
+[`vkr_vulkan_graph.c`](../../renderer/src/vulkan/vkr_vulkan_graph.c), and
+[`vkr_metal_packet_graph.inc`](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc).
 This record incorporates former ADR-003.

@@ -1,7 +1,7 @@
 #include "metal_packet_abi_test.h"
 
-#include "renderer/metal/vkr_metal_packet_abi.h"
-#include "renderer/metal/vkr_metal_packet_renderer.h"
+#include "metal/vkr_metal_packet_abi.h"
+#include "metal/vkr_metal_packet_renderer.h"
 
 #include <assert.h>
 #include <math.h>

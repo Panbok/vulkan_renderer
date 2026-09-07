@@ -61,8 +61,8 @@ publication contract that preserves this ownership boundary.
 
 ## Code evidence
 
-- [asset owner and lifecycle](../../lib/src/renderer/systems/vkr_render_assets.c)
-- [resource states and loader callbacks](../../lib/src/renderer/systems/vkr_resource_system.h)
-- [request scheduling and pump](../../lib/src/renderer/systems/vkr_resource_system.c)
-- [scene asynchronous loader](../../lib/src/renderer/resources/loaders/scene_loader.c)
-- [texture asynchronous loader](../../lib/src/renderer/resources/loaders/texture_loader.c)
+- [asset owner and lifecycle](../../runtime/src/renderer/systems/vkr_render_assets.c)
+- [resource states and loader callbacks](../../runtime/src/renderer/systems/vkr_resource_system.h)
+- [request scheduling and pump](../../runtime/src/renderer/systems/vkr_resource_system.c)
+- [scene asynchronous loader](../../runtime/src/renderer/resources/loaders/scene_loader.c)
+- [texture asynchronous loader](../../runtime/src/renderer/resources/loaders/texture_loader.c)

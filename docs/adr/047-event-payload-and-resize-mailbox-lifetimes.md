@@ -65,8 +65,8 @@ or renderer work moves to a separately owned render thread.
 
 ## Code evidence
 
-- [event ownership and callback API](../../lib/src/core/event.h)
-- [event worker lifetime ordering](../../lib/src/core/event.c)
-- [payload ring](../../lib/src/core/vkr_event_data_buffer.c)
-- [resize producer and mailbox consumer](../../lib/src/application.h)
-- [target generation](../../lib/src/renderer/vkr_renderer.c)
+- [event ownership and callback API](../../runtime/src/core/event.h)
+- [event worker lifetime ordering](../../runtime/src/core/event.c)
+- [payload ring](../../runtime/src/core/vkr_event_data_buffer.c)
+- [resize producer and mailbox consumer](../../runtime/src/application/vkr_standard_scene_runtime.h)
+- [target generation](../../renderer/src/vkr_renderer.c)

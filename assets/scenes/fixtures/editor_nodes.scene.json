@@ -23,7 +23,7 @@
         ]
       },
       "mesh": {
-        "path": "tests/fixtures/rendering/editor_nodes.gltf",
+        "path": "tests/fixtures/rendering/editor_nodes.vkb",
         "pipeline_domain": "world"
       }
     },

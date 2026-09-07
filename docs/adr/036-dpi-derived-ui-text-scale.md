@@ -49,8 +49,8 @@ semantics, or a HUD needs a separately accepted resolution-relative policy.
 
 ## Code evidence
 
-- [window snapshot](../../lib/src/core/vkr_window.c)
-- [Windows publication](../../lib/src/platform/vkr_window_windows.c)
-- [macOS publication](../../lib/src/platform/vkr_window_macos.m)
-- [UI scale use](../../lib/src/renderer/systems/vkr_ui_system.c)
-- [style resolution](../../lib/src/core/ui/vkr_ui_style.c)
+- [window snapshot](../../runtime/src/core/vkr_window.c)
+- [Windows publication](../../runtime/src/platform/vkr_window_windows.c)
+- [macOS publication](../../runtime/src/platform/vkr_window_macos.m)
+- [UI scale use](../../runtime/src/renderer/systems/vkr_ui_system.c)
+- [style resolution](../../runtime/src/core/ui/vkr_ui_style.c)

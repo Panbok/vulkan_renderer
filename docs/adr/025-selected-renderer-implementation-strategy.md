@@ -94,11 +94,11 @@ repeated native recording policy justifies a shared command operation.
 
 ## Implementation
 
-[`vkr_renderer.h`](../../lib/src/renderer/vkr_renderer.h),
-[`vkr_renderer_impl.h`](../../lib/src/renderer/vkr_renderer_impl.h),
-[`vkr_renderer_impl.c`](../../lib/src/renderer/vkr_renderer_impl.c), and
-[`vkr_renderer.c`](../../lib/src/renderer/vkr_renderer.c),
-[`vkr_renderer_internal.h`](../../lib/src/renderer/vkr_renderer_internal.h),
-[`vkr_render_assets.h`](../../lib/src/renderer/systems/vkr_render_assets.h), and
-[`application.h`](../../lib/src/application.h).
+[`vkr_renderer.h`](../../renderer/src/vkr_renderer.h),
+[`vkr_renderer_impl.h`](../../renderer/src/vkr_renderer_impl.h),
+[`vkr_renderer_impl.c`](../../renderer/src/vkr_renderer_impl.c), and
+[`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
+[`vkr_renderer_internal.h`](../../renderer/src/vkr_renderer_internal.h),
+[`vkr_render_assets.h`](../../runtime/src/renderer/systems/vkr_render_assets.h), and
+[`application.h`](../../runtime/src/application/vkr_standard_scene_runtime.h).
 This record incorporates former ADR-020/021/022/026.

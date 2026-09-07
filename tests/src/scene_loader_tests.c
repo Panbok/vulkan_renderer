@@ -1,8 +1,12 @@
 #include "scene_loader_tests.h"
 
+#include "assets/vkr_mesh_cook_source.h"
 #include "containers/str.h"
+#include "memory/arena.h"
+#include "memory/vkr_arena_pool.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_system.h"
@@ -383,39 +387,97 @@ test_scene_loader_reflection_probe_missing_cubemap_disables_probe(void) {
          "PASSED\n");
 }
 
-vkr_internal void test_scene_loader_imports_gltf_punctual_lights(void) {
-  printf("  Running test_scene_loader_imports_gltf_punctual_lights...\n");
-  char path[1024];
-  snprintf(path, sizeof(path),
+vkr_internal void test_scene_loader_instantiates_cooked_punctual_lights(void) {
+  printf(
+      "  Running test_scene_loader_instantiates_cooked_punctual_lights...\n");
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  char source_path[1024];
+  snprintf(source_path, sizeof(source_path),
            "%stests/fixtures/rendering/punctual_lights.gltf",
            PROJECT_SOURCE_DIR);
-  VkrSceneGltfPunctualLightImport lights[4] = {0};
-  uint32_t count = 0u;
-  const Mat4 scene_world = mat4_translate(vec3_new(10.0f, 0.0f, 0.0f));
-  assert(vkr_scene_loader_read_gltf_punctual_lights(
-      string8_create_from_cstr((const uint8_t *)path, string_length(path)),
-      scene_world, 7u, lights, ArrayCount(lights), &count));
-  assert(count == 3u);
+  static const char cooked_path[] = "build/vkr_scene_punctual_lights.vkb";
+  Arena *source_arena = arena_create(MB(16), MB(2));
+  Arena *scratch_arena = arena_create(MB(16), MB(2));
+  assert(source_arena && scratch_arena);
+  VkrAllocator source_allocator = {.ctx = source_arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&source_allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
 
-  assert(lights[0].type == VKR_SCENE_GLTF_LIGHT_POINT);
-  assert(strcmp(lights[0].name, "gltf.7.PointNode") == 0);
-  assert(fabsf(lights[0].position.x - 11.0f) < 0.0001f);
-  assert(fabsf(lights[0].position.y - 2.0f) < 0.0001f);
-  assert(fabsf(lights[0].position.z - 3.0f) < 0.0001f);
-  assert(fabsf(lights[0].color.x - 0.5f) < 0.0001f);
-  assert(fabsf(lights[0].intensity - 12.0f) < 0.0001f);
-  assert(fabsf(lights[0].range - 8.0f) < 0.0001f);
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrMeshCookStats stats = {0};
+  assert(vkr_mesh_cook_source(
+      string8_create_from_cstr((const uint8_t *)source_path,
+                               string_length(source_path)),
+      string8_lit(cooked_path), &source_allocator, &scratch_allocator, &stats,
+      &error));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(stats.range_count == 0u);
 
-  assert(lights[1].type == VKR_SCENE_GLTF_LIGHT_SPOT);
-  assert(fabsf(lights[1].inner_cone_angle - 0.2f) < 0.0001f);
-  assert(fabsf(lights[1].outer_cone_angle - 0.6f) < 0.0001f);
-  assert(fabsf(lights[1].direction.x) < 0.0001f);
-  assert(fabsf(lights[1].direction.y) < 0.0001f);
-  assert(fabsf(lights[1].direction.z + 1.0f) < 0.0001f);
+  VkrArenaPool arena_pool = {0};
+  assert(vkr_arena_pool_create(MB(1), 1u, &scratch_allocator, &arena_pool));
+  VkrMeshLoaderContext loader_context = {.arena_pool = &arena_pool};
+  VkrResourceLoader loader = vkr_mesh_loader_create(&loader_context);
+  VkrResourceHandleInfo mesh_handle = {0};
+  assert(loader.load(&loader, string8_lit(cooked_path), &scratch_allocator,
+                     &mesh_handle, &error));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(mesh_handle.as.mesh->source.nodes.length == 3u);
 
-  assert(lights[2].type == VKR_SCENE_GLTF_LIGHT_DIRECTIONAL);
-  assert(fabsf(lights[2].intensity - 3.0f) < 0.0001f);
-  printf("  test_scene_loader_imports_gltf_punctual_lights PASSED\n");
+  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
+  const VkrEntityId wrapper = vkr_scene_create_entity(&ctx.scene, &scene_error);
+  assert(wrapper.u64 != VKR_ENTITY_ID_INVALID.u64);
+  assert(vkr_scene_set_transform(&ctx.scene, wrapper,
+                                 vec3_new(10.0f, 0.0f, 0.0f),
+                                 vkr_quat_identity(), vec3_one()));
+  VkrEntityId source_nodes[3] = {0};
+  assert(vkr_scene_instantiate_source_nodes(
+      &ctx.scene, &mesh_handle.as.mesh->source, wrapper, 7u, source_nodes,
+      &scene_error));
+  assert(scene_error == VKR_SCENE_ERROR_NONE);
+  vkr_scene_update(&ctx.scene, 0.0);
+
+  const String8 point_name = string8_lit("PointNode");
+  const String8 resolved_point_name =
+      vkr_scene_get_name(&ctx.scene, source_nodes[0]);
+  assert(string8_equals(&resolved_point_name, &point_name));
+  const SceneTransform *point_transform =
+      vkr_scene_get_transform(&ctx.scene, source_nodes[0]);
+  const ScenePointLight *point_light =
+      vkr_scene_get_point_light(&ctx.scene, source_nodes[0]);
+  assert(point_transform && point_light);
+  assert(fabsf(point_transform->world.elements[12] - 11.0f) < 0.0001f);
+  assert(fabsf(point_transform->world.elements[13] - 2.0f) < 0.0001f);
+  assert(fabsf(point_transform->world.elements[14] - 3.0f) < 0.0001f);
+  assert(fabsf(point_light->color.x - 0.5f) < 0.0001f);
+  assert(fabsf(point_light->intensity - 12.0f) < 0.0001f);
+  assert(fabsf(point_light->range - 8.0f) < 0.0001f);
+
+  const ScenePointLight *spot_light =
+      vkr_scene_get_point_light(&ctx.scene, source_nodes[1]);
+  assert(spot_light && spot_light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT);
+  assert(fabsf(spot_light->inner_cone_angle - 0.2f) < 0.0001f);
+  assert(fabsf(spot_light->outer_cone_angle - 0.6f) < 0.0001f);
+  assert(fabsf(spot_light->direction_local.x) < 0.0001f);
+  assert(fabsf(spot_light->direction_local.y) < 0.0001f);
+  assert(fabsf(spot_light->direction_local.z + 1.0f) < 0.0001f);
+
+  const SceneDirectionalLight *directional_light =
+      vkr_scene_get_directional_light(&ctx.scene, source_nodes[2]);
+  assert(directional_light);
+  assert(fabsf(directional_light->intensity - 3.0f) < 0.0001f);
+
+  loader.unload(&loader, &mesh_handle, string8_lit(cooked_path));
+  assert(arena_pool.pool.allocated == 0u);
+  assert(remove(cooked_path) == 0);
+  vkr_arena_pool_destroy(&scratch_allocator, &arena_pool);
+  vkr_allocator_release_global_accounting(&source_allocator);
+  vkr_allocator_release_global_accounting(&scratch_allocator);
+  arena_destroy(source_arena);
+  arena_destroy(scratch_arena);
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_instantiates_cooked_punctual_lights PASSED\n");
 }
 
 vkr_internal void test_scene_loader_async_light_source_contract(void) {
@@ -452,18 +514,17 @@ vkr_internal void test_scene_loader_async_light_source_contract(void) {
   assert(error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
   assert(payload == NULL);
 
-  const char *valid_path =
+  const char *source_light_path =
       "tests/fixtures/rendering/gltf_light_range_override_valid.scene.json";
   payload = NULL;
   error = VKR_RENDERER_ERROR_NONE;
-  assert(
-      loader.prepare_async(&loader,
-                           string8_create_from_cstr((const uint8_t *)valid_path,
-                                                    string_length(valid_path)),
-                           &ctx.allocator, &payload, &error));
-  assert(error == VKR_RENDERER_ERROR_NONE);
-  assert(payload != NULL);
-  loader.release_async_payload(&loader, payload);
+  assert(!loader.prepare_async(
+      &loader,
+      string8_create_from_cstr((const uint8_t *)source_light_path,
+                               string_length(source_light_path)),
+      &ctx.allocator, &payload, &error));
+  assert(error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
+  assert(payload == NULL);
 
   const char *invalid_paths[] = {
       "tests/fixtures/rendering/"
@@ -654,7 +715,7 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_reflection_probes_parse_valid_block();
   test_scene_loader_reflection_probe_invalid_entries_skipped();
   test_scene_loader_reflection_probe_missing_cubemap_disables_probe();
-  test_scene_loader_imports_gltf_punctual_lights();
+  test_scene_loader_instantiates_cooked_punctual_lights();
   test_scene_loader_async_light_source_contract();
 
   printf("--- Scene Loader Tests Completed ---\n");

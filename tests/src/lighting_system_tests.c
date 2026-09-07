@@ -159,7 +159,7 @@ static bool32_t test_point_light_gpu_row_packing(void) {
       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT,
   };
   VkrGpuPointLightRow row = {0};
-  vkr_lighting_system_pack_point_light(&light, &row);
+  vkr_point_light_pack(&light, &row);
   assert(row.p0.x == 1.0f && row.p0.w == 8.0f);
   assert(row.p1.z == 6.0f && row.p1.w == 9.0f);
   assert(row.p2.x == 7.0f && row.p2.y == 10.0f && row.p2.z == 11.0f);
@@ -168,7 +168,7 @@ static bool32_t test_point_light_gpu_row_packing(void) {
   light.kind = VKR_POINT_LIGHT_KIND_GLTF_SPOT;
   light.inner_cone_angle = 0.25f;
   light.outer_cone_angle = 0.75f;
-  vkr_lighting_system_pack_point_light(&light, &row);
+  vkr_point_light_pack(&light, &row);
   assert(fabsf(row.p0.w - cosf(light.inner_cone_angle)) < 0.000001f);
   assert(fabsf(row.p1.w - cosf(light.outer_cone_angle)) < 0.000001f);
 

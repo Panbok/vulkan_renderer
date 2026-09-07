@@ -1,5 +1,5 @@
 #include "math_test.h"
-#include "renderer/vkr_color_transfer.h"
+#include "vkr_color_transfer.h"
 
 static bool32_t float_equals(float32_t a, float32_t b, float32_t epsilon) {
   return vkr_abs_f32(a - b) < epsilon;

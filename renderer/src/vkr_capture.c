@@ -1,0 +1,212 @@
+#include "vkr_capture.h"
+
+#include "vkr_renderer_internal.h"
+
+enum {
+  VKR_CAPTURE_CHANNEL_FINAL_COLOR = 0,
+  VKR_CAPTURE_CHANNEL_SCENE_COLOR,
+  VKR_CAPTURE_CHANNEL_DEPTH,
+  VKR_CAPTURE_CHANNEL_SHADOW_0,
+  VKR_CAPTURE_CHANNEL_SHADOW_1,
+  VKR_CAPTURE_CHANNEL_SHADOW_2,
+  VKR_CAPTURE_CHANNEL_SHADOW_3,
+  VKR_CAPTURE_CHANNEL_PICKING_IDS,
+  VKR_CAPTURE_CHANNEL_VISIBILITY_IDS,
+  VKR_CAPTURE_CHANNEL_VISIBILITY_PRIMITIVES,
+  VKR_CAPTURE_CHANNEL_GBUFFER_DIFFUSE,
+  VKR_CAPTURE_CHANNEL_GBUFFER_SPECULAR,
+  VKR_CAPTURE_CHANNEL_GBUFFER_NORMAL,
+  VKR_CAPTURE_CHANNEL_DEFERRED_EMISSIVE,
+  VKR_CAPTURE_CHANNEL_RESOLVE_BARYCENTRIC_LOD,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_PRIMITIVES,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_1,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_2,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_3,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_4,
+  VKR_CAPTURE_CHANNEL_HDR_PRE_BLOOM,
+  VKR_CAPTURE_CHANNEL_BLOOM_PREFILTER,
+  VKR_CAPTURE_CHANNEL_BLOOM_RESULT,
+  VKR_CAPTURE_CHANNEL_GTAO_VIEW_DEPTH,
+  VKR_CAPTURE_CHANNEL_GTAO_RAW,
+  VKR_CAPTURE_CHANNEL_GTAO_VISIBILITY,
+  VKR_CAPTURE_CHANNEL_HDR_COMBINED,
+  VKR_CAPTURE_CHANNEL_HDR_PRE_TRANSMISSION,
+  VKR_CAPTURE_CHANNEL_HDR_POST_TRANSMISSION,
+};
+
+vkr_global const VkrCaptureChannelDescription s_capture_channels[] = {
+    {VKR_CAPTURE_CHANNEL_FINAL_COLOR, "final_color", "swapchain",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_SRGB, "RGBA8_SRGB_PNG",
+     1},
+    {VKR_CAPTURE_CHANNEL_SCENE_COLOR, "scene_color", "scene_color",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_SRGB, "RGBA8_SRGB_PNG",
+     2},
+    {VKR_CAPTURE_CHANNEL_DEPTH, "depth", "depth", VKR_CAPTURE_FEATURE_NONE,
+     VKR_CAPTURE_ASPECT_DEPTH, VKR_CAPTURE_VALUE_DEPTH,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_FLOAT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_SHADOW_0, "shadow_cascade_0", "shadow_map",
+     VKR_CAPTURE_FEATURE_SHADOWS, VKR_CAPTURE_ASPECT_DEPTH,
+     VKR_CAPTURE_VALUE_DEPTH, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_FLOAT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_SHADOW_1, "shadow_cascade_1", "shadow_map",
+     VKR_CAPTURE_FEATURE_SHADOWS, VKR_CAPTURE_ASPECT_DEPTH,
+     VKR_CAPTURE_VALUE_DEPTH, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_FLOAT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_SHADOW_2, "shadow_cascade_2", "shadow_map",
+     VKR_CAPTURE_FEATURE_SHADOWS, VKR_CAPTURE_ASPECT_DEPTH,
+     VKR_CAPTURE_VALUE_DEPTH, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_FLOAT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_SHADOW_3, "shadow_cascade_3", "shadow_map",
+     VKR_CAPTURE_FEATURE_SHADOWS, VKR_CAPTURE_ASPECT_DEPTH,
+     VKR_CAPTURE_VALUE_DEPTH, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_FLOAT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_PICKING_IDS, "picking_ids", "picking_color",
+     VKR_CAPTURE_FEATURE_PICKING, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_UINT, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_VISIBILITY_IDS, "visibility_ids", "opaque_vbuffer",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_UINT,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_VISIBILITY_PRIMITIVES, "visibility_primitives",
+     "opaque_vbuffer", VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_UINT, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_GBUFFER_DIFFUSE, "gbuffer_diffuse", "gbuffer_albedo",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA8_UNORM", 1},
+    {VKR_CAPTURE_CHANNEL_GBUFFER_SPECULAR, "gbuffer_specular",
+     "gbuffer_specular", VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA8_UNORM", 1},
+    {VKR_CAPTURE_CHANNEL_GBUFFER_NORMAL, "gbuffer_normal", "gbuffer_normal",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RG16_SNORM_LE",
+     2},
+    {VKR_CAPTURE_CHANNEL_DEFERRED_EMISSIVE, "deferred_emissive",
+     "deferred_emissive_seed", VKR_CAPTURE_FEATURE_NONE,
+     VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_COLOR,
+     VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE", 2},
+    {VKR_CAPTURE_CHANNEL_RESOLVE_BARYCENTRIC_LOD, "resolve_barycentric_lod",
+     "deferred_resolve_debug", VKR_CAPTURE_FEATURE_NONE,
+     VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_COLOR,
+     VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE", 2},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS,
+     "transmission_visibility_ids", "transmission_vbuffer",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_UINT,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_PRIMITIVES,
+     "transmission_visibility_primitives", "transmission_vbuffer",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_UINT,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_1,
+     "transmission_visibility_ids_layer_1", "transmission_vbuffer",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_UINT,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_2,
+     "transmission_visibility_ids_layer_2", "transmission_vbuffer",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_UINT,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_3,
+     "transmission_visibility_ids_layer_3", "transmission_vbuffer",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_UINT,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_4,
+     "transmission_visibility_ids_layer_4", "transmission_diagnostic_vbuffer",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_UINT,
+     VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_HDR_PRE_BLOOM, "hdr_pre_bloom",
+     "temporal_history_color", VKR_CAPTURE_FEATURE_NONE,
+     VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_COLOR,
+     VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE", 2},
+    {VKR_CAPTURE_CHANNEL_BLOOM_PREFILTER, "bloom_prefilter", "bloom_chain",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
+     2},
+    {VKR_CAPTURE_CHANNEL_BLOOM_RESULT, "bloom_result", "bloom_accum",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
+     2},
+    {VKR_CAPTURE_CHANNEL_GTAO_VIEW_DEPTH, "gtao_view_depth", "gtao_view_depth",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_DEPTH, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_FLOAT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_GTAO_RAW, "gtao_raw", "gtao_raw",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA8_UNORM_PNG",
+     1},
+    {VKR_CAPTURE_CHANNEL_GTAO_VISIBILITY, "gtao_visibility", "gtao_visibility",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA8_UNORM_PNG",
+     1},
+    {VKR_CAPTURE_CHANNEL_HDR_COMBINED, "hdr_combined", "bloom_combined",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
+     2},
+    {VKR_CAPTURE_CHANNEL_HDR_PRE_TRANSMISSION, "hdr_pre_transmission",
+     "hdr_pre_transmission", VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
+     2},
+    {VKR_CAPTURE_CHANNEL_HDR_POST_TRANSMISSION, "hdr_post_transmission",
+     "hdr_scene_color", VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
+     2},
+};
+
+/* Duplicate requests are rejected with one 64-bit mask keyed by channel id. */
+_Static_assert(ArrayCount(s_capture_channels) <= 64,
+               "Capture channel ids must fit the duplicate-request bitmask");
+
+uint32_t vkr_renderer_capture_channel_count(void) {
+  return (uint32_t)ArrayCount(s_capture_channels);
+}
+
+const VkrCaptureChannelDescription *
+vkr_renderer_capture_channel_get(uint32_t index) {
+  return index < vkr_renderer_capture_channel_count()
+             ? &s_capture_channels[index]
+             : NULL;
+}
+
+VkrCaptureChannelId vkr_renderer_capture_channel_from_name(const char *name) {
+  if (!name) {
+    return VKR_CAPTURE_CHANNEL_INVALID;
+  }
+  for (uint32_t i = 0; i < vkr_renderer_capture_channel_count(); ++i) {
+    if (string_equals(name, s_capture_channels[i].name)) {
+      return s_capture_channels[i].id;
+    }
+  }
+  return VKR_CAPTURE_CHANNEL_INVALID;
+}
+
+bool8_t
+vkr_renderer_capture_request_contains(const VkrCaptureBatchRequest *request,
+                                      const char *channel_name) {
+  if (!request || !request->items || !channel_name)
+    return false_v;
+  const VkrCaptureChannelId channel =
+      vkr_renderer_capture_channel_from_name(channel_name);
+  if (channel == VKR_CAPTURE_CHANNEL_INVALID)
+    return false_v;
+  for (uint32_t i = 0u; i < request->item_count; ++i) {
+    if (request->items[i].channel == channel)
+      return true_v;
+  }
+  return false_v;
+}
+
+VkrCaptureStatus vkr_renderer_capture_poll(VkrRenderer *renderer,
+                                           VkrCaptureRequestId request_id,
+                                           VkrCapturePollResult *out_result) {
+  if (!renderer) {
+    if (out_result) {
+      MemZero(out_result, sizeof(*out_result));
+      out_result->error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    }
+    return VKR_CAPTURE_STATUS_NOT_FOUND;
+  }
+  return vkr_renderer_backend_capture_poll(renderer, request_id, out_result);
+}
+
+bool8_t vkr_renderer_capture_release(VkrRenderer *renderer,
+                                     VkrCaptureRequestId request_id) {
+  if (renderer) {
+    return vkr_renderer_backend_capture_release(renderer, request_id);
+  }
+  return false_v;
+}

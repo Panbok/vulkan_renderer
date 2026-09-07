@@ -71,7 +71,7 @@ matched quality/cost evidence justifies changing defaults.
 
 ## Implementation
 
-[`vkr_shadow_system.c`](../../lib/src/renderer/systems/vkr_shadow_system.c),
-[`vkr_candidate_residency.h`](../../lib/src/renderer/vkr_candidate_residency.h),
-[`shadow_kernel.slangh`](../../lib/src/renderer/shaders/shared/shadow_kernel.slangh), and
+[`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
+[`vkr_candidate_residency.h`](../../renderer/src/vkr_candidate_residency.h),
+[`shadow_kernel.slangh`](../../renderer/src/shaders/shared/shadow_kernel.slangh), and
 [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json).

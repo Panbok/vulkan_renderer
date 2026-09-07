@@ -72,5 +72,5 @@ synchronization defect.
 ## Implementation
 
 [`memory/`](../../lib/src/memory),
-[`vkr_vulkan_device.c`](../../lib/src/renderer/vulkan/vkr_vulkan_device.c), and
-[`vkr_scene_system.c`](../../lib/src/renderer/systems/vkr_scene_system.c).
+[`vkr_vulkan_device.c`](../../renderer/src/vulkan/vkr_vulkan_device.c), and
+[`vkr_scene_system.c`](../../runtime/src/renderer/systems/vkr_scene_system.c).

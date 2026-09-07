@@ -1,8 +1,8 @@
 #include "temporal_test.h"
 
-#include "renderer/vkr_dynamic_resolution.h"
-#include "renderer/vkr_prepared_frame.h"
-#include "renderer/vkr_temporal.h"
+#include "vkr_dynamic_resolution.h"
+#include "vkr_prepared_frame.h"
+#include "vkr_temporal.h"
 
 #include <assert.h>
 #include <math.h>

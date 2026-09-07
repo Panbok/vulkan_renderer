@@ -7,11 +7,11 @@ authority: proposal
 # Conditional D3D12 backend evaluation
 
 D3D12 is not scheduled. The current renderer explicitly selects only Metal or
-Vulkan in [vkr_renderer_impl.c](../../lib/src/renderer/vkr_renderer_impl.c),
-and [vkr_renderer_impl.h](../../lib/src/renderer/vkr_renderer_impl.h) exposes
+Vulkan in [vkr_renderer_impl.c](../../renderer/src/vkr_renderer_impl.c),
+and [vkr_renderer_impl.h](../../renderer/src/vkr_renderer_impl.h) exposes
 only their implementation properties. Platform-selected typed functions define
 the native operation boundary a third implementation would need to satisfy in
-[vkr_renderer.c](../../lib/src/renderer/vkr_renderer.c).
+[vkr_renderer.c](../../renderer/src/vkr_renderer.c).
 
 ## Current implementation baseline
 

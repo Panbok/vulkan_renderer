@@ -1,9 +1,9 @@
 #include "render_graph_barrier_test.h"
 #include "container_test_allocator.h"
-#include "renderer/vkr_frame_input.h"
-#include "renderer/vkr_renderer_impl.h"
-#include "renderer/vkr_rg_json.h"
-#include "renderer/vkr_render_graph_frame.h"
+#include "vkr_frame_input.h"
+#include "vkr_renderer_impl.h"
+#include "vkr_rg_json.h"
+#include "vkr_render_graph_frame.h"
 
 /**
  * Barrier planning is a deterministic function of the declared graph, so it is

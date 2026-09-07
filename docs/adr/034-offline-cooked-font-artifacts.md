@@ -61,7 +61,7 @@ require an expanded artifact contract.
 
 ## Code evidence
 
-- [VKFA format](../../lib/src/renderer/resources/loaders/vkr_font_cooked.h)
-- [cooked loader](../../lib/src/renderer/resources/loaders/cooked_font_loader.c)
-- [font ownership](../../lib/src/renderer/systems/vkr_font_system.c)
-- [layout lookup and kerning](../../lib/src/core/vkr_text.c)
+- [VKFA format](../../runtime/src/assets/vkr_font_cooked.h)
+- [cooked loader](../../runtime/src/renderer/resources/loaders/cooked_font_loader.c)
+- [font ownership](../../runtime/src/renderer/systems/vkr_font_system.c)
+- [layout lookup and kerning](../../runtime/src/core/vkr_text.c)

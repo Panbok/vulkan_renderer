@@ -13,11 +13,11 @@ never integrated.
 ## Current implementation baseline
 
 The renderer consumes cooked static geometry through
-[vkr_resources.h](../../lib/src/renderer/resources/vkr_resources.h), creates
+[vkr_resources.h](../../runtime/src/renderer/resources/vkr_resources.h), creates
 and owns mesh instances in
-[vkr_mesh_manager.c](../../lib/src/renderer/systems/vkr_mesh_manager.c), and
+[vkr_mesh_manager.c](../../runtime/src/renderer/systems/vkr_mesh_manager.c), and
 syncs scene renderables in
-[vkr_scene_system.c](../../lib/src/renderer/systems/vkr_scene_system.c). The
+[vkr_scene_system.c](../../runtime/src/renderer/systems/vkr_scene_system.c). The
 existing GPU-driven topology classifies candidate rows and emits indirect work;
 it has no terrain exception.
 

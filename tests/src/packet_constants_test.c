@@ -1,7 +1,7 @@
 #include "packet_constants_test.h"
 
-#include "renderer/vkr_ibl_math.h"
-#include "renderer/vkr_packet_constants.h"
+#include "vkr_ibl_math.h"
+#include "vkr_packet_constants.h"
 
 #include <assert.h>
 #include <stdio.h>

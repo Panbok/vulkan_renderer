@@ -16,21 +16,60 @@ This document describes code present on 2026-09-07. It does not certify a fresh
 native run or a performance result. [INDEX](INDEX.md) locates accepted decisions
 and proposals; [CONTEXT](CONTEXT.md) defines vocabulary.
 
+## Library boundaries
+
+The reusable libraries form an acyclic application boundary. `vkr_foundation`
+provides common containers, memory, math and platform support from `lib/src/`.
+`vkr_render_contracts` owns shared rendering values and CPU packing, tangent
+and color-transfer helpers used by the renderer and offline tools. `renderer_lib` owns rendering and native backend work only: it
+accepts frame data and an optional `VkrNativeSurface`, but has no window, input,
+event, scene, loader or cooking owner.
+
+`vkr_asset_formats` reads versioned cooked artifacts. It contains runtime
+decoding, not source import or artifact encoding. `vkr_runtime` builds on the
+renderer and format libraries. It supplies the reusable application host,
+standard scene runtime, runtime core services, and scene-facing systems.
+`vkr_sample_runtime` is an optional consumer that supplies sample control and
+presentation policy for the app and editor. `vkr_asset_cooking` is tool-only;
+it owns source import and cooked-artifact encoding and is not a runtime
+dependency.
+
+`assets/` contains asset data only. Shared reader code lives in
+`runtime/src/assets/`, offline producers in `tools/assets/`, and renderer code
+directly in `renderer/src/`.
+
+Runtime image decoding, transcode caches and dynamic system-font rasterization
+remain available. Offline mesh optimization, font atlas/MSDF generation and
+texture encoding belong to tools.
+
+Custom clients may link `renderer_lib` directly and own their loop and frame
+inputs, or use `vkr_runtime`'s host without using the standard scene runtime.
+The standard scene runtime owns the conventional scene/assets/camera/UI path;
+the host owns window, input, events, timing and lifecycle, and invokes explicit
+caller-state callbacks. Renderer callbacks never depend on link-time
+`application_*` overrides.
+
+The split passes independent renderer/runtime builds and serial Metal draw and
+native-resize validation. Bistro color/depth capture generation passes; its
+profile retains two unavailable manual-exposure telemetry assertions. Native
+Vulkan execution remains unrun. See ADR-004 for the evidence boundary.
+
 ## Ownership and source map
 
 | Owner | Responsibilities | Source |
 |---|---|---|
-| Application/runtime | Scene, camera, lighting, shadows, UI, picking, resize events, frame scratch and input construction | `lib/src/application.h`, `runtime/`, `lib/src/renderer/systems/vkr_scene_frame.c` |
-| Renderer | Acquired-frame lifecycle, targets, derived frame data and native operation selection | `lib/src/renderer/vkr_renderer.c` |
-| Selected implementation | Native resources/pipelines, graph realization, record/submit/cancel, targets | `lib/src/renderer/metal/`, `vulkan/` |
-| Shared graph | JSON realization, dependency order, culling, subresource barriers | `lib/src/renderer/vkr_rg_json.c`, `vkr_rg_compile.c` |
-| GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `lib/src/renderer/vkr_gpu_*`, `vkr_capture_ring.*` |
-| Render assets | Geometry, textures, materials, meshes, fonts, persistent world text, loaders and load scratch | `lib/src/renderer/systems/vkr_render_assets.c`, `resources/loaders/` |
-| Production shaders | Shared math and native bindings/entry points | `lib/src/renderer/shaders/` |
+| Application host | Window, input, event dispatch, timing, shutdown and caller-state callbacks | `runtime/src/application/vkr_application_host.h` |
+| Standard scene runtime | Scene, camera, lighting, shadows, UI, picking, resize events, frame scratch and input construction | `runtime/src/application/vkr_standard_scene_runtime.h`, `runtime/src/renderer/systems/vkr_scene_frame.c` |
+| Renderer | Acquired-frame lifecycle, targets, derived frame data and native operation selection | `renderer/src/vkr_renderer.c`, `renderer/src/vkr_native_surface.h` |
+| Selected implementation | Native resources/pipelines, graph realization, record/submit/cancel, targets | `renderer/src/metal/`, `vulkan/` |
+| Shared graph | JSON realization, dependency order, culling, subresource barriers | `renderer/src/vkr_rg_json.c`, `vkr_rg_compile.c` |
+| GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `renderer/src/vkr_gpu_*`, `vkr_capture_ring.*` |
+| Render assets | Geometry, textures, materials, meshes, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
+| Production shaders | Shared math and native bindings/entry points | `renderer/src/shaders/` |
 | Offline tools/harness | Asset cooking, cases, captures, comparisons and profiles | `tools/` |
 
-The application and editor are independent targets over `renderer_lib` and the
-neutral sample runtime. The app owns its F6 debug overlay; the editor owns its
+The application and editor are independent targets over `vkr_runtime` and the
+optional `vkr_sample_runtime`. The app owns its F6 debug overlay; the editor owns its
 dock composition and startup `--scene-only` mode. Neither executable imports the
 other's source. `core/vkr_subsystem_plan` resolves application boot dependencies;
 the GPU renderer does not own that subsystem policy. The editor has tab stacking, layout persistence, keyboard focus and icon-only
@@ -71,11 +110,13 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 
 ## Frame protocol
 
-1. The application consumes its resize mailbox and calls
+1. The application host pumps window, input and events. The standard scene
+   runtime consumes its resize mailbox and calls
    `vkr_renderer_begin_frame(renderer, &config, &frame)` with explicit shadow
    dimensions. Acquisition proves slot reuse and supplies target dimensions,
    target generation and retained-shadow state.
-2. The application pumps render assets with explicit submission/completion state,
+2. The standard scene runtime pumps render assets with explicit
+   submission/completion state,
    then extracts scene, UI and text draws and assembles
    `VkrFrameInput` with borrowed arrays in scratch. Text edits happen through
    their owner before rendering.
@@ -108,25 +149,27 @@ Frame inputs are not standalone replay recordings. See
 
 ## Scene extraction and publication
 
-The application owns `VkrRenderAssets` independently of `VkrRenderer`. Assets own
+The standard scene runtime owns `VkrRenderAssets` independently of `VkrRenderer`.
+Assets own
 geometry, texture, material, mesh and font systems, persistent world resources,
 loader contexts and their arenas, pools and asynchronous allocators. Assets have
-a 64 MiB owner arena and 32 MiB load scratch; Application has separate 32 MiB
-frame scratch. The renderer has no duplicate owner or scratch arena. Native graph
+a 64 MiB owner arena and 32 MiB load scratch; the standard scene runtime has a
+separate 32 MiB frame scratch. The renderer has no duplicate owner or scratch arena. Native graph
 DMemory remains backend-owned, and the Metal backend allocator query returns that
 actual graph allocator. The assets borrow
 the native `VkrAssetPublisher`; its renderer must outlive them. Cameras, lights,
-shadows, UI, picking, gizmos, skybox and the active scene belong to the application.
+shadows, UI, picking, gizmos, skybox and the active scene belong to the standard
+scene runtime.
 UI receives fonts, scratch, window and target extents explicitly. Scene operations
 receive assets; only picking readback needs a renderer operation.
 
-The application joins resource workers and proves GPU idle before releasing
-scene/asset resources. Scene unload drains GPU use before destruction and any
+The standard scene runtime joins resource workers and proves GPU idle before
+releasing scene/asset resources. Scene unload drains GPU use before destruction and any
 teardown publication afterward. Partial initialization uses the same owner order;
 loader contexts and asynchronous storage survive until workers and queued payloads
 are drained. Scene-created shapes use auto-released geometry and transfer
 creator references to the mesh manager; default geometry keeps its existing
-persistent lifetime. The renderer owns neither resource-loader registration nor app events.
+persistent lifetime. The renderer owns neither resource-loader registration nor application-host events.
 
 
 `VkrWorld` owns archetype ECS state and queries. `VkrScene` adds hierarchy,

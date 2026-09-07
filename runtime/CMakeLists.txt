@@ -1,29 +1,28 @@
-cmake_minimum_required(VERSION 3.27)
-
-project(vkr_sample_runtime)
-
-add_library(vkr_sample_runtime STATIC
-    src/vkr_sample_runtime.c
-)
-vkr_require_declared_c_functions(vkr_sample_runtime)
-
-if(MSVC)
-    target_compile_options(vkr_sample_runtime PRIVATE /arch:AVX2)
-else()
-    target_compile_options(vkr_sample_runtime PRIVATE -march=native)
+file(GLOB_RECURSE VKR_RUNTIME_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h)
+# Shared reader targets also serve the offline tools without linking runtime.
+list(FILTER VKR_RUNTIME_SOURCES EXCLUDE REGEX "/src/assets/")
+list(REMOVE_ITEM VKR_RUNTIME_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_sample_runtime.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_sample_runtime.h")
+if(APPLE)
+    enable_language(OBJC)
+    file(GLOB VKR_RUNTIME_OBJC CONFIGURE_DEPENDS src/platform/*.m)
+    list(APPEND VKR_RUNTIME_SOURCES ${VKR_RUNTIME_OBJC})
+endif()
+add_library(vkr_runtime STATIC ${VKR_RUNTIME_SOURCES})
+vkr_configure_library(vkr_runtime)
+target_include_directories(vkr_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(vkr_runtime PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
+target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats PRIVATE vkr_ktx_read vkr_image_decode)
+if(APPLE)
+    target_link_libraries(vkr_runtime PRIVATE "-framework Cocoa" "-framework GameController")
+elseif(WIN32)
+    target_link_libraries(vkr_runtime PRIVATE Xinput)
 endif()
 
-target_link_libraries(vkr_sample_runtime PUBLIC renderer_lib)
-target_include_directories(vkr_sample_runtime PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
-)
-target_compile_definitions(vkr_sample_runtime PRIVATE
-    $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=1>
-    $<$<BOOL:${VKR_EDITOR_LOGGING}>:LOG_LEVEL=5>
-    $<$<BOOL:${VKR_EDITOR_LOGGING}>:VKR_EDITOR_LOGGING=1>
-    $<$<CONFIG:Release>:ASSERT_LOG=0>
-    $<$<AND:$<CONFIG:RelWithDebInfo>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=3>
-    $<$<CONFIG:RelWithDebInfo>:ASSERT_LOG=0>
-    $<$<AND:$<CONFIG:Debug>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=4>
-    $<$<CONFIG:Debug>:ASSERT_LOG=1>
-)
+# Demo controls and presentation policy are optional consumers of the runtime.
+if(VKR_BUILD_APP OR VKR_BUILD_EDITOR OR VKR_BUILD_TESTS)
+    add_library(vkr_sample_runtime STATIC src/vkr_sample_runtime.c)
+    vkr_configure_library(vkr_sample_runtime)
+    target_link_libraries(vkr_sample_runtime PUBLIC vkr_runtime)
+endif()

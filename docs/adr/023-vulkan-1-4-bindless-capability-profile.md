@@ -72,8 +72,8 @@ binding mechanism has SDK, driver, shader and native validation evidence.
 
 ## Implementation
 
-[`vkr_vulkan_device.c`](../../lib/src/renderer/vulkan/vkr_vulkan_device.c),
-[`vkr_vulkan_resources.c`](../../lib/src/renderer/vulkan/vkr_vulkan_resources.c), and
-[`vkr_renderer_impl.c`](../../lib/src/renderer/vkr_renderer_impl.c). FSR-specific
-feature selection is in [`vkr_renderer.c`](../../lib/src/renderer/vkr_renderer.c)
+[`vkr_vulkan_device.c`](../../renderer/src/vulkan/vkr_vulkan_device.c),
+[`vkr_vulkan_resources.c`](../../renderer/src/vulkan/vkr_vulkan_resources.c), and
+[`vkr_renderer_impl.c`](../../renderer/src/vkr_renderer_impl.c). FSR-specific
+feature selection is in [`vkr_renderer.c`](../../renderer/src/vkr_renderer.c)
 under [ADR-052](052-vulkan-fsr31-upscaling.md).

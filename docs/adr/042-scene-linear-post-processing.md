@@ -76,8 +76,8 @@ or matched Release cost justifies changing resolution/quality.
 
 ## Implementation
 
-[`vkr_exposure.c`](../../lib/src/renderer/vkr_exposure.c),
-[`vkr_bloom.c`](../../lib/src/renderer/vkr_bloom.c),
-[`vkr_gtao.c`](../../lib/src/renderer/vkr_gtao.c),
-[`shared/`](../../lib/src/renderer/shaders/shared), and
+[`vkr_exposure.c`](../../renderer/src/vkr_exposure.c),
+[`vkr_bloom.c`](../../renderer/src/vkr_bloom.c),
+[`vkr_gtao.c`](../../renderer/src/vkr_gtao.c),
+[`shared/`](../../renderer/src/shaders/shared), and
 [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json).

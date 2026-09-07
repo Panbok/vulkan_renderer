@@ -39,7 +39,7 @@ No UI performance benefit is assumed.
 
 ## Code baseline
 
-- [immediate widget API](../../lib/src/renderer/systems/vkr_ui_system.h)
-- [UI state and focus](../../lib/src/renderer/systems/vkr_ui_system.c)
-- [dock tree](../../lib/src/core/ui/vkr_ui_dock.c)
+- [immediate widget API](../../runtime/src/renderer/systems/vkr_ui_system.h)
+- [UI state and focus](../../runtime/src/renderer/systems/vkr_ui_system.c)
+- [dock tree](../../runtime/src/core/ui/vkr_ui_dock.c)
 - [current floating overlays](../../editor/src/editor_windows.c)

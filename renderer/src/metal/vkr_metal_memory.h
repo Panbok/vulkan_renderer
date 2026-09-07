@@ -1,0 +1,99 @@
+#pragma once
+
+#include "vkr_gpu_memory.h"
+#include "vkr_gpu_submit_ring.h"
+#include "vkr_renderer.h"
+
+typedef VkrGpuMemoryCore VkrMetalMemoryCore;
+
+typedef enum VkrMetalMemoryStatus {
+  VKR_METAL_MEMORY_STATUS_OK = VKR_GPU_MEMORY_STATUS_OK,
+  VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT =
+      VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT,
+  VKR_METAL_MEMORY_STATUS_OUT_OF_HANDLES = VKR_GPU_MEMORY_STATUS_OUT_OF_HANDLES,
+  VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES = VKR_GPU_MEMORY_STATUS_OUT_OF_BYTES,
+  VKR_METAL_MEMORY_STATUS_FRAGMENTED = VKR_GPU_MEMORY_STATUS_FRAGMENTED,
+  VKR_METAL_MEMORY_STATUS_OUT_OF_RANGE_METADATA =
+      VKR_GPU_MEMORY_STATUS_OUT_OF_RANGE_METADATA,
+  VKR_METAL_MEMORY_STATUS_OUT_OF_RETIREMENT_RECORDS =
+      VKR_GPU_MEMORY_STATUS_OUT_OF_RETIREMENT_RECORDS,
+  VKR_METAL_MEMORY_STATUS_STALE_HANDLE = VKR_GPU_MEMORY_STATUS_STALE_HANDLE,
+  VKR_METAL_MEMORY_STATUS_RING_BUSY = VKR_GPU_MEMORY_STATUS_RING_BUSY,
+  VKR_METAL_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED =
+      VKR_GPU_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED,
+} VkrMetalMemoryStatus;
+
+typedef VkrGpuAllocationHandle VkrMetalAllocationHandle;
+typedef VkrGpuMemoryConfig VkrMetalMemoryConfig;
+typedef VkrGpuPlacement VkrMetalPlacement;
+
+typedef enum VkrMetalMemoryClass {
+  VKR_METAL_MEMORY_CLASS_UNKNOWN = VKR_GPU_MEMORY_CLASS_UNKNOWN,
+  VKR_METAL_MEMORY_CLASS_BUFFER = VKR_GPU_MEMORY_CLASS_BUFFER,
+  VKR_METAL_MEMORY_CLASS_TEXTURE = VKR_GPU_MEMORY_CLASS_TEXTURE,
+  VKR_METAL_MEMORY_CLASS_COUNT = VKR_GPU_MEMORY_CLASS_COUNT,
+} VkrMetalMemoryClass;
+
+typedef VkrGpuMemoryClassMetrics VkrMetalMemoryClassMetrics;
+typedef VkrGpuMemoryMetrics VkrMetalMemoryMetrics;
+typedef VkrGpuRetirementReleaseFn VkrMetalRetirementReleaseFn;
+
+uint64_t
+vkr_metal_memory_storage_requirement(const VkrMetalMemoryConfig *config);
+VkrMetalMemoryStatus vkr_metal_memory_create(const VkrMetalMemoryConfig *config,
+                                             void *storage,
+                                             uint64_t storage_size,
+                                             VkrMetalMemoryCore **out_memory);
+VkrMetalMemoryStatus
+vkr_metal_memory_allocate(VkrMetalMemoryCore *memory, uint64_t resource_size,
+                          uint64_t alignment, uint32_t kind,
+                          VkrMetalAllocationHandle *out_handle,
+                          VkrMetalPlacement *out_placement);
+VkrMetalMemoryStatus vkr_metal_memory_resolve(VkrMetalMemoryCore *memory,
+                                              VkrMetalAllocationHandle handle,
+                                              VkrMetalPlacement *out_placement);
+VkrMetalMemoryStatus vkr_metal_memory_retire(VkrMetalMemoryCore *memory,
+                                             VkrMetalAllocationHandle handle,
+                                             uint64_t last_use_submit_value);
+VkrMetalMemoryStatus
+vkr_metal_memory_collect(VkrMetalMemoryCore *memory,
+                         uint64_t completed_submit_value,
+                         VkrMetalRetirementReleaseFn release_fn,
+                         void *release_context, uint32_t *out_collected_count);
+void vkr_metal_memory_record_native_failure(VkrMetalMemoryCore *memory);
+void vkr_metal_memory_get_metrics(VkrMetalMemoryCore *memory,
+                                  VkrMetalMemoryMetrics *out_metrics);
+void vkr_metal_memory_owner_record_allocate(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);
+bool8_t vkr_metal_memory_owner_record_release(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);
+
+typedef VkrGpuSubmitRingSlot VkrMetalSubmitRingSlot;
+typedef VkrGpuSubmitRing VkrMetalSubmitRing;
+typedef VkrGpuRingSlice VkrMetalRingSlice;
+typedef VkrGpuAddressPair VkrMetalAddressPair;
+
+uint64_t vkr_metal_submit_ring_storage_requirement(uint32_t slot_count);
+bool8_t vkr_metal_submit_ring_total_size(uint64_t required_slot_size,
+                                         uint64_t minimum_slot_size,
+                                         uint32_t slot_count,
+                                         uint64_t *out_total_size);
+VkrMetalMemoryStatus vkr_metal_submit_ring_create(VkrMetalSubmitRing *ring,
+                                                  uint64_t total_size,
+                                                  uint32_t slot_count,
+                                                  void *storage,
+                                                  uint64_t storage_size);
+VkrMetalMemoryStatus
+vkr_metal_submit_ring_acquire(VkrMetalSubmitRing *ring, uint64_t requested_size,
+                              uint64_t completed_submit_value,
+                              VkrMetalRingSlice *out_slice);
+VkrMetalMemoryStatus vkr_metal_submit_ring_submit(VkrMetalSubmitRing *ring,
+                                                  VkrMetalRingSlice slice,
+                                                  uint64_t submit_value);
+void vkr_metal_submit_ring_cancel(VkrMetalSubmitRing *ring,
+                                  VkrMetalRingSlice slice);
+VkrMetalAddressPair vkr_metal_address_pair_slice(VkrMetalAddressPair buffer,
+                                                 VkrMetalRingSlice slice);
+const char *vkr_metal_memory_status_string(VkrMetalMemoryStatus status);

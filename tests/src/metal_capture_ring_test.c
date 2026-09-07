@@ -1,6 +1,6 @@
 #include "metal_capture_ring_test.h"
 
-#include "renderer/vkr_capture_ring.h"
+#include "vkr_capture_ring.h"
 
 #include <assert.h>
 #include <stdio.h>

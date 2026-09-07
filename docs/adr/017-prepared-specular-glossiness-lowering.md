@@ -57,7 +57,7 @@ material lobe is authorized.
 
 ## Implementation
 
-[`vkr_gltf_material_conversion.c`](../../lib/src/renderer/resources/loaders/vkr_gltf_material_conversion.c),
-[`mesh_loader_gltf.c`](../../lib/src/renderer/resources/loaders/mesh_loader_gltf.c),
-[`vkr_material_system.c`](../../lib/src/renderer/systems/vkr_material_system.c), and
-[`normal_map_kernel.slangh`](../../lib/src/renderer/shaders/shared/normal_map_kernel.slangh).
+[`vkr_gltf_material_conversion.c`](../../tools/assets/vkr_gltf_material_conversion.c),
+[`mesh_loader_gltf.c`](../../tools/assets/mesh_loader_gltf.c),
+[`vkr_material_system.c`](../../runtime/src/renderer/systems/vkr_material_system.c), and
+[`normal_map_kernel.slangh`](../../renderer/src/shaders/shared/normal_map_kernel.slangh).

@@ -60,8 +60,8 @@ another representation without weakening normalization or lifetime.
 
 ## Implementation
 
-[`vkr_ibl_math.h`](../../lib/src/renderer/vkr_ibl_math.h),
-[`vkr_ibl_sh_pool.c`](../../lib/src/renderer/vkr_ibl_sh_pool.c),
-[`sh_l2_kernel.slangh`](../../lib/src/renderer/shaders/shared/sh_l2_kernel.slangh),
-[`sh_projection.metal`](../../lib/src/renderer/shaders/metal/msl/ibl/sh_projection.metal), and
-[`vkr_vulkan_ibl.c`](../../lib/src/renderer/vulkan/vkr_vulkan_ibl.c).
+[`vkr_ibl_math.h`](../../renderer/src/vkr_ibl_math.h),
+[`vkr_ibl_sh_pool.c`](../../renderer/src/vkr_ibl_sh_pool.c),
+[`sh_l2_kernel.slangh`](../../renderer/src/shaders/shared/sh_l2_kernel.slangh),
+[`sh_projection.metal`](../../renderer/src/shaders/metal/msl/ibl/sh_projection.metal), and
+[`vkr_vulkan_ibl.c`](../../renderer/src/vulkan/vkr_vulkan_ibl.c).

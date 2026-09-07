@@ -63,6 +63,6 @@ quality requires a different feedback model.
 ## Implementation
 
 [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json),
-[`transmission_kernel.slangh`](../../lib/src/renderer/shaders/shared/transmission_kernel.slangh),
-[`vkr_vulkan_deferred.c`](../../lib/src/renderer/vulkan/vkr_vulkan_deferred.c), and
-[`vkr_metal_packet_commands.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_commands.inc).
+[`transmission_kernel.slangh`](../../renderer/src/shaders/shared/transmission_kernel.slangh),
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c), and
+[`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc).

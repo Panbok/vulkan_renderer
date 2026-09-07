@@ -49,6 +49,6 @@ workload cost justifies a different ABI.
 
 ## Implementation
 
-[`vkr_gpu_abi.h`](../../lib/src/renderer/vkr_gpu_abi.h),
-[`vkr_packed_geometry.c`](../../lib/src/renderer/vkr_packed_geometry.c), and
-[`gpu_draw.slangh`](../../lib/src/renderer/shaders/shared/gpu_draw.slangh).
+[`vkr_gpu_abi.h`](../../renderer/src/vkr_gpu_abi.h),
+[`vkr_packed_geometry.c`](../../renderer/src/vkr_packed_geometry.c), and
+[`gpu_draw.slangh`](../../renderer/src/shaders/shared/gpu_draw.slangh).

@@ -52,7 +52,7 @@ Another queue, presentation API or target model changes the completion proof.
 
 ## Implementation
 
-[`vkr_gpu_submit_ring.c`](../../lib/src/renderer/vkr_gpu_submit_ring.c),
-[`vkr_vulkan_wsi.c`](../../lib/src/renderer/vulkan/vkr_vulkan_wsi.c),
-[`vkr_vulkan_target.c`](../../lib/src/renderer/vulkan/vkr_vulkan_target.c), and
-[`vkr_metal_packet_frame.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_frame.inc).
+[`vkr_gpu_submit_ring.c`](../../renderer/src/vkr_gpu_submit_ring.c),
+[`vkr_vulkan_wsi.c`](../../renderer/src/vulkan/vkr_vulkan_wsi.c),
+[`vkr_vulkan_target.c`](../../renderer/src/vulkan/vkr_vulkan_target.c), and
+[`vkr_metal_packet_frame.inc`](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc).

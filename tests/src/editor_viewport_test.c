@@ -1,8 +1,8 @@
 #include "editor_viewport_test.h"
 
 #include "renderer/systems/vkr_editor_viewport.h"
-#include "renderer/vkr_exposure.h"
-#include "renderer/vkr_renderer_internal.h"
+#include "vkr_exposure.h"
+#include "vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <math.h>

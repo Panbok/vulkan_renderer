@@ -8,6 +8,12 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
+# Capture/export consumers and asset importers share one image writer object.
+add_library(vkr_image_write STATIC assets/stb_image_write_impl.c)
+target_include_directories(vkr_image_write PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
+
+
+if(VKR_BUILD_HARNESS)
 add_library(vkr_harness_core STATIC
     harness/vkr_harness_camera.c
     harness/vkr_harness_capture.c
@@ -31,10 +37,11 @@ target_include_directories(vkr_harness_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/harness
     PRIVATE
-        ${CMAKE_SOURCE_DIR}/lib/src
+        ${CMAKE_SOURCE_DIR}/renderer/src
+        ${CMAKE_SOURCE_DIR}/vendor
 )
 
-target_link_libraries(vkr_harness_core PUBLIC renderer_lib)
+target_link_libraries(vkr_harness_core PUBLIC vkr_runtime PRIVATE vkr_image_decode vkr_image_write)
 
 if(NOT WIN32)
     target_link_libraries(vkr_harness_core PUBLIC m)
@@ -65,6 +72,25 @@ target_compile_definitions(vkr_harness PRIVATE
     $<$<CONFIG:Debug>:ASSERT_LOG=1>
 )
 
+endif()
+
+if(VKR_BUILD_TOOLS)
+add_library(vkr_asset_cooking STATIC
+    assets/vkr_font_encode.c
+    assets/vkr_mesh_encode.c
+    assets/vkr_mesh_cook_source.c
+    assets/vkr_scene_light_bake.c
+    assets/vkr_mesh_deduplicate.c
+    assets/vkr_meshoptimizer_bridge.cpp
+    assets/mesh_loader_gltf.c
+    assets/vkr_gltf_material_conversion.c
+    assets/cgltf_impl.c)
+vkr_configure_library(vkr_asset_cooking)
+target_include_directories(vkr_asset_cooking PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+    PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
+target_link_libraries(vkr_asset_cooking PUBLIC vkr_asset_formats PRIVATE meshoptimizer vkr_image_decode vkr_image_write)
+target_compile_features(vkr_asset_cooking PRIVATE cxx_std_11)
+
 add_executable(vkr_vkt_packer
     vkr_vkt_packer.cpp
 )
@@ -87,7 +113,7 @@ add_executable(vkr_mesh_cooker
     vkr_mesh_cooker.c
 )
 vkr_require_declared_c_functions(vkr_mesh_cooker)
-target_link_libraries(vkr_mesh_cooker PRIVATE renderer_lib)
+target_link_libraries(vkr_mesh_cooker PRIVATE vkr_asset_cooking)
 
 set(VKR_MSDF_ATLAS_DIR "${CMAKE_SOURCE_DIR}/vendor/msdf-atlas-gen")
 set(VKR_MSDF_ATLAS_COMMIT
@@ -172,13 +198,13 @@ target_compile_definitions(vkr_font_cooker PRIVATE
     VKR_FONT_COOKER_MSDF_ATLAS_COMMIT="${VKR_MSDF_ATLAS_COMMIT}"
     VKR_FONT_COOKER_MSDFGEN_COMMIT="${VKR_MSDFGEN_COMMIT}")
 target_include_directories(vkr_font_cooker PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib/src
+    ${CMAKE_SOURCE_DIR}/renderer/src
     ${VKR_MSDF_ATLAS_DIR}
     ${VKR_MSDF_ATLAS_DIR}/msdfgen
     ${FREETYPE_INCLUDE_DIRS}
 )
 target_link_libraries(vkr_font_cooker PRIVATE
-    renderer_lib
+    vkr_asset_cooking
     msdf-atlas-gen::msdf-atlas-gen
     Freetype::Freetype
 )
@@ -200,4 +226,6 @@ if(APPLE)
         ${VKR_DIAGNOSTIC_FOUNDATION_LIBRARY}
         ${VKR_DIAGNOSTIC_METAL_LIBRARY}
     )
+endif()
+
 endif()

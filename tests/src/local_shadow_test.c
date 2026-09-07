@@ -1,7 +1,7 @@
 #include "defines.h"
 
 #include "math/mat.h"
-#include "renderer/vkr_frame_input.h"
+#include "vkr_frame_input.h"
 
 #include <assert.h>
 #include <math.h>

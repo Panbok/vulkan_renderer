@@ -2,9 +2,9 @@
 
 #include "math/vkr_frustum.h"
 #include "math/vkr_math.h"
-#include "renderer/vkr_candidate_residency.h"
-#include "renderer/vkr_renderer_internal.h"
-#include "renderer/vkr_visibility.h"
+#include "vkr_candidate_residency.h"
+#include "vkr_renderer_internal.h"
+#include "vkr_visibility.h"
 
 #include <assert.h>
 #include <stdio.h>

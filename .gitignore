@@ -10,6 +10,8 @@ build_release_info
 build_min_size_rel
 build_test
 build_lib
+build_lib_renderer/
+build_lib_runtime/
 build_vkt_packer
 build_font_cooker
 build_novcpkg

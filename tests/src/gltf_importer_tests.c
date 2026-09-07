@@ -3,10 +3,10 @@
 #include "containers/str.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
-#include "renderer/resources/loaders/mesh_loader_gltf.h"
-#include "renderer/resources/loaders/vkr_gltf_material_conversion.h"
-#include "renderer/resources/loaders/vkr_meshoptimizer_bridge.h"
-#include "renderer/vkr_color_transfer.h"
+#include "assets/mesh_loader_gltf.h"
+#include "assets/vkr_gltf_material_conversion.h"
+#include "assets/vkr_meshoptimizer_bridge.h"
+#include "vkr_color_transfer.h"
 
 #include <assert.h>
 #include <errno.h>

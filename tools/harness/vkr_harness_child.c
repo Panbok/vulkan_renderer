@@ -10,15 +10,15 @@
  */
 #include "vkr_harness_runtime.h"
 
-#include "application.h"
+#include "application/vkr_standard_scene_runtime.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
-#include "renderer/vkr_gtao.h"
-#include "renderer/vkr_temporal.h"
+#include "vkr_gtao.h"
+#include "vkr_temporal.h"
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
 
@@ -38,7 +38,7 @@ vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
   const uint32_t jitter =
       renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31
           ? vkr_temporal_upscale_sequence_length(renderer->temporal_state.width,
-                                                   output_width)
+                                                 output_width)
           : VKR_TEMPORAL_SEQUENCE_LENGTH;
   uint32_t a = VKR_GTAO_NOISE_SEQUENCE_LENGTH;
   uint32_t b = jitter;
@@ -178,11 +178,11 @@ typedef struct VkrHarnessChildContext {
  * per process.
  */
 vkr_global VkrHarnessChildContext *g_harness_child;
-vkr_internal void vkr_harness_child_fail(Application *application,
+vkr_internal void vkr_harness_child_fail(VkrStandardSceneRuntime *application,
                                          const char *reason);
 
-vkr_internal void
-vkr_harness_child_collect_submission_timings(Application *application) {
+vkr_internal void vkr_harness_child_collect_submission_timings(
+    VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   if (!child->submission_gpu_timing || !child->phase_started)
     return;
@@ -229,30 +229,6 @@ vkr_harness_child_collect_submission_timings(Application *application) {
     child->samples[offset] = (float64_t)timing.duration_ns;
     child->availability[offset] = VKR_METRIC_AVAILABILITY_VALID;
   }
-}
-
-bool8_t application_on_event(Event *event, UserData user_data) {
-  (void)event;
-  (void)user_data;
-  return true_v;
-}
-
-bool8_t application_on_window_event(Event *event, UserData user_data) {
-  (void)event;
-  (void)user_data;
-  return true_v;
-}
-
-bool8_t application_on_key_event(Event *event, UserData user_data) {
-  (void)event;
-  (void)user_data;
-  return true_v;
-}
-
-bool8_t application_on_mouse_event(Event *event, UserData user_data) {
-  (void)event;
-  (void)user_data;
-  return true_v;
 }
 
 vkr_internal const char *vkr_harness_metric_unit_name(VkrMetricUnit unit) {
@@ -318,18 +294,18 @@ vkr_harness_depth_format_name(VkrSurfaceDepthFormat format) {
   }
 }
 
-vkr_internal void vkr_harness_child_fail(Application *application,
+vkr_internal void vkr_harness_child_fail(VkrStandardSceneRuntime *application,
                                          const char *reason) {
   VkrHarnessChildContext *child = g_harness_child;
   if (!child->failed) {
     child->failed = true_v;
     string_format(child->failure, sizeof(child->failure), "%s", reason);
   }
-  application_close(application);
+  vkr_standard_scene_runtime_close(application);
 }
 
 vkr_internal bool8_t
-vkr_harness_child_resize_round_trip(Application *application) {
+vkr_harness_child_resize_round_trip(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrHarnessCase *case_manifest = child->case_manifest;
   if (!case_manifest->resize_round_trip || child->resize_round_trip_complete) {
@@ -337,13 +313,14 @@ vkr_harness_child_resize_round_trip(Application *application) {
   }
 
   if (!child->resize_outbound_requested && child->completed_frames >= 1u) {
-    if (!vkr_window_resize(&application->window, case_manifest->resize_width,
+    if (!vkr_window_resize(&application->host.window,
+                           case_manifest->resize_width,
                            case_manifest->resize_height)) {
       vkr_harness_child_fail(application, "resize.outbound_request_failed");
       return false_v;
     }
     const VkrWindowPixelSize pixels =
-        vkr_window_get_pixel_size(&application->window);
+        vkr_window_get_pixel_size(&application->host.window);
     if (pixels.width == 0u || pixels.height == 0u) {
       vkr_harness_child_fail(application, "resize.outbound_extent_invalid");
       return false_v;
@@ -370,13 +347,13 @@ vkr_harness_child_resize_round_trip(Application *application) {
     if (child->capture_index >= 0 && !child->capture_complete) {
       return true_v;
     }
-    if (!vkr_window_resize(&application->window, case_manifest->width,
+    if (!vkr_window_resize(&application->host.window, case_manifest->width,
                            case_manifest->height)) {
       vkr_harness_child_fail(application, "resize.restore_request_failed");
       return false_v;
     }
     const VkrWindowPixelSize pixels =
-        vkr_window_get_pixel_size(&application->window);
+        vkr_window_get_pixel_size(&application->host.window);
     if (pixels.width == 0u || pixels.height == 0u) {
       vkr_harness_child_fail(application, "resize.restore_extent_invalid");
       return false_v;
@@ -410,7 +387,8 @@ vkr_harness_child_resize_round_trip(Application *application) {
  * since the last update, so no sample is recorded and the case-frame index
  * does not advance.
  */
-vkr_internal void vkr_harness_child_sample(Application *application) {
+vkr_internal void
+vkr_harness_child_sample(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   VkrMetricsSnapshotView view = {0};
   if (!vkr_metrics_snapshot_acquire(application->metrics, &view)) {
@@ -512,7 +490,8 @@ vkr_internal void vkr_harness_child_sample(Application *application) {
   vkr_harness_child_collect_submission_timings(application);
 }
 
-vkr_internal void vkr_harness_child_drain_events(Application *application) {
+vkr_internal void
+vkr_harness_child_drain_events(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   uint32_t catalog_count = 0;
   const VkrMetricCatalogEntry *catalog =
@@ -546,7 +525,7 @@ vkr_internal void vkr_harness_child_drain_events(Application *application) {
  * and the selected backend has ordered every accepted publication.
  */
 vkr_internal bool8_t
-vkr_harness_child_activate_scene(Application *application) {
+vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   VkrRendererError resource_error = VKR_RENDERER_ERROR_NONE;
   const VkrResourceLoadState load_state =
@@ -596,7 +575,7 @@ vkr_harness_child_activate_scene(Application *application) {
 }
 
 vkr_internal bool8_t
-vkr_harness_child_texture_streams_ready(Application *application) {
+vkr_harness_child_texture_streams_ready(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrMaterialTextureStreamStats stats =
       vkr_material_system_get_texture_stream_stats(
@@ -621,8 +600,8 @@ vkr_harness_child_texture_streams_ready(Application *application) {
   return false_v;
 }
 
-vkr_internal bool8_t
-vkr_harness_child_renderer_publications_ready(Application *application) {
+vkr_internal bool8_t vkr_harness_child_renderer_publications_ready(
+    VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
   if (publisher->publications_idle &&
@@ -645,7 +624,7 @@ vkr_harness_child_renderer_publications_ready(Application *application) {
  * invalidate a different steady-state pass table.
  */
 vkr_internal bool8_t
-vkr_harness_child_prepare_pass_catalog(Application *application) {
+vkr_harness_child_prepare_pass_catalog(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrRendererMetricsPassTable *passes =
       vkr_renderer_metrics_get_pass_table(&application->renderer_metrics);
@@ -764,9 +743,9 @@ vkr_harness_child_compact_pass_samples(VkrHarnessChildContext *child) {
   return true_v;
 }
 
-vkr_internal void vkr_harness_child_build_ui(Application *application,
-                                             VkrHarnessChildContext *child,
-                                             float64_t delta) {
+vkr_internal void
+vkr_harness_child_build_ui(VkrStandardSceneRuntime *application,
+                           VkrHarnessChildContext *child, float64_t delta) {
   if (!child->text_fixture)
     return;
   const VkrUiTrack columns[] = {
@@ -785,11 +764,13 @@ vkr_internal void vkr_harness_child_build_ui(Application *application,
   root.row_count = ArrayCount(rows);
   root.style.padding_pt = (VkrUiEdges){32.0f, 32.0f, 32.0f, 32.0f};
   if (!vkr_ui_begin(&application->ui_system, &application->frame_allocator,
-                    application_is_windowed(application) ? &application->window
-                                                         : NULL,
+                    vkr_standard_scene_runtime_is_windowed(application)
+                        ? &application->host.window
+                        : NULL,
                     application->renderer.last_window_width,
                     application->renderer.last_window_height,
-                    &application->window.input_state, false_v, delta, &root))
+                    &application->host.window.input_state, false_v, delta,
+                    &root))
     return;
 
   const struct {
@@ -836,17 +817,19 @@ vkr_internal void vkr_harness_child_build_ui(Application *application,
   (void)vkr_ui_end(&application->ui_system);
 }
 
-void application_update(Application *application, float64_t delta) {
-  VkrHarnessChildContext *child = g_harness_child;
+vkr_internal void vkr_harness_child_update(void *state,
+                                           VkrStandardSceneRuntime *application,
+                                           float64_t delta) {
+  VkrHarnessChildContext *child = state;
   if (!child) {
-    application_close(application);
+    vkr_standard_scene_runtime_close(application);
     return;
   }
   vkr_harness_child_build_ui(application, child, delta);
   vkr_harness_child_drain_events(application);
-  /* Bootstrap may retry a typed OOM only after Application schedules a new,
-     bounded Scene reduction. Never sample that failed frame or permit recovery
-     inside authored warmup/measurement/capture phases. */
+  /* Bootstrap may retry a typed OOM only after VkrStandardSceneRuntime
+     schedules a new, bounded Scene reduction. Never sample that failed frame or
+     permit recovery inside authored warmup/measurement/capture phases. */
   if (!child->phase_started &&
       application->last_renderer_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY &&
       application->scene_memory_relief_generation >
@@ -922,7 +905,7 @@ void application_update(Application *application, float64_t delta) {
       vkr_harness_child_collect_submission_timings(application);
       child->submission_timings_drained = true_v;
     }
-    application_close(application);
+    vkr_standard_scene_runtime_close(application);
     return;
   }
   const uint64_t completed_submit_serial =
@@ -953,7 +936,8 @@ void application_update(Application *application, float64_t delta) {
     if (!vkr_harness_child_prepare_pass_catalog(application))
       return;
   } else if (!child->phase_started &&
-             next_frame % vkr_harness_temporal_alignment(&application->renderer) ==
+             next_frame %
+                     vkr_harness_temporal_alignment(&application->renderer) ==
                  0u) {
     /* Bootstrap duration must not choose either the raster jitter or GTAO
        noise phase consumed by authored warmup, including zero-warmup cases. */
@@ -1103,11 +1087,11 @@ vkr_internal bool8_t vkr_harness_warmup_stable(
   return drift <= profile->warmup_max_drift_ratio;
 }
 
-vkr_internal ApplicationConfig vkr_harness_child_application_config(
+vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
     const VkrSubsystemPlan *subsystem_plan, uint64_t capture_max_batch_bytes,
     VkrRendererBackendType renderer_backend) {
-  return (ApplicationConfig){
+  return (VkrStandardSceneRuntimeConfig){
       .title = "VKR Harness",
       .x = 100,
       .y = 100,
@@ -1141,8 +1125,8 @@ vkr_internal ApplicationConfig vkr_harness_child_application_config(
       .upscale_mode =
           string_equals(case_manifest->renderer.upscaler, "metalfx_temporal")
               ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
-              : string_equals(case_manifest->renderer.upscaler, "fsr31")
-                    ? VKR_UPSCALE_MODE_FSR31
+          : string_equals(case_manifest->renderer.upscaler, "fsr31")
+              ? VKR_UPSCALE_MODE_FSR31
               : VKR_UPSCALE_MODE_SPATIAL,
       .dynamic_resolution =
           {
@@ -1185,7 +1169,7 @@ vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
 
 /** Applies the case's renderer configuration to an already-created boot. */
 vkr_internal bool8_t vkr_harness_child_apply_renderer(
-    Application *application, const VkrHarnessCase *case_manifest) {
+    VkrStandardSceneRuntime *application, const VkrHarnessCase *case_manifest) {
   application->editor_viewport.enabled = case_manifest->renderer.editor;
   application->editor_viewport.scene_rendering_stopped =
       case_manifest->renderer.editor_stop_frame == 0u;
@@ -1264,7 +1248,7 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
 }
 
 vkr_internal void
-vkr_harness_child_device_provenance(Application *application,
+vkr_harness_child_device_provenance(VkrStandardSceneRuntime *application,
                                     VkrHarnessCase *case_manifest,
                                     VkrHarnessProvenance *provenance) {
   Arena *device_arena = arena_create(KB(16), KB(16));
@@ -1589,13 +1573,13 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   uint8_t *availability = NULL;
   VkrHarnessSampleMetric *sample_catalog = NULL;
   VkrHarnessSampleEvent *events = NULL;
-  bool8_t application_live = false_v;
+  bool8_t vkr_standard_scene_runtime_live = false_v;
   VkrSubsystemMask subsystem_mask = 0u;
   VkrHarnessChildContext child = {0};
   /* The repetition owns this large record through shutdown and report
      publication. Keeping it in the existing arena leaves room for nested
      report work on the Windows executable's 1 MiB stack. */
-  Application *application = arena_alloc(
+  VkrStandardSceneRuntime *application = arena_alloc(
       arenas.persistent, sizeof(*application), ARENA_MEMORY_TAG_STRUCT);
   if (!application) {
     vkr_harness_stderr("Unable to allocate the repetition application\n");
@@ -1625,10 +1609,24 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       seen |= 1ull << channel;
       const VkrCaptureChannelDescription *description =
           vkr_renderer_capture_channel_get(channel);
-      if (description->required_subsystem != VKR_RENDERER_SUBSYSTEM_COUNT &&
-          !vkr_subsystem_plan_includes(
-              &subsystem_plan,
-              (VkrRendererSubsystem)description->required_subsystem)) {
+      VkrRendererSubsystem required_subsystem = VKR_RENDERER_SUBSYSTEM_COUNT;
+      switch (description->required_feature) {
+      case VKR_CAPTURE_FEATURE_NONE:
+        break;
+      case VKR_CAPTURE_FEATURE_SHADOWS:
+        required_subsystem = VKR_RENDERER_SUBSYSTEM_SHADOWS;
+        break;
+      case VKR_CAPTURE_FEATURE_PICKING:
+        required_subsystem = VKR_RENDERER_SUBSYSTEM_PICKING;
+        break;
+      default:
+        vkr_harness_stderr("Capture channel is unavailable: %s\n",
+                           replay.logical_channels[i]);
+        exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
+        goto cleanup;
+      }
+      if (required_subsystem != VKR_RENDERER_SUBSYSTEM_COUNT &&
+          !vkr_subsystem_plan_includes(&subsystem_plan, required_subsystem)) {
         vkr_harness_stderr("Capture channel is unavailable: %s\n",
                            replay.logical_channels[i]);
         exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
@@ -1676,14 +1674,14 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
-  ApplicationConfig config = vkr_harness_child_application_config(
+  VkrStandardSceneRuntimeConfig config = vkr_harness_child_application_config(
       &case_manifest, &profile, &subsystem_plan, capture_max_batch_bytes,
       renderer_backend);
-  if (!application_create(application, &config)) {
+  if (!vkr_standard_scene_runtime_create(application, &config)) {
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
     goto cleanup;
   }
-  application_live = true_v;
+  vkr_standard_scene_runtime_live = true_v;
   subsystem_mask = application->subsystem_plan.effective_mask;
   if (subsystem_mask != subsystem_plan.effective_mask) {
     char planned_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX] = {0};
@@ -1724,7 +1722,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     }
   } else {
     case_manifest.content_scale =
-        vkr_window_get_content_scale(&application->window).value;
+        vkr_window_get_content_scale(&application->host.window).value;
   }
   if (case_manifest.renderer.text_fixture &&
       !application->ui_system.initialized) {
@@ -1834,6 +1832,11 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     child.capture_report->tool = VKR_HARNESS_TOOL_SNAPSHOT;
   }
   g_harness_child = &child;
+  vkr_standard_scene_runtime_set_callbacks(
+      application, &(VkrStandardSceneRuntimeCallbacks){
+                       .state = &child,
+                       .update = vkr_harness_child_update,
+                   });
 
   String8 scene = string8_create_from_cstr((const uint8_t *)case_manifest.scene,
                                            string_length(case_manifest.scene));
@@ -1844,8 +1847,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     child.failed = true_v;
     string_format(child.failure, sizeof(child.failure), "scene.enqueue_failed");
   } else {
-    application_start(application);
-    application_close(application);
+    vkr_standard_scene_runtime_run(application);
+    vkr_standard_scene_runtime_close(application);
   }
   vkr_harness_child_drain_events(application);
   if (child.failed) {
@@ -1869,8 +1872,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                     "scene.unload_wait_failed");
     }
   }
-  application_shutdown(application);
-  application_live = false_v;
+  vkr_standard_scene_runtime_shutdown(application);
+  vkr_standard_scene_runtime_live = false_v;
   g_harness_child = NULL;
   if (prewarm) {
     exit_code = child.failed ? VKR_HARNESS_EXIT_ERROR : VKR_HARNESS_EXIT_PASS;
@@ -1960,8 +1963,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   }
 
 cleanup:
-  if (application_live) {
-    application_shutdown(application);
+  if (vkr_standard_scene_runtime_live) {
+    vkr_standard_scene_runtime_shutdown(application);
   }
   g_harness_child = NULL;
   arena_destroy(arenas.transient);

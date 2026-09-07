@@ -23,9 +23,6 @@
 #include <sys/types.h>
 #include <time.h>
 
-#include <spirv_reflect.h>
-#include <stb_image.h>
-#include <stb_truetype.h>
 
 #if defined(PLATFORM_APPLE)
 #include <CoreGraphics/CoreGraphics.h>
@@ -43,7 +40,6 @@
 #include <windowsx.h>
 #include <io.h>
 #include <timeapi.h>
-#include <Xinput.h>
 #pragma comment(lib, "winmm.lib")
 #endif
 // clang-format on

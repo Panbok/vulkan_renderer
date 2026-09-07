@@ -112,8 +112,8 @@ authorised with explicit transfer and coordinate semantics.
 
 ## Implementation
 
-[`vkr_color_transfer.c`](../../lib/src/renderer/vkr_color_transfer.c),
+[`vkr_color_transfer.c`](../../renderer/src/vkr_color_transfer.c),
 [`vkr_platform_windows.c`](../../lib/src/platform/vkr_platform_windows.c),
-[`vkr_window_windows.c`](../../lib/src/platform/vkr_window_windows.c),
-[`vkr_vulkan_target.c`](../../lib/src/renderer/vulkan/vkr_vulkan_target.c), and
-[`tonemap.metal`](../../lib/src/renderer/shaders/metal/msl/post/tonemap.metal).
+[`vkr_window_windows.c`](../../runtime/src/platform/vkr_window_windows.c),
+[`vkr_vulkan_target.c`](../../renderer/src/vulkan/vkr_vulkan_target.c), and
+[`tonemap.metal`](../../renderer/src/shaders/metal/msl/post/tonemap.metal).

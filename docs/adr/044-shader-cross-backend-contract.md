@@ -36,6 +36,11 @@ records. Moving scene/assets to application owners and preparing all pass famili
 before emission likewise preserve those native ABI and shader contracts. These
 source changes do not establish fresh bilateral execution evidence.
 
+The library split relocates application/runtime sources without moving production
+shader sources from `renderer/src/shaders/`. It preserves shader-visible host
+records, native entry points and source ABI layout. It adds no fresh native
+cross-backend evidence; native Vulkan execution for the split remains unrun.
+
 Match coordinate conventions, units, field order/types, basis signs, bounds,
 edge behavior and dispatch coverage explicitly. World/view space is right-handed
 with forward `-Z`; depth is `[0,1]` and projection/viewport Y lowering is backend
@@ -224,9 +229,9 @@ A new shader family, ABI, algorithm or native-only feature changes these contrac
 
 ## Implementation
 
-Paths below are relative to [`lib/src/renderer/shaders/`](../../lib/src/renderer/shaders).
-Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
-[`vulkan/`](../../lib/src/renderer/vulkan).
+Paths below are relative to [`renderer/src/shaders/`](../../renderer/src/shaders).
+Native lowering lives in [`metal/`](../../renderer/src/metal) and
+[`vulkan/`](../../renderer/src/vulkan).
 
 | Domain | Shared source | Metal production | Vulkan production |
 |---|---|---|---|
@@ -243,7 +248,7 @@ Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
 | Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
-mirrors the shared Slang record. Consult [`shared/README.md`](../../lib/src/renderer/shaders/shared/README.md)
+mirrors the shared Slang record. Consult [`shared/README.md`](../../renderer/src/shaders/shared/README.md)
 and build scripts for the exact entry-point inventory. This record replaces
 former ADR-005's deleted reflection-driven frontend.
 

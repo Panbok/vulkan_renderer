@@ -48,7 +48,7 @@ A new target kind requires a different ownership or completion contract.
 
 ## Implementation
 
-[`vkr_renderer.h`](../../lib/src/renderer/vkr_renderer.h),
-[`vkr_renderer_impl.h`](../../lib/src/renderer/vkr_renderer_impl.h),
-[`vkr_vulkan_target.c`](../../lib/src/renderer/vulkan/vkr_vulkan_target.c), and
-[`vkr_capture_ring.c`](../../lib/src/renderer/vkr_capture_ring.c).
+[`vkr_renderer.h`](../../renderer/src/vkr_renderer.h),
+[`vkr_renderer_impl.h`](../../renderer/src/vkr_renderer_impl.h),
+[`vkr_vulkan_target.c`](../../renderer/src/vulkan/vkr_vulkan_target.c), and
+[`vkr_capture_ring.c`](../../renderer/src/vkr_capture_ring.c).

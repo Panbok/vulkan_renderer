@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 # ADR-030: Versioned meshoptimizer-cooked mesh artifacts
@@ -22,9 +22,11 @@ versions, ranges, dependencies, decode data, and checksums. The cooker applies
 meshoptimizer locality and vertex/index encoding per range. The loader fully
 validates the artifact before decoding it into runtime geometry.
 
-The glTF importer also decodes `EXT_meshopt_compression` input buffers. Runtime
-mesh loading retains source optimization for uncooked/imported input; cooked
-artifacts are the durable interchange boundary.
+The tool-owned glTF importer also decodes `EXT_meshopt_compression` input
+buffers. Runtime mesh loading accepts cooked `.vkb` artifacts; it does not
+import or optimize source geometry. Worker preparation decodes the artifact
+and requests materials; render-thread finalization resolves material references
+before publication.
 
 Editor Bakery invokes the same standalone mesh cooker with explicit input and
 output arguments on its cancellable worker. Source `.obj`, `.gltf` and `.glb`
@@ -36,6 +38,15 @@ Cooked version 17 stores original glTF node indices, names, parent links, exact
 local matrices, selected-scene membership, source mesh spans, punctual lights,
 camera/skin references, animation count and a source-content fingerprint.
 Runtime `.vkb` loading needs no authoring file to recover node identities.
+Scene-specific light range overrides are resolved by the offline mesh cooker
+through repeatable `--light-range <definition>=<meters>` arguments. Main Bistro
+uses `bistro-lights-main.vkb` with six 5 m overrides; scenes without those
+adjustments retain `bistro-lights.vkb`. The [cook scripts](../../tools/cook_vkr_meshes.sh)
+retain the exact inputs. Runtime scene loading rejects source-light import
+fields and instantiates the already-resolved punctual values from cooked nodes.
+Changed scene or source fingerprints can invalidate existing editor override
+sidecars. The loader preserves those files and rejects conflicting overrides;
+they must be reapplied against the updated source identity.
 Version 16 artifacts must be recooked because their vertices contain flattened
 node transforms and cannot reconstruct the original shared meshes faithfully.
 
@@ -82,7 +93,8 @@ artifact contract.
 
 ## Code evidence
 
-- [artifact contract](../../lib/src/renderer/resources/loaders/vkr_mesh_cooked.h)
-- [encode and decode](../../lib/src/renderer/resources/loaders/vkr_mesh_cooked.c)
-- [meshoptimizer bridge](../../lib/src/renderer/resources/loaders/vkr_meshoptimizer_bridge.cpp)
-- [glTF meshopt input decode](../../lib/src/renderer/resources/loaders/mesh_loader_gltf.c)
+- [artifact contract](../../runtime/src/assets/vkr_mesh_cooked.h)
+- [decode](../../runtime/src/assets/vkr_mesh_cooked_decode.c) and
+  [encode](../../tools/assets/vkr_mesh_encode.c)
+- [meshoptimizer bridge](../../tools/assets/vkr_meshoptimizer_bridge.cpp)
+- [glTF meshopt input decode](../../tools/assets/mesh_loader_gltf.c)

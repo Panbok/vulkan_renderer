@@ -24,6 +24,9 @@ shift
 goto cook_arguments
 
 :cook_defaults
+call :cook "tests\fixtures\rendering\specgloss_factor_parity.gltf" || exit /b 1
+call :cook "tests\fixtures\rendering\editor_nodes.gltf" || exit /b 1
+call :cook "tests\fixtures\rendering\editor_lights.gltf" || exit /b 1
 call :cook "assets\models\falcon.obj" || exit /b 1
 call :cook "assets\models\sponza.obj" || exit /b 1
 call :cook "assets\models\New_Sponza_001.gltf" || exit /b 1
@@ -32,6 +35,17 @@ call :cook "assets\models\bistro-lights.gltf" || exit /b 1
 call :cook "assets\models\bistrox.gltf" || exit /b 1
 call :cook "assets\models\bistro.gltf" || exit /b 1
 call :cook "assets\models\san-miguel-low-poly.obj" || exit /b 1
+if exist "assets\models\bistro-lights.gltf" (
+  "%VKR_MESH_COOKER_BIN%" --input "assets/models/bistro-lights.gltf" ^
+    --output "assets/models/bistro-lights-main.vkb" ^
+    --light-range "LMBR_000019c_Paris_StringLights_01_Yellow_Color=5.0" ^
+    --light-range "LMBR_000019a_Paris_StringLights_01_Pink_Color=5.0" ^
+    --light-range "LMBR_0000197_Paris_StringLights_01_Red_Color=5.0" ^
+    --light-range "LMBR_0000199_Paris_StringLights_01_Green_Color=5.0" ^
+    --light-range "LMBR_000019b_Paris_StringLights_01_Orange_Color=5.0" ^
+    --light-range "LMBR_0000198_Paris_StringLights_01_Blue_Color=5.0"
+  if errorlevel 1 exit /b 1
+)
 goto cook_complete
 
 :cook_complete

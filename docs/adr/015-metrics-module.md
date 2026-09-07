@@ -74,6 +74,6 @@ tracing cannot fit the bounded event contract.
 
 - [Registry and publication](../../lib/src/core/vkr_metrics.c),
   [types and inline writers](../../lib/src/core/vkr_metrics.h).
-- [Application ownership](../../lib/src/application.h),
-  [renderer collector](../../lib/src/renderer/vkr_renderer_metrics.c).
+- [Application ownership](../../runtime/src/application/vkr_standard_scene_runtime.h),
+  [renderer collector](../../renderer/src/vkr_renderer_metrics.c).
 - [Harness sampling](../../tools/harness/vkr_harness_child.c).

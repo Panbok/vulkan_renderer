@@ -6,7 +6,7 @@
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_ui_system.h"
-#include "renderer/vkr_renderer.h"
+#include "vkr_renderer.h"
 
 typedef struct VkrSampleUiText {
   String8 camera;

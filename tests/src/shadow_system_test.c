@@ -3,7 +3,7 @@
 #include "math/vkr_math.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_shadow_system.h"
-#include "renderer/vkr_frame_input.h"
+#include "vkr_frame_input.h"
 
 #include <assert.h>
 #include <math.h>

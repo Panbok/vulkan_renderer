@@ -1,7 +1,7 @@
 #include "ibl_math_tests.h"
 
-#include "renderer/vkr_ibl_math.h"
-#include "renderer/vkr_ibl_sh_pool.h"
+#include "vkr_ibl_math.h"
+#include "vkr_ibl_sh_pool.h"
 
 static bool32_t test_float32_to_float16_boundaries(void) {
   printf("  Running test_float32_to_float16_boundaries...\n");

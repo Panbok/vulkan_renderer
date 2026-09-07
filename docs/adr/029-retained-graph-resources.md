@@ -60,7 +60,7 @@ Retained buffers, aliasing or cross-queue consumers become required.
 
 ## Implementation
 
-[`vkr_rg_compile.c`](../../lib/src/renderer/vkr_rg_compile.c),
-[`vkr_render_graph.c`](../../lib/src/renderer/vkr_render_graph.c),
-[`vkr_vulkan_graph.c`](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c), and
-[`vkr_metal_packet_graph.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_graph.inc).
+[`vkr_rg_compile.c`](../../renderer/src/vkr_rg_compile.c),
+[`vkr_render_graph.c`](../../renderer/src/vkr_render_graph.c),
+[`vkr_vulkan_graph.c`](../../renderer/src/vulkan/vkr_vulkan_graph.c), and
+[`vkr_metal_packet_graph.inc`](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc).

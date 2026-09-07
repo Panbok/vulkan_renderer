@@ -13,13 +13,13 @@ same gap: bake work is explicitly barriered rather than graph-declared.
 ## Current implementation baseline
 
 The render graph describes typed compute dispatch in
-[vkr_render_graph.h](../../lib/src/renderer/vkr_render_graph.h). Vulkan
+[vkr_render_graph.h](../../renderer/src/vkr_render_graph.h). Vulkan
 currently records IBL dispatches and image barriers directly in
-[vkr_vulkan_ibl.c](../../lib/src/renderer/vulkan/vkr_vulkan_ibl.c), while its
+[vkr_vulkan_ibl.c](../../renderer/src/vulkan/vkr_vulkan_ibl.c), while its
 graph executor invokes that pending-work recorder from
-[vkr_vulkan_graph.c](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c).
+[vkr_vulkan_graph.c](../../renderer/src/vulkan/vkr_vulkan_graph.c).
 Publication already bounds pending bake jobs and carries their ownership in
-[vkr_vulkan_publisher.c](../../lib/src/renderer/vulkan/vkr_vulkan_publisher.c).
+[vkr_vulkan_publisher.c](../../renderer/src/vulkan/vkr_vulkan_publisher.c).
 
 ## Proposed gap
 

@@ -1,7 +1,7 @@
 #include "renderer_impl_test.h"
 
 #include "renderer/systems/vkr_render_assets.h"
-#include "renderer/vkr_renderer_impl.h"
+#include "vkr_renderer_impl.h"
 
 #include <assert.h>
 #include <stdio.h>

@@ -1,11 +1,14 @@
 #include "mesh_cooked_tests.h"
 
+#include "assets/vkr_mesh_cook_source.h"
+#include "assets/vkr_mesh_encode.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_arena_pool.h"
 #include "memory/vkr_dmemory_allocator.h"
-#include "renderer/resources/loaders/vkr_mesh_cooked.h"
+#include "renderer/resources/loaders/mesh_loader.h"
+#include "vkr_geometry_data.h"
 #include "renderer/systems/vkr_geometry_system.h"
 
 #include <assert.h>
@@ -172,7 +175,7 @@ static void test_tangent_generation_repairs_parallel_accumulation(void) {
     vertices[i].normal = (VkrPackedVec3){1.0f, 0.0f, 0.0f};
   }
   const uint32_t indices[3] = {0u, 1u, 2u};
-  vkr_geometry_system_generate_tangents(
+  vkr_geometry_generate_tangents(
       &allocator, vertices, ArrayCount(vertices), indices, ArrayCount(indices));
   for (uint32_t i = 0u; i < ArrayCount(vertices); ++i) {
     const Vec3 tangent = vec3_new(vertices[i].tangent.x, vertices[i].tangent.y,
@@ -211,7 +214,7 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
       test_vertex(3.0f, 0.0f, 0.0f), test_vertex(2.0f, 1.0f, 0.0f),
   };
   uint32_t indices[6] = {0, 1, 2, 3, 4, 5};
-  VkrMeshLoaderSubmeshRange ranges[2] = {
+  VkrGeometryUploadRange ranges[2] = {
       {
           .range_id = 0,
           .first_index = 0,
@@ -222,7 +225,6 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
           .material_name = string8_lit("material.first"),
           .shader_override = string8_lit("shader.first"),
           .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-          .material_handle = VKR_MATERIAL_HANDLE_INVALID,
       },
       {
           .range_id = 1,
@@ -234,7 +236,6 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
           .material_name = string8_lit("material.second"),
           .shader_override = string8_lit("shader.second"),
           .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT,
-          .material_handle = VKR_MATERIAL_HANDLE_INVALID,
       },
   };
   VkrMeshSourceNode source_nodes[3] = {
@@ -361,7 +362,7 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
          decoded.mesh_buffer.decodes[1].position_bias[0]);
   const uint32_t *decoded_indices = decoded.mesh_buffer.indices;
   for (uint32_t range_index = 0; range_index < 2u; ++range_index) {
-    const VkrMeshLoaderSubmeshRange *range = &decoded.ranges.data[range_index];
+    const VkrGeometryUploadRange *range = &decoded.ranges.data[range_index];
     for (uint32_t i = 0; i < range->index_count; ++i) {
       const uint32_t vertex_index = decoded_indices[range->first_index + i];
       assert(vertex_index < decoded.mesh_buffer.vertex_count);
@@ -376,7 +377,7 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   }
 
   static const char loader_artifact_path[] = "build/vkr_mesh_cooked_loader.vkb";
-  VkrMeshLoaderSubmeshRange loader_range = ranges[0];
+  VkrGeometryUploadRange loader_range = ranges[0];
   loader_range.material_name = (String8){0};
   loader_range.shader_override = (String8){0};
   VkrMeshCookedEncodeInfo loader_info = info;
@@ -598,7 +599,7 @@ test_collect_triangle_centroids(const VkrMeshLoaderResult *result,
   uint32_t triangle = 0;
   for (uint64_t range_index = 0; range_index < result->submeshes.length;
        ++range_index) {
-    const VkrMeshLoaderSubmeshRange *range =
+    const VkrGeometryUploadRange *range =
         &result->submeshes.data[range_index];
     for (uint32_t i = 0; i < range->index_count; i += 3u) {
       const VkrPackedVec3 a = test_mesh_result_position(
@@ -617,8 +618,8 @@ test_collect_triangle_centroids(const VkrMeshLoaderResult *result,
   qsort(out_centroids, triangle, sizeof(*out_centroids), test_centroid_compare);
 }
 
-static void test_mesh_source_optimization_is_mandatory(void) {
-  printf("  Running test_mesh_source_optimization_is_mandatory...\n");
+static void test_cooked_optimization_preserves_triangles(void) {
+  printf("  Running test_cooked_optimization_preserves_triangles...\n");
   static const char source_path[] = "build/vkr_mesh_runtime_opt.obj";
   static const char sidecar_path[] = "build/vkr_mesh_runtime_opt.vkb";
   static const char source[] = "o grid\n"
@@ -641,7 +642,10 @@ static void test_mesh_source_optimization_is_mandatory(void) {
   assert(fclose(file) == 0);
 
   Arena *scratch_arena = arena_create(MB(16), MB(2));
-  assert(scratch_arena != NULL);
+  Arena *source_arena = arena_create(MB(16), MB(2));
+  assert(scratch_arena != NULL && source_arena != NULL);
+  VkrAllocator source_allocator = {.ctx = source_arena};
+  assert(vkr_allocator_arena(&source_allocator));
   VkrAllocator scratch = {.ctx = scratch_arena};
   assert(vkr_allocator_arena(&scratch));
   VkrArenaPool arena_pool = {0};
@@ -655,10 +659,18 @@ static void test_mesh_source_optimization_is_mandatory(void) {
   VkrResourceHandleInfo first_handle = {0};
   VkrResourceHandleInfo second_handle = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  assert(loader.load(&loader, string8_lit(source_path), &scratch, &first_handle,
-                     &error));
+  VkrMeshCookStats stats = {0};
+  assert(vkr_mesh_cook_source(string8_lit(source_path),
+                              string8_lit(sidecar_path), &source_allocator,
+                              &scratch, &stats, &error));
+  assert(!loader.load(&loader, string8_lit(source_path), &scratch,
+                      &first_handle, &error));
+  assert(arena_pool.pool.allocated == 0u);
   error = VKR_RENDERER_ERROR_NONE;
-  assert(loader.load(&loader, string8_lit(source_path), &scratch,
+  assert(loader.load(&loader, string8_lit(sidecar_path), &scratch,
+                     &first_handle, &error));
+  error = VKR_RENDERER_ERROR_NONE;
+  assert(loader.load(&loader, string8_lit(sidecar_path), &scratch,
                      &second_handle, &error));
   assert(arena_pool.pool.allocated == 2u);
 
@@ -666,9 +678,9 @@ static void test_mesh_source_optimization_is_mandatory(void) {
   const VkrMeshLoaderResult *second = second_handle.as.mesh;
   assert(first->mesh_buffer.index_count == second->mesh_buffer.index_count);
   assert(first->submeshes.length == second->submeshes.length);
-  assert(first->load_metrics.runtime_optimized);
-  assert(second->load_metrics.runtime_optimized);
-  assert(first->load_metrics.preparation == VKR_MESH_PREPARATION_SOURCE);
+  assert(!first->load_metrics.runtime_optimized);
+  assert(!second->load_metrics.runtime_optimized);
+  assert(first->load_metrics.preparation == VKR_MESH_PREPARATION_COOKED);
   assert(first->load_metrics.vertices_transformed_after <=
          first->load_metrics.vertices_transformed_before);
   assert(first->load_metrics.bytes_fetched_after <=
@@ -697,19 +709,22 @@ static void test_mesh_source_optimization_is_mandatory(void) {
   }
   FilePath sidecar =
       file_path_create(sidecar_path, &scratch, FILE_PATH_TYPE_RELATIVE);
-  assert(!file_exists(&sidecar));
+  assert(file_exists(&sidecar));
 
-  loader.unload(&loader, &first_handle, string8_lit(source_path));
-  loader.unload(&loader, &second_handle, string8_lit(source_path));
+  loader.unload(&loader, &first_handle, string8_lit(sidecar_path));
+  loader.unload(&loader, &second_handle, string8_lit(sidecar_path));
   assert(arena_pool.pool.allocated == 0u);
   vkr_arena_pool_destroy(&scratch, &arena_pool);
   remove(source_path);
+  remove(sidecar_path);
+  vkr_allocator_release_global_accounting(&source_allocator);
+  arena_destroy(source_arena);
   vkr_allocator_release_global_accounting(&scratch);
   arena_destroy(scratch_arena);
-  printf("  test_mesh_source_optimization_is_mandatory PASSED\n");
+  printf("  test_cooked_optimization_preserves_triangles PASSED\n");
 }
 
-static void test_metadata_only_gltf_source_and_cooked_load(void) {
+static void test_metadata_only_gltf_cooked_load_without_source(void) {
   static const char source_path[] = "build/vkr_metadata_nodes.gltf";
   static const char cooked_path[] = "build/vkr_metadata_nodes.vkb";
   static const char json[] =
@@ -748,7 +763,7 @@ static void test_metadata_only_gltf_source_and_cooked_load(void) {
   assert(stats.range_count == 0 && stats.vertex_count == 0 &&
          stats.decoded_bytes == 0);
   for (uint32_t pass = 0; pass < 2; ++pass) {
-    String8 path = pass ? string8_lit(cooked_path) : string8_lit(source_path);
+    const String8 path = string8_lit(cooked_path);
     VkrResourceHandleInfo handle = {0};
     assert(loader.load(&loader, path, &scratch, &handle, &error));
     const VkrMeshLoaderResult *mesh = handle.as.mesh;
@@ -772,7 +787,7 @@ static void test_metadata_only_gltf_source_and_cooked_load(void) {
   vkr_allocator_release_global_accounting(&scratch);
   arena_destroy(source_arena);
   arena_destroy(scratch_arena);
-  printf("  test_metadata_only_gltf_source_and_cooked_load PASSED\n");
+  printf("  test_metadata_only_gltf_cooked_load_without_source PASSED\n");
 }
 
 bool32_t run_mesh_cooked_tests(void) {
@@ -780,8 +795,8 @@ bool32_t run_mesh_cooked_tests(void) {
   test_packed_geometry_validation_contract();
   test_tangent_generation_repairs_parallel_accumulation();
   test_mesh_cooked_round_trip_and_malformed_boundaries();
-  test_mesh_source_optimization_is_mandatory();
-  test_metadata_only_gltf_source_and_cooked_load();
+  test_cooked_optimization_preserves_triangles();
+  test_metadata_only_gltf_cooked_load_without_source();
   printf("--- Mesh Cooked Tests Completed ---\n");
   return true_v;
 }

@@ -41,7 +41,7 @@
         "scale": [1.0, 1.0, 1.0]
       },
       "mesh": {
-        "path": "assets/models/bistro-lights.gltf",
+        "path": "assets/models/bistro-lights.vkb",
         "pipeline_domain": "world"
       }
     }

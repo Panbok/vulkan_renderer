@@ -12,17 +12,17 @@ effects plan therefore does not describe a partially integrated feature.
 ## Current implementation baseline
 
 Scene entities own mesh-instance association through
-[the scene system](../../lib/src/renderer/systems/vkr_scene_system.h), while
-[mesh instances](../../lib/src/renderer/systems/vkr_mesh_manager.h) reference
+[the scene system](../../runtime/src/renderer/systems/vkr_scene_system.h), while
+[mesh instances](../../runtime/src/renderer/systems/vkr_mesh_manager.h) reference
 immutable published geometry. The packed-geometry contract states that routing
 and deformation change only through the publisher in
-[vkr_resources.h](../../lib/src/renderer/resources/vkr_resources.h).
+[vkr_resources.h](../../runtime/src/renderer/resources/vkr_resources.h).
 
 Compute is already production infrastructure: the graph has typed compute
-passes in [vkr_render_graph.h](../../lib/src/renderer/vkr_render_graph.h), and
+passes in [vkr_render_graph.h](../../renderer/src/vkr_render_graph.h), and
 the Vulkan graph maps GPU culling, deferred shading, temporal, post, and HZB
 work to compute executors in
-[vkr_vulkan_graph.c](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c). A new
+[vkr_vulkan_graph.c](../../renderer/src/vulkan/vkr_vulkan_graph.c). A new
 effect must not treat compute support as a prerequisite.
 
 ## Proposed gap

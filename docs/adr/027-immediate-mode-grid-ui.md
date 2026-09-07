@@ -237,12 +237,12 @@ layout behavior grids cannot express.
 
 ![Windows UI at 100% scale with icon edge coverage](../../assets/editor/ui-antialiasing-windows.png)
 
-- [UI state and lowering](../../lib/src/renderer/systems/vkr_ui_system.c)
-- [grid solver](../../lib/src/core/ui/vkr_ui_grid.c)
-- [dock tree](../../lib/src/core/ui/vkr_ui_dock.c)
+- [UI state and lowering](../../runtime/src/renderer/systems/vkr_ui_system.c)
+- [grid solver](../../runtime/src/core/ui/vkr_ui_grid.c)
+- [dock tree](../../runtime/src/core/ui/vkr_ui_dock.c)
 - [editor UI caller](../../editor/src/editor_ui.c)
 
 - [editor scene panels](../../editor/src/editor_scene_panels.c)
-- [edit journal and sidecars](../../lib/src/renderer/systems/vkr_scene_edit.c)
+- [edit journal and sidecars](../../runtime/src/renderer/systems/vkr_scene_edit.c)
 - [Console](../../editor/src/editor_console.c)
 - [Bakery](../../editor/src/editor_bakery.c)

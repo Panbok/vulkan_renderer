@@ -1,0 +1,498 @@
+#pragma once
+
+#include "containers/array.h"
+#include "containers/str.h"
+#include "containers/vkr_hashtable.h"
+#include "defines.h"
+#include "filesystem/filesystem.h"
+#include "math/mat.h"
+#include "math/vkr_transform.h"
+#include "vkr_buffer.h"
+#include "vkr_renderer.h"
+
+// =============================================================================
+// Scene resource handles (runtime scene instances owned by resource system)
+// =============================================================================
+
+typedef struct VkrSceneRuntime VkrSceneRuntime;
+typedef VkrSceneRuntime *VkrSceneHandle;
+
+#define VKR_SCENE_HANDLE_INVALID ((VkrSceneHandle)0)
+
+#include "vkr_render_resources.h"
+
+typedef struct VkrGeometry {
+  uint32_t id;
+  uint32_t pipeline_id;
+  uint32_t generation;
+
+  uint32_t vertex_size;
+  uint32_t vertex_count;
+  uint32_t index_size;
+  uint32_t index_count;
+
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
+
+  char name[GEOMETRY_NAME_MAX_LENGTH];
+  char material_name[MATERIAL_NAME_MAX_LENGTH];
+} VkrGeometry;
+Array(VkrGeometry);
+
+typedef struct VkrTexture {
+  VkrTextureDescription description;
+  VkrTextureOpaqueHandle handle;
+  FilePath file_path;
+  uint8_t *image;
+  uint64_t resident_bytes;
+} VkrTexture;
+Array(VkrTexture);
+
+// =============================================================================
+// Mesh/SubMesh - app/scene-side draw units
+// =============================================================================
+
+typedef enum VkrResourceLoadState {
+  VKR_RESOURCE_LOAD_STATE_INVALID = 0,
+  VKR_RESOURCE_LOAD_STATE_PENDING_CPU,
+  VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES,
+  VKR_RESOURCE_LOAD_STATE_PENDING_GPU,
+  VKR_RESOURCE_LOAD_STATE_READY,
+  VKR_RESOURCE_LOAD_STATE_FAILED,
+  VKR_RESOURCE_LOAD_STATE_CANCELED
+} VkrResourceLoadState;
+
+typedef enum VkrMeshLoadingState {
+  VKR_MESH_LOADING_STATE_NOT_LOADED = 0,
+  VKR_MESH_LOADING_STATE_PENDING = 1,
+  VKR_MESH_LOADING_STATE_LOADED = 2,
+  VKR_MESH_LOADING_STATE_FAILED = 3
+} VkrMeshLoadingState;
+
+typedef struct VkrSubMesh {
+  VkrGeometryHandle geometry;
+  VkrMaterialHandle material;
+  VkrPipelineDomain pipeline_domain;
+  String8 shader_override;
+  /** Stable identifier for a sub-range inside shared geometry buffers. */
+  uint32_t range_id;
+  /** Index buffer range; index_count==0 implies full-geometry draw. */
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+  /** Optional opaque-only range in a compacted index buffer. */
+  uint32_t opaque_first_index;
+  uint32_t opaque_index_count;
+  int32_t opaque_vertex_offset;
+  /** Local-space bounds for the draw range (center + extents). */
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
+  bool8_t owns_geometry;
+  bool8_t owns_material;
+  uint64_t last_render_frame;
+} VkrSubMesh;
+Array(VkrSubMesh);
+
+/**
+ * @brief Whether a caster may move without an explicit invalidating call.
+ *
+ * This is a contract, not an observation. `STATIC` asserts that the transform,
+ * geometry, deformation, and material routing cannot change except through an
+ * API that bumps the owning generation. "Has not moved recently" is not a
+ * static classification, and misclassifying a mover as static produces a stale
+ * shadow that nothing will correct.
+ *
+ * Unknown and runtime-created instances default to `DYNAMIC`, so the safe
+ * answer is the one you get by saying nothing.
+ */
+typedef enum VkrShadowCasterMobility {
+  VKR_SHADOW_CASTER_MOBILITY_DYNAMIC = 0,
+  VKR_SHADOW_CASTER_MOBILITY_STATIC = 1,
+} VkrShadowCasterMobility;
+
+typedef struct VkrMesh {
+  VkrTransform transform;
+  Mat4 model;
+  Array_VkrSubMesh submeshes;
+  VkrMeshLoadingState loading_state;
+  uint32_t render_id;
+  uint32_t temporal_generation;
+  uint32_t live_index; // Index in mesh manager's active mesh list.
+  bool8_t visible;
+
+  // Bounding sphere for frustum culling
+  bool8_t bounds_valid;
+  Vec3 bounds_local_center; // Local-space bounding sphere center
+  float32_t bounds_local_radius;
+  Vec3 bounds_world_center; // Cached world-space center (updated with model)
+  float32_t bounds_world_radius;
+
+  /** Shadow-caster mobility contract; see VkrShadowCasterMobility. */
+  VkrShadowCasterMobility shadow_mobility;
+} VkrMesh;
+Array(VkrMesh);
+
+// =============================================================================
+// Mesh Asset Types (Shared per unique mesh file + overrides)
+// =============================================================================
+
+/**
+ * @brief Handle to a shared mesh asset.
+ *
+ * Assets store geometry, material, and draw range data that is shared across
+ * all instances referencing the same mesh file with identical overrides.
+ */
+typedef struct VkrMeshAssetHandle {
+  uint32_t id;
+  uint32_t generation;
+} VkrMeshAssetHandle;
+
+#define VKR_MESH_ASSET_HANDLE_INVALID                                          \
+  (VkrMeshAssetHandle) { .id = 0, .generation = VKR_INVALID_ID }
+
+/**
+ * @brief Submesh data stored in a mesh asset (shared across instances).
+ *
+ * Contains geometry, material, and draw range information that is identical
+ * for all instances using this asset. Per-instance state (pipeline handles,
+ * instance descriptors) is stored separately in VkrMeshSubmeshInstanceState.
+ */
+typedef struct VkrMeshAssetSubmesh {
+  uint32_t geometry_submesh_index; // Native range within the shared geometry.
+  VkrGeometryHandle geometry;
+  VkrMaterialHandle material;
+  VkrPipelineDomain pipeline_domain;
+  String8 shader_override; // Owned stable copy
+
+  uint32_t range_id;
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+
+  uint32_t opaque_first_index;
+  uint32_t opaque_index_count;
+  int32_t opaque_vertex_offset;
+
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
+
+  bool8_t owns_geometry;
+  bool8_t owns_material;
+} VkrMeshAssetSubmesh;
+Array(VkrMeshAssetSubmesh);
+
+typedef enum VkrMeshPreparationKind {
+  VKR_MESH_PREPARATION_SOURCE = 0,
+  VKR_MESH_PREPARATION_COOKED = 1,
+} VkrMeshPreparationKind;
+
+typedef struct VkrMeshLoadMetrics {
+  uint64_t source_bytes;
+  uint64_t cooked_bytes;
+  uint64_t decoded_bytes;
+  uint64_t upload_bytes;
+  uint64_t analyzed_triangles;
+  uint64_t analyzed_vertex_bytes_before;
+  uint64_t analyzed_vertex_bytes_after;
+  uint64_t analyzed_vertices;
+  uint64_t vertices_transformed_before;
+  uint64_t vertices_transformed_after;
+  uint64_t bytes_fetched_before;
+  uint64_t bytes_fetched_after;
+  uint32_t vertex_count;
+  uint32_t index_count;
+  uint32_t range_count;
+  VkrMeshPreparationKind preparation;
+  bool8_t runtime_optimized;
+} VkrMeshLoadMetrics;
+
+/**
+ * @brief Shared mesh asset storing geometry/material data for multiple
+ * instances.
+ *
+ * A mesh asset is created once per unique (mesh_path, pipeline_domain,
+ * shader_override) combination. Multiple mesh instances can reference the same
+ * asset, sharing the submesh array and local bounds.
+ *
+ * @note Strings (mesh_path, shader_override) are owned copies allocated from a
+ * freeable allocator and must be freed when the asset is destroyed.
+ */
+typedef struct VkrMeshAsset {
+  uint32_t id;
+  uint32_t generation;
+
+  uint32_t source_mesh_index_plus_one;
+  String8 mesh_path; // Owned (freeable allocator)
+  VkrPipelineDomain domain;
+  String8 shader_override; // Owned (freeable allocator)
+  char *key_string;        // Owned key for asset_by_key removal
+
+  Array_VkrMeshAssetSubmesh submeshes;
+  VkrMeshLoadMetrics load_metrics;
+
+  bool8_t bounds_valid;
+  Vec3 bounds_local_center;
+  float32_t bounds_local_radius;
+
+  /**
+   * Asset readiness state for async mesh loading.
+   *
+   * `PENDING` means submesh/material/geometry payload is not finalized yet.
+   * `FAILED` keeps `last_error` until the asset is released/reloaded.
+   */
+  VkrMeshLoadingState loading_state;
+  VkrRendererError last_error;
+  uint64_t pending_request_id; // Resource-system request id while pending.
+
+  uint32_t ref_count; // Number of live instances referencing this asset
+} VkrMeshAsset;
+Array(VkrMeshAsset);
+
+// =============================================================================
+// Mesh Instance Types (Per-entity state)
+// =============================================================================
+
+/**
+ * @brief Handle to a mesh instance.
+ */
+
+
+
+
+/**
+ * @brief Per-entity mesh instance referencing a shared asset.
+ *
+ * Stores transform and visibility. The actual
+ * geometry/material data is retrieved from the referenced asset.
+ */
+typedef struct VkrMeshInstance {
+  VkrMeshAssetHandle asset;
+  uint32_t generation; // Handle generation for stale-handle detection.
+  uint32_t live_index; // Index in mesh manager's active instance list.
+
+  Mat4 model;
+  uint32_t render_id;
+  bool8_t visible;
+  VkrMeshLoadingState loading_state;
+
+  bool8_t bounds_valid;
+  Vec3 bounds_world_center;
+  float32_t bounds_world_radius;
+
+  /** Shadow-caster mobility contract; see VkrShadowCasterMobility. */
+  VkrShadowCasterMobility shadow_mobility;
+} VkrMeshInstance;
+Array(VkrMeshInstance);
+
+// =============================================================================
+// Font resource types (decoupled from systems)
+// =============================================================================
+
+/**
+ * @brief A font handle.
+ * @param id The font id.
+ * @param generation The font generation.
+ */
+typedef struct VkrFontHandle {
+  uint32_t id;         // The font id.
+  uint32_t generation; // The font generation.
+} VkrFontHandle;
+
+#define VKR_FONT_HANDLE_INVALID                                                \
+  (VkrFontHandle) { .id = 0, .generation = VKR_INVALID_ID }
+
+/**
+ * @brief A font glyph.
+ * @param codepoint The codepoint of the glyph.
+ * @param x The x position of the glyph.
+ * @param y The y position of the glyph.
+ * @param width The width of the glyph.
+ * @param height The height of the glyph.
+ * @param x_offset The x offset of the glyph.
+ * @param y_offset The y offset of the glyph.
+ * @param x_advance The x advance of the glyph.
+ * @param page_id The page id of the glyph.
+ */
+typedef struct VkrFontGlyph {
+  uint32_t codepoint; // The codepoint of the glyph.
+  uint16_t x;         // The x position of the glyph.
+  uint16_t y;         // The y position of the glyph.
+  uint16_t width;     // The width of the glyph.
+  uint16_t height;    // The height of the glyph.
+  int16_t x_offset;   // The x offset of the glyph.
+  int16_t y_offset;   // The y offset of the glyph.
+  int16_t x_advance;  // The x advance of the glyph.
+  uint8_t page_id;    // The page id of the glyph.
+} VkrFontGlyph;
+Array(VkrFontGlyph);
+Vector(VkrFontGlyph);
+
+/**
+ * @brief A font kerning.
+ * @param codepoint_0 The first codepoint.
+ * @param codepoint_1 The second codepoint.
+ * @param amount The kerning amount.
+ */
+typedef struct VkrFontKerning {
+  uint32_t codepoint_0; // The first codepoint.
+  uint32_t codepoint_1; // The second codepoint.
+  int16_t amount;       // The kerning amount.
+} VkrFontKerning;
+Array(VkrFontKerning);
+Vector(VkrFontKerning);
+
+/**
+ * @brief MTSDF glyph data (normalized coordinates).
+ */
+typedef struct VkrMtsdfGlyph {
+  uint32_t glyph_id; // Stable artifact glyph identifier.
+  uint32_t unicode;
+  float32_t advance; // Normalized advance
+
+  // Plane bounds (normalized quad in EM space)
+  float32_t plane_left;
+  float32_t plane_bottom;
+  float32_t plane_right;
+  float32_t plane_top;
+
+  // Atlas bounds (pixel coordinates in atlas)
+  float32_t atlas_left;
+  float32_t atlas_bottom;
+  float32_t atlas_right;
+  float32_t atlas_top;
+
+  // Normalized sampling bounds after applying the authored Y convention.
+  float32_t uv_left;
+  float32_t uv_bottom;
+  float32_t uv_right;
+  float32_t uv_top;
+
+  bool8_t has_geometry; // false for space-like glyphs
+} VkrMtsdfGlyph;
+Array(VkrMtsdfGlyph);
+Vector(VkrMtsdfGlyph);
+
+/** A unique cooked glyph record retained in artifact glyph-ID order. */
+typedef struct VkrFontGlyphId {
+  uint32_t glyph_id;
+  uint32_t page_index;
+  bool8_t has_geometry;
+  float32_t advance;
+  float32_t plane_left;
+  float32_t plane_bottom;
+  float32_t plane_right;
+  float32_t plane_top;
+  float32_t uv_left;
+  float32_t uv_bottom;
+  float32_t uv_right;
+  float32_t uv_top;
+} VkrFontGlyphId;
+Array(VkrFontGlyphId);
+
+/** Sorted integer map from a Unicode codepoint to an artifact glyph ID. */
+typedef struct VkrFontCodepointMapEntry {
+  uint32_t codepoint;
+  uint32_t glyph_id;
+  uint32_t glyph_index; // Derived index into glyphs_by_id.
+} VkrFontCodepointMapEntry;
+Array(VkrFontCodepointMapEntry);
+
+/** Kerning retained in the cooked artifact's glyph-ID domain. */
+typedef struct VkrFontGlyphKerning {
+  uint32_t left_glyph_id;
+  uint32_t right_glyph_id;
+  float32_t amount;
+} VkrFontGlyphKerning;
+Array(VkrFontGlyphKerning);
+
+/**
+ * @brief A font type.
+ * @param VKR_FONT_TYPE_BITMAP The bitmap font type.
+ * @param VKR_FONT_TYPE_SYSTEM The system font type.
+ * @param VKR_FONT_TYPE_MTSDF The MTSDF (multi-channel signed distance field)
+ * font type.
+ */
+typedef enum VkrFontType {
+  VKR_FONT_TYPE_BITMAP, // The bitmap font type.
+  VKR_FONT_TYPE_SYSTEM, // The system font type.
+  VKR_FONT_TYPE_MTSDF   // The MTSDF font type.
+} VkrFontType;
+
+/**
+ * @brief A font.
+ * @param id The font id.
+ * @param generation The font generation.
+ * @param type The font type.
+ * @param face The font face.
+ * @param size The font size.
+ * @param page_count The number of texture pages.
+ * @param atlas The primary atlas texture handle (page 0).
+ * @param atlas_pages The per-page atlas handles (indexed by page id).
+ */
+typedef struct VkrFont {
+  uint32_t id;          // The font id.
+  uint32_t generation;  // The font generation.
+  VkrFontType type;     // The font type.
+  char face[256];       // The font face.
+  uint32_t size;        // The font size.
+  int32_t line_height;  // The line height.
+  int32_t baseline;     // The baseline.
+  int32_t ascent;       // Distance from baseline to top of tallest glyph
+  int32_t descent;      // Distance from baseline to bottom (typically negative)
+  int32_t atlas_size_x; // The atlas size x.
+  int32_t atlas_size_y; // The atlas size y.
+  uint32_t page_count;  // Number of texture pages.
+  VkrTextureHandle atlas;              // Page 0 atlas handle.
+  Array_VkrTextureHandle atlas_pages;  // Page handles, indexed by page id.
+  VkrHashTable_uint32_t glyph_indices; // Codepoint -> glyph index lookup.
+  Array_VkrFontGlyph glyphs;           // The font glyphs.
+  Array_VkrFontKerning kernings;       // The font kernings.
+  float32_t tab_x_advance;             // The tab x advance.
+  Array_VkrMtsdfGlyph mtsdf_glyphs;    // MTSDF glyph metadata (if any).
+  Array_VkrFontGlyphId glyphs_by_id;   // Unique cooked glyph records.
+  Array_VkrFontCodepointMapEntry codepoint_map; // Sorted codepoint map.
+  Array_VkrFontGlyphKerning glyph_kernings;     // Glyph-ID kerning records.
+  uint32_t fallback_glyph_id;    // Cooked fallback glyph identifier.
+  uint32_t fallback_glyph_index; // Derived index into glyphs_by_id.
+  float32_t em_line_height;
+  float32_t em_ascender;
+  float32_t em_descender;
+  float32_t em_underline_y;
+  float32_t em_underline_thickness;
+  float32_t sdf_distance_range; // MTSDF distance range for shader.
+  Vec2 mtsdf_unit_range;        // Distance range in normalized UVs.
+  float32_t em_size;            // MTSDF EM size used for atlas.
+} VkrFont;
+Array(VkrFont);
+
+/**
+ * @brief A bitmap font page.
+ * @param id The page id.
+ * @param file The page file.
+ */
+typedef struct VkrBitmapFontPage {
+  uint8_t id;     // The page id.
+  char file[256]; // The page file.
+} VkrBitmapFontPage;
+Array(VkrBitmapFontPage);
+Vector(VkrBitmapFontPage);
+
+/**
+ * @brief A bitmap font resource data.
+ * @param font_id The font id.
+ * @param pages The pages.
+ */
+typedef struct VkrBitmapFontResourceData {
+  uint32_t font_id;              // The font id.
+  Array_VkrBitmapFontPage pages; // The pages.
+} VkrBitmapFontResourceData;
+Array(VkrBitmapFontResourceData);
+
+typedef struct VkrSystemFontResourceData {
+  uint32_t font_id; // The font id.
+  char file[256];   // The page file.
+} VkrSystemFontResourceData;
+Array(VkrSystemFontResourceData);

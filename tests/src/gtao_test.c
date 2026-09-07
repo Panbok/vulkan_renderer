@@ -1,7 +1,7 @@
 #include "gtao_test.h"
 
-#include "renderer/vkr_gtao.h"
-#include "renderer/vkr_renderer_internal.h"
+#include "vkr_gtao.h"
+#include "vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <math.h>

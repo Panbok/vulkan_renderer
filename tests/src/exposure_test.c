@@ -1,8 +1,8 @@
 #include "exposure_test.h"
 
-#include "renderer/vkr_exposure.h"
-#include "renderer/vkr_frame_input.h"
-#include "renderer/vkr_renderer_internal.h"
+#include "vkr_exposure.h"
+#include "vkr_frame_input.h"
+#include "vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <float.h>

@@ -1,7 +1,7 @@
 #include "bloom_test.h"
 
-#include "renderer/vkr_bloom.h"
-#include "renderer/vkr_renderer_internal.h"
+#include "vkr_bloom.h"
+#include "vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <math.h>

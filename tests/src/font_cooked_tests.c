@@ -5,7 +5,7 @@
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
-#include "renderer/resources/loaders/vkr_font_cooked.h"
+#include "assets/vkr_font_encode.h"
 
 #include <assert.h>
 #include <math.h>

@@ -1,7 +1,7 @@
 #include "metal_material_test.h"
 
-#include "renderer/metal/vkr_metal_material_table.h"
-#include "renderer/vkr_gpu_slot_table.h"
+#include "metal/vkr_metal_material_table.h"
+#include "vkr_gpu_slot_table.h"
 
 #include <assert.h>
 #include <stdio.h>

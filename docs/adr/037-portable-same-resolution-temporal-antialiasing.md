@@ -147,7 +147,7 @@ signals or unacceptable rejection/ghosting.
 
 ## Implementation
 
-[`vkr_temporal.c`](../../lib/src/renderer/vkr_temporal.c),
-[`vkr_vulkan_deferred.c`](../../lib/src/renderer/vulkan/vkr_vulkan_deferred.c),
-[`gpu_draws.metal`](../../lib/src/renderer/shaders/metal/msl/world/gpu_draws.metal), and
-[`deferred.slang`](../../lib/src/renderer/shaders/vulkan/slang/world/deferred.slang).
+[`vkr_temporal.c`](../../renderer/src/vkr_temporal.c),
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c),
+[`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal), and
+[`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang).

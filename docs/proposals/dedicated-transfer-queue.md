@@ -39,7 +39,7 @@ throughput benefit is assumed before those results exist.
 
 ## Code baseline
 
-- [Vulkan publication](../../lib/src/renderer/vulkan/vkr_vulkan_publisher.c)
-- [Vulkan transfer graph passes](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c)
-- [resource finalization](../../lib/src/renderer/systems/vkr_resource_system.c)
-- [Metal publication](../../lib/src/renderer/metal/vkr_metal_packet_renderer.m)
+- [Vulkan publication](../../renderer/src/vulkan/vkr_vulkan_publisher.c)
+- [Vulkan transfer graph passes](../../renderer/src/vulkan/vkr_vulkan_graph.c)
+- [resource finalization](../../runtime/src/renderer/systems/vkr_resource_system.c)
+- [Metal publication](../../renderer/src/metal/vkr_metal_packet_renderer.m)

@@ -52,7 +52,7 @@ A representative quality/cost comparison justifies enabling it by default.
 
 ## Implementation
 
-[`vkr_shadow_system.c`](../../lib/src/renderer/systems/vkr_shadow_system.c),
-[`vkr_vulkan_deferred.c`](../../lib/src/renderer/vulkan/vkr_vulkan_deferred.c),
-[`vkr_vulkan_renderer.c`](../../lib/src/renderer/vulkan/vkr_vulkan_renderer.c), and
-[`vkr_metal_packet_frame.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_frame.inc).
+[`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c),
+[`vkr_vulkan_renderer.c`](../../renderer/src/vulkan/vkr_vulkan_renderer.c), and
+[`vkr_metal_packet_frame.inc`](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc).

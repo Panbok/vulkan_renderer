@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-07
 authority: adr
 ---
 
@@ -18,7 +18,7 @@ history still require retained state.
 
 ## Decision
 
-Use `VkrFrameInput` version 30 with frame metadata, camera/lighting/settings and
+Use `VkrFrameInput` version 32 with frame metadata, camera/lighting/settings and
 typed optional world, shadow, skybox, UI, editor, picking and debug payloads.
 The application builds scene candidates, ordinary blend draws, UI geometry and
 world-text draws before rendering. Text edits apply through the text owner and
@@ -31,6 +31,26 @@ input no longer carries fields callers must zero so the renderer can overwrite
 them. CPU arrays remain caller-owned through `vkr_renderer_render_frame()`;
 generation identities refer to resources with independent GPU last-use lifetimes.
 A frame input is not a standalone serialized command buffer.
+
+`VkrApplicationHost` owns reusable window, input, event, timing and lifecycle
+work. Its callbacks carry caller-owned state, so applications do not provide
+link-time `application_update` or `application_on_*` overrides. The host may be
+used by a client that constructs its own render inputs. It dispatches
+`APPLICATION_INIT` once at the first run, after setting its running state; a
+host callback can suspend or close that run before the first frame. Host
+lifecycle callbacks run synchronously on the calling thread. Window/input
+callbacks run on the event worker and require caller synchronization; their
+state stays alive through host destruction. Independent event-manager
+observers still receive queued lifecycle notifications. The host invokes
+`APPLICATION_SHUTDOWN` only after initialization was dispatched, before its
+owner tears down resources visible to callbacks.
+
+`VkrStandardSceneRuntime` is an optional runtime consumer of that host. It owns
+the conventional scene, render assets, camera, lighting, shadow, UI and picking
+systems and builds the standard frame input. `vkr_sample_runtime` is separate
+sample control and presentation policy for the app and editor. A renderer-only
+client may instead own its loop and pass an optional `VkrNativeSurface` directly
+to `renderer_lib`; the renderer does not own a `VkrWindow`.
 
 `vkr_renderer_begin_frame(renderer, &config, &frame)` receives explicit shadow
 map dimensions, proves slot reuse and prepares the target. The returned `VkrFrame`
@@ -72,13 +92,15 @@ GPU completion and resource retirement. There is no dense per-slot submesh table
 
 ## Consequences
 
-The application owns scene-facing systems, frame scratch and `VkrFrameGlobals`.
+The standard scene runtime owns scene-facing systems, frame scratch and
+`VkrFrameGlobals`; a custom client can own equivalent state directly.
 `VkrRenderAssets` owns persistent assets, text, loaders and load scratch, borrowing
 the publisher from the longer-lived renderer. Scene extraction takes concrete
 subsystem inputs in `vkr_scene_frame`. The renderer owns acquisition, native
 resources and derived rendering state; it does not own scene or UI lifecycle.
 
-The application consumes resize events before acquisition. `target_generation`
+The application host dispatches resize events before acquisition. The standard
+scene runtime consumes its resize mailbox. `target_generation`
 lets it refresh UI target state and invalidate shadow fitting even when a recreated
 target has unchanged dimensions. Caller-owned scene/asset teardown proves GPU idle
 and preserves loader/publisher lifetimes under ADR-024.
@@ -102,13 +124,14 @@ become concrete requirements.
 
 ## Implementation
 
-[`vkr_frame_input.h`](../../lib/src/renderer/vkr_frame_input.h),
-[`vkr_frame_input.c`](../../lib/src/renderer/vkr_frame_input.c),
-[`vkr_prepared_frame.h`](../../lib/src/renderer/vkr_prepared_frame.h),
-[`vkr_renderer.h`](../../lib/src/renderer/vkr_renderer.h),
-[`vkr_renderer.c`](../../lib/src/renderer/vkr_renderer.c),
-[`vkr_scene_frame.c`](../../lib/src/renderer/systems/vkr_scene_frame.c), and
-[`application.h`](../../lib/src/application.h).
+[`vkr_frame_input.h`](../../renderer/src/vkr_frame_input.h),
+[`vkr_frame_input.c`](../../renderer/src/vkr_frame_input.c),
+[`vkr_prepared_frame.h`](../../renderer/src/vkr_prepared_frame.h),
+[`vkr_renderer.h`](../../renderer/src/vkr_renderer.h),
+[`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
+[`vkr_scene_frame.c`](../../runtime/src/renderer/systems/vkr_scene_frame.c), and
+[`vkr_application_host.h`](../../runtime/src/application/vkr_application_host.h),
+and [`vkr_standard_scene_runtime.h`](../../runtime/src/application/vkr_standard_scene_runtime.h).
 
 ## Evidence boundary
 
@@ -137,3 +160,15 @@ including a Windows preprocessor configuration with temporary Win32 type shims.
 This does not validate Windows SDK ABI, linking or Vulkan execution. Native Vulkan,
 editor interaction, in-process scene-reload memory plateaus and device-fault
 injection remain unrun.
+
+The subsequent library split passes independent renderer/runtime library builds,
+app/editor Release builds, and the same two serial Metal API-validation cases.
+The shipped app has no glTF importer, offline mesh/font cooker, mesh optimizer
+or KTX texture encoder symbols. Runtime decoding, transcode caches and dynamic
+system-font rasterization remain supported.
+
+Bistro loads resolved lights from its cooked artifact and produces color/depth
+captures. No compatible baseline is available for this split, so those captures
+do not establish pixel equivalence. Its profile passes opaque-draw, publication
+and resolve assertions; the two manual-exposure telemetry assertions remain
+unavailable. Native Windows Vulkan execution remains unrun.

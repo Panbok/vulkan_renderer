@@ -77,6 +77,6 @@ required beyond the accepted local-shadow pool.
 
 ## Implementation
 
-[`vkr_lighting_system.c`](../../lib/src/renderer/systems/vkr_lighting_system.c),
-[`vkr_frame_input.h`](../../lib/src/renderer/vkr_frame_input.h),
-[`vkr_gpu_abi.h`](../../lib/src/renderer/vkr_gpu_abi.h), and production world/deferred shaders.
+[`vkr_lighting_system.c`](../../runtime/src/renderer/systems/vkr_lighting_system.c),
+[`vkr_frame_input.h`](../../renderer/src/vkr_frame_input.h),
+[`vkr_gpu_abi.h`](../../renderer/src/vkr_gpu_abi.h), and production world/deferred shaders.
