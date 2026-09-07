@@ -868,7 +868,7 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
     float3 normal_dy = ddy(normal);
     float variance =
         0.25f * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
-    roughness = sqrt(saturate(roughness * roughness + min(variance, 0.25f)));
+    roughness = vkr_ggx_filter_roughness(roughness, variance);
     if ((material.flags & 4u) != 0u)
     {
         uint texture_index = NonUniformResourceIndex(material.emissive_texture);

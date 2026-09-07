@@ -49,7 +49,7 @@ static float4 vkr_metal_packet_shade(
   float3 normal_dy = dfdy(normal);
   float variance =
       0.25 * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
-  roughness = sqrt(saturate(roughness * roughness + min(variance, 0.25)));
+  roughness = vkr_ggx_filter_roughness(roughness, variance);
   if ((material.flags & 4u) != 0u) {
     emissive *= material.emissive_texture
                     .sample(material.emissive_sampler, input.texcoord)

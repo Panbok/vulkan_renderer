@@ -11,6 +11,15 @@ float vkr_direct_half_vector_inverse_length(float no_l, float3 half_vector)
     return rsqrt(length_squared);
 }
 
+// Materials store perceptual roughness r; GGX width is alpha = r^2.
+// Normal variance broadens alpha^2, then converts back to perceptual roughness.
+float vkr_ggx_filter_roughness(float roughness, float normal_variance)
+{
+    float alpha = roughness * roughness;
+    return sqrt(sqrt(saturate(alpha * alpha + min(normal_variance, 0.25f))));
+}
+
+
 // Shared GGX normal distribution for direct lighting and the IBL sampling PDF.
 float vkr_ggx_distribution(float no_h, float roughness)
 {

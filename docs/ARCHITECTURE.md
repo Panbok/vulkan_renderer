@@ -374,7 +374,10 @@ Camera or scene changes immediately restore current FSR RGB. The output uses the
 five-instance graph history pool, with private sample age in alpha; fullscreen
 conversion keeps final FSR alpha opaque. SDK-private accumulation remains active.
 Separating optical composition from reactivity reduces motion variation around
-glass. Opaque thin-edge motion remains a tuning gap. The tested camera
+glass. Forward/deferred specular antialiasing now shares the perceptual-to-GGX
+roughness conversion on both backends; normal variance broadens squared GGX
+width. Its measured benefit in the supplied Bistro view is small, and opaque
+thin-edge motion remains a tuning gap. The tested camera
 rotation has valid, correctly scaled opaque/transmission motion; see ADR-052 for the bounded evidence.
 FSR's SDK-private resources and classic descriptors remain behind a C bridge;
 the graph restores Vulkan descriptor buffers and graphics/compute offsets afterward.

@@ -248,6 +248,23 @@ the squared denominator. The zero-roughness prefilter retains its explicit
 source-mip-zero behavior. Changes to the distribution and importance-sampling PDF
 must remain consistent.
 
+Forward and deferred material lighting share `vkr_ggx_filter_roughness` on both
+backends. Material roughness is perceptual: GGX width is `alpha = roughness^2`.
+The filter adds capped normal variance to `alpha^2` and takes a fourth root to
+return perceptual roughness. The derivative coefficient and variance cap remain
+0.25; neighboring pixels from another visible draw contribute zero variance in
+deferred lighting. This corrects the former addition to `alpha` without changing
+normal samples, resources or native roots. The variance domain follows the
+less-conservative isotropic filter in
+[Improved Geometric Specular Antialiasing, equation 5](https://www.jp.square-enix.com/tech/library/pdf/ImprovedGeometricSpecularAA.pdf).
+Material/light math remains **UNALIGNED**: the Windows host cannot compile or
+execute native Metal, so a same-revision Metal build, focused diagnostic and
+matched native pixel comparison remain required.
+The corrected filter passes Vulkan Release Bistro motion and stationary captures
+with FSR and motion captures with portable TAA. The bounded Debug static-reset
+case loads Khronos synchronization validation and reports no API warnings or
+errors; ADR-052 records the small, mixed motion-quality changes and local cost.
+
 Exposure requires complete histogram groups and GTAO requires mip-selecting
 depth sampling under ADR-042. Equirectangular HDR conversion wraps longitude
 and clamps latitude, preserving the prepared source texture's pole behavior.

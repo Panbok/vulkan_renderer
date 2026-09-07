@@ -847,7 +847,7 @@ static float vkr_metal_packet_deferred_filter_roughness(
   float3 normal_dy = (normal_y - normal) * same_y;
   float normal_variance =
       0.25 * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
-  return sqrt(saturate(roughness * roughness + min(normal_variance, 0.25)));
+  return vkr_ggx_filter_roughness(roughness, normal_variance);
 }
 
 static float3

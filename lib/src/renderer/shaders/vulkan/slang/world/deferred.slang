@@ -1184,8 +1184,7 @@ float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
     float3 normal_dy = (normal_y - normal) * same_y;
     float normal_variance =
         0.25f * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
-    return sqrt(saturate(
-        roughness * roughness + min(normal_variance, 0.25f)));
+    return vkr_ggx_filter_roughness(roughness, normal_variance);
 }
 
 [shader("compute")]

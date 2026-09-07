@@ -186,6 +186,29 @@ essentially unchanged. Normal-map and cutout coverage sampling were excluded.
 No global mip bias was adopted. Material-aware mip tuning and thin-geometry
 filtering remain quality work; sharpening cannot substitute for either.
 
+The shared specular-AA roughness conversion is corrected under ADR-044: variance
+broadens `alpha^2`, where `alpha` is squared perceptual roughness. The existing
+samples, derivative coefficient and variance cap remain unchanged. Matched
+two-thirds-scale FSR rotation captures observe mean channel ranges of
+7.953 -> 7.931/255 on the isolated rail, 4.305 -> 4.238 on the balcony and
+4.135 -> 4.080 around the lantern. Windows change from 1.810 to 1.834. These are
+small, mixed changes; they do not establish a solution for moving thin edges.
+TAA captures likewise show small mixed changes, and the settled supplied view
+retains its detail. A tested triangle-normal fallback for pixels without matching
+right/down neighbors did not materially improve the target and was removed.
+
+Three local Release children of `fsr31_bistro_cost66` observe summed GPU pass
+means of 5.526 ms with the correction, versus the prior 5.531 ms. This shows no
+material added cost in this observation, not a speedup or elapsed GPU-frame time.
+Motion report SHA-256 is
+`dd3ac817b6c252e85cae637947ea9983c2c5073528c6294ce6569602d1eced41`; the retained math-only shader hashes identify the captured implementation.
+Final Release and Debug builds pass; all 92 inventoried Release shader hashes
+match the captured correction. The Debug static-reset profile passes all seven
+assertions under Khronos synchronization validation with no API warnings or
+errors (report `c4d72cc27ef394dc7a70f50b90264cec30bcf477a8e1e3515065a57cf13d593f`).
+Its known bootstrap geometry-publication warning remains outside measured frames;
+measured omissions are zero. Native Metal checks remain unavailable.
+
 ## Alternatives considered
 
 Using MetalFX on Vulkan is unavailable. Folding SDK descriptors into VKR's
@@ -219,6 +242,7 @@ foreach ($case in 'static', 'motion', 'native_aa', 'taa_reference') {
 .\build_debug\tools\vkr_harness.exe profile --case tools/cases/local/fsr31_bistro_static_reset.case.json --profile tools/profiles/local-offscreen-gpu-single.json
 .\build_release\tools\vkr_harness.exe snapshot --case tools/cases/local/fsr31_bistro_motion_quality_quality.case.json --profile tools/profiles/local-offscreen-gpu-single.json
 .\build_release\tools\vkr_harness.exe snapshot --case tools/cases/local/fsr31_bistro_motion_quality_taa.case.json --profile tools/profiles/local-offscreen-gpu-single.json
+.\build_release\tools\vkr_harness.exe snapshot --case tools/cases/local/specular_aa_bistro_static.case.json --profile tools/profiles/local-offscreen-gpu-single.json
 .\build_release\tools\vkr_harness.exe profile --case tools/cases/local/fsr31_bistro_cost66.case.json --profile tools/profiles/local-offscreen-gpu-single.json
 ```
 
