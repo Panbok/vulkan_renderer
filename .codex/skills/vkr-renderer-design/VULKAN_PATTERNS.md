@@ -8,7 +8,7 @@ identifies the contracts to inspect, rather than maintaining another issue list.
 `vkr_renderer.c` and `vkr_renderer_internal.h` use platform-selected typed native
 functions. Metal runs on macOS; Vulkan runs natively on Windows. Acquisition,
 rendering, native lifecycle, publication, capture and metrics cross this boundary.
-Native Vulkan types remain inside `lib/src/renderer/vulkan/`.
+Native Vulkan types remain inside `renderer/src/vulkan/`.
 
 Application owns scene/UI/camera/shadow/picking systems, frame scratch and resize
 events. `VkrRenderAssets` owns asset systems, loaders and load scratch; its borrowed

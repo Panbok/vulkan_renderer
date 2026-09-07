@@ -64,7 +64,7 @@ end of a document.
 
 ## Instruments
 
-Use the current metric catalog in `lib/src/renderer/vkr_renderer_metrics.c`
+Use the current metric catalog in `renderer/src/vkr_renderer_metrics.c`
 and actual report rows. Do not copy historical module/counter inventories into
 new work.
 

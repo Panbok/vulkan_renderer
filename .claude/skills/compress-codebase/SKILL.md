@@ -31,14 +31,14 @@ pass. A focused change can use a short file list in the task note. Replace
 `compression-audit` below with the current task slug.
 
 ```sh
-python3 .codex/skills/compress-codebase/scripts/inventory.py lib/src app/src \
+python3 .codex/skills/compress-codebase/scripts/inventory.py renderer/src app/src \
   --output .scratch/compression-audit/compression-before.tsv
 ```
 
 The script inventories known source extensions, including `.metal`, `.metalh`,
 `.slang`, `.slangh`, and `.inc`.
 Explicit files are included regardless of extension. It excludes root `build*/`,
-`vendor/`, `lib/src/vendor/`, and generated SPIR-V by default. Use `--exclude`
+`vendor/`, third-party implementation files, and generated SPIR-V by default. Use `--exclude`
 for additional repository-relative globs; `--include-excluded` removes only the
 default exclusions. Directory symlinks are not traversed. Counts are lexical
 proxies, not parsed code facts. Inspect callers before claiming dead code or

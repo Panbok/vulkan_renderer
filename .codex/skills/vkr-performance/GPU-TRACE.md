@@ -48,8 +48,8 @@ Pass names may be in `event-label` formatted values rather than object labels.
 Filter to verified renderer-child processes; compositor work is separate.
 
 Both backends label graph GPU work. Check current encoder creation sites under
-`lib/src/renderer/metal/` and debug-label calls under
-`lib/src/renderer/vulkan/` if labels are missing. Preserve cached labels;
+`renderer/src/metal/` and debug-label calls under
+`renderer/src/vulkan/` if labels are missing. Preserve cached labels;
 do not add per-frame string construction for instrumentation.
 
 | Observation | What to investigate |

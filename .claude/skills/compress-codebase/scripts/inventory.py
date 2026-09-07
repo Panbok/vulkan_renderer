@@ -50,7 +50,10 @@ DEFAULT_EXCLUDES = [
     ".git/**",
     "build*/**",
     "vendor/**",
-    "lib/src/vendor/**",
+    "runtime/src/vendor/**",
+    "runtime/src/assets/stb_image_impl.c",
+    "tools/assets/cgltf_impl.c",
+    "tools/assets/stb_image_write_impl.c",
     "assets/**/*.spv",
 ]
 
