@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -42,6 +42,18 @@ share dock geometry; stable tab IDs survive moves. Recursive subtree minima
 preserve 96-point panel width and 64-point content height when the window fits;
 smaller windows divide the shortage proportionally. The editor saves its layout to
 `.vkr-editor-layout.json` unless `VKR_EDITOR_LAYOUT_PATH` overrides or disables it.
+
+App and editor performance widgets show FPS/frame time, render/output extents,
+CPU/GPU models, process resident RAM and managed GPU memory. The neutral
+sample runtime copies hardware identity at startup and refreshes memory text
+once per second in fixed owned buffers. UI callbacks borrow those strings only
+through build. RAM uses the OS resident/working-set count, including shared
+mappings; GPU memory uses Metal's managed budget charge (heaps, external resources and
+transfer rings) or Vulkan's renderer-owned committed allocations, prefixed with
+`~` when totals are approximate. Device-wide Vulkan heap usage is not process
+consumption. These counters can overlap on unified memory and are not
+additive. Unavailable queries display unavailable. App output is the native
+presentation extent; editor output is the Scene image extent.
 
 Editor tabs use category-colored vector icons and an amber focused border. Real
 Ubuntu Mono Bold supplies headings; vector controls keep the existing UI vertex

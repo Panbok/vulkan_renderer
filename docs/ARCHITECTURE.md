@@ -184,7 +184,9 @@ providing at least a two-pixel reconstruction range for text at 8 physical pixel
 MTSDF atlas sampling stays linear when
 scene-texture filtering changes. The app debug overlay has 11/13-device-pixel
 minimum title/body sizes; its authored 9/11-point sizing still governs at higher
-content scales. See [ADR-027](adr/027-immediate-mode-grid-ui.md)
+content scales. Both performance widgets share runtime-cached CPU/GPU identity
+and process-resident/managed-GPU memory sampled once per second, alongside
+render/output extents. See [ADR-027](adr/027-immediate-mode-grid-ui.md)
 and [ADR-034](adr/034-offline-cooked-font-artifacts.md) through
 [ADR-036](adr/036-dpi-derived-ui-text-scale.md). Resource worker/finalize ownership
 is in [ADR-045](adr/045-resource-prepare-and-render-thread-finalize.md); stable

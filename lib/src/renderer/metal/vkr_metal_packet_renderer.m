@@ -519,6 +519,7 @@ struct VkrMetalPacketRenderer {
   // Conditional passes and repeat counts can move a name to another index.
   VkrMetalPacketPassLabel *pass_labels;
   id<MTLDevice> device;
+  char device_name[256];
   id<MTL4Compiler> compiler;
   id<MTL4FXTemporalScaler> metalfx_temporal_scaler;
   uint32_t metalfx_output_width;
@@ -824,6 +825,12 @@ VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
     renderer->picking_result =
         (VkrPixelReadbackResult){.status = VKR_READBACK_STATUS_IDLE};
   return VKR_RENDERER_ERROR_NONE;
+}
+
+String8 vkr_metal_packet_renderer_device_name(
+    const VkrMetalPacketRenderer *renderer) {
+  return string8_create_from_cstr((const uint8_t *)renderer->device_name,
+                                  strlen(renderer->device_name));
 }
 
 VkrPresentMode

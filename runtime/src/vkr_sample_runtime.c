@@ -107,6 +107,9 @@ typedef struct State {
 
   EventManager *event_manager; // For dispatching events
 
+  /* Runtime-owned caches; UI borrows views through its build callback. */
+  char hardware_text[512];
+  char system_text[768];
   ApplicationUiText fps_text;
   ApplicationUiText left_text;
   ApplicationUiText memory_text;
@@ -1765,8 +1768,28 @@ vkr_internal void application_update_memory_text(Application *application) {
                                      "\nGPU device memory\n");
 
   VkrDeviceMemoryStats gpu = {0};
-  if (complete &&
-      vkr_renderer_get_device_memory_stats(&application->renderer, &gpu)) {
+  const bool8_t have_gpu =
+      vkr_renderer_get_device_memory_stats(&application->renderer, &gpu);
+  uint64_t resident_bytes = 0u;
+  char ram[64] = "RAM (resident): unavailable";
+  char vram[64] = "GPU memory (managed): unavailable";
+  if (vkr_platform_get_process_resident_memory(&resident_bytes))
+    snprintf(ram, sizeof(ram), "RAM (resident): %.1f MiB",
+             (float64_t)resident_bytes / MB(1));
+  if (have_gpu) {
+    /* Metal charges native heaps, external resources and transfer rings to
+       one managed budget. Vulkan heap usage is device-wide; use this
+       renderer's committed allocations there instead. */
+    const bool8_t metal =
+        application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL;
+    const uint64_t gpu_bytes = metal ? gpu.heap_usage_bytes[0] : gpu.live_bytes;
+    snprintf(vram, sizeof(vram), "GPU memory (managed): %s%.1f MiB",
+             (metal || gpu.live_totals_exact) ? "" : "~",
+             (float64_t)gpu_bytes / MB(1));
+  }
+  snprintf(state->system_text, sizeof(state->system_text), "%s\n%s\n%s",
+           state->hardware_text, ram, vram);
+  if (complete && have_gpu) {
     uint64_t logical_live = 0u;
     for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner)
       logical_live += gpu.owners[owner].live_bytes;
@@ -2900,6 +2923,9 @@ vkr_internal void application_update_ui(Application *application,
               .performance = application_ui_text_view(&state->fps_text),
               .metrics = application_ui_text_view(&state->metrics_text),
               .memory = application_ui_text_view(&state->memory_text),
+              .system = string8_create_from_cstr(
+                  (const uint8_t *)state->system_text,
+                  string_length(state->system_text)),
           },
       .simulation_time = application->editor_viewport.simulation_time,
       .simulation_running = application->editor_viewport.simulation_running,
@@ -2909,10 +2935,18 @@ vkr_internal void application_update_ui(Application *application,
       .texture_pending_count = texture_streams.pending_count,
       .texture_demanded_missing_count = texture_streams.demanded_missing_count,
       .scene_output_scale = application->scene_output_scale,
-      .scene_render_width = application->editor_viewport.rendered_width,
-      .scene_render_height = application->editor_viewport.rendered_height,
-      .scene_output_width = application->editor_viewport.output_width,
-      .scene_output_height = application->editor_viewport.output_height,
+      .scene_render_width = application->editor_viewport.enabled
+                                ? application->editor_viewport.rendered_width
+                                : application->renderer.render_width,
+      .scene_render_height = application->editor_viewport.enabled
+                                 ? application->editor_viewport.rendered_height
+                                 : application->renderer.render_height,
+      .scene_output_width = application->editor_viewport.enabled
+                                ? application->editor_viewport.output_width
+                                : application->renderer.last_window_width,
+      .scene_output_height = application->editor_viewport.enabled
+                                 ? application->editor_viewport.output_height
+                                 : application->renderer.last_window_height,
       .transport_action = &transport_action,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
       .scene = application->active_scene,
@@ -3456,6 +3490,16 @@ int vkr_sample_runtime_run(int argc, char **argv,
            (float64_t)state->device_information.vram_local_size / GB(1));
   log_info("Device VRAM Shared Size: %.2f GB",
            (float64_t)state->device_information.vram_shared_size / GB(1));
+  VkrPlatformSystemInfo system_info = {0};
+  (void)vkr_platform_get_system_info(&system_info);
+  const String8 gpu_name = state->device_information.device_name;
+  snprintf(state->hardware_text, sizeof(state->hardware_text),
+           "CPU: %s\nGPU: %.*s",
+           system_info.cpu[0] ? system_info.cpu : "unavailable",
+           (int32_t)gpu_name.length, gpu_name.str);
+  snprintf(state->system_text, sizeof(state->system_text),
+           "%s\nRAM (resident): pending\nGPU memory (managed): pending",
+           state->hardware_text);
   state->anisotropy_supported =
       bitset8_is_set(&state->device_information.sampler_filters,
                      VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);

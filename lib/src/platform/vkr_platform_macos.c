@@ -4,6 +4,7 @@
 
 #include "containers/str.h"
 
+#include <mach/mach.h>
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/resource.h>
@@ -183,6 +184,21 @@ bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info) {
   }
   out_info->cpu[sizeof(out_info->cpu) - 1u] = '\0';
   out_info->process_priority = getpriority(PRIO_PROCESS, 0);
+  return true_v;
+}
+
+bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes) {
+  if (!out_bytes) {
+    return false_v;
+  }
+  *out_bytes = 0u;
+  mach_task_basic_info_data_t info = {0};
+  mach_msg_type_number_t info_count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info,
+                &info_count) != KERN_SUCCESS) {
+    return false_v;
+  }
+  *out_bytes = info.resident_size;
   return true_v;
 }
 

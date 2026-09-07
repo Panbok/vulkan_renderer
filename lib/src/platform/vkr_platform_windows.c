@@ -4,6 +4,13 @@
 #include "containers/str.h"
 #include <limits.h>
 
+#define PSAPI_VERSION 2
+#include <psapi.h>
+
+#if defined(_M_IX86) || defined(_M_X64)
+#include <intrin.h>
+#endif
+
 bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length) {
   if (!buffer || capacity == 0u || !out_length)
@@ -266,16 +273,79 @@ uint32_t vkr_platform_get_process_id(void) {
   return (uint32_t)GetCurrentProcessId();
 }
 
+vkr_internal bool8_t vkr_platform_get_cpu_brand(char *out_name,
+                                                uint32_t capacity) {
+  if (!out_name || capacity == 0u) {
+    return false_v;
+  }
+  out_name[0] = '\0';
+#if defined(_M_IX86) || defined(_M_X64)
+  int registers[4] = {0};
+  __cpuid(registers, (int)0x80000000u);
+  if ((uint32_t)registers[0] < 0x80000004u) {
+    return false_v;
+  }
+  char brand[49] = {0};
+  for (uint32_t leaf = 0u; leaf < 3u; ++leaf) {
+    __cpuid(registers, (int)(0x80000002u + leaf));
+    MemCopy(brand + leaf * sizeof(registers), registers, sizeof(registers));
+  }
+  uint32_t first = 0u;
+  uint32_t last = (uint32_t)string_length(brand);
+  while (first < last && brand[first] == ' ') {
+    first++;
+  }
+  while (last > first && brand[last - 1u] == ' ') {
+    last--;
+  }
+  const uint32_t length = Min(last - first, capacity - 1u);
+  if (length == 0u) {
+    return false_v;
+  }
+  MemCopy(out_name, brand + first, length);
+  out_name[length] = '\0';
+  return true_v;
+#else
+  return false_v;
+#endif
+}
+
+vkr_internal void vkr_platform_get_cpu_architecture(char *out_name,
+                                                    uint32_t capacity) {
+  if (!out_name || capacity == 0u) {
+    return;
+  }
+  SYSTEM_INFO info = {0};
+  GetNativeSystemInfo(&info);
+  const char *architecture = "unknown";
+  switch (info.wProcessorArchitecture) {
+  case PROCESSOR_ARCHITECTURE_AMD64:
+    architecture = "x86-64";
+    break;
+  case PROCESSOR_ARCHITECTURE_INTEL:
+    architecture = "x86";
+    break;
+  case PROCESSOR_ARCHITECTURE_ARM64:
+    architecture = "ARM64";
+    break;
+  case PROCESSOR_ARCHITECTURE_ARM:
+    architecture = "ARM";
+    break;
+  default:
+    break;
+  }
+  string_format(out_name, capacity, "%s", architecture);
+  out_name[capacity - 1u] = '\0';
+}
+
 bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info) {
   if (!out_info) {
     return false_v;
   }
   MemZero(out_info, sizeof(*out_info));
   string_format(out_info->os, sizeof(out_info->os), "Windows");
-  if (GetEnvironmentVariableA("PROCESSOR_IDENTIFIER", out_info->cpu,
-                              sizeof(out_info->cpu)) == 0u) {
-    string_format(out_info->cpu, sizeof(out_info->cpu), "unknown");
-  }
+  if (!vkr_platform_get_cpu_brand(out_info->cpu, sizeof(out_info->cpu)))
+    vkr_platform_get_cpu_architecture(out_info->cpu, sizeof(out_info->cpu));
   switch (GetPriorityClass(GetCurrentProcess())) {
   case IDLE_PRIORITY_CLASS:
     out_info->process_priority = 19;
@@ -296,6 +366,19 @@ bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info) {
     out_info->process_priority = 0;
     break;
   }
+  return true_v;
+}
+
+bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes) {
+  if (!out_bytes) {
+    return false_v;
+  }
+  *out_bytes = 0u;
+  PROCESS_MEMORY_COUNTERS info = {.cb = sizeof(info)};
+  if (!K32GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof(info))) {
+    return false_v;
+  }
+  *out_bytes = (uint64_t)info.WorkingSetSize;
   return true_v;
 }
 

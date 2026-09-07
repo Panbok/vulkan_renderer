@@ -1893,6 +1893,11 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         return false_v;
       }
       renderer->device = [MTLCreateSystemDefaultDevice() retain];
+      if (![renderer->device.name getCString:renderer->device_name
+                                  maxLength:sizeof(renderer->device_name)
+                                   encoding:NSUTF8StringEncoding])
+        snprintf(renderer->device_name, sizeof(renderer->device_name),
+                 "unavailable");
       MTL4CommandQueueDescriptor *queue_descriptor =
           [MTL4CommandQueueDescriptor new];
       queue_descriptor.feedbackQueue = vkr_metal_packet_feedback_queue();

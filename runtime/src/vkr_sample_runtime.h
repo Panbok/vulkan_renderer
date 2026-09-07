@@ -13,6 +13,8 @@ typedef struct VkrSampleUiText {
   String8 performance;
   String8 metrics;
   String8 memory;
+  /** CPU/GPU identity and periodically sampled process/device memory. */
+  String8 system;
 } VkrSampleUiText;
 
 typedef enum VkrSampleTransportAction {

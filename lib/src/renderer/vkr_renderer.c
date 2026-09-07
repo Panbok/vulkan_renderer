@@ -824,7 +824,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
   bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_LINEAR_BIT);
   bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
   *device_information = (VkrDeviceInformation){
-      .device_name = string8_lit("Apple Metal 4 GPU"),
+      .device_name =
+          vkr_metal_packet_renderer_device_name(renderer->metal_renderer),
       .vendor_name = string8_lit("Apple"),
       .driver_version = string8_lit("Metal 4"),
       .api_version = string8_lit("Metal 4"),

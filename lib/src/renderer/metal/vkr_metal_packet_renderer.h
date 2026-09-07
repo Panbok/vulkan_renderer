@@ -378,6 +378,9 @@ uint64_t
 vkr_metal_packet_renderer_submit_value(const VkrMetalPacketRenderer *renderer);
 uint64_t vkr_metal_packet_renderer_completed_value(
     const VkrMetalPacketRenderer *renderer);
+/** Borrowed UTF-8 model name; storage lives until renderer destruction. */
+String8 vkr_metal_packet_renderer_device_name(
+    const VkrMetalPacketRenderer *renderer);
 /** Returns the presentation mode actually applied to the Metal target. */
 VkrPresentMode
 vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer);
