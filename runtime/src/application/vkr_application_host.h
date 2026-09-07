@@ -97,7 +97,7 @@ void vkr_application_host_close(VkrApplicationHost *host);
 void vkr_application_host_shutdown(VkrApplicationHost *host);
 void vkr_application_host_destroy(VkrApplicationHost *host);
 
-INLINE bool8_t
+vkr_internal INLINE bool8_t
 vkr_application_host_is_windowed(const VkrApplicationHost *host) {
   return host->config.windowed;
 }
