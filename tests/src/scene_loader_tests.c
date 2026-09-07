@@ -423,7 +423,7 @@ vkr_internal void test_scene_loader_instantiates_cooked_punctual_lights(void) {
   assert(loader.load(&loader, string8_lit(cooked_path), &scratch_allocator,
                      &mesh_handle, &error));
   assert(error == VKR_RENDERER_ERROR_NONE);
-  assert(mesh_handle.as.mesh->source.nodes.length == 3u);
+  assert(mesh_handle.as.mesh->source.nodes.length == 5u);
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   const VkrEntityId wrapper = vkr_scene_create_entity(&ctx.scene, &scene_error);
@@ -431,7 +431,7 @@ vkr_internal void test_scene_loader_instantiates_cooked_punctual_lights(void) {
   assert(vkr_scene_set_transform(&ctx.scene, wrapper,
                                  vec3_new(10.0f, 0.0f, 0.0f),
                                  vkr_quat_identity(), vec3_one()));
-  VkrEntityId source_nodes[3] = {0};
+  VkrEntityId source_nodes[5] = {0};
   assert(vkr_scene_instantiate_source_nodes(
       &ctx.scene, &mesh_handle.as.mesh->source, wrapper, 7u, source_nodes,
       &scene_error));
@@ -453,10 +453,12 @@ vkr_internal void test_scene_loader_instantiates_cooked_punctual_lights(void) {
   assert(fabsf(point_light->color.x - 0.5f) < 0.0001f);
   assert(fabsf(point_light->intensity - 12.0f) < 0.0001f);
   assert(fabsf(point_light->range - 8.0f) < 0.0001f);
+  assert(point_light->casts_shadow);
 
   const ScenePointLight *spot_light =
       vkr_scene_get_point_light(&ctx.scene, source_nodes[1]);
   assert(spot_light && spot_light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT);
+  assert(spot_light->casts_shadow);
   assert(fabsf(spot_light->inner_cone_angle - 0.2f) < 0.0001f);
   assert(fabsf(spot_light->outer_cone_angle - 0.6f) < 0.0001f);
   assert(fabsf(spot_light->direction_local.x) < 0.0001f);
@@ -467,6 +469,14 @@ vkr_internal void test_scene_loader_instantiates_cooked_punctual_lights(void) {
       vkr_scene_get_directional_light(&ctx.scene, source_nodes[2]);
   assert(directional_light);
   assert(fabsf(directional_light->intensity - 3.0f) < 0.0001f);
+
+  const ScenePointLight *unlimited_light =
+      vkr_scene_get_point_light(&ctx.scene, source_nodes[3]);
+  assert(unlimited_light && unlimited_light->enabled);
+  assert(unlimited_light->range == 0.0f && !unlimited_light->casts_shadow);
+  const ScenePointLight *wide_spot =
+      vkr_scene_get_point_light(&ctx.scene, source_nodes[4]);
+  assert(wide_spot && wide_spot->enabled && !wide_spot->casts_shadow);
 
   loader.unload(&loader, &mesh_handle, string8_lit(cooked_path));
   assert(arena_pool.pool.allocated == 0u);

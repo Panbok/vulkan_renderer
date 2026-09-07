@@ -33,8 +33,13 @@ Diffuse uses ADR-038 coefficients and specular uses prefiltered cubemaps.
 Prepared scene metadata can override exact glTF light-definition ranges at the
 cold import boundary; malformed or unmatched overrides fail preparation.
 
-Directional lighting samples CSM. Point and spot lights opt into a separate
-bounded depth-array pool with `casts_shadow`. The default budget is 16 faces at
+Directional lighting samples CSM. Point and spot lights use a separate
+bounded depth-array pool when `casts_shadow` is set. glTF imports enable it by
+default for finite positive ranges and supported spot angles. Unlimited-range
+lights and spots with a 90-degree outer half-angle remain unshadowed, preserving
+valid glTF imports without inventing a range or changing the authored cone.
+Saved editor overrides can disable shadows; scene-authored JSON lights remain
+opt-in. The default budget is 16 faces at
 1024 squared: a spot uses one perspective view and a point uses six in
 +X, -X, +Y, -Y, +Z, -Z order. Stable scene-light order allocates complete light
 groups; requests that do not fit remain unshadowed. The budget and map size can
@@ -77,6 +82,7 @@ required beyond the accepted local-shadow pool.
 
 ## Implementation
 
+[`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c),
 [`vkr_lighting_system.c`](../../runtime/src/renderer/systems/vkr_lighting_system.c),
 [`vkr_frame_input.h`](../../renderer/src/vkr_frame_input.h),
 [`vkr_gpu_abi.h`](../../renderer/src/vkr_gpu_abi.h), and production world/deferred shaders.

@@ -332,12 +332,16 @@ production policy; a fifth layer is diagnostic. See
 
 Punctual lighting uses a stable 128-light table and 384-cell fragment-local
 bitmask grid with exact range/cone rejection. Up to 16 ready probes contribute
-fragment-space AABB weights. Directional lighting samples CSM. Opt-in point/spot shadows use a separate
+fragment-space AABB weights. Directional lighting samples CSM. Point/spot shadows use a separate
 16-face, 1024-squared depth pool per physical target image, with one face per
 spot and six per point. Stable light order allocates complete groups; excess
 lights remain unshadowed. Every selected local view redraws each frame, with
 nine-tap PCF and point taps remapped across faces. Scene `casts_shadow` and the
-editor's Cast shadows checkbox require a finite range. Light ranges,
+editor's Cast shadows checkbox require a finite range. Imported glTF point/spot
+lights default to casting shadows when their range is finite and positive and
+their spot outer half-angle is below 90 degrees. Other imported local lights
+remain unshadowed; saved editor overrides can disable shadows. Scene-authored
+JSON lights remain opt-in. Light ranges,
 probe bounds and GTAO do not establish arbitrary wall/furniture occlusion.
 See [ADR-019](adr/019-bounded-forward-spatial-lighting.md).
 

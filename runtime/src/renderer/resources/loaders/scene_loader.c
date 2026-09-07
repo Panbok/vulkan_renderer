@@ -1642,7 +1642,14 @@ bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
       if (!vkr_scene_set_directional_light(scene, entity, &light))
         goto cleanup;
     } else if (node->punctual.kind == 2u || node->punctual.kind == 3u) {
-      ScenePointLight light = {.color = node->punctual.color,
+      const bool8_t casts_shadow =
+          isfinite(node->punctual.range) && node->punctual.range > 0.0f &&
+          (node->punctual.kind == 2u ||
+           (isfinite(node->punctual.outer_cone) &&
+            node->punctual.outer_cone > 0.0f &&
+            node->punctual.outer_cone < 1.57079632679f));
+      ScenePointLight light = {.casts_shadow = casts_shadow,
+                               .color = node->punctual.color,
                                .intensity = node->punctual.intensity,
                                .constant = 1.0f,
                                .range = node->punctual.range,

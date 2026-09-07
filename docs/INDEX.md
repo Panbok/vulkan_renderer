@@ -85,7 +85,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [016](adr/016-hdr-environment-format.md) | HDR source delivery and cubemap sampling | implemented |
 | [017](adr/017-prepared-specular-glossiness-lowering.md) | Prepare PBR materials before publication | implemented |
 | [018](adr/018-graph-declared-transmission-feedback.md) | Ordered transmission with declared feedback | implemented |
-| [019](adr/019-bounded-forward-spatial-lighting.md) | Bounded punctual lighting, local shadows and probes | implemented |
+| [019](adr/019-bounded-forward-spatial-lighting.md) | Bounded punctual lighting, glTF shadow defaults, local shadows and probes | implemented |
 | [023](adr/023-vulkan-1-4-bindless-capability-profile.md) | One explicit Vulkan capability floor | implemented |
 | [024](adr/024-shared-bindless-gpu-cores.md) | Shared allocation/completion cores and bounded Metal heap residency | implemented |
 | [025](adr/025-selected-renderer-implementation-strategy.md) | Procedural renderer and prepared native commands | implemented |
