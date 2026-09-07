@@ -72,6 +72,22 @@ single native run cannot establish bilateral parity. MetalFX is an explicit
 backend-specific mode under ADR-040. Current missing native evidence is summarized
 in [ARCHITECTURE](../ARCHITECTURE.md).
 
+Vulkan FSR 3.1 is an authorized backend-specific **UNALIGNED** exception under
+ADR-052. Its prepare shader converts raw HDR, temporal validity and nearest
+transmission depth into depth and mask inputs. The SDK consumes these with
+normalized temporal motion and records the upscale. It has no Metal counterpart
+or portable parity claim.
+Its 48-byte prepare root carries the submitted-history scene-stationary proof;
+optical contrast contributes only to composition and is suppressed for matching
+scenes. Reactive rejection retains authored reactivity and missing-motion protection. Its separate 48-byte stabilization root carries output
+and render extents, raster jitter, sampled history/reactivity indices and the
+same stationary proof. The output-resolution pass averages 128 stationary samples
+and freezes completed pixels; changes or reactive footprints reset age. Age uses
+private output alpha, removed by the FSR-only fullscreen opaque-alpha flag.
+Production Vulkan compilation and reflection pass. Bounded Bistro static,
+camera-translation and editor-resize runs pass native Vulkan diagnostics; native Metal execution was
+unavailable. ADR-052 records the accepted capability boundary and evidence limits.
+
 Current evidence state: **UNALIGNED** for every domain below. The production
 source audit covers their counterparts; same-revision bilateral native
 comparisons and runtime reflection checks remain incomplete.
@@ -209,6 +225,7 @@ Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
 | IBL and SH | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
 | Temporal resolve | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
+| FSR 3.1 (UNALIGNED: authorized Vulkan-only feature) | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
 | Tonemap/FXAA | shared exposure state | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 

@@ -45,6 +45,15 @@ their independent table bytes and resource lifetime proofs. Unchanged frames
 perform no table clear, capacity scan or row copy; a changed generation refreshes
 the whole table rather than maintaining a second dirty journal.
 
+The Vulkan FSR 3.1 bridge is an explicit native exception to the descriptor-
+buffer path. Its narrow C interface owns SDK-private resources, classic
+descriptors and SDK pipeline state; the graph only lends declared input and
+output images for dispatch. A three-entry submitted-use ring proves completion
+before reusing the SDK's transient descriptor/view slots. Resize or cancelled
+SDK recording recreates that context only after completion. VKR restores its
+descriptor buffers and graphics/compute offsets after SDK recording. CPU scratch
+uses a private context-lifetime arena inside the bridge. See ADR-052.
+
 Host-visible Vulkan buffer placements satisfy both native memory requirements
 and the 16-byte alignment of typed CPU vector records. Transfer-only staging
 buffers can report a four-byte native requirement; using that alone permits
@@ -304,5 +313,6 @@ placement or upload policy with explicit last-use ownership.
 [`vkr_asset_publisher.h`](../../lib/src/renderer/vkr_asset_publisher.h),
 [`vkr_render_assets.c`](../../lib/src/renderer/systems/vkr_render_assets.c),
 [`vkr_vulkan_memory.c`](../../lib/src/renderer/vulkan/vkr_vulkan_memory.c), and
-[`vkr_metal_memory.c`](../../lib/src/renderer/metal/vkr_metal_memory.c).
+[`vkr_metal_memory.c`](../../lib/src/renderer/metal/vkr_metal_memory.c). The
+FSR bridge is in [`vkr_vulkan_fsr_sdk.cpp`](../../lib/src/renderer/vulkan/vkr_vulkan_fsr_sdk.cpp).
 This record incorporates the surviving lifetime rules from former ADR-007/008.

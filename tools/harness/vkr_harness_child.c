@@ -26,6 +26,30 @@ _Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH ==
                    0u,
                "Replay phase alignment must cover both temporal sequences");
 
+vkr_internal uint32_t
+vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
+  // Stopped editor scenes and non-temporal diagnostic modes have no raster
+  // sequence to align. In particular, no submitted Scene may exist yet.
+  if (!renderer->temporal_state.valid || !renderer->temporal_state.enabled)
+    return VKR_GTAO_NOISE_SEQUENCE_LENGTH;
+  const uint32_t output_width = renderer->scene_output_extent_overridden
+                                    ? renderer->scene_output_width
+                                    : renderer->last_window_width;
+  const uint32_t jitter =
+      renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31
+          ? vkr_temporal_upscale_sequence_length(renderer->temporal_state.width,
+                                                   output_width)
+          : VKR_TEMPORAL_SEQUENCE_LENGTH;
+  uint32_t a = VKR_GTAO_NOISE_SEQUENCE_LENGTH;
+  uint32_t b = jitter;
+  while (b != 0u) {
+    const uint32_t remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return (VKR_GTAO_NOISE_SEQUENCE_LENGTH / a) * jitter;
+}
+
 vkr_internal bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b,
                                          uint64_t *out) {
   if (!out || a > UINT64_MAX - b)
@@ -929,7 +953,8 @@ void application_update(Application *application, float64_t delta) {
     if (!vkr_harness_child_prepare_pass_catalog(application))
       return;
   } else if (!child->phase_started &&
-             next_frame % VKR_GTAO_NOISE_SEQUENCE_LENGTH == 0u) {
+             next_frame % vkr_harness_temporal_alignment(&application->renderer) ==
+                 0u) {
     /* Bootstrap duration must not choose either the raster jitter or GTAO
        noise phase consumed by authored warmup, including zero-warmup cases. */
     vkr_renderer_invalidate_temporal_history(&application->renderer);
@@ -1116,6 +1141,8 @@ vkr_internal ApplicationConfig vkr_harness_child_application_config(
       .upscale_mode =
           string_equals(case_manifest->renderer.upscaler, "metalfx_temporal")
               ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
+              : string_equals(case_manifest->renderer.upscaler, "fsr31")
+                    ? VKR_UPSCALE_MODE_FSR31
               : VKR_UPSCALE_MODE_SPATIAL,
       .dynamic_resolution =
           {

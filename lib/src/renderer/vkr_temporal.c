@@ -6,6 +6,15 @@
 #define VKR_TEMPORAL_CAMERA_CUT_DISTANCE 10.0f
 #define VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT 0.5f
 
+uint32_t vkr_temporal_upscale_sequence_length(uint32_t render_width,
+                                               uint32_t output_width) {
+  return Max((uint32_t)floorf(8.0f * (float32_t)output_width /
+                                 (float32_t)render_width *
+                                 (float32_t)output_width /
+                                 (float32_t)render_width),
+             VKR_TEMPORAL_SEQUENCE_LENGTH);
+}
+
 vkr_internal void temporal_scene_lane(VkrTemporalSceneSignature *signature,
                                       uint64_t lane) {
   // Two independent 64-bit recurrences over semantic lanes, not struct bytes.
@@ -273,8 +282,15 @@ vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
 }
 
 Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index) {
-  const uint32_t sequence_index =
-      frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH + 1u;
+  return vkr_temporal_jitter_for_frame_phases(frame_index,
+                                              VKR_TEMPORAL_SEQUENCE_LENGTH);
+}
+
+Vec2 vkr_temporal_jitter_for_frame_phases(uint32_t frame_index,
+                                          uint32_t phase_count) {
+  const uint32_t sequence_length =
+      phase_count ? phase_count : VKR_TEMPORAL_SEQUENCE_LENGTH;
+  const uint32_t sequence_index = frame_index % sequence_length + 1u;
   return (Vec2){vkr_temporal_halton(sequence_index, 2u) - 0.5f,
                 vkr_temporal_halton(sequence_index, 3u) - 0.5f};
 }
@@ -347,7 +363,8 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
       frame.reset_reasons |= VKR_TEMPORAL_RESET_CAMERA_CUT;
   }
   if (input->enabled && input->width > 0u && input->height > 0u) {
-    frame.jitter_pixels = vkr_temporal_jitter_for_frame(input->frame_index);
+    frame.jitter_pixels = vkr_temporal_jitter_for_frame_phases(
+        input->frame_index, input->jitter_phase_count);
     frame.jittered_projection = vkr_temporal_jitter_projection(
         input->projection, frame.jitter_pixels, input->width, input->height);
   }

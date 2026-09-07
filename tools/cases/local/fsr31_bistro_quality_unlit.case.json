@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "id": "local.fsr31.quality_unlit",
+  "suite": "local",
+  "description": "FSR-active Bistro shading isolation: unlit",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    1858,
+    1057
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": {
+    "warmup": 160,
+    "measure": 34
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "backend": "vulkan",
+    "render_scale": 0.666666667,
+    "upscaler": "fsr31",
+    "taa_enabled": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "unlit",
+    "exposure_mode": "manual",
+    "manual_exposure": 0.853,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": false,
+    "gtao_enabled": false,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "fxaa_enabled": false
+  },
+  "camera": {
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "mode": "keyframes",
+    "interpolation": "linear",
+    "speed": "medium",
+    "keys": [
+      {
+        "position": [
+          1.3500154,
+          3.62181449,
+          25.4996758
+        ],
+        "yaw": -154.91153,
+        "pitch": -3.12425447,
+        "t": 0
+      },
+      {
+        "position": [
+          1.3500154,
+          3.62181449,
+          25.4996758
+        ],
+        "yaw": -150.91153,
+        "pitch": -3.12425447,
+        "t": 2
+      }
+    ]
+  },
+  "captures": [
+    {
+      "at_frame": 30,
+      "channels": [
+        "unlit"
+      ]
+    },
+    {
+      "at_frame": 31,
+      "channels": [
+        "unlit"
+      ]
+    },
+    {
+      "at_frame": 32,
+      "channels": [
+        "unlit"
+      ]
+    },
+    {
+      "at_frame": 33,
+      "channels": [
+        "unlit"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "stat": "min",
+      "min": 1,
+      "metric": "draw.world.opaque_draws"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "packet.publication_omitted_candidates"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "visibility.gbuffer.resolve_invalid"
+    },
+    {
+      "stat": "min",
+      "min": 1239,
+      "metric": "frame.render_width"
+    },
+    {
+      "stat": "max",
+      "max": 1239,
+      "metric": "frame.render_width"
+    },
+    {
+      "stat": "min",
+      "min": 705,
+      "metric": "frame.render_height"
+    },
+    {
+      "stat": "max",
+      "max": 705,
+      "metric": "frame.render_height"
+    }
+  ]
+}

@@ -897,6 +897,43 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       renderer, VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
       "vk_deferred_lighting", lighting_fields, ArrayCount(lighting_fields),
       sizeof(VkrVulkanLightingRoot));
+  static const VkrVulkanReflectedField fsr31_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot, scene_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot,
+                                 pre_transmission_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot, validity_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot,
+                                 opaque_depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot,
+                                 transmission_depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot,
+                                 output_depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot, reactive_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot,
+                                 composition_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot,
+                                 transmission_enabled),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31PrepareRoot, scene_stationary),
+  };
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV, "vk_fsr31_prepare",
+      fsr31_fields, ArrayCount(fsr31_fields),
+      sizeof(VkrVulkanFsr31PrepareRoot));
+  static const VkrVulkanReflectedField fsr31_stabilize_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, output_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, history_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, reactive_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, scene_stationary),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, output_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, render_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, jitter_pixels),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFsr31StabilizeRoot, reserved),
+  };
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV, "vk_fsr31_stabilize",
+      fsr31_stabilize_fields, ArrayCount(fsr31_stabilize_fields),
+      sizeof(VkrVulkanFsr31StabilizeRoot));
   valid &= vkr_vk_validate_root_abi(
       renderer, VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
       "vk_temporal_resolve", temporal_resolve_fields,
@@ -1140,10 +1177,8 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
       .pAttachments = color_attachment_count ? color_attachments : NULL,
   };
   const VkDynamicState dynamic_states[] = {
-      VK_DYNAMIC_STATE_VIEWPORT,
-      VK_DYNAMIC_STATE_SCISSOR,
-      VK_DYNAMIC_STATE_CULL_MODE,
-      VK_DYNAMIC_STATE_FRONT_FACE,
+      VK_DYNAMIC_STATE_VIEWPORT,   VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_CULL_MODE,  VK_DYNAMIC_STATE_FRONT_FACE,
       VK_DYNAMIC_STATE_DEPTH_BIAS,
   };
   const VkPipelineDynamicStateCreateInfo dynamic = {
@@ -1344,6 +1379,8 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
+      VKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV,
+      VKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV,
       VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
       VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV,
       VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
@@ -1382,6 +1419,8 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           "vk_gbuffer_resolve",
           "vk_deferred_lighting",
           "vk_temporal_resolve",
+          "vk_fsr31_prepare",
+          "vk_fsr31_stabilize",
           "vk_hzb_build",
           "vk_sdsm_reduce",
           "vk_picking_resolve",

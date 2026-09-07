@@ -7,6 +7,10 @@
 /** Renderer-owned jitter period used to align deterministic replay. */
 #define VKR_TEMPORAL_SEQUENCE_LENGTH 8u
 
+/** FSR jitter period for validated nonzero render/output widths. */
+uint32_t vkr_temporal_upscale_sequence_length(uint32_t render_width,
+                                               uint32_t output_width);
+
 struct VkrPreparedFrame;
 
 /** Packet-content proof for static scene accumulation; native resource and
@@ -55,6 +59,8 @@ typedef struct VkrTemporalFrameInput {
   uint32_t width;
   uint32_t height;
   uint32_t render_mode;
+  /** Consumer jitter period. Zero preserves the portable TAA period. */
+  uint32_t jitter_phase_count;
   uint32_t explicit_reset_reasons;
   bool8_t enabled;
 } VkrTemporalFrameInput;
@@ -70,6 +76,10 @@ typedef struct VkrTemporalFrame {
 
 /** Raster shift in pixels for an enabled temporal frame's fixed sequence. */
 Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index);
+
+/** Halton jitter with a caller-selected phase count. */
+Vec2 vkr_temporal_jitter_for_frame_phases(uint32_t frame_index,
+                                          uint32_t phase_count);
 
 /** Builds frame-local temporal state without committing it. */
 VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,

@@ -50,6 +50,8 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_UI,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_PREPARE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_UPSCALE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT,
 } VkrMetalPacketGraphExecutorKind;
 
@@ -111,6 +113,8 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.editor.overlay.picking", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.fsr31.prepare", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.fsr31.upscale", VKR_RG_PASS_TYPE_COMPUTE},
 };
 _Static_assert(ArrayCount(s_metal_packet_graph_executors) ==
                    VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT,

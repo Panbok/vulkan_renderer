@@ -69,6 +69,7 @@ typedef struct VkrVulkanDeviceConfig {
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
   bool8_t enable_gpu_assisted;
+  bool8_t fsr31_enabled;
 } VkrVulkanDeviceConfig;
 
 typedef struct VkrVulkanDescriptorLayout {

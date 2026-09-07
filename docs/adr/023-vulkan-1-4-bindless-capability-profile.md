@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 
@@ -31,6 +31,11 @@ are separate descriptors. Native descriptor sizes remain inside host layout and
 writer code. Shaders index arrays with logical indices and never interpret
 native descriptor bytes. Unsupported devices fail initialization with capability
 diagnostics; there is no legacy descriptor-set renderer fallback.
+
+When Vulkan FSR 3.1 is selected, require
+`shaderStorageImageExtendedFormats` for its graph-declared `R32_SFLOAT` storage
+depth. This conditional requirement does not raise the base Vulkan floor; a
+device that lacks it rejects FSR initialization with a capability diagnostic.
 
 Concurrent host publication of descriptor and material rows additionally requires
 compatible host-visible, host-coherent memory. The PUBLICATION memory class prefers
@@ -69,4 +74,6 @@ binding mechanism has SDK, driver, shader and native validation evidence.
 
 [`vkr_vulkan_device.c`](../../lib/src/renderer/vulkan/vkr_vulkan_device.c),
 [`vkr_vulkan_resources.c`](../../lib/src/renderer/vulkan/vkr_vulkan_resources.c), and
-[`vkr_renderer_impl.c`](../../lib/src/renderer/vkr_renderer_impl.c).
+[`vkr_renderer_impl.c`](../../lib/src/renderer/vkr_renderer_impl.c). FSR-specific
+feature selection is in [`vkr_renderer.c`](../../lib/src/renderer/vkr_renderer.c)
+under [ADR-052](052-vulkan-fsr31-upscaling.md).

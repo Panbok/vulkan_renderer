@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 
@@ -18,9 +18,10 @@ target would also reduce UI resolution and change capture/picking semantics.
 ## Decision
 
 Accept a finite Metal Scene scale in `(0,1]` at initialization; zero selects
-unit scale for API callers. Vulkan rejects non-unit scale. Keep native physical
-output and UI extent separate from the Scene presentation extent: whole target
-in direct mode or the dock-owned panel in editor mode.
+unit scale for API callers. Vulkan's spatial path rejects non-unit scale.
+Vulkan FSR 3.1, accepted separately in ADR-052, uses a fixed scale in `[1/3, 1]`.
+Keep native physical output and UI extent separate from the Scene presentation
+extent: whole target in direct mode or the dock-owned panel in editor mode.
 
 Spatial mode rounds Scene output dimensions times scale to the nearest internal
 pixel, with a minimum of one. MetalFX rounds upward so integer content dimensions
@@ -58,3 +59,4 @@ measurements justify a different spatial filter.
 [`vkr_viewport.c`](../../lib/src/renderer/vkr_viewport.c),
 [`vkr_metal_packet_graph.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_graph.inc), and
 [`tonemap.metal`](../../lib/src/renderer/shaders/metal/msl/post/tonemap.metal).
+Vulkan FSR scale selection and output extent use [ADR-052](052-vulkan-fsr31-upscaling.md).

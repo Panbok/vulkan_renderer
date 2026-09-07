@@ -8,7 +8,9 @@ if(APPLE)
 file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h src/*.m)
 enable_language(C OBJC)
 elseif(WIN32)
+enable_language(CXX)
 file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h)
+list(APPEND LIB_SOURCES src/renderer/vulkan/vkr_vulkan_fsr_sdk.cpp)
 endif()
 list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 
@@ -88,6 +90,8 @@ vkr_add_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classif
 vkr_add_vulkan_packet_shader("packet.gpu_draw_prefix.comp" vk_gpu_draw_prefix compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_encode.comp" vk_gpu_draw_encode compute)
 vkr_add_vulkan_packet_shader("packet.temporal_transform.comp" vk_temporal_transform compute)
+vkr_add_vulkan_packet_shader("packet.fsr31.prepare.comp" vk_fsr31_prepare compute)
+vkr_add_vulkan_packet_shader("packet.fsr31.stabilize.comp" vk_fsr31_stabilize compute)
 vkr_add_vulkan_packet_shader("packet.visibility.vert" vk_visibility_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.visibility.frag" vk_visibility_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.visibility_opaque.frag" vk_visibility_opaque_fragment fragment)
@@ -264,6 +268,20 @@ else()
 endif()
 target_link_libraries(renderer_lib PRIVATE ktx_read)
 target_link_libraries(renderer_lib PRIVATE vkr_meshoptimizer_bridge)
+
+if(WIN32)
+    include("${CMAKE_SOURCE_DIR}/cmake/vkr_fsr.cmake")
+    target_compile_features(renderer_lib PRIVATE cxx_std_17)
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/vkr_vulkan_fsr_sdk.cpp"
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    target_link_libraries(renderer_lib PRIVATE
+        ${VKR_FSR3_UPSCALER_TARGET}
+        ${VKR_FSR3_VULKAN_BACKEND_TARGET})
+    target_compile_definitions(renderer_lib PRIVATE VKR_HAS_FSR3_UPSCALER=1)
+else()
+    target_compile_definitions(renderer_lib PRIVATE VKR_HAS_FSR3_UPSCALER=0)
+endif()
 
 # Set platform-specific definitions and link libraries
 if(APPLE)

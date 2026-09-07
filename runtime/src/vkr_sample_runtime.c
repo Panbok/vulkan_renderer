@@ -804,8 +804,9 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
 /**
  * @brief Build a world-space ray from normalized displayed image coordinates.
  */
-vkr_internal bool8_t application_build_view_ray(
-    VkrCamera *camera, Vec2 position, Vec3 *out_origin, Vec3 *out_dir) {
+vkr_internal bool8_t application_build_view_ray(VkrCamera *camera,
+                                                Vec2 position, Vec3 *out_origin,
+                                                Vec3 *out_dir) {
   if (!camera || !out_origin || !out_dir) {
     return false_v;
   }
@@ -1079,10 +1080,9 @@ vkr_internal bool8_t application_request_picking(
 
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
-  if (!application_build_view_ray(
-          camera, viewport_info->position,
-          &state->gizmo_drag.pick_ray_origin,
-          &state->gizmo_drag.pick_ray_direction))
+  if (!application_build_view_ray(camera, viewport_info->position,
+                                  &state->gizmo_drag.pick_ray_origin,
+                                  &state->gizmo_drag.pick_ray_direction))
     return false_v;
   state->pick_scene_generation = application->scene_generation;
   state->pick_selected_entity = state->selected_entity;
@@ -1275,7 +1275,7 @@ application_update_gizmo_drag(Application *application,
   Vec3 ray_origin = vec3_zero();
   Vec3 ray_dir = vec3_zero();
   if (!application_build_view_ray(camera, viewport_info->position, &ray_origin,
-                                   &ray_dir)) {
+                                  &ray_dir)) {
     return;
   }
 
@@ -1982,8 +1982,7 @@ vkr_internal void application_handle_input(Application *application,
     application_log_camera_snapshot(application);
   }
 
-  bool8_t camera_captured =
-      vkr_window_is_mouse_captured(&application->window);
+  bool8_t camera_captured = vkr_window_is_mouse_captured(&application->window);
   if (state->free_camera_held &&
       (!camera_captured || input_is_button_up(input_state, BUTTON_RIGHT) ||
        application_editor_scene_rendering_stopped(application))) {
@@ -1994,16 +1993,18 @@ vkr_internal void application_handle_input(Application *application,
     camera_captured = false_v;
   }
   bool8_t camera_started = false_v;
-  const bool8_t camera_tab = input_key_just_pressed(input_state, KEY_TAB) &&
-      (camera_captured ||
-       (application->editor_viewport.enabled ? state->scene_keyboard_focus
-                                            : !application->ui_capture.keyboard));
-  const bool8_t camera_shortcut = application->editor_viewport.enabled &&
-      !application->ui_capture.text &&
+  const bool8_t camera_tab =
+      input_key_just_pressed(input_state, KEY_TAB) &&
+      (camera_captured || (application->editor_viewport.enabled
+                               ? state->scene_keyboard_focus
+                               : !application->ui_capture.keyboard));
+  const bool8_t camera_shortcut =
+      application->editor_viewport.enabled && !application->ui_capture.text &&
       application->ui_system.keyboard_input_layer == 0u &&
       input_key_just_pressed(input_state, KEY_F3);
   if ((camera_tab || camera_shortcut) &&
-      (camera_captured || !application_editor_scene_rendering_stopped(application))) {
+      (camera_captured ||
+       !application_editor_scene_rendering_stopped(application))) {
     vkr_window_set_mouse_capture(&application->window, !camera_captured);
     state->free_camera_held = false_v;
     camera_started = !camera_captured;
@@ -2479,8 +2480,8 @@ vkr_internal void application_finish_gizmo_edit(Application *application) {
   application_clear_gizmo_handles(application);
 }
 
-vkr_internal void application_capture_gizmo_release(
-    const VkrViewportHitInfo *viewport_info) {
+vkr_internal void
+application_capture_gizmo_release(const VkrViewportHitInfo *viewport_info) {
   state->gizmo_drag.released = true_v;
   state->gizmo_drag.release_has_target_coords =
       viewport_info->has_target_coords;
@@ -2912,7 +2913,8 @@ vkr_internal void application_update_ui(Application *application,
   VkrSampleTransportAction transport_action = VKR_SAMPLE_TRANSPORT_NONE;
   VkrSceneEditRequest scene_edit = {0};
   const VkrMaterialTextureStreamStats texture_streams =
-      vkr_material_system_get_texture_stream_stats(&application->assets.material_system);
+      vkr_material_system_get_texture_stream_stats(
+          &application->assets.material_system);
   VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
       .dock = &application->editor_viewport.dock,
@@ -2923,9 +2925,9 @@ vkr_internal void application_update_ui(Application *application,
               .performance = application_ui_text_view(&state->fps_text),
               .metrics = application_ui_text_view(&state->metrics_text),
               .memory = application_ui_text_view(&state->memory_text),
-              .system = string8_create_from_cstr(
-                  (const uint8_t *)state->system_text,
-                  string_length(state->system_text)),
+              .system =
+                  string8_create_from_cstr((const uint8_t *)state->system_text,
+                                           string_length(state->system_text)),
           },
       .simulation_time = application->editor_viewport.simulation_time,
       .simulation_running = application->editor_viewport.simulation_running,
@@ -3106,7 +3108,8 @@ vkr_internal void application_update_ui(Application *application,
     break;
   case VKR_SAMPLE_TRANSPORT_TOGGLE_CAMERA:
     if (!application_editor_scene_rendering_stopped(application)) {
-      const bool8_t captured = vkr_window_is_mouse_captured(&application->window);
+      const bool8_t captured =
+          vkr_window_is_mouse_captured(&application->window);
       vkr_window_set_mouse_capture(&application->window, !captured);
       state->free_camera_held = false_v;
       state->scene_keyboard_focus = true_v;
@@ -3120,16 +3123,17 @@ vkr_internal void application_update_ui(Application *application,
 }
 
 static void application_project_ui(Application *application,
-                                    const VkrViewportMapping *mapping) {
+                                   const VkrViewportMapping *mapping) {
   const VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
       .mapping = *mapping,
       .mapping_valid = true_v,
-      .view_projection = mat4_mul(application->globals.projection,
-                                   application->globals.view),
+      .view_projection =
+          mat4_mul(application->globals.projection, application->globals.view),
       .scene = application->active_scene,
       .scene_generation = application->scene_generation,
-      .scene_rendering_stopped = application_editor_scene_rendering_stopped(application),
+      .scene_rendering_stopped =
+          application_editor_scene_rendering_stopped(application),
   };
   state->ui.project_scene(state->ui.state, &frame);
 }
@@ -3274,6 +3278,10 @@ int vkr_sample_runtime_run(int argc, char **argv,
       };
     }
   }
+  if (renderer_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN) {
+    application_config.render_scale = 2.0f / 3.0f;
+    application_config.upscale_mode = VKR_UPSCALE_MODE_FSR31;
+  }
   application_config.metrics_config = (VkrMetricsConfig){
       .pass_gpu_timings = rg_gpu_timing_enabled,
       .submission_gpu_timings = submission_gpu_timing_enabled,
@@ -3334,7 +3342,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->current_fps = 0.0;
   state->current_frametime = 0.0;
   state->ui = runtime_config->ui;
-  application.project_ui = state->ui.project_scene ? application_project_ui : NULL;
+  application.project_ui =
+      state->ui.project_scene ? application_project_ui : NULL;
   if (strlen(PROJECT_SOURCE_DIR) + strlen(scene_path_arg) +
           sizeof(".editor.json") >
       sizeof(state->sidecar_path)) {

@@ -2416,6 +2416,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK:
     return vkr_metal_packet_prepare_picking_readback(
         renderer, pass, packet, prepared, readback, readback_offset);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_PREPARE:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_UPSCALE:
+    log_error("FSR 3.1 requires the Vulkan backend");
+    return false_v;
   default:
     return false_v;
   }

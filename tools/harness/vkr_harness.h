@@ -24,7 +24,7 @@
  * Version 2 first held warmup at the initial pose. This value participates in
  * the workload fingerprint, preventing comparisons across replay behavior.
  */
-#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 4u
+#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 5u
 #define VKR_HARNESS_PATH_MAX 1024u
 /**
  * Paths recorded inside a report are relative to its run root, never absolute.
@@ -272,9 +272,9 @@ typedef struct VkrHarnessRendererConfig {
    */
   uint32_t render_width;
   uint32_t render_height;
-  /** Reconstruction implementation: `spatial` or `metalfx_temporal`. */
+  /** Reconstruction implementation: `spatial`, `metalfx_temporal`, or `fsr31`. */
   char upscaler[24];
-  /** Completion-driven MetalFX resolution policy. */
+  /** Completion-driven MetalFX resolution policy. FSR 3.1 uses fixed scale. */
   bool8_t dynamic_resolution;
   float32_t dynamic_resolution_min_scale;
   float32_t dynamic_resolution_max_scale;

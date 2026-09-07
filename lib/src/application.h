@@ -841,10 +841,10 @@ vkr_internal bool8_t application_editor_viewport_mapping(
                           application, window_width, window_height, &panel))
     return false_v;
   const bool8_t renderer_scaled_scene =
-      application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL &&
-      (application->renderer.scene_output_extent_overridden ||
-       application->renderer.render_scale != 1.0f ||
-       application->renderer.upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL);
+      application->renderer.scene_output_extent_overridden ||
+      application->renderer.render_scale != 1.0f ||
+      application->renderer.upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
+      application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31;
   if (renderer_scaled_scene && application->renderer.render_width > 0u &&
       application->renderer.render_height > 0u) {
     return vkr_editor_viewport_mapping_from_panel_rect_and_target(
@@ -863,7 +863,8 @@ vkr_internal VkrRendererError
 application_configure_scene_output(Application *application) {
   if (!application)
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL)
+  if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31)
     return VKR_RENDERER_ERROR_NONE;
 
   if (application_editor_scene_rendering_stopped(application))
@@ -875,15 +876,15 @@ application_configure_scene_output(Application *application) {
   /* Unit-scale editor scenes already use the packet's mapped viewport. */
   if (paneled && application->renderer.render_scale == 1.0f &&
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+      application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31 &&
       application->scene_output_scale == 1.0f)
     return vkr_renderer_restore_scene_output_extent(&application->renderer);
   if (!paneled && application->scene_output_scale == 1.0f)
     return vkr_renderer_restore_scene_output_extent(&application->renderer);
 
-  /* MetalFX scaler recreation waits for completion. Keep the previous Scene
-     output while a dock gesture is live, let the compositor stretch it, and
-     resize once when the gesture releases. Pending memory relief must realize
-     its smaller targets before it can authorize texture retries. */
+  /* Temporal scalers recreate completion-protected output on release. Keep the
+     previous Scene output while a dock gesture is live, then resize once.
+     Pending memory relief must realize smaller targets before texture retries. */
   if (paneled && application->renderer.scene_output_extent_overridden &&
       application->scene_memory_relief_generation ==
           application->assets.material_system
@@ -1481,18 +1482,17 @@ void application_draw_frame(Application *application, float64_t delta) {
       application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
       application->editor_viewport.rendered_width = viewport_width;
       application->editor_viewport.rendered_height = viewport_height;
-      const bool8_t scaled_metal =
-          application->renderer.backend_type ==
-              VKR_RENDERER_BACKEND_TYPE_METAL &&
-          (application->renderer.scene_output_extent_overridden ||
-           application->renderer.render_scale != 1.0f ||
-           application->renderer.upscale_mode ==
-               VKR_UPSCALE_MODE_METALFX_TEMPORAL);
+      const bool8_t scaled_scene =
+          application->renderer.scene_output_extent_overridden ||
+          application->renderer.render_scale != 1.0f ||
+          application->renderer.upscale_mode ==
+              VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
+          application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31;
       application->editor_viewport.output_width =
-          scaled_metal ? application->renderer.scene_output_width
+          scaled_scene ? application->renderer.scene_output_width
                        : viewport_width;
       application->editor_viewport.output_height =
-          scaled_metal ? application->renderer.scene_output_height
+          scaled_scene ? application->renderer.scene_output_height
                        : viewport_height;
     }
     vkr_shadow_system_commit_frame(

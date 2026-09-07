@@ -13,6 +13,7 @@ typedef struct VkrVulkanFeatureSet {
   bool8_t geometry_shader;
   bool8_t independent_blend;
   bool8_t sampler_anisotropy;
+  bool8_t storage_image_extended_formats;
   bool8_t shader_draw_parameters;
   bool8_t buffer_device_address;
   bool8_t draw_indirect_count;
@@ -337,6 +338,10 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
                                      &device->debug_messenger) != VK_SUCCESS) {
       return false_v;
     }
+    log_info("Vulkan validation enabled: VK_LAYER_KHRONOS_validation "
+             "(synchronization=%u, GPU-assisted=%u)",
+             (uint32_t)device->config.enable_synchronization_validation,
+             (uint32_t)device->config.enable_gpu_assisted);
   }
 
   if (debug_utils_available) {
@@ -447,6 +452,8 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
       .geometry_shader = features2.features.geometryShader,
       .independent_blend = features2.features.independentBlend,
       .sampler_anisotropy = features2.features.samplerAnisotropy,
+      .storage_image_extended_formats =
+          features2.features.shaderStorageImageExtendedFormats,
       .shader_draw_parameters = features11.shaderDrawParameters,
       .buffer_device_address = features12.bufferDeviceAddress,
       .draw_indirect_count = features12.drawIndirectCount,
@@ -512,10 +519,14 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
                      candidate->features.geometry_shader);
   vkr_vk_add_feature(report, "independentBlend",
                      candidate->features.independent_blend);
+  if (device->config.fsr31_enabled)
+    vkr_vk_add_feature(report, "FSR.shaderStorageImageExtendedFormats",
+                       candidate->features.storage_image_extended_formats);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE, "samplerAnisotropy",
                     false_v, candidate->features.sampler_anisotropy,
-                    candidate->features.sampler_anisotropy ? "enabled when selected"
-                                                           : "unavailable");
+                    candidate->features.sampler_anisotropy
+                        ? "enabled when selected"
+                        : "unavailable");
   vkr_vk_add_feature(report, "shaderDrawParameters",
                      candidate->features.shader_draw_parameters);
   vkr_vk_add_feature(report, "bufferDeviceAddress",
@@ -1039,6 +1050,8 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       .features = {.shaderInt64 = VK_TRUE,
                    .geometryShader = VK_TRUE,
                    .independentBlend = VK_TRUE,
+                   .shaderStorageImageExtendedFormats =
+                       device->config.fsr31_enabled,
                    .samplerAnisotropy = candidate->features.sampler_anisotropy},
   };
   const char *extensions[3] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
@@ -1218,8 +1231,9 @@ float32_t vkr_vulkan_device_max_anisotropy(const VkrVulkanDevice *device) {
   if (!device || !device->selected ||
       !device->selected->features.sampler_anisotropy)
     return 1.0f;
-  return Min(16.0f,
-             device->selected->properties.properties.limits.maxSamplerAnisotropy);
+  return Min(
+      16.0f,
+      device->selected->properties.properties.limits.maxSamplerAnisotropy);
 }
 
 const VkPhysicalDeviceMemoryProperties *

@@ -1,5 +1,6 @@
 static const uint VKR_FULLSCREEN_TONEMAP = 1u << 1u;
 static const uint VKR_FULLSCREEN_FXAA = 1u << 2u;
+static const uint VKR_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u;
 
 float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
                        bool tonemap, float exposure)
@@ -126,10 +127,16 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
         NonUniformResourceIndex(root.transmission_sampler);
     bool tonemap = (g_push.flags & VKR_FULLSCREEN_TONEMAP) != 0u;
     float exposure = root.exposure_state->exposure_multiplier;
-    if ((g_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
-        return vkr_post_sample(texture_index, sampler_index, input.uv, tonemap,
-                               exposure);
     uint2 extent = uint2(root.point_light_grid_origin_cell_size.xy);
-    return vkr_fxaa(texture_index, sampler_index, input.uv,
-                    1.0f / float2(extent), tonemap, exposure);
+    float4 result;
+    if ((g_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
+        result = vkr_post_sample(texture_index, sampler_index, input.uv, tonemap,
+                                 exposure);
+    else
+        result = vkr_fxaa(texture_index, sampler_index, input.uv,
+                          1.0f / float2(extent), tonemap, exposure);
+    // FSR output alpha carries a private static-history sample count.
+    if ((g_push.flags & VKR_FULLSCREEN_OPAQUE_ALPHA) != 0u)
+        result.a = 1.0f;
+    return result;
 }

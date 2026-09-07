@@ -409,7 +409,7 @@
     {
       "name": "temporal_history_color",
       "type": "image",
-      "condition": "scene_rendering && !metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled && !fsr31_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -418,7 +418,7 @@
     {
       "name": "temporal_history_depth",
       "type": "image",
-      "condition": "scene_rendering && !metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled && !fsr31_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16_SFLOAT",
       "usage": ["STORAGE"],
@@ -427,7 +427,7 @@
     {
       "name": "temporal_history_identity",
       "type": "image",
-      "condition": "scene_rendering && !metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled && !fsr31_enabled",
       "extent": { "mode": "viewport" },
       "format": "R32G32_UINT",
       "usage": ["STORAGE"],
@@ -436,7 +436,7 @@
     {
       "name": "temporal_history_surface",
       "type": "image",
-      "condition": "scene_rendering && !metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled && !fsr31_enabled",
       "extent": { "mode": "viewport" },
       "format": "R32_UINT",
       "usage": ["STORAGE"],
@@ -479,6 +479,42 @@
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {
+      "name": "fsr31_depth",
+      "type": "image",
+      "condition": "scene_rendering && fsr31_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R32_SFLOAT",
+      "usage": ["STORAGE", "SAMPLED"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "fsr31_reactive",
+      "type": "image",
+      "condition": "scene_rendering && fsr31_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R8_UNORM",
+      "usage": ["STORAGE", "SAMPLED"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "fsr31_composition",
+      "type": "image",
+      "condition": "scene_rendering && fsr31_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R8_UNORM",
+      "usage": ["STORAGE", "SAMPLED"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "fsr31_output_color",
+      "type": "image",
+      "condition": "scene_rendering && fsr31_enabled",
+      "extent": { "mode": "scene_output" },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["STORAGE", "SAMPLED", "COLOR_ATTACHMENT", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "HISTORY"]
+    },
+    {
       "name": "exposure_histogram",
       "type": "buffer",
       "condition": "scene_rendering && exposure_automatic",
@@ -497,7 +533,7 @@
     {
       "name": "bloom_chain",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
       "extent": { "mode": "viewport", "divisor": 2 },
       "format": "R16G16B16A16_SFLOAT",
       "mip_levels": "full_chain",
@@ -507,7 +543,7 @@
     {
       "name": "bloom_accum",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
       "extent": { "mode": "viewport", "divisor": 2 },
       "format": "R16G16B16A16_SFLOAT",
       "mip_levels": "full_chain",
@@ -517,7 +553,7 @@
     {
       "name": "bloom_combined",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled && !metalfx_enabled",
+      "condition": "scene_rendering && bloom_enabled && !metalfx_enabled && !fsr31_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -527,6 +563,35 @@
       "name": "metalfx_bloom_combined",
       "type": "image",
       "condition": "scene_rendering && bloom_enabled && metalfx_enabled",
+      "extent": { "mode": "scene_output" },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "fsr31_bloom_chain",
+      "type": "image",
+      "condition": "scene_rendering && bloom_enabled && fsr31_enabled",
+      "extent": { "mode": "scene_output", "divisor": 2 },
+      "format": "R16G16B16A16_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "fsr31_bloom_accum",
+      "type": "image",
+      "condition": "scene_rendering && bloom_enabled && fsr31_enabled",
+      "extent": { "mode": "scene_output", "divisor": 2 },
+      "format": "R16G16B16A16_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "fsr31_bloom_combined",
+      "type": "image",
+      "condition": "scene_rendering && bloom_enabled && fsr31_enabled",
       "extent": { "mode": "scene_output" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -2017,7 +2082,7 @@
     {
       "name": "Temporal.Resolve.Fullscreen",
       "type": "compute",
-      "condition": "scene_rendering && !editor_enabled && !metalfx_enabled",
+      "condition": "scene_rendering && !editor_enabled && !metalfx_enabled && !fsr31_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 0 },
@@ -2040,6 +2105,58 @@
         { "image": "temporal_history_surface", "access": "STORAGE_WRITE", "binding": 11 }
       ],
       "execute": "pass.temporal.resolve"
+    },
+    {
+      "name": "FSR31.Prepare",
+      "type": "compute",
+      "condition": "scene_rendering && fsr31_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 0, "when": "!editor_enabled" },
+        { "image": "scene_color", "access": "SAMPLED", "binding": 0, "when": "editor_enabled" },
+        { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 1, "when": "!editor_enabled" },
+        { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 1, "when": "editor_enabled" },
+        { "image": "temporal_validity", "access": "SAMPLED", "binding": 2 },
+        { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 3 },
+        { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 4, "subresource": { "base_layer": 0, "layer_count": 1 }, "when": "transmission_pending" }
+      ],
+      "writes": [
+        { "image": "fsr31_depth", "access": "STORAGE_WRITE", "binding": 5 },
+        { "image": "fsr31_reactive", "access": "STORAGE_WRITE", "binding": 6 },
+        { "image": "fsr31_composition", "access": "STORAGE_WRITE", "binding": 7 }
+      ],
+      "execute": "pass.fsr31.prepare"
+    },
+    {
+      "name": "FSR31.Upscale",
+      "type": "compute",
+      "condition": "scene_rendering && fsr31_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 0, "when": "!editor_enabled" },
+        { "image": "scene_color", "access": "SAMPLED", "binding": 0, "when": "editor_enabled" },
+        { "image": "fsr31_depth", "access": "SAMPLED", "binding": 1 },
+        { "image": "temporal_motion", "access": "SAMPLED", "binding": 2 },
+        { "image": "fsr31_reactive", "access": "SAMPLED", "binding": 3 },
+        { "image": "fsr31_composition", "access": "SAMPLED", "binding": 4 }
+      ],
+      "writes": [
+        { "image": "fsr31_output_color", "access": "STORAGE_WRITE", "binding": 5 }
+      ],
+      "execute": "pass.fsr31.upscale"
+    },
+    {
+      "name": "FSR31.Stabilize",
+      "type": "compute",
+      "condition": "scene_rendering && fsr31_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "fsr31_reactive", "access": "SAMPLED", "binding": 1 }
+      ],
+      "writes": [
+        { "image": "fsr31_output_color", "access": "STORAGE_READ_WRITE", "binding": 0 }
+      ],
+      "execute": "pass.fsr31.stabilize"
     },
     {
       "name": "MetalFX.StageInputs",
@@ -2077,7 +2194,7 @@
     {
       "name": "Temporal.Resolve.Editor",
       "type": "compute",
-      "condition": "scene_rendering && editor_enabled && !metalfx_enabled",
+      "condition": "scene_rendering && editor_enabled && !metalfx_enabled && !fsr31_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "scene_color", "access": "SAMPLED", "binding": 0 },
@@ -2107,8 +2224,9 @@
       "condition": "scene_rendering && exposure_automatic",
       "flags": ["NO_CULL"],
       "reads": [
-        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled" },
-        { "image": "metalfx_output_color", "access": "SAMPLED", "binding": 0, "when": "metalfx_enabled" }
+        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled && !fsr31_enabled" },
+        { "image": "metalfx_output_color", "access": "SAMPLED", "binding": 0, "when": "metalfx_enabled" },
+        { "image": "fsr31_output_color", "access": "SAMPLED", "binding": 0, "when": "fsr31_enabled" }
       ],
       "writes": [
         { "buffer": "exposure_histogram", "access": "STORAGE_READ_WRITE", "binding": 1 }
@@ -2134,14 +2252,23 @@
       "condition": "scene_rendering && bloom_enabled",
       "flags": ["NO_CULL"],
       "reads": [
-        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled" },
-        { "image": "metalfx_output_color", "access": "SAMPLED", "binding": 0, "when": "metalfx_enabled" }
+        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled && !fsr31_enabled" },
+        { "image": "metalfx_output_color", "access": "SAMPLED", "binding": 0, "when": "metalfx_enabled" },
+        { "image": "fsr31_output_color", "access": "SAMPLED", "binding": 0, "when": "fsr31_enabled" }
       ],
       "writes": [
         {
           "image": "bloom_chain",
           "access": "STORAGE_WRITE",
           "binding": 1,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": 0, "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_chain",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": 0, "mip_count": 1 }
         }
       ],
@@ -2158,6 +2285,14 @@
           "image": "bloom_chain",
           "access": "SAMPLED",
           "binding": 0,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": "${i}", "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_chain",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": "${i}", "mip_count": 1 }
         }
       ],
@@ -2166,6 +2301,14 @@
           "image": "bloom_chain",
           "access": "STORAGE_WRITE",
           "binding": 1,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_chain",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
         }
       ],
@@ -2185,18 +2328,42 @@
           "image": "bloom_chain",
           "access": "SAMPLED",
           "binding": 0,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": "${i}", "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_chain",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": "${i}", "mip_count": 1 }
         },
         {
           "image": "bloom_accum",
           "access": "SAMPLED",
           "binding": 2,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_accum",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
         },
         {
           "image": "bloom_chain",
           "access": "SAMPLED",
           "binding": 3,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_chain",
+          "access": "SAMPLED",
+          "binding": 3,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
         }
       ],
@@ -2205,6 +2372,14 @@
           "image": "bloom_accum",
           "access": "STORAGE_WRITE",
           "binding": 1,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": "${i}", "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_accum",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": "${i}", "mip_count": 1 }
         }
       ],
@@ -2216,18 +2391,28 @@
       "condition": "scene_rendering && bloom_enabled",
       "flags": ["NO_CULL"],
       "reads": [
-        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled" },
+        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled && !fsr31_enabled" },
         { "image": "metalfx_output_color", "access": "SAMPLED", "binding": 0, "when": "metalfx_enabled" },
+        { "image": "fsr31_output_color", "access": "SAMPLED", "binding": 0, "when": "fsr31_enabled" },
         {
           "image": "bloom_accum",
           "access": "SAMPLED",
           "binding": 2,
+          "when": "!fsr31_enabled",
+          "subresource": { "base_mip": 0, "mip_count": 1 }
+        },
+        {
+          "image": "fsr31_bloom_accum",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "fsr31_enabled",
           "subresource": { "base_mip": 0, "mip_count": 1 }
         }
       ],
       "writes": [
-        { "image": "bloom_combined", "access": "STORAGE_WRITE", "binding": 1, "when": "!metalfx_enabled" },
-        { "image": "metalfx_bloom_combined", "access": "STORAGE_WRITE", "binding": 1, "when": "metalfx_enabled" }
+        { "image": "bloom_combined", "access": "STORAGE_WRITE", "binding": 1, "when": "!metalfx_enabled && !fsr31_enabled" },
+        { "image": "metalfx_bloom_combined", "access": "STORAGE_WRITE", "binding": 1, "when": "metalfx_enabled" },
+        { "image": "fsr31_bloom_combined", "access": "STORAGE_WRITE", "binding": 1, "when": "fsr31_enabled" }
       ],
       "execute": "pass.bloom.combine"
     },
@@ -2242,7 +2427,7 @@
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0,
-          "when": "!metalfx_enabled"
+          "when": "!metalfx_enabled && !fsr31_enabled"
         },
         {
           "image": "metalfx_output_color",
@@ -2251,13 +2436,20 @@
           "array_index": 0,
           "when": "metalfx_enabled"
         },
+        {
+          "image": "fsr31_output_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "fsr31_enabled"
+        },
         { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" },
         {
           "image": "bloom_combined",
           "access": "SAMPLED",
           "binding": 2,
           "subresource": { "base_mip": 0, "mip_count": 1 },
-          "when": "bloom_enabled && !metalfx_enabled"
+          "when": "bloom_enabled && !metalfx_enabled && !fsr31_enabled"
         },
         {
           "image": "metalfx_bloom_combined",
@@ -2265,6 +2457,13 @@
           "binding": 2,
           "subresource": { "base_mip": 0, "mip_count": 1 },
           "when": "bloom_enabled && metalfx_enabled"
+        },
+        {
+          "image": "fsr31_bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": { "base_mip": 0, "mip_count": 1 },
+          "when": "bloom_enabled && fsr31_enabled"
         }
       ],
       "attachments": {
@@ -2290,7 +2489,7 @@
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0,
-          "when": "!metalfx_enabled"
+          "when": "!metalfx_enabled && !fsr31_enabled"
         },
         {
           "image": "metalfx_output_color",
@@ -2299,13 +2498,20 @@
           "array_index": 0,
           "when": "metalfx_enabled"
         },
+        {
+          "image": "fsr31_output_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "fsr31_enabled"
+        },
         { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" },
         {
           "image": "bloom_combined",
           "access": "SAMPLED",
           "binding": 2,
           "subresource": { "base_mip": 0, "mip_count": 1 },
-          "when": "bloom_enabled && !metalfx_enabled"
+          "when": "bloom_enabled && !metalfx_enabled && !fsr31_enabled"
         },
         {
           "image": "metalfx_bloom_combined",
@@ -2313,6 +2519,13 @@
           "binding": 2,
           "subresource": { "base_mip": 0, "mip_count": 1 },
           "when": "bloom_enabled && metalfx_enabled"
+        },
+        {
+          "image": "fsr31_bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": { "base_mip": 0, "mip_count": 1 },
+          "when": "bloom_enabled && fsr31_enabled"
         }
       ],
       "attachments": {

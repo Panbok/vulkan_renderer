@@ -1,0 +1,98 @@
+diff --git a/sdk/CMakeLists.txt b/sdk/CMakeLists.txt
+index bfa1349..8c24aed 100644
+--- a/sdk/CMakeLists.txt
++++ b/sdk/CMakeLists.txt
+@@ -75,7 +75,8 @@ if (NOT FFX_CUSTOM_API)
+ 	endif()
+ endif()
+ 
+-# Set platform
++# Set platform. Embedded builds may provide their target explicitly.
++if(NOT DEFINED FFX_PLATFORM_NAME)
+ if(CMAKE_GENERATOR_PLATFORM STREQUAL "Gaming.Xbox.Scarlett.x64")
+ 	set(FFX_PLATFORM_NAME gdk_scarlett_x64)
+ elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "Gaming.Xbox.XboxOne.x64")
+@@ -92,6 +93,8 @@ else()
+     message(FATAL_ERROR "Unsupported target platform \"${CMAKE_GENERATOR_PLATFORM}\"")
+ endif()
+ 
++endif()
++
+ # Pre-compile shaders
+ set(FFX_AUTO_COMPILE_SHADERS ON CACHE BOOL "Compile shaders automatically as a prebuild step.")
+ 
+@@ -116,7 +119,9 @@ endif()
+ if (NOT FFX_CUSTOM_API)
+ 
+ 	# Embed PDBs in the debug versions of the libs
+-	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Z7 /Od")
++	if(MSVC)
++        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Z7 /Od")
++    endif()
+     
+ 	# Write debug, profile, and release versions of the static libs to the /bin folder as they are uniquely named	
+ 	set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_HOME_DIRECTORY}/bin/ffx_sdk/)
+diff --git a/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt b/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt
+index ac1088d..a0ba14c 100644
+--- a/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt
++++ b/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt
+@@ -35,7 +35,7 @@ function(compile_shaders_with_depfile
+ 	EXECUTABLE BASE_ARGS API_BASE_ARGS
+ 	PERMUTATION_ARGS INCLUDES_ARGS
+ 	SHADER_FILES OUTPUT_PATH
+-	PERMUTATION_OUTPUTS)
++	PERMUTATION_OUTPUTS_VAR)
+ 
+ 	#message(STATUS "OUTPUT_PATH=${OUTPUT_PATH}")
+ 	#message(STATUS "EXE=${EXECUTABLE}")
+@@ -127,7 +127,7 @@ function(compile_shaders_with_depfile
+ 		list(APPEND PERMUTATION_OUTPUTS ${WAVE64_16BIT_PERMUTATION_HEADER})
+ 	endforeach(PASS_SHADER)
+ 
+-	set(${PERMUTATION_OUTPUTS} ${PERMUTATION_OUTPUTS} PARENT_SCOPE)
++	set(${PERMUTATION_OUTPUTS_VAR} ${PERMUTATION_OUTPUTS} PARENT_SCOPE)
+ endfunction()
+ 
+ # macro to add shader output files to a list for dependencies
+diff --git a/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h b/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h
+index d0cbf9d..c5bbbfc 100644
+--- a/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h
++++ b/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h
+@@ -395,7 +395,7 @@ FfxFloat32x4 SampleHistory(FfxFloat32x2 fUV)
+ #endif
+ 
+ #if defined(FSR3UPSCALER_BIND_UAV_LUMA_HISTORY)
+-layout (set = 0, binding = FSR3UPSCALER_BIND_UAV_LUMA_HISTORY, rgba8) uniform image2D  rw_luma_history;
++layout (set = 0, binding = FSR3UPSCALER_BIND_UAV_LUMA_HISTORY, rgba16f) uniform image2D  rw_luma_history;
+ 
+ void StoreLumaHistory(FfxInt32x2 iPxPos, FfxFloat32x4 fLumaHistory)
+ {
+diff --git a/sdk/src/backends/vk/ffx_vk.cpp b/sdk/src/backends/vk/ffx_vk.cpp
+index d914479..ff57937 100644
+--- a/sdk/src/backends/vk/ffx_vk.cpp
++++ b/sdk/src/backends/vk/ffx_vk.cpp
+@@ -341,7 +341,11 @@ FfxErrorCode ffxGetInterfaceVK(
+     backendInterface->fpBreadcrumbsWrite = BreadcrumbsWriteVK;
+     backendInterface->fpBreadcrumbsPrintDeviceInfo = BreadcrumbsPrintDeviceInfoVK;
+     backendInterface->fpRegisterConstantBufferAllocator = RegisterConstantBufferAllocatorVK;
++#if defined(VKR_FSR_UPSCALER_ONLY)
++    backendInterface->fpSwapChainConfigureFrameGeneration = nullptr;
++#else
+     backendInterface->fpSwapChainConfigureFrameGeneration = ffxSetFrameGenerationConfigToSwapchainVK;
++#endif
+ 
+     // Memory assignments
+     backendInterface->scratchBuffer = scratchBuffer;
+@@ -1985,6 +1989,12 @@ FfxErrorCode GetDeviceCapabilitiesVK(FfxInterface* backendInterface, FfxDeviceCa
+     deviceCapabilities->extendedSynchronizationSupported = false;
+     deviceCapabilities->shaderStorageBufferArrayNonUniformIndexing = false;
+ 
++    // VKR does not enable shaderFloat16 or subgroup-size control. Do not
++    // select SDK permutations that require features merely advertised by the GPU.
++#if defined(VKR_FSR_FP32_ONLY)
++    return FFX_OK;
++#endif
++
+     BackendContext_VK* context = (BackendContext_VK*)backendInterface->scratchBuffer;
+ 
+     // check if extensions are enabled

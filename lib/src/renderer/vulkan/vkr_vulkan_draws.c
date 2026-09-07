@@ -1,5 +1,5 @@
-#include "renderer/vulkan/vkr_vulkan_internal.h"
 #include "renderer/vkr_visibility.h"
+#include "renderer/vulkan/vkr_vulkan_internal.h"
 
 typedef struct VkrVulkanTableDrawUpload {
   VkrVulkanPacketDrawRoot root;
@@ -334,12 +334,12 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   // Bound variable uploads before publishing any mapped pointer or GPU address.
   // A capped conservative bound preserves the former 75 MiB direct-only limit.
   const uint64_t geometry_table_bytes =
-      packet->scene_rendering
-          ? (uint64_t)renderer->config.geometry_capacity *
-                sizeof(VkrGpuGeometryRow)
-          : 0u;
-  uint64_t direct_bytes = geometry_table_bytes +
-                          256u; // Alignment between the fixed packet tables below.
+      packet->scene_rendering ? (uint64_t)renderer->config.geometry_capacity *
+                                    sizeof(VkrGpuGeometryRow)
+                              : 0u;
+  uint64_t direct_bytes =
+      geometry_table_bytes +
+      256u; // Alignment between the fixed packet tables below.
   uint64_t candidate_bytes = 0u;
   uint64_t draw_bytes = 0u;
   uint64_t text_bytes = 0u;
@@ -349,10 +349,8 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
     const uint64_t direct_run_count = vkr_world_draw_parity_run_count(world);
     direct_bytes +=
         (uint64_t)world->instance_count * sizeof(VkrPreparedInstanceGPU) +
-        direct_run_count *
-            sizeof(VkrVulkanPreparedDirectDraw);
-    draw_bytes = direct_run_count *
-                 sizeof(VkrVulkanTableDrawUpload);
+        direct_run_count * sizeof(VkrVulkanPreparedDirectDraw);
+    draw_bytes = direct_run_count * sizeof(VkrVulkanTableDrawUpload);
     candidate_bytes =
         ((uint64_t)world->gpu_candidate_count +
          world->transmission_gpu_candidate_count) *
@@ -428,7 +426,8 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       slot->geometry_table_generation = renderer->geometry_table_generation;
     }
   } else {
-    /* Non-scene uploads begin at offset zero and invalidate this cached prefix. */
+    /* Non-scene uploads begin at offset zero and invalidate this cached prefix.
+     */
     slot->geometry_table_generation = 0u;
   }
   const bool8_t common_uploads =
@@ -986,13 +985,12 @@ bool8_t vkr_vk_prepare_packet_draws(
         .current_view_projection = packet->temporal.current_view_projection,
         .previous_view_projection =
             slot->temporal_history_valid
-                ? slot->temporal_color_input->history_view_projection
+                ? slot->temporal_previous_view_projection
                 : packet->temporal.current_view_projection,
         .history_valid = slot->temporal_history_valid,
-        .previous_frame_index =
-            slot->temporal_history_valid
-                ? slot->temporal_color_input->history_frame_index
-                : packet->input.frame.frame_index,
+        .previous_frame_index = slot->temporal_history_valid
+                                    ? slot->temporal_previous_frame_index
+                                    : packet->input.frame.frame_index,
     };
     frame_root->temporal_draw_state = temporal_address;
   }

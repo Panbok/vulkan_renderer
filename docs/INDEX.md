@@ -83,6 +83,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [046](adr/046-editor-viewport-mapping-and-picking.md) | Editor viewport mapping, transform gizmos, picking and retained Scene presentation | implemented |
 | [047](adr/047-event-payload-and-resize-mailbox-lifetimes.md) | Event callback payload lifetime and coalesced resize handoff | implemented |
 | [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs, crash diagnostics and reviewed capture baselines | implemented |
+| [052](adr/052-vulkan-fsr31-upscaling.md) | Vulkan FSR 3.1 temporal upscaling | implemented |
 
 ## Proposals
 

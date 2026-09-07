@@ -26,10 +26,13 @@ instrumentation, environment constraints, stability, and authority requirements.
 The parent launches isolated children and records effective configuration and
 build/device provenance alongside workload, policy, and environment fingerprints.
 The camera script is versioned: warmup holds its initial pose and measured frame
-zero starts the authored path. Version 4 starts warmup at the common zero of the
-eight-phase raster jitter and 64-phase GTAO noise sequences, invalidating temporal
-history at that boundary. Aligning raster jitter alone left captures dependent
-on bootstrap duration through ambient-occlusion noise.
+zero starts the authored path. Version 5 starts warmup at the common zero of the
+active raster jitter and 64-phase GTAO noise sequences, invalidating temporal
+history at that boundary. Portable TAA uses eight raster phases; FSR uses the
+renderer-owned period from the rounded render/output width ratio (17 for
+1239-to-1858 pixels, giving a common 1088-frame period). Stopped scenes and non-temporal modes require only the GTAO
+alignment. Aligning to 64 frames alone left FSR captures dependent on bootstrap
+duration through their raster jitter phase.
 Waiting for that phase remains bootstrap work; authored frame counts and GPU
 completion rules do not change. The workload fingerprint includes this version,
 so results from the previous replay behavior are incompatible.
@@ -119,6 +122,11 @@ The empty-stopped and tiny-node transport diagnostic cases are prepared for
 separate, bounded native runs; CPU manifest checks do not establish GPU stability.
 
 ## Consequences
+
+FSR and MetalFX cases default to FXAA disabled. An explicitly authored
+`renderer.fxaa_enabled` overrides that default, so post-upscaler filtering can
+be compared with the runtime. Capture channels select their replay render mode:
+use `unlit` for unlit output; `final_color` selects the normal shaded path.
 
 A report can pass execution yet be non-authoritative for performance. Capture
 replay timing cannot substitute for the primary profile. Accepted generations

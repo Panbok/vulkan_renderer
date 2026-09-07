@@ -41,6 +41,8 @@ typedef enum VkrUpscaleMode {
   VKR_UPSCALE_MODE_SPATIAL = 0,
   /** MetalFX temporal reconstruction into native-resolution HDR. */
   VKR_UPSCALE_MODE_METALFX_TEMPORAL,
+  /** FidelityFX Super Resolution 3.1 temporal upscaling on Vulkan. */
+  VKR_UPSCALE_MODE_FSR31,
   VKR_UPSCALE_MODE_COUNT,
 } VkrUpscaleMode;
 

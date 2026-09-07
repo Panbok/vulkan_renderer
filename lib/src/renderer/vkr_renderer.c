@@ -443,6 +443,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
+      .fsr31_enabled =
+          renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31,
       .transmission_compact_enabled =
           !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
 #if !defined(NDEBUG)
@@ -502,6 +504,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     return false_v;
   }
   if (backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      requested_upscale_mode != VKR_UPSCALE_MODE_FSR31 &&
       requested_render_scale != 1.0f) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
     log_error("Internal render scale is currently supported only by Metal");
@@ -517,6 +520,18 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
       backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
     log_error("MetalFX temporal upscaling requires the Metal backend");
+    return false_v;
+  }
+  if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 &&
+      backend_type != VKR_RENDERER_BACKEND_TYPE_VULKAN) {
+    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+    log_error("FSR 3.1 upscaling requires the Vulkan backend");
+    return false_v;
+  }
+  if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 &&
+      requested_render_scale < (1.0f / 3.0f)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    log_error("FSR 3.1 render scale must be in [1/3, 1]");
     return false_v;
   }
   if (requested_dynamic_resolution.enabled &&
@@ -586,6 +601,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->temporal_reset_reasons = 0u;
   renderer->temporal_enabled =
       requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
+      requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
       !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
   renderer->exposure_state = (VkrExposureState){0};
   renderer->exposure_reset_reasons = 0u;
@@ -708,6 +724,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.editor_image_width = 1u;
   prepared->frame.editor_image_height = 1u;
   prepared->frame.editor_image_rect_px = (Vec4){0};
+  prepared->frame.scene_output_width = rf->scene_output_width;
+  prepared->frame.scene_output_height = rf->scene_output_height;
+  prepared->frame.render_scale = rf->render_scale;
+  prepared->frame.fsr31_enabled =
+      rf->upscale_mode == VKR_UPSCALE_MODE_FSR31;
   if (packet->editor) {
     const Vec4 rect = packet->editor->image_rect_px;
     const bool8_t rendering = prepared->frame.scene_rendering;
@@ -776,6 +797,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       .width = temporal_width,
       .height = temporal_height,
       .render_mode = packet->globals.render_mode,
+      .jitter_phase_count =
+          prepared->frame.fsr31_enabled
+              ? vkr_temporal_upscale_sequence_length(temporal_width,
+                                                       rf->scene_output_width)
+              : VKR_TEMPORAL_SEQUENCE_LENGTH,
       .explicit_reset_reasons = rf->temporal_reset_reasons,
       .enabled = rf->temporal_enabled && !indirect_diffuse_only,
   };
@@ -947,8 +973,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .actual_target_image_count = renderer->present_target.image_count,
       .actual_target_width = renderer->last_window_width,
       .actual_target_height = renderer->last_window_height,
-      .actual_render_width = renderer->last_window_width,
-      .actual_render_height = renderer->last_window_height,
+      .actual_render_width = renderer->render_width,
+      .actual_render_height = renderer->render_height,
       .actual_color_format = color_format,
       .actual_depth_format = depth_format,
       .actual_color_space = color_space,
@@ -1632,6 +1658,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
       .render_scale = renderer->render_scale,
       .metalfx_enabled =
           renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL,
+      .fsr31_enabled = renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31,
       .picking_pending = false_v,
       .target_color_format = renderer->impl.caps.present_color_format,
       .target_depth_format = renderer->impl.caps.present_depth_format,
@@ -1681,8 +1708,21 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   }
   renderer->frame_active = true_v;
   renderer->frame_number++;
+  if (renderer->last_window_width != out_setup->window_width ||
+      renderer->last_window_height != out_setup->window_height)
+    renderer->target_generation++;
   renderer->last_window_width = out_setup->window_width;
   renderer->last_window_height = out_setup->window_height;
+  if (!renderer->scene_output_extent_overridden) {
+    renderer->scene_output_width = out_setup->window_width;
+    renderer->scene_output_height = out_setup->window_height;
+  }
+  renderer->render_width = vkr_renderer_scaled_extent(
+      renderer->scene_output_width, renderer->render_scale,
+      renderer->upscale_mode);
+  renderer->render_height = vkr_renderer_scaled_extent(
+      renderer->scene_output_height, renderer->render_scale,
+      renderer->upscale_mode);
   renderer->timing_completed_ready = vkr_renderer_backend_poll_submit_result(
       renderer, renderer->timing_last_completed_submit_value,
       &renderer->timing_result);
@@ -2084,7 +2124,8 @@ vkr_internal VkrRendererError vkr_renderer_configure_scene_output_extent(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   if (renderer->frame_active)
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
-  if (renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL)
+  if (renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      renderer->upscale_mode != VKR_UPSCALE_MODE_FSR31)
     return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   if (renderer->scene_output_extent_overridden == overridden &&
       renderer->scene_output_width == width &&

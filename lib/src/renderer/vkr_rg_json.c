@@ -75,6 +75,20 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_BLOOM_METALFX_ENABLED},
     {"bloom_enabled && !metalfx_enabled",
      VKR_RG_JSON_CONDITION_BLOOM_METALFX_DISABLED},
+    {"fsr31_enabled", VKR_RG_JSON_CONDITION_FSR31_ENABLED},
+    {"!fsr31_enabled", VKR_RG_JSON_CONDITION_FSR31_DISABLED},
+    {"!metalfx_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_METALFX_FSR31_DISABLED},
+    {"editor_enabled && !metalfx_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_FSR31_DISABLED},
+    {"!editor_enabled && !metalfx_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_FSR31_DISABLED},
+    {"bloom_enabled && fsr31_enabled",
+     VKR_RG_JSON_CONDITION_BLOOM_FSR31_ENABLED},
+    {"bloom_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_BLOOM_FSR31_DISABLED},
+    {"bloom_enabled && !metalfx_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_BLOOM_METALFX_FSR31_DISABLED},
     {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
     {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
     {"picking_pending && transmission_pending",
@@ -566,6 +580,9 @@ vkr_rg_json_parse_image_access(String8 value, VkrRgJsonImageAccessFlags *out) {
     *out = VKR_RG_JSON_IMAGE_ACCESS_STORAGE_READ;
   } else if (vkr_string8_equals_cstr_i(&value, "STORAGE_WRITE")) {
     *out = VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE;
+  } else if (vkr_string8_equals_cstr_i(&value, "STORAGE_READ_WRITE")) {
+    *out = VKR_RG_JSON_IMAGE_ACCESS_STORAGE_READ |
+           VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE;
   } else if (vkr_string8_equals_cstr_i(&value, "COLOR_ATTACHMENT")) {
     *out = VKR_RG_JSON_IMAGE_ACCESS_COLOR_ATTACHMENT;
   } else if (vkr_string8_equals_cstr_i(&value, "DEPTH_ATTACHMENT")) {
@@ -1964,6 +1981,25 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->bloom_enabled && frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_BLOOM_METALFX_DISABLED:
     return frame->bloom_enabled && !frame->metalfx_enabled;
+  case VKR_RG_JSON_CONDITION_FSR31_ENABLED:
+    return frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_FSR31_DISABLED:
+    return !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_METALFX_FSR31_DISABLED:
+    return !frame->metalfx_enabled && !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_FSR31_DISABLED:
+    return frame->editor_enabled && !frame->metalfx_enabled &&
+           !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_FSR31_DISABLED:
+    return !frame->editor_enabled && !frame->metalfx_enabled &&
+           !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_BLOOM_FSR31_ENABLED:
+    return frame->bloom_enabled && frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_BLOOM_FSR31_DISABLED:
+    return frame->bloom_enabled && !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_BLOOM_METALFX_FSR31_DISABLED:
+    return frame->bloom_enabled && !frame->metalfx_enabled &&
+           !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:

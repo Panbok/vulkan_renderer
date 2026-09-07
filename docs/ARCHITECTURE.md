@@ -1,6 +1,6 @@
 ---
-status: implemented
-updated: 2026-09-06
+status: partial
+updated: 2026-09-07
 authority: architecture
 ---
 
@@ -12,7 +12,7 @@ implementations own GPU resources, pipelines, commands and completion; shared
 code owns portable contracts and scene-facing systems. Linux, D3D12 and the
 retired Vulkan 1.2 renderer are not current execution paths.
 
-This document describes code present on 2026-09-05. It does not certify a fresh
+This document describes code present on 2026-09-07. It does not certify a fresh
 native run or a performance result. [INDEX](INDEX.md) locates accepted decisions
 and proposals; [CONTEXT](CONTEXT.md) defines vocabulary.
 
@@ -205,9 +205,9 @@ compiler for dependencies, ordering, culling and barriers.
 HZB/transmission/bloom/GTAO mip counts and GTAO constants once from the prepared
 frame. Native formats, resource instances and history/completion selection remain
 with each backend. Native executor registries bind the authored operations,
-including conditional MetalFX declarations.
-Vulkan rejects active MetalFX passes during graph validation; disabled declarations
-do not block startup. There is one GPU-driven world topology;
+including conditional MetalFX and Vulkan FSR 3.1 declarations. Vulkan rejects
+active MetalFX passes; Metal ignores inactive FSR declarations. Disabled
+declarations do not block startup. There is one GPU-driven world topology;
 no retained-forward/legacy world branch remains.
 
 The graph describes image reads/writes/attachments, buffer access, compute
@@ -247,7 +247,8 @@ post controls and the temporal consumer. The main dataflow is:
    transmission visibility layers.
 3. Resolve the G-buffer, evaluate GTAO, compute HDR lighting, and shade transmission
    from deepest to nearest. Resolve requested picking, then draw ordinary blend.
-4. Reconstruct temporal Scene HDR through portable TAA or selected MetalFX.
+4. Reconstruct temporal Scene HDR through portable TAA, selected MetalFX or
+   Vulkan FSR 3.1.
 5. Meter exposure, produce/combine bloom, tonemap/FXAA and compose native UI.
 
 Shadow passes produce directional cascades when their retained reuse proof fails.
@@ -356,15 +357,34 @@ is no legacy descriptor-set fallback. See
 Requested material anisotropy uses the enabled device feature and effective
 limit (up to 16); devices without it report a maximum of 1.
 
-Metal supports explicit internal scale and MetalFX temporal reconstruction.
-The sample selects dynamic MetalFX in direct and paneled modes; zero-initialized
-renderer API callers use unit-scale spatial mode. Vulkan rejects non-unit scale
-and MetalFX. UI stays native after Scene reconstruction. MetalFX motion targets
-the exact preceding scaler encode, with GPU event/fence ordering. Under Metal
-validation, the sample explicitly uses portable TAA/spatial diagnostics because
-the installed native MetalFX wrappers are incompatible. See
-[ADR-039](adr/039-metal-internal-render-scale.md) and
-[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md).
+Metal supports explicit internal scale and MetalFX temporal reconstruction. The
+sample selects dynamic MetalFX in direct and paneled modes; zero-initialized
+renderer API callers use unit-scale spatial mode. Vulkan spatial rendering
+rejects non-unit scale and MetalFX. Vulkan FSR 3.1 accepts a fixed scale in
+`[1/3, 1]`, including Native AA, with no frame generation or dynamic resolution.
+It consumes raw HDR, normalized previous-UV minus current-UV motion, portable
+jitter, masks and nearest transmission depth, then writes output-sized HDR before
+exposure, bloom, tonemap and UI. The first slice supports finite perspective
+cameras only; orthographic, infinite and reversed projections are unsupported.
+The FSR mask pass puts optical contrast only in the composition mask; authored
+reactivity and missing motion drive the reactive mask. TAA's full-scene and native
+revision proof suppresses static composition contrast. A following compute
+pass accumulates 128 stationary output samples and freezes completed pixels.
+Camera or scene changes immediately restore current FSR RGB. The output uses the
+five-instance graph history pool, with private sample age in alpha; fullscreen
+conversion keeps final FSR alpha opaque. SDK-private accumulation remains active.
+Separating optical composition from reactivity reduces motion variation around
+glass. Opaque thin-edge motion remains a tuning gap. The tested camera
+rotation has valid, correctly scaled opaque/transmission motion; see ADR-052 for the bounded evidence.
+FSR's SDK-private resources and classic descriptors remain behind a C bridge;
+the graph restores Vulkan descriptor buffers and graphics/compute offsets afterward.
+Bounded native Vulkan validation passes. UI stays native after Scene reconstruction. MetalFX
+motion targets the exact preceding scaler encode, with GPU event/fence ordering.
+Under Metal validation, the sample explicitly uses portable TAA/spatial
+diagnostics because the installed native MetalFX wrappers are incompatible. See
+[ADR-039](adr/039-metal-internal-render-scale.md),
+[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) and
+[ADR-052](adr/052-vulkan-fsr31-upscaling.md).
 
 ## Memory, synchronization and observability
 
@@ -432,7 +452,7 @@ Metal compute/graphics timestamps exist; transfer timing is not supported.
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero
 of raster jitter and GTAO noise, with temporal history invalidated; replay version
-4 fingerprints this behavior.
+5 includes FSR's scale-dependent jitter period in this alignment.
 See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-and-evidence.md).
 
 ## Remaining implementation and evidence boundaries
@@ -524,6 +544,9 @@ These are limits of current code or retained acceptance, not scheduled promises:
 - Moving TAA/MetalFX quality, final-color baseline acceptance and authoritative
   post-effect/reconstruction performance require their own matched evidence.
   Portable Metal validation does not certify native MetalFX.
+- Vulkan FSR 3.1 static, motion, Native AA, portable-TAA reference and editor-resize
+  checks pass on Windows. Native Vulkan static and resize diagnostics are clean;
+  performance and comprehensive temporal-quality evidence remain open.
 - The shader corrections and stationary coverage support remain UNALIGNED under
   ADR-044. Bounded Vulkan Release Bistro profiling and static/moving-camera
   snapshots pass on RX 6700 XT after fixing cooker memory growth, upload-memory

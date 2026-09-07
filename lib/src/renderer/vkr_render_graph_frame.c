@@ -12,6 +12,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     const VkrGtaoConfig *gtao_config,
                                     VkrRenderGraphFrameInfo *frame,
                                     VkrGtaoGpuParams *gtao_params) {
+  frame->fsr31_enabled = packet->fsr31_enabled;
+  frame->scene_output_width = packet->scene_output_width;
+  frame->scene_output_height = packet->scene_output_height;
+  frame->render_scale = packet->render_scale;
   frame->editor_enabled = packet->input.frame.editor_enabled;
   frame->scene_rendering = packet->scene_rendering;
   frame->editor_image_available = packet->editor_image_available;
@@ -98,10 +102,14 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->transmission_rough_mip_pass_count = Min(hzb_mip_count, 6u) - 1u;
 
   /* Bloom requires enough viewport extent for both reduction and upsampling. */
+  const uint32_t bloom_width =
+      frame->fsr31_enabled ? frame->scene_output_width : frame->viewport_width;
+  const uint32_t bloom_height = frame->fsr31_enabled
+                                    ? frame->scene_output_height
+                                    : frame->viewport_height;
   frame->bloom_mip_count =
       packet->bloom.enabled
-          ? vkr_bloom_mip_count(bloom_config, frame->viewport_width,
-                                frame->viewport_height)
+          ? vkr_bloom_mip_count(bloom_config, bloom_width, bloom_height)
           : 0u;
   frame->bloom_enabled = frame->bloom_mip_count > 0u;
   frame->gtao_depth_mip_count =

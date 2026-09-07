@@ -104,6 +104,129 @@ vkr_internal bool8_t vkr_vk_deferred_push_root(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+vkr_internal bool8_t vkr_vk_temporal_scene_equal(
+    const VkrVulkanTemporalSceneState *current,
+    const VkrVulkanTemporalSceneState *previous) {
+  return current->signature.eligible && previous->signature.eligible &&
+         current->signature.hash[0] == previous->signature.hash[0] &&
+         current->signature.hash[1] == previous->signature.hash[1] &&
+         current->radiance_revision == previous->radiance_revision &&
+         current->publication_generation == previous->publication_generation &&
+         current->graph_revision == previous->graph_revision;
+}
+
+bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass) {
+  const VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanFsr31PrepareRoot root = {
+      .extent = {renderer->prepared_frame.viewport_width,
+                 renderer->prepared_frame.viewport_height},
+      .transmission_enabled = renderer->prepared_frame.transmission_pending,
+      .scene_stationary =
+          slot->temporal_history_valid &&
+          vkr_vk_temporal_scene_equal(&slot->temporal_scene,
+                                      &renderer->fsr31_history.scene),
+  };
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &root.scene_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u,
+                                     &root.pre_transmission_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u,
+                                     &root.validity_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 3u,
+                                     &root.opaque_depth_texture) ||
+      (root.transmission_enabled &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 4u,
+                                      &root.transmission_depth_texture)) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 5u,
+                                     &root.output_depth_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 6u,
+                                     &root.reactive_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 7u,
+                                     &root.composition_texture) ||
+      !vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanFsr31PrepareRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE];
+  prepared->groups[0][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImage *colors =
+      vkr_vk_temporal_graph_image(renderer, "fsr31_output_color");
+  if (!colors || colors->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT)
+    return false_v;
+  VkrVulkanGraphImageInstance *output =
+      &colors->instances[renderer->history_output_index];
+  slot->temporal_color_output = output;
+  VkrVulkanFsr31StabilizeRoot root = {
+      .output_extent = {output->image.width, output->image.height},
+      .render_extent = {renderer->prepared_frame.viewport_width,
+                        renderer->prepared_frame.viewport_height},
+      .jitter_pixels = renderer->graph->packet->temporal.jitter_pixels,
+  };
+  if (slot->temporal_history_valid &&
+      vkr_vk_temporal_scene_equal(&slot->temporal_scene,
+                                  &renderer->fsr31_history.scene)) {
+    VkrVulkanGraphImageInstance *previous =
+        &colors->instances[renderer->fsr31_history.history_index];
+    if (previous->history_valid && previous->has_sampled_slot &&
+        previous->history_producer_submit_value ==
+            renderer->fsr31_history.submit_value &&
+        previous->image.width == output->image.width &&
+        previous->image.height == output->image.height) {
+      root.scene_stationary = true_v;
+      root.history_texture = previous->sampled_slot.index;
+      slot->temporal_color_input = previous;
+      // The preceding submission owns this history. Order its writes before
+      // this read; the HISTORY pool separately proves completion before reuse.
+      prepared->image_barriers[0] = (VkImageMemoryBarrier2){
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+          .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+          .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+          .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .image = previous->image.handle,
+          .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .levelCount = 1u, .layerCount = 1u},
+      };
+      prepared->image_barrier_count = 1u;
+    }
+  }
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u,
+                                     &root.output_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u,
+                                     &root.reactive_texture) ||
+      !vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanFsr31StabilizeRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FSR31_STABILIZE];
+  prepared->groups[0][0] = (root.output_extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.output_extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
 bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedUpload *prepared,
                                        const VkrRgPass *pass,
@@ -162,8 +285,8 @@ bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
       };
       const VkBufferCopy instance_copy = {
           .srcOffset = range->instance_source_offset,
-          .dstOffset =
-              (uint64_t)range->destination_first * sizeof(VkrPreparedInstanceGPU),
+          .dstOffset = (uint64_t)range->destination_first *
+                       sizeof(VkrPreparedInstanceGPU),
           .size = (uint64_t)range->count * sizeof(VkrPreparedInstanceGPU),
       };
       prepared->candidate_copies[prepared->copy_count] = candidate_copy;
@@ -197,7 +320,8 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
        (!slot->exposure_histogram || !slot->exposure_state_output)))
     return false_v;
   slot->shadow_cascade_count = renderer->prepared_frame.shadow_cascade_count;
-  slot->local_shadow_view_count = renderer->prepared_frame.local_shadow_view_count;
+  slot->local_shadow_view_count =
+      renderer->prepared_frame.local_shadow_view_count;
   const VkBufferCopy copies[] = {
       {.dstOffset = VKR_VULKAN_READBACK_DRAW_STATE_OFFSET,
        .size = (1u + renderer->prepared_frame.shadow_cascade_count +
@@ -354,7 +478,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       }
     }
     if (!renderer->config.frustum_enabled)
-      MemZero(planes, (uint64_t)view_count * VKR_FRUSTUM_PLANE_COUNT * sizeof(*planes));
+      MemZero(planes,
+              (uint64_t)view_count * VKR_FRUSTUM_PLANE_COUNT * sizeof(*planes));
   }
   const uint32_t visible_capacity =
       transmission
@@ -397,9 +522,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
           &renderer->graph_images[hzb_use->image.id - 1u];
       const Mat4 current_view_projection = views[0];
       const VkrPreparedFrame *packet = renderer->graph->packet;
-      const Mat4 raster_view_projection =
-          mat4_mul(packet->temporal.jittered_projection,
-                   packet->input.globals.view);
+      const Mat4 raster_view_projection = mat4_mul(
+          packet->temporal.jittered_projection, packet->input.globals.view);
       VkrVulkanGraphImageInstance *selected = NULL;
       for (uint32_t i = 0u; i < hzb->instance_count; ++i) {
         VkrVulkanGraphImageInstance *candidate = &hzb->instances[i];
@@ -408,12 +532,15 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
         VkrHzbHistoryRejection rejection = VKR_HZB_HISTORY_REJECTION_COUNT;
         if (!candidate->history_valid)
           rejection = VKR_HZB_HISTORY_INVALID;
-        else if (candidate->history_producer_submit_value > renderer->completed_value)
+        else if (candidate->history_producer_submit_value >
+                 renderer->completed_value)
           rejection = VKR_HZB_HISTORY_INCOMPLETE;
         else if (candidate->history_world_epoch != slot->gpu_world_epoch)
           rejection = VKR_HZB_HISTORY_WORLD_CHANGED;
-        else if (candidate->history_width != renderer->prepared_frame.viewport_width ||
-                 candidate->history_height != renderer->prepared_frame.viewport_height)
+        else if (candidate->history_width !=
+                     renderer->prepared_frame.viewport_width ||
+                 candidate->history_height !=
+                     renderer->prepared_frame.viewport_height)
           rejection = VKR_HZB_HISTORY_EXTENT_CHANGED;
         else if (MemCompare(&candidate->history_view_projection,
                             &current_view_projection, sizeof(Mat4)) != 0)
@@ -490,11 +617,52 @@ void vkr_vk_mark_hzb_submitted(VkrVulkanRenderer *renderer,
   instance->history_world_epoch = slot->gpu_world_epoch;
   instance->history_view_projection =
       mat4_mul(packet->input.globals.projection, packet->input.globals.view);
-  instance->history_raster_view_projection =
-      mat4_mul(packet->temporal.jittered_projection, packet->input.globals.view);
+  instance->history_raster_view_projection = mat4_mul(
+      packet->temporal.jittered_projection, packet->input.globals.view);
   instance->history_width = renderer->prepared_frame.viewport_width;
   instance->history_height = renderer->prepared_frame.viewport_height;
   instance->history_valid = true_v;
+}
+
+vkr_internal void
+vkr_vk_prepare_fsr31_history(VkrVulkanRenderer *renderer,
+                             VkrVulkanPreparedCompute *prepared,
+                             VkrVulkanGraphBufferInstance *output) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrVulkanFsr31History *history = &renderer->fsr31_history;
+  slot->temporal_transform_output = output;
+  if (!packet->temporal.history_valid || !history->valid ||
+      history->frame_index + 1u != packet->input.frame.frame_index ||
+      history->scene_generation != packet->input.frame.scene_generation ||
+      history->history_index == renderer->history_output_index)
+    return;
+  VkrVulkanGraphBuffer *transforms =
+      &renderer
+           ->graph_buffers[renderer->temporal_transform_history_handle.id - 1u];
+  VkrVulkanGraphBufferInstance *previous =
+      &transforms->instances[history->history_index];
+  if (!previous->history_valid ||
+      previous->history_producer_submit_value != history->submit_value)
+    return;
+  prepared->buffer_barrier = (VkBufferMemoryBarrier2){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = previous->buffer.handle,
+      .size = VK_WHOLE_SIZE,
+  };
+  prepared->has_buffer_barrier = true_v;
+  slot->temporal_transform_input = previous;
+  slot->temporal_previous_view_projection = history->view_projection;
+  slot->temporal_previous_frame_index = history->frame_index;
+  slot->temporal_history_valid = true_v;
 }
 
 bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
@@ -506,126 +674,141 @@ bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
       vkr_vk_deferred_buffer(renderer, pass, 0u);
   VkrVulkanGraphBufferInstance *output =
       vkr_vk_deferred_buffer(renderer, pass, 1u);
-  VkrVulkanGraphImage *colors =
-      vkr_vk_temporal_graph_image(renderer, "temporal_history_color");
-  VkrVulkanGraphImage *depths =
-      vkr_vk_temporal_graph_image(renderer, "temporal_history_depth");
-  VkrVulkanGraphImage *identities =
-      vkr_vk_temporal_graph_image(renderer, "temporal_history_identity");
-  VkrVulkanGraphImage *surfaces =
-      vkr_vk_temporal_graph_image(renderer, "temporal_history_surface");
-  if (!instances || !output || !colors || !depths || !identities ||
-      !surfaces ||
-      !vkr_rg_buffer_handle_valid(
-          renderer->temporal_transform_history_handle) ||
-      colors->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
-      depths->instance_count != colors->instance_count ||
-      identities->instance_count != colors->instance_count ||
-      surfaces->instance_count != colors->instance_count)
+  if (!instances || !output ||
+      !vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle))
     return false_v;
-
-  const uint32_t current = renderer->history_output_index;
-  slot->temporal_transform_output = output;
-  slot->temporal_color_output = &colors->instances[current];
-  slot->temporal_depth_output = &depths->instances[current];
-  slot->temporal_identity_output = &identities->instances[current];
-  slot->temporal_surface_output = &surfaces->instances[current];
-
   const VkrPreparedFrame *packet = renderer->graph->packet;
-  VkrVulkanGraphImageInstance *selected = NULL;
-  uint32_t selected_index = UINT32_MAX;
-  if (packet->temporal.history_valid) {
-    for (uint32_t i = 0u; i < colors->instance_count; ++i) {
-      VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
-      if (i == current || !candidate->history_valid ||
-          candidate->history_frame_index + 1u !=
-              packet->input.frame.frame_index ||
-          candidate->history_scene_generation !=
-              packet->input.frame.scene_generation ||
-          candidate->history_width != renderer->prepared_frame.viewport_width ||
-          candidate->history_height != renderer->prepared_frame.viewport_height)
-        continue;
-      if (!selected || candidate->history_producer_submit_value >
-                           selected->history_producer_submit_value) {
-        selected = candidate;
-        selected_index = i;
+  if (renderer->prepared_frame.fsr31_enabled) {
+    vkr_vk_prepare_fsr31_history(renderer, prepared, output);
+  } else {
+    VkrVulkanGraphImage *colors =
+        vkr_vk_temporal_graph_image(renderer, "temporal_history_color");
+    VkrVulkanGraphImage *depths =
+        vkr_vk_temporal_graph_image(renderer, "temporal_history_depth");
+    VkrVulkanGraphImage *identities =
+        vkr_vk_temporal_graph_image(renderer, "temporal_history_identity");
+    VkrVulkanGraphImage *surfaces =
+        vkr_vk_temporal_graph_image(renderer, "temporal_history_surface");
+    if (!instances || !output || !colors || !depths || !identities ||
+        !surfaces ||
+        !vkr_rg_buffer_handle_valid(
+            renderer->temporal_transform_history_handle) ||
+        colors->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
+        depths->instance_count != colors->instance_count ||
+        identities->instance_count != colors->instance_count ||
+        surfaces->instance_count != colors->instance_count)
+      return false_v;
+
+    const uint32_t current = renderer->history_output_index;
+    slot->temporal_transform_output = output;
+    slot->temporal_color_output = &colors->instances[current];
+    slot->temporal_depth_output = &depths->instances[current];
+    slot->temporal_identity_output = &identities->instances[current];
+    slot->temporal_surface_output = &surfaces->instances[current];
+
+    VkrVulkanGraphImageInstance *selected = NULL;
+    uint32_t selected_index = UINT32_MAX;
+    if (packet->temporal.history_valid) {
+      for (uint32_t i = 0u; i < colors->instance_count; ++i) {
+        VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
+        if (i == current || !candidate->history_valid ||
+            candidate->history_frame_index + 1u !=
+                packet->input.frame.frame_index ||
+            candidate->history_scene_generation !=
+                packet->input.frame.scene_generation ||
+            candidate->history_width !=
+                renderer->prepared_frame.viewport_width ||
+            candidate->history_height !=
+                renderer->prepared_frame.viewport_height)
+          continue;
+        if (!selected || candidate->history_producer_submit_value >
+                             selected->history_producer_submit_value) {
+          selected = candidate;
+          selected_index = i;
+        }
       }
     }
-  }
-  if (selected) {
-    VkrVulkanGraphBuffer *transforms =
-        &renderer
-             ->graph_buffers[renderer->temporal_transform_history_handle.id -
-                             1u];
-    if (selected_index >= transforms->instance_count)
-      return false_v;
-    VkrVulkanGraphBufferInstance *previous_transform =
-        &transforms->instances[selected_index];
-    VkrVulkanGraphImageInstance *previous_depth =
-        &depths->instances[selected_index];
-    VkrVulkanGraphImageInstance *previous_identity =
-        &identities->instances[selected_index];
-    VkrVulkanGraphImageInstance *previous_surface =
-        &surfaces->instances[selected_index];
-    if (!previous_transform->history_valid || !selected->has_sampled_slot ||
-        !previous_depth->has_storage_slot ||
-        !previous_identity->has_storage_slot ||
-        !previous_surface->has_storage_slot) {
-      selected = NULL;
-    } else {
-      /* The preceding submission may still be in flight. All render work
-         uses this queue; these dependencies order its writes before every
-         history reader. Output reuse still requires completed last use. */
-      const VkBufferMemoryBarrier2 buffer_barrier = {
-          .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-          .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-          .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-          .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .buffer = previous_transform->buffer.handle,
-          .size = VK_WHOLE_SIZE,
-      };
-      VkImageMemoryBarrier2 image_barriers[4] = {0};
-      VkrVulkanGraphImageInstance *history_images[] = {
-          selected, previous_depth, previous_identity, previous_surface};
-      for (uint32_t i = 0u; i < ArrayCount(history_images); ++i) {
-        image_barriers[i] = (VkImageMemoryBarrier2){
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                            (i == 0u ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0u),
-            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                             (i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0u),
-            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .dstAccessMask = i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                                     : VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-            .oldLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                 : VK_IMAGE_LAYOUT_GENERAL,
-            .newLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                 : VK_IMAGE_LAYOUT_GENERAL,
+    if (selected) {
+      VkrVulkanGraphBuffer *transforms =
+          &renderer
+               ->graph_buffers[renderer->temporal_transform_history_handle.id -
+                               1u];
+      if (selected_index >= transforms->instance_count)
+        return false_v;
+      VkrVulkanGraphBufferInstance *previous_transform =
+          &transforms->instances[selected_index];
+      VkrVulkanGraphImageInstance *previous_depth =
+          &depths->instances[selected_index];
+      VkrVulkanGraphImageInstance *previous_identity =
+          &identities->instances[selected_index];
+      VkrVulkanGraphImageInstance *previous_surface =
+          &surfaces->instances[selected_index];
+      if (!previous_transform->history_valid || !selected->has_sampled_slot ||
+          !previous_depth->has_storage_slot ||
+          !previous_identity->has_storage_slot ||
+          !previous_surface->has_storage_slot) {
+        selected = NULL;
+      } else {
+        /* The preceding submission may still be in flight. All render work
+           uses this queue; these dependencies order its writes before every
+           history reader. Output reuse still requires completed last use. */
+        const VkBufferMemoryBarrier2 buffer_barrier = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = history_images[i]->image.handle,
-            .subresourceRange =
-                {
-                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .levelCount = 1u,
-                    .layerCount = 1u,
-                },
+            .buffer = previous_transform->buffer.handle,
+            .size = VK_WHOLE_SIZE,
         };
+        VkImageMemoryBarrier2 image_barriers[4] = {0};
+        VkrVulkanGraphImageInstance *history_images[] = {
+            selected, previous_depth, previous_identity, previous_surface};
+        for (uint32_t i = 0u; i < ArrayCount(history_images); ++i) {
+          image_barriers[i] = (VkImageMemoryBarrier2){
+              .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+              .srcStageMask =
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                  (i == 0u ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0u),
+              .srcAccessMask =
+                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                  (i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0u),
+              .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+              .dstAccessMask = i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                                       : VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+              .oldLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                   : VK_IMAGE_LAYOUT_GENERAL,
+              .newLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                   : VK_IMAGE_LAYOUT_GENERAL,
+              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+              .image = history_images[i]->image.handle,
+              .subresourceRange =
+                  {
+                      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                      .levelCount = 1u,
+                      .layerCount = 1u,
+                  },
+          };
+        }
+        MemCopy(prepared->image_barriers, image_barriers,
+                sizeof(image_barriers));
+        prepared->image_barrier_count = ArrayCount(image_barriers);
+        prepared->buffer_barrier = buffer_barrier;
+        prepared->has_buffer_barrier = true_v;
+        slot->temporal_transform_input = previous_transform;
+        slot->temporal_color_input = selected;
+        slot->temporal_previous_view_projection =
+            selected->history_view_projection;
+        slot->temporal_previous_frame_index = selected->history_frame_index;
+        slot->temporal_depth_input = previous_depth;
+        slot->temporal_identity_input = previous_identity;
+        slot->temporal_surface_input = previous_surface;
+        slot->temporal_history_valid = true_v;
       }
-      MemCopy(prepared->image_barriers, image_barriers, sizeof(image_barriers));
-      prepared->image_barrier_count = ArrayCount(image_barriers);
-      prepared->buffer_barrier = buffer_barrier;
-      prepared->has_buffer_barrier = true_v;
-      slot->temporal_transform_input = previous_transform;
-      slot->temporal_color_input = selected;
-      slot->temporal_depth_input = previous_depth;
-      slot->temporal_identity_input = previous_identity;
-      slot->temporal_surface_input = previous_surface;
-      slot->temporal_history_valid = true_v;
     }
   }
 
@@ -688,8 +871,8 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
     instance->history_scene_generation = packet->input.frame.scene_generation;
     instance->history_view_projection =
         packet->temporal.current_view_projection;
-    instance->history_width = renderer->prepared_frame.viewport_width;
-    instance->history_height = renderer->prepared_frame.viewport_height;
+    instance->history_width = instance->image.width;
+    instance->history_height = instance->image.height;
     instance->history_valid = true_v;
   }
   if (slot->temporal_transform_output) {
@@ -703,6 +886,21 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
   }
   if (slot->temporal_color_output)
     slot->temporal_color_output->history_scene = slot->temporal_scene;
+  if (slot->fsr31_recorded) {
+    renderer->fsr31_history = (VkrVulkanFsr31History){
+        .view_projection = packet->temporal.current_view_projection,
+        .scene = slot->temporal_scene,
+        .frame_index = packet->input.frame.frame_index,
+        .scene_generation = packet->input.frame.scene_generation,
+        .submit_value = submit_value,
+        .history_index = renderer->history_output_index,
+        .valid = true_v,
+    };
+    renderer->fsr31_dispatch_uses[renderer->fsr31_dispatch_slot] = submit_value;
+    renderer->fsr31_dispatch_slot =
+        (renderer->fsr31_dispatch_slot + 1u) % VKR_VULKAN_FRAME_SLOT_COUNT;
+    slot->fsr31_recorded = false_v;
+  }
 }
 
 bool8_t vkr_vk_prepare_deferred_cull(VkrVulkanRenderer *renderer,
@@ -828,9 +1026,9 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
     prepared->pipelines[bucket] = renderer->packet_pipelines[wanted_pipeline];
     prepared->cull_modes[bucket] =
         (bucket & 1u) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
-    prepared->front_faces[bucket] =
-        (bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
-            ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    prepared->front_faces[bucket] = (bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                        ? VK_FRONT_FACE_CLOCKWISE
+                                        : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     const VkDeviceSize argument_offset =
         ((VkDeviceSize)view_index * VKR_WORLD_DRAW_STATE_BUCKET_COUNT +
          bucket) *
@@ -865,13 +1063,13 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const bool8_t emissive_capture =
-      packet->input.debug && vkr_renderer_capture_request_contains(
-                                 packet->input.debug->capture,
-                                 "deferred_emissive");
+      packet->input.debug &&
+      vkr_renderer_capture_request_contains(packet->input.debug->capture,
+                                            "deferred_emissive");
   const bool8_t resolve_debug_capture =
-      packet->input.debug && vkr_renderer_capture_request_contains(
-                                 packet->input.debug->capture,
-                                 "resolve_barycentric_lod");
+      packet->input.debug &&
+      vkr_renderer_capture_request_contains(packet->input.debug->capture,
+                                            "resolve_barycentric_lod");
   /* The selected no-capture modules compile out every access through these
      fields; slot zero is never an optional-output write target. */
   uint32_t emissive_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
@@ -898,7 +1096,7 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .current_view_projection = packet->temporal.current_view_projection,
       .previous_view_projection =
           slot->temporal_history_valid
-              ? slot->temporal_color_input->history_view_projection
+              ? slot->temporal_previous_view_projection
               : packet->temporal.current_view_projection,
       .vbuffer_texture = indices[0],
       .albedo_texture = indices[1],
@@ -917,17 +1115,15 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .instance_count = slot->gpu_candidate_count,
       .render_mode = packet->input.globals.render_mode,
       .history_valid = slot->temporal_history_valid,
-      .previous_frame_index =
-          slot->temporal_history_valid
-              ? slot->temporal_color_input->history_frame_index
-              : packet->input.frame.frame_index,
-      .sky_reprojection =
-          slot->temporal_history_valid
-              ? vkr_temporal_sky_reprojection(
-                    packet->temporal.current_view_projection,
-                    slot->temporal_color_input->history_view_projection,
-                    packet->input.globals.view_position)
-              : mat4_identity(),
+      .previous_frame_index = slot->temporal_history_valid
+                                  ? slot->temporal_previous_frame_index
+                                  : packet->input.frame.frame_index,
+      .sky_reprojection = slot->temporal_history_valid
+                              ? vkr_temporal_sky_reprojection(
+                                    packet->temporal.current_view_projection,
+                                    slot->temporal_previous_view_projection,
+                                    packet->input.globals.view_position)
+                              : mat4_identity(),
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanResolveRoot),
@@ -1118,24 +1314,14 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
       .history_valid = history_valid,
       .render_mode = packet->input.globals.render_mode,
       .camera_stationary =
-          history_valid &&
-          MemCompare(&slot->temporal_color_input->history_view_projection,
-                     &packet->temporal.current_view_projection,
-                     sizeof(Mat4)) == 0,
+          history_valid && MemCompare(&slot->temporal_previous_view_projection,
+                                      &packet->temporal.current_view_projection,
+                                      sizeof(Mat4)) == 0,
       .scene_stationary =
-          history_valid && slot->temporal_scene.signature.eligible &&
-          slot->temporal_color_input->history_scene.signature.eligible &&
-          slot->temporal_scene.signature.hash[0] ==
-              slot->temporal_color_input->history_scene.signature.hash[0] &&
-          slot->temporal_scene.signature.hash[1] ==
-              slot->temporal_color_input->history_scene.signature.hash[1] &&
-          slot->temporal_scene.radiance_revision ==
-              slot->temporal_color_input->history_scene.radiance_revision &&
-          slot->temporal_scene.publication_generation ==
-              slot->temporal_color_input->history_scene
-                  .publication_generation &&
-          slot->temporal_scene.graph_revision ==
-              slot->temporal_color_input->history_scene.graph_revision,
+          history_valid &&
+          vkr_vk_temporal_scene_equal(
+              &slot->temporal_scene,
+              &slot->temporal_color_input->history_scene),
       .transmission_visible_rows =
           transmission_visible ? transmission_visible->buffer.address : 0u,
       .transmission_instances =
@@ -1145,10 +1331,9 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
       .transmission_enabled = transmission_enabled,
       .current_jitter_pixels = packet->temporal.jitter_pixels,
       .previous_jitter_pixels =
-          history_valid
-              ? vkr_temporal_jitter_for_frame(
-                    (uint32_t)slot->temporal_color_input->history_frame_index)
-              : (Vec2){0},
+          history_valid ? vkr_temporal_jitter_for_frame(
+                              (uint32_t)slot->temporal_previous_frame_index)
+                        : (Vec2){0},
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanTemporalResolveRoot),
@@ -1471,9 +1656,8 @@ vkr_internal bool8_t vkr_vk_bloom_root(VkrVulkanRenderer *renderer,
                                  destination->image.width >> destination_mip),
                              Max(1u,
                                  destination->image.height >> destination_mip)},
-      .params = vkr_bloom_gpu_params(
-          &renderer->bloom_config, &packet->bloom,
-          renderer->prepared_frame.bloom_mip_count),
+      .params = vkr_bloom_gpu_params(&renderer->bloom_config, &packet->bloom,
+                                     renderer->prepared_frame.bloom_mip_count),
   };
   return true_v;
 }
@@ -1848,15 +2032,14 @@ bool8_t vkr_vk_prepare_deferred_transmission(VkrVulkanRenderer *renderer,
       .current_view_projection = packet->temporal.current_view_projection,
       .previous_view_projection =
           slot->temporal_history_valid
-              ? slot->temporal_color_input->history_view_projection
+              ? slot->temporal_previous_view_projection
               : packet->temporal.current_view_projection,
       .motion_texture = motion,
       .validity_texture = validity,
       .history_valid = slot->temporal_history_valid,
-      .previous_frame_index =
-          slot->temporal_history_valid
-              ? slot->temporal_color_input->history_frame_index
-              : packet->input.frame.frame_index,
+      .previous_frame_index = slot->temporal_history_valid
+                                  ? slot->temporal_previous_frame_index
+                                  : packet->input.frame.frame_index,
       .vbuffer_texture = vbuffer,
       .depth_texture = depth,
       .feedback_texture = feedback,

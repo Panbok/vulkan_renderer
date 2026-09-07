@@ -25,6 +25,7 @@
 #include "post/exposure.slang"
 #include "post/bloom.slang"
 #include "post/gtao.slang"
+#include "post/fsr31.slang"
 #include "post/default.slang"
 #include "text/default.slang"
 #include "ui/default.slang"

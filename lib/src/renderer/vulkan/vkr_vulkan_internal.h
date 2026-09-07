@@ -317,6 +317,7 @@ typedef enum VkrVulkanPacketPipeline {
 typedef enum VkrVulkanFullscreenFlag {
   VKR_VULKAN_FULLSCREEN_TONEMAP = 1u << 1u,
   VKR_VULKAN_FULLSCREEN_FXAA = 1u << 2u,
+  VKR_VULKAN_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u,
 } VkrVulkanFullscreenFlag;
 
 typedef enum VkrVulkanPacketShader {
@@ -363,6 +364,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
+  VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE,
+  VKR_VULKAN_DEFERRED_PIPELINE_FSR31_STABILIZE,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
   VKR_VULKAN_DEFERRED_PIPELINE_SDSM,
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
@@ -550,6 +553,35 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   Vec2 current_jitter_pixels;
   Vec2 previous_jitter_pixels;
 } VkrVulkanTemporalResolveRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanFsr31PrepareRoot {
+  uint32_t scene_texture;
+  uint32_t pre_transmission_texture;
+  uint32_t validity_texture;
+  uint32_t opaque_depth_texture;
+  uint32_t transmission_depth_texture;
+  uint32_t output_depth_texture;
+  uint32_t reactive_texture;
+  uint32_t composition_texture;
+  uint32_t extent[2];
+  uint32_t transmission_enabled;
+  uint32_t scene_stationary;
+} VkrVulkanFsr31PrepareRoot;
+_Static_assert(sizeof(VkrVulkanFsr31PrepareRoot) == 48u,
+               "FSR input preparation root must match its shader");
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanFsr31StabilizeRoot {
+  uint32_t output_texture;
+  uint32_t history_texture;
+  uint32_t reactive_texture;
+  uint32_t scene_stationary;
+  uint32_t output_extent[2];
+  uint32_t render_extent[2];
+  Vec2 jitter_pixels;
+  uint32_t reserved[2];
+} VkrVulkanFsr31StabilizeRoot;
+_Static_assert(sizeof(VkrVulkanFsr31StabilizeRoot) == 48u,
+               "FSR stabilization root must match its shader");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint64_t frame;
@@ -1170,7 +1202,8 @@ typedef struct VkrVulkanGraphImageInstance {
   uint64_t history_producer_submit_value;
   uint64_t history_world_epoch;
   Mat4 history_view_projection;
-  /** Exact raster grid that produced HZB depth; camera compatibility is separate. */
+  /** Exact raster grid that produced HZB depth; camera compatibility is
+   * separate. */
   Mat4 history_raster_view_projection;
   uint32_t history_width;
   uint32_t history_height;
@@ -1426,6 +1459,10 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *temporal_surface_input;
   VkrVulkanGraphImageInstance *temporal_surface_output;
   bool8_t temporal_history_valid;
+  /* Lowered once from the selected temporal consumer's predecessor. */
+  Mat4 temporal_previous_view_projection;
+  uint64_t temporal_previous_frame_index;
+  bool8_t fsr31_recorded;
   VkrVulkanPreparedCaptureCopy *capture_copies;
   VkImage picking_readback_image;
   VkBufferImageCopy2 picking_readback_region;
@@ -1659,6 +1696,18 @@ typedef struct VkrVulkanRetiredMaterial {
   bool8_t occupied;
 } VkrVulkanRetiredMaterial;
 
+typedef struct VkrVulkanFsrSdk VkrVulkanFsrSdk;
+
+typedef struct VkrVulkanFsr31History {
+  Mat4 view_projection;
+  VkrVulkanTemporalSceneState scene;
+  uint64_t frame_index;
+  uint64_t scene_generation;
+  uint64_t submit_value;
+  uint32_t history_index;
+  bool8_t valid;
+} VkrVulkanFsr31History;
+
 struct VkrVulkanRenderer {
   VkrAllocator *allocator;
   VkrVulkanRendererConfig config;
@@ -1668,6 +1717,15 @@ struct VkrVulkanRenderer {
   VkrBloomConfig bloom_config;
   VkrGtaoConfig gtao_config;
   VkrGtaoGpuParams gtao_params;
+  VkrVulkanFsrSdk *fsr31;
+  uint32_t fsr31_output_width;
+  uint32_t fsr31_output_height;
+  VkrVulkanFsr31History fsr31_history;
+  /* Independent of command slots: cancelled SDK dispatches advance its rings.
+   */
+  uint64_t fsr31_dispatch_uses[VKR_VULKAN_FRAME_SLOT_COUNT];
+  uint32_t fsr31_dispatch_slot;
+  bool8_t fsr31_recreate;
   VkrDMemory publication_staging_memory;
   VkrDMemory capture_storage_memory;
   Arena *graph_frame_arena;
@@ -1872,15 +1930,13 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
                              VkBufferUsageFlags usage,
                              VkrVulkanBuffer *out_buffer);
 bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer);
-bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
-                               uint32_t height, uint32_t mip_levels,
-                               uint32_t array_layers, VkFormat format,
-                               VkImageCreateFlags flags,
-                               VkImageViewType view_type,
-                               VkImageUsageFlags usage,
-                               VkrGpuAllocationOwner owner,
-                               VkrVulkanImage *out_image,
-                               VkrRendererError *out_error);
+bool8_t
+vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
+                       uint32_t height, uint32_t mip_levels,
+                       uint32_t array_layers, VkFormat format,
+                       VkImageCreateFlags flags, VkImageViewType view_type,
+                       VkImageUsageFlags usage, VkrGpuAllocationOwner owner,
+                       VkrVulkanImage *out_image, VkrRendererError *out_error);
 bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
                                  uint32_t height, uint32_t image_count,
                                  VkrVulkanTargetSet *out_targets);
@@ -1924,7 +1980,18 @@ bool8_t vkr_vk_publish_storage_view(VkrVulkanRenderer *renderer,
                                     VkrGpuSlotHandle *out_handle);
 void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
                            VkrVulkanFrameSlot *slot);
-void vkr_vk_record_graph(VkrVulkanRenderer *renderer, VkCommandBuffer command);
+bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
+                            VkCommandBuffer command);
+bool8_t vkr_vk_prepare_fsr31_context(VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass);
+void vkr_vk_cancel_fsr31(VkrVulkanRenderer *renderer);
+void vkr_vk_bind_descriptor_buffers(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command);
 bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedUpload *prepared,
                                        const VkrRgPass *pass,

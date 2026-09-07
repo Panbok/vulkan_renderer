@@ -1,4 +1,5 @@
 #include "renderer/vkr_render_graph_frame.h"
+#include "renderer/vulkan/vkr_vulkan_fsr_sdk.h"
 #include "renderer/vulkan/vkr_vulkan_internal.h"
 #include <math.h>
 
@@ -191,6 +192,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
       .enable_synchronization_validation =
           config->enable_synchronization_validation,
       .enable_gpu_assisted = config->enable_gpu_assisted,
+      .fsr31_enabled = config->fsr31_enabled,
   };
   if (!vkr_vulkan_device_create(&device_config, &renderer->device) ||
       !vkr_vk_create_timeline(renderer) ||
@@ -617,8 +619,34 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-vkr_internal void vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
-                                               VkrVulkanFrameSlot *slot) {
+void vkr_vk_bind_descriptor_buffers(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command) {
+  const VkDescriptorBufferBindingInfoEXT descriptor_bindings[] = {
+      {
+          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+          .address = renderer->resource_descriptors.address,
+          .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT,
+      },
+      {
+          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+          .address = renderer->sampler_descriptors.address,
+          .usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
+      },
+  };
+  vkr_vulkan_device_cmd_bind_descriptor_buffers(renderer->device)(
+      command, ArrayCount(descriptor_bindings), descriptor_bindings);
+  const uint32_t buffer_indices[] = {0u, 1u};
+  const VkDeviceSize descriptor_offsets[] = {0u, 0u};
+  vkr_vulkan_device_cmd_set_descriptor_offsets(renderer->device)(
+      command, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->pipeline_layout, 0u,
+      ArrayCount(buffer_indices), buffer_indices, descriptor_offsets);
+  vkr_vulkan_device_cmd_set_descriptor_offsets(renderer->device)(
+      command, VK_PIPELINE_BIND_POINT_COMPUTE, renderer->pipeline_layout, 0u,
+      ArrayCount(buffer_indices), buffer_indices, descriptor_offsets);
+}
+
+vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
+                                                  VkrVulkanFrameSlot *slot) {
   VkCommandBuffer command = slot->command_buffer;
   const VkrVulkanImage *target = &renderer->targets.images[slot->image_index];
   vkr_vk_record_buffer_initializations(renderer, command);
@@ -653,34 +681,13 @@ vkr_internal void vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_GENERAL);
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
   }
 
-  const VkDescriptorBufferBindingInfoEXT descriptor_bindings[] = {
-      {
-          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
-          .address = renderer->resource_descriptors.address,
-          .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT,
-      },
-      {
-          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
-          .address = renderer->sampler_descriptors.address,
-          .usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
-      },
-  };
-  vkr_vulkan_device_cmd_bind_descriptor_buffers(renderer->device)(
-      command, ArrayCount(descriptor_bindings), descriptor_bindings);
-  const uint32_t buffer_indices[] = {0u, 1u};
-  const VkDeviceSize descriptor_offsets[] = {0u, 0u};
-  vkr_vulkan_device_cmd_set_descriptor_offsets(renderer->device)(
-      command, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->pipeline_layout, 0u,
-      ArrayCount(buffer_indices), buffer_indices, descriptor_offsets);
-  vkr_vulkan_device_cmd_set_descriptor_offsets(renderer->device)(
-      command, VK_PIPELINE_BIND_POINT_COMPUTE, renderer->pipeline_layout, 0u,
-      ArrayCount(buffer_indices), buffer_indices, descriptor_offsets);
+  vkr_vk_bind_descriptor_buffers(renderer, command);
 
-  vkr_vk_record_graph(renderer, command);
+  if (!vkr_vk_record_graph(renderer, command))
+    return false_v;
   vkr_vk_record_capture(renderer, command, slot);
   vkr_vk_record_deferred_readback(renderer, command);
   VkCopyImageToBufferInfo2 readback_info = {
@@ -747,6 +754,7 @@ vkr_internal void vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
       .pBufferMemoryBarriers = &readback_barrier,
   };
   vkCmdPipelineBarrier2(command, &readback_dependency);
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_vk_build_command_buffer(VkrVulkanRenderer *renderer,
@@ -765,7 +773,8 @@ vkr_internal bool8_t vkr_vk_build_command_buffer(VkrVulkanRenderer *renderer,
     log_error("Vulkan failed to begin the frame command buffer");
     return false_v;
   }
-  vkr_vk_record_frame_commands(renderer, slot);
+  if (!vkr_vk_record_frame_commands(renderer, slot))
+    return false_v;
   if (vkEndCommandBuffer(command) != VK_SUCCESS) {
     log_error("Vulkan failed to end the frame command buffer");
     return false_v;
@@ -850,6 +859,10 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   }
   if (!vkr_vk_validate_graph(renderer)) {
     log_error("Vulkan failed to validate the authored graph");
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+  if (!vkr_vk_prepare_fsr31_context(renderer)) {
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
@@ -972,6 +985,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                      &submit_info, VK_NULL_HANDLE);
   if (submit_result != VK_SUCCESS) {
     log_error("Vulkan queue submission failed (result=%d)", (int)submit_result);
+    vkr_vk_cancel_fsr31(renderer);
     vkr_vk_fail_picking_readback(renderer, slot);
     vkr_vk_abandon_ibl_bake_recordings(renderer);
     vkr_vk_discard_unsubmitted_asset_uses(renderer);
@@ -1275,8 +1289,7 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       out_result->transmission_compact_overflow_count +=
           transmission_diagnostics->compact_overflow[layer];
   }
-  for (uint32_t cascade = 0u; cascade < best->shadow_cascade_count;
-       ++cascade) {
+  for (uint32_t cascade = 0u; cascade < best->shadow_cascade_count; ++cascade) {
     out_result->shadow_gpu_visible_count[cascade] =
         opaque[cascade + 1u].visible_count;
     out_result->shadow_gpu_overflow_count[cascade] =
@@ -1719,6 +1732,10 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
                         : VK_NULL_HANDLE;
   if (device) {
     vkr_vulkan_renderer_wait_idle(renderer);
+#if VKR_HAS_FSR3_UPSCALER
+    vkr_vulkan_fsr_sdk_destroy(renderer->fsr31);
+#endif
+    renderer->fsr31 = NULL;
     if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
       (void)vkDeviceWaitIdle(device);
     vkr_vk_discard_ibl_bakes(renderer);
