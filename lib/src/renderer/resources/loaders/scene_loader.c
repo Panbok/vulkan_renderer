@@ -36,6 +36,7 @@ typedef struct SceneShapeImport {
 } SceneShapeImport;
 
 typedef struct ScenePointLightImport {
+  bool8_t casts_shadow;
   Vec3 color;
   float32_t intensity;
   float32_t constant;
@@ -1853,6 +1854,20 @@ scene_json_parse_point_light(const VkrJsonReader *entity_reader,
     out_entity->point_light.intensity = intensity;
   }
 
+  scene_json_read_bool_field(&point_light_obj, "casts_shadow",
+                             &out_entity->point_light.casts_shadow);
+  scene_json_read_float_field(&point_light_obj, "range",
+                              &out_entity->point_light.range);
+  scene_json_read_vec3_field(&point_light_obj, "direction_local",
+                             &out_entity->point_light.direction_local);
+  scene_json_read_float_field(&point_light_obj, "inner_cone_angle",
+                              &out_entity->point_light.inner_cone_angle);
+  scene_json_read_float_field(&point_light_obj, "outer_cone_angle",
+                              &out_entity->point_light.outer_cone_angle);
+  float32_t kind = (float32_t)out_entity->point_light.kind;
+  if (scene_json_read_float_field(&point_light_obj, "kind", &kind) &&
+      (kind == 0.0f || kind == 1.0f || kind == 2.0f))
+    out_entity->point_light.kind = (VkrPointLightKind)kind;
   VkrJsonReader attenuation_reader = point_light_obj;
   if (vkr_json_find_field(&attenuation_reader, "attenuation")) {
     if (!scene_json_parse_null(&attenuation_reader)) {
@@ -2424,6 +2439,7 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
         .direction_local = light_import->direction_local,
         .inner_cone_angle = light_import->inner_cone_angle,
         .outer_cone_angle = light_import->outer_cone_angle,
+        .casts_shadow = light_import->casts_shadow,
         .kind = light_import->kind,
         .enabled = light_import->enabled,
     };
@@ -2804,6 +2820,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .direction_local = light_import->direction_local,
         .inner_cone_angle = light_import->inner_cone_angle,
         .outer_cone_angle = light_import->outer_cone_angle,
+        .casts_shadow = light_import->casts_shadow,
         .kind = light_import->kind,
         .enabled = light_import->enabled,
     };

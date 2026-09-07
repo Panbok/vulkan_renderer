@@ -85,6 +85,11 @@ bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *v) {
         !isfinite(p->inner_cone_angle) || !isfinite(p->outer_cone_angle) ||
         p->inner_cone_angle < 0 || p->outer_cone_angle < p->inner_cone_angle ||
         p->outer_cone_angle > 1.5707964f || p->enabled > 1 ||
+        p->casts_shadow > 1 ||
+        (p->casts_shadow &&
+         (p->range <= 0.0f || (p->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
+                               (p->outer_cone_angle <= 0.0f ||
+                                p->outer_cone_angle >= 1.57079632679f)))) ||
         (uint32_t)p->kind > VKR_POINT_LIGHT_KIND_GLTF_SPOT ||
         (p->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
          (!isfinite(vec3_dot(p->direction_local, p->direction_local)) ||
@@ -328,7 +333,8 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !json_floats(w, "point_direction", &p->direction_local.x, 3) ||
         !json_floats(w, "point_params", params, 7) ||
         !WRITE_INT("point_kind", p->kind) ||
-        !WRITE_BOOL("point_enabled", p->enabled))
+        !WRITE_BOOL("point_enabled", p->enabled) ||
+        !WRITE_BOOL("point_casts_shadow", p->casts_shadow))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) {
@@ -637,7 +643,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "directional_color",
                                "directional_direction",
                                "directional_intensity",
-                               "directional_enabled"};
+                               "directional_enabled",
+                               "point_casts_shadow"};
   MemZero(v, sizeof(*v));
   uint32_t seen = 0;
   if (!edit_json_take(j, '{'))
@@ -736,6 +743,9 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 17:
       ok = edit_json_floats(j, &v->directional_light.intensity, 1);
       break;
+    case 19:
+      ok = edit_json_bool(j, &v->point_light.casts_shadow);
+      break;
     case 18:
       ok = edit_json_bool(j, &v->directional_light.enabled);
       break;
@@ -758,6 +768,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     required |= 31u << 10u;
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
     required |= 15u << 15u;
+  if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
+    required |= seen & (1u << 19u); /* Old journals default shadows off. */
   return seen == required && vkr_scene_edit_validate(v);
 }
 

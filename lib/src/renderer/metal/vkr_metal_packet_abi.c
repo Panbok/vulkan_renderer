@@ -146,6 +146,10 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
                   "ibl_probe_reserved", 444),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, temporal_draw_state,
                   "temporal_draw_state", 448),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, local_shadow_texture_id,
+                  "local_shadow_map", 456),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, local_shadow_views,
+                  "local_shadow_views", 464),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
@@ -763,7 +767,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            16, vkr_draw_root_fields),
         [VKR_METAL_PACKET_ABI_FRAME_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketFrameRoot, "VkrMetalPacketFrameRoot",
-                           464, 16, vkr_frame_root_fields),
+                           480, 16, vkr_frame_root_fields),
         [VKR_METAL_PACKET_ABI_IBL_PROBE] =
             VKR_ABI_RECORD(VkrMetalPacketIblProbe, "VkrMetalPacketIblProbe", 64,
                            16, vkr_ibl_probe_fields),

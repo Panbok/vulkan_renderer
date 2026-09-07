@@ -43,7 +43,7 @@ enum {
   VKR_METAL_PACKET_TIMEOUT_MS = 5000,
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
   VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
-  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = 8,
+  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = 16,
   VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
   VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
       VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
@@ -315,6 +315,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t point_light_masks_gpu;
   uint64_t shadow_cascades_gpu;
   uint64_t shadow_texture_id;
+  uint64_t local_shadow_texture_id;
+  uint64_t local_shadow_views_gpu;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
   /** Submission-local SH publication. Nonzero only after projection recording
@@ -520,6 +522,7 @@ struct VkrMetalPacketRenderer {
   // Conditional passes and repeat counts can move a name to another index.
   VkrMetalPacketPassLabel *pass_labels;
   id<MTLDevice> device;
+  char device_name[256];
   id<MTL4Compiler> compiler;
   id<MTL4FXTemporalScaler> metalfx_temporal_scaler;
   uint32_t metalfx_output_width;
@@ -827,6 +830,12 @@ VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
     renderer->picking_result =
         (VkrPixelReadbackResult){.status = VKR_READBACK_STATUS_IDLE};
   return VKR_RENDERER_ERROR_NONE;
+}
+
+String8 vkr_metal_packet_renderer_device_name(
+    const VkrMetalPacketRenderer *renderer) {
+  return string8_create_from_cstr((const uint8_t *)renderer->device_name,
+                                  strlen(renderer->device_name));
 }
 
 VkrPresentMode

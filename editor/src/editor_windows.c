@@ -232,11 +232,11 @@ static void editor_scene_resolution_build(const VkrEditorUi *editor,
   const float32_t scale = ui->content_scale;
   const Vec4 viewport = frame->mapping.panel_rect_px;
   const bool8_t fallback = frame->scene_output_scale < 1.0f;
-  const float32_t width = Min(208.0f, viewport.z / scale - 16.0f);
+  const float32_t width = Min(320.0f, viewport.z / scale - 16.0f);
   const bool8_t incomplete =
       frame->texture_pending_count || frame->texture_demanded_missing_count;
   const float32_t height =
-      (fallback ? 58.0f : 42.0f) + 42.0f + (incomplete ? 28.0f : 0.0f);
+      (fallback ? 58.0f : 42.0f) + 114.0f + (incomplete ? 28.0f : 0.0f);
   const float32_t left = viewport.x / scale + 8.0f;
   const float32_t right = (viewport.x + viewport.z) / scale - width - 8.0f;
   const float32_t top =
@@ -293,9 +293,11 @@ static void editor_scene_resolution_build(const VkrEditorUi *editor,
                                   ? string8_lit("Scene stopped")
                               : !frame->scene ? string8_lit("No Scene loaded")
                                               : frame->text.performance;
-  text = string8_create_formatted(ui->frame_allocator, "%.*s\n%.*s",
+  text = string8_create_formatted(ui->frame_allocator, "%.*s\n%.*s\n%.*s",
                                   (int32_t)performance.length, performance.str,
-                                  (int32_t)text.length, text.str);
+                                  (int32_t)text.length, text.str,
+                                  (int32_t)frame->text.system.length,
+                                  frame->text.system.str);
   if (incomplete)
     text = string8_create_formatted(
         ui->frame_allocator, "%.*s\nTexture wait: %u\nMissing: %u",
@@ -386,7 +388,8 @@ void vkr_editor_scene_toolbar_build(VkrEditorUi *editor,
           ui, string8_lit("camera.enter"), VKR_UI_ICON_CAMERA,
           frame->mouse_captured
               ? string8_lit("Free camera active; Escape to release")
-              : string8_lit("Enter free camera (Tab / F3); Escape to release"),
+              : string8_lit("Hold RMB to fly; Tab / F3 toggles camera; Escape "
+                            "releases"),
           7, cols, frame->mouse_captured ? amber : blue,
           frame->scene_rendering_stopped))
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_TOGGLE_CAMERA;
@@ -400,9 +403,13 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   const VkrUiTrack nav_columns[] = {
-      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO}, {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.unit = VKR_UI_TRACK_AUTO},
   };
   const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
@@ -454,7 +461,15 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                        ? VKR_EDITOR_MENU_NONE
                        : VKR_EDITOR_MENU_METRICS;
   }
-  if (editor_menu_button(ui, string8_lit("menu.help"), string8_lit("Help"), 2u,
+  if (editor_menu_button(ui, string8_lit("menu.debug"), string8_lit("Debug"),
+                         2u, editor->menu == VKR_EDITOR_MENU_DEBUG,
+                         editor->heading_font)) {
+    editor->commands_open = false_v;
+    editor->menu = editor->menu == VKR_EDITOR_MENU_DEBUG
+                       ? VKR_EDITOR_MENU_NONE
+                       : VKR_EDITOR_MENU_DEBUG;
+  }
+  if (editor_menu_button(ui, string8_lit("menu.help"), string8_lit("Help"), 3u,
                          editor->windows[VKR_EDITOR_WINDOW_HELP].visible,
                          editor->heading_font)) {
     editor->commands_open = false_v;
@@ -467,13 +482,13 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   const bool8_t bakery_visible =
       vkr_ui_dock_find_panel(frame->dock, VKR_UI_DOCK_PANEL_BAKERY, NULL, NULL);
   if (editor_menu_button(ui, string8_lit("menu.bakery"), string8_lit("Bakery"),
-                         3u, bakery_visible, editor->heading_font)) {
+                         4u, bakery_visible, editor->heading_font)) {
     editor->commands_open = false_v;
     editor->menu = VKR_EDITOR_MENU_NONE;
     vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_BAKERY);
   }
   if (editor_menu_button(ui, string8_lit("menu.commands"),
-                         string8_lit("Commands"), 4u, editor->commands_open,
+                         string8_lit("Commands"), 5u, editor->commands_open,
                          editor->heading_font)) {
     editor->commands_open = !editor->commands_open;
     editor->commands_focus_search = editor->commands_open;
@@ -490,7 +505,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   VkrUiWidgetConfig status =
       vkr_editor_text_config(11.0f, (Vec4){0.68f, 0.72f, 0.74f, 1.0f});
   status.placement = (VkrUiPlacement){
-      .column = 6u,
+      .column = 7u,
       .row = 0u,
       .column_span = 1u,
       .row_span = 1u,
@@ -509,18 +524,36 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   (void)vkr_ui_input_layer_set(ui, 0u);
 }
 
+static VkrUiRect editor_menu_popup_rect(const VkrEditorUi *editor,
+                                        const VkrUiSystem *ui) {
+  const float32_t scale = ui->content_scale;
+  const float32_t target_width = (float32_t)ui->target_width / scale;
+  const float32_t target_height = (float32_t)ui->target_height / scale;
+  const bool8_t debug = editor->menu == VKR_EDITOR_MENU_DEBUG;
+  const float32_t width = Min(debug ? 230.0f : 210.0f, target_width);
+  const float32_t height =
+      Min(debug ? (editor->labels_expanded ? 184.0f : 50.0f) : 94.0f,
+          Max(0.0f, target_height - VKR_EDITOR_NAVIGATION_HEIGHT_PT));
+  const float32_t x = Min(VKR_EDITOR_METRICS_MENU_X_PT + (debug ? 72.0f : 0),
+                          Max(0.0f, target_width - width));
+  return (VkrUiRect){x * scale, VKR_EDITOR_NAVIGATION_HEIGHT_PT * scale,
+                     width * scale, height * scale};
+}
+
 void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
-  if (editor->menu != VKR_EDITOR_MENU_METRICS)
+  if (editor->menu == VKR_EDITOR_MENU_NONE)
     return;
 
   vkr_ui_keyboard_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 2u);
   (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 2u);
   const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack rows[] = {
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
   };
+  const VkrUiRect rect = editor_menu_popup_rect(editor, ui);
+  const bool8_t debug = editor->menu == VKR_EDITOR_MENU_DEBUG;
   VkrUiPanelConfig popup = vkr_ui_panel_config_default();
   popup.placement = (VkrUiPlacement){
       .column = 0u,
@@ -529,19 +562,62 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
       .row_span = 1u,
       .justify = VKR_UI_ALIGN_START,
       .align = VKR_UI_ALIGN_START,
-      .margin_pt = {VKR_EDITOR_NAVIGATION_HEIGHT_PT, 0.0f, 0.0f,
-                    VKR_EDITOR_METRICS_MENU_X_PT},
+      .margin_pt = {rect.y / ui->content_scale, 0.0f, 0.0f,
+                    rect.x / ui->content_scale},
   };
   popup.columns = &one_track;
   popup.column_count = 1u;
   popup.rows = rows;
-  popup.row_count = ArrayCount(rows);
+  popup.row_count = debug ? (editor->labels_expanded ? 5u : 1u) : 3u;
   popup.style = vkr_editor_glass_style();
-  popup.style.min_size_pt = (Vec2){210.0f, 94.0f};
+  popup.style.background_color.w = 0.98f;
+  popup.style.min_size_pt =
+      (Vec2){rect.width / ui->content_scale, rect.height / ui->content_scale};
   popup.style.max_size_pt = popup.style.min_size_pt;
   popup.clip_children = true_v;
-  if (!vkr_ui_panel_begin(ui, string8_lit("editor.menu.popup"), &popup))
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.menu.popup"), &popup)) {
+    (void)vkr_ui_input_layer_set(ui, 0u);
     return;
+  }
+
+  if (debug) {
+    VkrUiWidgetConfig item =
+        vkr_editor_text_config(12.0f, (Vec4){0.80f, 0.84f, 0.90f, 1.0f});
+    item.placement.column = item.placement.row = 0u;
+    item.placement.justify = VKR_UI_ALIGN_STRETCH;
+    item.style.padding_pt = (VkrUiEdges){4.0f, 3.0f, 4.0f, 3.0f};
+    item.text.font = editor->heading_font;
+    const bool8_t toggle_labels =
+        vkr_ui_button(ui, string8_lit("labels"),
+                      editor->labels_expanded ? string8_lit("Labels  -")
+                                              : string8_lit("Labels  +"),
+                      &item);
+    if (editor->labels_expanded) {
+      item.placement.row = 1u;
+      (void)vkr_ui_checkbox(ui, string8_lit("labels.enabled"),
+                            string8_lit("All light labels"),
+                            &editor->labels_enabled, &item);
+      item.placement.row = 2u;
+      item.placement.margin_pt.left = 12.0f;
+      item.disabled = !editor->labels_enabled;
+      (void)vkr_ui_checkbox(ui, string8_lit("labels.directional"),
+                            string8_lit("Directional lights"),
+                            &editor->labels_directional, &item);
+      item.placement.row = 3u;
+      (void)vkr_ui_checkbox(ui, string8_lit("labels.spot"),
+                            string8_lit("Spot lights"), &editor->labels_spot,
+                            &item);
+      item.placement.row = 4u;
+      (void)vkr_ui_checkbox(ui, string8_lit("labels.point"),
+                            string8_lit("Point lights"), &editor->labels_point,
+                            &item);
+    }
+    (void)vkr_ui_panel_end(ui);
+    if (toggle_labels)
+      editor->labels_expanded = !editor->labels_expanded;
+    (void)vkr_ui_input_layer_set(ui, 0u);
+    return;
+  }
 
   VkrUiWidgetConfig heading =
       vkr_editor_text_config(12.0f, (Vec4){0.84f, 0.69f, 0.43f, 1.0f});
@@ -574,6 +650,7 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
       memory->visible)
     editor_window_raise(editor, VKR_EDITOR_WINDOW_MEMORY);
   (void)vkr_ui_panel_end(ui);
+  (void)vkr_ui_input_layer_set(ui, 0u);
 }
 
 static VkrUiRect editor_window_rect(const VkrUiSystem *ui,
@@ -584,15 +661,6 @@ static VkrUiRect editor_window_rect(const VkrUiSystem *ui,
       .y = window->position_pt.y * scale,
       .width = window->size_pt.x * scale,
       .height = window->size_pt.y * scale,
-  };
-}
-
-static VkrUiRect editor_menu_popup_rect(const VkrUiSystem *ui) {
-  return (VkrUiRect){
-      .x = VKR_EDITOR_METRICS_MENU_X_PT * ui->content_scale,
-      .y = VKR_EDITOR_NAVIGATION_HEIGHT_PT * ui->content_scale,
-      .width = 210.0f * ui->content_scale,
-      .height = 94.0f * ui->content_scale,
   };
 }
 
@@ -627,14 +695,14 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
   if (ui->keyboard_input_layer == EDITOR_COMMAND_LAYER)
     (void)vkr_ui_keyboard_layer_set(ui, 0);
 
-  if (editor->menu == VKR_EDITOR_MENU_METRICS)
+  if (editor->menu != VKR_EDITOR_MENU_NONE)
     vkr_ui_keyboard_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 2u);
   else if (ui->keyboard_input_layer == VKR_EDITOR_WINDOW_COUNT + 2u)
     vkr_ui_keyboard_layer_set(ui, 0u);
   const bool8_t popup_contains_pointer =
-      editor->menu == VKR_EDITOR_MENU_METRICS &&
+      editor->menu != VKR_EDITOR_MENU_NONE &&
       editor_point_in_rect(ui->mouse_x, ui->mouse_y,
-                           editor_menu_popup_rect(ui));
+                           editor_menu_popup_rect(editor, ui));
   if (ui->mouse_pressed && !popup_contains_pointer) {
     uint32_t top_z = 0u;
     VkrEditorWindowKind top_kind = VKR_EDITOR_WINDOW_COUNT;
@@ -659,9 +727,9 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
       (void)vkr_ui_input_layer_register(ui, window->z_order + 1u,
                                         editor_window_rect(ui, window));
   }
-  if (editor->menu == VKR_EDITOR_MENU_METRICS)
+  if (editor->menu != VKR_EDITOR_MENU_NONE)
     (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_WINDOW_COUNT + 2u,
-                                      editor_menu_popup_rect(ui));
+                                      editor_menu_popup_rect(editor, ui));
 }
 
 static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
@@ -682,11 +750,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     break;
   case VKR_EDITOR_WINDOW_HELP:
     title_text = string8_lit("EDITOR CONTROLS");
-    body_text = string8_lit("Cmd/Ctrl+P   Commands: scene, panels, transport\n"
-                            "Tab/F3 Camera (click Scene for Tab); Esc release\n"
-                            "F8  Cycle IBL mode\n"
-                            "F9 / F10  IBL intensity     G   Camera snapshot\n"
-                            "Click a title bar to focus and drag a window.");
+    body_text =
+        string8_lit("Cmd/Ctrl+P   Commands: scene, panels, transport\n"
+                    "Hold RMB in Scene to fly; release RMB to stop\n"
+                    "Tab/F3 or Camera button toggles fly; Esc releases\n"
+                    "F8  Cycle IBL mode\n"
+                    "F9 / F10  IBL intensity     G   Camera snapshot\n"
+                    "Click a title bar to focus and drag a window.");
     font_size_pt = 11.0f;
     break;
   default:
@@ -938,6 +1008,20 @@ static void editor_command_execute(EditorCommand command,
 
 void vkr_editor_commands_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
+  if (editor->menu != VKR_EDITOR_MENU_NONE) {
+    VkrUiSystem *ui = frame->ui;
+    const bool8_t outside =
+        ui->mouse_pressed &&
+        (float32_t)ui->mouse_y >=
+            VKR_EDITOR_NAVIGATION_HEIGHT_PT * ui->content_scale &&
+        !editor_point_in_rect(ui->mouse_x, ui->mouse_y,
+                              editor_menu_popup_rect(editor, ui));
+    if (outside || input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+      editor->menu = VKR_EDITOR_MENU_NONE;
+      ui->focused_id = ui->active_id = VKR_UI_ID_NONE;
+      (void)vkr_ui_keyboard_layer_set(ui, 0u);
+    }
+  }
   const bool8_t modifier = input_key_shortcut_modifier(frame->input, KEY_P);
   if (!frame->mouse_captured && modifier &&
       input_key_just_pressed(frame->input, KEY_P) && !editor->commands_open) {

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="64" viewBox="0 0 192 64">
+  <g fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Directional: sun and parallel outgoing rays. Each glyph occupies 64px. -->
+    <circle cx="25" cy="25" r="10"/>
+    <path d="M25 7v4 M25 39v4 M7 25h4 M39 25h4 M12 12l3 3 M35 35l3 3 M12 38l3-3 M35 15l3-3
+             M35 47l10 10 M45 42l10 10 M45 57h-5 M45 57v-5 M55 52h-5 M55 52v-5"/>
+    <!-- Spot: lamp housing with a widening beam. -->
+    <path d="M77 11l14 4 9 12-17 10-6-16z M84 38l7 16 29-17-17-9 M98 30l8 14
+             M75 23l-5 4 M70 27l9 15"/>
+    <!-- Point: omnidirectional bulb. -->
+    <path d="M153 42c0-7-8-10-8-19a15 15 0 0 1 30 0c0 9-8 12-8 19z M153 48h14 M155 54h10
+             M160 2v-1 M138 23h-5 M182 23h5 M144 7l-4-4 M176 7l4-4"/>
+  </g>
+</svg>

@@ -18,23 +18,6 @@ vkr_metal_packet_release_budgeted_resource(VkrMetalPacketRenderer *renderer,
   vkr_metal_memory_device_release_external(renderer->memory, allocated);
 }
 
-vkr_internal id<MTLIndirectCommandBuffer> vkr_metal_packet_create_budgeted_icb(
-    VkrMetalPacketRenderer *renderer, MTLIndirectCommandBufferDescriptor *descriptor,
-    uint32_t command_count) {
-  /* Metal has no ICB size query. Check its actual allocation before requesting
-   * residency, releasing the provisional object if it cannot enter the budget. */
-  id<MTLIndirectCommandBuffer> icb = [renderer->device
-      newIndirectCommandBufferWithDescriptor:descriptor
-                             maxCommandCount:command_count
-                                     options:MTLResourceStorageModePrivate];
-  if (icb && !vkr_metal_memory_device_reserve_external(renderer->memory,
-                                                       icb.allocatedSize)) {
-    [icb release];
-    return nil;
-  }
-  return icb;
-}
-
 vkr_internal id<MTLLibrary>
 vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
                                 const char *path, NSString *name)
@@ -278,6 +261,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, frame_type, "point_light_data",
             VKR_GPU_ABI_POINT_LIGHT_ROW) ||
+        !vkr_metal_packet_validate_nested_gpu_abi(
+            pipeline_label, frame_type, "local_shadow_views",
+            VKR_GPU_ABI_LOCAL_SHADOW_VIEW) ||
         !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
                                               "instances",
                                               VKR_METAL_PACKET_ABI_INSTANCE) ||
@@ -365,9 +351,12 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, root.bufferStructType, "frame",
             VKR_METAL_PACKET_ABI_FRAME_ROOT) ||
-        !vkr_metal_packet_validate_nested_gpu_abi(pipeline_label, frame_type,
-                                                  "point_light_data",
-                                                  VKR_GPU_ABI_POINT_LIGHT_ROW))
+        !vkr_metal_packet_validate_nested_gpu_abi(
+            pipeline_label, frame_type, "point_light_data",
+            VKR_GPU_ABI_POINT_LIGHT_ROW) ||
+        !vkr_metal_packet_validate_nested_gpu_abi(
+            pipeline_label, frame_type, "local_shadow_views",
+            VKR_GPU_ABI_LOCAL_SHADOW_VIEW))
       return false_v;
   }
   return true_v;
@@ -1045,8 +1034,8 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icb_residencies(
 vkr_internal bool8_t vkr_metal_packet_reserve_gpu_draw_icb(
     VkrMetalPacketRenderer *renderer, id<MTLResidencySet> residency,
     id<MTLIndirectCommandBuffer> *icb, uint32_t *capacity,
-    uint32_t required_commands, bool8_t transmission)
-    API_AVAILABLE(macos(26.0)) {
+    uint32_t required_commands, bool8_t transmission,
+    VkrRendererError *out_error) API_AVAILABLE(macos(26.0)) {
   if (required_commands <= *capacity)
     return true_v;
   if (*icb) {
@@ -1065,8 +1054,18 @@ vkr_internal bool8_t vkr_metal_packet_reserve_gpu_draw_icb(
   descriptor.inheritCullMode = YES;
   descriptor.maxVertexBufferBindCount = transmission ? 0u : 1u;
   descriptor.maxFragmentBufferBindCount = transmission ? 0u : 3u;
-  *icb = vkr_metal_packet_create_budgeted_icb(renderer, descriptor,
-                                              required_commands);
+  /* Metal has no ICB size query. Reject and release a provisional native
+     object before residency if its actual allocation cannot enter the cap. */
+  *icb = [renderer->device
+      newIndirectCommandBufferWithDescriptor:descriptor
+                             maxCommandCount:required_commands
+                                     options:MTLResourceStorageModePrivate];
+  if (*icb && !vkr_metal_memory_device_reserve_external(renderer->memory,
+                                                        (*icb).allocatedSize)) {
+    [*icb release];
+    *icb = nil;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
   [descriptor release];
   if (!*icb) {
     log_error("Metal indirect command buffer growth failed: commands=%u "
@@ -1088,8 +1087,8 @@ vkr_internal bool8_t vkr_metal_packet_reserve_gpu_draw_icb(
 
 vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_icbs(
     VkrMetalPacketRenderer *renderer, uint32_t candidate_count,
-    uint32_t transmission_count, uint32_t view_count)
-    API_AVAILABLE(macos(26.0)) {
+    uint32_t transmission_count, uint32_t view_count,
+    VkrRendererError *out_error) API_AVAILABLE(macos(26.0)) {
   if (candidate_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
       transmission_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
       view_count > VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX ||
@@ -1111,7 +1110,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_icbs(
               renderer, slot->gpu_draw_icb_residencies[group],
               &slot->gpu_draw_icbs[group],
               &slot->gpu_draw_icb_capacities[group],
-              candidate_capacity * group_view_count, false_v))
+              candidate_capacity * group_view_count, false_v, out_error))
         return false_v;
     }
   }
@@ -1123,7 +1122,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_icbs(
             renderer, slot->gpu_draw_icb_residencies[0],
             &slot->transmission_gpu_draw_icb,
             &slot->transmission_gpu_draw_icb_capacity, transmission_capacity,
-            true_v))
+            true_v, out_error))
       return false_v;
   }
   return true_v;
@@ -1922,6 +1921,11 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         return false_v;
       }
       renderer->device = [MTLCreateSystemDefaultDevice() retain];
+      if (![renderer->device.name getCString:renderer->device_name
+                                  maxLength:sizeof(renderer->device_name)
+                                   encoding:NSUTF8StringEncoding])
+        snprintf(renderer->device_name, sizeof(renderer->device_name),
+                 "unavailable");
       MTL4CommandQueueDescriptor *queue_descriptor =
           [MTL4CommandQueueDescriptor new];
       queue_descriptor.feedbackQueue = vkr_metal_packet_feedback_queue();

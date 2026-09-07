@@ -607,6 +607,9 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t shadow_cascade_count;
   /** Bits of repeated shadow passes that must be instantiated this frame. */
   uint32_t shadow_cascade_render_mask;
+  uint32_t local_shadow_view_count;
+  uint32_t local_shadow_map_size;
+  uint32_t local_shadow_map_layer_count;
 } VkrRenderGraphFrameInfo;
 
 /**

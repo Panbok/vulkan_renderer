@@ -8,6 +8,7 @@
 typedef enum VkrEditorMenu {
   VKR_EDITOR_MENU_NONE = 0,
   VKR_EDITOR_MENU_METRICS,
+  VKR_EDITOR_MENU_DEBUG,
 } VkrEditorMenu;
 
 typedef enum VkrEditorWindowKind {
@@ -24,11 +25,28 @@ typedef struct VkrEditorWindowState {
   bool8_t visible;
 } VkrEditorWindowState;
 
+typedef struct VkrEditorLabelAnchor {
+  VkrUiId widget;
+  VkrEntityId entity;
+} VkrEditorLabelAnchor;
+
 typedef struct VkrEditorUi {
   VkrEditorConsole console;
   VkrEditorBakery *bakery;
   VkrEditorScenePanels *scene_panels;
   VkrEditorMenu menu;
+  bool8_t labels_expanded;
+  bool8_t labels_enabled;
+  bool8_t labels_directional;
+  bool8_t labels_spot;
+  bool8_t labels_point;
+  VkrFontHandle label_font;
+  /* Frame-scratch records, consumed before UI geometry preparation. */
+  VkrEditorLabelAnchor *label_anchors;
+  uint32_t label_anchor_count;
+  uint64_t label_scene_generation;
+  VkrUiId label_panel;
+  bool8_t label_capacity_warned;
   bool8_t commands_open;
   bool8_t commands_focus_search;
   uint32_t commands_cursor;

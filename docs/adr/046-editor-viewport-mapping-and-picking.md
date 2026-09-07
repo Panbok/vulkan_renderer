@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 # ADR-046: One editor viewport mapping for scene presentation and interaction
@@ -76,7 +76,7 @@ continues to require completion of its last submission.
 The user approved the extra scene-sized image and compositing pass so Render Stop
 preserves the visible scene while the editor and simulation remain independent.
 
-A Scene out-of-memory failure reduces editor-owned output scale by 0.75 and
+A Scene out-of-memory failure reduces Application-owned output scale by 0.75 and
 retries on a later frame, down to a 0.25 floor. Metal's existing dynamic-resolution
 ratio and MetalFX operate within this reduced Scene output; other paths multiply
 their existing viewport scale. The UI stays at window resolution. The reduced
@@ -88,7 +88,8 @@ Render Stop latches a visible error until explicit retry or unload. UI-only fram
 continue instead of retrying an impossible allocation every frame. Both native
 backends preserve graph-allocation OOM status for this policy.
 
-The user approved bounded texture recovery in the paneled editor. Only typed
+The user approved bounded texture recovery in the paneled editor and its
+extension to the standalone Metal app. Only typed
 out-of-memory publication failures retain the existing material/slot/path record;
 the failed resource request and prepared payload are released. A successful live
 Scene submission commits its output-reduction generation and allows one retry
@@ -108,6 +109,18 @@ capacity retries require a new high-water allowance as described in
 [ADR-024](024-shared-bindless-gpu-cores.md). Further texture-triggered reductions wait until
 in-flight requests finish; a native frame OOM still requests immediate relief.
 Unload removes waiting records with their materials.
+
+Standalone Metal applies this scale to its full physical target extent. Its
+fullscreen tonemap stretches the reduced Scene output to the drawable, then UI
+renders at native resolution. Both MetalFX and fixed-scale spatial modes honor
+the override; temporal preparation and picking use the resulting render extent.
+Application owns the output scale and relief generation for both presentations,
+and configures material recovery before asset publication. The runtime no longer
+restricts retry admission to the editor. If the floor cannot relieve an app OOM,
+the app exits through normal shutdown rather than repeating failed allocations;
+the paneled editor keeps its existing Render Stop behavior. Standalone Vulkan
+has no Scene-output scaling capability and retains its existing unscaled texture
+failure behavior. GPU completion and the 4 GiB default managed cap are unchanged.
 
 On a live Scene image-allocation OOM, Metal retries image realization once at
 the same requested extent. Before that retry it waits for all submitted work,
@@ -164,6 +177,26 @@ picks while retaining active edits; stopping Scene rendering commits the current
 edit. Escape explicitly restores the pre-drag transform.
 
 ## Verification and limits
+
+The standalone-app extension passes normal Release Bistro checks on Apple M1 Pro
+with a 3024×1898 physical target and the unchanged 4 GiB cap. The MetalFX case
+loads all 517 texture assignments with zero pending, failed, demanded-missing,
+or evicted assignments after reducing Scene output to 75%; dynamic resolution
+then renders at 1134×712. The fixed spatial case renders at 1701×1068 after bounded
+relief, captures picking IDs at that extent, and presents final color at
+3024×1898. Its report SHA-256 is
+`c70b83a05b6ff4f4424547c759ce42e19591c15be351a2f267e371d0f2521ab4`.
+
+Reproduction commands use `./build_release/tools/vkr_harness snapshot --case`
+with `tools/cases/local/app_bistro_texture_memory.case.json` or
+`tools/cases/local/app_bistro_texture_memory_spatial.case.json`, followed by
+`--profile tools/profiles/local-metal-windowed-validation-serial.json`.
+Validation variables are unset; the profile name does not enable native validation.
+The existing `editor_memory_same_resolution_retry` snapshot passes Stop, resize,
+Resume and both 1528×1074 extent assertions (report SHA-256
+`d19ebc4b3cef6d04963b8404e64a31868d29621355ac37d5360b7acb60350377`).
+These observations establish bounded startup recovery and composition, not a
+performance result, long-session memory stability, or native Vulkan acceptance.
 
 The Vulkan stopped-frame readback fix passes Release and Debug checks on an
 RX 6700 XT at 100% Windows scaling. The

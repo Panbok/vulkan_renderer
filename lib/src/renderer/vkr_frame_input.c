@@ -321,6 +321,87 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
   }
+  const VkrLocalShadowPassPayload *local = packet->local_shadow;
+  if (local) {
+    if (!packet->world || packet->world->gpu_shadow_candidate_count == 0u ||
+        !packet->lighting || !packet->lighting->point_lights ||
+        packet->lighting->point_light_count > VKR_MAX_SCENE_POINT_LIGHTS ||
+        !local->view_count || local->view_count > local->face_budget ||
+        local->face_budget > VKR_LOCAL_SHADOW_FACE_COUNT_MAX ||
+        !local->map_size || local->map_size > VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.local_shadow",
+                        "invalid local shadow capacity or owners");
+    uint32_t next_view = 0u;
+    for (uint32_t i = 0; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i) {
+      const uint32_t first = local->light_first_view[i];
+      if (!first)
+        continue;
+      if (i >= packet->lighting->point_light_count)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.local_shadow.light_first_view",
+                          "references a missing light");
+      const uint32_t count = packet->lighting->point_lights[i].kind ==
+                                     VKR_POINT_LIGHT_KIND_GLTF_SPOT
+                                 ? 1u
+                                 : 6u;
+      if (first != next_view + 1u || count > local->view_count - next_view)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.local_shadow.light_first_view",
+                          "requires contiguous complete light views");
+      const VkrPointLight *light = &packet->lighting->point_lights[i];
+      static const Vec3 face_directions[6] = {
+          {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+      for (uint32_t face = 0; face < count; ++face) {
+        const VkrLocalShadowView *view = &local->views[next_view + face];
+        const Vec4 position = view->light_position_near;
+        const Vec4 direction = view->light_direction_far;
+        const float32_t length_squared = direction.x * direction.x +
+                                         direction.y * direction.y +
+                                         direction.z * direction.z;
+        if (position.x != light->position.x ||
+            position.y != light->position.y ||
+            position.z != light->position.z || !isfinite(position.x) ||
+            !isfinite(position.y) || !isfinite(position.z) ||
+            !isfinite(length_squared) ||
+            fabsf(length_squared - 1.0f) > 0.0001f ||
+            (count == 6u && (direction.x != face_directions[face].x ||
+                             direction.y != face_directions[face].y ||
+                             direction.z != face_directions[face].z)))
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.local_shadow.views",
+                            "requires the owning light position and normalized "
+                            "face direction");
+      }
+      next_view += count;
+    }
+    if (next_view != local->view_count)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.local_shadow.view_count",
+                        "contains unowned views");
+    for (uint32_t i = 0; i < local->view_count; ++i) {
+      const VkrLocalShadowView *view = &local->views[i];
+      for (uint32_t j = 0; j < 16u; ++j)
+        if (!isfinite(view->light_view_projection.elements[j]))
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.local_shadow.views",
+                            "requires finite projection matrices");
+      if (!isfinite(view->light_position_near.w) ||
+          view->light_position_near.w <= 0.0f ||
+          !isfinite(view->light_direction_far.w) ||
+          view->light_direction_far.w <= view->light_position_near.w ||
+          !isfinite(view->projection_params.x) ||
+          view->projection_params.x <= 0.0f ||
+          view->projection_params.y != 1.0f / (float32_t)local->map_size ||
+          !isfinite(view->projection_params.z) ||
+          view->projection_params.z < 0.0f ||
+          !isfinite(view->projection_params.w) ||
+          view->projection_params.w < 0.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.local_shadow.views",
+                          "invalid projection or texel bias units");
+    }
+  }
   const VkrShadowPassPayload *shadow = packet->shadow;
   if (shadow) {
     if (shadow->cascade_count == 0u ||

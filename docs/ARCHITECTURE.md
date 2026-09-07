@@ -38,7 +38,13 @@ independent simulation/render controls in a draggable Scene toolbar, alongside
 load/unload and camera entry. Scene focus routes Tab to camera capture; panel
 focus routes it to widgets. Hierarchy reads the authoritative scene
 through a virtualized tree; Inspector sends typed selection and edit requests to
-the runtime. Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
+the runtime. Debug > Labels controls selectable directional, spot and point
+light texture icons. The editor identifies ECS light components and projects
+32-point labels above their origins using the packet's unjittered camera and
+Scene mapping. Inspector exposes light enable, color/intensity, local direction
+angles, punctual range and spotlight cone controls through the edit journal.
+RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
+Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
 mesh, font and texture cookers in a cancellable child process. Its setup, jobs
 and output views use labeled controls and adapt to dock width. Render Stop retains the last Scene image while UI continues;
 Vulkan UI-only frames reset Scene readback copies before skipping absent producers.
@@ -85,7 +91,7 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 30 contains frame metadata, camera/lighting/settings and typed
+Frame-input version 31 contains frame metadata, camera/lighting/settings and typed
 world, shadow, skybox, UI, editor, picking and debug payloads. Supplied world-text
 and UI streams are authoritative. `vkr_frame_input_validate()` checks structural
 input. Private `VkrPreparedFrame` holds derived temporal, exposure, bloom and GTAO
@@ -178,7 +184,11 @@ providing at least a two-pixel reconstruction range for text at 8 physical pixel
 MTSDF atlas sampling stays linear when
 scene-texture filtering changes. The app debug overlay has 11/13-device-pixel
 minimum title/body sizes; its authored 9/11-point sizing still governs at higher
-content scales. See [ADR-027](adr/027-immediate-mode-grid-ui.md)
+content scales. Its panels size to measured text, row gaps, padding and borders;
+the performance block wraps within the panel's maximum width before measurement.
+Both performance widgets share runtime-cached CPU/GPU identity
+and process-resident/managed-GPU memory sampled once per second, alongside
+render/output extents. See [ADR-027](adr/027-immediate-mode-grid-ui.md)
 and [ADR-034](adr/034-offline-cooked-font-artifacts.md) through
 [ADR-036](adr/036-dpi-derived-ui-text-scale.md). Resource worker/finalize ownership
 is in [ADR-045](adr/045-resource-prepare-and-render-thread-finalize.md); stable
@@ -278,7 +288,12 @@ production policy; a fifth layer is diagnostic. See
 
 Punctual lighting uses a stable 128-light table and 384-cell fragment-local
 bitmask grid with exact range/cone rejection. Up to 16 ready probes contribute
-fragment-space AABB weights. Only directional lighting samples CSM; light ranges,
+fragment-space AABB weights. Directional lighting samples CSM. Opt-in point/spot shadows use a separate
+16-face, 1024-squared depth pool per physical target image, with one face per
+spot and six per point. Stable light order allocates complete groups; excess
+lights remain unshadowed. Every selected local view redraws each frame, with
+nine-tap PCF and point taps remapped across faces. Scene `casts_shadow` and the
+editor's Cast shadows checkbox require a finite range. Light ranges,
 probe bounds and GTAO do not establish arbitrary wall/furniture occlusion.
 See [ADR-019](adr/019-bounded-forward-spatial-lighting.md).
 
@@ -384,7 +399,12 @@ on demand after their GPU and CPU consumers finish. Graph draw tables use scene
 candidate capacities on both backends; native caches retain sufficient backing
 and wait for submitted users before replacing undersized buffers. Automatic texture pressure
 accounts charged asset-heap capacity separately, and capacity retries require a
-new finite high-water allowance or committed Scene reduction.
+new finite high-water allowance or committed Scene reduction. Application owns
+bounded Scene-output recovery for the paneled editor and standalone Metal app;
+failed texture payloads are released, while their paths wait for a successfully
+submitted reduction before retrying. Fullscreen Scene composition stretches to
+the physical output and leaves UI native. App recovery stops at the existing
+25% floor; standalone Vulkan has no Scene-output override capability.
 Metal entrypoints use autorelease pools for temporary Objective-C objects;
 resources that span calls retain explicit ownership and completion-gated release.
 `VKR_METAL_MEMORY_BUDGET_MB` configures the cap at startup. See
@@ -492,7 +512,7 @@ These are limits of current code or retained acceptance, not scheduled promises:
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, terrain, a general effects system, asynchronous graph
   queues and fully graph-declared IBL baking are not production features.
-- Clearcoat, sheen, point/spot shadows, arbitrary local-light occlusion, meshlets,
+- Clearcoat, sheen, arbitrary indirect-light occlusion, meshlets,
   automatic mesh LOD and shader hot reload are absent.
 - Native source exists for both backends, but same-revision crossed transmission,
   visibility/packed geometry, punctual lighting, shadow-transition, tonemap,

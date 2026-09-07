@@ -296,6 +296,7 @@ if(APPLE)
         # lighting path and by the IBL projection kernel, so the shared header
         # precedes both.
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/sh_l2_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/local_shadow.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/editor/overlay.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"

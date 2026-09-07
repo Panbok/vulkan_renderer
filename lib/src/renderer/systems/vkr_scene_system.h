@@ -208,6 +208,7 @@ typedef struct ScenePointLight {
   float32_t outer_cone_angle;
   VkrPointLightKind kind;
   bool8_t enabled; // Whether this light is active
+  bool8_t casts_shadow; // Opt-in; requires a finite positive range.
 } ScenePointLight;
 
 /**

@@ -741,11 +741,13 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   if (!prepared->frame.scene_rendering) {
     prepared->frame.input.world = NULL;
     prepared->frame.input.shadow = NULL;
+    prepared->frame.input.local_shadow = NULL;
     prepared->frame.input.lighting = NULL;
     prepared->frame.input.skybox = NULL;
     prepared->frame.input.picking = NULL;
   }
-  const bool8_t scaled = rf->render_scale != 1.0f;
+  const bool8_t scaled =
+      rf->scene_output_extent_overridden || rf->render_scale != 1.0f;
   const uint32_t temporal_width = scaled ? rf->render_width
                                   : packet->frame.viewport_width
                                       ? packet->frame.viewport_width
@@ -824,7 +826,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
   bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_LINEAR_BIT);
   bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
   *device_information = (VkrDeviceInformation){
-      .device_name = string8_lit("Apple Metal 4 GPU"),
+      .device_name =
+          vkr_metal_packet_renderer_device_name(renderer->metal_renderer),
       .vendor_name = string8_lit("Apple"),
       .driver_version = string8_lit("Metal 4"),
       .api_version = string8_lit("Metal 4"),

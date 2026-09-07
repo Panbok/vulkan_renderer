@@ -12,7 +12,7 @@ _Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT == 8u,
 _Static_assert(VKR_FRUSTUM_PLANE_COUNT == 6u,
                "Vulkan deferred shaders require six frustum planes");
 _Static_assert(VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX <=
-                   2u * VKR_VULKAN_DEFERRED_PREFIX_GROUP_SIZE,
+                   5u * VKR_VULKAN_DEFERRED_PREFIX_GROUP_SIZE,
                "Vulkan cull prefix group coverage is incomplete");
 _Static_assert(VKR_VULKAN_TEXTURE_MIP_MAX == 16u,
                "Vulkan deferred shaders require sixteen HZB mip slots");
@@ -179,6 +179,8 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
       &renderer->frame_slots[renderer->active_frame_slot];
   VkrVulkanPreparedReadback *prepared = &slot->deferred_readback;
   prepared->count = 0u;
+  slot->shadow_cascade_count = 0u;
+  slot->local_shadow_view_count = 0u;
   // UI-only frames have no Scene producers. Clear prior slot readbacks before
   // returning so reused slots cannot copy stale Scene statistics.
   if (!renderer->graph->packet->scene_rendering)
@@ -194,9 +196,12 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
       (slot->exposure_requested &&
        (!slot->exposure_histogram || !slot->exposure_state_output)))
     return false_v;
+  slot->shadow_cascade_count = renderer->prepared_frame.shadow_cascade_count;
+  slot->local_shadow_view_count = renderer->prepared_frame.local_shadow_view_count;
   const VkBufferCopy copies[] = {
       {.dstOffset = VKR_VULKAN_READBACK_DRAW_STATE_OFFSET,
-       .size = (1u + renderer->prepared_frame.shadow_cascade_count) *
+       .size = (1u + renderer->prepared_frame.shadow_cascade_count +
+                renderer->prepared_frame.local_shadow_view_count) *
                sizeof(VkrGpuDrawCompactionState)},
       {.dstOffset = VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET,
        .size = sizeof(VkrGpuTransmissionDiagnostics)},
@@ -308,7 +313,9 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
        (!candidates || !classifications || !visible || !commands)))
     return false_v;
   const uint32_t view_count =
-      transmission ? 1u : 1u + renderer->prepared_frame.shadow_cascade_count;
+      transmission ? 1u
+                   : 1u + renderer->prepared_frame.shadow_cascade_count +
+                         renderer->prepared_frame.local_shadow_view_count;
   uint64_t views_address = 0u;
   uint64_t planes_address = 0u;
   Mat4 *views = NULL;
@@ -332,7 +339,13 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
                              source->normal.z, source->d};
     }
     for (uint32_t i = 1u; i < view_count; ++i) {
-      views[i] = packet->input.shadow->cascades[i - 1u].light_view_projection;
+      const uint32_t cascade_count =
+          renderer->prepared_frame.shadow_cascade_count;
+      views[i] =
+          i <= cascade_count
+              ? packet->input.shadow->cascades[i - 1u].light_view_projection
+              : packet->input.local_shadow->views[i - 1u - cascade_count]
+                    .light_view_projection;
       const VkrFrustum shadow = vkr_frustum_from_matrix(views[i]);
       for (uint32_t plane = 0u; plane < VKR_FRUSTUM_PLANE_COUNT; ++plane) {
         const VkrPlane *source = &shadow.planes[plane];
@@ -725,7 +738,8 @@ bool8_t vkr_vk_prepare_deferred_cull(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedRaster *prepared,
                                        const VkrRgPass *pass, bool8_t shadow,
-                                       bool8_t transmission) {
+                                       bool8_t transmission,
+                                       bool8_t local_shadow) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   VkrVulkanGraphBufferInstance *visible =
@@ -737,13 +751,18 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   if (!visible || !states || !commands)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
+  const uint32_t layer = pass->desc.depth_attachment.desc.slice.base_layer;
   const uint32_t view_index =
-      shadow ? 1u + pass->desc.depth_attachment.desc.slice.base_layer : 0u;
+      shadow ? 1u + layer +
+                   (local_shadow ? renderer->prepared_frame.shadow_cascade_count
+                                 : 0u)
+             : 0u;
   const Mat4 view_projection =
-      shadow ? packet->input.shadow->cascades[view_index - 1u]
-                   .light_view_projection
-             : mat4_mul(packet->temporal.jittered_projection,
-                        packet->input.globals.view);
+      local_shadow
+          ? packet->input.local_shadow->views[layer].light_view_projection
+      : shadow ? packet->input.shadow->cascades[layer].light_view_projection
+               : mat4_mul(packet->temporal.jittered_projection,
+                          packet->input.globals.view);
   const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
       packet, renderer->prepared_frame.viewport_width,
       renderer->prepared_frame.viewport_height);
@@ -752,12 +771,12 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
       vkr_vk_packet_frame_root(slot, &frame_address);
   if (!frame_root)
     return false_v;
-  vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame,
-                                transmission
-                                    ? slot->transmission_gpu_candidate_instances
-                                    : slot->gpu_candidate_instances,
-                                view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
-                                VKR_VULKAN_SENTINEL_SLOT_INDEX, false_v);
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame,
+      transmission ? slot->transmission_gpu_candidate_instances
+                   : slot->gpu_candidate_instances,
+      view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, false_v);
   VkrVulkanRasterRoot root = {
       .geometry_rows = slot->gpu_geometry_rows,
       .visible_rows = visible->buffer.address,
@@ -956,6 +975,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   if (renderer->prepared_frame.shadow_cascade_count > 0u &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &shadow_texture))
     return false_v;
+  uint32_t local_shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (renderer->prepared_frame.local_shadow_view_count > 0u &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 8u, &local_shadow_texture))
+    return false_v;
   uint32_t gtao_visibility = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (vkr_rg_pass_find_image_use(&pass->desc, 7u, 0u) &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &gtao_visibility))
@@ -985,9 +1008,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       vkr_vk_packet_frame_root(slot, &frame_address);
   if (!frame_root)
     return false_v;
-  vkr_vk_fill_packet_frame_root(
-      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
-      view_projection, shadow_texture, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
+  vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame,
+                                slot->gpu_candidate_instances, view_projection,
+                                shadow_texture, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+                                local_shadow_texture, true_v);
   const VkrVulkanLightingRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1752,6 +1776,11 @@ bool8_t vkr_vk_prepare_deferred_transmission(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_sampled_index(renderer, pass, compact ? 8u : 6u,
                                      &shadow_texture))
     return false_v;
+  uint32_t local_shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (renderer->prepared_frame.local_shadow_view_count > 0u &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 15u,
+                                     &local_shadow_texture))
+    return false_v;
   const VkrRgImageUse *vbuffer_use =
       vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
   const uint32_t layer = vbuffer_use && vbuffer_use->has_slice
@@ -1790,7 +1819,8 @@ bool8_t vkr_vk_prepare_deferred_transmission(VkrVulkanRenderer *renderer,
   vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame,
                                 slot->transmission_gpu_candidate_instances,
                                 view_projection, shadow_texture,
-                                VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
+                                VKR_VULKAN_SENTINEL_SLOT_INDEX,
+                                local_shadow_texture, true_v);
   const VkrVulkanTransmissionRoot root = {
       .visible_rows = visible->buffer.address,
       .materials = renderer->materials.address,

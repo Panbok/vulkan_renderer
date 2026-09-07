@@ -1656,6 +1656,9 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX,
       .shadow_cascade_render_mask = 0xffu,
       .hzb_build_enabled = true_v,
+      .local_shadow_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      .local_shadow_map_layer_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
       .hzb_reduce_pass_count = 14u,
       .transmission_rough_mip_pass_count = 5u,
       .sdsm_enabled = true_v,
@@ -1673,14 +1676,34 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   };
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length == VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  bool8_t found_compaction_state = false_v;
+  for (uint64_t i = 0u; i < runtime->buffers.length; ++i) {
+    const VkrRgBuffer *buffer = &runtime->buffers.data[i];
+    if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_compaction_state")) {
+      const uint64_t view_count = 1u + frame.shadow_cascade_count +
+                                  frame.local_shadow_view_count;
+      assert(buffer->desc.size ==
+             view_count * sizeof(VkrGpuDrawCompactionState));
+      found_compaction_state = true_v;
+    }
+  }
+  assert(found_compaction_state);
+  /* Repetition of a sampled face must not repeat or remove lighting itself. */
+  uint32_t lighting_passes = 0u;
+  for (uint64_t i = 0u; i < runtime->passes.length; ++i) {
+    const VkrRgPass *pass = &runtime->passes.data[i];
+    if (vkr_string8_equals_cstr(&pass->desc.name, "Lighting.Deferred.Editor"))
+      ++lighting_passes;
+  }
+  assert(lighting_passes == 1u);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
   frame.transmission_compact_enabled = true_v;
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length == VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
@@ -1734,6 +1757,14 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   };
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  lighting_passes = 0u;
+  for (uint64_t i = 0u; i < runtime->passes.length; ++i) {
+    const VkrRgPass *pass = &runtime->passes.data[i];
+    if (vkr_string8_equals_cstr(&pass->desc.name,
+                                "Lighting.Deferred.Fullscreen"))
+      ++lighting_passes;
+  }
+  assert(lighting_passes == 1u);
   bool8_t found_vbuffer = false_v;
   for (uint64_t i = 0u; i < runtime->passes.length; ++i) {
     VkrRgPass *pass = vector_get_VkrRgPass(&runtime->passes, i);

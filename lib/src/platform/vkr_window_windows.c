@@ -597,6 +597,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       }
     } else {
       // Window lost focus
+      /* A release outside this window may never arrive. End editor RMB holds
+         without changing latched camera capture. */
+      input_process_button(state->input_state, BUTTON_RIGHT, false_v);
       if (state->mouse_captured) {
         show_cursor(state);
       }

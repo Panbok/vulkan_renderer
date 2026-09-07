@@ -27,6 +27,7 @@ typedef struct VkrPointLight {
   float32_t outer_cone_angle;
   VkrPointLightKind kind;
   uint32_t render_id;
+  bool8_t casts_shadow;
 } VkrPointLight;
 
 /** Packs one canonical point light into the shared four-Vec4 GPU row. */

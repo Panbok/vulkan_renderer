@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "entities": [
+    { "name": "Root", "parent": null, "transform": { "pos": [0, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] } },
+    { "name": "Point", "parent": 0, "transform": { "pos": [0, 3, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "point_light": { "enabled": true, "casts_shadow": true, "color": [1, 1, 1], "intensity": 20, "attenuation": { "constant": 1, "linear": 0.05, "quadratic": 0.01 }, "range": 30 } },
+    { "name": "Receiver", "parent": 0, "transform": { "pos": [0, -0.25, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "shape": { "type": "cube", "dimensions": [18, 0.5, 18], "material": { "name": "receiver", "path": "tests/fixtures/rendering/p20_opaque_single.mt" } } },
+    { "name": "CasterX", "parent": 0, "transform": { "pos": [3, 2, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "shape": { "type": "cube", "dimensions": [2, 4, 2], "material": { "name": "caster_x", "path": "tests/fixtures/rendering/p20_opaque_single.mt" } } },
+    { "name": "CasterZ", "parent": 0, "transform": { "pos": [0, 2, 3], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "shape": { "type": "cube", "dimensions": [2, 4, 2], "material": { "name": "caster_z", "path": "tests/fixtures/rendering/p20_opaque_single.mt" } } }
+  ]
+}

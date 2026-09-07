@@ -450,9 +450,12 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
   values[11] = color.z;
   values[12] = intensity;
   values[13] = range;
-  values[14] = direction.x;
-  values[15] = direction.y;
-  values[16] = direction.z;
+  // Angles describe the local light ray: yaw zero faces -Z; elevation is +Y.
+  const float32_t horizontal = hypotf(direction.x, direction.z);
+  values[14] = atan2f(direction.x, -direction.z) * 57.2957795f;
+  values[15] = atan2f(direction.y, horizontal) * 57.2957795f;
+  values[16] = p->values.point_light.inner_cone_angle * 57.2957795f;
+  values[17] = p->values.point_light.outer_cone_angle * 57.2957795f;
   for (uint32_t i = 0; i < 18; i++)
     snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", values[i]);
   const String8 full_name = vkr_scene_get_name(f->scene, f->selected_entity);
@@ -504,9 +507,9 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
     out->visibility = p->values.visibility;
     out->fields |= VKR_SCENE_EDIT_VISIBILITY;
   }
-  float32_t v[17] = {0};
-  bool8_t numeric_changed[17] = {0};
-  for (uint32_t i = 0; i < 17; ++i) {
+  float32_t v[18] = {0};
+  bool8_t numeric_changed[18] = {0};
+  for (uint32_t i = 0; i < 18; ++i) {
     if (!strcmp(p->numbers[i], p->original_numbers[i]))
       continue;
     char *end;
@@ -545,15 +548,55 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
         out->point_light.color.elements[axis] = v[9 + axis];
         out->directional_light.color.elements[axis] = v[9 + axis];
       }
-      if (numeric_changed[14 + axis]) {
-        out->point_light.direction_local.elements[axis] = v[14 + axis];
-        out->directional_light.direction_local.elements[axis] = v[14 + axis];
+    }
+    if (numeric_changed[14] || numeric_changed[15]) {
+      for (uint32_t i = 14; i < 16; ++i)
+        if (!numeric_changed[i])
+          v[i] = strtof(p->original_numbers[i], NULL);
+      if (v[14] < -180 || v[14] > 180 || v[15] < -90 || v[15] > 90) {
+        snprintf(p->error, sizeof(p->error),
+                 "Yaw must be -180..180; elevation must be -90..90 degrees.");
+        return false_v;
       }
+      const float32_t yaw = v[14] * 0.0174532925f;
+      const float32_t elevation = v[15] * 0.0174532925f;
+      const Vec3 direction = {sinf(yaw) * cosf(elevation), sinf(elevation),
+                              -cosf(yaw) * cosf(elevation)};
+      out->point_light.direction_local = direction;
+      out->directional_light.direction_local = direction;
     }
     if (numeric_changed[12])
       out->point_light.intensity = out->directional_light.intensity = v[12];
     if (numeric_changed[13])
       out->point_light.range = v[13];
+    if (numeric_changed[16])
+      out->point_light.inner_cone_angle = v[16] * 0.0174532925f;
+    if (numeric_changed[17])
+      out->point_light.outer_cone_angle = v[17] * 0.0174532925f;
+    if ((numeric_changed[16] || numeric_changed[17]) &&
+        (out->point_light.inner_cone_angle < 0 ||
+         out->point_light.outer_cone_angle <
+             out->point_light.inner_cone_angle ||
+         out->point_light.outer_cone_angle > 1.5707964f ||
+         !(cosf(out->point_light.inner_cone_angle) >
+           cosf(out->point_light.outer_cone_angle)))) {
+      snprintf(p->error, sizeof(p->error),
+               "Use 0 <= inner < outer <= 90 degrees; increase the gap between "
+               "cone angles.");
+      return false_v;
+    }
+    out->point_light.casts_shadow = p->values.point_light.casts_shadow;
+    if (out->point_light.casts_shadow &&
+        (out->point_light.range <= 0.0f ||
+         (out->point_light.kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
+          out->point_light.outer_cone_angle >= 1.57079632679f))) {
+      snprintf(p->error, sizeof(p->error),
+               "Shadows require positive range and a spot outer angle below 90 "
+               "degrees.");
+      return false_v;
+    }
+    out->point_light.enabled = p->values.point_light.enabled;
+    out->directional_light.enabled = p->values.directional_light.enabled;
     if ((p->original_values.fields & VKR_SCENE_EDIT_POINT_LIGHT) &&
         MemCompare(&out->point_light, &p->original_values.point_light,
                    sizeof(out->point_light)))
@@ -576,7 +619,8 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.scroll"));
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.fields"));
   const char *labels[] = {"name",  "visibility", "inherit", "apply", "revert",
-                          "frame", "undo",       "redo",    "save"};
+                          "frame", "undo",       "redo",    "save",
+                          "light.point.enabled", "light.directional.enabled"};
   for (uint32_t i = 0; i < ArrayCount(labels); ++i) {
     VkrUiId id = vkr_ui_id_stack_widget_label(
         &ui->id_stack, string8_create((uint8_t *)labels[i], strlen(labels[i])));
@@ -585,10 +629,15 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
     if (ui->active_id == id)
       ui->active_id = 0;
   }
-  for (uint32_t i = 0; i < 17; ++i) {
+  for (uint32_t i = 0; i < 18; ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
     VkrUiId id =
         vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
+    if (ui->focused_id == id)
+      ui->focused_id = 0;
+    if (ui->active_id == id)
+      ui->active_id = 0;
+    id = vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("slider"));
     if (ui->focused_id == id)
       ui->focused_id = 0;
     if (ui->active_id == id)
@@ -652,11 +701,16 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
     inspector_read(p, f);
   float32_t content_height =
       5 + 27 + 29 + 27 + 30 + 26 + 9 * 26 + 29 + 30 + 44 + 88;
-  bool8_t light = (p->values.fields & (VKR_SCENE_EDIT_POINT_LIGHT |
-                                       VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)) != 0;
+  const bool8_t point = (p->values.fields & VKR_SCENE_EDIT_POINT_LIGHT) != 0;
+  const bool8_t directional =
+      (p->values.fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) != 0;
+  const bool8_t spot = point &&
+      p->values.point_light.kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
+  const bool8_t light = point || directional;
+  const bool8_t aimed = directional || spot;
   if (light)
-    content_height +=
-        26 + ((p->values.fields & VKR_SCENE_EDIT_POINT_LIGHT) ? 8 : 7) * 26;
+    content_height += 26 + (point + directional) * 27 +
+                      (4 + point + (aimed ? 4 : 0) + (spot ? 4 : 0)) * 26;
   if (!(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
     content_height -= 9 * 26;
   if (tr && !tr->trs_editable)
@@ -726,26 +780,51 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
   vkr_ui_label(ui, string8_lit("transform.title"),
                string8_lit("Local transform"), &c);
   y += 26;
-  const char *labels[17] = {"Position X",       "Position Y",
+  const char *labels[18] = {"Position X",       "Position Y",
                             "Position Z",       "Rotation X (deg)",
                             "Rotation Y (deg)", "Rotation Z (deg)",
                             "Scale X",          "Scale Y",
                             "Scale Z",          "Linear red",
                             "Linear green",     "Linear blue",
-                            "Intensity",        "Range",
-                            "Direction X",      "Direction Y",
-                            "Direction Z"};
-  uint32_t total = light ? 17u : 9u;
+                            "Intensity",        "Range (0 = unlimited)",
+                            "Local yaw (deg)",  "Local elevation (deg)",
+                            "Inner cone (deg)", "Outer cone (deg)"};
+  uint32_t total = light ? 18u : 9u;
   for (uint32_t i = 0; i < total; i++) {
     if (i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
       continue;
     if (i == 9) {
       c = widget_at(5, y, w - 10, 24);
       c.text.font = heading;
-      vkr_ui_label(ui, string8_lit("light.title"), string8_lit("Light"), &c);
+      vkr_ui_label(ui, string8_lit("light.title"),
+                   spot    ? string8_lit("Spot light")
+                   : point ? string8_lit("Point light")
+                           : string8_lit("Directional light"),
+                   &c);
       y += 26;
+      if (point) {
+        c = widget_at(5, y, w - 10, 24);
+        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.enabled"),
+                                      string8_lit("Light enabled"),
+                                      &p->values.point_light.enabled, &c);
+        y += 27;
+        c = widget_at(5, y, w - 10, 24);
+        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.shadow"),
+                                      string8_lit("Cast shadows"),
+                                      &p->values.point_light.casts_shadow, &c);
+        y += 27;
+      }
+      if (directional) {
+        c = widget_at(5, y, w - 10, 24);
+        p->changed |=
+            vkr_ui_checkbox(ui, string8_lit("light.directional.enabled"),
+                            string8_lit("Directional light enabled"),
+                            &p->values.directional_light.enabled, &c);
+        y += 27;
+      }
     }
-    if (i == 13 && !(p->values.fields & VKR_SCENE_EDIT_POINT_LIGHT))
+    if ((i == 13 && !point) || (i >= 14 && i < 16 && !aimed) ||
+        (i >= 16 && !spot))
       continue;
     (void)vkr_ui_push_id_u64(ui, i);
     c = widget_at(5, y, w * 0.53f - 6, 24);
@@ -762,8 +841,32 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
         y + 24 > p->inspector_scroll && y < h + p->inspector_scroll &&
         ui->focused_id ==
             vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
-    (void)vkr_ui_pop_id(ui);
     y += 26;
+    if (i >= 14) {
+      const float32_t minimum = i == 14 ? -180.0f : i == 15 ? -90.0f : 0.0f;
+      const float32_t maximum = i == 14 ? 180.0f : 90.0f;
+      char *end;
+      float32_t angle = strtof(p->numbers[i], &end);
+      const bool8_t valid = end != p->numbers[i] && !*end && isfinite(angle);
+      c = widget_at(5, y, w - 11, 24);
+      c.disabled = !valid;
+      c.tooltip = i < 16
+                      ? string8_lit("Local light direction; node rotation also applies")
+                        : string8_lit("Cone half-angle; inner must be less than outer");
+      // The slider owns only this draft string. Apply creates the undo entry.
+      float32_t slider_angle = valid ? vkr_clamp_f32(angle, minimum, maximum) : 0;
+      if (vkr_ui_slider_f32(ui, string8_lit("slider"), &slider_angle,
+                            minimum, maximum, &c)) {
+        snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", slider_angle);
+        p->changed = true_v;
+      }
+      field_focus |=
+          y + 24 > p->inspector_scroll && y < h + p->inspector_scroll &&
+          ui->focused_id == vkr_ui_id_stack_widget_label(&ui->id_stack,
+                                                         string8_lit("slider"));
+      y += 26;
+    }
+    (void)vkr_ui_pop_id(ui);
   }
   if (tr && !tr->trs_editable) {
     c = widget_at(5, y, w - 10, 44);

@@ -226,6 +226,8 @@ typedef enum VkrShadowSdsmStatus {
  * them. Keeping them would preserve controls the renderer cannot honor.
  */
 typedef struct VkrShadowConfig {
+  uint32_t local_shadow_face_budget;
+  uint32_t local_shadow_map_size;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
   float32_t cascade_split_lambda;
@@ -294,6 +296,8 @@ typedef struct VkrShadowConfig {
  */
 #define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
+      .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,             \
+      .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
       .cascade_count = 4,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.80f,                                           \
@@ -338,6 +342,8 @@ typedef struct VkrShadowConfig {
  */
 #define VKR_SHADOW_CONFIG_BALANCED                                             \
   ((VkrShadowConfig){                                                          \
+      .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,             \
+      .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
       .cascade_count = 3,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.75f,                                           \

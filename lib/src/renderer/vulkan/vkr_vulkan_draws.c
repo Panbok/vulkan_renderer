@@ -178,6 +178,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->point_light_data = 0u;
   slot->point_light_masks = 0u;
   slot->shadow_cascades = 0u;
+  slot->local_shadow_views = 0u;
   slot->ibl_probes = 0u;
   slot->ibl_probe_count = 0u;
   slot->prefilter_texture = 0u;
@@ -195,9 +196,14 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
         &slot->point_light_data, NULL);
     if (!packed)
       return false_v;
-    for (uint32_t i = 0u; i < lighting->point_light_count; ++i)
+    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
       vkr_lighting_system_pack_point_light(&lighting->point_lights[i],
                                            &packed[i]);
+      packed[i].p3.w =
+          packet->input.local_shadow
+              ? (float32_t)packet->input.local_shadow->light_first_view[i]
+              : 0.0f;
+    }
     const uint64_t mask_bytes =
         (uint64_t)lighting->point_light_grid->cell_count *
         sizeof(VkrPointLightMask);
@@ -229,6 +235,17 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
           .origin_inv_size_pad = source->origin_inv_size_pad,
       };
     }
+  }
+
+  if (packet->input.local_shadow && packet->input.local_shadow->view_count) {
+    const uint64_t bytes = (uint64_t)packet->input.local_shadow->view_count *
+                           sizeof(VkrLocalShadowView);
+    void *views =
+        vkr_vk_frame_upload_allocate(slot, bytes, _Alignof(VkrLocalShadowView),
+                                     &slot->local_shadow_views, NULL);
+    if (!views)
+      return false_v;
+    MemCopy(views, packet->input.local_shadow->views, bytes);
   }
 
   if (lighting && lighting->ibl_enabled && lighting->ibl_source.id) {
@@ -362,6 +379,9 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   if (packet->input.shadow)
     direct_bytes += (uint64_t)packet->input.shadow->cascade_count *
                     sizeof(VkrVulkanPacketShadowCascade);
+  if (packet->input.local_shadow)
+    direct_bytes += (uint64_t)packet->input.local_shadow->view_count *
+                    sizeof(VkrLocalShadowView);
   direct_bytes += vkr_vk_graph_upload_bound(renderer, draw_bytes, text_bytes,
                                             ui_root_bytes);
   if (!vkr_vk_reserve_frame_uploads(renderer, slot, direct_bytes,
@@ -740,7 +760,8 @@ void vkr_vk_fill_packet_frame_root(
     VkrVulkanRenderer *renderer, VkrVulkanPacketFrameRoot *root,
     const VkrVulkanFrameSlot *slot, const VkrPacketFrameConstants *frame,
     uint64_t instances, Mat4 view_projection, uint32_t shadow_texture,
-    uint32_t transmission_texture, bool8_t lighting_pass) {
+    uint32_t transmission_texture, uint32_t local_shadow_texture,
+    bool8_t lighting_pass) {
   root->instances = instances;
   root->view_projection = view_projection;
   root->materials = renderer->materials.address;
@@ -758,6 +779,8 @@ void vkr_vk_fill_packet_frame_root(
   root->point_light_data = slot->point_light_data;
   root->point_light_masks = slot->point_light_masks;
   root->shadow_cascades = slot->shadow_cascades;
+  root->local_shadow_views = slot->local_shadow_views;
+  root->local_shadow_texture = local_shadow_texture;
   root->ibl_probes = slot->ibl_probes;
   root->ibl_probe_count = slot->ibl_probe_count;
 
@@ -928,7 +951,7 @@ bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
     VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,
     uint32_t target_width, uint32_t target_height, uint32_t shadow_texture,
-    uint32_t transmission_texture) {
+    uint32_t transmission_texture, uint32_t local_shadow_texture) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   const uint32_t draw_count = slot->direct_draw_count;
@@ -946,7 +969,8 @@ bool8_t vkr_vk_prepare_packet_draws(
     return false_v;
   vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame, instances,
                                 view_projection, shadow_texture,
-                                transmission_texture, lighting_pass);
+                                transmission_texture, local_shadow_texture,
+                                lighting_pass);
   if (lighting_pass) {
     uint64_t temporal_address = 0u;
     VkrVulkanPacketTemporalDrawState *temporal = vkr_vk_frame_upload_allocate(

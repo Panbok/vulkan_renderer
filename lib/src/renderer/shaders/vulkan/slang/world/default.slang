@@ -438,6 +438,78 @@ float3 packet_box_project(float3 direction, float3 world_position,
     return normalize(world_position + safe_direction * t_hit - center);
 }
 
+// Local perspective depth arrays share the directional comparison sampler.
+float packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
+                          VkrGpuPointLightRow light, uint kind,
+                          float3 world_position, float3 normal)
+{
+    uint encoded_view = uint(light.p3.w);
+    if (encoded_view == 0u)
+        return 1.0f;
+    uint first_view = encoded_view - 1u;
+    float3 from_light = world_position - light.p0.xyz;
+    uint face = kind == 2u ? 0u : vkr_local_shadow_face(from_light);
+    VkrLocalShadowView data = frame.local_shadow_views[first_view + face];
+    float forward_depth = dot(from_light, data.light_direction_far.xyz);
+    if (forward_depth <= data.light_position_near.w ||
+        forward_depth >= data.light_direction_far.w)
+        return 1.0f;
+    float world_texel = 2.0f * forward_depth * data.projection_params.x *
+                        data.projection_params.y;
+    float3 receiver = world_position +
+        normal * (data.projection_params.w * world_texel) -
+        normalize(from_light) * (data.projection_params.z * world_texel);
+    if (kind != 2u)
+    {
+        face = vkr_local_shadow_face(receiver - light.p0.xyz);
+        data = frame.local_shadow_views[first_view + face];
+    }
+    float4 clip = mul(data.light_view_projection, float4(receiver, 1.0f));
+    if (clip.w <= 0.0f || clip.z < 0.0f || clip.z > clip.w)
+        return 1.0f;
+    float2 uv = clip.xy / clip.w * 0.5f + 0.5f;
+    if (kind == 2u && (any(uv < 0.0f) || any(uv > 1.0f)))
+        return 1.0f;
+    float radial_distance = length(receiver - light.p0.xyz);
+    float visibility = 0.0f;
+    [unroll] for (uint tap = 0u; tap < 9u; ++tap)
+    {
+        float2 tap_uv = uv + vkr_shadow_poisson[tap] *
+                            (1.5f * data.projection_params.y);
+        float reference = clip.z / clip.w;
+        uint tap_view = first_view;
+        if (kind == 2u)
+        {
+            if (any(tap_uv < 0.0f) || any(tap_uv > 1.0f))
+            {
+                visibility += 1.0f;
+                continue;
+            }
+        }
+        else
+        {
+            float3 ray = vkr_local_shadow_direction(face, tap_uv);
+            tap_view += vkr_local_shadow_face(ray);
+            float3 tap_world = light.p0.xyz + normalize(ray) * radial_distance;
+            float4 tap_clip = mul(frame.local_shadow_views[tap_view]
+                                     .light_view_projection,
+                                 float4(tap_world, 1.0f));
+            tap_uv = tap_clip.xy / tap_clip.w * 0.5f + 0.5f;
+            reference = tap_clip.z / tap_clip.w;
+            if (reference < 0.0f || reference > 1.0f)
+            {
+                visibility += 1.0f;
+                continue;
+            }
+        }
+        visibility += g_depth_array_textures[frame.local_shadow_texture]
+            .SampleCmpLevelZero(
+                g_comparison_samplers[frame.shadow_comparison_sampler],
+                float3(tap_uv, float(tap_view)), reference);
+    }
+    return visibility / 9.0f;
+}
+
 // Every enabled punctual light for one shaded point. `albedo` and `metallic`
 // follow packet_direct: the forward path passes base color with its metallic
 // factor, the deferred path passes G-buffer diffuse albedo and zero. Both
@@ -511,6 +583,7 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
                     attenuation *= cone_attenuation;
                 }
             }
+            attenuation *= packet_local_shadow(frame, light, kind, world_position, normal);
             VkrVulkanDirectResult direct = packet_direct(
                 normal, view, light_direction, p1.rgb * p2.x * attenuation,
                 albedo, metallic, roughness, f0);
@@ -580,6 +653,7 @@ float3 packet_punctual_specular(VkrVulkanPacketFrameRoot *frame,
                     attenuation *= cone_attenuation;
                 }
             }
+            attenuation *= packet_local_shadow(frame, light, kind, world_position, normal);
             result += packet_direct_specular(
                 normal, view, light_direction, p1.rgb * p2.x * attenuation,
                 roughness, f0);

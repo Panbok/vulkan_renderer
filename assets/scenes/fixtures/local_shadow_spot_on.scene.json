@@ -1,0 +1,141 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Spot",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          -3,
+          6,
+          3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "kind": 2,
+        "direction_local": [
+          0.3,
+          -0.7,
+          -1
+        ],
+        "inner_cone_angle": 0.2,
+        "outer_cone_angle": 0.65,
+        "color": [
+          0.7,
+          0.85,
+          1
+        ],
+        "intensity": 500,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30
+      }
+    },
+    {
+      "name": "Receiver",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          -0.25,
+          -5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          14,
+          0.5,
+          20
+        ],
+        "material": {
+          "name": "receiver",
+          "path": "tests/fixtures/rendering/p20_opaque_single.mt"
+        }
+      }
+    },
+    {
+      "name": "Caster",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          1.5,
+          -1
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          2,
+          3,
+          2
+        ],
+        "material": {
+          "name": "caster",
+          "path": "tests/fixtures/rendering/p20_opaque_single.mt"
+        }
+      }
+    }
+  ]
+}

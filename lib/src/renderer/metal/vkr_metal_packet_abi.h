@@ -84,6 +84,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
   uint64_t temporal_draw_state;
+  uint64_t local_shadow_texture_id;
+  uint64_t local_shadow_views;
 } VkrMetalPacketFrameRoot;
 
 /** Native unlit editor handle; pointers address packed published geometry. */
@@ -113,7 +115,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
 enum {
-  VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX = 5u,
+  VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX = 25u,
 };
 
 /** One frustum and routing policy in the bounded multi-view cull set. */

@@ -107,6 +107,9 @@ typedef struct State {
 
   EventManager *event_manager; // For dispatching events
 
+  /* Runtime-owned caches; UI borrows views through its build callback. */
+  char hardware_text[512];
+  char system_text[768];
   ApplicationUiText fps_text;
   ApplicationUiText left_text;
   ApplicationUiText memory_text;
@@ -141,6 +144,7 @@ typedef struct State {
   VkrEntityId pick_selected_entity;
 
   bool8_t free_camera_use_gamepad;
+  bool8_t free_camera_held;
   bool8_t free_camera_wheel_initialized;
   int8_t free_camera_prev_wheel_delta;
 
@@ -1683,7 +1687,7 @@ vkr_internal void application_unload_scene_system(Application *application) {
   state->gizmo_edit_pending = false_v;
   application_clear_gizmo_selection(application);
   application->active_scene = NULL;
-  application->editor_viewport.output_scale = 1.0f;
+  application->scene_output_scale = 1.0f;
   application->editor_viewport.rendered_width = 0u;
   application->editor_viewport.rendered_height = 0u;
   application->editor_viewport.output_width = 0u;
@@ -1764,8 +1768,28 @@ vkr_internal void application_update_memory_text(Application *application) {
                                      "\nGPU device memory\n");
 
   VkrDeviceMemoryStats gpu = {0};
-  if (complete &&
-      vkr_renderer_get_device_memory_stats(&application->renderer, &gpu)) {
+  const bool8_t have_gpu =
+      vkr_renderer_get_device_memory_stats(&application->renderer, &gpu);
+  uint64_t resident_bytes = 0u;
+  char ram[64] = "RAM (resident): unavailable";
+  char vram[64] = "GPU memory (managed): unavailable";
+  if (vkr_platform_get_process_resident_memory(&resident_bytes))
+    snprintf(ram, sizeof(ram), "RAM (resident): %.1f MiB",
+             (float64_t)resident_bytes / MB(1));
+  if (have_gpu) {
+    /* Metal charges native heaps, external resources and transfer rings to
+       one managed budget. Vulkan heap usage is device-wide; use this
+       renderer's committed allocations there instead. */
+    const bool8_t metal =
+        application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL;
+    const uint64_t gpu_bytes = metal ? gpu.heap_usage_bytes[0] : gpu.live_bytes;
+    snprintf(vram, sizeof(vram), "GPU memory (managed): %s%.1f MiB",
+             (metal || gpu.live_totals_exact) ? "" : "~",
+             (float64_t)gpu_bytes / MB(1));
+  }
+  snprintf(state->system_text, sizeof(state->system_text), "%s\n%s\n%s",
+           state->hardware_text, ram, vram);
+  if (complete && have_gpu) {
     uint64_t logical_live = 0u;
     for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner)
       logical_live += gpu.owners[owner].live_bytes;
@@ -1958,17 +1982,31 @@ vkr_internal void application_handle_input(Application *application,
     application_log_camera_snapshot(application);
   }
 
-  const bool8_t camera_captured =
+  bool8_t camera_captured =
       vkr_window_is_mouse_captured(&application->window);
+  if (state->free_camera_held &&
+      (!camera_captured || input_is_button_up(input_state, BUTTON_RIGHT) ||
+       application_editor_scene_rendering_stopped(application))) {
+    if (camera_captured)
+      vkr_window_set_mouse_capture(&application->window, false_v);
+    state->free_camera_held = false_v;
+    state->free_camera_wheel_initialized = false_v;
+    camera_captured = false_v;
+  }
+  bool8_t camera_started = false_v;
   const bool8_t camera_tab = input_key_just_pressed(input_state, KEY_TAB) &&
       (camera_captured ||
        (application->editor_viewport.enabled ? state->scene_keyboard_focus
                                             : !application->ui_capture.keyboard));
   const bool8_t camera_shortcut = application->editor_viewport.enabled &&
-      !application->ui_capture.text && input_key_just_pressed(input_state, KEY_F3);
+      !application->ui_capture.text &&
+      application->ui_system.keyboard_input_layer == 0u &&
+      input_key_just_pressed(input_state, KEY_F3);
   if ((camera_tab || camera_shortcut) &&
       (camera_captured || !application_editor_scene_rendering_stopped(application))) {
     vkr_window_set_mouse_capture(&application->window, !camera_captured);
+    state->free_camera_held = false_v;
+    camera_started = !camera_captured;
     state->free_camera_wheel_initialized = false_v;
     state->free_camera_use_gamepad = false_v;
   }
@@ -1978,12 +2016,57 @@ vkr_internal void application_handle_input(Application *application,
     bool8_t should_capture =
         !vkr_window_is_mouse_captured(&application->window);
     vkr_window_set_mouse_capture(&application->window, should_capture);
+    state->free_camera_held = false_v;
+    camera_started = should_capture;
     if (should_capture) {
       state->free_camera_use_gamepad = !state->free_camera_use_gamepad;
     } else {
       state->free_camera_use_gamepad = false_v;
     }
   }
+
+  if (application->editor_viewport.enabled &&
+      !vkr_window_is_mouse_captured(&application->window) &&
+      !application_editor_scene_rendering_stopped(application) &&
+      !application->ui_capture.mouse && !application->ui_capture.text &&
+      application->ui_system.mouse_input_layer == 0u &&
+      application->ui_system.keyboard_input_layer == 0u &&
+      !state->gizmo_drag.active && !state->gizmo_drag.pending_pick &&
+      !input_is_key_down(input_state, KEY_ESCAPE) &&
+      input_button_just_pressed(input_state, BUTTON_RIGHT) &&
+      input_is_button_down(input_state, BUTTON_RIGHT)) {
+    int32_t press_x = 0, press_y = 0;
+    input_get_button_press_position(input_state, BUTTON_RIGHT, &press_x,
+                                    &press_y);
+    const VkrViewportHitInfo hit =
+        application_get_viewport_hit_info(application, press_x, press_y);
+    if (hit.has_target_coords) {
+      vkr_window_set_mouse_capture(&application->window, true_v);
+      state->free_camera_held = true_v;
+      state->free_camera_use_gamepad = false_v;
+      state->free_camera_wheel_initialized = false_v;
+      state->scene_keyboard_focus = true_v;
+      application->ui_system.focused_id = VKR_UI_ID_NONE;
+      application->ui_system.focused_is_text = false_v;
+      application->ui_capture.keyboard = false_v;
+      camera_started = true_v;
+    }
+  }
+
+  /* Camera capture owns editor input. A previously focused Inspector button or
+     a toolbar under the virtual pointer must not block movement. */
+  if (application->editor_viewport.enabled &&
+      vkr_window_is_mouse_captured(&application->window)) {
+    application->ui_system.focused_id = VKR_UI_ID_NONE;
+    application->ui_system.focused_is_text = false_v;
+    application->ui_capture = (VkrUiInputCapture){0};
+    state->scene_keyboard_focus = true_v;
+  }
+
+  /* Capture changes the platform cursor coordinates. Consume motion only after
+     the next input snapshot establishes a baseline in captured coordinates. */
+  if (camera_started)
+    return;
 
   if (!vkr_window_is_mouse_captured(&application->window) ||
       application->ui_capture.mouse || application->ui_capture.keyboard ||
@@ -2782,6 +2865,7 @@ vkr_internal void application_update_ui(Application *application,
     if (escape ||
         (command && input_key_just_pressed(state->input_state, KEY_P))) {
       vkr_window_set_mouse_capture(&application->window, false_v);
+      state->free_camera_held = false_v;
       state->free_camera_wheel_initialized = false_v;
       state->free_camera_use_gamepad = false_v;
     }
@@ -2839,6 +2923,9 @@ vkr_internal void application_update_ui(Application *application,
               .performance = application_ui_text_view(&state->fps_text),
               .metrics = application_ui_text_view(&state->metrics_text),
               .memory = application_ui_text_view(&state->memory_text),
+              .system = string8_create_from_cstr(
+                  (const uint8_t *)state->system_text,
+                  string_length(state->system_text)),
           },
       .simulation_time = application->editor_viewport.simulation_time,
       .simulation_running = application->editor_viewport.simulation_running,
@@ -2847,11 +2934,19 @@ vkr_internal void application_update_ui(Application *application,
       .scene_error = application->editor_viewport.scene_error,
       .texture_pending_count = texture_streams.pending_count,
       .texture_demanded_missing_count = texture_streams.demanded_missing_count,
-      .scene_output_scale = application->editor_viewport.output_scale,
-      .scene_render_width = application->editor_viewport.rendered_width,
-      .scene_render_height = application->editor_viewport.rendered_height,
-      .scene_output_width = application->editor_viewport.output_width,
-      .scene_output_height = application->editor_viewport.output_height,
+      .scene_output_scale = application->scene_output_scale,
+      .scene_render_width = application->editor_viewport.enabled
+                                ? application->editor_viewport.rendered_width
+                                : application->renderer.render_width,
+      .scene_render_height = application->editor_viewport.enabled
+                                 ? application->editor_viewport.rendered_height
+                                 : application->renderer.render_height,
+      .scene_output_width = application->editor_viewport.enabled
+                                ? application->editor_viewport.output_width
+                                : application->renderer.last_window_width,
+      .scene_output_height = application->editor_viewport.enabled
+                                 ? application->editor_viewport.output_height
+                                 : application->renderer.last_window_height,
       .transport_action = &transport_action,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
       .scene = application->active_scene,
@@ -2997,6 +3092,11 @@ vkr_internal void application_update_ui(Application *application,
     break;
   case VKR_SAMPLE_TRANSPORT_STOP_RENDERING:
     application->editor_viewport.scene_rendering_stopped = true_v;
+    if (vkr_window_is_mouse_captured(&application->window))
+      vkr_window_set_mouse_capture(&application->window, false_v);
+    state->free_camera_held = false_v;
+    state->free_camera_wheel_initialized = false_v;
+    state->free_camera_use_gamepad = false_v;
     vkr_picking_cancel(&application->picking);
     state->gizmo_drag.active = false_v;
     state->gizmo_drag.pending_pick = false_v;
@@ -3008,6 +3108,7 @@ vkr_internal void application_update_ui(Application *application,
     if (!application_editor_scene_rendering_stopped(application)) {
       const bool8_t captured = vkr_window_is_mouse_captured(&application->window);
       vkr_window_set_mouse_capture(&application->window, !captured);
+      state->free_camera_held = false_v;
       state->scene_keyboard_focus = true_v;
       state->free_camera_wheel_initialized = false_v;
       state->free_camera_use_gamepad = false_v;
@@ -3016,6 +3117,21 @@ vkr_internal void application_update_ui(Application *application,
   case VKR_SAMPLE_TRANSPORT_NONE:
     break;
   }
+}
+
+static void application_project_ui(Application *application,
+                                    const VkrViewportMapping *mapping) {
+  const VkrSampleUiFrame frame = {
+      .ui = &application->ui_system,
+      .mapping = *mapping,
+      .mapping_valid = true_v,
+      .view_projection = mat4_mul(application->globals.projection,
+                                   application->globals.view),
+      .scene = application->active_scene,
+      .scene_generation = application->scene_generation,
+      .scene_rendering_stopped = application_editor_scene_rendering_stopped(application),
+  };
+  state->ui.project_scene(state->ui.state, &frame);
 }
 
 void application_update(Application *application, float64_t delta) {
@@ -3185,8 +3301,6 @@ int vkr_sample_runtime_run(int argc, char **argv,
              "reconstruction instead of MetalFX");
   }
   application.editor_viewport.enabled = runtime_config->presentation.paneled;
-  application.assets.material_system.texture_stream_memory_recovery_enabled =
-      application.editor_viewport.enabled;
   application.editor_viewport.scene_only =
       runtime_config->presentation.scene_only;
   application.editor_viewport.render_scale =
@@ -3220,6 +3334,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->current_fps = 0.0;
   state->current_frametime = 0.0;
   state->ui = runtime_config->ui;
+  application.project_ui = state->ui.project_scene ? application_project_ui : NULL;
   if (strlen(PROJECT_SOURCE_DIR) + strlen(scene_path_arg) +
           sizeof(".editor.json") >
       sizeof(state->sidecar_path)) {
@@ -3248,6 +3363,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->world_text_id = 0;
   state->world_text_update_clock = vkr_clock_create();
   state->free_camera_use_gamepad = false_v;
+  state->free_camera_held = false_v;
   state->free_camera_wheel_initialized = false_v;
   state->free_camera_prev_wheel_delta = 0;
   state->last_picked_object_id = 0;
@@ -3374,6 +3490,16 @@ int vkr_sample_runtime_run(int argc, char **argv,
            (float64_t)state->device_information.vram_local_size / GB(1));
   log_info("Device VRAM Shared Size: %.2f GB",
            (float64_t)state->device_information.vram_shared_size / GB(1));
+  VkrPlatformSystemInfo system_info = {0};
+  (void)vkr_platform_get_system_info(&system_info);
+  const String8 gpu_name = state->device_information.device_name;
+  snprintf(state->hardware_text, sizeof(state->hardware_text),
+           "CPU: %s\nGPU: %.*s",
+           system_info.cpu[0] ? system_info.cpu : "unavailable",
+           (int32_t)gpu_name.length, gpu_name.str);
+  snprintf(state->system_text, sizeof(state->system_text),
+           "%s\nRAM (resident): pending\nGPU memory (managed): pending",
+           state->hardware_text);
   state->anisotropy_supported =
       bitset8_is_set(&state->device_information.sampler_filters,
                      VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);

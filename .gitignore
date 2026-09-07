@@ -20,6 +20,8 @@ assets/textures/*
 !assets/textures/bistro_indoor_probe_*.png
 !assets/textures/UbuntuMono21px_0.png
 !assets/textures/UbuntuMono21px_0.png.vkt
+!assets/textures/editor-light-labels.png
+!assets/textures/editor-light-labels.png.vkt
 assets/models/*
 !assets/models/*.vkr.json
 assets/meters

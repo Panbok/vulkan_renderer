@@ -163,6 +163,17 @@ vkr_global const VkrGpuAbiField vkr_gpu_point_light_row_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p3, "p3", 48),
 };
 
+vkr_global const VkrGpuAbiField vkr_local_shadow_view_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrLocalShadowView, light_view_projection,
+                      "light_view_projection", 0),
+    VKR_GPU_ABI_FIELD(VkrLocalShadowView, light_position_near,
+                      "light_position_near", 64),
+    VKR_GPU_ABI_FIELD(VkrLocalShadowView, light_direction_far,
+                      "light_direction_far", 80),
+    VKR_GPU_ABI_FIELD(VkrLocalShadowView, projection_params,
+                      "projection_params", 96),
+};
+
 vkr_global const VkrGpuAbiRecord
     vkr_gpu_abi_records[VKR_GPU_ABI_RECORD_COUNT] = {
         [VKR_GPU_ABI_VERTEX] = VKR_GPU_ABI_RECORD(
@@ -174,8 +185,8 @@ vkr_global const VkrGpuAbiRecord
             VkrGpuGeometryDecodeRecord, "VkrGpuGeometryDecodeRecord", 32, 4,
             vkr_gpu_geometry_decode_record_fields),
         [VKR_GPU_ABI_INSTANCE] =
-            VKR_GPU_ABI_RECORD(VkrPreparedInstanceGPU, "VkrMetalPacketInstance", 128,
-                               16, vkr_gpu_instance_fields),
+            VKR_GPU_ABI_RECORD(VkrPreparedInstanceGPU, "VkrMetalPacketInstance",
+                               128, 16, vkr_gpu_instance_fields),
         [VKR_GPU_ABI_TEXT_VERTEX] =
             VKR_GPU_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32,
                                16, vkr_gpu_text_vertex_fields),
@@ -188,6 +199,9 @@ vkr_global const VkrGpuAbiRecord
         [VKR_GPU_ABI_VISIBLE_DRAW_ROW] =
             VKR_GPU_ABI_RECORD(VkrGpuVisibleDrawRow, "VkrGpuVisibleDrawRow", 32,
                                4, vkr_gpu_visible_draw_row_fields),
+        [VKR_GPU_ABI_LOCAL_SHADOW_VIEW] =
+            VKR_GPU_ABI_RECORD(VkrLocalShadowView, "VkrLocalShadowView", 112,
+                               16, vkr_local_shadow_view_fields),
         [VKR_GPU_ABI_POINT_LIGHT_ROW] =
             VKR_GPU_ABI_RECORD(VkrGpuPointLightRow, "VkrGpuPointLightRow", 64,
                                16, vkr_gpu_point_light_row_fields),

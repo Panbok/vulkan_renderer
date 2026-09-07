@@ -25,9 +25,15 @@ static void app_ui_handle_input(void *state, const InputState *input) {
 static VkrUiDockInputCapture app_ui_build(void *state,
                                           const VkrSampleUiFrame *frame) {
   const VkrAppUi *ui = state;
-  if (ui->visible)
-    vkr_debug_overlay_build(frame->ui, frame->text.camera,
-                            frame->text.performance);
+  if (ui->visible) {
+    String8 performance = string8_create_formatted(
+        frame->ui->frame_allocator, "%.*s\nRender %ux%u\nOutput %ux%u\n%.*s",
+        (int32_t)frame->text.performance.length, frame->text.performance.str,
+        frame->scene_render_width, frame->scene_render_height,
+        frame->scene_output_width, frame->scene_output_height,
+        (int32_t)frame->text.system.length, frame->text.system.str);
+    vkr_debug_overlay_build(frame->ui, frame->text.camera, performance);
+  }
   return (VkrUiDockInputCapture){0};
 }
 

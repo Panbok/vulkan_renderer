@@ -1644,6 +1644,13 @@ bool8_t vkr_scene_set_point_light(VkrScene *scene, VkrEntityId entity,
   if (!scene || !scene->world || !light)
     return false_v;
 
+  if (light->casts_shadow && (!isfinite(light->range) || light->range <= 0.0f ||
+                              (light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
+                               (!isfinite(light->outer_cone_angle) ||
+                                light->outer_cone_angle <= 0.0f ||
+                                light->outer_cone_angle >= 1.57079632679f))))
+    return false_v;
+
   // Ensure render ID for picking
   uint32_t prev_render_id = vkr_scene_get_render_id(scene, entity);
   if (!vkr_scene_ensure_render_id(scene, entity, NULL)) {

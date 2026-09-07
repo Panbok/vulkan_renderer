@@ -46,6 +46,10 @@ void vkr_editor_action_style(VkrUiWidgetConfig *config, VkrFontHandle heading) {
 void vkr_editor_ui_init(VkrEditorUi *editor) {
   *editor = (VkrEditorUi){
       .menu = VKR_EDITOR_MENU_NONE,
+      .labels_enabled = true_v,
+      .labels_directional = true_v,
+      .labels_spot = true_v,
+      .labels_point = true_v,
       .windows =
           {
               [VKR_EDITOR_WINDOW_DRAWS] =
@@ -163,6 +167,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
   if (!frame->scene_only)
     vkr_editor_dock_build(editor, frame);
+  vkr_editor_labels_build(editor, frame);
   vkr_editor_windows_build_navigation(editor, frame);
   vkr_editor_scene_toolbar_build(editor, frame);
   if (frame->scene_only && frame->mapping.target_width > 0u)

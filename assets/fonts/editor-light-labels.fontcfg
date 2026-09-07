@@ -1,0 +1,4 @@
+# Bitmap symbols: D = directional, S = spot, P = point. Source: assets/editor/light-labels.svg.
+file=editor-light-labels.fnt
+type=bitmap
+face=Editor light labels

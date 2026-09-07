@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -66,7 +66,12 @@ Scene readiness requires successful streamed textures. A terminal texture reques
 failure reports `scene.texture_load_failed` before testing pending streams, so
 optional interactive fallback materials cannot silently become complete capture
 or profile evidence. Pending work without a terminal failure retains the bounded
-readiness timeout. The editor's optional-texture fallback policy is unchanged.
+readiness timeout. Before authored warmup begins, a typed frame OOM may retry only
+when Application has scheduled an uncommitted bounded Scene-reduction generation.
+That failed frame contributes no samples and cannot start capture or measurement.
+Other frame errors and errors during authored phases remain terminal. This lets
+the harness observe the app's approved startup recovery without treating failed
+frames as rendering evidence.
 
 The child consumes pinned metrics snapshots, checks required sample validity,
 collects completed GPU timings by source serial, and records bounded events.

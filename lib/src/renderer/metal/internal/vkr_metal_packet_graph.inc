@@ -2,6 +2,7 @@
  * plans. */
 typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW = 0,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_RESOLVE,
@@ -62,6 +63,7 @@ typedef struct VkrMetalPacketGraphExecutorSpec {
 vkr_global const VkrMetalPacketGraphExecutorSpec
     s_metal_packet_graph_executors[] = {
         {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.local_shadow", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
@@ -496,9 +498,12 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
     return false_v;
   }
 
+  const bool8_t array_texture =
+      image->desc.layers > 1u ||
+      (image->desc.flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY) != 0u;
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
   descriptor.textureType =
-      image->desc.layers > 1 ? MTLTextureType2DArray : MTLTextureType2D;
+      array_texture ? MTLTextureType2DArray : MTLTextureType2D;
   descriptor.pixelFormat = format;
   descriptor.width = image->desc.width;
   descriptor.height = image->desc.height;
@@ -541,7 +546,7 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
                        image->desc.mip_levels, image->desc.layers);
   id<MTLTexture> texture = (id<MTLTexture>)resource.metal_texture;
   const MTLTextureType view_type =
-      image->desc.layers > 1u ? MTLTextureType2DArray : MTLTextureType2D;
+      array_texture ? MTLTextureType2DArray : MTLTextureType2D;
   for (uint32_t mip = 0u; mip < image->desc.mip_levels; ++mip) {
     id<MTLTexture> view = [texture
         newTextureViewWithPixelFormat:format
@@ -561,7 +566,7 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
     }
     instance->views.mip_views[mip] = view;
   }
-  if (image->desc.layers > 1u) {
+  if (array_texture) {
     if (image->desc.layers > VKR_METAL_PACKET_MAX_TEXTURE_LAYERS) {
       log_error("Metal graph image '%.*s' layer count %u exceeds capacity %u",
                 (int)image->name.length, image->name.str, image->desc.layers,
@@ -2126,7 +2131,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
     const uint64_t state_bytes =
         transmission
             ? sizeof(VkrMetalPacketTransmissionDiagnostics)
-            : (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count) *
+            : (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
+                         renderer->prepared_frame.local_shadow_view_count) *
                   sizeof(VkrGpuDrawCompactionState);
     if (!candidates || !instances || !state || (sdsm_enabled && !sdsm) ||
         state_bytes > state->resource.length)

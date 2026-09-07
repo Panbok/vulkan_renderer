@@ -1,5 +1,7 @@
 #include "test_main.h"
 
+bool32_t run_local_shadow_tests(void);
+
 typedef bool32_t (*VkrTestSuite)(void);
 
 static const VkrTestSuite VKR_TEST_SUITES[] = {
@@ -33,6 +35,7 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_texture_lifetime_tests,
     run_ibl_math_tests,
     run_lighting_system_tests,
+    run_local_shadow_tests,
     run_texture_vkt_tests,
     run_renderer_impl_tests,
     run_vulkan_tests,

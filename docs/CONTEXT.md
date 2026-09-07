@@ -53,6 +53,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Visibility buffer | Rasterized primitive/draw identity used to recover geometry and materials in later resolve work. | [ADR-028](adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | G-buffer / material resolve | Resolved surface attributes consumed by deferred lighting; resolve reconstructs attributes from visibility and geometry. | [ADR-028](adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | HZB | Hierarchical depth representation used by visibility rejection. History validity is explicit. | [ADR-028](adr/028-gpu-driven-deferred-visibility-buffer.md) |
+| Local shadow face | One perspective depth layer for an opted-in punctual light: one per spot, six per point, allocated as complete groups from the bounded pool. | [ADR-019](adr/019-bounded-forward-spatial-lighting.md) |
 | CSM | Cascaded shadow mapping: directional shadow coverage split across depth intervals. | [vkr_frame_input.h](../lib/src/renderer/vkr_frame_input.h) |
 | SDSM | Sample Distribution Shadow Maps: optional cascade-range fitting from completed occupied-depth feedback. | [ADR-033](adr/033-occupied-depth-sdsm-feedback.md) |
 | IBL | Image-based lighting derived from environment sources. Diffuse response uses SH; skybox and specular prefilter use cubemaps. | [ADR-038](adr/038-sh-l2-diffuse-irradiance.md) |

@@ -19,7 +19,7 @@
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 30u
+#define VKR_FRAME_INPUT_VERSION 31u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -323,6 +323,20 @@ typedef struct VkrShadowReceiverPacketData {
   float32_t fade_end;
 } VkrShadowReceiverPacketData;
 
+/** Fixed application-owned frame payload, borrowed until render returns.
+ * First-view entries encode index+1; zero means no allocated shadow. */
+typedef struct VkrLocalShadowPassPayload {
+  uint32_t view_count;
+  uint32_t map_size;
+  uint32_t face_budget;
+  uint32_t light_first_view[VKR_MAX_SCENE_POINT_LIGHTS];
+  VkrLocalShadowView views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+} VkrLocalShadowPassPayload;
+
+void vkr_local_shadow_prepare(const VkrPointLight *lights, uint32_t light_count,
+                              uint32_t face_budget, uint32_t map_size,
+                              VkrLocalShadowPassPayload *out);
+
 /**
  * @brief Payload for the shadow pass across cascades.
  *
@@ -422,6 +436,7 @@ typedef struct VkrFrameInput {
   const VkrFrameLighting *lighting;
   const VkrWorldPassPayload *world;
   const VkrShadowPassPayload *shadow;
+  const VkrLocalShadowPassPayload *local_shadow;
   const VkrSkyboxPassPayload *skybox;
   const VkrUiPassPayload *ui;
   const VkrEditorPassPayload *editor;

@@ -54,20 +54,16 @@ static void debug_overlay_build_help(VkrUiSystem *ui) {
   panel.rows = rows;
   panel.row_count = ArrayCount(rows);
   panel.style = debug_overlay_panel_style();
-  panel.style.min_size_pt = (Vec2){360.0f, 116.0f};
-  panel.style.max_size_pt = panel.style.min_size_pt;
   panel.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("debug.help"), &panel))
     return;
 
   VkrUiWidgetConfig title =
-      debug_overlay_text(ui, 9.0f, 11.0f,
-                         (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
+      debug_overlay_text(ui, 9.0f, 11.0f, (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
   vkr_ui_label(ui, string8_lit("title"), string8_lit("DEBUG / CONTROLS"),
                &title);
-  VkrUiWidgetConfig body =
-      debug_overlay_text(ui, 11.0f, 13.0f,
-                         (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
+  VkrUiWidgetConfig body = debug_overlay_text(
+      ui, 11.0f, 13.0f, (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
   vkr_ui_label(ui, string8_lit("body"),
                string8_lit("F6  Toggle debug UI       Tab  Toggle free camera\n"
                            "F4 / F5  Texture filter  F7   GPU pass timings\n"
@@ -86,6 +82,8 @@ static void debug_overlay_build_camera(VkrUiSystem *ui, String8 camera_text,
       {.unit = VKR_UI_TRACK_AUTO},
   };
   VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  const float32_t target_width_pt =
+      (float32_t)ui->target_width / ui->content_scale;
   panel.placement = (VkrUiPlacement){
       .column = 0u,
       .row = 0u,
@@ -93,29 +91,33 @@ static void debug_overlay_build_camera(VkrUiSystem *ui, String8 camera_text,
       .row_span = 1u,
       .justify = VKR_UI_ALIGN_END,
       .align = VKR_UI_ALIGN_START,
-      .margin_pt = {8.0f, 8.0f, 0.0f, 0.0f},
+      .margin_pt = {target_width_pt < 764.0f ? 132.0f : 8.0f, 8.0f, 0.0f, 0.0f},
   };
   panel.columns = &one_track;
   panel.column_count = 1u;
   panel.rows = rows;
   panel.row_count = ArrayCount(rows);
   panel.style = debug_overlay_panel_style();
-  panel.style.min_size_pt = (Vec2){288.0f, 98.0f};
+  panel.style.max_size_pt.x = Max(1.0f, Min(380.0f, target_width_pt - 16.0f));
   panel.style.gap_pt = 6.0f;
-  panel.style.max_size_pt = panel.style.min_size_pt;
   panel.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("debug.camera.performance"), &panel))
     return;
 
   VkrUiWidgetConfig title =
-      debug_overlay_text(ui, 9.0f, 11.0f,
-                         (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
-  vkr_ui_label(ui, string8_lit("title"), string8_lit("CAMERA / FPS"), &title);
-  VkrUiWidgetConfig body =
-      debug_overlay_text(ui, 11.0f, 13.0f,
-                         (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
+      debug_overlay_text(ui, 9.0f, 11.0f, (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
+  vkr_ui_label(ui, string8_lit("title"), string8_lit("CAMERA / PERFORMANCE"),
+               &title);
+  VkrUiWidgetConfig body = debug_overlay_text(
+      ui, 11.0f, 13.0f, (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
   vkr_ui_label(ui, string8_lit("camera"), camera_text, &body);
   body.placement.row = 2u;
+  body.placement.justify = VKR_UI_ALIGN_STRETCH;
+  body.text.layout.word_wrap = true_v;
+  body.text.layout.max_width =
+      Max(1.0f, panel.style.max_size_pt.x - panel.style.padding_pt.left -
+                    panel.style.padding_pt.right - panel.style.border_pt.left -
+                    panel.style.border_pt.right);
   body.style.text_color = (Vec4){0.54f, 0.88f, 0.72f, 1.0f};
   vkr_ui_label(ui, string8_lit("performance"), performance_text, &body);
   (void)vkr_ui_panel_end(ui);

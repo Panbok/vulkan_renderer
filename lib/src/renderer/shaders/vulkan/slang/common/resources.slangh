@@ -63,6 +63,8 @@ struct VkrVulkanTransmissionMaterial
     uint thickness_sampler;
 };
 
+#include "../../../shared/local_shadow.slangh"
+
 struct VkrVulkanShadowCascade
 {
     float4x4 light_view_projection;
@@ -145,6 +147,9 @@ struct VkrVulkanPacketFrameRoot
     uint ibl_probe_count;
     uint ibl_probe_reserved;
     VkrVulkanPacketTemporalDrawState* temporal_draw_state;
+    VkrLocalShadowView* local_shadow_views;
+    uint local_shadow_texture;
+    uint local_shadow_reserved;
 };
 
 #include "../../../shared/gpu_draw.slangh"

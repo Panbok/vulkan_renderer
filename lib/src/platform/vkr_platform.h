@@ -85,6 +85,13 @@ uint32_t vkr_platform_get_process_id(void);
 
 bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
 
+/**
+ * Returns resident process memory in bytes: macOS resident pages or the Windows
+ * working set. This includes shared mappings; it is not allocator accounting
+ * or dedicated GPU usage. Clears `out_bytes` and returns false on failure.
+ */
+bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes);
+
 /** Raw, uncoloured process output suitable for machine-readable tools. */
 void vkr_platform_stdout_write(const char *message);
 void vkr_platform_stderr_write(const char *message);

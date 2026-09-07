@@ -204,6 +204,19 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
                           bias.depth_bias_slope);
     temporal_scene_floats(&signature, bias.depth_bias_clamp, 0.0f);
   }
+  const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
+  temporal_scene_lane(&signature, local != NULL);
+  if (local) {
+    temporal_scene_pair(&signature, local->view_count, local->map_size);
+    for (uint32_t i = 0; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i)
+      temporal_scene_lane(&signature, local->light_first_view[i]);
+    for (uint32_t i = 0; i < local->view_count; ++i) {
+      temporal_scene_matrix(&signature, local->views[i].light_view_projection);
+      temporal_scene_vec4(&signature, local->views[i].light_position_near);
+      temporal_scene_vec4(&signature, local->views[i].light_direction_far);
+      temporal_scene_vec4(&signature, local->views[i].projection_params);
+    }
+  }
   temporal_scene_lane(&signature, packet->input.skybox != NULL);
   if (packet->input.skybox) {
     temporal_scene_pair(&signature, packet->input.skybox->cubemap.id,

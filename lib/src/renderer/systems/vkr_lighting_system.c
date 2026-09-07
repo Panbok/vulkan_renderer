@@ -250,6 +250,7 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
                  .outer_cone_angle = lights[i].outer_cone_angle,
                  .kind = lights[i].kind,
                  .render_id = render_id,
+                 .casts_shadow = lights[i].casts_shadow,
              });
   }
 }

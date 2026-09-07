@@ -2159,7 +2159,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     return false_v;
   if (!vkr_metal_packet_prepare_gpu_draw_icbs(
           renderer, source_gpu_draw_count, source_transmission_gpu_draw_count,
-          1u + renderer->prepared_frame.shadow_cascade_count))
+          1u + renderer->prepared_frame.shadow_cascade_count +
+              renderer->prepared_frame.local_shadow_view_count,
+          out_error))
     return false_v;
   const uint64_t direct_run_count =
       world ? vkr_world_draw_parity_run_count(world) : 0u;
@@ -2195,11 +2197,17 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     root_count += direct_frame_root_count;
   {
     const uint32_t gpu_draw_view_count =
-        1u + renderer->prepared_frame.shadow_cascade_count;
+        1u + renderer->prepared_frame.shadow_cascade_count +
+        renderer->prepared_frame.local_shadow_view_count;
     const uint32_t gpu_draw_icb_group_count =
         (gpu_draw_view_count + renderer->gpu_draw_icb_view_group_size - 1u) /
         renderer->gpu_draw_icb_view_group_size;
-    root_count += 11u + renderer->prepared_frame.hzb_reduce_pass_count +
+    const uint32_t draw_root_slots =
+        (gpu_draw_view_count * sizeof(VkrMetalPacketDrawRoot) +
+         VKR_METAL_PACKET_DRAW_ROOT_STRIDE - 1u) /
+        VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+    root_count += 10u + draw_root_slots +
+                  renderer->prepared_frame.hzb_reduce_pass_count +
                   gpu_draw_icb_group_count;
   }
   root_count += renderer->prepared_frame.sdsm_enabled ? 1u : 0u;
@@ -2212,7 +2220,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                  !renderer->prepared_frame.transmission_compact_enabled
              ? 4u
              : 0u);
-  root_count += renderer->prepared_frame.shadow_cascade_count;
+  root_count += renderer->prepared_frame.shadow_cascade_count +
+                renderer->prepared_frame.local_shadow_view_count;
   if (packet->input.picking && packet->input.picking->pending)
     root_count += 1u;
   root_count += ui_batch_count;
@@ -2270,15 +2279,23 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       AlignOf(VkrMetalPacketShadowCascade));
   const uint64_t shadow_cascades_bytes =
       (uint64_t)shadow_cascade_count * sizeof(VkrMetalPacketShadowCascade);
+  const uint32_t local_shadow_view_count =
+      renderer->prepared_frame.local_shadow_view_count;
+  const uint64_t local_shadow_views_offset =
+      vkr_metal_packet_align_up(shadow_cascades_offset + shadow_cascades_bytes,
+                                AlignOf(VkrLocalShadowView));
+  const uint64_t local_shadow_views_bytes =
+      (uint64_t)local_shadow_view_count * sizeof(VkrLocalShadowView);
   const uint32_t ibl_probe_count =
       packet->input.lighting ? packet->input.lighting->ibl_probe_count : 0;
-  const uint64_t ibl_probes_offset =
-      vkr_metal_packet_align_up(shadow_cascades_offset + shadow_cascades_bytes,
-                                AlignOf(VkrMetalPacketIblProbe));
+  const uint64_t ibl_probes_offset = vkr_metal_packet_align_up(
+      local_shadow_views_offset + local_shadow_views_bytes,
+      AlignOf(VkrMetalPacketIblProbe));
   const uint64_t ibl_probes_bytes =
       (uint64_t)ibl_probe_count * sizeof(VkrMetalPacketIblProbe);
   const uint32_t gpu_draw_view_count =
-      1u + renderer->prepared_frame.shadow_cascade_count;
+      1u + renderer->prepared_frame.shadow_cascade_count +
+      renderer->prepared_frame.local_shadow_view_count;
   const uint32_t gpu_draw_icb_group_count =
       gpu_draw_view_count > 0u ? (gpu_draw_view_count +
                                   renderer->gpu_draw_icb_view_group_size - 1u) /
@@ -2622,6 +2639,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     for (uint32_t i = 0; i < point_light_count; ++i)
       vkr_lighting_system_pack_point_light(
           &packet->input.lighting->point_lights[i], &packed[i]);
+    if (local_shadow_view_count > 0u) {
+      for (uint32_t i = 0u; i < point_light_count; ++i)
+        packed[i].p3.w =
+            (float32_t)packet->input.local_shadow->light_first_view[i];
+    }
     upload->point_light_data_gpu = gpu + point_light_offset;
     if (point_light_masks_bytes > 0) {
       MemCopy(cpu + point_light_masks_offset,
@@ -2648,6 +2670,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       return false_v;
     upload->shadow_cascades_gpu = gpu + shadow_cascades_offset;
     upload->shadow_texture_id = shadow_texture.gpuResourceID._impl;
+  }
+  if (local_shadow_view_count > 0u) {
+    id<MTLTexture> local_shadow_texture =
+        vkr_metal_packet_named_texture(renderer, "local_shadow_map");
+    if (!local_shadow_texture)
+      return false_v;
+    MemCopy(cpu + local_shadow_views_offset, packet->input.local_shadow->views,
+            local_shadow_views_bytes);
+    upload->local_shadow_views_gpu = gpu + local_shadow_views_offset;
+    upload->local_shadow_texture_id = local_shadow_texture.gpuResourceID._impl;
   }
   /* Resolved from the packet's environment source, so a probe that aliases the
      scene environment shares this publication instead of projecting a
@@ -2699,6 +2731,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       vkr_metal_packet_pack_gpu_draw_view(
           &views[cascade + 1u], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v, renderer->frustum_enabled);
+    }
+    for (uint32_t face = 0u; face < local_shadow_view_count; ++face) {
+      const VkrFrustum frustum = vkr_frustum_from_matrix(
+          packet->input.local_shadow->views[face].light_view_projection);
+      vkr_metal_packet_pack_gpu_draw_view(
+          &views[1u + renderer->prepared_frame.shadow_cascade_count + face],
+          &frustum, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER, false_v);
     }
     upload->gpu_draw_views_gpu = gpu + gpu_draw_views_offset;
   }
