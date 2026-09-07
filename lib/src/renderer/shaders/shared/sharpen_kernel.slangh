@@ -1,0 +1,10 @@
+// Post-tonemap linear RGB. Limit detail recovery to the sampled color envelope
+// so sharpening cannot introduce brighter/darker ringing around an edge.
+float3 vkr_sharpen_color(float3 color, float3 neighbor_average,
+                         float3 neighborhood_min, float3 neighborhood_max,
+                         float strength)
+{
+    float3 detail = strength * (color - neighbor_average);
+    return color + clamp(detail, min(color, neighborhood_min) - color,
+                         max(color, neighborhood_max) - color);
+}

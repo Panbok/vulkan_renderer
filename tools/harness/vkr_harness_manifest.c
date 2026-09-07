@@ -444,6 +444,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "tonemap_enabled",
       "fxaa_enabled",
       "transmission_depth_diagnostic_enabled",
+      "image_sharpness",
       "render_scale",
       "upscaler",
       "dynamic_resolution",
@@ -495,6 +496,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   renderer->gtao_enabled = false_v;
   renderer->gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
   renderer->gtao_power = VKR_GTAO_DEFAULT_POWER;
+  renderer->image_sharpness = 0.0f;
   renderer->render_scale = 1.0f;
   /* Unset means "do not clamp", so an existing case keeps every packed probe
      and its workload fingerprint is unchanged by these controls existing. */
@@ -511,6 +513,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   float64_t bloom_intensity = renderer->bloom_intensity;
   float64_t gtao_radius = renderer->gtao_radius;
   float64_t gtao_power = renderer->gtao_power;
+  float64_t image_sharpness = renderer->image_sharpness;
   float64_t render_scale = renderer->render_scale;
   float64_t dynamic_resolution_min_scale =
       VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE;
@@ -607,6 +610,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
                                   &gtao_power_token, error) ||
       !vkr_harness_manifest_f64(doc, token, "gtao_power", false_v, &gtao_power,
                                 error) ||
+      !vkr_harness_manifest_f64(doc, token, "image_sharpness", false_v,
+                                &image_sharpness, error) ||
       !vkr_harness_manifest_field(doc, token, "ibl_probe_limit", false_v,
                                   &ibl_probe_limit_token, error) ||
       !vkr_harness_manifest_u64(doc, token, "ibl_probe_limit", false_v,
@@ -689,12 +694,14 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
       manual_exposure > FLT_MAX || !isfinite(exposure_compensation_ev) ||
       exposure_compensation_ev < -FLT_MAX ||
-      exposure_compensation_ev > FLT_MAX || exposure_reset_frame > UINT32_MAX) {
+      exposure_compensation_ev > FLT_MAX || !isfinite(image_sharpness) ||
+      image_sharpness < 0.0 || image_sharpness > 1.0 ||
+      exposure_reset_frame > UINT32_MAX) {
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
         "Renderer backend, preset, render/exposure mode, "
-        "exposure/bloom/GTAO controls, probe limit, or cascade count is "
-        "invalid");
+        "exposure/bloom/GTAO/image-sharpness controls, probe limit, or "
+        "cascade count is invalid");
     return false_v;
   }
   renderer->manual_exposure = (float32_t)manual_exposure;
@@ -705,6 +712,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   renderer->bloom_intensity = (float32_t)bloom_intensity;
   renderer->gtao_radius = (float32_t)gtao_radius;
   renderer->gtao_power = (float32_t)gtao_power;
+  renderer->image_sharpness = (float32_t)image_sharpness;
   if (!isfinite(render_scale) || render_scale <= 0.0 || render_scale > 1.0) {
     vkr_harness_error_set(
         error, "renderer.render_scale", "$.renderer.render_scale",

@@ -1269,12 +1269,19 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
   };
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
-  root->transmission_sampler = (composite || renderer->config.fxaa_enabled)
+  const float32_t image_sharpness =
+      !composite && renderer->graph->packet->input.globals.render_mode ==
+                        VKR_RENDER_MODE_DEFAULT
+          ? renderer->graph->packet->input.globals.image_sharpness
+          : 0.0f;
+  root->transmission_sampler = (composite || renderer->config.fxaa_enabled ||
+                               image_sharpness > 0.0f)
                                    ? renderer->transmission_sampler_slot
                                    : 0u;
   root->exposure_state = exposure_state ? exposure_state : manual_state_address;
   root->point_light_grid_origin_cell_size =
-      (Vec4){(float32_t)output_width, (float32_t)output_height, 0.0f, 0.0f};
+      (Vec4){(float32_t)output_width, (float32_t)output_height, image_sharpness,
+             0.0f};
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,

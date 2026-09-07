@@ -19,7 +19,7 @@
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 31u
+#define VKR_FRAME_INPUT_VERSION 32u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -112,6 +112,8 @@ typedef struct VkrFrameGlobals {
   bool8_t gtao_enabled;
   float32_t gtao_radius;
   float32_t gtao_power;
+  /** Presentation-only sharpness in [0, 1]. Zero bypasses sharpening. */
+  float32_t image_sharpness;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */

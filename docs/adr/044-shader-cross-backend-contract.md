@@ -88,6 +88,19 @@ Production Vulkan compilation and reflection pass. Bounded Bistro static,
 camera-translation and editor-resize runs pass native Vulkan diagnostics; native Metal execution was
 unavailable. ADR-052 records the accepted capability boundary and evidence limits.
 
+Presentation sharpening shares bounded cross-neighborhood arithmetic in both
+production shader libraries. Frame version 32 carries `image_sharpness` in [0,1];
+zero takes the existing path without extra samples. The Vulkan utility root
+carries strength in `point_light_grid_origin_cell_size.z` beside output extent
+in xy, with unchanged native layout. Metal's 32-byte tonemap root replaces the
+two reserved words with flags at byte 8 and float strength at byte 12; exposure
+and extent remain at bytes 16 and 24, with the ABI manifest updated. This domain
+is **UNALIGNED** until same-revision native Metal compilation, validation and
+matched pixel evidence are available; Windows cannot execute those gates. Vulkan Release captures cover
+FSR/TAA/native, both FXAA states, zero/default/maximum strength and editor text.
+The enabled editor/text Debug case passes Khronos synchronization validation
+with no API warnings or errors; local cost and quality limits are in ADR-043.
+
 Current evidence state: **UNALIGNED** for every domain below. The production
 source audit covers their counterparts; same-revision bilateral native
 comparisons and runtime reflection checks remain incomplete.
@@ -226,7 +239,7 @@ Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
 | Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
 | Temporal resolve | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | FSR 3.1 (UNALIGNED: authorized Vulkan-only feature) | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
-| Tonemap/FXAA | shared exposure state | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
+| Tonemap/FXAA/sharpening (UNALIGNED) | shared exposure state, `shared/sharpen_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode

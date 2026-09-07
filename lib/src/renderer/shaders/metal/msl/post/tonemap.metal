@@ -1,6 +1,7 @@
 struct alignas(16) VkrMetalPacketTonemapRoot {
   texture2d<float, access::sample> source;
-  uint2 reserved;
+  uint flags;
+  float image_sharpness;
   // Always valid. Manual frames bind a frame-upload fallback record and
   // automatic frames bind the graph resolve output.
   device const VkrExposureState *exposure_state;
@@ -35,7 +36,7 @@ static float vkr_metal_packet_fxaa_luminance(float3 color) {
 static float4 vkr_metal_packet_fxaa(texture2d<float, access::sample> source,
                                     sampler source_sampler, float2 uv,
                                     float2 inverse_extent, float exposure,
-                                    bool tonemap) {
+                                    bool tonemap, float sharpness) {
   float4 center = vkr_metal_packet_post_sample(source, source_sampler, uv,
                                                exposure, tonemap);
   float4 north = vkr_metal_packet_post_sample(
@@ -80,8 +81,17 @@ static float4 vkr_metal_packet_fxaa(texture2d<float, access::sample> source,
           max(max(max(luma_north, luma_south), max(luma_west, luma_east)),
               max(max(luma_northwest, luma_northeast),
                   max(luma_southwest, luma_southeast))));
-  if (luma_max - luma_min < max(0.0312, luma_max * 0.125))
+  if (luma_max - luma_min < max(0.0312, luma_max * 0.125)) {
+    if (sharpness > 0.0)
+      center.rgb = vkr_sharpen_color(
+          center.rgb, 0.25 * (north.rgb + south.rgb + west.rgb + east.rgb),
+          min(min(min(north.rgb, south.rgb), min(west.rgb, east.rgb)),
+              min(min(northwest.rgb, northeast.rgb), min(southwest.rgb, southeast.rgb))),
+          max(max(max(north.rgb, south.rgb), max(west.rgb, east.rgb)),
+              max(max(northwest.rgb, northeast.rgb), max(southwest.rgb, southeast.rgb))),
+          sharpness);
     return center;
+  }
 
   float2 direction;
   direction.x =
@@ -124,6 +134,14 @@ static float4 vkr_metal_packet_fxaa(texture2d<float, access::sample> source,
   subpixel = subpixel * subpixel * (3.0 - 2.0 * subpixel);
   subpixel = subpixel * subpixel * 0.75;
   result = mix(result, 0.25 * (north + south + west + east), subpixel);
+  if (sharpness > 0.0)
+    result.rgb = vkr_sharpen_color(
+        result.rgb, 0.25 * (north.rgb + south.rgb + west.rgb + east.rgb),
+        min(min(min(north.rgb, south.rgb), min(west.rgb, east.rgb)),
+            min(min(northwest.rgb, northeast.rgb), min(southwest.rgb, southeast.rgb))),
+        max(max(max(north.rgb, south.rgb), max(west.rgb, east.rgb)),
+            max(max(northwest.rgb, northeast.rgb), max(southwest.rgb, southeast.rgb))),
+        sharpness * (1.0 - subpixel));
   result.a = center.a;
   return result;
 }
@@ -146,12 +164,31 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
                                    filter::linear);
   float2 uv = input.texcoord;
   float exposure = root->exposure_state->exposure_multiplier;
-  if (root->reserved.y == 0u)
-    return vkr_metal_packet_post_sample(root->source, source_sampler, uv,
-                                        exposure, root->reserved.x != 0u);
+  bool tonemap = (root->flags & 1u) != 0u;
+  float sharpness = root->image_sharpness;
+  if ((root->flags & 2u) == 0u) {
+    float4 result = vkr_metal_packet_post_sample(root->source, source_sampler, uv,
+                                                exposure, tonemap);
+    if (sharpness > 0.0) {
+      float2 step = 1.0 / float2(root->output_extent);
+      float3 north = vkr_metal_packet_post_sample(root->source, source_sampler,
+          uv - float2(0.0, step.y), exposure, tonemap).rgb;
+      float3 south = vkr_metal_packet_post_sample(root->source, source_sampler,
+          uv + float2(0.0, step.y), exposure, tonemap).rgb;
+      float3 west = vkr_metal_packet_post_sample(root->source, source_sampler,
+          uv - float2(step.x, 0.0), exposure, tonemap).rgb;
+      float3 east = vkr_metal_packet_post_sample(root->source, source_sampler,
+          uv + float2(step.x, 0.0), exposure, tonemap).rgb;
+      result.rgb = vkr_sharpen_color(result.rgb,
+          0.25 * (north + south + west + east),
+          min(min(north, south), min(west, east)),
+          max(max(north, south), max(west, east)), sharpness);
+    }
+    return result;
+  }
   return vkr_metal_packet_fxaa(root->source, source_sampler, uv,
                                1.0 / float2(root->output_extent), exposure,
-                               root->reserved.x != 0u);
+                               tonemap, sharpness);
 }
 
 static_assert(sizeof(VkrMetalPacketTonemapRoot) == 32,

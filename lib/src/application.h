@@ -506,6 +506,7 @@ vkr_internal bool8_t application_rendering_initialize(
       .gtao_enabled = !application->renderer.gtao_forced_disabled,
       .gtao_radius = VKR_GTAO_DEFAULT_RADIUS,
       .gtao_power = VKR_GTAO_DEFAULT_POWER,
+      .image_sharpness = 0.25f,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
 #if VKR_METRICS_ENABLED
@@ -1435,6 +1436,7 @@ void application_draw_frame(Application *application, float64_t delta) {
               .gtao_enabled = application->globals.gtao_enabled,
               .gtao_radius = application->globals.gtao_radius,
               .gtao_power = application->globals.gtao_power,
+              .image_sharpness = application->globals.image_sharpness,
               .render_mode = (uint32_t)application->globals.render_mode,
           },
       .lighting = scene_stopped ? NULL : &frame_lighting,

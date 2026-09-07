@@ -76,7 +76,9 @@ subgroup path because VKR does not enable float16 or subgroup-size controls. Thi
 is a compatibility choice, not a performance claim.
 
 FSR is limited to finite perspective cameras in this slice. Orthographic,
-infinite and reversed projections are unsupported. SDK sharpening remains disabled.
+infinite and reversed projections are unsupported. Shared presentation sharpening
+uses `image_sharpness` after stabilization and tone mapping, under ADR-043.
+SDK RCAS remains disabled; the shared control also supports TAA and native output.
 
 ## Consequences
 

@@ -224,6 +224,12 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.bloom_intensity);
   ADD("renderer.gtao", "%u,%.9g,%.9g", case_manifest->renderer.gtao_enabled,
       case_manifest->renderer.gtao_radius, case_manifest->renderer.gtao_power);
+  /* Existing cases predate this opt-in control. Preserve their workload
+     identity exactly when it is disabled. */
+  if (case_manifest->renderer.image_sharpness != 0.0f) {
+    ADD("renderer.image_sharpness", "%.9g",
+        case_manifest->renderer.image_sharpness);
+  }
   /* Preserve workload identities for manifests authored before render-scale
      support. Non-default scale remains a distinct deterministic workload. */
   if (case_manifest->renderer.render_scale != 1.0f) {

@@ -11,6 +11,10 @@ the shared source and is tracked in
 used by every Metal and Vulkan material path, including two-channel BC5 and EAC
 RG11 sources.
 
+`sharpen_kernel.slangh` owns neighborhood-limited detail recovery in post-tonemap
+linear RGB. Both final presentation shaders consume it after optional FXAA;
+native code owns sampling, frame strength and UI/composite bypasses.
+
 `point_light.slangh` owns the four-vector punctual-light GPU row compiled by
 both Slang libraries. Metal's native deferred library mirrors that row in
 `../metal/msl/common/draw.metalh`; host and shader reflection validate both

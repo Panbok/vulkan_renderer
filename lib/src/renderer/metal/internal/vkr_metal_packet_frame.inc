@@ -540,11 +540,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       editor_rect ? (uint32_t)editor_rect->w : target_height;
   *root = (VkrMetalPacketTonemapRoot){
       .source_texture_id = source.gpuResourceID._impl,
-      .reserved = {!editor_rect && renderer->tonemap_enabled ? 1u : 0u,
-                   !editor_rect && renderer->fxaa_enabled &&
-                           !renderer->metalfx_enabled
-                       ? 1u
-                       : 0u},
+      .flags = (!editor_rect && renderer->tonemap_enabled ? 1u : 0u) |
+               (!editor_rect && renderer->fxaa_enabled &&
+                        !renderer->metalfx_enabled
+                    ? 2u
+                    : 0u),
+      .image_sharpness =
+          !editor_rect && packet->input.globals.render_mode == VKR_RENDER_MODE_DEFAULT
+              ? packet->input.globals.image_sharpness
+              : 0.0f,
       .exposure_state = manual_state_gpu,
       .output_extent = {output_width, output_height},
   };

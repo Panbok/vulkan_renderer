@@ -546,6 +546,9 @@ bool8_t vkr_harness_report_write(const char *path,
                                 report->case_manifest.renderer.gtao_radius) &&
       vkr_harness_json_emit_f64(writer, "gtao_power",
                                 report->case_manifest.renderer.gtao_power) &&
+      vkr_harness_json_emit_f64(
+          writer, "image_sharpness",
+          report->case_manifest.renderer.image_sharpness) &&
       vkr_harness_json_emit_u64(
           writer, "ibl_probe_limit",
           report->case_manifest.renderer.ibl_probe_limit) &&

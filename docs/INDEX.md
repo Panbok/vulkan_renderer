@@ -77,7 +77,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [040](adr/040-metalfx-temporal-dynamic-resolution.md) | MetalFX temporal reconstruction and completed-GPU scale control | implemented |
 | [041](adr/041-retained-cascaded-shadows.md) | Stable fits and retained directional shadow cascades | implemented |
 | [042](adr/042-scene-linear-post-processing.md) | Scene-linear exposure with completed-history time, bloom and ambient visibility | implemented |
-| [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation with one sRGB transfer | implemented |
+| [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation, color transfer and image sharpness | implemented |
 | [044](adr/044-shader-cross-backend-contract.md) | Portable shader semantics with native ABI validation | implemented |
 | [045](adr/045-resource-prepare-and-render-thread-finalize.md) | Worker preparation and render-thread resource finalization | implemented |
 | [046](adr/046-editor-viewport-mapping-and-picking.md) | Editor viewport mapping, transform gizmos, picking and retained Scene presentation | implemented |

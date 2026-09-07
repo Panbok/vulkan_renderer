@@ -91,7 +91,7 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 31 contains frame metadata, camera/lighting/settings and typed
+Frame-input version 32 contains frame metadata, camera/lighting/settings and typed
 world, shadow, skybox, UI, editor, picking and debug payloads. Supplied world-text
 and UI streams are authoritative. `vkr_frame_input_validate()` checks structural
 input. Private `VkrPreparedFrame` holds derived temporal, exposure, bloom and GTAO
@@ -346,6 +346,13 @@ and [ADR-042](adr/042-scene-linear-post-processing.md).
 
 Windows uses Per-Monitor V2 physical client pixels. Final shaders emit linear RGB
 into sRGB attachments; UI/text authored colors decode once before linear blending.
+The frame's `image_sharpness` control is finite in `[0,1]`, with zero as an exact
+bypass. The sample initializes it to 0.25; zero-initialized packet callers and
+harness cases default to zero. A shared, neighborhood-limited sharpening filter
+operates on tone-mapped linear Scene RGB in the existing presentation draw, after
+FXAA when enabled. FXAA reuses its samples and attenuates sharpening where its
+subpixel blend is strongest. UI, editor recomposition, diagnostic views and
+temporal histories are excluded. FSR's SDK sharpener remains disabled.
 Internal Scene pixels, Scene presentation pixels and physical target/UI pixels
 remain distinct. Picking and composition share viewport mapping.
 See [ADR-043](adr/043-presentation-dpi-and-color-transfer.md).

@@ -297,6 +297,86 @@ typedef struct VkrHarnessCaseV6 {
   float32_t content_scale;
 } VkrHarnessCaseV6;
 
+/* Version 7 embedded the complete case before image sharpness became an
+ * authored renderer control. Keep this layout byte-exact when reading stored
+ * summaries. */
+typedef struct VkrHarnessRendererConfigV7 {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  bool8_t taa_enabled;
+  bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
+  char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  uint32_t exposure_reset_frame;
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
+  uint32_t shadow_debug_mode;
+  uint32_t ibl_probe_limit;
+  bool8_t tonemap_enabled;
+  bool8_t fxaa_enabled;
+  bool8_t transmission_depth_diagnostic_enabled;
+  float32_t render_scale;
+  uint32_t render_width;
+  uint32_t render_height;
+  char upscaler[24];
+  bool8_t dynamic_resolution;
+  float32_t dynamic_resolution_min_scale;
+  float32_t dynamic_resolution_max_scale;
+  float32_t dynamic_resolution_target_frame_ms;
+  uint32_t editor_stop_frame;
+  uint32_t editor_resume_frame;
+} VkrHarnessRendererConfigV7;
+
+typedef struct VkrHarnessCaseV7 {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV7 renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+  float32_t content_scale;
+} VkrHarnessCaseV7;
+
 _Static_assert(offsetof(VkrHarnessCaseV3, renderer) ==
                    offsetof(VkrHarnessCase, renderer),
                "Legacy case prefix drift");
@@ -315,6 +395,18 @@ _Static_assert(sizeof(VkrHarnessRendererConfigV5) ==
 _Static_assert(sizeof(VkrHarnessCaseV5) ==
                    offsetof(VkrHarnessCaseV6, content_scale),
                "Version-5 case layout drift");
+_Static_assert(sizeof(VkrHarnessRendererConfigV7) ==
+                   offsetof(VkrHarnessRendererConfig, image_sharpness),
+               "Version-7 renderer layout drift");
+_Static_assert(offsetof(VkrHarnessCaseV7, renderer) ==
+                   offsetof(VkrHarnessCase, renderer),
+               "Version-7 case prefix drift");
+_Static_assert(
+    offsetof(VkrHarnessCaseV7, camera) ==
+        offsetof(VkrHarnessCase, camera),
+    "Version-7 case camera alignment drift");
+_Static_assert(sizeof(VkrHarnessCaseV7) == sizeof(VkrHarnessCase),
+               "Version-7 case layout drift");
 typedef struct VkrHarnessCaptureSummaryHeaderV2 {
   uint8_t magic[8];
   uint32_t version;
@@ -448,10 +540,33 @@ typedef struct VkrHarnessCaptureSummaryHeaderV7 {
   char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCase case_manifest;
+  VkrHarnessCaseV7 case_manifest;
   VkrHarnessProfile profile;
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV7;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV8 {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCase case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV8;
 
 _Static_assert(
     offsetof(VkrHarnessCaptureSummaryHeaderV2, case_manifest) ==
@@ -463,7 +578,9 @@ _Static_assert(
         offsetof(VkrHarnessCaptureSummaryHeaderV5, case_manifest) ==
             offsetof(VkrHarnessCaptureSummaryHeaderV6, case_manifest) &&
         offsetof(VkrHarnessCaptureSummaryHeaderV6, case_manifest) ==
-            offsetof(VkrHarnessCaptureSummaryHeaderV7, case_manifest),
+            offsetof(VkrHarnessCaptureSummaryHeaderV7, case_manifest) &&
+        offsetof(VkrHarnessCaptureSummaryHeaderV7, case_manifest) ==
+            offsetof(VkrHarnessCaptureSummaryHeaderV8, case_manifest),
     "Capture summary common prefix drift");
 
 static const uint8_t s_capture_summary_magic[8] = {'V', 'K', 'R', 'C',
@@ -601,6 +718,23 @@ static void vkr_harness_case_from_v6(const VkrHarnessCaseV6 *source,
   destination->content_scale = source->content_scale;
   destination->renderer.editor_stop_frame = UINT32_MAX;
   destination->renderer.editor_resume_frame = UINT32_MAX;
+}
+
+static void vkr_harness_case_from_v7(const VkrHarnessCaseV7 *source,
+                                     VkrHarnessCase *destination) {
+  MemZero(destination, sizeof(*destination));
+  MemCopy(destination, source, offsetof(VkrHarnessCaseV7, renderer));
+  MemCopy(&destination->renderer, &source->renderer, sizeof(source->renderer));
+  destination->camera = source->camera;
+  MemCopy(destination->captures, source->captures,
+          sizeof(destination->captures));
+  destination->capture_count = source->capture_count;
+  MemCopy(destination->assertions, source->assertions,
+          sizeof(destination->assertions));
+  destination->assertion_count = source->assertion_count;
+  destination->compare = source->compare;
+  destination->content_scale = source->content_scale;
+  destination->renderer.image_sharpness = 0.0f;
 }
 
 static void vkr_harness_png_write(void *context, void *data, int size) {
@@ -1255,7 +1389,7 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
   const uint64_t artifact_bytes =
       (uint64_t)report->artifact_count * sizeof(VkrHarnessArtifact);
   const uint64_t size =
-      sizeof(VkrHarnessCaptureSummaryHeaderV7) + capture_bytes + artifact_bytes;
+      sizeof(VkrHarnessCaptureSummaryHeaderV8) + capture_bytes + artifact_bytes;
   Scratch scratch = scratch_create(transient);
   uint8_t *bytes = arena_alloc(transient, size, ARENA_MEMORY_TAG_ARRAY);
   if (!bytes) {
@@ -1263,10 +1397,10 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
     return false_v;
   }
   MemZero(bytes, size);
-  VkrHarnessCaptureSummaryHeaderV7 *header =
-      (VkrHarnessCaptureSummaryHeaderV7 *)bytes;
+  VkrHarnessCaptureSummaryHeaderV8 *header =
+      (VkrHarnessCaptureSummaryHeaderV8 *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
-  header->version = 7u;
+  header->version = 8u;
   header->capture_count = report->capture_count;
   header->artifact_count = report->artifact_count;
   header->tool = (uint32_t)report->tool;
@@ -1325,7 +1459,8 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
                  sizeof(common->magic)) != 0 ||
       (common->version != 2u && common->version != 3u &&
        common->version != 4u && common->version != 5u &&
-       common->version != 6u && common->version != 7u) ||
+       common->version != 6u && common->version != 7u &&
+       common->version != 8u) ||
       common->tool > VKR_HARNESS_TOOL_COMPARE ||
       common->exit_code > VKR_HARNESS_EXIT_ERROR ||
       common->capture_count > VKR_HARNESS_MAX_CAPTURE_RESULTS ||
@@ -1338,7 +1473,8 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
       : common->version == 4u ? sizeof(VkrHarnessCaptureSummaryHeaderV4)
       : common->version == 5u ? sizeof(VkrHarnessCaptureSummaryHeaderV5)
       : common->version == 6u ? sizeof(VkrHarnessCaptureSummaryHeaderV6)
-                              : sizeof(VkrHarnessCaptureSummaryHeaderV7);
+      : common->version == 7u ? sizeof(VkrHarnessCaptureSummaryHeaderV7)
+                              : sizeof(VkrHarnessCaptureSummaryHeaderV8);
   const uint64_t capture_bytes =
       (uint64_t)common->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
@@ -1406,9 +1542,16 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
                              &out_summary->case_manifest);
     out_summary->profile = header->profile;
     out_summary->provenance = header->provenance;
-  } else {
+  } else if (common->version == 7u) {
     const VkrHarnessCaptureSummaryHeaderV7 *header =
         (const VkrHarnessCaptureSummaryHeaderV7 *)bytes;
+    vkr_harness_case_from_v7(&header->case_manifest,
+                             &out_summary->case_manifest);
+    out_summary->profile = header->profile;
+    out_summary->provenance = header->provenance;
+  } else {
+    const VkrHarnessCaptureSummaryHeaderV8 *header =
+        (const VkrHarnessCaptureSummaryHeaderV8 *)bytes;
     out_summary->case_manifest = header->case_manifest;
     out_summary->profile = header->profile;
     out_summary->provenance = header->provenance;

@@ -42,8 +42,13 @@ exercise retained Scene presentation. Their zero-based indices include authored
 warmup and exclude bootstrap; stop at zero also suppresses bootstrap Scene work.
 Resume must follow stop. Captures during the stopped interval support only
 `final_color`. These optional controls enter the workload fingerprint when set.
-Capture-summary version 7 stores them; readers migrate versions 2–6 with both
-controls unset so older captures preserve their original behavior.
+Capture-summary version 8 also stores `renderer.image_sharpness`, a finite
+[0,1] control defaulting to zero. Nonzero values enter the workload fingerprint;
+zero retains existing workload identities. The effective value is reported and
+replayed. Readers migrate versions 2–6 with editor controls unset, and versions
+2–7 with sharpness zero. Version 7 retains its explicit native case/config
+layout; the new field occupies former alignment padding before the camera, so
+case size alone cannot distinguish the formats.
 
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible

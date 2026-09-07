@@ -1,10 +1,10 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-07
 authority: adr
 ---
 
-# ADR-043: Physical-pixel presentation with one sRGB transfer
+# ADR-043: Physical-pixel presentation, color transfer and image sharpness
 
 ## Status
 
@@ -34,11 +34,70 @@ rectangle and draws native-resolution UI afterward. Output-space FXAA stays in
 the final draw, with offsets expressed in output pixels. HDR/intermediate and
 final-color captures are different contracts and must be compared accordingly.
 
+The user-approved `VkrFrameGlobals.image_sharpness` control applies to FSR,
+portable TAA, MetalFX and native Scene presentation. It accepts finite values in
+[0,1]; zero bypasses sharpening, and the sample app starts at 0.25. The harness
+default is zero so existing cases retain their settings. Frame-input version 32
+makes the added control explicit.
+
+Sharpen post-tonemap linear RGB in the existing final draw, preserving alpha.
+A four-neighbor cross average supplies the unsharp residual; clamp that residual
+to the sampled color envelope to limit ringing. With FXAA enabled, reuse its
+nine samples, sharpen its selected result and multiply strength by
+`1 - subpixel_blend`. The low-contrast FXAA exit still sharpens when requested.
+Without FXAA, a nonzero strength adds four samples; zero adds no samples or
+filter arithmetic. Sampling offsets use output pixels and clamp at image edges.
+This is bounded detail recovery, not FSR RCAS or a new antialiasing algorithm.
+
+No image, graph pass or temporal history is added. Editor.Resolve applies the
+filter once before overlays; Editor.Composite bypasses it. UI and diagnostic
+render modes are excluded. The SDK's FSR sharpener stays disabled, avoiding two
+sharpening stages. Native roots and the outstanding Metal validation gate are
+recorded in ADR-044. Increased edge contrast can expose existing temporal
+variation, so quality and cost require matched static and moving captures.
+
+
 ## Consequences
 
 Output transfer is shared while native surface formats differ. Correct source
 transfer does not prove mixed-DPI interaction, translucent fixtures or final-color
 baseline acceptance. Offscreen rendering cannot validate monitor transitions.
+
+## Sharpness validation
+
+Windows Release, RX 6700 XT, Bistro at the supplied camera, output 1858x1057:
+FSR, portable TAA and native captures pass at strength 0.25; strength 1 and
+FXAA on/off paths also pass. Inspected stationary windows and road detail gain
+about 3.3% and 4.7% in local gradient magnitude. This measures contrast, not
+recovered scene resolution. Moving FSR range rises roughly 9–11% in the same
+regions, so sharpening does not replace temporal antialiasing. The static pair
+remains stable (mean RGB difference 0.000092/255).
+
+In three local Release children per setting, with FXAA off, presentation-pass
+mean cost changes from 0.1075 to 0.1610 ms. Summed GPU pass means change from
+5.5180 to 5.6286 ms, with all 61 pass rows and draw counts preserved. These
+are dirty-tree observations, not authoritative timings or elapsed GPU-frame
+time. Native editor captures retain all 5,185 colored UI pixels outside the
+Scene rectangle exactly while changing Scene pixels.
+
+Release and Debug wrappers pass. The enabled editor/text case passes three
+assertions under Khronos synchronization validation with no API warnings or
+errors and empty stderr; the known bootstrap publication warning remains outside
+measured frames. Native Metal compilation and execution are unavailable here.
+
+```powershell
+.\build_release.bat
+.\build_release\tools\vkr_harness.exe snapshot --case tools/cases/local/sharpness_bistro_fsr_motion.case.json --profile tools/profiles/local-offscreen-gpu-single.json
+.\build_release\tools\vkr_harness.exe snapshot --case tools/cases/local/sharpness_bistro_editor_ui.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
+.\build_release\tools\vkr_harness.exe profile --case tools/cases/local/sharpness_bistro_cost.case.json --profile tools/profiles/local-offscreen-gpu-single.json
+.\build.bat Debug
+.\build_debug\tools\vkr_harness.exe profile --case tools/cases/local/sharpness_bistro_editor_ui.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
+```
+
+Motion, cost and native diagnostic report SHA-256 values are respectively
+`a40d7b15f06611e32cf3ff62f17736bf1ef643b5e487826084f0c1e1e2ae297b`,
+`4f592a8777d478e142b0ab5b3a159f596ff8895af8de0c8870b6988349d8537a` and
+`9ef330905efa7bebcbb0e91a59def4e251e1c8ff26933400f4790c53e68a4857`.
 
 ## Alternatives considered
 

@@ -284,6 +284,8 @@ typedef struct VkrHarnessRendererConfig {
    * the first scene frame. Resume must follow the configured stop. */
   uint32_t editor_stop_frame;
   uint32_t editor_resume_frame;
+  /** Image-space sharpness after reconstruction. Zero disables the control. */
+  float32_t image_sharpness;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

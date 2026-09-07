@@ -19,7 +19,8 @@ float vkr_fxaa_luminance(float3 color)
 }
 
 float4 vkr_fxaa(uint texture_index, uint sampler_index, float2 uv,
-                float2 inverse_extent, bool tonemap, float exposure)
+                float2 inverse_extent, bool tonemap, float exposure,
+                float sharpness)
 {
     float4 center = vkr_post_sample(texture_index, sampler_index, uv, tonemap,
                                     exposure);
@@ -69,7 +70,17 @@ float4 vkr_fxaa(uint texture_index, uint sampler_index, float2 uv,
                     max(luma_southwest, luma_southeast))));
     if (luma_max - luma_min <
         max(0.0312f, luma_max * 0.125f))
+    {
+        if (sharpness > 0.0f)
+            center.rgb = vkr_sharpen_color(
+                center.rgb, 0.25f * (north.rgb + south.rgb + west.rgb + east.rgb),
+                min(min(min(north.rgb, south.rgb), min(west.rgb, east.rgb)),
+                    min(min(northwest.rgb, northeast.rgb), min(southwest.rgb, southeast.rgb))),
+                max(max(max(north.rgb, south.rgb), max(west.rgb, east.rgb)),
+                    max(max(northwest.rgb, northeast.rgb), max(southwest.rgb, southeast.rgb))),
+                sharpness);
         return center;
+    }
 
     float2 direction;
     direction.x = -((luma_northwest + luma_northeast) -
@@ -112,6 +123,14 @@ float4 vkr_fxaa(uint texture_index, uint sampler_index, float2 uv,
     subpixel = subpixel * subpixel * (3.0f - 2.0f * subpixel);
     subpixel = subpixel * subpixel * 0.75f;
     result = lerp(result, 0.25f * (north + south + west + east), subpixel);
+    if (sharpness > 0.0f)
+        result.rgb = vkr_sharpen_color(
+            result.rgb, 0.25f * (north.rgb + south.rgb + west.rgb + east.rgb),
+            min(min(min(north.rgb, south.rgb), min(west.rgb, east.rgb)),
+                min(min(northwest.rgb, northeast.rgb), min(southwest.rgb, southeast.rgb))),
+            max(max(max(north.rgb, south.rgb), max(west.rgb, east.rgb)),
+                max(max(northwest.rgb, northeast.rgb), max(southwest.rgb, southeast.rgb))),
+            sharpness * (1.0f - subpixel));
     result.a = center.a;
     return result;
 }
@@ -128,13 +147,32 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
     bool tonemap = (g_push.flags & VKR_FULLSCREEN_TONEMAP) != 0u;
     float exposure = root.exposure_state->exposure_multiplier;
     uint2 extent = uint2(root.point_light_grid_origin_cell_size.xy);
+    float sharpness = root.point_light_grid_origin_cell_size.z;
     float4 result;
     if ((g_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
+    {
         result = vkr_post_sample(texture_index, sampler_index, input.uv, tonemap,
                                  exposure);
+        if (sharpness > 0.0f)
+        {
+            float2 step = 1.0f / float2(extent);
+            float3 north = vkr_post_sample(texture_index, sampler_index,
+                input.uv - float2(0.0f, step.y), tonemap, exposure).rgb;
+            float3 south = vkr_post_sample(texture_index, sampler_index,
+                input.uv + float2(0.0f, step.y), tonemap, exposure).rgb;
+            float3 west = vkr_post_sample(texture_index, sampler_index,
+                input.uv - float2(step.x, 0.0f), tonemap, exposure).rgb;
+            float3 east = vkr_post_sample(texture_index, sampler_index,
+                input.uv + float2(step.x, 0.0f), tonemap, exposure).rgb;
+            result.rgb = vkr_sharpen_color(result.rgb,
+                0.25f * (north + south + west + east),
+                min(min(north, south), min(west, east)),
+                max(max(north, south), max(west, east)), sharpness);
+        }
+    }
     else
         result = vkr_fxaa(texture_index, sampler_index, input.uv,
-                          1.0f / float2(extent), tonemap, exposure);
+                          1.0f / float2(extent), tonemap, exposure, sharpness);
     // FSR output alpha carries a private static-history sample count.
     if ((g_push.flags & VKR_FULLSCREEN_OPAQUE_ALPHA) != 0u)
         result.a = 1.0f;

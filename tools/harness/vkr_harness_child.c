@@ -1251,6 +1251,8 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   application->globals.gtao_enabled = case_manifest->renderer.gtao_enabled;
   application->globals.gtao_radius = case_manifest->renderer.gtao_radius;
   application->globals.gtao_power = case_manifest->renderer.gtao_power;
+  application->globals.image_sharpness =
+      case_manifest->renderer.image_sharpness;
   /* Determinism rule 3: the harness camera receives an explicit extent and
      lens; it never reads window size or input state. */
   VkrCamera *camera = vkr_camera_registry_get_by_handle(

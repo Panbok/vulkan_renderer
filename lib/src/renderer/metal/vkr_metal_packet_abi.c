@@ -172,7 +172,8 @@ vkr_global const VkrMetalPacketAbiField vkr_shadow_cascade_fields[] = {
 
 vkr_global const VkrMetalPacketAbiField vkr_tonemap_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, source_texture_id, "source", 0),
-    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, reserved, "reserved", 8),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, flags, "flags", 8),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, image_sharpness, "image_sharpness", 12),
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, exposure_state, "exposure_state",
                   16),
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, output_extent, "output_extent",

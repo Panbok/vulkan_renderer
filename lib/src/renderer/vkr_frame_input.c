@@ -222,6 +222,13 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                       "packet.globals.exposure_compensation_ev",
                       "must be finite");
 
+  if (!isfinite(packet->globals.image_sharpness) ||
+      packet->globals.image_sharpness < 0.0f ||
+      packet->globals.image_sharpness > 1.0f)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.image_sharpness",
+                      "must be finite and within [0, 1]");
+
   if (packet->globals.bloom_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.bloom_enabled", "must be zero or one");
