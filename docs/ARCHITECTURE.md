@@ -645,7 +645,7 @@ Vulkan pools keyed device/upload/staging/readback blocks, with persistent mappin
 required dedicated-allocation exceptions. Completion-protected Vulkan frame slots
 keep directly read uploads separate from copy-only candidate staging; both retain
 capacity grown during frame preflight. Metal creates placement heaps on demand
-and releases empty heaps after completed retirement. Its default 4 GiB managed
+and releases empty heaps after completed retirement. Its default 5 GiB managed
 allocation cap includes heap capacity, upload/readback rings and explicit native
 buffers/ICBs; opaque driver allocations remain outside that cap. Separate lifetime
 groups keep asset textures from pinning retired Scene heaps. Transfer buffers grow

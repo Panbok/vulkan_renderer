@@ -87,7 +87,7 @@ after GPU completion and reclamation of superseded targets, as specified in
 [ADR-046](046-editor-viewport-mapping-and-picking.md). Successful ordinary
 replacement retains its asynchronous retirement policy.
 
-The default managed allocation ceiling is 4 GiB, configurable at startup through
+The default managed allocation ceiling is 5 GiB, configurable at startup through
 `VKR_METAL_MEMORY_BUDGET_MB` (positive integer MiB). The cap includes committed
 heap backing, the existing upload/readback rings, material and SH buffers, and
 ICBs. It covers spare heap capacity and resources awaiting completion. Allocation
@@ -101,7 +101,7 @@ so bounded Scene recovery can run; other native creation failures remain termina
 Device-reported allocation and residency footprints remain separate observations.
 Driver/validation/compiler storage, opaque command and counter heaps, MetalFX
 internals, and external drawables are outside the managed cap. Texture views do
-not get charged a second time. A 4 GiB managed cap does not guarantee a 4 GiB
+not get charged a second time. A 5 GiB managed cap does not guarantee a 5 GiB
 process footprint or that the host has enough available memory.
 
 Metal transfer buffers start at 32 MiB upload and 64 KiB readback per frame slot.

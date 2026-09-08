@@ -309,7 +309,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   /* Two completion-protected slots; backing heaps grow only at resource
    * creation. */
   const uint32_t frame_slot_count = 2u;
-  uint64_t managed_budget_mb = 4096u;
+  uint64_t managed_budget_mb = 5120u;
   const char *budget_env = getenv("VKR_METAL_MEMORY_BUDGET_MB");
   if (budget_env &&
       (!string_to_u64(budget_env, &managed_budget_mb) ||
