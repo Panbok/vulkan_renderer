@@ -21,6 +21,7 @@ typedef struct VkrMeshLoaderGltfPrimitive {
   const uint32_t *indices;
   uint32_t index_count;
   String8 material_path;
+  bool8_t preserve_tangents;
 } VkrMeshLoaderGltfPrimitive;
 
 /**

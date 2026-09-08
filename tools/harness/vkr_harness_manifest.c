@@ -299,6 +299,7 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
   int32_t keys = -1;
   int32_t position = -1;
   int32_t center = -1;
+  int32_t vertical_fov_token = -1;
   int32_t yaw_token = -1;
   int32_t pitch_token = -1;
   int32_t interpolation_token = -1;
@@ -312,6 +313,8 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                   error) ||
       !vkr_harness_manifest_field(doc, token, "center", false_v, &center,
                                   error) ||
+      !vkr_harness_manifest_field(doc, token, "vertical_fov_degrees", false_v,
+                                  &vertical_fov_token, error) ||
       !vkr_harness_manifest_field(doc, token, "yaw", false_v, &yaw_token,
                                   error) ||
       !vkr_harness_manifest_field(doc, token, "pitch", false_v, &pitch_token,
@@ -344,6 +347,31 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
         duration_token >= 0 || angle_token >= 0) {
       vkr_harness_error_set(error, "camera.static", "$.camera",
                             "Static camera requires only position/yaw/pitch");
+      return false_v;
+    }
+  } else if (string_equals(mode, "cubemap_px") ||
+             string_equals(mode, "cubemap_nx") ||
+             string_equals(mode, "cubemap_py") ||
+             string_equals(mode, "cubemap_ny") ||
+             string_equals(mode, "cubemap_pz") ||
+             string_equals(mode, "cubemap_nz")) {
+    camera->mode =
+        string_equals(mode, "cubemap_px")   ? VKR_HARNESS_CAMERA_CUBEMAP_PX
+        : string_equals(mode, "cubemap_nx") ? VKR_HARNESS_CAMERA_CUBEMAP_NX
+        : string_equals(mode, "cubemap_py") ? VKR_HARNESS_CAMERA_CUBEMAP_PY
+        : string_equals(mode, "cubemap_ny") ? VKR_HARNESS_CAMERA_CUBEMAP_NY
+        : string_equals(mode, "cubemap_pz") ? VKR_HARNESS_CAMERA_CUBEMAP_PZ
+                                            : VKR_HARNESS_CAMERA_CUBEMAP_NZ;
+    if (position < 0 || vertical_fov_token < 0 ||
+        !vkr_harness_manifest_vec3(doc, position, &camera->static_pose.position,
+                                   "$.camera.position", error) ||
+        camera->vertical_fov_degrees != 90.0f || keys >= 0 || center >= 0 ||
+        yaw_token >= 0 || pitch_token >= 0 || interpolation_token >= 0 ||
+        radius_token >= 0 || height_token >= 0 || revolutions_token >= 0 ||
+        duration_token >= 0 || angle_token >= 0) {
+      vkr_harness_error_set(
+          error, "camera.cubemap", "$.camera",
+          "Cubemap camera requires position and an explicit 90 degree FOV");
       return false_v;
     }
   } else if (string_equals(mode, "keyframes") ||
@@ -461,6 +489,11 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "shadow_sdsm",
       "render_mode",
       "exposure_mode",
+      "display_transform",
+      "white_balance_temperature",
+      "white_balance_tint",
+      "color_contrast",
+      "color_saturation",
       "manual_exposure",
       "exposure_compensation_ev",
       "exposure_reset_frame",
@@ -468,6 +501,16 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "bloom_threshold",
       "bloom_knee",
       "bloom_intensity",
+      "ssr_enabled",
+      "ssgi_enabled",
+      "dof_enabled",
+      "dof_focus_distance",
+      "dof_f_stop",
+      "motion_blur_enabled",
+      "motion_blur_shutter_angle",
+      "motion_blur_entity",
+      "motion_blur_entity_velocity",
+      "display_output",
       "gtao_enabled",
       "gtao_radius",
       "gtao_power",
@@ -481,7 +524,11 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   }
   string_copy(renderer->render_mode, "default");
   string_copy(renderer->exposure_mode, "manual");
+  string_copy(renderer->display_transform, "agx");
+  renderer->color_contrast = 1.0f;
+  renderer->color_saturation = 1.0f;
   string_copy(renderer->upscaler, "spatial");
+  string_copy(renderer->display_output, "sdr");
   renderer->taa_enabled = true_v;
   renderer->tonemap_enabled = true_v;
   renderer->fxaa_enabled = true_v;
@@ -496,6 +543,14 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   renderer->gtao_enabled = false_v;
   renderer->gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
   renderer->gtao_power = VKR_GTAO_DEFAULT_POWER;
+  renderer->dof_enabled = false_v;
+  renderer->dof_focus_distance = 5.0f;
+  renderer->dof_f_stop = 2.8f;
+  renderer->motion_blur_enabled = false_v;
+  renderer->motion_blur_shutter_angle = 180.0f;
+  renderer->motion_blur_entity_velocity_x = 0.0f;
+  renderer->motion_blur_entity_velocity_y = 0.0f;
+  renderer->motion_blur_entity_velocity_z = 0.0f;
   renderer->image_sharpness = 0.0f;
   renderer->render_scale = 1.0f;
   /* Unset means "do not clamp", so an existing case keeps every packed probe
@@ -508,11 +563,18 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   uint64_t editor_resume_frame = UINT32_MAX;
   float64_t manual_exposure = renderer->manual_exposure;
   float64_t exposure_compensation_ev = 0.0;
+  float64_t white_balance_temperature = 0.0;
+  float64_t white_balance_tint = 0.0;
+  float64_t color_contrast = renderer->color_contrast;
+  float64_t color_saturation = renderer->color_saturation;
   float64_t bloom_threshold = renderer->bloom_threshold;
   float64_t bloom_knee = renderer->bloom_knee;
   float64_t bloom_intensity = renderer->bloom_intensity;
   float64_t gtao_radius = renderer->gtao_radius;
   float64_t gtao_power = renderer->gtao_power;
+  float64_t dof_focus_distance = renderer->dof_focus_distance;
+  float64_t dof_f_stop = renderer->dof_f_stop;
+  float64_t motion_blur_shutter_angle = renderer->motion_blur_shutter_angle;
   float64_t image_sharpness = renderer->image_sharpness;
   float64_t render_scale = renderer->render_scale;
   float64_t dynamic_resolution_min_scale =
@@ -529,7 +591,11 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   int32_t gtao_radius_token = -1;
   int32_t gtao_power_token = -1;
   int32_t ibl_probe_limit_token = -1;
-  if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
+  int32_t motion_blur_entity_velocity_token = -1;
+  if (!vkr_harness_manifest_string(doc, token, "display_output", false_v,
+                                    renderer->display_output,
+                                    sizeof(renderer->display_output), error) ||
+      !vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_u64(doc, token, "editor_stop_frame", false_v,
                                 &editor_stop_frame, error) ||
@@ -576,6 +642,17 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       !vkr_harness_manifest_string(doc, token, "exposure_mode", false_v,
                                    renderer->exposure_mode,
                                    sizeof(renderer->exposure_mode), error) ||
+      !vkr_harness_manifest_string(
+          doc, token, "display_transform", false_v, renderer->display_transform,
+          sizeof(renderer->display_transform), error) ||
+      !vkr_harness_manifest_f64(doc, token, "white_balance_temperature",
+                                false_v, &white_balance_temperature, error) ||
+      !vkr_harness_manifest_f64(doc, token, "white_balance_tint", false_v,
+                                &white_balance_tint, error) ||
+      !vkr_harness_manifest_f64(doc, token, "color_contrast", false_v,
+                                &color_contrast, error) ||
+      !vkr_harness_manifest_f64(doc, token, "color_saturation", false_v,
+                                &color_saturation, error) ||
       !vkr_harness_manifest_field(doc, token, "manual_exposure", false_v,
                                   &manual_exposure_token, error) ||
       !vkr_harness_manifest_f64(doc, token, "manual_exposure", false_v,
@@ -600,6 +677,26 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
                                   &bloom_intensity_token, error) ||
       !vkr_harness_manifest_f64(doc, token, "bloom_intensity", false_v,
                                 &bloom_intensity, error) ||
+      !vkr_harness_manifest_bool(doc, token, "ssgi_enabled", false_v,
+                                 &renderer->ssgi_enabled, error) ||
+      !vkr_harness_manifest_bool(doc, token, "ssr_enabled", false_v,
+                                 &renderer->ssr_enabled, error) ||
+      !vkr_harness_manifest_bool(doc, token, "dof_enabled", false_v,
+                                 &renderer->dof_enabled, error) ||
+      !vkr_harness_manifest_f64(doc, token, "dof_focus_distance", false_v,
+                                &dof_focus_distance, error) ||
+      !vkr_harness_manifest_f64(doc, token, "dof_f_stop", false_v,
+                                &dof_f_stop, error) ||
+      !vkr_harness_manifest_bool(doc, token, "motion_blur_enabled", false_v,
+                                 &renderer->motion_blur_enabled, error) ||
+      !vkr_harness_manifest_f64(doc, token, "motion_blur_shutter_angle", false_v,
+                                &motion_blur_shutter_angle, error) ||
+      !vkr_harness_manifest_string(doc, token, "motion_blur_entity", false_v,
+                                   renderer->motion_blur_entity,
+                                   sizeof(renderer->motion_blur_entity), error) ||
+      !vkr_harness_manifest_field(doc, token, "motion_blur_entity_velocity",
+                                  false_v, &motion_blur_entity_velocity_token,
+                                  error) ||
       !vkr_harness_manifest_bool(doc, token, "gtao_enabled", false_v,
                                  &renderer->gtao_enabled, error) ||
       !vkr_harness_manifest_field(doc, token, "gtao_radius", false_v,
@@ -617,6 +714,18 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       !vkr_harness_manifest_u64(doc, token, "ibl_probe_limit", false_v,
                                 &ibl_probe_limit, error)) {
     return false_v;
+  }
+  if (motion_blur_entity_velocity_token >= 0) {
+    Vec3 velocity = {0};
+    if (!vkr_harness_manifest_vec3(doc, motion_blur_entity_velocity_token,
+                                   &velocity,
+                                   "$.renderer.motion_blur_entity_velocity",
+                                   error)) {
+      return false_v;
+    }
+    renderer->motion_blur_entity_velocity_x = velocity.x;
+    renderer->motion_blur_entity_velocity_y = velocity.y;
+    renderer->motion_blur_entity_velocity_z = velocity.z;
   }
   if (editor_stop_frame > UINT32_MAX || editor_resume_frame > UINT32_MAX ||
       ((editor_stop_frame != UINT32_MAX || editor_resume_frame != UINT32_MAX) &&
@@ -653,6 +762,9 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");
+  const bool8_t display_output_valid =
+      string_equals(renderer->display_output, "sdr") ||
+      string_equals(renderer->display_output, "auto_extended_linear");
   const bool8_t upscaler_valid =
       string_equals(renderer->upscaler, "spatial") ||
       string_equals(renderer->upscaler, "metalfx_temporal") ||
@@ -660,6 +772,9 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   const bool8_t exposure_mode_valid =
       string_equals(renderer->exposure_mode, "manual") ||
       string_equals(renderer->exposure_mode, "automatic");
+  const bool8_t display_transform_valid =
+      string_equals(renderer->display_transform, "agx") ||
+      string_equals(renderer->display_transform, "aces_fitted");
   const bool8_t automatic_exposure =
       string_equals(renderer->exposure_mode, "automatic");
   const bool8_t automatic_controls_valid =
@@ -685,10 +800,31 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       gtao_radius_token >= 0 && gtao_power_token >= 0;
   const bool8_t gtao_controls_valid =
       gtao_values_valid && (!renderer->gtao_enabled || gtao_controls_present);
+  const bool8_t dof_focus_valid =
+      !renderer->dof_enabled ||
+      (isfinite(dof_focus_distance) && dof_focus_distance > 0.0 &&
+       dof_focus_distance <= FLT_MAX);
+  const bool8_t dof_f_stop_valid =
+      !renderer->dof_enabled ||
+      (isfinite(dof_f_stop) && dof_f_stop > 0.0 && dof_f_stop <= FLT_MAX);
+  const bool8_t motion_blur_controls_valid =
+      isfinite(motion_blur_shutter_angle) && motion_blur_shutter_angle >= 0.0 &&
+      motion_blur_shutter_angle <= 360.0 &&
+      isfinite(renderer->motion_blur_entity_velocity_x) &&
+      isfinite(renderer->motion_blur_entity_velocity_y) &&
+      isfinite(renderer->motion_blur_entity_velocity_z);
+  const bool8_t motion_blur_entity_valid =
+      renderer->motion_blur_entity[0] != '\0' ||
+      (renderer->motion_blur_entity_velocity_x == 0.0f &&
+       renderer->motion_blur_entity_velocity_y == 0.0f &&
+       renderer->motion_blur_entity_velocity_z == 0.0f);
   if (!preset_valid || !mode_valid || !backend_valid || !upscaler_valid ||
+      !display_output_valid ||
       cascades < 1u || cascades > 8u || !exposure_mode_valid ||
-      !automatic_controls_valid || !bloom_controls_valid ||
-      !gtao_controls_valid ||
+      !display_transform_valid || !automatic_controls_valid ||
+      !bloom_controls_valid || !gtao_controls_valid || !dof_focus_valid ||
+      !dof_f_stop_valid || !motion_blur_controls_valid ||
+      !motion_blur_entity_valid ||
       (ibl_probe_limit_token >= 0 &&
        ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
       !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
@@ -696,22 +832,35 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       exposure_compensation_ev < -FLT_MAX ||
       exposure_compensation_ev > FLT_MAX || !isfinite(image_sharpness) ||
       image_sharpness < 0.0 || image_sharpness > 1.0 ||
-      exposure_reset_frame > UINT32_MAX) {
+      !isfinite(white_balance_temperature) ||
+      white_balance_temperature < -1.0 || white_balance_temperature > 1.0 ||
+      !isfinite(white_balance_tint) || white_balance_tint < -1.0 ||
+      white_balance_tint > 1.0 || !isfinite(color_contrast) ||
+      color_contrast < 0.5 || color_contrast > 1.5 ||
+      !isfinite(color_saturation) || color_saturation < 0.0 ||
+      color_saturation > 1.5 || exposure_reset_frame > UINT32_MAX) {
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
-        "Renderer backend, preset, render/exposure mode, "
-        "exposure/bloom/GTAO/image-sharpness controls, probe limit, or "
-        "cascade count is invalid");
+        "Renderer backend, preset, render/exposure/display-transform mode, "
+        "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/image-sharpness controls, "
+        "probe limit, or cascade count is invalid");
     return false_v;
   }
   renderer->manual_exposure = (float32_t)manual_exposure;
   renderer->exposure_compensation_ev = (float32_t)exposure_compensation_ev;
+  renderer->white_balance_temperature = (float32_t)white_balance_temperature;
+  renderer->white_balance_tint = (float32_t)white_balance_tint;
+  renderer->color_contrast = (float32_t)color_contrast;
+  renderer->color_saturation = (float32_t)color_saturation;
   renderer->exposure_reset_frame = (uint32_t)exposure_reset_frame;
   renderer->bloom_threshold = (float32_t)bloom_threshold;
   renderer->bloom_knee = (float32_t)bloom_knee;
   renderer->bloom_intensity = (float32_t)bloom_intensity;
   renderer->gtao_radius = (float32_t)gtao_radius;
   renderer->gtao_power = (float32_t)gtao_power;
+  renderer->dof_focus_distance = (float32_t)dof_focus_distance;
+  renderer->dof_f_stop = (float32_t)dof_f_stop;
+  renderer->motion_blur_shutter_angle = (float32_t)motion_blur_shutter_angle;
   renderer->image_sharpness = (float32_t)image_sharpness;
   if (!isfinite(render_scale) || render_scale <= 0.0 || render_scale > 1.0) {
     vkr_harness_error_set(

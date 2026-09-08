@@ -41,7 +41,32 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING,
   VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC,
   VKR_RG_JSON_CONDITION_BLOOM_ENABLED,
+  VKR_RG_JSON_CONDITION_DOF_ENABLED,
+  VKR_RG_JSON_CONDITION_SUBSURFACE_ENABLED,
+  VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED,
+  VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_ENABLED,
+  VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_DISABLED,
+
+  VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED,
+  VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_ENABLED,
+  VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED,
+  VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED,
+  VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED,
+  VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_ENABLED,
+  VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED,
+  VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED,
   VKR_RG_JSON_CONDITION_GTAO_ENABLED,
+  VKR_RG_JSON_CONDITION_FOG_EDITOR_ENABLED,
+  VKR_RG_JSON_CONDITION_FOG_EDITOR_DISABLED,
+  VKR_RG_JSON_CONDITION_FROXEL_FOG_ENABLED,
+  VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_ENABLED,
+  VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_DISABLED,
+  VKR_RG_JSON_CONDITION_SSR_ENABLED,
+  VKR_RG_JSON_CONDITION_SSGI_ENABLED,
+  VKR_RG_JSON_CONDITION_SSGI_EDITOR_ENABLED,
+  VKR_RG_JSON_CONDITION_SSGI_FULLSCREEN_ENABLED,
+  VKR_RG_JSON_CONDITION_SSR_EDITOR_ENABLED,
+  VKR_RG_JSON_CONDITION_SSR_EDITOR_DISABLED,
   VKR_RG_JSON_CONDITION_METALFX_ENABLED,
   VKR_RG_JSON_CONDITION_METALFX_DISABLED,
   VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED,
@@ -124,6 +149,7 @@ typedef enum VkrRgJsonExtentMode {
   VKR_RG_JSON_EXTENT_NONE = 0,
   VKR_RG_JSON_EXTENT_WINDOW,       // The extent is the window size.
   VKR_RG_JSON_EXTENT_SCENE_OUTPUT, // Reconstructed Scene presentation size.
+  VKR_RG_JSON_EXTENT_MOTION_BLUR_TILES, // Ceil(Scene output / 16).
   VKR_RG_JSON_EXTENT_EDITOR_IMAGE, // Retained editor presentation size.
   VKR_RG_JSON_EXTENT_VIEWPORT,     // Internal Scene render size.
   VKR_RG_JSON_EXTENT_FIXED,        // The extent is a fixed size.
@@ -168,6 +194,8 @@ typedef struct VkrRgJsonImageDesc {
   VkrRgJsonImageFormatSource format_source; // Runtime format source token.
   VkrTextureFormat format;    // Explicit format when source=EXPLICIT.
   VkrTextureUsageFlags usage; // The usage of the image.
+  VkrTextureType type;        // Texture dimension; defaults to 2D.
+  uint32_t depth;             // 3D depth; defaults to one.
   bool8_t layers_is_set;      // Whether the layers are set.
   uint32_t layers;            // The layers of the image.
   String8 layers_source;      // The source of the layers.
@@ -198,8 +226,8 @@ typedef enum VkrRgJsonDrawCountSource {
 
 typedef struct VkrRgJsonBufferDesc {
   VkrRgJsonBufferSizeMode size_mode;
-  uint64_t size;             // Fixed byte size.
-  uint32_t bytes_per_pixel;  // Viewport-pixel stride.
+  uint64_t size;              // Fixed byte size.
+  uint32_t bytes_per_pixel;   // Viewport-pixel stride.
   uint32_t bytes_per_element; // Draw-table stride, including authored views.
   VkrRgJsonDrawCountSource draw_count_source;
   VkrBufferUsageFlags usage; // The usage of the buffer.

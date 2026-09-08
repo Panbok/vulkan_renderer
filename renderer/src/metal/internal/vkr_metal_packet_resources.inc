@@ -677,6 +677,41 @@ bool8_t vkr_metal_packet_renderer_destroy_mesh(VkrMetalPacketRenderer *renderer,
   }
 }
 
+vkr_internal Vec4 vkr_metal_packet_anisotropy(float32_t strength,
+                                               float32_t rotation) {
+  const float32_t normalized_rotation =
+      remainderf(rotation, 6.28318530717958647692f);
+  return (Vec4){strength, cosf(normalized_rotation),
+                sinf(normalized_rotation), 0.0f};
+}
+
+vkr_internal bool8_t vkr_metal_packet_diffuse_extensions_valid(
+    const VkrMaterial *material) {
+  const VkrPbrProperties *pbr = &material->pbr;
+  const float32_t strength = pbr->diffuse_transmission_strength;
+  const Vec3 tint = pbr->diffuse_transmission_color;
+  if (!isfinite(strength) || !isfinite(tint.x) || !isfinite(tint.y) ||
+      !isfinite(tint.z) || strength < 0.0f || strength > 1.0f ||
+      tint.x < 0.0f || tint.x > 1.0f || tint.y < 0.0f || tint.y > 1.0f ||
+      tint.z < 0.0f || tint.z > 1.0f)
+    return false_v;
+  if (strength > 0.0f &&
+      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f))
+    return false_v;
+  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
+      pbr->subsurface_strength > 1.0f || pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT)
+    return false_v;
+  if (pbr->subsurface_strength > 0.0f &&
+      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
+       pbr->diffuse_transmission_strength > 0.0f))
+    return false_v;
+  return true_v;
+}
+
 bool8_t vkr_metal_packet_renderer_create_material(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketMaterialCreateInfo *create_info,
@@ -770,6 +805,39 @@ bool8_t vkr_metal_packet_renderer_create_material(
                   .material_alpha = material_constants.alpha,
                   .material_attenuation_color =
                       material_constants.attenuation_color,
+                  .clearcoat_texture_id = slot->textures[6].resource_id,
+                  .clearcoat_roughness_texture_id =
+                      slot->textures[7].resource_id,
+                  .clearcoat_normal_texture_id = slot->textures[8].resource_id,
+                  .clearcoat_sampler_id = material_sampler_id,
+                  .clearcoat_roughness_sampler_id = material_sampler_id,
+                  .clearcoat_normal_sampler_id = material_sampler_id,
+                  .material_clearcoat =
+                      {create_info->pbr.clearcoat_factor,
+                       create_info->pbr.clearcoat_roughness,
+                       create_info->pbr.clearcoat_normal_scale, 0.0f},
+                  .sheen_color_texture_id = slot->textures[9].resource_id,
+                  .sheen_roughness_texture_id =
+                      slot->textures[10].resource_id,
+                  .sheen_color_sampler_id = material_sampler_id,
+                  .sheen_roughness_sampler_id = material_sampler_id,
+                  .material_sheen =
+                      {create_info->pbr.sheen_color.x,
+                       create_info->pbr.sheen_color.y,
+                       create_info->pbr.sheen_color.z,
+                       create_info->pbr.sheen_roughness},
+                  .material_anisotropy = vkr_metal_packet_anisotropy(
+                      create_info->pbr.anisotropy_strength,
+                      create_info->pbr.anisotropy_rotation),
+                  .anisotropy_texture_id = slot->textures[11].resource_id,
+                  .anisotropy_sampler_id = material_sampler_id,
+                  .material_diffuse_transmission = {
+                      create_info->pbr.diffuse_transmission_color.x,
+                      create_info->pbr.diffuse_transmission_color.y,
+                      create_info->pbr.diffuse_transmission_color.z,
+                      create_info->pbr.diffuse_transmission_strength},
+                  .material_subsurface = {create_info->pbr.subsurface_strength,
+                      (float32_t)create_info->pbr.subsurface_profile, 0.0f, 0.0f},
               },
           .transmission =
               {
@@ -875,12 +943,14 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
         handle.generation == VKR_INVALID_ID || material->id != handle.id ||
         material->generation != handle.generation)
       return false_v;
+    if (!vkr_metal_packet_diffuse_extensions_valid(material))
+      return false_v;
     if (!@available(macOS 26.0, *))
       return false_v;
     VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
     if (slot->live)
       return false_v;
-    VkrTextureSlot source_slots[6] = {
+    VkrTextureSlot source_slots[12] = {
         VKR_TEXTURE_SLOT_DIFFUSE,
         material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled
             ? VKR_TEXTURE_SLOT_NORMAL
@@ -899,8 +969,26 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
         material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled
             ? VKR_TEXTURE_SLOT_THICKNESS
             : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_CLEARCOAT].enabled
+            ? VKR_TEXTURE_SLOT_CLEARCOAT
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS].enabled
+            ? VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL].enabled
+            ? VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_SHEEN_COLOR].enabled
+            ? VKR_TEXTURE_SLOT_SHEEN_COLOR
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS].enabled
+            ? VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_ANISOTROPY].enabled
+            ? VKR_TEXTURE_SLOT_ANISOTROPY
+            : VKR_TEXTURE_SLOT_DIFFUSE,
     };
-    VkrMetalPacketTexture *textures[6] = {0};
+    VkrMetalPacketTexture *textures[12] = {0};
     for (uint32_t i = 0; i < ArrayCount(source_slots); ++i) {
       const VkrMaterialTexture *source = &material->textures[source_slots[i]];
       if (source->handle.id == 0 ||
@@ -921,6 +1009,18 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION;
     if (material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled)
       flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS;
+    if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT;
+    if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS;
+    if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_NORMAL;
+    if (material->textures[VKR_TEXTURE_SLOT_SHEEN_COLOR].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_COLOR;
+    if (material->textures[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_ROUGHNESS;
+    if (material->textures[VKR_TEXTURE_SLOT_ANISOTROPY].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ANISOTROPY;
     const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                           ? material->pbr.base_color
                           : material->phong.diffuse_color;
@@ -928,6 +1028,15 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
       pbr.base_color = material->phong.diffuse_color;
       pbr.emissive_factor = material->phong.emission_color;
+      pbr.clearcoat_factor = 0.0f;
+      pbr.clearcoat_roughness = 0.0f;
+      pbr.clearcoat_normal_scale = 1.0f;
+      pbr.sheen_color = (Vec3){0.0f, 0.0f, 0.0f};
+      pbr.sheen_roughness = 0.0f;
+      pbr.anisotropy_strength = 0.0f;
+      pbr.anisotropy_rotation = 0.0f;
+      pbr.diffuse_transmission_strength = 0.0f;
+      pbr.diffuse_transmission_color = (Vec3){0.0f, 0.0f, 0.0f};
     }
     const VkrPacketMaterialConstants material_constants =
         vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
@@ -955,6 +1064,38 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                 .material_alpha = material_constants.alpha,
                 .material_attenuation_color =
                     material_constants.attenuation_color,
+                .clearcoat_texture_id = textures[6]->resource.resource_id,
+                .clearcoat_roughness_texture_id =
+                    textures[7]->resource.resource_id,
+                .clearcoat_normal_texture_id = textures[8]->resource.resource_id,
+                .clearcoat_sampler_id = textures[6]->sampler_resource_id,
+                .clearcoat_roughness_sampler_id =
+                    textures[7]->sampler_resource_id,
+                .clearcoat_normal_sampler_id =
+                    textures[8]->sampler_resource_id,
+                .material_clearcoat =
+                    {pbr.clearcoat_factor, pbr.clearcoat_roughness,
+                     pbr.clearcoat_normal_scale, 0.0f},
+                .sheen_color_texture_id = textures[9]->resource.resource_id,
+                .sheen_roughness_texture_id =
+                    textures[10]->resource.resource_id,
+                .sheen_color_sampler_id = textures[9]->sampler_resource_id,
+                .sheen_roughness_sampler_id =
+                    textures[10]->sampler_resource_id,
+                .material_sheen =
+                    {pbr.sheen_color.x, pbr.sheen_color.y, pbr.sheen_color.z,
+                     pbr.sheen_roughness},
+                .material_anisotropy = vkr_metal_packet_anisotropy(
+                    pbr.anisotropy_strength, pbr.anisotropy_rotation),
+                .anisotropy_texture_id = textures[11]->resource.resource_id,
+                .anisotropy_sampler_id = textures[11]->sampler_resource_id,
+                .material_diffuse_transmission = {
+                    pbr.diffuse_transmission_color.x,
+                    pbr.diffuse_transmission_color.y,
+                    pbr.diffuse_transmission_color.z,
+                    pbr.diffuse_transmission_strength},
+                  .material_subsurface = {pbr.subsurface_strength,
+                      (float32_t)pbr.subsurface_profile, 0.0f, 0.0f},
             },
         .transmission =
             {
@@ -1505,6 +1646,221 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
   }
 }
 
+vkr_internal bool8_t vkr_metal_packet_create_atmosphere_readback(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketTexture *source)
+    API_AVAILABLE(macos(26.0)) {
+  const uint64_t reservation = [renderer->device
+      heapBufferSizeAndAlignWithLength:sizeof(float32_t) * 4u
+                               options:MTLResourceStorageModeShared]
+                                   .size;
+  if (!vkr_metal_memory_device_reserve_external(renderer->memory, reservation))
+    return false_v;
+  id<MTLBuffer> buffer = [renderer->device
+      newBufferWithLength:sizeof(float32_t) * 4u
+                  options:MTLResourceStorageModeShared];
+  if (!buffer || !vkr_metal_memory_device_reconcile_external(
+                     renderer->memory, reservation, buffer.allocatedSize)) {
+    [buffer release];
+    vkr_metal_memory_device_release_external(renderer->memory, reservation);
+    return false_v;
+  }
+  id<MTLResidencySet> residency = (id<MTLResidencySet>)
+      vkr_metal_memory_device_residency_set(renderer->memory);
+  [residency addAllocation:buffer];
+  [residency commit];
+  buffer.label = @"VKR atmosphere observer irradiance";
+  MemZero(buffer.contents, sizeof(float32_t) * 4u);
+  source->atmosphere_sun_readback = buffer;
+  return true_v;
+}
+
+vkr_internal void vkr_metal_packet_release_atmosphere_readback(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketTexture *source) {
+  id<MTLBuffer> readback = source->atmosphere_sun_readback;
+  if (!readback)
+    return;
+  id<MTLResidencySet> residency = (id<MTLResidencySet>)
+      vkr_metal_memory_device_residency_set(renderer->memory);
+  [residency removeAllocation:readback];
+  [residency commit];
+  vkr_metal_packet_release_budgeted_resource(renderer, readback);
+  source->atmosphere_sun_readback = nil;
+}
+
+bool8_t vkr_metal_packet_renderer_bake_atmosphere(
+    VkrMetalPacketRenderer *renderer, const VkrAtmosphereGpuParams *params,
+    VkrTextureHandle source_handle, VkrTextureHandle prefilter_handle,
+    float32_t sh_deringing) {
+  @autoreleasepool {
+    if (!renderer || !params ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        !renderer->atmosphere_luts_live ||
+        !renderer->atmosphere_transmittance_pipeline ||
+        !renderer->atmosphere_multiple_scattering_pipeline ||
+        !renderer->atmosphere_source_pipeline || !renderer->atmosphere_sun_pipeline)
+      return false_v;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    VkrMetalPacketTexture *source =
+        vkr_metal_packet_resolve_texture(renderer, source_handle);
+    VkrMetalPacketTexture *prefilter =
+        vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
+    if (!vkr_metal_packet_validate_ibl_textures(source, prefilter) ||
+        !renderer->atmosphere_luts[0].metal_texture ||
+        !renderer->atmosphere_luts[1].metal_texture ||
+        (source->atmosphere_bake_active &&
+         source->atmosphere_status == VKR_ATMOSPHERE_BAKE_PENDING))
+      return false_v;
+
+    id<MTLTexture> source_texture =
+        (id<MTLTexture>)source->resource.metal_texture;
+    if (source_texture.pixelFormat != MTLPixelFormatRGBA16Float ||
+        (source_texture.usage & MTLTextureUsageShaderWrite) == 0 ||
+        !vkr_metal_packet_create_atmosphere_readback(renderer, source))
+      return false_v;
+    VkrMetalRingSlice slice = {0};
+    VkrMetalAddressPair upload = {0};
+    id<MTLBuffer> upload_buffer = nil;
+    id<MTL4ComputeCommandEncoder> encoder = nil;
+    const uint64_t root_bytes = 4u * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+    if (!vkr_metal_packet_begin_upload(renderer, root_bytes, &slice, &upload,
+                                       &upload_buffer, &encoder)) {
+      vkr_metal_packet_release_atmosphere_readback(renderer, source);
+      return false_v;
+    }
+
+    VkrMetalPacketAtmosphereRoot root = {
+        .params = *params,
+        .transmittance_sample_texture_id = renderer->atmosphere_luts[0].resource_id,
+        .transmittance_storage_texture_id = renderer->atmosphere_luts[0].resource_id,
+        .multiple_scattering_sample_texture_id = renderer->atmosphere_luts[1].resource_id,
+        .multiple_scattering_storage_texture_id = renderer->atmosphere_luts[1].resource_id,
+        .source_storage_texture_id = source->resource.resource_id,
+        .sun_output = source->atmosphere_sun_readback.gpuAddress,
+        .extent = {VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
+                   VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT},
+        .face_size = (uint32_t)source_texture.width,
+    };
+    uint8_t *root_bytes_cpu = upload.cpu_address;
+    MemCopy(root_bytes_cpu, &root, sizeof(root));
+    [renderer->argument_table setAddress:upload.gpu_address atIndex:0u];
+    [encoder setComputePipelineState:renderer->atmosphere_transmittance_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(root.extent[0], root.extent[1], 1u)
+        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+
+    root.extent[0] = VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE;
+    root.extent[1] = VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE;
+    MemCopy(root_bytes_cpu + VKR_METAL_PACKET_ROOT_ALIGNMENT, &root, sizeof(root));
+    [renderer->argument_table
+        setAddress:upload.gpu_address + VKR_METAL_PACKET_ROOT_ALIGNMENT atIndex:0u];
+    [encoder setComputePipelineState:renderer->atmosphere_multiple_scattering_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreadgroups:MTLSizeMake(root.extent[0], root.extent[1], 1u)
+            threadsPerThreadgroup:MTLSizeMake(1u, 1u,
+                                               VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+
+    MemCopy(root_bytes_cpu + 2u * VKR_METAL_PACKET_ROOT_ALIGNMENT, &root,
+            sizeof(root));
+    [renderer->argument_table
+        setAddress:upload.gpu_address + 2u * VKR_METAL_PACKET_ROOT_ALIGNMENT
+               atIndex:0u];
+    [encoder setComputePipelineState:renderer->atmosphere_source_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(source_texture.width, source_texture.height, 6u)
+        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageBlit
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    if (source_texture.mipmapLevelCount > 1u)
+      [encoder generateMipmapsForTexture:source_texture];
+    [encoder barrierAfterEncoderStages:MTLStageBlit
+                   beforeEncoderStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+
+    MemCopy(root_bytes_cpu + 3u * VKR_METAL_PACKET_ROOT_ALIGNMENT, &root,
+            sizeof(root));
+    [renderer->argument_table
+        setAddress:upload.gpu_address + 3u * VKR_METAL_PACKET_ROOT_ALIGNMENT
+               atIndex:0u];
+    [encoder setComputePipelineState:renderer->atmosphere_sun_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
+        threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
+    if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
+      /* submit_upload commits before its ring-retirement failure path. Keep the
+         source-owned buffer resident until destroy/status proves completion. */
+      source->last_use_submit_value = renderer->submit_value;
+      source->atmosphere_completion_submit_value = renderer->submit_value;
+      source->atmosphere_projected_solid_angle = params->solar.w;
+      source->atmosphere_status = VKR_ATMOSPHERE_BAKE_PENDING;
+      source->atmosphere_bake_active = true_v;
+      source->atmosphere_ibl_failed = true_v;
+      return false_v;
+    }
+
+    renderer->atmosphere_luts_last_use_submit_value = renderer->submit_value;
+    source->last_use_submit_value = renderer->submit_value;
+    source->atmosphere_completion_submit_value = renderer->submit_value;
+    source->atmosphere_projected_solid_angle = params->solar.w;
+    source->atmosphere_status = VKR_ATMOSPHERE_BAKE_PENDING;
+    source->atmosphere_bake_active = true_v;
+    source->atmosphere_ibl_failed = false_v;
+    if (!vkr_metal_packet_renderer_bake_ibl_cubemap(
+            renderer, source_handle, prefilter_handle, sh_deringing)) {
+      /* The source bake still owns the readback until its submitted work
+         completes. A stale SH slot cannot turn this failed candidate READY. */
+      source->atmosphere_ibl_failed = true_v;
+      return true_v;
+    }
+    source->atmosphere_completion_submit_value = renderer->submit_value;
+    return true_v;
+  }
+}
+
+VkrAtmosphereBakeStatus vkr_metal_packet_renderer_atmosphere_bake_status(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle source_handle,
+    VkrAtmosphereBakeResult *out_result) {
+  VkrMetalPacketTexture *source = renderer
+                                      ? vkr_metal_packet_resolve_texture(
+                                            renderer, source_handle)
+                                      : NULL;
+  if (!source || !source->atmosphere_bake_active)
+    return VKR_ATMOSPHERE_BAKE_FAILED;
+  if (source->atmosphere_status == VKR_ATMOSPHERE_BAKE_PENDING &&
+      renderer->completion.signaledValue >=
+          source->atmosphere_completion_submit_value) {
+    const float32_t *irradiance = source->atmosphere_sun_readback
+                                      ? (const float32_t *)source->atmosphere_sun_readback.contents
+                                      : NULL;
+    if (!source->atmosphere_ibl_failed &&
+        source->ibl_sh_slot != VKR_SH_SLOT_BLACK && irradiance &&
+        source->atmosphere_projected_solid_angle > 0.0f && isfinite(irradiance[0]) &&
+        isfinite(irradiance[1]) && isfinite(irradiance[2]) &&
+        irradiance[0] >= 0.0f && irradiance[1] >= 0.0f && irradiance[2] >= 0.0f) {
+      source->atmosphere_result.solar_irradiance =
+          (Vec3){irradiance[0], irradiance[1], irradiance[2]};
+      source->atmosphere_result.solar_disk_radiance =
+          (Vec3){irradiance[0] / source->atmosphere_projected_solid_angle,
+                 irradiance[1] / source->atmosphere_projected_solid_angle,
+                 irradiance[2] / source->atmosphere_projected_solid_angle};
+      source->atmosphere_status = VKR_ATMOSPHERE_BAKE_READY;
+    } else {
+      source->atmosphere_status = VKR_ATMOSPHERE_BAKE_FAILED;
+    }
+    vkr_metal_packet_release_atmosphere_readback(renderer, source);
+  }
+  if (source->atmosphere_status == VKR_ATMOSPHERE_BAKE_READY && out_result)
+    *out_result = source->atmosphere_result;
+  return source->atmosphere_status;
+}
+
 bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect_handle,
     VkrTextureHandle source_handle, VkrTextureHandle prefilter_handle,
@@ -1563,7 +1919,8 @@ bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageBlit
                      visibilityOptions:MTL4VisibilityOptionDevice];
-    [encoder generateMipmapsForTexture:source_texture];
+    if (source_texture.mipmapLevelCount > 1u)
+      [encoder generateMipmapsForTexture:source_texture];
     if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
       return false_v;
     }
@@ -1765,6 +2122,16 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
           return false_v;
         }
       }
+    }
+    if (slot->atmosphere_bake_active && slot->atmosphere_sun_readback) {
+      /* Cancellation is cold-only. The source owns this readback until its
+         final atmosphere/IBL submission completes. */
+      if (renderer->completion.signaledValue <
+              slot->atmosphere_completion_submit_value &&
+          !vkr_metal_packet_wait(renderer,
+                                 slot->atmosphere_completion_submit_value))
+        return false_v;
+      vkr_metal_packet_release_atmosphere_readback(renderer, slot);
     }
     if (vkr_metal_memory_device_retire(renderer->memory, slot->resource.handle,
                                        slot->last_use_submit_value) !=
@@ -2076,6 +2443,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_overlay_draws(
         .model_view_projection = mat4_mul(view_projection, source->model),
         .color = source->color,
         .object_id = source->object_id,
+        .display_output = upload->display_output_gpu,
     };
     mesh->last_use_submit_value = renderer->submit_value + 1u;
   }
@@ -2187,15 +2555,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       direct_pass_count * ((uint64_t)direct_draw_count + world_text_count);
   if (direct_draw_count > 0u)
     root_count += direct_frame_root_count;
+  const uint32_t frame_root_gpu_draw_view_count =
+      1u + renderer->prepared_frame.shadow_cascade_count +
+      renderer->prepared_frame.local_shadow_view_count;
   {
-    const uint32_t gpu_draw_view_count =
-        1u + renderer->prepared_frame.shadow_cascade_count +
-        renderer->prepared_frame.local_shadow_view_count;
     const uint32_t gpu_draw_icb_group_count =
-        (gpu_draw_view_count + renderer->gpu_draw_icb_view_group_size - 1u) /
+        (frame_root_gpu_draw_view_count +
+         renderer->gpu_draw_icb_view_group_size - 1u) /
         renderer->gpu_draw_icb_view_group_size;
     const uint32_t draw_root_slots =
-        (gpu_draw_view_count * sizeof(VkrMetalPacketDrawRoot) +
+        (frame_root_gpu_draw_view_count * sizeof(VkrMetalPacketDrawRoot) +
          VKR_METAL_PACKET_DRAW_ROOT_STRIDE - 1u) /
         VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
     root_count += 10u + draw_root_slots +
@@ -2226,6 +2595,60 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (renderer->graph->execution_order.length > UINT64_MAX - root_count)
     return false_v;
   root_count += renderer->graph->execution_order.length;
+  /* Gather has its ordinary pass root plus a complete frame root. */
+  if (packet->subsurface_enabled)
+    root_count += VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT;
+
+  /* Every frame root had one cell in the pre-sheen budget. FrameRoot now has
+   * an explicit two-cell span; add exactly its extra cell for each pass that
+   * can create one. Draw-root cells remain fixed at 512 B. */
+  uint64_t frame_root_count =
+      direct_draw_count > 0u ? direct_frame_root_count : 0u;
+  for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
+       ++order) {
+    const VkrRgPass *pass =
+        &renderer->graph->passes
+             .data[renderer->graph->execution_order.data[order]];
+    if (pass->culled)
+      continue;
+    if (vkr_metal_packet_graph_pass_is(
+            pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING) ||
+        vkr_metal_packet_graph_pass_is(
+            pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE)) {
+      ++frame_root_count;
+    } else if (renderer->prepared_frame.ssgi_enabled &&
+               vkr_metal_packet_graph_pass_is(
+                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_COMPOSITE)) {
+      ++frame_root_count;
+    } else if (renderer->prepared_frame.ssr_enabled &&
+               vkr_metal_packet_graph_pass_is(
+                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_COMPOSITE)) {
+      ++frame_root_count;
+    } else if (packet->froxel_fog.grid_dimensions_cell_pixels[0] > 0u &&
+               (vkr_metal_packet_graph_pass_is(
+                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INJECT) ||
+                vkr_metal_packet_graph_pass_is(
+                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INTEGRATE) ||
+                vkr_metal_packet_graph_pass_is(
+                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_APPLY))) {
+      ++frame_root_count;
+    } else if (source_gpu_draw_count > 0u &&
+               vkr_metal_packet_graph_pass_is(
+                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE)) {
+      frame_root_count += frame_root_gpu_draw_view_count;
+    } else if (source_transmission_gpu_draw_count > 0u &&
+               vkr_metal_packet_graph_pass_is(
+                   pass,
+                   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE)) {
+      ++frame_root_count;
+    }
+  }
+  const uint64_t frame_root_extra_cells =
+      (uint64_t)VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT - 1u;
+  if (frame_root_count >
+      (UINT64_MAX - root_count) / frame_root_extra_cells)
+    return false_v;
+  root_count += frame_root_count * frame_root_extra_cells;
   if (root_count > renderer->max_draws)
     return false_v;
 
@@ -2285,6 +2708,27 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       AlignOf(VkrMetalPacketIblProbe));
   const uint64_t ibl_probes_bytes =
       (uint64_t)ibl_probe_count * sizeof(VkrMetalPacketIblProbe);
+  const VkrDiffuseVolumeBinding *diffuse_volume = packet->input.lighting ?
+      &packet->input.lighting->diffuse_volume : NULL;
+  const bool8_t diffuse_volume_enabled = diffuse_volume && diffuse_volume->texture.id != 0u &&
+      diffuse_volume->texture.generation != VKR_INVALID_ID;
+  const uint64_t diffuse_volume_offset = vkr_metal_packet_align_up(
+      ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrMetalPacketDiffuseVolume));
+  const uint64_t diffuse_volume_bytes = diffuse_volume_enabled ? sizeof(VkrMetalPacketDiffuseVolume) : 0u;
+  const uint32_t rectangle_light_count = packet->input.lighting
+      ? packet->input.lighting->rectangle_light_count : 0u;
+  const uint64_t ltc_offset = vkr_metal_packet_align_up(
+      diffuse_volume_offset + diffuse_volume_bytes, AlignOf(VkrMetalPacketLtc));
+  const uint64_t rectangle_lights_offset = ltc_offset + sizeof(VkrMetalPacketLtc);
+  const uint64_t rectangle_lights_bytes =
+      (uint64_t)rectangle_light_count * sizeof(VkrGpuRectangleLightRow);
+  const uint64_t sheen_offset = vkr_metal_packet_align_up(
+      rectangle_lights_offset + rectangle_lights_bytes,
+      AlignOf(VkrMetalPacketSheen));
+  const uint64_t fog_offset = vkr_metal_packet_align_up(
+      sheen_offset + sizeof(VkrMetalPacketSheen), AlignOf(VkrFogGpuParams));
+  const uint64_t froxel_fog_offset = vkr_metal_packet_align_up(
+      fog_offset + sizeof(VkrFogGpuParams), AlignOf(VkrFroxelFogGpuParams));
   const uint32_t gpu_draw_view_count =
       1u + renderer->prepared_frame.shadow_cascade_count +
       renderer->prepared_frame.local_shadow_view_count;
@@ -2294,7 +2738,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                      renderer->gpu_draw_icb_view_group_size
                                : 0u;
   const uint64_t gpu_draw_views_offset = vkr_metal_packet_align_up(
-      ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrMetalPacketGpuDrawView));
+      froxel_fog_offset + sizeof(VkrFroxelFogGpuParams),
+      AlignOf(VkrMetalPacketGpuDrawView));
   const uint64_t gpu_draw_views_bytes =
       (uint64_t)gpu_draw_view_count * sizeof(VkrMetalPacketGpuDrawView);
   const uint64_t transmission_gpu_draw_view_offset =
@@ -2409,8 +2854,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (ui_geometry_end > UINT64_MAX - ui_index_bytes)
     return false_v;
   ui_geometry_end += ui_index_bytes;
+  const uint64_t display_output_offset = vkr_metal_packet_align_up(
+      ui_geometry_end, AlignOf(VkrDisplayOutputParams));
+  if (display_output_offset > UINT64_MAX - sizeof(VkrDisplayOutputParams))
+    return false_v;
   const uint64_t direct_draw_offset = vkr_metal_packet_align_up(
-      ui_geometry_end, AlignOf(VkrMetalPacketPreparedDraw));
+      display_output_offset + sizeof(VkrDisplayOutputParams),
+      AlignOf(VkrMetalPacketPreparedDraw));
   const uint64_t direct_draw_bytes =
       (uint64_t)direct_draw_count * sizeof(VkrMetalPacketPreparedDraw);
   if (direct_draw_offset > UINT64_MAX - direct_draw_bytes)
@@ -2443,6 +2893,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->acquired = true_v;
   uint8_t *cpu = upload->addresses.cpu_address;
   uint64_t gpu = upload->addresses.gpu_address;
+  VkrDisplayOutputParams *display_output =
+      (VkrDisplayOutputParams *)(cpu + display_output_offset);
+  *display_output = renderer->display_output;
+  upload->display_output_gpu = gpu + display_output_offset;
   MemZero(cpu + gpu_draw_state_zero_offset, gpu_draw_state_zero_bytes);
   upload->gpu_draw_state_zero_source_offset =
       upload->slice.offset + gpu_draw_state_zero_offset;
@@ -2653,7 +3107,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       cascades[i] = (VkrMetalPacketShadowCascade){
           .light_view_projection = source->light_view_projection,
           .split_near_far_texel_depth = source->split_near_far_texel_depth,
-          .origin_inv_size_pad = source->origin_inv_size_pad,
+          .origin_inv_size_sun = source->origin_inv_size_sun,
       };
     }
     id<MTLTexture> shadow_texture =
@@ -2672,6 +3126,103 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
             local_shadow_views_bytes);
     upload->local_shadow_views_gpu = gpu + local_shadow_views_offset;
     upload->local_shadow_texture_id = local_shadow_texture.gpuResourceID._impl;
+  }
+  VkrMetalPacketLtc *ltc = (VkrMetalPacketLtc *)(cpu + ltc_offset);
+  *ltc = (VkrMetalPacketLtc){
+      .lights = gpu + rectangle_lights_offset,
+      .matrix_texture = renderer->ltc_luts[0].resource_id,
+      .amplitude_texture = renderer->ltc_luts[1].resource_id,
+      .light_count = rectangle_light_count,
+  };
+  VkrGpuRectangleLightRow *rectangle_rows =
+      (VkrGpuRectangleLightRow *)(cpu + rectangle_lights_offset);
+  for (uint32_t i = 0u; i < rectangle_light_count; ++i)
+    vkr_rectangle_light_pack(&packet->input.lighting->rectangle_lights[i], &rectangle_rows[i]);
+  upload->ltc_gpu = gpu + ltc_offset;
+  VkrMetalPacketSheen *sheen = (VkrMetalPacketSheen *)(cpu + sheen_offset);
+  *sheen = (VkrMetalPacketSheen){
+      .directional_albedo_texture =
+          renderer->sheen_directional_albedo_lut.resource_id,
+      .ltc_matrix_texture = renderer->sheen_ltc_luts[0].resource_id,
+      .ltc_amplitude_texture = renderer->sheen_ltc_luts[1].resource_id,
+      .ltc_matrix_texture_b = renderer->sheen_ltc_luts[2].resource_id,
+      .ltc_amplitude_texture_b = renderer->sheen_ltc_luts[3].resource_id,
+  };
+  upload->sheen_gpu = gpu + sheen_offset;
+  MemCopy(cpu + fog_offset, &packet->fog, sizeof(packet->fog));
+  upload->fog_gpu = gpu + fog_offset;
+  VkrFroxelFogGpuParams froxel_fog = packet->froxel_fog;
+  if (froxel_fog.grid_dimensions_cell_pixels[0] != 0u) {
+    const Mat4 froxel_current_view_projection =
+        vkr_metal_packet_clip_matrix(renderer->convert_vulkan_clip_y,
+                                     packet->temporal.current_view_projection);
+    const Mat4 froxel_raster_view_projection = vkr_metal_packet_clip_matrix(
+        renderer->convert_vulkan_clip_y,
+        mat4_mul(packet->temporal.jittered_projection,
+                 packet->input.globals.view));
+    froxel_fog.inverse_view_projection =
+        mat4_inverse(froxel_current_view_projection);
+    froxel_fog.previous_view_projection = froxel_current_view_projection;
+    froxel_fog.previous_view = packet->input.globals.view;
+    froxel_fog.current_view_projection = froxel_current_view_projection;
+    froxel_fog.inverse_raster_view_projection =
+        mat4_inverse(froxel_raster_view_projection);
+    if (renderer->selected_froxel_history_instance != UINT32_MAX) {
+      const VkrMetalPacketFroxelHistoryState *history =
+          &renderer->froxel_history[renderer->selected_froxel_history_instance];
+      froxel_fog.previous_view_projection = history->view_projection;
+      froxel_fog.previous_view = history->view;
+    }
+  }
+  MemCopy(cpu + froxel_fog_offset, &froxel_fog, sizeof(froxel_fog));
+  upload->froxel_fog_gpu = gpu + froxel_fog_offset;
+  if (froxel_fog.grid_dimensions_cell_pixels[0] != 0u) {
+    id<MTLTexture> integrated =
+        vkr_metal_packet_named_texture(renderer, "froxel_integrated");
+    if (!integrated || integrated.textureType != MTLTextureType3D ||
+        integrated.pixelFormat != MTLPixelFormatRGBA16Float ||
+        integrated.width != froxel_fog.grid_dimensions_cell_pixels[0] ||
+        integrated.height != froxel_fog.grid_dimensions_cell_pixels[1] ||
+        integrated.depth != froxel_fog.grid_dimensions_cell_pixels[2])
+      return false_v;
+    upload->froxel_integrated_texture_id = integrated.gpuResourceID._impl;
+  }
+  if (packet->subsurface_enabled) {
+    const VkrSubsurfaceBinding *binding = &packet->input.lighting->subsurface;
+    VkrMetalPacketTexture *texture =
+        vkr_metal_packet_resolve_texture(renderer, binding->texture);
+    id<MTLTexture> native = texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
+    if (!native || binding->profile_count == 0u ||
+        binding->profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
+        native.pixelFormat != MTLPixelFormatRGBA32Float ||
+        native.textureType != MTLTextureType2D ||
+        native.width != VKR_SUBSURFACE_TABLE_WIDTH ||
+        native.height != VKR_SUBSURFACE_TABLE_HEIGHT ||
+        native.mipmapLevelCount != 1u || native.arrayLength != 1u)
+      return false_v;
+    upload->subsurface_texture_id = texture->resource.resource_id;
+    texture->last_use_submit_value = renderer->submit_value + 1u;
+  }
+  if (packet->input.lighting) {
+    const VkrDiffuseVolumeBinding *volume = &packet->input.lighting->diffuse_volume;
+    if (volume->texture.id != 0u && volume->texture.generation != VKR_INVALID_ID) {
+      VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_texture(renderer, volume->texture);
+      const uint32_t probe_count = volume->dimensions[0] * volume->dimensions[1] * volume->dimensions[2];
+      id<MTLTexture> native_texture = texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
+      if (!native_texture || native_texture.pixelFormat != MTLPixelFormatRGBA32Float ||
+          native_texture.textureType != MTLTextureType2D ||
+          native_texture.width != 8u || native_texture.height != probe_count)
+        return false_v;
+      upload->diffuse_volume_texture_id = texture->resource.resource_id;
+      VkrMetalPacketDiffuseVolume *params = (VkrMetalPacketDiffuseVolume *)(cpu + diffuse_volume_offset);
+      *params = (VkrMetalPacketDiffuseVolume){
+        .origin = {volume->origin.x, volume->origin.y, volume->origin.z, 0.0f},
+        .inverse_spacing = {volume->inverse_spacing.x, volume->inverse_spacing.y, volume->inverse_spacing.z, 0.0f},
+        .dimensions = {volume->dimensions[0], volume->dimensions[1], volume->dimensions[2], 0u},
+      };
+      upload->diffuse_volume_params_gpu = gpu + diffuse_volume_offset;
+      texture->last_use_submit_value = renderer->submit_value + 1u;
+    }
   }
   /* Resolved from the packet's environment source, so a probe that aliases the
      scene environment shares this publication instead of projecting a
@@ -2782,8 +3333,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (packet->input.world &&
       packet->input.world->transmission_gpu_candidate_count > 0) {
     id<MTLTexture> transmission_texture = vkr_metal_packet_named_texture(
-        renderer, packet->input.frame.editor_enabled ? "scene_pre_transmission"
-                                                     : "hdr_pre_transmission");
+        renderer, packet->subsurface_enabled ? "subsurface_color"
+            : packet->input.frame.editor_enabled ? "scene_pre_transmission"
+                                                 : "hdr_pre_transmission");
     if (!transmission_texture)
       return false_v;
     upload->transmission_texture_id = transmission_texture.gpuResourceID._impl;

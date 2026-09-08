@@ -5,6 +5,8 @@
 
 #include "renderer/resources/loaders/scene_loader.h"
 
+#include "assets/vkr_diffuse_volume.h"
+#include "vkr_subsurface.h"
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
@@ -14,6 +16,9 @@
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_world_resources.h"
+
+#include <stdlib.h>
+#include <stdio.h>
 
 typedef struct SceneText3DImport {
   String8 text;
@@ -48,10 +53,18 @@ typedef struct ScenePointLightImport {
   bool8_t enabled;
 } ScenePointLightImport;
 
+typedef struct SceneRectangleLightImport {
+  Vec3 color;
+  float32_t radiance;
+  Vec2 size;
+  bool8_t enabled;
+} SceneRectangleLightImport;
+
 typedef struct SceneDirectionalLightImport {
   Vec3 color;
   float32_t intensity;
   Vec3 direction_local;
+  float32_t sun_angular_diameter_degrees;
   bool8_t enabled;
 } SceneDirectionalLightImport;
 
@@ -70,6 +83,38 @@ typedef struct SceneEnvironmentImport {
   float32_t sh_deringing;
 } SceneEnvironmentImport;
 
+typedef struct SceneAtmosphereImport {
+  bool8_t has_block;
+  bool8_t valid;
+  VkrAtmosphereSettings settings;
+  float32_t sh_deringing;
+} SceneAtmosphereImport;
+
+typedef struct SceneFogImport {
+  bool8_t has_block;
+  bool8_t valid;
+  VkrFogSettings settings;
+} SceneFogImport;
+
+typedef struct SceneFroxelFogImport {
+  bool8_t valid;
+  VkrFroxelFogSettings settings;
+} SceneFroxelFogImport;
+
+typedef struct SceneDiffuseVolumeImport {
+  bool8_t has_block;
+  bool8_t valid;
+  String8 path;
+} SceneDiffuseVolumeImport;
+
+typedef struct SceneSubsurfaceImport {
+  bool8_t has_block;
+  bool8_t valid;
+  bool8_t enabled;
+  VkrSubsurfaceProfile profiles[VKR_SUBSURFACE_PROFILE_COUNT];
+  uint32_t profile_count;
+} SceneSubsurfaceImport;
+
 typedef struct SceneReflectionProbeImport {
   bool8_t enabled;
   Vec3 center;
@@ -80,6 +125,7 @@ typedef struct SceneReflectionProbeImport {
   float32_t specular_intensity;
   float32_t sh_deringing;
   bool8_t has_cubemap;
+  String8 cubemap_path;
   String8 cubemap_base_path;
   String8 cubemap_extension;
 } SceneReflectionProbeImport;
@@ -106,6 +152,8 @@ typedef struct SceneEntityImport {
   SceneShapeImport shape;
   bool8_t has_point_light;
   ScenePointLightImport point_light;
+  bool8_t has_rectangle_light;
+  SceneRectangleLightImport rectangle_light;
   bool8_t has_directional_light;
   SceneDirectionalLightImport directional_light;
 } SceneEntityImport;
@@ -160,12 +208,27 @@ typedef struct VkrSceneLoaderAsyncPayload {
   SceneMeshAsyncState *mesh_states;
   SceneShapeMaterialAsyncState *shape_material_states;
   SceneEnvironmentImport environment_import;
+  SceneAtmosphereImport atmosphere_import;
+  SceneFogImport fog_import;
+  SceneFroxelFogImport froxel_fog_import;
   VkrTexturePreparedLoad environment_prepared;
   bool8_t environment_prepared_ready;
   bool8_t environment_applied;
+  bool8_t atmosphere_applied;
+  bool8_t fog_applied;
+  SceneDiffuseVolumeImport diffuse_volume_import;
+  VkrTexturePreparedLoad diffuse_volume_prepared;
+  VkrDiffuseVolumeBinding diffuse_volume_binding;
+  bool8_t diffuse_volume_prepared_ready;
+  bool8_t diffuse_volume_applied;
+  SceneSubsurfaceImport subsurface_import;
+  bool8_t subsurface_applied;
   SceneReflectionProbeImport
       reflection_probe_imports[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t reflection_probe_import_count;
+  VkrTexturePreparedLoad
+      reflection_probe_prepared[VKR_SCENE_REFLECTION_PROBE_MAX];
+  bool8_t reflection_probe_prepared_ready[VKR_SCENE_REFLECTION_PROBE_MAX];
   bool8_t reflection_probes_applied;
   SceneAsyncFinalizeStage stage;
   uint32_t stage_cursor;
@@ -200,6 +263,29 @@ vkr_internal bool8_t scene_loader_alloc_copy_string(VkrAllocator *allocator,
 vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void);
 vkr_internal SceneEnvironmentImport
 scene_loader_parse_environment_import(String8 json);
+vkr_internal SceneAtmosphereImport scene_atmosphere_import_defaults(void);
+vkr_internal SceneAtmosphereImport
+scene_loader_parse_atmosphere_import(String8 json);
+vkr_internal SceneFogImport scene_fog_import_defaults(void);
+vkr_internal SceneFogImport scene_loader_parse_fog_import(String8 json);
+vkr_internal SceneDiffuseVolumeImport
+scene_diffuse_volume_import_defaults(void);
+vkr_internal SceneDiffuseVolumeImport
+scene_loader_parse_diffuse_volume_import(String8 json);
+vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
+    String8 path, VkrAllocator *temp_alloc,
+    VkrDiffuseVolumeBinding *out_binding, VkrTexturePreparedLoad *out_prepared);
+vkr_internal void scene_loader_apply_diffuse_volume_import(
+    VkrScene *scene, struct VkrRenderAssets *assets,
+    const SceneDiffuseVolumeImport *import,
+    const VkrDiffuseVolumeBinding *binding,
+    const VkrTexturePreparedLoad *prepared);
+vkr_internal SceneSubsurfaceImport scene_subsurface_import_defaults(void);
+vkr_internal SceneSubsurfaceImport
+scene_loader_parse_subsurface_import(String8 json);
+vkr_internal bool8_t scene_loader_apply_subsurface_import(
+    VkrScene *scene, struct VkrRenderAssets *assets,
+    const SceneSubsurfaceImport *import, VkrRendererError *out_error);
 vkr_internal SceneReflectionProbeImport
 scene_reflection_probe_import_defaults(void);
 vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
@@ -212,12 +298,16 @@ vkr_internal void scene_loader_apply_environment_import(
     VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneEnvironmentImport *environment_import,
     const VkrTexturePreparedLoad *prepared_environment);
+vkr_internal bool8_t scene_loader_apply_atmosphere_import(
+    VkrScene *scene, const SceneAtmosphereImport *atmosphere_import);
 vkr_internal void
 scene_loader_reset_scene_reflection_probes(VkrScene *scene,
                                            struct VkrRenderAssets *assets);
 vkr_internal void scene_loader_apply_reflection_probe_imports(
     VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneReflectionProbeImport *imports, uint32_t import_count);
+    const SceneReflectionProbeImport *imports, uint32_t import_count,
+    const VkrTexturePreparedLoad *prepared_cubemaps,
+    const bool8_t *prepared_cubemaps_ready);
 vkr_internal bool8_t scene_loader_parse_json_imports(
     VkrAllocator *allocator, VkrMutex mutex, String8 json,
     SceneEntityImport **out_imports, uint32_t *out_entity_count,
@@ -255,8 +345,8 @@ vkr_internal bool8_t scene_string8_ends_with_cstr_i(String8 value,
   if (value.length < suffix_length) {
     return false_v;
   }
-  const String8 tail = string8_substring(&value, value.length - suffix_length,
-                                         value.length);
+  const String8 tail =
+      string8_substring(&value, value.length - suffix_length, value.length);
   const String8 suffix_string =
       string8_create_from_cstr((const uint8_t *)suffix, suffix_length);
   return string8_equalsi(&tail, &suffix_string);
@@ -312,6 +402,15 @@ vkr_internal bool8_t scene_json_parse_vec3(VkrJsonReader *reader,
     return false_v;
   }
   *out_value = vec3_new(values[0], values[1], values[2]);
+  return true_v;
+}
+
+vkr_internal bool8_t scene_json_parse_vec2(VkrJsonReader *reader,
+                                           Vec2 *out_value) {
+  float32_t values[2] = {0};
+  if (!scene_json_parse_float_array(reader, values, 2))
+    return false_v;
+  *out_value = vec2_new(values[0], values[1]);
   return true_v;
 }
 
@@ -532,12 +631,24 @@ vkr_internal ScenePointLightImport scene_point_light_import_defaults(void) {
   };
 }
 
+vkr_internal SceneRectangleLightImport
+scene_rectangle_light_import_defaults(void) {
+  return (SceneRectangleLightImport){
+      .color = vec3_new(1.0f, 1.0f, 1.0f),
+      .radiance = 1.0f,
+      .size = vec2_new(1.0f, 1.0f),
+      .enabled = true_v,
+  };
+}
+
 vkr_internal SceneDirectionalLightImport
 scene_directional_light_import_defaults(void) {
   return (SceneDirectionalLightImport){
       .color = vec3_new(1.0f, 1.0f, 1.0f),
       .intensity = 1.0f,
       .direction_local = vec3_new(0.0f, -1.0f, 0.0f),
+      .sun_angular_diameter_degrees =
+          VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES,
       .enabled = true_v,
   };
 }
@@ -667,6 +778,12 @@ scene_loader_parse_environment_import(String8 json) {
     result.valid = false_v;
     return result;
   }
+  VkrJsonReader base_path_reader = cubemap_object;
+  VkrJsonReader extension_reader = cubemap_object;
+  const bool8_t has_base_path_field =
+      vkr_json_find_field(&base_path_reader, "base_path");
+  const bool8_t has_extension_field =
+      vkr_json_find_field(&extension_reader, "extension");
   const bool8_t has_path = scene_json_read_string_field(&cubemap_object, "path",
                                                         &result.cubemap_path);
   const bool8_t has_base_path = scene_json_read_string_field(
@@ -677,13 +794,693 @@ scene_loader_parse_environment_import(String8 json) {
   const bool8_t faces = has_base_path && has_extension &&
                         result.cubemap_base_path.length > 0u &&
                         result.cubemap_extension.length > 0u;
-  if (direct == faces) {
+  if (direct == faces ||
+      (direct && (has_base_path_field || has_extension_field))) {
     result.valid = false_v;
   } else {
     result.source_kind = VKR_SCENE_ENV_SOURCE_CUBEMAP;
   }
 
   return result;
+}
+
+vkr_internal SceneAtmosphereImport scene_atmosphere_import_defaults(void) {
+  VkrAtmosphereSettings settings = vkr_atmosphere_settings_defaults();
+  settings.enabled = false_v;
+  return (SceneAtmosphereImport){
+      .has_block = false_v,
+      .valid = true_v,
+      .settings = settings,
+      .sh_deringing = 0.0f,
+  };
+}
+
+/* Atmosphere JSON is stricter than a disabled renderer packet: every supplied
+   field is parsed and validated even when enabled=false. */
+vkr_internal SceneAtmosphereImport
+scene_loader_parse_atmosphere_import(String8 json) {
+  SceneAtmosphereImport result = scene_atmosphere_import_defaults();
+  if (!json.str || !json.length)
+    return result;
+
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader atmosphere_reader = root;
+  if (!vkr_json_find_field(&atmosphere_reader, "atmosphere"))
+    return result;
+  result.has_block = true_v;
+  if (scene_json_parse_null(&atmosphere_reader))
+    return result;
+
+  VkrJsonReader atmosphere_object = {0};
+  if (!vkr_json_enter_object(&atmosphere_reader, &atmosphere_object))
+    goto invalid;
+
+  result.settings.enabled = true_v;
+  VkrJsonReader field = atmosphere_object;
+  if (vkr_json_find_field(&field, "enabled") &&
+      !vkr_json_parse_bool(&field, &result.settings.enabled))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "sun_direction") &&
+      !scene_json_parse_vec3(&field, &result.settings.sun_direction))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "solar_irradiance") &&
+      !scene_json_parse_vec3(&field, &result.settings.solar_irradiance))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "ground_albedo") &&
+      !scene_json_parse_vec3(&field, &result.settings.ground_albedo))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "observer_altitude_m") &&
+      !vkr_json_parse_float(&field, &result.settings.observer_altitude_m))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "sun_angular_diameter_degrees") &&
+      !vkr_json_parse_float(&field,
+                            &result.settings.sun_angular_diameter_degrees))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "rayleigh_density_scale") &&
+      !vkr_json_parse_float(&field, &result.settings.rayleigh_density_scale))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "mie_density_scale") &&
+      !vkr_json_parse_float(&field, &result.settings.mie_density_scale))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "ozone_density_scale") &&
+      !vkr_json_parse_float(&field, &result.settings.ozone_density_scale))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "mie_anisotropy") &&
+      !vkr_json_parse_float(&field, &result.settings.mie_anisotropy))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "sh_deringing") &&
+      !vkr_json_parse_float(&field, &result.sh_deringing))
+    goto invalid;
+
+  VkrAtmosphereSettings validation = result.settings;
+  validation.enabled = true_v;
+  if (vkr_atmosphere_settings_valid(&validation) &&
+      isfinite(result.sh_deringing) && result.sh_deringing >= 0.0f)
+    return result;
+
+invalid:
+  result.valid = false_v;
+  log_error("Scene loader: $.atmosphere must contain a finite nonzero sun "
+            "direction; finite nonnegative solar_irradiance; density scales in [0,100]; "
+            "ground_albedo in [0,1]; altitude in [0,100000]; angular "
+            "diameter in [1e-16,5]; mie_anisotropy in [-.95,.95]; and finite "
+            "nonnegative sh_deringing");
+  return result;
+}
+
+vkr_internal SceneFogImport scene_fog_import_defaults(void) {
+  return (SceneFogImport){
+      .has_block = false_v,
+      .valid = true_v,
+      .settings = vkr_fog_settings_defaults(),
+  };
+}
+
+/* Fog has no resource preparation, but it remains a distinct import so both
+   sync and async loads reject malformed authored values before scene mutation.
+   The renderer accepts a zeroed disabled packet for old callers; scene JSON is
+   stricter and validates every supplied numeric field even when disabled. */
+vkr_internal SceneFogImport scene_loader_parse_fog_import(String8 json) {
+  SceneFogImport result = scene_fog_import_defaults();
+  if (!json.str || json.length == 0u)
+    return result;
+
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader fog_reader = root;
+  if (!vkr_json_find_field(&fog_reader, "fog"))
+    return result;
+
+  result.has_block = true_v;
+  if (scene_json_parse_null(&fog_reader))
+    return result;
+
+  VkrJsonReader fog_object = {0};
+  if (!vkr_json_enter_object(&fog_reader, &fog_object))
+    goto invalid;
+
+  VkrJsonReader field = fog_object;
+  if (vkr_json_find_field(&field, "enabled") &&
+      !vkr_json_parse_bool(&field, &result.settings.enabled))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "color") &&
+      !scene_json_parse_vec3(&field, &result.settings.color))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "density") &&
+      !vkr_json_parse_float(&field, &result.settings.density))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "base_height") &&
+      !vkr_json_parse_float(&field, &result.settings.base_height))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "height_falloff") &&
+      !vkr_json_parse_float(&field, &result.settings.height_falloff))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "max_distance") &&
+      !vkr_json_parse_float(&field, &result.settings.max_distance))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "sky_distance") &&
+      !vkr_json_parse_float(&field, &result.settings.sky_distance))
+    goto invalid;
+
+  /* Force full authored-value validation: disabled frame packets may be zero
+     for backwards compatibility, while an authored fog object cannot hide a
+     NaN or invalid distance behind enabled=false. */
+  VkrFogSettings validation = result.settings;
+  validation.enabled = true_v;
+  if (vkr_fog_settings_valid(&validation))
+    return result;
+
+invalid:
+  result.valid = false_v;
+  log_error("Scene loader: $.fog must contain finite nonnegative "
+            "color/density/height_falloff, finite base_height, positive "
+            "max_distance/sky_distance, and sky_distance <= max_distance");
+  return result;
+}
+
+vkr_internal SceneFroxelFogImport scene_loader_parse_froxel_fog_import(String8 json) {
+  SceneFroxelFogImport result = {.valid = true_v,
+      .settings = vkr_froxel_fog_settings_defaults()};
+  if (!json.str || json.length == 0u)
+    return result;
+
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader fog_reader = root;
+  if (!vkr_json_find_field(&fog_reader, "volumetric_fog"))
+    return result;
+
+  if (scene_json_parse_null(&fog_reader))
+    return result;
+
+  VkrJsonReader fog_object = {0};
+  if (!vkr_json_enter_object(&fog_reader, &fog_object))
+    goto invalid;
+
+  VkrJsonReader field = fog_object;
+  if (vkr_json_find_field(&field, "enabled") &&
+      !vkr_json_parse_bool(&field, &result.settings.enabled))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "color") &&
+      !scene_json_parse_vec3(&field, &result.settings.color))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "density") &&
+      !vkr_json_parse_float(&field, &result.settings.density))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "base_height") &&
+      !vkr_json_parse_float(&field, &result.settings.base_height))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "height_falloff") &&
+      !vkr_json_parse_float(&field, &result.settings.height_falloff))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "max_distance") &&
+      !vkr_json_parse_float(&field, &result.settings.max_distance))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "density_boxes")) {
+    vkr_json_skip_whitespace(&field);
+    if (field.pos >= field.length || field.data[field.pos++] != '[')
+      goto invalid;
+    while (vkr_json_next_array_element(&field)) {
+      if (result.settings.box_count == VKR_FROXEL_FOG_BOX_COUNT_MAX)
+        goto invalid;
+      VkrJsonReader box_object = {0};
+      if (!vkr_json_enter_object(&field, &box_object))
+        goto invalid;
+      VkrFroxelDensityBox *box =
+          &result.settings.boxes[result.settings.box_count++];
+      VkrJsonReader member = box_object;
+      if (!vkr_json_find_field(&member, "minimum") ||
+          !scene_json_parse_vec3(&member, &box->minimum))
+        goto invalid;
+      member = box_object;
+      if (!vkr_json_find_field(&member, "maximum") ||
+          !scene_json_parse_vec3(&member, &box->maximum))
+        goto invalid;
+      member = box_object;
+      if (!vkr_json_find_field(&member, "density_multiplier") ||
+          !vkr_json_parse_float(&member, &box->density_multiplier))
+        goto invalid;
+    }
+  }
+
+  /* Force full authored-value validation: disabled frame packets may be zero
+     for backwards compatibility, while an authored fog object cannot hide a
+     NaN or invalid distance behind enabled=false. */
+  VkrFroxelFogSettings validation = result.settings;
+  validation.enabled = true_v;
+  if (vkr_froxel_fog_settings_valid(&validation))
+    return result;
+
+invalid:
+  result.valid = false_v;
+  log_error("Scene loader: $.volumetric_fog requires color in [0,1], "
+            "finite nonnegative density/height_falloff, finite base_height, "
+            "positive max_distance, and at most 16 ordered finite density boxes");
+  return result;
+}
+
+vkr_internal SceneDiffuseVolumeImport
+scene_diffuse_volume_import_defaults(void) {
+  return (SceneDiffuseVolumeImport){
+      .has_block = false_v,
+      .valid = true_v,
+      .path = {0},
+  };
+}
+
+vkr_internal SceneDiffuseVolumeImport
+scene_loader_parse_diffuse_volume_import(String8 json) {
+  SceneDiffuseVolumeImport result = scene_diffuse_volume_import_defaults();
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader volume_reader = root;
+  if (!vkr_json_find_field(&volume_reader, "diffuse_volume"))
+    return result;
+
+  result.has_block = true_v;
+  if (scene_json_parse_null(&volume_reader))
+    return result;
+
+  VkrJsonReader volume_object = {0};
+  if (!vkr_json_enter_object(&volume_reader, &volume_object) ||
+      !scene_json_read_string_field(&volume_object, "path", &result.path) ||
+      result.path.length == 0u ||
+      !scene_string8_ends_with_cstr_i(result.path, ".vkdv")) {
+    result.valid = false_v;
+    log_error("Scene loader: $.diffuse_volume.path must name a .vkdv asset");
+  }
+  return result;
+}
+
+vkr_internal SceneSubsurfaceImport scene_subsurface_import_defaults(void) {
+  return (SceneSubsurfaceImport){
+      .has_block = false_v,
+      .valid = true_v,
+      .enabled = false_v,
+      .profile_count = 0u,
+  };
+}
+
+vkr_internal SceneSubsurfaceImport
+scene_loader_parse_subsurface_import(String8 json) {
+  SceneSubsurfaceImport result = scene_subsurface_import_defaults();
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader subsurface_reader = root;
+  if (!vkr_json_find_field(&subsurface_reader, "subsurface"))
+    return result;
+
+  result.has_block = true_v;
+  if (scene_json_parse_null(&subsurface_reader))
+    return result;
+
+  VkrJsonReader subsurface_object = {0};
+  if (!vkr_json_enter_object(&subsurface_reader, &subsurface_object))
+    goto invalid;
+
+  VkrJsonReader enabled_reader = subsurface_object;
+  if (vkr_json_find_field(&enabled_reader, "enabled") &&
+      !vkr_json_parse_bool(&enabled_reader, &result.enabled))
+    goto invalid;
+  if (!result.enabled)
+    return result;
+
+  VkrJsonReader profiles_reader = subsurface_object;
+  if (!vkr_json_find_field(&profiles_reader, "profiles"))
+    goto invalid;
+  vkr_json_skip_whitespace(&profiles_reader);
+  if (profiles_reader.pos >= profiles_reader.length ||
+      profiles_reader.data[profiles_reader.pos++] != '[')
+    goto invalid;
+  while (vkr_json_next_array_element(&profiles_reader)) {
+    if (result.profile_count == VKR_SUBSURFACE_PROFILE_COUNT ||
+        !scene_json_parse_vec3(
+            &profiles_reader,
+            &result.profiles[result.profile_count].diffusion_distance) ||
+        !vkr_subsurface_profile_valid(result.profiles[result.profile_count]))
+      goto invalid;
+    ++result.profile_count;
+  }
+  vkr_json_skip_whitespace(&profiles_reader);
+  if (profiles_reader.pos >= profiles_reader.length ||
+      profiles_reader.data[profiles_reader.pos] != ']')
+    goto invalid;
+  if (result.profile_count == 0u)
+    goto invalid;
+  return result;
+
+invalid:
+  result.valid = false_v;
+  log_error("Scene loader: active $.subsurface requires one to eight positive "
+            "finite RGB diffusion-distance profiles");
+  return result;
+}
+
+vkr_internal uint32_t scene_loader_diffuse_volume_cell_index(
+    const VkrDiffuseVolume *volume, uint32_t x, uint32_t y, uint32_t z) {
+  const uint32_t width = volume->dimensions[0] - 1u;
+  const uint32_t height = volume->dimensions[1] - 1u;
+  return x + width * (y + height * z);
+}
+
+vkr_internal bool8_t
+scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
+                                    VkrDiffuseVolumeBinding *out_binding,
+                                    VkrTexturePreparedLoad *out_prepared) {
+  if (!path.str || path.length == 0u || !temp_alloc || !out_binding ||
+      !out_prepared)
+    return false_v;
+  *out_binding = (VkrDiffuseVolumeBinding){
+      .texture = VKR_TEXTURE_HANDLE_INVALID,
+  };
+  MemZero(out_prepared, sizeof(*out_prepared));
+
+  String8 terminated_path = string8_duplicate(temp_alloc, &path);
+  if (!terminated_path.str) {
+    log_error("Scene loader: diffuse volume path allocation failed for '%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+  FilePath file_path = file_path_create(string8_cstr(&terminated_path),
+                                        temp_alloc, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle handle = {0};
+  FileError file_error = file_open(&file_path, mode, &handle);
+  if (file_error != FILE_ERROR_NONE) {
+    log_error("Scene loader: diffuse volume open failed for '%.*s': %.*s",
+              (int)path.length, path.str,
+              (int)file_get_error_string(file_error).length,
+              file_get_error_string(file_error).str);
+    return false_v;
+  }
+
+  uint8_t *bytes = NULL;
+  uint64_t byte_count = 0u;
+  file_error = file_read_all(&handle, temp_alloc, &bytes, &byte_count);
+  file_close(&handle);
+  if (file_error != FILE_ERROR_NONE || !bytes || byte_count == 0u) {
+    log_error("Scene loader: diffuse volume read failed for '%.*s': %.*s",
+              (int)path.length, path.str,
+              (int)file_get_error_string(file_error).length,
+              file_get_error_string(file_error).str);
+    return false_v;
+  }
+
+  Arena *decode_arena = arena_create(KB(64), KB(4));
+  if (!decode_arena) {
+    log_error("Scene loader: diffuse volume decode arena allocation failed for "
+              "'%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+  VkrDiffuseVolume volume = {0};
+  const bool8_t decoded =
+      vkr_diffuse_volume_decode(bytes, byte_count, decode_arena, &volume);
+  if (!decoded) {
+    arena_destroy(decode_arena);
+    log_error("Scene loader: diffuse volume validation failed for '%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+  const Vec3 inverse_spacing = {1.0f / volume.spacing.x,
+                                1.0f / volume.spacing.y,
+                                1.0f / volume.spacing.z};
+  if (!isfinite(inverse_spacing.x) || !isfinite(inverse_spacing.y) ||
+      !isfinite(inverse_spacing.z)) {
+    arena_destroy(decode_arena);
+    log_error("Scene loader: diffuse volume spacing is too small for '%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+
+  const uint64_t texel_count = (uint64_t)volume.probe_count * 8u;
+  const uint64_t pixel_bytes = texel_count * 4u * sizeof(float32_t);
+  float32_t *pixels = (float32_t *)malloc((size_t)pixel_bytes);
+  VkrTextureUploadRegion *region =
+      (VkrTextureUploadRegion *)malloc(sizeof(*region));
+  if (!pixels || !region) {
+    free(region);
+    free(pixels);
+    arena_destroy(decode_arena);
+    log_error(
+        "Scene loader: diffuse volume upload allocation failed for '%.*s'",
+        (int)path.length, path.str);
+    return false_v;
+  }
+
+  for (uint32_t probe_index = 0u; probe_index < volume.probe_count;
+       ++probe_index) {
+    const VkrDiffuseVolumeProbe *probe = &volume.probes[probe_index];
+    float32_t *row = pixels + (uint64_t)probe_index * 8u * 4u;
+    for (uint32_t vector = 0u; vector < VKR_SH_PACKED_VECTOR_COUNT; ++vector)
+      for (uint32_t component = 0u; component < 4u; ++component)
+        row[vector * 4u + component] = probe->sh.v[vector][component];
+
+    const uint32_t x = probe_index % volume.dimensions[0];
+    const uint32_t yz = probe_index / volume.dimensions[0];
+    const uint32_t y = yz % volume.dimensions[1];
+    const uint32_t z = yz / volume.dimensions[1];
+    const uint32_t cell_region =
+        x + 1u < volume.dimensions[0] && y + 1u < volume.dimensions[1] &&
+                z + 1u < volume.dimensions[2]
+            ? volume.cell_region_ids[scene_loader_diffuse_volume_cell_index(
+                  &volume, x, y, z)]
+            : 0u;
+    row[7u * 4u + 0u] = (float32_t)probe->region_id;
+    row[7u * 4u + 1u] = (float32_t)cell_region;
+    row[7u * 4u + 2u] = 0.0f;
+    row[7u * 4u + 3u] = 0.0f;
+  }
+
+  *region = (VkrTextureUploadRegion){
+      .mip_level = 0u,
+      .array_layer = 0u,
+      .width = 8u,
+      .height = volume.probe_count,
+      .depth = 1u,
+      .byte_offset = 0u,
+      .byte_size = pixel_bytes,
+  };
+  *out_prepared = (VkrTexturePreparedLoad){
+      .description =
+          {
+              .width = 8u,
+              .height = volume.probe_count,
+              .channels = 4u,
+              .mip_levels = 1u,
+              .array_layers = 1u,
+              .type = VKR_TEXTURE_TYPE_2D,
+              .format = VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT,
+              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              .sample_count = VKR_SAMPLE_COUNT_1,
+              .properties = vkr_texture_property_flags_create(),
+              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .min_filter = VKR_FILTER_NEAREST,
+              .mag_filter = VKR_FILTER_NEAREST,
+              .mip_filter = VKR_MIP_FILTER_NONE,
+              .anisotropy_enable = false_v,
+          },
+      .upload_data = (uint8_t *)pixels,
+      .upload_data_size = pixel_bytes,
+      .upload_regions = region,
+      .upload_region_count = 1u,
+      .upload_mip_levels = 1u,
+      .upload_array_layers = 1u,
+      .upload_is_compressed = false_v,
+  };
+  *out_binding = (VkrDiffuseVolumeBinding){
+      .texture = VKR_TEXTURE_HANDLE_INVALID,
+      .origin = volume.origin,
+      .inverse_spacing = inverse_spacing,
+      .dimensions = {volume.dimensions[0], volume.dimensions[1],
+                     volume.dimensions[2]},
+  };
+  arena_destroy(decode_arena);
+  return true_v;
+}
+
+vkr_internal void scene_loader_apply_diffuse_volume_import(
+    VkrScene *scene, struct VkrRenderAssets *assets,
+    const SceneDiffuseVolumeImport *import,
+    const VkrDiffuseVolumeBinding *binding,
+    const VkrTexturePreparedLoad *prepared) {
+  if (!scene)
+    return;
+  vkr_scene_reset_diffuse_volume(scene, assets);
+  if (!import || !import->has_block || !import->valid)
+    return;
+  if (!assets || !binding || !prepared) {
+    log_error("Scene loader: diffuse volume '%.*s' is unavailable",
+              (int)import->path.length, import->path.str);
+    return;
+  }
+
+  VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_texture_system_finalize_prepared_load(
+          &assets->texture_system, import->path, prepared, &texture, &error)) {
+    String8 error_text = vkr_renderer_get_error_string(error);
+    log_error("Scene loader: diffuse volume upload failed for '%.*s': %.*s",
+              (int)import->path.length, import->path.str,
+              (int)error_text.length, error_text.str);
+    return;
+  }
+  vkr_texture_system_add_ref_by_handle(&assets->texture_system, texture);
+
+  scene->diffuse_volume = *binding;
+  scene->diffuse_volume.texture = texture;
+}
+
+vkr_internal bool8_t scene_loader_subsurface_texture_key(
+    const SceneSubsurfaceImport *import, char storage[256u],
+    String8 *out_key) {
+  if (!import || !storage || !out_key)
+    return false_v;
+
+  int32_t written = snprintf(storage, 256u, "__scene_subsurface_%u",
+                             import->profile_count);
+  if (written < 0 || (uint32_t)written >= 256u)
+    return false_v;
+  uint32_t length = (uint32_t)written;
+  for (uint32_t profile = 0u; profile < import->profile_count; ++profile) {
+    const Vec3 distance = import->profiles[profile].diffusion_distance;
+    const float32_t components[3] = {distance.x, distance.y, distance.z};
+    for (uint32_t component = 0u; component < ArrayCount(components);
+         ++component) {
+      uint32_t bits = 0u;
+      MemCopy(&bits, &components[component], sizeof(bits));
+      written = snprintf(storage + length, 256u - length, "_%08x", bits);
+      if (written < 0 || (uint32_t)written >= 256u - length)
+        return false_v;
+      length += (uint32_t)written;
+    }
+  }
+  *out_key = (String8){
+      .str = (uint8_t *)storage,
+      .length = length,
+  };
+  return true_v;
+}
+
+vkr_internal bool8_t scene_loader_apply_subsurface_import(
+    VkrScene *scene, struct VkrRenderAssets *assets,
+    const SceneSubsurfaceImport *import, VkrRendererError *out_error) {
+  if (!scene || !assets || !import || !out_error) {
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  if (!import->valid) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  if (scene->subsurface.texture.id != 0u) {
+    const bool8_t released = vkr_texture_system_release_by_handle(
+        &assets->texture_system, scene->subsurface.texture);
+    /* The release consumes the scene reference even when native destruction
+       fails; the texture system retains that zero-reference entry. */
+    scene->subsurface = (VkrSubsurfaceBinding){
+        .texture = VKR_TEXTURE_HANDLE_INVALID,
+    };
+    if (!released) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return false_v;
+    }
+  }
+  if (!import->enabled || import->profile_count == 0u)
+    return true_v;
+
+  VkrSubsurfaceTable table = {0};
+  if (!vkr_subsurface_table_build(import->profiles, import->profile_count,
+                                  &table)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  char key_storage[256u] = {0};
+  String8 texture_key = {0};
+  if (!scene_loader_subsurface_texture_key(import, key_storage, &texture_key)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  VkrTextureUploadRegion region = {
+      .mip_level = 0u,
+      .array_layer = 0u,
+      .width = VKR_SUBSURFACE_TABLE_WIDTH,
+      .height = VKR_SUBSURFACE_TABLE_HEIGHT,
+      .depth = 1u,
+      .byte_offset = 0u,
+      .byte_size = VKR_SUBSURFACE_TABLE_BYTE_COUNT,
+  };
+  const VkrTexturePreparedLoad prepared = {
+      .description =
+          {
+              .id = VKR_INVALID_ID,
+              .generation = VKR_INVALID_ID,
+              .width = VKR_SUBSURFACE_TABLE_WIDTH,
+              .height = VKR_SUBSURFACE_TABLE_HEIGHT,
+              .channels = 4u,
+              .mip_levels = 1u,
+              .array_layers = 1u,
+              .type = VKR_TEXTURE_TYPE_2D,
+              .format = VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT,
+              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              .sample_count = VKR_SAMPLE_COUNT_1,
+              .properties = vkr_texture_property_flags_create(),
+              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .min_filter = VKR_FILTER_NEAREST,
+              .mag_filter = VKR_FILTER_NEAREST,
+              .mip_filter = VKR_MIP_FILTER_NONE,
+              .anisotropy_enable = false_v,
+          },
+      .upload_data = (uint8_t *)&table,
+      .upload_data_size = VKR_SUBSURFACE_TABLE_BYTE_COUNT,
+      .upload_regions = &region,
+      .upload_region_count = 1u,
+      .upload_mip_levels = 1u,
+      .upload_array_layers = 1u,
+      .upload_is_compressed = false_v,
+  };
+  VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
+  if (!vkr_texture_system_finalize_prepared_load(
+          &assets->texture_system, texture_key, &prepared, &texture,
+          out_error)) {
+    return false_v;
+  }
+
+  /* The texture system copies this stack-backed table before returning. */
+  vkr_texture_system_add_ref_by_handle(&assets->texture_system, texture);
+  scene->subsurface = (VkrSubsurfaceBinding){
+      .texture = texture,
+      .profile_count = import->profile_count,
+  };
+  return true_v;
 }
 
 vkr_internal SceneReflectionProbeImport
@@ -698,6 +1495,7 @@ scene_reflection_probe_import_defaults(void) {
       .specular_intensity = 1.0f,
       .sh_deringing = 0.0f,
       .has_cubemap = false_v,
+      .cubemap_path = {0},
       .cubemap_base_path = {0},
       .cubemap_extension = {0},
   };
@@ -809,13 +1607,24 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
           continue;
         }
 
-        bool8_t has_base_path = scene_json_read_string_field(
+        VkrJsonReader base_path_reader = cubemap_object;
+        VkrJsonReader extension_reader = cubemap_object;
+        const bool8_t has_base_path_field =
+            vkr_json_find_field(&base_path_reader, "base_path");
+        const bool8_t has_extension_field =
+            vkr_json_find_field(&extension_reader, "extension");
+        const bool8_t has_path = scene_json_read_string_field(
+            &cubemap_object, "path", &import.cubemap_path);
+        const bool8_t has_base_path = scene_json_read_string_field(
             &cubemap_object, "base_path", &import.cubemap_base_path);
-        bool8_t has_extension = scene_json_read_string_field(
+        const bool8_t has_extension = scene_json_read_string_field(
             &cubemap_object, "extension", &import.cubemap_extension);
-        if (!has_base_path || !has_extension ||
-            import.cubemap_base_path.length == 0 ||
-            import.cubemap_extension.length == 0) {
+        const bool8_t direct = has_path && import.cubemap_path.length > 0u;
+        const bool8_t faces = has_base_path && has_extension &&
+                              import.cubemap_base_path.length > 0u &&
+                              import.cubemap_extension.length > 0u;
+        if (direct == faces ||
+            (direct && (has_base_path_field || has_extension_field))) {
           log_warn("Scene loader: reflection probe %u cubemap path is invalid",
                    input_index);
           input_index++;
@@ -840,6 +1649,30 @@ scene_loader_reset_scene_environment(VkrScene *scene, VkrRenderAssets *assets) {
   }
 
   if (assets) {
+    if (scene->atmosphere.candidate_prefilter_cubemap.id != 0) {
+      vkr_texture_system_release_by_handle(
+          &assets->texture_system,
+          scene->atmosphere.candidate_prefilter_cubemap);
+    }
+    if (scene->atmosphere.candidate_source_cubemap.id != 0) {
+      vkr_texture_system_release_by_handle(
+          &assets->texture_system, scene->atmosphere.candidate_source_cubemap);
+    }
+    if (scene->atmosphere.retired_environment.prefilter_cubemap.id != 0) {
+      vkr_texture_system_release_by_handle(
+          &assets->texture_system,
+          scene->atmosphere.retired_environment.prefilter_cubemap);
+    }
+    if (scene->atmosphere.retired_environment.source_cubemap.id != 0) {
+      vkr_texture_system_release_by_handle(
+          &assets->texture_system,
+          scene->atmosphere.retired_environment.source_cubemap);
+    }
+    if (scene->atmosphere.retired_environment.delivery_equirect.id != 0) {
+      vkr_texture_system_release_by_handle(
+          &assets->texture_system,
+          scene->atmosphere.retired_environment.delivery_equirect);
+    }
     if (scene->environment.prefilter_cubemap.id != 0) {
       vkr_texture_system_release_by_handle(
           &assets->texture_system, scene->environment.prefilter_cubemap);
@@ -864,6 +1697,21 @@ scene_loader_reset_scene_environment(VkrScene *scene, VkrRenderAssets *assets) {
                             .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
                             .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
                             .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE};
+  scene->atmosphere = (VkrSceneAtmosphere){
+      .requested_settings = vkr_atmosphere_settings_defaults(),
+      .candidate_settings = vkr_atmosphere_settings_defaults(),
+      .active_settings = vkr_atmosphere_settings_defaults(),
+      .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+                              .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+                              .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
+      .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+  };
+  scene->atmosphere.requested_settings.enabled = false_v;
+  scene->atmosphere.candidate_settings.enabled = false_v;
+  scene->atmosphere.active_settings.enabled = false_v;
 }
 
 vkr_internal void scene_loader_apply_environment_import(
@@ -996,6 +1844,19 @@ failed:
   scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
 }
 
+vkr_internal bool8_t scene_loader_apply_atmosphere_import(
+    VkrScene *scene, const SceneAtmosphereImport *atmosphere_import) {
+  if (!scene || !atmosphere_import || !atmosphere_import->has_block)
+    return true_v;
+  if (!atmosphere_import->valid ||
+      !vkr_scene_request_atmosphere(scene, &atmosphere_import->settings,
+                                    atmosphere_import->sh_deringing)) {
+    log_error("Scene loader: rejected $.atmosphere before scene mutation");
+    return false_v;
+  }
+  return true_v;
+}
+
 vkr_internal void
 scene_loader_reset_scene_reflection_probes(VkrScene *scene,
                                            struct VkrRenderAssets *assets) {
@@ -1038,7 +1899,9 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
 
 vkr_internal void scene_loader_apply_reflection_probe_imports(
     VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneReflectionProbeImport *imports, uint32_t import_count) {
+    const SceneReflectionProbeImport *imports, uint32_t import_count,
+    const VkrTexturePreparedLoad *prepared_cubemaps,
+    const bool8_t *prepared_cubemaps_ready) {
   if (!scene) {
     return;
   }
@@ -1093,9 +1956,44 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
         bool8_t source_valid = false_v;
         if (import->has_cubemap) {
           VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
-          if (vkr_texture_system_load_cube_map(
-                  &assets->texture_system, import->cubemap_base_path,
-                  import->cubemap_extension, &source_cubemap, &cubemap_error)) {
+          if (import->cubemap_path.length > 0u) {
+            VkrTexturePreparedLoad local_prepared = {0};
+            const VkrTexturePreparedLoad *upload =
+                prepared_cubemaps && prepared_cubemaps_ready &&
+                        prepared_cubemaps_ready[i]
+                    ? &prepared_cubemaps[i]
+                    : &local_prepared;
+            const bool8_t prepared =
+                upload != &local_prepared ||
+                vkr_texture_system_prepare_load_from_file(
+                    &assets->texture_system, import->cubemap_path,
+                    VKR_TEXTURE_RGBA_CHANNELS, &assets->scratch_allocator,
+                    &local_prepared, &cubemap_error);
+            if (prepared &&
+                upload->description.type == VKR_TEXTURE_TYPE_CUBE_MAP &&
+                vkr_texture_system_finalize_prepared_load(
+                    &assets->texture_system, import->cubemap_path, upload,
+                    &source_cubemap, &cubemap_error)) {
+              vkr_texture_system_add_ref_by_handle(&assets->texture_system,
+                                                   source_cubemap);
+              source_valid = true_v;
+            } else {
+              if (prepared &&
+                  upload->description.type != VKR_TEXTURE_TYPE_CUBE_MAP) {
+                cubemap_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+              }
+              String8 err_str = vkr_renderer_get_error_string(cubemap_error);
+              log_warn("Scene loader: reflection probe %u cubemap load failed "
+                       "for '%.*s': %.*s",
+                       i, (int)import->cubemap_path.length,
+                       import->cubemap_path.str, (int)err_str.length,
+                       err_str.str);
+            }
+            vkr_texture_system_release_prepared_load(&local_prepared);
+          } else if (vkr_texture_system_load_cube_map(
+                         &assets->texture_system, import->cubemap_base_path,
+                         import->cubemap_extension, &source_cubemap,
+                         &cubemap_error)) {
             source_valid = true_v;
           } else {
             String8 err_str = vkr_renderer_get_error_string(cubemap_error);
@@ -1130,6 +2028,19 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
               i);
         }
 
+        if (source_valid && !probe.uses_scene_environment_source) {
+          VkrTexture *source_texture = vkr_texture_system_get_by_handle(
+              &assets->texture_system, source_cubemap);
+          if (!source_texture || !source_texture->handle ||
+              source_texture->description.type != VKR_TEXTURE_TYPE_CUBE_MAP ||
+              source_texture->description.mip_levels == 0u) {
+            vkr_texture_system_release_by_handle(&assets->texture_system,
+                                                 source_cubemap);
+            source_valid = false_v;
+          } else {
+            probe.source_mip_count = source_texture->description.mip_levels;
+          }
+        }
         if (source_valid) {
           probe.source_cubemap = source_cubemap;
           probe.bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_PENDING;
@@ -1509,24 +2420,73 @@ scene_json_parse_point_light(const VkrJsonReader *entity_reader,
   }
 }
 
-vkr_internal void
-scene_json_parse_directional_light(const VkrJsonReader *entity_reader,
-                                   uint32_t entity_index,
-                                   SceneEntityImport *out_entity) {
+vkr_internal bool8_t scene_json_parse_rectangle_light(
+    const VkrJsonReader *entity_reader, uint32_t entity_index,
+    SceneEntityImport *out_entity) {
+  VkrJsonReader rectangle_reader = *entity_reader;
+  if (!vkr_json_find_field(&rectangle_reader, "rectangle_light"))
+    return true_v;
+  if (scene_json_parse_null(&rectangle_reader))
+    return true_v;
+
+  VkrJsonReader object = {0};
+  if (!vkr_json_enter_object(&rectangle_reader, &object)) {
+    log_error("Scene loader: entity %u rectangle_light is not an object",
+              entity_index);
+    return false_v;
+  }
+  SceneRectangleLightImport light = scene_rectangle_light_import_defaults();
+  VkrJsonReader field = object;
+  if (vkr_json_find_field(&field, "enabled") &&
+      !vkr_json_parse_bool(&field, &light.enabled))
+    goto invalid;
+  field = object;
+  if (vkr_json_find_field(&field, "color") &&
+      !scene_json_parse_vec3(&field, &light.color))
+    goto invalid;
+  field = object;
+  if (vkr_json_find_field(&field, "radiance") &&
+      !vkr_json_parse_float(&field, &light.radiance))
+    goto invalid;
+  field = object;
+  if (vkr_json_find_field(&field, "size") &&
+      !scene_json_parse_vec2(&field, &light.size))
+    goto invalid;
+  if (light.enabled > 1u || !isfinite(light.color.x) ||
+      !isfinite(light.color.y) || !isfinite(light.color.z) ||
+      light.color.x < 0.0f || light.color.y < 0.0f || light.color.z < 0.0f ||
+      !isfinite(light.radiance) || light.radiance < 0.0f ||
+      !isfinite(light.size.x) || !isfinite(light.size.y) ||
+      light.size.x <= 0.0f || light.size.y <= 0.0f)
+    goto invalid;
+  out_entity->has_rectangle_light = true_v;
+  out_entity->rectangle_light = light;
+  return true_v;
+
+invalid:
+  log_error("Scene loader: entity %u rectangle_light must have finite "
+            "nonnegative color/radiance and positive size",
+            entity_index);
+  return false_v;
+}
+
+vkr_internal bool8_t scene_json_parse_directional_light(
+    const VkrJsonReader *entity_reader, uint32_t entity_index,
+    SceneEntityImport *out_entity) {
   VkrJsonReader dir_light_reader = *entity_reader;
   if (!vkr_json_find_field(&dir_light_reader, "directional_light")) {
-    return;
+    return true_v;
   }
 
   if (scene_json_parse_null(&dir_light_reader)) {
-    return;
+    return true_v;
   }
 
   VkrJsonReader dir_light_obj = {0};
   if (!vkr_json_enter_object(&dir_light_reader, &dir_light_obj)) {
     log_warn("Scene loader: entity %u directional_light is not an object",
              entity_index);
-    return;
+    return true_v;
   }
 
   out_entity->has_directional_light = true_v;
@@ -1552,11 +2512,28 @@ scene_json_parse_directional_light(const VkrJsonReader *entity_reader,
                                  &direction)) {
     out_entity->directional_light.direction_local = direction;
   }
+
+  VkrJsonReader sun_reader = dir_light_obj;
+  if (vkr_json_find_field(&sun_reader, "sun_angular_diameter_degrees")) {
+    float32_t sun_angular_diameter_degrees = 0.0f;
+    if (!vkr_json_parse_float(&sun_reader, &sun_angular_diameter_degrees) ||
+        !isfinite(sun_angular_diameter_degrees) ||
+        sun_angular_diameter_degrees < 0.0f ||
+        sun_angular_diameter_degrees >= 180.0f) {
+      log_error("Scene loader: entity %u directional_light "
+                "sun_angular_diameter_degrees must be finite and in [0, 180)",
+                entity_index);
+      return false_v;
+    }
+    out_entity->directional_light.sun_angular_diameter_degrees =
+        sun_angular_diameter_degrees;
+  }
+  return true_v;
 }
 
-vkr_internal void scene_json_parse_entity(const VkrJsonReader *entity_reader,
-                                          uint32_t entity_index,
-                                          SceneEntityImport *out_entity) {
+vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
+                                             uint32_t entity_index,
+                                             SceneEntityImport *out_entity) {
   *out_entity = (SceneEntityImport){
       .parent_index = -1,
       .position = vec3_new(0.0f, 0.0f, 0.0f),
@@ -1572,7 +2549,11 @@ vkr_internal void scene_json_parse_entity(const VkrJsonReader *entity_reader,
   scene_json_parse_text3d(entity_reader, entity_index, out_entity);
   scene_json_parse_shape(entity_reader, entity_index, out_entity);
   scene_json_parse_point_light(entity_reader, entity_index, out_entity);
-  scene_json_parse_directional_light(entity_reader, entity_index, out_entity);
+  if (!scene_json_parse_rectangle_light(entity_reader, entity_index,
+                                        out_entity))
+    return false_v;
+  return scene_json_parse_directional_light(entity_reader, entity_index,
+                                            out_entity);
 }
 
 vkr_internal uint64_t scene_loader_source_fingerprint(String8 json) {
@@ -1635,10 +2616,13 @@ bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
     if (!vkr_entity_has_component(scene->world, entity, scene->comp_visibility))
       goto cleanup;
     if (node->punctual.kind == 1u) {
-      SceneDirectionalLight light = {.color = node->punctual.color,
-                                     .intensity = node->punctual.intensity,
-                                     .direction_local = {0, 0, -1},
-                                     .enabled = true_v};
+      SceneDirectionalLight light = {
+          .color = node->punctual.color,
+          .intensity = node->punctual.intensity,
+          .direction_local = {0, 0, -1},
+          .sun_angular_diameter_degrees =
+              VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES,
+          .enabled = true_v};
       if (!vkr_scene_set_directional_light(scene, entity, &light))
         goto cleanup;
     } else if (node->punctual.kind == 2u || node->punctual.kind == 3u) {
@@ -1775,9 +2759,6 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
     return false_v;
   }
 
-  // Store renderer frontend reference for layer message sending
-  scene->assets = assets;
-
   VkrJsonReader root = vkr_json_reader_from_string(json);
   int32_t version = 1;
   VkrJsonReader version_reader = root;
@@ -1789,10 +2770,83 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
     return false_v;
   }
 
-  SceneEnvironmentImport environment_import =
-      scene_loader_parse_environment_import(json);
-  scene_loader_apply_environment_import(scene, assets, &environment_import,
-                                        NULL);
+  const SceneFogImport fog_import = scene_loader_parse_fog_import(json);
+  if (!fog_import.valid) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    return false_v;
+  }
+  const SceneFroxelFogImport froxel_fog_import =
+      scene_loader_parse_froxel_fog_import(json);
+  if (!froxel_fog_import.valid) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    return false_v;
+  }
+  const SceneSubsurfaceImport subsurface_import =
+      scene_loader_parse_subsurface_import(json);
+  if (!subsurface_import.valid) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    return false_v;
+  }
+  scene->fog = fog_import.settings;
+  scene->froxel_fog = froxel_fog_import.settings;
+
+  // Store renderer frontend reference for layer message sending only after
+  // root-level authored settings have passed their input boundary.
+  scene->assets = assets;
+
+  const SceneAtmosphereImport atmosphere_import =
+      scene_loader_parse_atmosphere_import(json);
+  if (!atmosphere_import.valid) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    return false_v;
+  }
+  if (atmosphere_import.settings.enabled) {
+    /* A procedural atmosphere is the global source; do not load an HDR source
+       that this scene generation will immediately replace. */
+    scene_loader_reset_scene_environment(scene, assets);
+  } else {
+    SceneEnvironmentImport environment_import =
+        scene_loader_parse_environment_import(json);
+    scene_loader_apply_environment_import(scene, assets, &environment_import,
+                                          NULL);
+  }
+  if (!scene_loader_apply_atmosphere_import(scene, &atmosphere_import)) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    return false_v;
+  }
+
+  SceneDiffuseVolumeImport diffuse_volume_import =
+      scene_loader_parse_diffuse_volume_import(json);
+  VkrDiffuseVolumeBinding diffuse_volume_binding = {
+      .texture = VKR_TEXTURE_HANDLE_INVALID,
+  };
+  VkrTexturePreparedLoad diffuse_volume_prepared = {0};
+  if (diffuse_volume_import.has_block && diffuse_volume_import.valid &&
+      !scene_loader_prepare_diffuse_volume(diffuse_volume_import.path,
+                                           temp_alloc, &diffuse_volume_binding,
+                                           &diffuse_volume_prepared)) {
+    diffuse_volume_import.valid = false_v;
+  }
+  scene_loader_apply_diffuse_volume_import(
+      scene, assets, &diffuse_volume_import, &diffuse_volume_binding,
+      diffuse_volume_prepared.upload_data ? &diffuse_volume_prepared : NULL);
+  vkr_texture_system_release_prepared_load(&diffuse_volume_prepared);
+
+  VkrRendererError subsurface_error = VKR_RENDERER_ERROR_NONE;
+  if (!scene_loader_apply_subsurface_import(scene, assets, &subsurface_import,
+                                            &subsurface_error)) {
+    String8 error_text = vkr_renderer_get_error_string(subsurface_error);
+    log_error("Scene loader: subsurface upload failed: %.*s",
+              (int)error_text.length, error_text.str);
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
+    return false_v;
+  }
 
   SceneReflectionProbeImport
       reflection_probe_imports[VKR_SCENE_REFLECTION_PROBE_MAX] = {0};
@@ -1800,7 +2854,8 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
       scene_loader_parse_reflection_probe_imports(json,
                                                   reflection_probe_imports);
   scene_loader_apply_reflection_probe_imports(
-      scene, assets, reflection_probe_imports, reflection_probe_import_count);
+      scene, assets, reflection_probe_imports, reflection_probe_import_count,
+      NULL, NULL);
   (void)vkr_world_resources_prepare_scene_reflection_probes(
       assets, &assets->world_resources, scene);
 
@@ -1838,6 +2893,7 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
   }
 
   uint32_t parsed = 0;
+  uint32_t rectangle_light_count = 0;
   while (vkr_json_next_array_element(&entities_reader)) {
     if (parsed >= entity_count) {
       break;
@@ -1851,7 +2907,19 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
       return false_v;
     }
 
-    scene_json_parse_entity(&entity_obj, parsed, &imports[parsed]);
+    if (!scene_json_parse_entity(&entity_obj, parsed, &imports[parsed])) {
+      if (out_error)
+        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+      return false_v;
+    }
+    if (imports[parsed].has_rectangle_light &&
+        ++rectangle_light_count > VKR_MAX_SCENE_RECTANGLE_LIGHTS) {
+      if (out_error)
+        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+      log_error("Scene loader: scene exceeds %u rectangle lights",
+                VKR_MAX_SCENE_RECTANGLE_LIGHTS);
+      return false_v;
+    }
     parsed++;
   }
 
@@ -2074,6 +3142,25 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
     loaded_point_lights++;
   }
 
+  // Load rectangle light components
+  for (uint32_t i = 0; i < entity_count; i++) {
+    if (!imports[i].has_rectangle_light)
+      continue;
+    const SceneRectangleLightImport *light_import = &imports[i].rectangle_light;
+    const SceneRectangleLight light = {
+        .color = light_import->color,
+        .radiance = light_import->radiance,
+        .size = light_import->size,
+        .enabled = light_import->enabled,
+    };
+    if (!vkr_scene_set_rectangle_light(scene, entity_ids[i], &light)) {
+      if (out_error)
+        *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
+      log_error("Scene loader: failed to set rectangle light for entity %u", i);
+      return false_v;
+    }
+  }
+
   // Load directional light components
   uint32_t loaded_directional_lights = 0;
   bool8_t enabled_directional_seen = false_v;
@@ -2087,6 +3174,8 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
         .color = light_import->color,
         .intensity = light_import->intensity,
         .direction_local = light_import->direction_local,
+        .sun_angular_diameter_degrees =
+            light_import->sun_angular_diameter_degrees,
         .enabled = light_import->enabled,
     };
 
@@ -2213,6 +3302,7 @@ vkr_internal bool8_t scene_loader_parse_json_imports(
   }
 
   uint32_t parsed = 0;
+  uint32_t rectangle_light_count = 0;
   while (vkr_json_next_array_element(&entities_reader)) {
     if (parsed >= entity_count) {
       break;
@@ -2229,7 +3319,23 @@ vkr_internal bool8_t scene_loader_parse_json_imports(
       return false_v;
     }
 
-    scene_json_parse_entity(&entity_obj, parsed, &imports[parsed]);
+    if (!scene_json_parse_entity(&entity_obj, parsed, &imports[parsed])) {
+      vkr_allocator_free_ts(allocator, imports, import_bytes,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
+      if (out_error)
+        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+      return false_v;
+    }
+    if (imports[parsed].has_rectangle_light &&
+        ++rectangle_light_count > VKR_MAX_SCENE_RECTANGLE_LIGHTS) {
+      vkr_allocator_free_ts(allocator, imports, import_bytes,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
+      if (out_error)
+        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+      log_error("Scene loader: scene exceeds %u rectangle lights",
+                VKR_MAX_SCENE_RECTANGLE_LIGHTS);
+      return false_v;
+    }
     parsed++;
   }
 
@@ -2462,6 +3568,8 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .color = light_import->color,
         .intensity = light_import->intensity,
         .direction_local = light_import->direction_local,
+        .sun_angular_diameter_degrees =
+            light_import->sun_angular_diameter_degrees,
         .enabled = light_import->enabled,
     };
 
@@ -2470,6 +3578,24 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
                 entity_index);
     } else {
       payload->load_result.directional_light_count++;
+    }
+  }
+
+  if (entity_import->has_rectangle_light) {
+    const SceneRectangleLightImport *light_import =
+        &entity_import->rectangle_light;
+    const SceneRectangleLight light = {
+        .color = light_import->color,
+        .radiance = light_import->radiance,
+        .size = light_import->size,
+        .enabled = light_import->enabled,
+    };
+    if (!vkr_scene_set_rectangle_light(scene, entity, &light)) {
+      log_error("Scene loader: failed to set rectangle light for entity %u",
+                entity_index);
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return false_v;
     }
   }
 
@@ -2769,6 +3895,10 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   MemZero(payload, sizeof(*payload));
   payload->assets = assets;
   payload->environment_import = scene_environment_import_defaults();
+  payload->atmosphere_import = scene_atmosphere_import_defaults();
+  payload->fog_import = scene_fog_import_defaults();
+  payload->diffuse_volume_import = scene_diffuse_volume_import_defaults();
+  payload->subsurface_import = scene_subsurface_import_defaults();
   payload->reflection_probe_import_count = 0;
   payload->reflection_probes_applied = false_v;
   payload->stage = SCENE_ASYNC_STAGE_CREATE_ENTITIES;
@@ -2786,6 +3916,20 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   payload->json_length = json_copy.length;
   payload->scene_source_fingerprint =
       scene_loader_source_fingerprint(json_copy);
+
+  payload->fog_import = scene_loader_parse_fog_import(json_copy);
+  payload->froxel_fog_import = scene_loader_parse_froxel_fog_import(json_copy);
+  if (!payload->fog_import.valid || !payload->froxel_fog_import.valid) {
+    scene_loader_destroy_async_payload(payload);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  payload->subsurface_import = scene_loader_parse_subsurface_import(json_copy);
+  if (!payload->subsurface_import.valid) {
+    scene_loader_destroy_async_payload(payload);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   if (!scene_loader_parse_json_imports(
@@ -2808,8 +3952,16 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
       return false_v;
     }
   }
+  payload->atmosphere_import = scene_loader_parse_atmosphere_import(json_copy);
+  if (!payload->atmosphere_import.valid) {
+    scene_loader_destroy_async_payload(payload);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
   payload->environment_import =
-      scene_loader_parse_environment_import(json_copy);
+      payload->atmosphere_import.settings.enabled
+          ? scene_environment_import_defaults()
+          : scene_loader_parse_environment_import(json_copy);
   const bool8_t direct_cubemap =
       payload->environment_import.source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP &&
       payload->environment_import.cubemap_path.length > 0u;
@@ -2835,9 +3987,48 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
                (int)environment_path.length, environment_path.str);
     }
   }
+  payload->diffuse_volume_import =
+      scene_loader_parse_diffuse_volume_import(json_copy);
+  if (payload->diffuse_volume_import.has_block &&
+      payload->diffuse_volume_import.valid) {
+    payload->diffuse_volume_prepared_ready =
+        scene_loader_prepare_diffuse_volume(payload->diffuse_volume_import.path,
+                                            temp_alloc,
+                                            &payload->diffuse_volume_binding,
+                                            &payload->diffuse_volume_prepared);
+    if (!payload->diffuse_volume_prepared_ready)
+      payload->diffuse_volume_import.valid = false_v;
+  }
   payload->reflection_probe_import_count =
       scene_loader_parse_reflection_probe_imports(
           json_copy, payload->reflection_probe_imports);
+  for (uint32_t i = 0u; i < payload->reflection_probe_import_count; ++i) {
+    SceneReflectionProbeImport *probe = &payload->reflection_probe_imports[i];
+    if (!probe->enabled || !probe->has_cubemap ||
+        probe->cubemap_path.length == 0u) {
+      continue;
+    }
+    VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
+    if (vkr_texture_system_prepare_load_from_file(
+            &assets->texture_system, probe->cubemap_path,
+            VKR_TEXTURE_RGBA_CHANNELS, temp_alloc,
+            &payload->reflection_probe_prepared[i], &cubemap_error)) {
+      if (payload->reflection_probe_prepared[i].description.type ==
+          VKR_TEXTURE_TYPE_CUBE_MAP) {
+        payload->reflection_probe_prepared_ready[i] = true_v;
+        continue;
+      }
+      cubemap_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    vkr_texture_system_release_prepared_load(
+        &payload->reflection_probe_prepared[i]);
+    String8 err_str = vkr_renderer_get_error_string(cubemap_error);
+    log_warn("Scene loader: reflection probe %u cubemap preparation failed "
+             "for '%.*s': %.*s",
+             i, (int)probe->cubemap_path.length, probe->cubemap_path.str,
+             (int)err_str.length, err_str.str);
+    probe->enabled = false_v;
+  }
 
   payload->load_result.entity_count = payload->entity_count;
 
@@ -2926,6 +4117,12 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
     return false_v;
   }
 
+  if (!async_payload->fog_applied) {
+    scene->fog = async_payload->fog_import.settings;
+    scene->froxel_fog = async_payload->froxel_fog_import.settings;
+    async_payload->fog_applied = true_v;
+  }
+
   if (!async_payload->environment_applied) {
     scene_loader_apply_environment_import(
         scene, async_payload->assets, &async_payload->environment_import,
@@ -2939,10 +4136,50 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
     }
     async_payload->environment_applied = true_v;
   }
+  if (!async_payload->atmosphere_applied) {
+    if (!scene_loader_apply_atmosphere_import(
+            scene, &async_payload->atmosphere_import)) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    async_payload->atmosphere_applied = true_v;
+  }
+  if (!async_payload->diffuse_volume_applied) {
+    scene_loader_apply_diffuse_volume_import(
+        scene, async_payload->assets, &async_payload->diffuse_volume_import,
+        &async_payload->diffuse_volume_binding,
+        async_payload->diffuse_volume_prepared_ready
+            ? &async_payload->diffuse_volume_prepared
+            : NULL);
+    if (async_payload->diffuse_volume_prepared_ready) {
+      vkr_texture_system_release_prepared_load(
+          &async_payload->diffuse_volume_prepared);
+      async_payload->diffuse_volume_prepared_ready = false_v;
+    }
+    async_payload->diffuse_volume_applied = true_v;
+  }
+  if (!async_payload->subsurface_applied) {
+    if (!scene_loader_apply_subsurface_import(
+            scene, async_payload->assets, &async_payload->subsurface_import,
+            out_error)) {
+      return false_v;
+    }
+    async_payload->subsurface_applied = true_v;
+  }
   if (!async_payload->reflection_probes_applied) {
     scene_loader_apply_reflection_probe_imports(
         scene, async_payload->assets, async_payload->reflection_probe_imports,
-        async_payload->reflection_probe_import_count);
+        async_payload->reflection_probe_import_count,
+        async_payload->reflection_probe_prepared,
+        async_payload->reflection_probe_prepared_ready);
+    for (uint32_t i = 0u; i < async_payload->reflection_probe_import_count;
+         ++i) {
+      if (async_payload->reflection_probe_prepared_ready[i]) {
+        vkr_texture_system_release_prepared_load(
+            &async_payload->reflection_probe_prepared[i]);
+        async_payload->reflection_probe_prepared_ready[i] = false_v;
+      }
+    }
     (void)vkr_world_resources_prepare_scene_reflection_probes(
         async_payload->assets, &async_payload->assets->world_resources, scene);
     async_payload->reflection_probes_applied = true_v;
@@ -3133,9 +4370,21 @@ vkr_internal bool8_t vkr_scene_loader_estimate_async_finalize_cost(
   (void)payload;
   assert_log(out_cost != NULL, "Out cost is NULL");
 
-  // Scene finalize applies staged ECS data and dependency attachment.
-  // Heavy texture/mesh uploads are accounted on their own resource requests.
   MemZero(out_cost, sizeof(*out_cost));
+  VkrSceneLoaderAsyncPayload *async_payload =
+      (VkrSceneLoaderAsyncPayload *)payload;
+  if (async_payload->diffuse_volume_prepared_ready) {
+    out_cost->gpu_upload_bytes +=
+        async_payload->diffuse_volume_prepared.upload_data_size;
+    out_cost->gpu_upload_ops += 1u;
+  }
+  if (!async_payload->subsurface_applied &&
+      async_payload->subsurface_import.valid &&
+      async_payload->subsurface_import.enabled &&
+      async_payload->subsurface_import.profile_count > 0u) {
+    out_cost->gpu_upload_bytes += VKR_SUBSURFACE_TABLE_BYTE_COUNT;
+    out_cost->gpu_upload_ops += 1u;
+  }
   return true_v;
 }
 
@@ -3148,6 +4397,17 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
   if (payload->environment_prepared_ready) {
     vkr_texture_system_release_prepared_load(&payload->environment_prepared);
     payload->environment_prepared_ready = false_v;
+  }
+  if (payload->diffuse_volume_prepared_ready) {
+    vkr_texture_system_release_prepared_load(&payload->diffuse_volume_prepared);
+    payload->diffuse_volume_prepared_ready = false_v;
+  }
+  for (uint32_t i = 0u; i < payload->reflection_probe_import_count; ++i) {
+    if (payload->reflection_probe_prepared_ready[i]) {
+      vkr_texture_system_release_prepared_load(
+          &payload->reflection_probe_prepared[i]);
+      payload->reflection_probe_prepared_ready[i] = false_v;
+    }
   }
 
   if (payload->imports) {

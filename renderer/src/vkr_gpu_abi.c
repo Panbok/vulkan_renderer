@@ -1,6 +1,7 @@
 #include "vkr_gpu_abi.h"
 
 #include "vkr_buffer.h"
+#include "vkr_color_grading.h"
 
 #include <stddef.h>
 #include <math.h>
@@ -174,8 +175,22 @@ vkr_global const VkrGpuAbiField vkr_local_shadow_view_fields[] = {
                       "projection_params", 96),
 };
 
+vkr_global const VkrGpuAbiField vkr_color_grading_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrColorGradingGpu, white_balance_rows, "white_balance_rows", 0),
+    VKR_GPU_ABI_FIELD(VkrColorGradingGpu, controls, "controls", 48),
+};
+
+vkr_global const VkrGpuAbiField vkr_gpu_rectangle_light_row_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, center_half_width, "center_half_width", 0),
+    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, right_half_height, "right_half_height", 16),
+    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, up_radiance, "up_radiance", 32),
+    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, color, "color", 48),
+};
+
 vkr_global const VkrGpuAbiRecord
     vkr_gpu_abi_records[VKR_GPU_ABI_RECORD_COUNT] = {
+        [VKR_GPU_ABI_COLOR_GRADING] = VKR_GPU_ABI_RECORD(
+            VkrColorGradingGpu, "VkrColorGrading", 64, 16, vkr_color_grading_fields),
         [VKR_GPU_ABI_VERTEX] = VKR_GPU_ABI_RECORD(
             VkrVertex3d, "VkrMetalPacketVertex", 64, 16, vkr_gpu_vertex_fields),
         [VKR_GPU_ABI_PACKED_STATIC_VERTEX] =
@@ -205,6 +220,9 @@ vkr_global const VkrGpuAbiRecord
         [VKR_GPU_ABI_POINT_LIGHT_ROW] =
             VKR_GPU_ABI_RECORD(VkrGpuPointLightRow, "VkrGpuPointLightRow", 64,
                                16, vkr_gpu_point_light_row_fields),
+    [VKR_GPU_ABI_RECTANGLE_LIGHT_ROW] =
+        VKR_GPU_ABI_RECORD(VkrGpuRectangleLightRow, "VkrGpuRectangleLightRow", 64,
+                           16, vkr_gpu_rectangle_light_row_fields),
 };
 
 const VkrGpuAbiRecord *vkr_gpu_abi_record(VkrGpuAbiRecordId id) {

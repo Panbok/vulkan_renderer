@@ -1,0 +1,253 @@
+// Static spherical sky-atmosphere math derived independently from Hillaire,
+// EGSR 2020. See docs/adr/058-revision-baked-sky-atmosphere.md for the
+// parameter and publication contract. Native files own all texture
+// access and dispatch; this header owns portable geometry, medium and phase
+// math.
+
+#ifndef VKR_SHADER_ATMOSPHERE_KERNEL_SLANGH
+#define VKR_SHADER_ATMOSPHERE_KERNEL_SLANGH
+
+#define VKR_ATMOSPHERE_PI 3.14159265358979323846f
+#define VKR_ATMOSPHERE_TRANSMITTANCE_SAMPLES 40u
+#define VKR_ATMOSPHERE_MULTI_DIRECTIONS 64u
+#define VKR_ATMOSPHERE_MULTI_SAMPLES 20u
+#define VKR_ATMOSPHERE_SOURCE_SAMPLES 32u
+#define VKR_ATMOSPHERE_DISC_GRID 4u
+#define VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH 80.0f
+
+#if defined(__METAL_VERSION__)
+#define VKR_ATMOSPHERE_OUT(type) thread type &
+#else
+#define VKR_ATMOSPHERE_OUT(type) out type
+#endif
+
+// All distance-valued members are kilometres. `sun.xyz` points from a point in
+// the atmosphere toward the sun. `solar.w` is pi*sin(radius)^2, the projected
+// disc solid angle used to convert irradiance into visual disc radiance.
+struct VkrAtmosphereParams {
+  float4 planet;         // bottom radius, top radius, observer altitude, Mie g.
+  float4 rayleigh;       // beta RGB, scale height.
+  float4 mie_scattering; // beta RGB, scale height.
+  float4 mie_extinction; // beta RGB, reserved.
+  float4 ozone;          // beta RGB, midpoint altitude.
+  float4 ground;         // albedo RGB, ozone half-width.
+  float4 sun;            // normalized toward-sun direction, cos(radius).
+  float4 solar;          // top-of-atmosphere irradiance RGB, projected angle.
+};
+
+struct VkrAtmosphereMedium {
+  float3 rayleigh_scattering;
+  float3 mie_scattering;
+  float3 scattering;
+  float3 extinction;
+};
+
+float3 vkr_atmosphere_safe_normalize(float3 value, float3 fallback) {
+  float squared_length = dot(value, value);
+  return squared_length > 1e-20f ? value * rsqrt(squared_length) : fallback;
+}
+
+float vkr_atmosphere_height(VkrAtmosphereParams params, float3 position) {
+  return max(length(position) - params.planet.x, 0.0f);
+}
+
+float vkr_atmosphere_density_exponential(float height, float scale_height) {
+  return scale_height > 1e-6f ? exp(-max(height, 0.0f) / scale_height) : 0.0f;
+}
+
+float vkr_atmosphere_ozone_density(VkrAtmosphereParams params, float height) {
+  float half_width = max(params.ground.w, 1e-6f);
+  return saturate(1.0f - abs(height - params.ozone.w) / half_width);
+}
+
+VkrAtmosphereMedium vkr_atmosphere_medium(VkrAtmosphereParams params,
+                                          float3 position) {
+  float height = vkr_atmosphere_height(params, position);
+  float rayleigh_density =
+      vkr_atmosphere_density_exponential(height, params.rayleigh.w);
+  float mie_density =
+      vkr_atmosphere_density_exponential(height, params.mie_scattering.w);
+  float ozone_density = vkr_atmosphere_ozone_density(params, height);
+  VkrAtmosphereMedium result;
+  result.rayleigh_scattering = params.rayleigh.rgb * rayleigh_density;
+  result.mie_scattering = params.mie_scattering.rgb * mie_density;
+  result.scattering = result.rayleigh_scattering + result.mie_scattering;
+  result.extinction = result.rayleigh_scattering +
+                      params.mie_extinction.rgb * mie_density +
+                      params.ozone.rgb * ozone_density;
+  return result;
+}
+
+// Returns the nearest nonnegative hit, or -1 when the ray misses the sphere.
+float vkr_atmosphere_ray_sphere_nearest(float3 origin, float3 direction,
+                                        float radius) {
+  float b = dot(origin, direction);
+  float c = dot(origin, origin) - radius * radius;
+  float discriminant = b * b - c;
+  if (discriminant < 0.0f)
+    return -1.0f;
+  float root = sqrt(discriminant);
+  float near_hit = -b - root;
+  float far_hit = -b + root;
+  return near_hit >= 0.0f ? near_hit : (far_hit >= 0.0f ? far_hit : -1.0f);
+}
+
+float vkr_atmosphere_segment_limit(VkrAtmosphereParams params, float3 origin,
+                                   float3 direction, VKR_ATMOSPHERE_OUT(bool) hits_ground) {
+  // At ground level the inward segment is empty. Computing -b-sqrt(b*b)
+  // can round slightly negative and incorrectly select the far planet hit.
+  if (dot(origin, direction) < 0.0f &&
+      dot(origin, origin) <= params.planet.x * params.planet.x) {
+    hits_ground = true;
+    return 0.0f;
+  }
+  // Valid observers/samples are inside or on the atmosphere. Use its far
+  // intersection so an inward ray at the outer boundary does not stop at t=0.
+  float b = dot(origin, direction);
+  float top = max(-b + sqrt(max(b * b - dot(origin, origin) +
+                                    params.planet.y * params.planet.y,
+                                0.0f)),
+                  0.0f);
+  float bottom =
+      vkr_atmosphere_ray_sphere_nearest(origin, direction, params.planet.x);
+  hits_ground = dot(origin, direction) < 0.0f && bottom >= 0.0f &&
+                (top < 0.0f || bottom < top);
+  return hits_ground ? bottom : max(top, 0.0f);
+}
+
+float vkr_atmosphere_rayleigh_phase(float cosine) {
+  return 3.0f * (1.0f + cosine * cosine) / (16.0f * VKR_ATMOSPHERE_PI);
+}
+
+// Cornette-Shanks is the phase used by Hillaire's published reference path.
+// `cosine` is dot(camera-to-sample, sample-to-sun), so positive means forward.
+float vkr_atmosphere_mie_phase(float g, float cosine) {
+  float g2 = g * g;
+  float denominator = max(1.0f + g2 - 2.0f * g * cosine, 1e-6f);
+  float coefficient =
+      3.0f * (1.0f - g2) / (8.0f * VKR_ATMOSPHERE_PI * (2.0f + g2));
+  return coefficient * (1.0f + cosine * cosine) / pow(denominator, 1.5f);
+}
+
+// Hillaire/Bruneton transmittance parameterization. U is distance-to-top and V
+// is radius, which preserves horizon resolution better than a linear cosine
+// map.
+float2 vkr_atmosphere_transmittance_uv(VkrAtmosphereParams params, float radius,
+                                       float view_zenith_cosine) {
+  float bottom = params.planet.x;
+  float top = params.planet.y;
+  float H = sqrt(max(top * top - bottom * bottom, 0.0f));
+  float rho = sqrt(max(radius * radius - bottom * bottom, 0.0f));
+  float discriminant =
+      radius * radius * (view_zenith_cosine * view_zenith_cosine - 1.0f) +
+      top * top;
+  float distance_to_top =
+      max(-radius * view_zenith_cosine + sqrt(max(discriminant, 0.0f)), 0.0f);
+  float min_distance = top - radius;
+  float max_distance = rho + H;
+  return saturate(float2((distance_to_top - min_distance) /
+                             max(max_distance - min_distance, 1e-6f),
+                         rho / max(H, 1e-6f)));
+}
+
+void vkr_atmosphere_transmittance_params(
+    VkrAtmosphereParams params, float2 uv, VKR_ATMOSPHERE_OUT(float) radius,
+    VKR_ATMOSPHERE_OUT(float) view_zenith_cosine) {
+  float bottom = params.planet.x;
+  float top = params.planet.y;
+  float H = sqrt(max(top * top - bottom * bottom, 0.0f));
+  float rho = H * saturate(uv.y);
+  radius = sqrt(rho * rho + bottom * bottom);
+  float min_distance = top - radius;
+  float max_distance = rho + H;
+  float distance_to_top =
+      min_distance + saturate(uv.x) * (max_distance - min_distance);
+  view_zenith_cosine =
+      distance_to_top > 1e-6f
+          ? (top * top - radius * radius - distance_to_top * distance_to_top) /
+                (2.0f * radius * distance_to_top)
+          : 1.0f;
+  view_zenith_cosine = clamp(view_zenith_cosine, -1.0f, 1.0f);
+}
+
+float2 vkr_atmosphere_multi_scattering_uv(VkrAtmosphereParams params,
+                                          float radius,
+                                          float sun_zenith_cosine) {
+  return saturate(float2(sun_zenith_cosine * 0.5f + 0.5f,
+                         (radius - params.planet.x) /
+                             max(params.planet.y - params.planet.x, 1e-6f)));
+}
+
+float3 vkr_atmosphere_cube_direction(uint face, float2 uv) {
+  float2 st = uv * 2.0f - 1.0f;
+  switch (face) {
+  case 0u:
+    return float3(1.0f, -st.y, -st.x);
+  case 1u:
+    return float3(-1.0f, -st.y, st.x);
+  case 2u:
+    return float3(st.x, 1.0f, st.y);
+  case 3u:
+    return float3(st.x, -1.0f, -st.y);
+  case 4u:
+    return float3(st.x, -st.y, 1.0f);
+  default:
+    return float3(-st.x, -st.y, -1.0f);
+  }
+}
+
+float vkr_atmosphere_solar_disc_coverage(uint face, uint2 pixel, uint face_size,
+                                         float3 sun_direction,
+                                         float sun_cosine_radius) {
+  float covered = 0.0f;
+  for (uint y = 0u; y < VKR_ATMOSPHERE_DISC_GRID; ++y) {
+    for (uint x = 0u; x < VKR_ATMOSPHERE_DISC_GRID; ++x) {
+      float2 subpixel = (float2(pixel) + (float2(float(x), float(y)) + 0.5f) /
+                                             float(VKR_ATMOSPHERE_DISC_GRID)) /
+                        float(face_size);
+      float3 direction = vkr_atmosphere_safe_normalize(
+          vkr_atmosphere_cube_direction(face, subpixel),
+          float3(0.0f, 1.0f, 0.0f));
+      covered +=
+          dot(direction, sun_direction) >= sun_cosine_radius ? 1.0f : 0.0f;
+    }
+  }
+  return covered / float(VKR_ATMOSPHERE_DISC_GRID * VKR_ATMOSPHERE_DISC_GRID);
+}
+
+float3 vkr_atmosphere_segment_source_integral(float3 source, float3 extinction,
+                                              float step) {
+  float3 optical_depth = min(max(extinction * max(step, 0.0f), 0.0f),
+                             VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH);
+  float3 transmittance = exp(-optical_depth);
+  float3 denominator = max(extinction, float3(1e-6f));
+  float3 exact = source * (1.0f - transmittance) / denominator;
+  float3 linear = source * step;
+  return float3(extinction.x * step < 1e-4f ? linear.x : exact.x,
+                extinction.y * step < 1e-4f ? linear.y : exact.y,
+                extinction.z * step < 1e-4f ? linear.z : exact.z);
+}
+
+bool vkr_atmosphere_sun_occluded(VkrAtmosphereParams params, float3 position,
+                                 float3 sun_direction) {
+  // A ground-level inward ray hits at t=0; it is still planet-occluded.
+  return dot(position, sun_direction) < 0.0f &&
+         vkr_atmosphere_ray_sphere_nearest(position, sun_direction,
+                                           params.planet.x) >= 0.0f;
+}
+
+float3 vkr_atmosphere_solar_disk_radiance(float3 observed_irradiance,
+                                          float projected_disc_solid_angle) {
+  return observed_irradiance / projected_disc_solid_angle;
+}
+
+// Reserve 60000 for the visible disc and keep their sum representable in
+// RGBA16F. Uniform scaling preserves hue at extreme authored calibrations.
+float3 vkr_atmosphere_source_radiance(float3 radiance) {
+  float peak = max(radiance.x, max(radiance.y, radiance.z));
+  return radiance * min(1.0f, 5000.0f / max(peak, 5000.0f));
+}
+
+#undef VKR_ATMOSPHERE_OUT
+
+#endif

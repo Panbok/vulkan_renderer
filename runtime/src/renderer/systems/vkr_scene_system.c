@@ -162,6 +162,42 @@ vkr_internal void scene_release_owned_texture_handle(VkrRenderAssets *assets,
   *handle = VKR_TEXTURE_HANDLE_INVALID;
 }
 
+void vkr_scene_reset_diffuse_volume(VkrScene *scene,
+                                    struct VkrRenderAssets *assets) {
+  if (!scene)
+    return;
+  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
+                                     &scene->diffuse_volume.texture);
+  scene->diffuse_volume = (VkrDiffuseVolumeBinding){
+      .texture = VKR_TEXTURE_HANDLE_INVALID,
+  };
+}
+
+bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
+                                     const VkrAtmosphereSettings *settings,
+                                     float32_t sh_deringing) {
+  if (!scene || !settings || !vkr_atmosphere_settings_valid(settings) ||
+      !isfinite(sh_deringing) || sh_deringing < 0.0f) {
+    return false_v;
+  }
+  VkrAtmosphereSettings normalized = *settings;
+  if (normalized.enabled) {
+    const VkrAtmosphereGpuParams params = vkr_atmosphere_prepare(settings);
+    normalized.sun_direction =
+        vec3_new(params.sun.x, params.sun.y, params.sun.z);
+  }
+  scene->atmosphere.requested_settings = normalized;
+  scene->atmosphere.requested_sh_deringing = sh_deringing;
+  scene->atmosphere.requested_revision =
+      scene->atmosphere.requested_revision == UINT64_MAX
+          ? 1u
+          : scene->atmosphere.requested_revision + 1u;
+  scene->atmosphere.bake_state = settings->enabled
+                                     ? VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING
+                                     : VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE;
+  return true_v;
+}
+
 vkr_internal void
 scene_reset_reflection_probe_runtime(VkrSceneReflectionProbe *probe) {
   if (!probe) {
@@ -918,6 +954,24 @@ vkr_internal bool8_t scene_compile_queries(VkrScene *scene) {
     return false;
   }
 
+  VkrComponentTypeId rectangle_light_types[2] = {
+      scene->comp_transform,
+      scene->comp_rectangle_light,
+  };
+  VkrQuery q_rectangle_lights;
+  vkr_entity_query_build(scene->world, rectangle_light_types, 2, NULL, 0,
+                         &q_rectangle_lights);
+  if (!vkr_entity_query_compile(scene->world, &q_rectangle_lights, scene->alloc,
+                                &scene->query_rectangle_lights)) {
+    log_error("Failed to compile rectangle light query");
+    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_transforms);
+    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_renderables);
+    vkr_entity_query_compiled_destroy(scene->alloc,
+                                      &scene->query_directional_light);
+    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_point_lights);
+    return false;
+  }
+
   // Build shapes query (transform + shape + render id)
   VkrComponentTypeId shape_types[3] = {
       scene->comp_transform,
@@ -935,6 +989,8 @@ vkr_internal bool8_t scene_compile_queries(VkrScene *scene) {
     vkr_entity_query_compiled_destroy(scene->alloc,
                                       &scene->query_directional_light);
     vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_point_lights);
+    vkr_entity_query_compiled_destroy(scene->alloc,
+                                      &scene->query_rectangle_lights);
     return false;
   }
 
@@ -1017,6 +1073,9 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   scene->comp_point_light = vkr_entity_register_component_once(
       scene->world, "ScenePointLight", sizeof(ScenePointLight),
       AlignOf(ScenePointLight));
+  scene->comp_rectangle_light = vkr_entity_register_component_once(
+      scene->world, "SceneRectangleLight", sizeof(SceneRectangleLight),
+      AlignOf(SceneRectangleLight));
 
   if (scene->comp_source_identity == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_name == VKR_COMPONENT_TYPE_INVALID ||
@@ -1027,7 +1086,8 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       scene->comp_text3d == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_shape == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_directional_light == VKR_COMPONENT_TYPE_INVALID ||
-      scene->comp_point_light == VKR_COMPONENT_TYPE_INVALID) {
+      scene->comp_point_light == VKR_COMPONENT_TYPE_INVALID ||
+      scene->comp_rectangle_light == VKR_COMPONENT_TYPE_INVALID) {
     vkr_entity_destroy_world(scene->world);
     if (out_error)
       *out_error = VKR_SCENE_ERROR_COMPONENT_REGISTRATION_FAILED;
@@ -1061,6 +1121,28 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
+  };
+  scene->atmosphere = (VkrSceneAtmosphere){
+      .requested_settings = vkr_atmosphere_settings_defaults(),
+      .candidate_settings = vkr_atmosphere_settings_defaults(),
+      .active_settings = vkr_atmosphere_settings_defaults(),
+      .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+                              .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+                              .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
+      .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE,
+  };
+  scene->atmosphere.requested_settings.enabled = false_v;
+  scene->atmosphere.candidate_settings.enabled = false_v;
+  scene->atmosphere.active_settings.enabled = false_v;
+  scene->fog = vkr_fog_settings_defaults();
+  scene->froxel_fog = vkr_froxel_fog_settings_defaults();
+  vkr_scene_reset_diffuse_volume(scene, NULL);
+  scene->subsurface = (VkrSubsurfaceBinding){
+      .texture = VKR_TEXTURE_HANDLE_INVALID,
   };
   scene->reflection_probe_count = 0;
   for (uint32_t i = 0; i < VKR_SCENE_REFLECTION_PROBE_MAX; ++i) {
@@ -1148,6 +1230,35 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
 
   // Release environment generations; native retirement retains submitted uses.
   if (assets) {
+    vkr_scene_reset_diffuse_volume(scene, assets);
+    if (scene->subsurface.texture.id != 0u) {
+      if (!vkr_texture_system_release_by_handle(
+              &assets->texture_system, scene->subsurface.texture)) {
+        log_warn("Scene subsurface texture %u:%u remains registered in the "
+                 "texture system after native release failed",
+                 scene->subsurface.texture.id,
+                 scene->subsurface.texture.generation);
+      }
+      /* Release consumed the scene reference. The texture system owns any
+         failed native-destruction entry until its later teardown. */
+      scene->subsurface = (VkrSubsurfaceBinding){
+          .texture = VKR_TEXTURE_HANDLE_INVALID,
+      };
+    }
+    scene_release_owned_texture_handle(
+        (VkrRenderAssets *)assets,
+        &scene->atmosphere.candidate_prefilter_cubemap);
+    scene_release_owned_texture_handle(
+        (VkrRenderAssets *)assets, &scene->atmosphere.candidate_source_cubemap);
+    scene_release_owned_texture_handle(
+        (VkrRenderAssets *)assets,
+        &scene->atmosphere.retired_environment.prefilter_cubemap);
+    scene_release_owned_texture_handle(
+        (VkrRenderAssets *)assets,
+        &scene->atmosphere.retired_environment.source_cubemap);
+    scene_release_owned_texture_handle(
+        (VkrRenderAssets *)assets,
+        &scene->atmosphere.retired_environment.delivery_equirect);
     scene_release_owned_texture_handle((VkrRenderAssets *)assets,
                                        &scene->environment.prefilter_cubemap);
     scene_release_owned_texture_handle((VkrRenderAssets *)assets,
@@ -1165,6 +1276,21 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
     scene->reflection_probe_count = 0;
     scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
     scene->environment.enabled = false_v;
+    scene->atmosphere = (VkrSceneAtmosphere){
+        .requested_settings = vkr_atmosphere_settings_defaults(),
+        .candidate_settings = vkr_atmosphere_settings_defaults(),
+        .active_settings = vkr_atmosphere_settings_defaults(),
+        .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+                                .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+                                .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                                .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                                .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
+        .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+        .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+    };
+    scene->atmosphere.requested_settings.enabled = false_v;
+    scene->atmosphere.candidate_settings.enabled = false_v;
+    scene->atmosphere.active_settings.enabled = false_v;
   }
 
   // Destroy queries
@@ -1174,6 +1300,8 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
     vkr_entity_query_compiled_destroy(scene->alloc,
                                       &scene->query_directional_light);
     vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_point_lights);
+    vkr_entity_query_compiled_destroy(scene->alloc,
+                                      &scene->query_rectangle_lights);
     vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_shapes);
   }
 
@@ -1327,6 +1455,8 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
     return;
   bool8_t had_mesh =
       vkr_entity_has_component(scene->world, entity, scene->comp_mesh_renderer);
+  bool8_t had_rectangle_light = vkr_entity_has_component(
+      scene->world, entity, scene->comp_rectangle_light);
 
   VkrEntityId old_parent = VKR_ENTITY_ID_INVALID;
   const SceneTransform *t = (const SceneTransform *)vkr_entity_get_component(
@@ -1374,6 +1504,8 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   }
 
   vkr_entity_destroy_entity(scene->world, entity);
+  if (had_rectangle_light && scene->rectangle_light_count > 0u)
+    scene->rectangle_light_count--;
   scene->structure_revision++;
 
   // Note: hierarchy will be cleaned up on next topo rebuild
@@ -1686,9 +1818,51 @@ ScenePointLight *vkr_scene_get_point_light(VkrScene *scene,
       scene->world, entity, scene->comp_point_light);
 }
 
+bool8_t vkr_scene_set_rectangle_light(VkrScene *scene, VkrEntityId entity,
+                                      const SceneRectangleLight *light) {
+  if (!scene || !scene->world || !light || !isfinite(light->radiance) ||
+      light->radiance < 0.0f || !isfinite(light->size.x) ||
+      !isfinite(light->size.y) || light->size.x <= 0.0f ||
+      light->size.y <= 0.0f || light->enabled > 1u ||
+      !isfinite(light->color.x) || !isfinite(light->color.y) ||
+      !isfinite(light->color.z) || light->color.x < 0.0f ||
+      light->color.y < 0.0f || light->color.z < 0.0f ||
+      !vkr_entity_has_component(scene->world, entity, scene->comp_transform))
+    return false_v;
+
+  SceneRectangleLight *existing =
+      (SceneRectangleLight *)vkr_entity_get_component_mut(
+          scene->world, entity, scene->comp_rectangle_light);
+  if (existing) {
+    *existing = *light;
+    return true_v;
+  }
+  if (scene->rectangle_light_count >= VKR_MAX_SCENE_RECTANGLE_LIGHTS ||
+      !vkr_scene_ensure_render_id(scene, entity, NULL))
+    return false_v;
+  if (!vkr_entity_add_component(scene->world, entity,
+                                scene->comp_rectangle_light, light))
+    return false_v;
+  scene->rectangle_light_count++;
+  scene_invalidate_queries(scene);
+  scene->render_full_sync_needed = true;
+  return true_v;
+}
+
+SceneRectangleLight *vkr_scene_get_rectangle_light(VkrScene *scene,
+                                                   VkrEntityId entity) {
+  if (!scene || !scene->world)
+    return NULL;
+  return (SceneRectangleLight *)vkr_entity_get_component_mut(
+      scene->world, entity, scene->comp_rectangle_light);
+}
+
 bool8_t vkr_scene_set_directional_light(VkrScene *scene, VkrEntityId entity,
                                         const SceneDirectionalLight *light) {
-  if (!scene || !scene->world || !light)
+  if (!scene || !scene->world || !light ||
+      !isfinite(light->sun_angular_diameter_degrees) ||
+      light->sun_angular_diameter_degrees < 0.0f ||
+      light->sun_angular_diameter_degrees >= 180.0f)
     return false_v;
 
   SceneDirectionalLight *existing =

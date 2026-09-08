@@ -1,4 +1,5 @@
 #include "../../../shared/point_light.slangh"
+#include "../../../shared/diffuse_volume_kernel.slangh"
 
 struct VkrVulkanVertex
 {
@@ -53,6 +54,27 @@ struct VkrVulkanMaterial
     float4 material_surface;
     float4 material_alpha;
     float4 material_attenuation_color;
+    // x factor, y roughness, z coat-normal scale, w reserved.
+    float4 material_clearcoat;
+    uint clearcoat_texture;
+    uint clearcoat_roughness_texture;
+    uint clearcoat_normal_texture;
+    uint clearcoat_sampler;
+    uint clearcoat_roughness_sampler;
+    uint clearcoat_normal_sampler;
+    uint2 clearcoat_reserved;
+    // RGB linear sheen color, A authored sheen roughness.
+    float4 material_sheen;
+    uint sheen_color_texture;
+    uint sheen_roughness_texture;
+    uint sheen_color_sampler;
+    uint sheen_roughness_sampler;
+    float4 material_anisotropy;
+    uint anisotropy_texture;
+    uint anisotropy_sampler;
+    uint2 anisotropy_reserved;
+    float4 material_diffuse_transmission;
+    float4 material_subsurface;
 };
 
 struct VkrVulkanTransmissionMaterial
@@ -69,7 +91,7 @@ struct VkrVulkanShadowCascade
 {
     float4x4 light_view_projection;
     float4 split_near_far_texel_depth;
-    float4 origin_inv_size_pad;
+    float4 origin_inv_size_sun;
 };
 
 struct VkrVulkanIblProbe
@@ -82,6 +104,43 @@ struct VkrVulkanIblProbe
     float4 extents_weight;
     float4 intensity_box;
 };
+struct VkrGpuRectangleLightRow
+{
+    float4 center_half_width;
+    float4 right_half_height;
+    float4 up_radiance;
+    float4 color;
+};
+
+struct VkrVulkanLtc
+{
+    VkrGpuRectangleLightRow* lights;
+    uint matrix_texture;
+    uint amplitude_texture;
+    uint count;
+    uint sampler;
+    uint2 reserved;
+};
+
+struct VkrVulkanSheen
+{
+    uint directional_albedo_texture;
+    uint ltc_matrix_texture;
+    uint ltc_amplitude_texture;
+    uint sampler;
+    uint ltc_matrix_texture_b;
+    uint ltc_amplitude_texture_b;
+    uint2 reserved;
+};
+
+struct VkrVulkanAnisotropy
+{
+    uint table0_texture;
+    uint table1_texture;
+    uint table2_texture;
+    uint sampler_index;
+};
+
 struct VkrVulkanPacketTemporalDrawState
 {
     VkrTemporalTransform* previous_transforms;
@@ -150,6 +209,20 @@ struct VkrVulkanPacketFrameRoot
     VkrLocalShadowView* local_shadow_views;
     uint local_shadow_texture;
     uint local_shadow_reserved;
+    uint dfg_texture;
+    uint dfg_sampler;
+    uint diffuse_volume_texture;
+    uint3 diffuse_volume_reserved;
+    float4 diffuse_volume_origin;
+    float4 diffuse_volume_inverse_spacing;
+    uint4 diffuse_volume_dimensions;
+    VkrVulkanLtc* ltc;
+    VkrFogParams* fog;
+    VkrFroxelFogParams* froxel_fog;
+    uint froxel_integrated_texture;
+    uint froxel_sampler;
+    VkrVulkanSheen* sheen;
+    VkrVulkanAnisotropy* anisotropy;
 };
 
 #include "../../../shared/gpu_draw.slangh"
@@ -226,6 +299,10 @@ struct VkrVulkanPacketUtilityRoot
     // Always valid. Manual frames bind a frame-upload fallback record and
     // automatic frames bind the graph resolve output.
     VkrExposureState* exposure_state;
+    VkrColorGrading* color_grading;
+    uint64_t display_output_padding;
+    VkrDisplayOutputParams* display_output;
+    uint64_t display_output_reserved;
 };
 
 struct VkrVulkanIblRoot
@@ -320,6 +397,8 @@ struct VkrVulkanUiRoot
     uint mode;
     uint flags;
     float4 corner_radii;
+    VkrDisplayOutputParams* display_output;
+    uint64_t display_output_reserved;
 };
 
 struct VkrVulkanUiOutput
@@ -334,6 +413,7 @@ struct VkrVulkanUiOutput
 [[vk::binding(0, 0)]] Texture2D<uint2> g_uint2_textures[];
 [[vk::binding(0, 0)]] TextureCube<float4> g_cube_textures[];
 [[vk::binding(0, 0)]] Texture2DArray<float4> g_array_textures[];
+[[vk::binding(0, 0)]] Texture3D<float4> g_3d_textures[];
 // Scalar-typed alias of the same sampled-image heap. SampleCmpLevelZero is only
 // defined on a single-channel texture, and the shadow array is D32.
 [[vk::binding(0, 0)]] Texture2DArray<float> g_depth_array_textures[];
@@ -347,6 +427,7 @@ struct VkrVulkanUiOutput
 [[vk::binding(1, 0)]] RWTexture2D<uint> g_storage_uint_2d[];
 [[vk::binding(1, 0)]] RWTexture2D<uint2> g_storage_uint2_2d[];
 [[vk::binding(1, 0)]] RWTexture2DArray<float4> g_storage_images[];
+[[vk::binding(1, 0)]] RWTexture3D<float4> g_storage_3d[];
 [[vk::binding(1, 0)]] RWTexture2DArray<uint2> g_storage_uint2_images[];
 [[vk::push_constant]] ConstantBuffer<VkrVulkanPushConstants> g_push;
 

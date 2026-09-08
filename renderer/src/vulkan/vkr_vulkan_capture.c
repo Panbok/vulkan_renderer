@@ -101,6 +101,10 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
       return false_v;
 
     slot->capture_images[i] = handle;
+    const bool8_t extended_linear_final =
+        string_equals(channel->name, "final_color") &&
+        graph_image->desc.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT &&
+        renderer->display_output_params.extended_linear != 0u;
     slot->capture_plans[i] = (VkrCaptureBackendItemPlan){
         .result = {.channel = item->channel,
                    .width = instance->image.width,
@@ -108,12 +112,17 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
                    .row_pitch = row_pitch,
                    .format = graph_image->desc.format,
                    .value_kind = channel->value_kind,
-                   .color_space = channel->color_space,
+                   .color_space = extended_linear_final
+                                      ? VKR_CAPTURE_COLOR_SPACE_EXTENDED_LINEAR
+                                      : channel->color_space,
                    .origin = VKR_CAPTURE_ORIGIN_TOP_LEFT,
                    .data_size = data_size,
                    .mip = 0u,
                    .layer = source_layer,
-                   .display_exposure = packet->exposure.manual},
+                   .display_exposure = packet->exposure.manual,
+                   .display_output = extended_linear_final
+                                         ? renderer->display_output_params
+                                         : (VkrDisplayOutputParams){0}},
         .buffer_offset = offset,
     };
     string_format(slot->capture_plans[i].result.producer_resource,

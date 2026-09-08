@@ -1,12 +1,13 @@
 #include "vkr_rg_json.h"
+#include "vkr_motion_blur.h"
 
 #include "containers/bitset.h"
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
-#include "vkr_render_graph_internal.h"
 #include "vkr_gpu_abi.h"
+#include "vkr_render_graph_internal.h"
 
 typedef struct VkrRgJsonParseContext {
   VkrAllocator *allocator;
@@ -64,7 +65,44 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING},
     {"exposure_automatic", VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC},
     {"bloom_enabled", VKR_RG_JSON_CONDITION_BLOOM_ENABLED},
+    {"dof_enabled", VKR_RG_JSON_CONDITION_DOF_ENABLED},
+    {"subsurface_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_ENABLED},
+    {"!subsurface_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED},
+    {"!subsurface_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_ENABLED},
+    {"!subsurface_enabled && !editor_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_DISABLED},
+
+    {"motion_blur_enabled",
+     VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED},
+    {"!motion_blur_enabled && metalfx_enabled",
+     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_ENABLED},
+    {"!motion_blur_enabled && fsr31_enabled",
+     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED},
+    {"!motion_blur_enabled && !metalfx_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED},
+    {"!dof_enabled && motion_blur_enabled",
+     VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED},
+    {"!dof_enabled && !motion_blur_enabled && metalfx_enabled",
+     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_ENABLED},
+    {"!dof_enabled && !motion_blur_enabled && fsr31_enabled",
+     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED},
+    {"!dof_enabled && !motion_blur_enabled && !metalfx_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED},
     {"gtao_enabled", VKR_RG_JSON_CONDITION_GTAO_ENABLED},
+    {"fog_enabled && editor_enabled", VKR_RG_JSON_CONDITION_FOG_EDITOR_ENABLED},
+    {"fog_enabled && !editor_enabled", VKR_RG_JSON_CONDITION_FOG_EDITOR_DISABLED},
+    {"froxel_fog_enabled", VKR_RG_JSON_CONDITION_FROXEL_FOG_ENABLED},
+    {"froxel_fog_enabled && editor_enabled",
+     VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_ENABLED},
+    {"froxel_fog_enabled && !editor_enabled",
+     VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_DISABLED},
+    {"ssr_enabled", VKR_RG_JSON_CONDITION_SSR_ENABLED},
+    {"ssgi_enabled", VKR_RG_JSON_CONDITION_SSGI_ENABLED},
+    {"ssgi_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SSGI_EDITOR_ENABLED},
+    {"ssgi_enabled && !editor_enabled",
+     VKR_RG_JSON_CONDITION_SSGI_FULLSCREEN_ENABLED},
+    {"ssr_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SSR_EDITOR_ENABLED},
+    {"ssr_enabled && !editor_enabled",
+     VKR_RG_JSON_CONDITION_SSR_EDITOR_DISABLED},
     {"metalfx_enabled", VKR_RG_JSON_CONDITION_METALFX_ENABLED},
     {"!metalfx_enabled", VKR_RG_JSON_CONDITION_METALFX_DISABLED},
     {"editor_enabled && !metalfx_enabled",
@@ -361,6 +399,8 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
     out_extent->mode = VKR_RG_JSON_EXTENT_WINDOW;
   } else if (vkr_string8_equals_cstr_i(&mode, "scene_output")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_SCENE_OUTPUT;
+  } else if (vkr_string8_equals_cstr_i(&mode, "motion_blur_tiles")) {
+    out_extent->mode = VKR_RG_JSON_EXTENT_MOTION_BLUR_TILES;
   } else if (vkr_string8_equals_cstr_i(&mode, "editor_image")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_EDITOR_IMAGE;
   } else if (vkr_string8_equals_cstr_i(&mode, "viewport")) {
@@ -430,6 +470,7 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
     {"R8G8B8A8_SNORM", VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM},
     {"R8G8B8A8_SINT", VKR_TEXTURE_FORMAT_R8G8B8A8_SINT},
     {"R16G16B16A16_SFLOAT", VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT},
+    {"R32G32B32A32_SFLOAT", VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT},
     {"R8_UNORM", VKR_TEXTURE_FORMAT_R8_UNORM},
     {"R16_SFLOAT", VKR_TEXTURE_FORMAT_R16_SFLOAT},
     {"R32_SFLOAT", VKR_TEXTURE_FORMAT_R32_SFLOAT},
@@ -686,6 +727,8 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
   *out_desc = (VkrRgJsonImageDesc){0};
   out_desc->usage = vkr_texture_usage_flags_create();
   out_desc->format_source = VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT;
+  out_desc->type = VKR_TEXTURE_TYPE_2D;
+  out_desc->depth = 1u;
 
   VkrJsonReader import_reader = *obj;
   if (vkr_json_find_field(&import_reader, "import")) {
@@ -697,6 +740,31 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
 
   if (!vkr_rg_json_parse_extent(ctx, obj, field_path, &out_desc->extent)) {
     return false_v;
+  }
+
+  VkrJsonReader dimension_reader = *obj;
+  if (vkr_json_find_field(&dimension_reader, "dimension")) {
+    String8 dimension = {0};
+    if (!vkr_json_parse_string(&dimension_reader, &dimension)) {
+      return vkr_rg_json_error(ctx, field_path, "dimension must be a string");
+    }
+    if (vkr_string8_equals_cstr_i(&dimension, "2d")) {
+      out_desc->type = VKR_TEXTURE_TYPE_2D;
+    } else if (vkr_string8_equals_cstr_i(&dimension, "3d")) {
+      out_desc->type = VKR_TEXTURE_TYPE_3D;
+    } else {
+      return vkr_rg_json_error(ctx, field_path,
+                               "dimension must be 2d or 3d");
+    }
+  }
+
+  VkrJsonReader depth_reader = *obj;
+  if (vkr_json_find_field(&depth_reader, "depth")) {
+    int32_t depth = 0;
+    if (!vkr_json_parse_int(&depth_reader, &depth) || depth <= 0) {
+      return vkr_rg_json_error(ctx, field_path, "depth must be >= 1");
+    }
+    out_desc->depth = (uint32_t)depth;
   }
 
   VkrJsonReader layers_source_reader = *obj;
@@ -721,6 +789,19 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
   if (out_desc->layers_is_set && out_desc->layers_source.length > 0) {
     return vkr_rg_json_error(ctx, field_path,
                              "layers and layers_source are mutually exclusive");
+  }
+  if (out_desc->type == VKR_TEXTURE_TYPE_3D) {
+    if (out_desc->is_import) {
+      return vkr_rg_json_error(ctx, field_path,
+                               "3d graph images cannot be imported");
+    }
+    if (out_desc->layers_is_set || out_desc->layers_source.length > 0) {
+      return vkr_rg_json_error(ctx, field_path,
+                               "3d graph images cannot have layers");
+    }
+  } else if (out_desc->depth != 1u) {
+    return vkr_rg_json_error(ctx, field_path,
+                             "depth applies only to dimension 3d");
   }
 
   VkrJsonReader mip_reader = *obj;
@@ -908,8 +989,9 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
        (out_resource->flags & (VKR_RG_JSON_RESOURCE_FLAG_EXTERNAL |
                                VKR_RG_JSON_RESOURCE_FLAG_HISTORY |
                                VKR_RG_JSON_RESOURCE_FLAG_RETAINED))))
-    return vkr_rg_json_error(ctx, field_path,
-                             "GROW_ONLY requires an owned buffer without HISTORY or RETAINED");
+    return vkr_rg_json_error(
+        ctx, field_path,
+        "GROW_ONLY requires an owned buffer without HISTORY or RETAINED");
 
   if (out_resource->flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED) {
     /* RETAINED describes content lifetime; these four describe where instances
@@ -1967,8 +2049,56 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->exposure_automatic;
   case VKR_RG_JSON_CONDITION_BLOOM_ENABLED:
     return frame->bloom_enabled;
+  case VKR_RG_JSON_CONDITION_SUBSURFACE_ENABLED:
+    return frame->subsurface_enabled;
+  case VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED:
+    return !frame->subsurface_enabled;
+  case VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_ENABLED:
+    return !frame->subsurface_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_DISABLED:
+    return !frame->subsurface_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_DOF_ENABLED:
+    return frame->dof_enabled;
+  case VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED:
+    return frame->motion_blur_enabled;
+  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_ENABLED:
+    return !frame->motion_blur_enabled && frame->metalfx_enabled;
+  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED:
+    return !frame->motion_blur_enabled && frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED:
+    return !frame->motion_blur_enabled && !frame->metalfx_enabled && !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED:
+    return !frame->dof_enabled && frame->motion_blur_enabled;
+  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_ENABLED:
+    return !frame->dof_enabled && !frame->motion_blur_enabled && frame->metalfx_enabled;
+  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED:
+    return !frame->dof_enabled && !frame->motion_blur_enabled && frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED:
+    return !frame->dof_enabled && !frame->motion_blur_enabled && !frame->metalfx_enabled && !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_GTAO_ENABLED:
     return frame->gtao_enabled;
+  case VKR_RG_JSON_CONDITION_FOG_EDITOR_ENABLED:
+    return frame->fog_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_FOG_EDITOR_DISABLED:
+    return frame->fog_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_FROXEL_FOG_ENABLED:
+    return frame->froxel_fog_enabled;
+  case VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_ENABLED:
+    return frame->froxel_fog_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_DISABLED:
+    return frame->froxel_fog_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_SSR_ENABLED:
+    return frame->ssr_enabled;
+  case VKR_RG_JSON_CONDITION_SSGI_ENABLED:
+    return frame->ssgi_enabled;
+  case VKR_RG_JSON_CONDITION_SSGI_EDITOR_ENABLED:
+    return frame->ssgi_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_SSGI_FULLSCREEN_ENABLED:
+    return frame->ssgi_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_SSR_EDITOR_ENABLED:
+    return frame->ssr_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_SSR_EDITOR_DISABLED:
+    return frame->ssr_enabled && !frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_METALFX_ENABLED:
     return frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_METALFX_DISABLED:
@@ -2048,6 +2178,19 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
     *out_count = frame->transmission_rough_mip_pass_count;
     return true_v;
   }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "ssr_depth_mip_pass_count")) {
+    *out_count =
+        frame->ssr_depth_mip_count > 0u ? frame->ssr_depth_mip_count - 1u : 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "ssgi_depth_mip_pass_count")) {
+    *out_count = frame->ssgi_depth_mip_count > 0u
+                     ? frame->ssgi_depth_mip_count - 1u
+                     : 0u;
+    return true_v;
+  }
   /* Both bloom chains are one step shorter than the chain itself: the prefilter
      owns mip 0, and the deepest level has nothing above it to accumulate into.
      They are separate sources because the two directions are separate authored
@@ -2085,6 +2228,12 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
   if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
                                 "shadow_cascade_render_mask")) {
     *out_enabled = repeat_index < 32u && (frame->shadow_cascade_render_mask &
+                                          (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "local_shadow_render_mask")) {
+    *out_enabled = repeat_index < 32u && (frame->local_shadow_render_mask &
                                           (UINT32_C(1) << repeat_index)) != 0u;
     return true_v;
   }
@@ -2140,6 +2289,12 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
   case VKR_RG_JSON_EXTENT_EDITOR_IMAGE:
     *out_width = frame->editor_image_width;
     *out_height = frame->editor_image_height;
+    return true_v;
+  case VKR_RG_JSON_EXTENT_MOTION_BLUR_TILES:
+    *out_width = frame->scene_output_width / VKR_MOTION_BLUR_TILE_SIZE +
+        (frame->scene_output_width % VKR_MOTION_BLUR_TILE_SIZE != 0u);
+    *out_height = frame->scene_output_height / VKR_MOTION_BLUR_TILE_SIZE +
+        (frame->scene_output_height % VKR_MOTION_BLUR_TILE_SIZE != 0u);
     return true_v;
   case VKR_RG_JSON_EXTENT_VIEWPORT:
     *out_width =
@@ -2406,12 +2561,13 @@ vkr_internal bool8_t vkr_rg_json_apply_slice(const VkrRgJsonAttachment *att,
 }
 
 vkr_internal uint32_t vkr_rg_json_mip_levels(const VkrRgJsonImageDesc *image,
-                                             uint32_t width, uint32_t height) {
+                                             uint32_t width, uint32_t height,
+                                             uint32_t depth) {
   if (image->mip_levels_is_set)
     return image->mip_levels;
   if (!image->mip_levels_full)
     return 1u;
-  uint32_t extent = Max(width, height);
+  uint32_t extent = Max(Max(width, height), depth);
   uint32_t levels = 0u;
   while (extent) {
     levels++;
@@ -2485,8 +2641,11 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           }
           desc.width = frame->target_width;
           desc.height = frame->target_height;
+          desc.depth = resource->image.depth;
+          desc.type = resource->image.type;
           desc.mip_levels =
-              vkr_rg_json_mip_levels(&resource->image, desc.width, desc.height);
+              vkr_rg_json_mip_levels(&resource->image, desc.width, desc.height,
+                                     desc.depth);
           desc.usage = resource->image.usage;
           uint32_t layers = 1;
           if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
@@ -2547,8 +2706,11 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
           desc.width = width;
           desc.height = height;
+          desc.depth = resource->image.depth;
+          desc.type = resource->image.type;
           desc.mip_levels =
-              vkr_rg_json_mip_levels(&resource->image, width, height);
+              vkr_rg_json_mip_levels(&resource->image, width, height,
+                                     desc.depth);
           desc.usage = resource->image.usage;
           desc.flags = vkr_rg_json_resource_flags(resource->flags);
           if (resource->image.layers_is_set ||

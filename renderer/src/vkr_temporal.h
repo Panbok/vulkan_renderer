@@ -9,7 +9,7 @@
 
 /** FSR jitter period for validated nonzero render/output widths. */
 uint32_t vkr_temporal_upscale_sequence_length(uint32_t render_width,
-                                               uint32_t output_width);
+                                              uint32_t output_width);
 
 struct VkrPreparedFrame;
 
@@ -24,6 +24,16 @@ typedef struct VkrTemporalSceneSignature {
  * Excludes temporal sampling noise and post-temporal exposure/bloom/UI. */
 VkrTemporalSceneSignature
 vkr_temporal_scene_signature(const struct VkrPreparedFrame *packet);
+
+/** Reflection radiance controls, independent of camera and object motion.
+ * Native callers additionally prove resource/graph revisions and projection,
+ * extent, frame continuity and selected motion-history compatibility. */
+VkrTemporalSceneSignature
+vkr_ssr_content_signature(const struct VkrPreparedFrame *packet);
+
+/** Independent direct-light bounce content; excludes camera and sampling phase. */
+VkrTemporalSceneSignature
+vkr_ssgi_content_signature(const struct VkrPreparedFrame *packet);
 
 typedef enum VkrTemporalResetReason {
   VKR_TEMPORAL_RESET_NONE = 0u,

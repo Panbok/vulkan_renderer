@@ -1,0 +1,42 @@
+// Centered shutter and velocity/depth reconstruction shared by both backends.
+#ifndef VKR_MOTION_BLUR_KERNEL_SLANGH
+#define VKR_MOTION_BLUR_KERNEL_SLANGH
+struct VkrMotionBlurGpuParams {
+  // Full-shutter velocity scale, near metres, far metres, reserved.
+  float4 motion;
+  float4 depth_uv;  // Canonical output UV to current raster metadata UV.
+  uint4 dimensions; // Output width/height and ceil(width/16), ceil(height/16).
+};
+float2 vkr_motion_blur_velocity(VkrMotionBlurGpuParams params,
+                                float2 motion_uv) {
+  float2 velocity =
+      motion_uv * float2(params.dimensions.xy) * (0.5f * params.motion.x);
+  return velocity * min(1.0f, 16.0f / max(length(velocity), 1e-6f));
+}
+float vkr_motion_blur_depth(VkrMotionBlurGpuParams params, float device_depth) {
+  return params.motion.y * params.motion.z /
+         (params.motion.z - device_depth * (params.motion.z - params.motion.y));
+}
+float vkr_motion_blur_line_coverage(float2 offset, float2 velocity) {
+  float radius = length(velocity);
+  if (radius <= 0.5f)
+    return clamp(1.0f - length(offset), 0.0f, 1.0f);
+  float2 direction = velocity / radius;
+  float along = abs(dot(offset, direction));
+  float across = length(offset - direction * dot(offset, direction));
+  return clamp(radius - along + 0.5f, 0.0f, 1.0f) *
+         clamp(1.5f - across, 0.0f, 1.0f);
+}
+float vkr_motion_blur_sample_weight(float2 offset, float2 center_velocity,
+                                    float2 sample_velocity, float center_depth,
+                                    float sample_depth) {
+  float tolerance = max(0.01f, min(center_depth, sample_depth) * 0.01f);
+  // A closer moving sample may cover this receiver; a moving receiver may
+  // uncover a farther sample. Equal-depth motion supports both directions.
+  float sample_front =
+      clamp(0.5f + (center_depth - sample_depth) / tolerance, 0.0f, 1.0f);
+  float center_front = 1.0f - sample_front;
+  return sample_front * vkr_motion_blur_line_coverage(offset, sample_velocity) +
+         center_front * vkr_motion_blur_line_coverage(offset, center_velocity);
+}
+#endif

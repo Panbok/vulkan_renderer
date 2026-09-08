@@ -34,6 +34,25 @@ typedef struct VkrPointLight {
   bool8_t casts_shadow;
 } VkrPointLight;
 
+#define VKR_MAX_SCENE_RECTANGLE_LIGHTS 8u
+
+/** One-sided emitter with orthonormal world axes and world-unit half sizes.
+ * Emission faces -cross(right, up); radiance is per unit projected area. */
+typedef struct VkrRectangleLight {
+  Vec3 position;
+  Vec3 right;
+  Vec3 up;
+  Vec3 color;
+  float32_t half_width;
+  float32_t half_height;
+  float32_t radiance;
+  uint32_t render_id;
+} VkrRectangleLight;
+
+bool8_t vkr_rectangle_light_valid(const VkrRectangleLight *light);
+void vkr_rectangle_light_pack(const VkrRectangleLight *light,
+                             VkrGpuRectangleLightRow *row);
+
 /** Packs one canonical point light into the shared four-Vec4 GPU row. */
 void vkr_point_light_pack(const VkrPointLight *light, VkrGpuPointLightRow *row);
 

@@ -6,7 +6,8 @@ project(renderer_lib)
 # helpers without linking a GPU backend or runtime systems.
 add_library(vkr_render_contracts STATIC src/vkr_packed_geometry.c
     src/vkr_geometry_data.c
-    src/vkr_color_transfer.c)
+    src/vkr_color_transfer.c
+    src/vkr_subsurface.c)
 vkr_configure_library(vkr_render_contracts)
 target_include_directories(vkr_render_contracts PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(vkr_render_contracts PUBLIC vkr_foundation)
@@ -26,7 +27,8 @@ list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 list(REMOVE_ITEM LIB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_packed_geometry.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_geometry_data.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_color_transfer.c")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_color_transfer.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_subsurface.c")
 
 # Create a static library
 add_library(renderer_lib STATIC ${LIB_SOURCES})
@@ -98,6 +100,10 @@ vkr_add_vulkan_packet_shader("packet.ui_rect.vert" ui_rect_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.ui_rect.frag" ui_rect_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
 vkr_add_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
+vkr_add_vulkan_packet_shader("packet.atmosphere_transmittance.comp" atmosphere_transmittance_compute compute)
+vkr_add_vulkan_packet_shader("packet.atmosphere_multiple_scattering.comp" atmosphere_multiple_scattering_compute compute)
+vkr_add_vulkan_packet_shader("packet.atmosphere_source.comp" atmosphere_source_compute compute)
+vkr_add_vulkan_packet_shader("packet.atmosphere_sun.comp" atmosphere_sun_compute compute)
 vkr_add_vulkan_packet_shader(
     "packet.ibl_sh.comp" ibl_sh compute -DVKR_VULKAN_IBL_SH_ROOT=1)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classify compute)
@@ -129,6 +135,16 @@ vkr_add_vulkan_packet_shader("packet.sdsm_reduce.comp" vk_sdsm_reduce compute)
 vkr_add_vulkan_packet_shader("packet.exposure_clear.comp" vk_exposure_clear compute)
 vkr_add_vulkan_packet_shader("packet.exposure_histogram.comp" vk_exposure_histogram compute)
 vkr_add_vulkan_packet_shader("packet.exposure_resolve.comp" vk_exposure_resolve compute)
+vkr_add_vulkan_packet_shader("packet.subsurface_gather.comp" vk_subsurface_gather compute)
+vkr_add_vulkan_packet_shader("packet.motion_blur_tile_max.comp" vk_motion_blur_tile_max compute)
+vkr_add_vulkan_packet_shader("packet.motion_blur_neighbor_max.comp" vk_motion_blur_neighbor_max compute)
+vkr_add_vulkan_packet_shader("packet.motion_blur_reconstruct.comp" vk_motion_blur_reconstruct compute)
+vkr_add_vulkan_packet_shader("packet.dof_coc.comp" vk_dof_coc compute)
+vkr_add_vulkan_packet_shader("packet.dof_dilate_horizontal.comp" vk_dof_dilate_horizontal compute)
+vkr_add_vulkan_packet_shader("packet.dof_dilate_vertical.comp" vk_dof_dilate_vertical compute)
+vkr_add_vulkan_packet_shader("packet.dof_prefilter.comp" vk_dof_prefilter compute)
+vkr_add_vulkan_packet_shader("packet.dof_gather.comp" vk_dof_gather compute)
+vkr_add_vulkan_packet_shader("packet.dof_composite.comp" vk_dof_composite compute)
 vkr_add_vulkan_packet_shader("packet.bloom_prefilter.comp" vk_bloom_prefilter compute)
 vkr_add_vulkan_packet_shader("packet.bloom_downsample_tent13.comp" vk_bloom_downsample_tent13 compute)
 vkr_add_vulkan_packet_shader("packet.bloom_downsample_box4.comp" vk_bloom_downsample_box4 compute)
@@ -137,6 +153,20 @@ vkr_add_vulkan_packet_shader("packet.gtao_depth_prefilter.comp" vk_gtao_depth_pr
 vkr_add_vulkan_packet_shader("packet.gtao_depth_mip.comp" vk_gtao_depth_mip compute)
 vkr_add_vulkan_packet_shader("packet.gtao_evaluate.comp" vk_gtao_evaluate compute)
 vkr_add_vulkan_packet_shader("packet.gtao_denoise.comp" vk_gtao_denoise compute)
+vkr_add_vulkan_packet_shader("packet.ssr_depth_base.comp" vk_ssr_depth_base compute)
+vkr_add_vulkan_packet_shader("packet.ssr_depth_mip.comp" vk_ssr_depth_mip compute)
+vkr_add_vulkan_packet_shader("packet.ssr_trace.comp" vk_ssr_trace compute)
+vkr_add_vulkan_packet_shader("packet.ssr_temporal.comp" vk_ssr_temporal compute)
+vkr_add_vulkan_packet_shader("packet.ssr_composite.comp" vk_ssr_composite compute)
+vkr_add_vulkan_packet_shader("packet.ssgi_depth_base.comp" ssgi_depth_base_compute compute)
+vkr_add_vulkan_packet_shader("packet.ssgi_depth_mip.comp" ssgi_depth_mip_compute compute)
+vkr_add_vulkan_packet_shader("packet.ssgi_trace.comp" ssgi_trace_compute compute)
+vkr_add_vulkan_packet_shader("packet.ssgi_temporal.comp" ssgi_temporal_compute compute)
+vkr_add_vulkan_packet_shader("packet.ssgi_composite.comp" ssgi_composite_compute compute)
+vkr_add_vulkan_packet_shader("packet.fog_apply.comp" fog_apply_compute compute)
+vkr_add_vulkan_packet_shader("packet.froxel_inject.comp" froxel_inject_compute compute)
+vkr_add_vulkan_packet_shader("packet.froxel_integrate.comp" froxel_integrate_compute compute)
+vkr_add_vulkan_packet_shader("packet.froxel_apply.comp" froxel_apply_compute compute)
 vkr_add_vulkan_packet_shader("packet.bloom_combine.comp" vk_bloom_combine compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
@@ -273,16 +303,34 @@ if(APPLE)
         # The bloom kernel reuses the exposure kernel's Rec. 709 luminance, so
         # it must follow it here for the same reason as below.
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/bloom_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/dof_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/motion_blur_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/subsurface_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/gtao_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/ltc_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/sheen_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/ssr_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/ssgi_contract.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/ssgi_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/fog_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/froxel_fog_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/atmosphere_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/temporal_filter_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/dfg_contract.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/ggx_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/anisotropy_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/clearcoat_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/sharpen_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/agx_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/display_output_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/color_grading_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/normal_map_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/transmission_kernel.slangh"
         # VkrShL2Packed and its evaluation are referenced by the deferred
         # lighting path and by the IBL projection kernel, so the shared header
         # precedes both.
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/sh_l2_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/diffuse_volume_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/local_shadow.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/editor/overlay.metal"
@@ -296,11 +344,19 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/equirect_to_cube.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/sh_projection.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/specular_prefilter.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/atmosphere.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ui/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/exposure.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/bloom.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/dof.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/motion_blur.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/gtao.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/ssr.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/ssgi.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/subsurface.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/fog.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/froxel_fog.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/tonemap.metal")
     list(JOIN VKR_METAL_PACKET_MSL_SOURCES "|"
          VKR_METAL_PACKET_MSL_SOURCE_ARGUMENT)

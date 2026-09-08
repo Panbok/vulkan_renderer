@@ -62,6 +62,32 @@ vkr_metal_shadow_kernel(depth2d_array<float, access::sample> shadow_map,
   return sum;
 }
 
+struct VkrMetalPcssBlockers {
+  float average_depth;
+  uint count;
+};
+
+static VkrMetalPcssBlockers vkr_metal_shadow_pcss_blockers(
+    depth2d_array<float, access::sample> shadow_map, uint cascade, float2 uv,
+    float reference, float2 rotation, float2 search_tap_scale) {
+  VkrMetalPcssBlockers result = {0.0, 0u};
+  for (uint i = 0u; i < VKR_SHADOW_PCSS_BLOCKER_COUNT; ++i) {
+    float2 tap = vkr_shadow_poisson[i];
+    float2 rotated = float2(tap.x * rotation.x - tap.y * rotation.y,
+                            tap.x * rotation.y + tap.y * rotation.x);
+    float blocker_depth = shadow_map.sample(vkr_metal_shadow_raw_sampler,
+                                            uv + rotated * search_tap_scale,
+                                            cascade);
+    if (blocker_depth < reference) {
+      result.average_depth += blocker_depth;
+      ++result.count;
+    }
+  }
+  if (result.count != 0u)
+    result.average_depth /= float(result.count);
+  return result;
+}
+
 /** One cascade's visibility. `valid` is false when the receiver misses it. */
 static VkrMetalPacketShadowSample
 vkr_metal_packet_shadow_cascade_sample(constant VkrMetalPacketFrameRoot *root,
@@ -94,12 +120,33 @@ vkr_metal_packet_shadow_cascade_sample(constant VkrMetalPacketFrameRoot *root,
                       root->shadow_slope_bias_texels * slope;
   float reference = projected.z - bias_texels * texel / depth_span;
 
-  float inv_size = data.origin_inv_size_pad.z;
+  float inv_size = data.origin_inv_size_sun.z;
   float map_size = 1.0 / inv_size;
   float2 rotation = vkr_metal_shadow_kernel_rotation(
-      uv, data.origin_inv_size_pad.xy / texel, map_size);
+      uv, data.origin_inv_size_sun.xy / texel, map_size);
   float2 tap_scale = root->shadow_pcf_radius_texels * inv_size;
   uint count = root->shadow_pcf_sample_count;
+
+  float sun_tan_half_angle = data.origin_inv_size_sun.w;
+  if (vkr_shadow_pcss_enabled(cascade, sun_tan_half_angle) != 0u) {
+    // The near PCSS budget includes its no-blocker fallback. Preserve the PCF
+    // radius and prefix order there, while bounding a configured 32-tap PCF.
+    count = min(count, VKR_SHADOW_PCSS_FILTER_MAX_COUNT);
+    float search_radius = vkr_shadow_pcss_search_radius_texels(
+        reference, depth_span, sun_tan_half_angle, texel,
+        root->shadow_pcf_radius_texels);
+    VkrMetalPcssBlockers blockers = vkr_metal_shadow_pcss_blockers(
+        root->shadow_map, cascade, uv, reference, rotation,
+        search_radius * inv_size);
+    // Sparse blockers do not prove an unoccluded receiver. With none, retain
+    // the configured PCF radius; otherwise widen the bounded PCSS filter.
+    if (blockers.count != 0u) {
+      float filter_radius = vkr_shadow_pcss_filter_radius_texels(
+          reference, blockers.average_depth, depth_span, sun_tan_half_angle,
+          texel, root->shadow_pcf_radius_texels);
+      tap_scale = filter_radius * inv_size;
+    }
+  }
 
   float factor;
   if (count >= 16u && root->shadow_pcf_uniform_early_out != 0u) {
@@ -174,6 +221,44 @@ VkrMetalPacketShadowSample vkr_metal_packet_directional_shadow_sample(
 
   sample.factor = mix(1.0, sample.factor, fade);
   return sample;
+}
+
+// Volumetric injection has a fixed one-comparison shadow budget. It keeps the
+// same cascade choice and receiver bias as surface shading but deliberately
+// omits PCF/PCSS filtering and the overlap blend, which would add samples.
+float vkr_metal_packet_directional_shadow_one_tap(
+    constant VkrMetalPacketFrameRoot *root, float3 world_position) {
+  if (root->shadow_cascade_count == 0u || root->shadow_cascades == nullptr)
+    return 1.0f;
+  float view_depth = abs((root->view * float4(world_position, 1.0f)).z);
+  float fade_span = root->shadow_fade_end - root->shadow_fade_start;
+  float fade = fade_span > 0.0f
+                   ? saturate((root->shadow_fade_end - view_depth) / fade_span)
+                   : 1.0f;
+  if (fade <= 0.0f)
+    return 1.0f;
+  uint cascade = 0u;
+  for (uint index = 0u; index + 1u < root->shadow_cascade_count; ++index) {
+    if (view_depth > root->shadow_cascades[index].split_near_far_texel_depth.y)
+      cascade = index + 1u;
+  }
+  const device VkrMetalPacketShadowCascade &data = root->shadow_cascades[cascade];
+  float4 clip = data.light_view_projection * float4(world_position, 1.0f);
+  if (abs(clip.w) <= 1e-6f)
+    return 1.0f;
+  float3 projected = clip.xyz / clip.w;
+  float2 uv = projected.xy * 0.5f + 0.5f;
+  if (any(uv < 0.0f) || any(uv > 1.0f) || projected.z < 0.0f ||
+      projected.z > 1.0f)
+    return 1.0f;
+  float texel = data.split_near_far_texel_depth.z;
+  float depth_span = data.split_near_far_texel_depth.w;
+  float bias_texels = root->shadow_receiver_bias_texels +
+                      root->shadow_slope_bias_texels;
+  float reference = projected.z - bias_texels * texel / depth_span;
+  float visibility = root->shadow_map.sample_compare(
+      vkr_metal_shadow_compare_sampler, uv, cascade, reference);
+  return mix(1.0f, visibility, fade);
 }
 
 float3 vkr_metal_packet_shadow_debug_color(uint mode,
@@ -261,4 +346,40 @@ float vkr_metal_packet_local_shadow_sample(
         reference);
   }
   return sum * (1.0 / 9.0);
+}
+
+// Same local-shadow projection and receiver bias as the surface path, with a
+// single centre comparison for volumetric injection.
+float vkr_metal_packet_local_shadow_one_tap(
+    constant VkrMetalPacketFrameRoot *root, uint first_view_encoded, uint kind,
+    float3 world_position) {
+  if (first_view_encoded == 0u)
+    return 1.0f;
+  uint first_view = first_view_encoded - 1u;
+  bool point = kind != 2u;
+  float3 light_position = root->local_shadow_views[first_view].light_position_near.xyz;
+  float3 from_light = world_position - light_position;
+  uint face = point ? vkr_local_shadow_face(from_light) : 0u;
+  const device VkrLocalShadowView &source = root->local_shadow_views[first_view + face];
+  float forward_depth = dot(from_light, source.light_direction_far.xyz);
+  if (forward_depth <= source.light_position_near.w ||
+      forward_depth >= source.light_direction_far.w)
+    return 1.0f;
+  float footprint = 2.0f * forward_depth * source.projection_params.x *
+                    source.projection_params.y;
+  float3 receiver = world_position - normalize(from_light) *
+                    (source.projection_params.z * footprint);
+  from_light = receiver - light_position;
+  face = point ? vkr_local_shadow_face(from_light) : 0u;
+  const device VkrLocalShadowView &view = root->local_shadow_views[first_view + face];
+  float4 clip = view.light_view_projection * float4(receiver, 1.0f);
+  if (clip.w <= 0.0f || clip.z < 0.0f || clip.z > clip.w)
+    return 1.0f;
+  float3 projected = clip.xyz / clip.w;
+  float2 uv = projected.xy * 0.5f + 0.5f;
+  if (!point && (any(uv < 0.0f) || any(uv > 1.0f)))
+    return 1.0f;
+  return root->local_shadow_map.sample_compare(vkr_metal_shadow_compare_sampler,
+                                                uv, first_view + face,
+                                                projected.z);
 }

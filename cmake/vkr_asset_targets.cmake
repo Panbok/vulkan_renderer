@@ -1,5 +1,6 @@
 # Cooked formats are shared by offline producers and runtime consumers.
 add_library(vkr_asset_formats STATIC
+    "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_diffuse_volume.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_font_cooked_decode.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_cooked_decode.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_decode.cpp")
@@ -25,6 +26,25 @@ set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "Disable KTX Vulkan upload path in rend
 
 set(_VKR_BUILD_SHARED_LIBS_PREV "${BUILD_SHARED_LIBS}")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build KTX dependencies statically." FORCE)
+# KTX's floating-point channel flags can set the high bit. Shift them as
+# uint32_t; the upstream signed shift triggers UBSan during HDR cube creation.
+find_package(Git REQUIRED)
+set(VKR_KTX_FLOAT_PATCH "${CMAKE_SOURCE_DIR}/vendor/ktx-float-channel-shift.patch")
+execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
+    apply --reverse --check "${VKR_KTX_FLOAT_PATCH}"
+    RESULT_VARIABLE vkr_ktx_patch_present OUTPUT_QUIET ERROR_QUIET)
+if(NOT vkr_ktx_patch_present EQUAL 0)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
+        apply --check "${VKR_KTX_FLOAT_PATCH}" RESULT_VARIABLE vkr_ktx_patch_check)
+    if(NOT vkr_ktx_patch_check EQUAL 0)
+        message(FATAL_ERROR "KTX floating-point channel patch no longer applies")
+    endif()
+    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
+        apply "${VKR_KTX_FLOAT_PATCH}" RESULT_VARIABLE vkr_ktx_patch_result)
+    if(NOT vkr_ktx_patch_result EQUAL 0)
+        message(FATAL_ERROR "Could not apply KTX floating-point channel patch")
+    endif()
+endif()
 add_subdirectory("${VKR_KTX_SOFTWARE_DIR}" "${CMAKE_BINARY_DIR}/vendor/ktx-software" EXCLUDE_FROM_ALL)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Clang can select MSVC STL vector-algorithm helpers newer than the

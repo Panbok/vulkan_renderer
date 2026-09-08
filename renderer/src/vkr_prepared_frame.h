@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vkr_color_grading.h"
 #include "vkr_frame_input.h"
 
 /* Private recording input. The renderer owns derived frame values; input
@@ -20,6 +21,19 @@ typedef struct VkrPreparedFrame {
   bool8_t fsr31_enabled;
   VkrTemporalFrame temporal;
   VkrExposureFrame exposure;
+  VkrColorGradingGpu color_grading;
   VkrBloomFrame bloom;
+  bool8_t dof_enabled;
+  VkrDofGpuParams dof;
+  bool8_t motion_blur_enabled;
+  VkrMotionBlurGpuParams motion_blur;
+  float64_t motion_blur_delta_seconds;
+  bool8_t subsurface_enabled;
+  VkrSubsurfaceGpuParams subsurface;
   VkrGtaoFrame gtao;
+  bool8_t ssr_enabled;
+  bool8_t ssgi_enabled;
+  VkrFogGpuParams fog;
+  VkrFroxelFogGpuParams froxel_fog;
+  uint64_t froxel_fog_signature;
 } VkrPreparedFrame;

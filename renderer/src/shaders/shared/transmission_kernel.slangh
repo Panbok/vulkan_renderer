@@ -77,13 +77,13 @@ float vkr_transmission_feedback_blend(float roughness)
 float3 vkr_transmission_compose(VkrTransmissionLobes lobes,
                                 float3 background,
                                 float3 base_color,
-                                float3 fresnel,
+                                float3 reflectance,
                                 float transmission,
                                 float metallic)
 {
     float resolved_transmission = saturate(transmission);
     float dielectric = 1.0f - saturate(metallic);
-    float3 transmitted = background * base_color * (1.0f - saturate(fresnel));
+    float3 transmitted = background * base_color * (1.0f - saturate(reflectance));
     return lobes.specular + (1.0f - resolved_transmission) * lobes.diffuse +
            resolved_transmission * dielectric * transmitted + lobes.emissive;
 }

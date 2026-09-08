@@ -1,0 +1,4 @@
+#ifndef VKR_DFG_CONTRACT
+#define VKR_DFG_CONTRACT
+#define VKR_DFG_LUT_SIZE 256u
+#endif

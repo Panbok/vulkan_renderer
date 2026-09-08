@@ -8,6 +8,8 @@ struct VkrVulkanEditorOverlayRoot
     uint decode_index;
     uint object_id;
     uint reserved;
+    VkrDisplayOutputParams* display_output;
+    uint64_t display_output_reserved;
 };
 
 struct VkrVulkanEditorOverlayPush
@@ -40,6 +42,9 @@ VkrVulkanEditorOverlayOutput editor_overlay_vertex(uint vertex_id : SV_VertexID)
 [shader("fragment")]
 float4 editor_overlay_fragment(VkrVulkanEditorOverlayOutput input) : SV_Target0
 {
+    VkrVulkanEditorOverlayRoot* root = g_editor_overlay_push.root;
+    input.color.rgb = vkr_display_output_ui(input.color.rgb,
+                                             root.display_output[0]);
     return input.color;
 }
 

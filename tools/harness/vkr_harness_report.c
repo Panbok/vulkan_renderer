@@ -497,6 +497,21 @@ bool8_t vkr_harness_report_write(const char *path,
           report->case_manifest.renderer.tonemap_enabled) &&
       vkr_harness_json_emit_bool(writer, "fxaa_enabled",
                                  report->case_manifest.renderer.fxaa_enabled) &&
+      vkr_harness_json_emit_string(
+          writer, "display_transform",
+          report->case_manifest.renderer.display_transform) &&
+      vkr_harness_json_emit_f64(
+          writer, "white_balance_temperature",
+          report->case_manifest.renderer.white_balance_temperature) &&
+      vkr_harness_json_emit_f64(
+          writer, "white_balance_tint",
+          report->case_manifest.renderer.white_balance_tint) &&
+      vkr_harness_json_emit_f64(
+          writer, "color_contrast",
+          report->case_manifest.renderer.color_contrast) &&
+      vkr_harness_json_emit_f64(
+          writer, "color_saturation",
+          report->case_manifest.renderer.color_saturation) &&
       vkr_harness_json_emit_string(writer, "renderer_backend",
                                    report->case_manifest.renderer.backend[0]
                                        ? report->case_manifest.renderer.backend
@@ -540,6 +555,37 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_f64(
           writer, "bloom_intensity",
           report->case_manifest.renderer.bloom_intensity) &&
+      vkr_harness_json_emit_string(writer, "display_output",
+                                   report->case_manifest.renderer.display_output) &&
+      vkr_harness_json_emit_bool(writer, "ssgi_enabled",
+                                 report->case_manifest.renderer.ssgi_enabled) &&
+      vkr_harness_json_emit_bool(writer, "ssr_enabled",
+                                 report->case_manifest.renderer.ssr_enabled) &&
+      vkr_harness_json_emit_bool(writer, "dof_enabled",
+                                 report->case_manifest.renderer.dof_enabled) &&
+      vkr_harness_json_emit_f64(
+          writer, "dof_focus_distance",
+          report->case_manifest.renderer.dof_focus_distance) &&
+      vkr_harness_json_emit_f64(writer, "dof_f_stop",
+                                report->case_manifest.renderer.dof_f_stop) &&
+      vkr_harness_json_emit_bool(
+          writer, "motion_blur_enabled",
+          report->case_manifest.renderer.motion_blur_enabled) &&
+      vkr_harness_json_emit_f64(
+          writer, "motion_blur_shutter_angle",
+          report->case_manifest.renderer.motion_blur_shutter_angle) &&
+      vkr_harness_json_emit_string(
+          writer, "motion_blur_entity",
+          report->case_manifest.renderer.motion_blur_entity) &&
+      vkr_harness_json_emit_name(writer, "motion_blur_entity_velocity") &&
+      vkr_json_writer_begin_array(writer) &&
+      vkr_json_writer_f64(
+          writer, report->case_manifest.renderer.motion_blur_entity_velocity_x) &&
+      vkr_json_writer_f64(
+          writer, report->case_manifest.renderer.motion_blur_entity_velocity_y) &&
+      vkr_json_writer_f64(
+          writer, report->case_manifest.renderer.motion_blur_entity_velocity_z) &&
+      vkr_json_writer_end_array(writer) &&
       vkr_harness_json_emit_bool(writer, "gtao_enabled",
                                  report->case_manifest.renderer.gtao_enabled) &&
       vkr_harness_json_emit_f64(writer, "gtao_radius",

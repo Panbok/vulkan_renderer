@@ -6,12 +6,17 @@
 #include "math/vec.h"
 #include "math/vkr_transform.h"
 #include "vkr_bloom.h"
+#include "vkr_dof.h"
+#include "vkr_subsurface.h"
+#include "vkr_motion_blur.h"
 #include "vkr_buffer.h"
 #include "vkr_exposure.h"
 #include "vkr_gpu_abi.h"
 #include "vkr_gtao.h"
 #include "vkr_ibl_math.h"
 #include "vkr_lighting.h"
+#include "vkr_fog.h"
+#include "vkr_froxel_fog.h"
 #include "vkr_render_resources.h"
 #include "vkr_renderer.h"
 #include "vkr_shadow.h"
@@ -19,7 +24,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 32u
+#define VKR_FRAME_INPUT_VERSION 44u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -69,6 +74,13 @@ typedef struct VkrFrameInfo {
   uint64_t scene_generation;
 } VkrFrameInfo;
 
+/** Presentation transform applied after scene-linear exposure. */
+typedef enum VkrDisplayTransform {
+  VKR_DISPLAY_TRANSFORM_AGX = 0,
+  VKR_DISPLAY_TRANSFORM_ACES_FITTED = 1,
+  VKR_DISPLAY_TRANSFORM_COUNT,
+} VkrDisplayTransform;
+
 /**
  * @brief Global camera and lighting data for the frame.
  *
@@ -89,6 +101,14 @@ typedef struct VkrFrameGlobals {
   float32_t manual_exposure;
   /** Additive EV bias. Automatic mode only; manual mode ignores it. */
   float32_t exposure_compensation_ev;
+  /** Presentation transform selected for the fullscreen tonemap pass. */
+  uint32_t display_transform;
+  /** White balance offsets normalized to [-1, 1]. */
+  float32_t white_balance_temperature;
+  float32_t white_balance_tint;
+  /** Restrained display grading after metering and before display transform. */
+  float32_t color_contrast;
+  float32_t color_saturation;
   uint32_t render_mode;
   /**
    * Bloom controls, added in packet 21. A zeroed block disables bloom, so a
@@ -114,6 +134,19 @@ typedef struct VkrFrameGlobals {
   float32_t gtao_power;
   /** Presentation-only sharpness in [0, 1]. Zero bypasses sharpening. */
   float32_t image_sharpness;
+  /** Half-resolution opaque SSR with independent reflection history. */
+  bool8_t ssr_enabled;
+  bool8_t ssgi_enabled;
+  VkrFogSettings fog;
+  /** Opt-in local participating medium; supersedes analytic fog when enabled. */
+  VkrFroxelFogSettings froxel_fog;
+  /** Optional post-reconstruction lens blur; a zeroed block disables it. */
+  bool8_t dof_enabled;
+  float32_t dof_focus_distance;
+  float32_t dof_f_stop;
+  bool8_t motion_blur_enabled;
+  /** Centred exposure angle in [0,360] degrees; zero also bypasses blur. */
+  float32_t motion_blur_shutter_angle;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */
@@ -135,6 +168,10 @@ typedef struct VkrFrameLighting {
   const VkrPointLightGrid *point_light_grid;
   const VkrFrameIblProbe *ibl_probes;
   uint32_t ibl_probe_count;
+  VkrDiffuseVolumeBinding diffuse_volume;
+  VkrSubsurfaceBinding subsurface;
+  const VkrRectangleLight *rectangle_lights;
+  uint32_t rectangle_light_count;
 } VkrFrameLighting;
 
 /**
@@ -288,14 +325,15 @@ typedef struct VkrShadowConfigOverride {
  * and bound the slice used for cascade selection and cross-fade. The depth span
  * is the divisor that converts a texel-denominated receiver bias into the
  * normalized orthographic depth the shadow map stores.
- * `origin_inv_size_pad` is (light-space origin x, y, 1 / shadow map size, 0).
+ * `origin_inv_size_sun` is (light-space origin x, y, 1 / shadow map size,
+ * tangent of half the sun angular diameter). A zero tangent retains PCF.
  * The origin is in the receiver's reconstructed right/up basis, which is what
  * makes the rotated kernel's cell hash stable under light-view translation.
  */
 typedef struct VkrShadowCascadePacketData {
   Mat4 light_view_projection;
   Vec4 split_near_far_texel_depth;
-  Vec4 origin_inv_size_pad;
+  Vec4 origin_inv_size_sun;
 } VkrShadowCascadePacketData;
 
 /**
@@ -331,6 +369,8 @@ typedef struct VkrLocalShadowPassPayload {
   uint32_t view_count;
   uint32_t map_size;
   uint32_t face_budget;
+  /** Bits of views that require a depth redraw this submission. */
+  uint32_t render_mask;
   uint32_t light_first_view[VKR_MAX_SCENE_POINT_LIGHTS];
   VkrLocalShadowView views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
 } VkrLocalShadowPassPayload;
@@ -367,6 +407,8 @@ typedef struct VkrUiPassPayload {
 typedef struct VkrSkyboxPassPayload {
   VkrTextureHandle cubemap;
   VkrMaterialHandle material;
+  /** Source RGB excludes the sun; atmosphere source alpha is disc coverage. */
+  Vec3 solar_disk_radiance;
 } VkrSkyboxPassPayload;
 
 /**

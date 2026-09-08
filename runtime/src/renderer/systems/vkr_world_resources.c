@@ -5,6 +5,7 @@
 
 #include "renderer/systems/vkr_world_resources.h"
 
+#include <math.h>
 #include <stdio.h>
 
 #include "containers/str.h"
@@ -271,6 +272,268 @@ bool8_t vkr_world_resources_prepare_scene_environment(
   }
   return vkr_world_resources_prepare_published_environment(assets, resources,
                                                            scene);
+}
+
+vkr_internal bool8_t
+vkr_world_resources_has_atmosphere_publisher(const VkrRenderAssets *assets) {
+  return assets && assets->asset_publisher &&
+         assets->asset_publisher->bake_atmosphere &&
+         assets->asset_publisher->atmosphere_bake_status;
+}
+
+vkr_internal bool8_t vkr_world_resources_clear_atmosphere_candidate(
+    VkrRenderAssets *assets, VkrSceneAtmosphere *atmosphere) {
+  if (!assets || !atmosphere)
+    return false_v;
+  const bool8_t prefilter_released = vkr_world_resources_release_texture(
+      &assets->texture_system, &atmosphere->candidate_prefilter_cubemap);
+  const bool8_t source_released = vkr_world_resources_release_texture(
+      &assets->texture_system, &atmosphere->candidate_source_cubemap);
+  if (!prefilter_released || !source_released) {
+    log_warn("Atmosphere candidate release remains pending; preserving owned "
+             "handles for retry");
+    return false_v;
+  }
+  atmosphere->candidate_sh_deringing = 0.0f;
+  atmosphere->candidate_settings = vkr_atmosphere_settings_defaults();
+  atmosphere->candidate_settings.enabled = false_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_world_resources_release_environment_tuple(
+    VkrRenderAssets *assets, VkrSceneEnvironment *environment) {
+  if (!assets || !environment)
+    return false_v;
+  const bool8_t prefilter_released = vkr_world_resources_release_texture(
+      &assets->texture_system, &environment->prefilter_cubemap);
+  const bool8_t source_released = vkr_world_resources_release_texture(
+      &assets->texture_system, &environment->source_cubemap);
+  const bool8_t delivery_released = vkr_world_resources_release_texture(
+      &assets->texture_system, &environment->delivery_equirect);
+  if (!prefilter_released || !source_released || !delivery_released) {
+    log_warn("Retired atmosphere environment release remains pending; "
+             "preserving owned handles for retry");
+    return false_v;
+  }
+  *environment = (VkrSceneEnvironment){
+      .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
+  };
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_world_resources_drain_retired_atmosphere_environment(
+    VkrRenderAssets *assets, VkrSceneAtmosphere *atmosphere) {
+  if (!assets || !atmosphere)
+    return false_v;
+  const VkrSceneEnvironment *retired = &atmosphere->retired_environment;
+  if (retired->delivery_equirect.id == 0u && retired->source_cubemap.id == 0u &&
+      retired->prefilter_cubemap.id == 0u)
+    return true_v;
+  return vkr_world_resources_release_environment_tuple(
+      assets, &atmosphere->retired_environment);
+}
+
+vkr_internal bool8_t vkr_world_resources_atmosphere_result_valid(
+    const VkrAtmosphereBakeResult *result) {
+  return result && isfinite(result->solar_irradiance.x) &&
+         result->solar_irradiance.x >= 0.0f &&
+         isfinite(result->solar_irradiance.y) &&
+         result->solar_irradiance.y >= 0.0f &&
+         isfinite(result->solar_irradiance.z) &&
+         result->solar_irradiance.z >= 0.0f &&
+         isfinite(result->solar_disk_radiance.x) &&
+         result->solar_disk_radiance.x >= 0.0f &&
+         isfinite(result->solar_disk_radiance.y) &&
+         result->solar_disk_radiance.y >= 0.0f &&
+         isfinite(result->solar_disk_radiance.z) &&
+         result->solar_disk_radiance.z >= 0.0f;
+}
+
+vkr_internal bool8_t vkr_world_resources_disable_scene_atmosphere(
+    VkrRenderAssets *assets, VkrScene *scene) {
+  VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
+  if (!vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere) ||
+      !vkr_world_resources_drain_retired_atmosphere_environment(assets,
+                                                                atmosphere))
+    return false_v;
+  atmosphere->candidate_revision = 0u;
+  atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE;
+  if (!atmosphere->active_revision)
+    return true_v;
+
+  atmosphere->retired_environment = scene->environment;
+  scene->environment = (VkrSceneEnvironment){
+      .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
+  };
+  atmosphere->active_settings = vkr_atmosphere_settings_defaults();
+  atmosphere->active_settings.enabled = false_v;
+  atmosphere->active_result = (VkrAtmosphereBakeResult){0};
+  atmosphere->active_revision = 0u;
+  return vkr_world_resources_drain_retired_atmosphere_environment(assets,
+                                                                  atmosphere);
+}
+
+bool8_t vkr_world_resources_prepare_scene_atmosphere(
+    VkrRenderAssets *assets, VkrWorldResources *resources, VkrScene *scene) {
+  (void)resources;
+  if (!assets || !scene)
+    return false_v;
+
+  VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
+  if (!atmosphere->requested_revision)
+    return true_v;
+  if (!vkr_world_resources_drain_retired_atmosphere_environment(assets,
+                                                                atmosphere))
+    return false_v;
+  if (!atmosphere->requested_settings.enabled) {
+    if (!atmosphere->active_revision && !atmosphere->candidate_revision &&
+        atmosphere->bake_state == VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE)
+      return true_v;
+    return vkr_world_resources_disable_scene_atmosphere(assets, scene);
+  }
+  if (atmosphere->active_revision == atmosphere->requested_revision)
+    return true_v;
+  if (atmosphere->candidate_revision &&
+      atmosphere->candidate_revision != atmosphere->requested_revision) {
+    if (!vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere))
+      return false_v;
+    atmosphere->candidate_revision = 0u;
+    atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE;
+  }
+  if (atmosphere->bake_state == VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING &&
+      atmosphere->candidate_revision == atmosphere->requested_revision &&
+      atmosphere->candidate_source_cubemap.id != 0u)
+    return true_v;
+  if (atmosphere->bake_state == VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED &&
+      atmosphere->candidate_revision == atmosphere->requested_revision) {
+    if ((atmosphere->candidate_source_cubemap.id != 0u ||
+         atmosphere->candidate_prefilter_cubemap.id != 0u) &&
+        !vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere))
+      return false_v;
+    return false_v;
+  }
+  if (!vkr_atmosphere_settings_valid(&atmosphere->requested_settings) ||
+      !isfinite(atmosphere->requested_sh_deringing) ||
+      atmosphere->requested_sh_deringing < 0.0f ||
+      !vkr_world_resources_has_atmosphere_publisher(assets)) {
+    atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
+    atmosphere->candidate_revision = atmosphere->requested_revision;
+    return false_v;
+  }
+
+  char source_name_storage[160];
+  char prefilter_name_storage[160];
+  snprintf(source_name_storage, sizeof(source_name_storage),
+           "__atmosphere.scene.%p.%llu.source", (void *)scene,
+           (unsigned long long)atmosphere->requested_revision);
+  snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
+           "__atmosphere.scene.%p.%llu.prefilter", (void *)scene,
+           (unsigned long long)atmosphere->requested_revision);
+  const String8 source_name = string8_create_from_cstr(
+      (const uint8_t *)source_name_storage, string_length(source_name_storage));
+  const String8 prefilter_name =
+      string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
+                               string_length(prefilter_name_storage));
+  if (!vkr_world_resources_create_writable_cube_texture(
+          assets, source_name, VKR_ATMOSPHERE_SOURCE_SIZE, true_v,
+          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+          &atmosphere->candidate_source_cubemap) ||
+      !vkr_world_resources_create_writable_cube_texture(
+          assets, prefilter_name, VKR_IBL_PREFILTER_SIZE, true_v,
+          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+          &atmosphere->candidate_prefilter_cubemap)) {
+    (void)vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere);
+    atmosphere->candidate_revision = atmosphere->requested_revision;
+    atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
+    return false_v;
+  }
+
+  const VkrAtmosphereGpuParams params =
+      vkr_atmosphere_prepare(&atmosphere->requested_settings);
+  if (!assets->asset_publisher->bake_atmosphere(
+          assets->asset_publisher->state, &params,
+          atmosphere->candidate_source_cubemap,
+          atmosphere->candidate_prefilter_cubemap,
+          atmosphere->requested_sh_deringing)) {
+    (void)vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere);
+    atmosphere->candidate_revision = atmosphere->requested_revision;
+    atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
+    return false_v;
+  }
+  atmosphere->candidate_settings = atmosphere->requested_settings;
+  atmosphere->candidate_sh_deringing = atmosphere->requested_sh_deringing;
+  atmosphere->candidate_revision = atmosphere->requested_revision;
+  atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING;
+  return true_v;
+}
+
+void vkr_world_resources_poll_scene_atmosphere(VkrRenderAssets *assets,
+                                               VkrScene *scene) {
+  if (!assets || !scene)
+    return;
+  VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
+  if (atmosphere->bake_state != VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING ||
+      !atmosphere->candidate_revision || !assets->asset_publisher ||
+      !assets->asset_publisher->atmosphere_bake_status)
+    return;
+
+  VkrAtmosphereBakeResult result = {0};
+  const VkrAtmosphereBakeStatus status =
+      assets->asset_publisher->atmosphere_bake_status(
+          assets->asset_publisher->state, atmosphere->candidate_source_cubemap,
+          &result);
+  if (status == VKR_ATMOSPHERE_BAKE_PENDING)
+    return;
+  if (status != VKR_ATMOSPHERE_BAKE_READY ||
+      !vkr_world_resources_atmosphere_result_valid(&result)) {
+    if (vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere))
+      atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
+    return;
+  }
+
+  if (!vkr_world_resources_drain_retired_atmosphere_environment(assets,
+                                                                atmosphere))
+    return;
+
+  VkrSceneEnvironment previous = scene->environment;
+  scene->environment = (VkrSceneEnvironment){
+      .enabled = true_v,
+      .source_kind = VKR_SCENE_ENV_SOURCE_CUBEMAP,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .sh_deringing = atmosphere->candidate_sh_deringing,
+      .source_face_size = VKR_ATMOSPHERE_SOURCE_SIZE,
+      .source_mip_count = VKR_IBL_PREFILTER_MIP_COUNT,
+      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+      .source_cubemap = atmosphere->candidate_source_cubemap,
+      .prefilter_cubemap = atmosphere->candidate_prefilter_cubemap,
+      .bake_state = VKR_SCENE_ENV_BAKE_STATE_READY,
+  };
+  atmosphere->candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  atmosphere->candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  atmosphere->active_settings = atmosphere->candidate_settings;
+  atmosphere->active_result = result;
+  atmosphere->active_revision = atmosphere->candidate_revision;
+  atmosphere->candidate_revision = 0u;
+  atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_READY;
+  atmosphere->retired_environment = previous;
+  (void)vkr_world_resources_drain_retired_atmosphere_environment(assets,
+                                                                 atmosphere);
 }
 
 void vkr_world_resources_bake_scene_ibl_if_pending(VkrRenderAssets *assets,

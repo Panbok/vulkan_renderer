@@ -1,5 +1,6 @@
 #pragma once
 #include "defines.h"
+#include "vkr_display_output.h"
 
 typedef struct VkrSurfaceSize {
   uint32_t width;
@@ -16,4 +17,6 @@ typedef struct VkrNativeSurface {
   void *win32_window;
   void *context;
   VkrSurfaceSize (*pixel_size)(void *context);
+  /** Optional platform snapshot query on the render thread. */
+  VkrDisplayOutputSnapshot (*display_output_snapshot)(void *context);
 } VkrNativeSurface;

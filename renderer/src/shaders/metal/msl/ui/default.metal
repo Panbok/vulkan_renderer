@@ -6,6 +6,7 @@ struct VkrMetalPacketUiRoot {
   uint mode;
   uint flags;
   float4 corner_radii;
+  constant VkrDisplayOutputParams *display_output;
 };
 
 struct VkrMetalPacketUiOutput {
@@ -14,8 +15,14 @@ struct VkrMetalPacketUiOutput {
   float4 color [[user(COLOR)]];
 };
 
-static_assert(sizeof(VkrMetalPacketUiRoot) == 64,
-              "VkrMetalPacketUiRoot must remain 64 bytes");
+static_assert(sizeof(VkrMetalPacketUiRoot) == 80,
+              "VkrMetalPacketUiRoot must remain 80 bytes");
+
+static float4 vkr_metal_packet_ui_display_color(
+    float4 color, constant VkrMetalPacketUiRoot *root) {
+  color.rgb = vkr_display_output_ui(color.rgb, *root->display_output);
+  return color;
+}
 
 VkrMetalPacketUiOutput vkr_metal_packet_ui_vertex_output(
     uint vertex_id, constant VkrMetalPacketUiRoot *root) {
@@ -43,8 +50,9 @@ fragment float4 vkr_metal_packet_ui_fragment(
                                filter::linear);
   if (root->mode == 0u) {
     if ((root->flags & 1u) == 0u)
-      return input.color;
-    return input.color * root->texture.sample(ui_sampler, input.texcoord);
+      return vkr_metal_packet_ui_display_color(input.color, root);
+    return vkr_metal_packet_ui_display_color(
+        input.color * root->texture.sample(ui_sampler, input.texcoord), root);
   }
 
   float4 atlas = root->texture.sample(ui_sampler, input.texcoord);
@@ -61,7 +69,8 @@ fragment float4 vkr_metal_packet_ui_fragment(
         max(min(atlas.r, atlas.g), min(max(atlas.r, atlas.g), atlas.b)) - 0.5;
     alpha = saturate(range * signed_distance + 0.5);
   }
-  return float4(input.color.rgb, input.color.a * alpha);
+  return vkr_metal_packet_ui_display_color(
+      float4(input.color.rgb, input.color.a * alpha), root);
 }
 
 vertex VkrMetalPacketUiOutput vkr_metal_packet_ui_rect_vertex(
@@ -84,5 +93,6 @@ fragment float4 vkr_metal_packet_ui_rect_fragment(
                    radius;
   float edge = max(fwidth(distance), 1e-4);
   float alpha = saturate(0.5 - distance / edge);
-  return float4(input.color.rgb, input.color.a * alpha);
+  return vkr_metal_packet_ui_display_color(
+      float4(input.color.rgb, input.color.a * alpha), root);
 }

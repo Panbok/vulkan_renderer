@@ -31,12 +31,36 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
   VKR_VULKAN_GRAPH_EXECUTOR_HZB_BUILD,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_BASE,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_MIP,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSR_TRACE,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSR_TEMPORAL,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSR_COMPOSITE,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_BASE,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_MIP,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TRACE,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TEMPORAL,
+  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_COMPOSITE,
+  VKR_VULKAN_GRAPH_EXECUTOR_FOG_APPLY,
+  VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INJECT,
+  VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INTEGRATE,
+  VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_APPLY,
   VKR_VULKAN_GRAPH_EXECUTOR_SDSM_REDUCE,
   VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
   VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
   VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND,
   VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM,
   VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_RESOLVE,
+  VKR_VULKAN_GRAPH_EXECUTOR_SUBSURFACE_GATHER,
+  VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX,
+  VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX,
+  VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT,
+  VKR_VULKAN_GRAPH_EXECUTOR_DOF_COC,
+  VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL,
+  VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL,
+  VKR_VULKAN_GRAPH_EXECUTOR_DOF_PREFILTER,
+  VKR_VULKAN_GRAPH_EXECUTOR_DOF_GATHER,
+  VKR_VULKAN_GRAPH_EXECUTOR_DOF_COMPOSITE,
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_PREFILTER,
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
@@ -56,6 +80,8 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL,
   VKR_VULKAN_GRAPH_EXECUTOR_COUNT,
 } VkrVulkanGraphExecutorKind;
+
+enum { VKR_VULKAN_FULLSCREEN_ACES_FITTED = 1u << 4u };
 
 struct VkrVulkanPreparedGraphPass {
   VkrVulkanGraphExecutorKind kind;
@@ -115,12 +141,36 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssr.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssr.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssr.trace", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssr.temporal", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssr.composite", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssgi.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssgi.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssgi.trace", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssgi.temporal", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.ssgi.composite", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.fog.apply", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.froxel.inject", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.froxel.integrate", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.froxel.apply", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.sdsm.reduce", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.subsurface.gather", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.motion_blur.tile_max", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.motion_blur.neighbor_max", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.motion_blur.reconstruct", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.dof.coc", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.dof.dilate_horizontal", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.dof.dilate_vertical", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.dof.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.dof.gather", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.dof.composite", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.bloom.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
@@ -288,10 +338,10 @@ vkr_internal bool8_t vkr_vk_graph_format_supports(VkrVulkanRenderer *renderer,
 vkr_internal bool8_t vkr_vk_graph_image_desc_equal(const VkrRgImageDesc *a,
                                                    const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
-         a->format == b->format && a->usage.set == b->usage.set &&
-         a->samples == b->samples && a->layers == b->layers &&
-         a->mip_levels == b->mip_levels && a->type == b->type &&
-         a->flags == b->flags;
+         a->depth == b->depth && a->format == b->format &&
+         a->usage.set == b->usage.set && a->samples == b->samples &&
+         a->layers == b->layers && a->mip_levels == b->mip_levels &&
+         a->type == b->type && a->flags == b->flags;
 }
 
 vkr_internal void
@@ -364,18 +414,24 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
   if (renderer->config.capture_ring_capacity > 0u)
     checked_usage.set |= VKR_TEXTURE_USAGE_TRANSFER_SRC;
   const VkImageUsageFlags usage = vkr_vk_graph_image_usage(checked_usage);
+  const bool8_t volume = desc->type == VKR_TEXTURE_TYPE_3D;
   if (format == VK_FORMAT_UNDEFINED || usage == 0u ||
       !vkr_vk_graph_format_supports(renderer, format, checked_usage) ||
-      desc->samples != 1u || desc->layers == 0u ||
+      desc->samples != 1u || !desc->depth || desc->layers == 0u ||
       desc->layers > VKR_VULKAN_GRAPH_LAYER_MAX || desc->mip_levels == 0u ||
-      desc->mip_levels > VKR_VULKAN_TEXTURE_MIP_MAX)
+      desc->mip_levels > VKR_VULKAN_TEXTURE_MIP_MAX ||
+      (volume && (desc->layers != 1u ||
+                  (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY))) ||
+      (!volume && desc->depth != 1u))
     return false_v;
   const bool8_t array_view =
       desc->layers > 1u || (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY);
-  if (!vkr_vk_create_image_ex(renderer, desc->width, desc->height,
+  if (!vkr_vk_create_image_ex(renderer, desc->width, desc->height, desc->depth,
                               desc->mip_levels, desc->layers, format, 0u,
-                              array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                                         : VK_IMAGE_VIEW_TYPE_2D,
+                              volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                              volume ? VK_IMAGE_VIEW_TYPE_3D
+                                     : (array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                   : VK_IMAGE_VIEW_TYPE_2D),
                               usage, VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
                               &out_instance->image, NULL))
     return false_v;
@@ -384,8 +440,9 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
     const VkImageViewCreateInfo mip_view_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = out_instance->image.handle,
-        .viewType =
-            array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+        .viewType = volume ? VK_IMAGE_VIEW_TYPE_3D
+                           : (array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                         : VK_IMAGE_VIEW_TYPE_2D),
         .format = format,
         .subresourceRange =
             {
@@ -404,7 +461,7 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
       vkr_vk_destroy_graph_image_instance(renderer, out_instance);
       return false_v;
     }
-    for (uint32_t layer = 0u; layer < desc->layers; ++layer) {
+    for (uint32_t layer = 0u; !volume && layer < desc->layers; ++layer) {
       const VkImageViewCreateInfo view_info = {
           .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
           .image = out_instance->image.handle,
@@ -561,13 +618,15 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
     for (uint32_t instance = 0; instance < instance_count; ++instance) {
       if (!vkr_vk_create_graph_image_instance(renderer, &image->desc,
                                               &slot->instances[instance])) {
-        log_error("Vulkan failed to realize graph image '%.*s' "
-                  "(%ux%u, format=%u, usage=0x%x, samples=%u, layers=%u, "
-                  "mips=%u, instance=%u/%u)",
-                  (int)image->name.length, image->name.str, image->desc.width,
-                  image->desc.height, image->desc.format, image->desc.usage.set,
-                  image->desc.samples, image->desc.layers,
-                  image->desc.mip_levels, instance, instance_count);
+        log_error(
+            "Vulkan failed to realize graph image '%.*s' "
+            "(%ux%ux%u, type=%u, format=%u, usage=0x%x, samples=%u, layers=%u, "
+            "mips=%u, instance=%u/%u)",
+            (int)image->name.length, image->name.str, image->desc.width,
+            image->desc.height, image->desc.depth, image->desc.type,
+            image->desc.format, image->desc.usage.set, image->desc.samples,
+            image->desc.layers, image->desc.mip_levels, instance,
+            instance_count);
         vkr_vk_destroy_graph_image(renderer, slot);
         return false_v;
       }
@@ -671,6 +730,38 @@ void vkr_vulkan_renderer_retained_shadow_token(
         slot->desc.height != renderer->prepared_frame.shadow_map_size ||
         slot->desc.format != renderer->prepared_frame.shadow_depth_format ||
         slot->desc.layers != renderer->prepared_frame.shadow_map_layer_count)
+      return;
+    const VkrVulkanGraphImageInstance *instance = &slot->instances[image_index];
+    out_token->resource_generation = slot->graph_generation;
+    const uint32_t layer_count = Min(slot->desc.layers, 32u);
+    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+      if (instance->retained_states[layer].content_valid)
+        out_token->valid_layer_mask |= UINT32_C(1) << layer;
+    }
+    return;
+  }
+}
+
+void vkr_vulkan_renderer_retained_local_shadow_token(
+    VkrVulkanRenderer *renderer, uint32_t image_index,
+    VkrRetainedLocalShadowToken *out_token) {
+  *out_token = (VkrRetainedLocalShadowToken){0};
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, "local_shadow_map"))
+      continue;
+    VkrVulkanGraphImage *slot = &renderer->graph_images[i];
+    if (!slot->live || slot->graph_generation != image->generation ||
+        slot->instance_count != renderer->targets.image_count ||
+        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
+        slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
+        slot->desc.type != VKR_TEXTURE_TYPE_2D ||
+        slot->desc.width != renderer->prepared_frame.local_shadow_map_size ||
+        slot->desc.height != renderer->prepared_frame.local_shadow_map_size ||
+        slot->desc.format != renderer->prepared_frame.shadow_depth_format ||
+        slot->desc.layers !=
+            renderer->prepared_frame.local_shadow_map_layer_count)
       return;
     const VkrVulkanGraphImageInstance *instance = &slot->instances[image_index];
     out_token->resource_generation = slot->graph_generation;
@@ -998,6 +1089,12 @@ vkr_internal bool8_t vkr_vk_prepare_graph_image_barriers(
                                         instance->image.mip_levels,
                                         instance->image.array_layers, &base_mip,
                                         &mip_count, &base_layer, &layer_count);
+    const VkrVulkanGraphImage *graph_image =
+        &renderer->graph_images[barrier->image.id - 1u];
+    if (graph_image->desc.type == VKR_TEXTURE_TYPE_3D) {
+      base_layer = 0u;
+      layer_count = 1u;
+    }
     native[i] = (VkImageMemoryBarrier2){
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = lowered.src_stages,
@@ -1103,6 +1200,11 @@ vkr_internal bool8_t vkr_vk_graph_attachment(
     return false_v;
   const VkrVulkanGraphImage *graph_image =
       &renderer->graph_images[attachment->image.id - 1u];
+  /* Dynamic rendering never accepts a 3D image view. The graph validator
+     rejects these attachments too; retain the native boundary so an invalid
+     graph cannot reach the 2D layer-view table. */
+  if (graph_image->desc.type == VKR_TEXTURE_TYPE_3D)
+    return false_v;
   VkImageView view =
       graph_image->external_swapchain ? instance->image.view
       : attachment->desc.slice.layer_count == 1u
@@ -1159,14 +1261,16 @@ vkr_internal bool8_t vkr_vk_graph_sampled_index(VkrVulkanRenderer *renderer,
 /**
  * @brief Resolves the final HDR input shared by fullscreen and editor draws.
  *
- * Binding 2 exists only when bloom produced `bloom_combined`; otherwise the
- * pre-bloom temporal result at binding 0 remains the source.
+ * Bloom at binding 2 takes precedence over DoF at binding 3, motion blur at
+ * binding 4, then the original reconstructed source at binding 0.
  */
 vkr_internal bool8_t vkr_vk_graph_fullscreen_source(VkrVulkanRenderer *renderer,
                                                     const VkrRgPass *pass,
                                                     uint32_t *out_index) {
   const uint32_t binding =
-      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) ? 2u : 0u;
+      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) ? 2u :
+      vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u) ? 3u :
+      vkr_rg_pass_find_image_use(&pass->desc, 4u, 0u) ? 4u : 0u;
   return vkr_vk_graph_sampled_index(renderer, pass, binding, out_index);
 }
 
@@ -1282,7 +1386,8 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     prepared->scissor = editor_scissor;
     if (!vkr_vk_prepare_packet_fullscreen(
             renderer, &prepared->fullscreen,
-            VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index, 0u, 0u,
+            VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index, 0u,
+            VKR_VULKAN_FULLSCREEN_ALREADY_OUTPUT_ENCODED,
             true_v, (uint32_t)image_rect.z, (uint32_t)image_rect.w))
       return false_v;
     return true_v;
@@ -1302,7 +1407,12 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
         renderer, &prepared->fullscreen,
         VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index,
         exposure_state ? exposure_state->buffer.address : 0u,
-        (renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP : 0u) |
+        (renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP
+                                          : 0u) |
+            (packet->input.globals.display_transform ==
+                     VKR_DISPLAY_TRANSFORM_ACES_FITTED
+                 ? VKR_VULKAN_FULLSCREEN_ACES_FITTED
+                 : 0u) |
             (renderer->prepared_frame.fsr31_enabled
                  ? VKR_VULKAN_FULLSCREEN_OPAQUE_ALPHA
                  : 0u),
@@ -1423,7 +1533,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_transfer_pass(
   VkrVulkanGraphImageInstance *destination = vkr_vk_graph_image(
       renderer, write->image, renderer->prepared_frame.image_index);
   if (!source || !destination ||
-      source->image.format != destination->image.format)
+      source->image.format != destination->image.format ||
+      source->image.depth != 1u || destination->image.depth != 1u)
     return false_v;
   prepared->transfer_region = (VkImageCopy2){
       .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
@@ -1496,9 +1607,10 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
       bytes += ui_root_bytes;
       break;
     case VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE:
-      bytes += (uint64_t)renderer->pending_ibl_bake_count *
-               ((VKR_VULKAN_TEXTURE_MIP_MAX + 1u) * sizeof(VkrVulkanIblRoot) +
-                sizeof(VkrVulkanIblShRoot));
+      bytes +=
+          (uint64_t)renderer->pending_ibl_bake_count *
+          ((VKR_VULKAN_TEXTURE_MIP_MAX + 1u) * sizeof(VkrVulkanIblRoot) +
+           sizeof(VkrVulkanIblShRoot) + 4u * sizeof(VkrVulkanAtmosphereRoot));
       break;
     default:
       break;
@@ -1632,6 +1744,34 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_fsr31_dispatch(renderer, &prepared->fsr31, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_HZB_BUILD:
     return vkr_vk_prepare_deferred_hzb(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_BASE:
+    return vkr_vk_prepare_ssr_depth_base(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_MIP:
+    return vkr_vk_prepare_ssr_depth_mip(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_TRACE:
+    return vkr_vk_prepare_ssr_trace(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_TEMPORAL:
+    return vkr_vk_prepare_ssr_temporal(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_COMPOSITE:
+    return vkr_vk_prepare_ssr_composite(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_BASE:
+    return vkr_vk_prepare_ssgi_depth_base(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_MIP:
+    return vkr_vk_prepare_ssgi_depth_mip(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TRACE:
+    return vkr_vk_prepare_ssgi_trace(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TEMPORAL:
+    return vkr_vk_prepare_ssgi_temporal(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_COMPOSITE:
+    return vkr_vk_prepare_ssgi_composite(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_FOG_APPLY:
+    return vkr_vk_prepare_fog_apply(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INJECT:
+    return vkr_vk_prepare_froxel_inject(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INTEGRATE:
+    return vkr_vk_prepare_froxel_integrate(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_APPLY:
+    return vkr_vk_prepare_froxel_apply(renderer, &prepared->compute, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_SDSM_REDUCE:
     return vkr_vk_prepare_deferred_sdsm(renderer, &prepared->compute, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
@@ -1639,6 +1779,35 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
                                              pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
     return vkr_vk_prepare_exposure_resolve(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SUBSURFACE_GATHER:
+    return vkr_vk_prepare_subsurface(renderer, &prepared->compute, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX:
+    return vkr_vk_prepare_motion_blur(renderer, &prepared->compute, pass,
+                                       VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_TILE_MAX);
+  case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX:
+    return vkr_vk_prepare_motion_blur(renderer, &prepared->compute, pass,
+                                       VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_NEIGHBOR_MAX);
+  case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT:
+    return vkr_vk_prepare_motion_blur(renderer, &prepared->compute, pass,
+                                       VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_RECONSTRUCT);
+  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_COC:
+    return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
+                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_COC);
+  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL:
+    return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
+                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_HORIZONTAL);
+  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL:
+    return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
+                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_VERTICAL);
+  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_PREFILTER:
+    return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
+                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_PREFILTER);
+  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_GATHER:
+    return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
+                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_GATHER);
+  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_COMPOSITE:
+    return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
+                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_COMPOSITE);
   case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_PREFILTER:
     return vkr_vk_prepare_bloom_prefilter(renderer, &prepared->compute, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE:
@@ -1703,6 +1872,24 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   slot->temporal_surface_input = NULL;
   slot->temporal_surface_output = NULL;
   slot->temporal_history_valid = false_v;
+  slot->motion_blur_interval_scale = 0.0f;
+  slot->ssr_color_input = NULL;
+  slot->ssr_color_output = NULL;
+  slot->ssr_depth_input = NULL;
+  slot->ssr_depth_output = NULL;
+  slot->ssr_identity_input = NULL;
+  slot->ssr_identity_output = NULL;
+  slot->ssr_history_valid = false_v;
+  slot->ssgi_color_input = NULL;
+  slot->ssgi_color_output = NULL;
+  slot->ssgi_depth_input = NULL;
+  slot->ssgi_depth_output = NULL;
+  slot->ssgi_identity_input = NULL;
+  slot->ssgi_identity_output = NULL;
+  slot->ssgi_history_valid = false_v;
+  slot->froxel_history_input = NULL;
+  slot->froxel_history_output = NULL;
+  slot->froxel_history_valid = false_v;
   slot->temporal_previous_view_projection =
       renderer->graph->packet->temporal.current_view_projection;
   slot->temporal_previous_frame_index =

@@ -4,6 +4,7 @@
 #include "platform/vkr_platform.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 
 vkr_internal bool8_t vkr_standard_scene_runtime_register_duration_metric(
@@ -184,15 +185,26 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
       .ambient_color = vec4_new(0.1f, 0.1f, 0.1f, 1.0f),
       .exposure_mode = VKR_EXPOSURE_MODE_AUTOMATIC,
       .manual_exposure = VKR_DEFAULT_EXPOSURE,
+      .display_transform = VKR_DISPLAY_TRANSFORM_AGX,
+      .white_balance_temperature = 0.0f,
+      .white_balance_tint = 0.0f,
+      .color_contrast = 1.0f,
+      .color_saturation = 1.0f,
       .bloom_enabled = !application->renderer.bloom_forced_disabled,
       .bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD,
       .bloom_knee = VKR_BLOOM_DEFAULT_KNEE,
       .bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY,
+      .dof_focus_distance = VKR_DOF_DEFAULT_FOCUS_DISTANCE,
+      .dof_f_stop = VKR_DOF_DEFAULT_F_STOP,
+      .motion_blur_shutter_angle = VKR_MOTION_BLUR_DEFAULT_SHUTTER_ANGLE,
+      .ssr_enabled = !application->renderer.ssr_forced_disabled,
+      .ssgi_enabled = false_v,
       .gtao_enabled = !application->renderer.gtao_forced_disabled,
       .gtao_radius = VKR_GTAO_DEFAULT_RADIUS,
       .gtao_power = VKR_GTAO_DEFAULT_POWER,
       .image_sharpness = 0.25f,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
+      .fog = vkr_fog_settings_defaults(),
   };
 #if VKR_METRICS_ENABLED
   application->renderer.boot_metrics.systems_ns = vkr_metrics_elapsed_ns(start);
@@ -324,6 +336,7 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       .application_name = "vulkan_renderer",
       .present_target = config->present_target,
       .requested_present_mode = config->requested_present_mode,
+      .display_output_mode = config->display_output_mode,
       .render_scale = config->render_scale,
       .upscale_mode = config->upscale_mode,
       .dynamic_resolution = config->dynamic_resolution,
@@ -608,6 +621,15 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
           application->shadow_system.initialized
               ? application->shadow_system.config.cascade_count
               : 1u,
+      .local_shadow_map_size =
+          application->shadow_system.initialized
+              ? application->shadow_system.config.local_shadow_map_size
+              : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
+      .local_shadow_face_budget =
+          application->shadow_system.initialized
+              ? Min(application->shadow_system.config.local_shadow_face_budget,
+                    VKR_LOCAL_SHADOW_FACE_COUNT_MAX)
+              : VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
   };
   application->assets.material_system.texture_stream_memory_recovery_enabled =
       application->editor_viewport.enabled ||
@@ -737,12 +759,12 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   VkrLocalShadowPassPayload local_shadow_payload = {0};
   if (!scene_stopped && world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
-    vkr_local_shadow_prepare(
+    vkr_shadow_system_resolve_local_shadows(
+        &application->shadow_system, setup.image_index,
+        setup.retained_local_shadow, &world_payload,
         application->lighting_system.point_lights,
         application->lighting_system.point_light_count,
-        application->shadow_system.config.local_shadow_face_budget,
-        application->shadow_system.config.local_shadow_map_size,
-        &local_shadow_payload);
+        application->globals.view_position, &local_shadow_payload);
   }
   VkrShadowPassPayload shadow_payload = {0};
   /* Raster depth bias, distinct from receiver bias. Lowered from the shadow
@@ -756,6 +778,9 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     const VkrShadowConfig *shadow_config = &application->shadow_system.config;
     const float32_t inverse_map_size =
         1.0f / (float32_t)shadow_config->shadow_map_size;
+    const float32_t sun_tan_half_angle = tanf(
+        application->lighting_system.directional.sun_angular_diameter_degrees *
+        0.008726646259971648f);
     shadow_payload.cascade_count = shadow_cascade_count;
     shadow_payload.sdsm_enabled = shadow_config->sdsm_enabled;
     shadow_payload.cascade_render_mask = shadow_frame.cascade_render_mask;
@@ -766,9 +791,9 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
               {shadow_frame.split_near[i], shadow_frame.split_far[i],
                shadow_frame.world_units_per_texel[i],
                shadow_frame.light_space_depth_span[i]},
-          .origin_inv_size_pad = {shadow_frame.light_space_origin[i].x,
+          .origin_inv_size_sun = {shadow_frame.light_space_origin[i].x,
                                   shadow_frame.light_space_origin[i].y,
-                                  inverse_map_size, 0.0f},
+                                  inverse_map_size, sun_tan_half_angle},
       };
     }
     /* The fade ends at the *resolved* last split, not at
@@ -888,6 +913,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   VkrSkyboxPassPayload skybox_payload = {
       .cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .material = VKR_MATERIAL_HANDLE_INVALID,
+      .solar_disk_radiance = vec3_new(0.0f, 0.0f, 0.0f),
   };
   const bool8_t scene_environment_ready =
       active_scene && active_scene->environment.enabled &&
@@ -913,6 +939,11 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     frame_ibl_intensity = scene_environment->intensity;
     frame_ibl_diffuse_intensity = scene_environment->diffuse_intensity;
     frame_ibl_specular_intensity = scene_environment->specular_intensity;
+    if (active_scene->atmosphere.active_revision &&
+        active_scene->atmosphere.active_settings.enabled) {
+      skybox_payload.solar_disk_radiance =
+          active_scene->atmosphere.active_result.solar_disk_radiance;
+    }
   }
 
   VkrWorldResources *world_resources = &application->assets.world_resources;
@@ -1018,6 +1049,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       };
     }
   }
+  frame_ibl_enabled = frame_ibl_enabled || frame_ibl_probe_count > 0u;
   const VkrFrameLighting frame_lighting = {
       .directional_enabled = application->lighting_system.directional.enabled,
       .directional_direction =
@@ -1030,11 +1062,17 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .ibl_intensity = frame_ibl_intensity,
       .ibl_diffuse_intensity = frame_ibl_diffuse_intensity,
       .ibl_specular_intensity = frame_ibl_specular_intensity,
+      .rectangle_lights = application->lighting_system.rectangle_lights,
+      .rectangle_light_count = application->lighting_system.rectangle_light_count,
       .point_lights = application->lighting_system.point_lights,
       .point_light_count = application->lighting_system.point_light_count,
       .point_light_grid = &application->lighting_system.point_light_grid,
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
+      .subsurface = active_scene ? active_scene->subsurface
+                                 : (VkrSubsurfaceBinding){0},
+      .diffuse_volume = active_scene ? active_scene->diffuse_volume
+                                     : (VkrDiffuseVolumeBinding){0},
   };
 
   VkrEditorOverlayDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
@@ -1068,15 +1106,33 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
               .manual_exposure = application->globals.manual_exposure,
               .exposure_compensation_ev =
                   application->globals.exposure_compensation_ev,
+              .display_transform =
+                  (uint32_t)application->globals.display_transform,
+              .white_balance_temperature =
+                  application->globals.white_balance_temperature,
+              .white_balance_tint = application->globals.white_balance_tint,
+              .color_contrast = application->globals.color_contrast,
+              .color_saturation = application->globals.color_saturation,
               .bloom_enabled = application->globals.bloom_enabled,
               .bloom_threshold = application->globals.bloom_threshold,
               .bloom_knee = application->globals.bloom_knee,
               .bloom_intensity = application->globals.bloom_intensity,
+              .dof_enabled = application->globals.dof_enabled,
+              .dof_focus_distance = application->globals.dof_focus_distance,
+              .dof_f_stop = application->globals.dof_f_stop,
+              .motion_blur_enabled = application->globals.motion_blur_enabled,
+              .motion_blur_shutter_angle = application->globals.motion_blur_shutter_angle,
+              .ssr_enabled = application->globals.ssr_enabled,
+              .ssgi_enabled = application->globals.ssgi_enabled,
               .gtao_enabled = application->globals.gtao_enabled,
               .gtao_radius = application->globals.gtao_radius,
               .gtao_power = application->globals.gtao_power,
               .image_sharpness = application->globals.image_sharpness,
               .render_mode = (uint32_t)application->globals.render_mode,
+              .fog = active_scene ? active_scene->fog
+                                  : vkr_fog_settings_defaults(),
+              .froxel_fog = active_scene ? active_scene->froxel_fog
+                                  : vkr_froxel_fog_settings_defaults(),
           },
       .lighting = scene_stopped ? NULL : &frame_lighting,
       .world = scene_stopped ? NULL : &world_payload,
@@ -1289,8 +1345,20 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   vkr_camera_registry_update_all(camera_system);
 
   if (application->active_scene) {
+    (void)vkr_world_resources_prepare_scene_atmosphere(
+        &application->assets, &application->assets.world_resources,
+        application->active_scene);
+    vkr_world_resources_poll_scene_atmosphere(&application->assets,
+                                              application->active_scene);
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
                                         application->active_scene);
+    if (application->active_scene->atmosphere.active_revision &&
+        application->active_scene->atmosphere.active_settings.enabled) {
+      vkr_lighting_system_apply_atmosphere_sun(
+          &application->lighting_system,
+          &application->active_scene->atmosphere.active_settings,
+          &application->active_scene->atmosphere.active_result);
+    }
   }
 
   if (camera &&

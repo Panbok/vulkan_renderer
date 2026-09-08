@@ -42,6 +42,11 @@ static void vkr_metal_gtao_store(texture2d<float, access::write> destination,
   destination.write(float4(value, 0.0, 0.0, 1.0), pixel);
 }
 
+static void vkr_metal_gtao_store_directional(
+    texture2d<float, access::write> destination, uint2 pixel, float4 value) {
+  destination.write(value, pixel);
+}
+
 kernel void
 vkr_metal_packet_gtao_depth_prefilter(constant VkrMetalPacketGtaoDepthRoot &root
                                       [[buffer(0)]],
@@ -85,7 +90,8 @@ vkr_metal_packet_gtao_evaluate(constant VkrMetalPacketGtaoEvaluateRoot &root
   if (any(pixel >= root.destination_extent))
     return;
   if (root.vbuffer.read(pixel).x == 0u) {
-    vkr_metal_gtao_store(root.destination, pixel, 1.0);
+    vkr_metal_gtao_store_directional(root.destination, pixel,
+                                     float4(0.5, 0.5, 1.0, 1.0));
     vkr_metal_gtao_store(root.edges, pixel, vkr_gtao_pack_edges(float4(1.0)));
     return;
   }
@@ -122,6 +128,7 @@ vkr_metal_packet_gtao_evaluate(constant VkrMetalPacketGtaoEvaluateRoot &root
                            root.params.radius_multiplier / pixel_view_size;
   float2 noise = vkr_gtao_spatiotemporal_noise(pixel, root.params.noise_index);
   float visibility = 0.0;
+  float3 bent_moment_view = 0.0;
 
   for (uint slice = 0u; slice < root.params.slice_count; ++slice) {
     float phi =
@@ -178,19 +185,22 @@ vkr_metal_packet_gtao_evaluate(constant VkrMetalPacketGtaoEvaluateRoot &root
     visibility +=
         vkr_gtao_integrate_slice(projected_normal_length, cos_normal,
                                  normal_angle, horizon_cos0, horizon_cos1);
+    bent_moment_view += vkr_gtao_integrate_bent_slice(
+        projected_normal_length, normal_angle, horizon_cos0, horizon_cos1,
+        view_direction, view_slice_direction);
   }
 
-  vkr_metal_gtao_store(root.destination, pixel,
-                       vkr_gtao_finalize_visibility(root.params, visibility));
+  vkr_metal_gtao_store_directional(
+      root.destination, pixel,
+      vkr_gtao_finalize_directional(root.params, visibility, bent_moment_view,
+                                    world_normal));
 }
 
-static float
+static float4
 vkr_metal_gtao_denoise_sample(texture2d<float, access::sample> texture,
                               float2 pixel, uint2 extent) {
-  return texture
-      .sample(vkr_metal_gtao_point_sampler, vkr_metal_gtao_uv(pixel, extent),
-              level(0.0))
-      .x;
+  return texture.sample(vkr_metal_gtao_point_sampler,
+                        vkr_metal_gtao_uv(pixel, extent), level(0.0));
 }
 
 static float vkr_metal_gtao_edge_weight(float edge0, float edge1, float beta) {
@@ -207,25 +217,25 @@ vkr_metal_packet_gtao_denoise(constant VkrMetalPacketGtaoDenoiseRoot &root
   float2 p = float2(pixel);
   float beta = root.params.denoise_blur_beta;
   float4 center_edges = vkr_gtao_unpack_edges(
-      vkr_metal_gtao_denoise_sample(root.edges, p, root.destination_extent));
+      vkr_metal_gtao_denoise_sample(root.edges, p, root.destination_extent).x);
   float4 left_edges = vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-      root.edges, p + float2(-1.0, 0.0), root.destination_extent));
+      root.edges, p + float2(-1.0, 0.0), root.destination_extent).x);
   float4 right_edges = vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-      root.edges, p + float2(1.0, 0.0), root.destination_extent));
+      root.edges, p + float2(1.0, 0.0), root.destination_extent).x);
   float4 top_edges = vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-      root.edges, p + float2(0.0, -1.0), root.destination_extent));
+      root.edges, p + float2(0.0, -1.0), root.destination_extent).x);
   float4 bottom_edges = vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-      root.edges, p + float2(0.0, 1.0), root.destination_extent));
+      root.edges, p + float2(0.0, 1.0), root.destination_extent).x);
   float4 top_left_edges = vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-      root.edges, p + float2(-1.0, -1.0), root.destination_extent));
+      root.edges, p + float2(-1.0, -1.0), root.destination_extent).x);
   float4 top_right_edges = vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-      root.edges, p + float2(1.0, -1.0), root.destination_extent));
+      root.edges, p + float2(1.0, -1.0), root.destination_extent).x);
   float4 bottom_left_edges =
       vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-          root.edges, p + float2(-1.0, 1.0), root.destination_extent));
+          root.edges, p + float2(-1.0, 1.0), root.destination_extent).x);
   float4 bottom_right_edges =
       vkr_gtao_unpack_edges(vkr_metal_gtao_denoise_sample(
-          root.edges, p + float2(1.0, 1.0), root.destination_extent));
+          root.edges, p + float2(1.0, 1.0), root.destination_extent).x);
 
   float weights[9];
   weights[0] = pow(
@@ -251,20 +261,31 @@ vkr_metal_packet_gtao_denoise(constant VkrMetalPacketGtaoDenoiseRoot &root
                    beta);
 
   float visibility = 0.0;
+  float3 bent_normal = 0.0;
   float weight_sum = 0.0;
+  float4 center = vkr_metal_gtao_denoise_sample(root.source, p,
+                                                 root.destination_extent);
+  float3 fallback_bent =
+      vkr_gtao_decode_bent_direction(center, float3(0.0, 0.0, 1.0));
   uint index = 0u;
   for (int y = -1; y <= 1; ++y) {
     for (int x = -1; x <= 1; ++x) {
-      visibility +=
-          weights[index] * vkr_metal_gtao_denoise_sample(
-                               root.source, p + float2(float(x), float(y)),
-                               root.destination_extent);
+      float4 sample = vkr_metal_gtao_denoise_sample(
+          root.source, p + float2(float(x), float(y)), root.destination_extent);
+      float weight = weights[index];
+      visibility += weight * vkr_gtao_decode_visibility(sample);
+      bent_normal +=
+          weight * vkr_gtao_decode_bent_direction(sample, fallback_bent);
       weight_sum += weights[index];
       ++index;
     }
   }
-  vkr_metal_gtao_store(root.destination, pixel,
-                       visibility / max(weight_sum, 1e-6));
+  float inverse_weight = 1.0 / max(weight_sum, 1e-6);
+  float3 filtered_bent =
+      vkr_gtao_normalize_or(bent_normal * inverse_weight, fallback_bent);
+  vkr_metal_gtao_store_directional(
+      root.destination, pixel,
+      float4(filtered_bent * 0.5 + 0.5, visibility * inverse_weight));
 }
 
 static_assert(sizeof(VkrGtaoParams) == 192,

@@ -5,6 +5,62 @@ static Vec3 vkr_harness_lerp_vec3(Vec3 a, Vec3 b, float32_t t) {
                   vkr_lerp_f32(a.z, b.z, t));
 }
 
+static bool8_t vkr_harness_camera_is_cubemap(VkrHarnessCameraMode mode) {
+  return mode >= VKR_HARNESS_CAMERA_CUBEMAP_PX &&
+         mode <= VKR_HARNESS_CAMERA_CUBEMAP_NZ;
+}
+
+static bool8_t vkr_harness_camera_cubemap_face(VkrHarnessCameraMode mode,
+                                               uint32_t *out_face) {
+  if (!out_face || !vkr_harness_camera_is_cubemap(mode)) {
+    return false_v;
+  }
+  *out_face = (uint32_t)(mode - VKR_HARNESS_CAMERA_CUBEMAP_PX);
+  return true_v;
+}
+
+/* The capture is top-left, while ibl/common.* evaluates KTX face rows with
+ * the opposite vertical direction. The probe packer owns that one row flip. */
+static bool8_t vkr_harness_camera_cubemap_basis(VkrHarnessCameraMode mode,
+                                                Vec3 *out_forward,
+                                                Vec3 *out_up) {
+  if (!out_forward || !out_up) {
+    return false_v;
+  }
+  uint32_t face = 0u;
+  if (!vkr_harness_camera_cubemap_face(mode, &face)) {
+    return false_v;
+  }
+  switch (face) {
+  case 0u:
+    *out_forward = vec3_new(1.0f, 0.0f, 0.0f);
+    *out_up = vec3_new(0.0f, -1.0f, 0.0f);
+    return true_v;
+  case 1u:
+    *out_forward = vec3_new(-1.0f, 0.0f, 0.0f);
+    *out_up = vec3_new(0.0f, -1.0f, 0.0f);
+    return true_v;
+  case 2u:
+    *out_forward = vec3_new(0.0f, 1.0f, 0.0f);
+    *out_up = vec3_new(0.0f, 0.0f, 1.0f);
+    return true_v;
+  case 3u:
+    *out_forward = vec3_new(0.0f, -1.0f, 0.0f);
+    *out_up = vec3_new(0.0f, 0.0f, -1.0f);
+    return true_v;
+  case 4u:
+    *out_forward = vec3_new(0.0f, 0.0f, 1.0f);
+    *out_up = vec3_new(0.0f, -1.0f, 0.0f);
+    return true_v;
+  case 5u:
+    *out_forward = vec3_new(0.0f, 0.0f, -1.0f);
+    *out_up = vec3_new(0.0f, -1.0f, 0.0f);
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
 static float32_t vkr_harness_yaw_delta(float32_t from, float32_t to) {
   float32_t delta = vkr_fmod_f32(to - from, 360.0f);
   if (delta < -180.0f) {
@@ -117,6 +173,14 @@ bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
   if (camera->mode == VKR_HARNESS_CAMERA_STATIC) {
     return true_v;
   }
+  if (vkr_harness_camera_is_cubemap(camera->mode)) {
+    if (camera->vertical_fov_degrees != 90.0f) {
+      vkr_harness_error_set(out_error, "camera.cubemap", "$.camera",
+                            "Cubemap cameras require a 90 degree vertical FOV");
+      return false_v;
+    }
+    return true_v;
+  }
   if (camera->mode == VKR_HARNESS_CAMERA_ORBIT) {
     if (camera->orbit_radius <= 0.0f || camera->orbit_duration_seconds <= 0.0 ||
         camera->orbit_revolutions == 0.0f) {
@@ -186,7 +250,8 @@ bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
     return false_v;
   }
   authored_time_seconds *= vkr_harness_speed_multiplier(camera->speed);
-  if (camera->mode == VKR_HARNESS_CAMERA_STATIC) {
+  if (camera->mode == VKR_HARNESS_CAMERA_STATIC ||
+      vkr_harness_camera_is_cubemap(camera->mode)) {
     *out_pose = camera->static_pose;
     return true_v;
   }
@@ -244,6 +309,27 @@ bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
     key_time = camera->keys[0].time_seconds + duration * parameter;
   }
   vkr_harness_camera_evaluate_keys(camera, key_time, out_pose);
+  return true_v;
+}
+
+bool8_t
+vkr_harness_camera_evaluate_script(const VkrHarnessCamera *camera,
+                                   float64_t authored_time_seconds,
+                                   VkrHarnessCameraScriptPose *out_pose) {
+  if (!camera || !out_pose) {
+    return false_v;
+  }
+  MemZero(out_pose, sizeof(*out_pose));
+  if (!vkr_harness_camera_is_cubemap(camera->mode)) {
+    return vkr_harness_camera_evaluate(camera, authored_time_seconds,
+                                       &out_pose->pose);
+  }
+  if (!vkr_harness_camera_cubemap_basis(camera->mode, &out_pose->forward,
+                                        &out_pose->up)) {
+    return false_v;
+  }
+  out_pose->pose = camera->static_pose;
+  out_pose->exact_basis = true_v;
   return true_v;
 }
 

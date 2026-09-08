@@ -54,6 +54,25 @@ struct VkrMetalPacketMaterial {
   float4 material_surface;
   float4 material_alpha;
   float4 material_attenuation_color;
+  texture2d<float, access::sample> clearcoat_texture;
+  texture2d<float, access::sample> clearcoat_roughness_texture;
+  texture2d<float, access::sample> clearcoat_normal_texture;
+  sampler clearcoat_sampler;
+  sampler clearcoat_roughness_sampler;
+  sampler clearcoat_normal_sampler;
+  // x factor, y roughness, z coat-normal scale, w reserved.
+  float4 material_clearcoat;
+  texture2d<float, access::sample> sheen_color_texture;
+  texture2d<float, access::sample> sheen_roughness_texture;
+  sampler sheen_color_sampler;
+  sampler sheen_roughness_sampler;
+  // RGB linear sheen color, A authored sheen roughness.
+  float4 material_sheen;
+  float4 material_anisotropy;
+  texture2d<float, access::sample> anisotropy_texture;
+  sampler anisotropy_sampler;
+  float4 material_diffuse_transmission;
+  float4 material_subsurface;
 };
 
 struct VkrMetalPacketTransmissionMaterial {
@@ -91,6 +110,43 @@ struct VkrGpuPointLightRow {
   float4 p3;
 };
 
+struct VkrGpuRectangleLightRow {
+  float4 center_half_width;
+  float4 right_half_height;
+  float4 up_radiance;
+  float4 color;
+};
+
+struct alignas(16) VkrMetalPacketLtc {
+  device VkrGpuRectangleLightRow *lights;
+  texture2d<float, access::sample> matrix_texture;
+  texture2d<float, access::sample> amplitude_texture;
+  uint light_count;
+  uint reserved;
+};
+
+struct VkrMetalPacketDiffuseVolume {
+    float4 origin;
+    float4 inverse_spacing;
+    uint4 dimensions;
+};
+
+struct alignas(16) VkrMetalPacketSheen {
+  texture2d<float, access::sample> directional_albedo_texture;
+  texture2d<float, access::sample> ltc_matrix_texture;
+  texture2d<float, access::sample> ltc_amplitude_texture;
+  texture2d<float, access::sample> ltc_matrix_texture_b;
+  texture2d<float, access::sample> ltc_amplitude_texture_b;
+  uint2 reserved;
+};
+
+struct alignas(16) VkrMetalPacketAnisotropy {
+  texture2d_array<float, access::sample> table0;
+  texture2d_array<float, access::sample> table1;
+  texture2d_array<float, access::sample> table2;
+  uint2 reserved;
+};
+
 struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketInstance *instances;
   uint2 instance_address_padding;
@@ -106,16 +162,14 @@ struct VkrMetalPacketFrameRoot {
   float4 view_position;
   uint prefilter_mip_count;
   uint flags;
-  uint reserved_0;
-  uint reserved_1;
+  constant VkrFroxelFogParams *froxel_fog;
   float4 ibl_controls;
   float4 directional_direction_enabled;
   float4 directional_color_intensity;
   float4 ambient_color;
   uint render_mode;
   uint shadow_debug_mode;
-  uint reserved_2;
-  uint reserved_3;
+  texture3d<float, access::sample> froxel_integrated;
   device VkrGpuPointLightRow *point_light_data;
   device uint4 *point_light_masks;
   float4 point_light_grid_origin_cell_size;
@@ -150,6 +204,13 @@ struct VkrMetalPacketFrameRoot {
   constant VkrMetalPacketTemporalDrawState *temporal_draw_state;
   depth2d_array<float, access::sample> local_shadow_map;
   device VkrLocalShadowView *local_shadow_views;
+  texture2d<float, access::sample> dfg_lut;
+  texture2d<float, access::read> diffuse_volume;
+  constant VkrMetalPacketDiffuseVolume *diffuse_volume_params;
+  constant VkrMetalPacketLtc *ltc;
+  constant VkrFogParams *fog;
+  constant VkrMetalPacketSheen *sheen;
+  constant VkrMetalPacketAnisotropy *anisotropy;
 };
 
 struct VkrGpuGeometryRow {
@@ -258,14 +319,13 @@ struct VkrMetalPacketDrawRoot {
   constant VkrMetalPacketFrameRoot *frame;
   uint visible_row_index;
   uint flags;
-  uint reserved_0;
-  uint reserved_1;
+  uint2 reserved;
 };
 
 struct VkrMetalPacketShadowCascade {
   float4x4 light_view_projection;
   float4 split_near_far_texel_depth;
-  float4 origin_inv_size_pad;
+  float4 origin_inv_size_sun;
 };
 
 struct VkrMetalPacketVertexOutput {
@@ -304,12 +364,12 @@ static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
               "Geometry decode record ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketInstance) == 128,
               "Prepared instance Metal ABI must remain 128 bytes");
-static_assert(sizeof(VkrMetalPacketMaterial) == 176,
-              "Metal material row ABI must remain 176 bytes");
+static_assert(sizeof(VkrMetalPacketMaterial) == 352,
+              "Metal material row ABI must remain 352 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 480,
-              "Metal packet frame root ABI must remain 480 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 528,
+              "Metal packet frame root ABI must remain 528 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,

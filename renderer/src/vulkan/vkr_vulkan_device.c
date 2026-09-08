@@ -79,16 +79,25 @@ struct VkrVulkanDevice {
   // validation because Release GPU captures also need graph pass names.
   PFN_vkCmdBeginDebugUtilsLabelEXT cmd_begin_debug_label;
   PFN_vkCmdEndDebugUtilsLabelEXT cmd_end_debug_label;
+  bool8_t swapchain_colorspace_enabled;
   bool8_t ready;
 };
 
 VkSurfaceFormatKHR
 vkr_vulkan_device_choose_surface_format(const VkSurfaceFormatKHR *formats,
                                         const bool8_t *format_usable,
-                                        uint32_t count) {
+                                        uint32_t count,
+                                        bool8_t prefer_extended_linear) {
   if (!formats || !format_usable || !count)
     return (VkSurfaceFormatKHR){VK_FORMAT_UNDEFINED,
                                 VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+  if (prefer_extended_linear) {
+    for (uint32_t i = 0u; i < count; ++i) {
+      if (format_usable[i] && formats[i].format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+          formats[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+        return formats[i];
+    }
+  }
   if (count == 1u && formats[0].format == VK_FORMAT_UNDEFINED &&
       format_usable[0])
     return (VkSurfaceFormatKHR){VK_FORMAT_B8G8R8A8_SRGB,
@@ -237,7 +246,7 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
     return false_v;
   }
 
-  const char *enabled_extensions[5];
+  const char *enabled_extensions[6];
   uint32_t enabled_extension_count = 0;
   if (device->config.windowed) {
     const char *window_extensions[] = {
@@ -256,6 +265,13 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
       }
       enabled_extensions[enabled_extension_count++] = window_extensions[i];
     }
+  }
+  if (device->config.windowed &&
+      vkr_vk_extension_present(available, available_count,
+                               VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
+    enabled_extensions[enabled_extension_count++] =
+        VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+    device->swapchain_colorspace_enabled = true_v;
   }
   const bool8_t validation_available =
       vkr_vk_layer_present("VK_LAYER_KHRONOS_validation");
@@ -709,14 +725,17 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
         window_instance_extensions[i], device->config.windowed, present,
         device->config.windowed ? "window floor" : "offscreen omitted");
   }
+  vkr_vk_report_add(
+      report, VKR_VULKAN_REPORT_INSTANCE_EXTENSION,
+      VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, false_v,
+      vkr_vk_extension_present(instance_extensions, instance_extension_count,
+                               VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME),
+      "optional extended-linear presentation");
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
                     VK_KHR_SWAPCHAIN_EXTENSION_NAME, device->config.windowed,
                     candidate->has_swapchain_extension,
                     device->config.windowed ? "window floor"
                                             : "offscreen omitted");
-  const bool8_t encoded_source_supported =
-      (srgb_format3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_BLIT_SRC_BIT) !=
-      0u;
   bool8_t encoded_present_supported = false_v;
   if (device->config.windowed && candidate->queue_family_index != UINT32_MAX) {
     uint32_t surface_format_count = 0u;
@@ -739,20 +758,25 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
         VkFormatProperties properties = {0};
         vkGetPhysicalDeviceFormatProperties(candidate->physical, format,
                                             &properties);
-        surface_format_usable[i] = (properties.optimalTilingFeatures &
-                                    VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0u;
+        const VkFormatFeatureFlags required_features =
+            VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+        surface_format_usable[i] =
+            (properties.optimalTilingFeatures & required_features) ==
+            required_features;
       }
       const VkSurfaceFormatKHR selected =
-          vkr_vulkan_device_choose_surface_format(
-              surface_formats, surface_format_usable, surface_format_count);
-      encoded_present_supported =
-          encoded_source_supported && selected.format != VK_FORMAT_UNDEFINED;
+          vkr_vulkan_device_choose_surface_format(surface_formats,
+                                                  surface_format_usable,
+                                                  surface_format_count, false_v);
+      encoded_present_supported = selected.format != VK_FORMAT_UNDEFINED;
     }
   }
   vkr_vk_report_add(
       report, VKR_VULKAN_REPORT_FORMAT, "BGRA8/RGBA8 sRGB presentation target",
       device->config.windowed, encoded_present_supported,
-      device->config.windowed ? "RGBA8 sRGB blit-src and sRGB blit-dst"
+      device->config.windowed
+          ? "RGBA8 sRGB WSI blit-dst plus mirror attachment/blit-src"
                               : "offscreen omitted");
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
                     VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME, false_v,
@@ -1209,6 +1233,11 @@ VkQueue vkr_vulkan_device_queue(const VkrVulkanDevice *device) {
 
 VkSurfaceKHR vkr_vulkan_device_surface(const VkrVulkanDevice *device) {
   return device ? device->surface : VK_NULL_HANDLE;
+}
+
+bool8_t vkr_vulkan_device_extended_linear_present_enabled(
+    const VkrVulkanDevice *device) {
+  return device && device->swapchain_colorspace_enabled;
 }
 
 bool8_t

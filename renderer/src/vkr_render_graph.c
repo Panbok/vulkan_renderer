@@ -35,10 +35,37 @@ vkr_internal int64_t vkr_rg_find_buffer_index(VkrRenderGraph *graph,
 vkr_internal bool8_t vkr_rg_image_desc_equal(const VkrRgImageDesc *a,
                                              const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
+         a->depth == b->depth &&
          a->format == b->format && a->usage.set == b->usage.set &&
          a->samples == b->samples && a->layers == b->layers &&
          a->mip_levels == b->mip_levels && a->type == b->type &&
          a->flags == b->flags;
+}
+
+vkr_internal bool8_t vkr_rg_image_desc_valid(String8 name,
+                                              const VkrRgImageDesc *desc) {
+  if (desc->type >= VKR_TEXTURE_TYPE_COUNT || desc->depth == 0u) {
+    log_error("RenderGraph image '%.*s': invalid texture type or depth",
+              (int)name.length, name.str);
+    return false_v;
+  }
+  if (desc->type != VKR_TEXTURE_TYPE_3D) {
+    if (desc->depth == 1u)
+      return true_v;
+    log_error("RenderGraph image '%.*s': non-3D textures require depth one",
+              (int)name.length, name.str);
+    return false_v;
+  }
+  if (desc->layers != 1u || desc->samples != VKR_SAMPLE_COUNT_1 ||
+      (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY) != 0u ||
+      (desc->usage.set & (VKR_TEXTURE_USAGE_COLOR_ATTACHMENT |
+                           VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT)) != 0u) {
+    log_error("RenderGraph image '%.*s': 3D images require one layer, one "
+              "sample, no array view, and no attachment usage",
+              (int)name.length, name.str);
+    return false_v;
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_rg_buffer_desc_equal(const VkrRgBufferDesc *a,
@@ -562,6 +589,8 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
   }
   if (!vkr_rg_image_flags_valid(name, desc->flags))
     return VKR_RG_IMAGE_HANDLE_INVALID;
+  if (!vkr_rg_image_desc_valid(name, desc))
+    return VKR_RG_IMAGE_HANDLE_INVALID;
 
   int64_t index = vkr_rg_find_image_index(graph, name);
   if (index >= 0) {
@@ -621,6 +650,8 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
   }
   resolved_desc.flags |= VKR_RG_RESOURCE_FLAG_EXTERNAL;
   if (!vkr_rg_image_flags_valid(name, resolved_desc.flags))
+    return VKR_RG_IMAGE_HANDLE_INVALID;
+  if (!vkr_rg_image_desc_valid(name, &resolved_desc))
     return VKR_RG_IMAGE_HANDLE_INVALID;
 
   int64_t index = vkr_rg_find_image_index(graph, name);

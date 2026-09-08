@@ -1,3 +1,4 @@
+#include <math.h>
 #include "renderer/resources/loaders/material_loader.h"
 #include "containers/str.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -288,9 +289,11 @@ vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
   material->phong.shininess = 32.0f;
   material->phong.emission_color = vec3_new(0, 0, 0);
   material->pbr.base_color = vec4_new(1, 1, 1, 1);
+  material->pbr.diffuse_transmission_color = vec3_new(1, 1, 1);
   material->pbr.metallic = 1.0f;
   material->pbr.roughness = 1.0f;
   material->pbr.normal_scale = 1.0f;
+  material->pbr.clearcoat_normal_scale = 1.0f;
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_new(0, 0, 0);
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
@@ -487,16 +490,22 @@ vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
   switch (slot) {
   case VKR_TEXTURE_SLOT_DIFFUSE:
   case VKR_TEXTURE_SLOT_EMISSION:
+  case VKR_TEXTURE_SLOT_SHEEN_COLOR:
     return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
                ? VKR_MATERIAL_TEXTURE_CLASS_COLOR_SRGB
                : VKR_MATERIAL_TEXTURE_CLASS_COLOR_LINEAR;
   case VKR_TEXTURE_SLOT_NORMAL:
+  case VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL:
     return VKR_MATERIAL_TEXTURE_CLASS_NORMAL_RG;
   case VKR_TEXTURE_SLOT_SPECULAR:
   case VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS:
   case VKR_TEXTURE_SLOT_OCCLUSION:
   case VKR_TEXTURE_SLOT_TRANSMISSION:
   case VKR_TEXTURE_SLOT_THICKNESS:
+  case VKR_TEXTURE_SLOT_CLEARCOAT:
+  case VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS:
+  case VKR_TEXTURE_SLOT_ANISOTROPY:
+  case VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS:
     return VKR_MATERIAL_TEXTURE_CLASS_DATA_MASK;
   default:
     return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
@@ -523,6 +532,18 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
     return "transmission";
   case VKR_TEXTURE_SLOT_THICKNESS:
     return "thickness";
+  case VKR_TEXTURE_SLOT_CLEARCOAT:
+    return "clearcoat";
+  case VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS:
+    return "clearcoat_roughness";
+  case VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL:
+    return "clearcoat_normal";
+  case VKR_TEXTURE_SLOT_SHEEN_COLOR:
+    return "sheen_color";
+  case VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS:
+    return "sheen_roughness";
+  case VKR_TEXTURE_SLOT_ANISOTROPY:
+    return "anisotropy";
   default:
     return "unknown";
   }
@@ -531,6 +552,12 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
 vkr_internal bool8_t vkr_material_parse_texture_slot_from_key(
     String8 key, VkrTextureSlot *out_slot) {
   vkr_local_persist const VkrMaterialSlotAlias aliases[] = {
+      {"sheen_color_texture", VKR_TEXTURE_SLOT_SHEEN_COLOR},
+      {"sheen_roughness_texture", VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS},
+      {"anisotropy_texture", VKR_TEXTURE_SLOT_ANISOTROPY},
+      {"clearcoat_normal_texture", VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL},
+      {"clearcoat_roughness_texture", VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS},
+      {"clearcoat_texture", VKR_TEXTURE_SLOT_CLEARCOAT},
       {"base_color_texture", VKR_TEXTURE_SLOT_DIFFUSE},
       {"diffuse_texture", VKR_TEXTURE_SLOT_DIFFUSE},
       {"metallic_roughness_texture", VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS},
@@ -561,6 +588,12 @@ vkr_internal bool8_t vkr_material_parse_texture_slot_from_key(
 vkr_internal bool8_t vkr_material_parse_texture_colorspace_slot_from_key(
     String8 key, VkrTextureSlot *out_slot) {
   vkr_local_persist const VkrMaterialSlotAlias aliases[] = {
+      {"sheen_color_colorspace", VKR_TEXTURE_SLOT_SHEEN_COLOR},
+      {"sheen_roughness_colorspace", VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS},
+      {"anisotropy_colorspace", VKR_TEXTURE_SLOT_ANISOTROPY},
+      {"clearcoat_normal_colorspace", VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL},
+      {"clearcoat_roughness_colorspace", VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS},
+      {"clearcoat_colorspace", VKR_TEXTURE_SLOT_CLEARCOAT},
       {"base_color_colorspace", VKR_TEXTURE_SLOT_DIFFUSE},
       {"diffuse_colorspace", VKR_TEXTURE_SLOT_DIFFUSE},
       {"emissive_colorspace", VKR_TEXTURE_SLOT_EMISSION},
@@ -593,7 +626,13 @@ vkr_internal bool8_t vkr_material_slot_implies_pbr_type(VkrTextureSlot slot) {
           slot == VKR_TEXTURE_SLOT_OCCLUSION ||
           slot == VKR_TEXTURE_SLOT_EMISSION ||
           slot == VKR_TEXTURE_SLOT_TRANSMISSION ||
-          slot == VKR_TEXTURE_SLOT_THICKNESS)
+          slot == VKR_TEXTURE_SLOT_THICKNESS ||
+          slot == VKR_TEXTURE_SLOT_CLEARCOAT ||
+          slot == VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS ||
+          slot == VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL ||
+          slot == VKR_TEXTURE_SLOT_SHEEN_COLOR ||
+          slot == VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS ||
+          slot == VKR_TEXTURE_SLOT_ANISOTROPY)
              ? true_v
              : false_v;
 }
@@ -1444,9 +1483,11 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   material->phong.shininess = 0.0f;
   material->phong.emission_color = vec3_new(0, 0, 0);
   material->pbr.base_color = vec4_new(1, 1, 1, 1);
+  material->pbr.diffuse_transmission_color = vec3_new(1, 1, 1);
   material->pbr.metallic = 1.0f;
   material->pbr.roughness = 1.0f;
   material->pbr.normal_scale = 1.0f;
+  material->pbr.clearcoat_normal_scale = 1.0f;
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_zero();
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
@@ -1682,9 +1723,11 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   out_data->phong.shininess = 32.0f;
   out_data->phong.emission_color = vec3_new(0, 0, 0);
   out_data->pbr.base_color = vec4_new(1, 1, 1, 1);
+  out_data->pbr.diffuse_transmission_color = vec3_new(1, 1, 1);
   out_data->pbr.metallic = 1.0f;
   out_data->pbr.roughness = 1.0f;
   out_data->pbr.normal_scale = 1.0f;
+  out_data->pbr.clearcoat_normal_scale = 1.0f;
   out_data->pbr.occlusion_strength = 1.0f;
   out_data->pbr.emissive_factor = vec3_new(0, 0, 0);
   out_data->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
@@ -1702,6 +1745,8 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
     out_data->texture_paths[slot][0] = '\0';
     out_data->texture_colorspace[slot] = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
   }
+
+  out_data->texture_colorspace[VKR_TEXTURE_SLOT_SHEEN_COLOR] = VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB;
 
   String8 material_name = {0};
   vkr_get_stable_material_name(out_data->name, path, &material_name);
@@ -1768,6 +1813,26 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
         out_data->material_type = parsed_type;
       }
       continue;
+    }
+
+    String8 subsurface_namespace = key;
+    if (subsurface_namespace.length > 11u) subsurface_namespace.length = 11u;
+    if (vkr_string8_equals_cstr_i(&subsurface_namespace, "subsurface_") &&
+        !vkr_string8_equals_cstr_i(&key, "subsurface_strength") &&
+        !vkr_string8_equals_cstr_i(&key, "subsurface_profile")) {
+      log_error("Material: subsurface supports only strength and profile");
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+
+    String8 diffuse_namespace = key;
+    if (diffuse_namespace.length > 21u) diffuse_namespace.length = 21u;
+    if (vkr_string8_equals_cstr_i(&diffuse_namespace, "diffuse_transmission_") &&
+        !vkr_string8_equals_cstr_i(&key, "diffuse_transmission_strength") &&
+        !vkr_string8_equals_cstr_i(&key, "diffuse_transmission_color")) {
+      log_error("Material: diffuse transmission supports only material-wide strength and color");
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
     }
 
     VkrTextureSlot texture_slot = VKR_TEXTURE_SLOT_COUNT;
@@ -1839,6 +1904,104 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
     } else if (vkr_string8_equals_cstr_i(&key, "dielectric_specular")) {
       out_data->material_type = VKR_MATERIAL_TYPE_PBR;
       (void)string8_to_vec3(&value, &out_data->pbr.dielectric_specular);
+    } else if (vkr_string8_equals_cstr_i(&key, "subsurface_strength")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.subsurface_strength) ||
+          !isfinite(out_data->pbr.subsurface_strength) ||
+          out_data->pbr.subsurface_strength < 0.0f ||
+          out_data->pbr.subsurface_strength > 1.0f) {
+        log_error("Material: invalid subsurface_strength");
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "subsurface_profile")) {
+      float32_t profile;
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &profile) || !isfinite(profile) ||
+          profile < 0.0f || profile >= 8.0f || floorf(profile) != profile) {
+        log_error("Material: subsurface_profile must be an integer in [0,7]");
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+      out_data->pbr.subsurface_profile = (uint32_t)profile;
+    } else if (vkr_string8_equals_cstr_i(&key, "diffuse_transmission_strength")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.diffuse_transmission_strength) ||
+          !isfinite(out_data->pbr.diffuse_transmission_strength) ||
+          out_data->pbr.diffuse_transmission_strength < 0.0f ||
+          out_data->pbr.diffuse_transmission_strength > 1.0f) {
+        log_error("Material: invalid diffuse_transmission_strength in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "diffuse_transmission_color")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_vec3(&value, &out_data->pbr.diffuse_transmission_color) ||
+          !isfinite(out_data->pbr.diffuse_transmission_color.x) || out_data->pbr.diffuse_transmission_color.x < 0.0f || out_data->pbr.diffuse_transmission_color.x > 1.0f ||
+          !isfinite(out_data->pbr.diffuse_transmission_color.y) || out_data->pbr.diffuse_transmission_color.y < 0.0f || out_data->pbr.diffuse_transmission_color.y > 1.0f ||
+          !isfinite(out_data->pbr.diffuse_transmission_color.z) || out_data->pbr.diffuse_transmission_color.z < 0.0f || out_data->pbr.diffuse_transmission_color.z > 1.0f) {
+        log_error("Material: invalid diffuse_transmission_color in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "anisotropy_strength")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.anisotropy_strength) ||
+          !isfinite(out_data->pbr.anisotropy_strength) || out_data->pbr.anisotropy_strength < 0.0f || out_data->pbr.anisotropy_strength > 1.0f) {
+        log_error("Material: invalid anisotropy_strength in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "anisotropy_rotation")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.anisotropy_rotation) ||
+          !isfinite(out_data->pbr.anisotropy_rotation)) {
+        log_error("Material: invalid anisotropy_rotation in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "sheen_color")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_vec3(&value, &out_data->pbr.sheen_color) ||
+          !isfinite(out_data->pbr.sheen_color.x) || out_data->pbr.sheen_color.x < 0.0f || out_data->pbr.sheen_color.x > 1.0f ||
+          !isfinite(out_data->pbr.sheen_color.y) || out_data->pbr.sheen_color.y < 0.0f || out_data->pbr.sheen_color.y > 1.0f ||
+          !isfinite(out_data->pbr.sheen_color.z) || out_data->pbr.sheen_color.z < 0.0f || out_data->pbr.sheen_color.z > 1.0f) {
+        log_error("Material: invalid sheen_color in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "sheen_roughness")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.sheen_roughness) ||
+          !isfinite(out_data->pbr.sheen_roughness) || out_data->pbr.sheen_roughness < 0.0f || out_data->pbr.sheen_roughness > 1.0f) {
+        log_error("Material: invalid sheen_roughness in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "clearcoat_factor")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.clearcoat_factor) ||
+          !isfinite(out_data->pbr.clearcoat_factor) || out_data->pbr.clearcoat_factor < 0.0f || out_data->pbr.clearcoat_factor > 1.0f) {
+        log_error("Material: invalid clearcoat_factor in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "clearcoat_roughness")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.clearcoat_roughness) ||
+          !isfinite(out_data->pbr.clearcoat_roughness) || out_data->pbr.clearcoat_roughness < 0.0f || out_data->pbr.clearcoat_roughness > 1.0f) {
+        log_error("Material: invalid clearcoat_roughness in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "clearcoat_normal_scale")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      if (!string8_to_f32(&value, &out_data->pbr.clearcoat_normal_scale) ||
+          !isfinite(out_data->pbr.clearcoat_normal_scale)) {
+        log_error("Material: invalid clearcoat_normal_scale in '%.*s'", (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
     } else if (vkr_string8_equals_cstr_i(&key, "transmission_factor")) {
       out_data->material_type = VKR_MATERIAL_TYPE_PBR;
       (void)string8_to_f32(&value, &out_data->pbr.transmission_factor);
@@ -1916,10 +2079,67 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
        out_data->texture_paths[VKR_TEXTURE_SLOT_OCCLUSION][0] != '\0' ||
        out_data->texture_paths[VKR_TEXTURE_SLOT_EMISSION][0] != '\0' ||
        out_data->texture_paths[VKR_TEXTURE_SLOT_TRANSMISSION][0] != '\0' ||
-       out_data->texture_paths[VKR_TEXTURE_SLOT_THICKNESS][0] != '\0')) {
+       out_data->texture_paths[VKR_TEXTURE_SLOT_THICKNESS][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_CLEARCOAT][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_SHEEN_COLOR][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_ANISOTROPY][0] != '\0')) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
   }
 
+  for (uint32_t slot = VKR_TEXTURE_SLOT_CLEARCOAT; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    String8 texture_path = string8_create_from_cstr(
+        (const uint8_t *)out_data->texture_paths[slot],
+        string_length(out_data->texture_paths[slot]));
+    String8 query = {0};
+    (void)vkr_material_strip_query(texture_path, &query);
+    const VkrMaterialTextureColorSpace expected = slot == VKR_TEXTURE_SLOT_SHEEN_COLOR
+        ? VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB : VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+    VkrMaterialTextureColorSpace colorspace = expected;
+    VkrMaterialTextureClass texture_class = VKR_MATERIAL_TEXTURE_CLASS_UNKNOWN;
+    bool8_t color_known = false_v, class_known = false_v;
+    const bool8_t has_color = vkr_material_query_get_colorspace(query, &colorspace, &color_known);
+    const bool8_t has_class = vkr_material_query_get_texture_class(query, &texture_class, &class_known);
+    if (out_data->texture_colorspace[slot] != expected ||
+        (has_color && (!color_known || colorspace != expected)) ||
+        (has_class && (!class_known || texture_class != vkr_material_texture_class_from_slot(
+            (VkrTextureSlot)slot, expected)))) {
+      log_error("Material: layer maps require their declared color/data/normal texture intent");
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+  }
+
+  if (out_data->pbr.subsurface_strength > 0.0f &&
+      (out_data->material_type != VKR_MATERIAL_TYPE_PBR ||
+       out_data->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       (!out_data->alpha_mode_explicit && out_data->pbr.base_color.w < 0.999f) ||
+       out_data->pbr.transmission_factor > 0.0f ||
+       out_data->pbr.thickness_factor > 0.0f ||
+       out_data->pbr.diffuse_transmission_strength > 0.0f)) {
+    log_error("Material: subsurface requires opaque/cutout PBR without refraction, thickness or thin-sheet transmission");
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (out_data->pbr.diffuse_transmission_strength > 0.0f &&
+      (out_data->material_type != VKR_MATERIAL_TYPE_PBR ||
+       out_data->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       (!out_data->alpha_mode_explicit && out_data->pbr.base_color.w < 0.999f) ||
+       out_data->pbr.transmission_factor > 0.0f ||
+       out_data->pbr.thickness_factor > 0.0f)) {
+    log_error("Material: diffuse transmission requires opaque/cutout surfaces without refraction or thickness");
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (out_data->pbr.anisotropy_strength > 0.0f &&
+      out_data->pbr.transmission_factor > 0.0f) {
+    log_error("Material: anisotropy with refraction is unsupported");
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  out_data->pbr.anisotropy_rotation = remainderf(out_data->pbr.anisotropy_rotation, 6.283185307179586f);
   out_data->parse_success = true_v;
   return true_v;
 }

@@ -1,0 +1,140 @@
+// Analytic scene-linear height fog. Native passes own reconstruction, storage
+// and dispatch; this header owns only finite radiance and optical-depth math.
+
+#ifndef VKR_SHADER_FOG_KERNEL_SLANGH
+#define VKR_SHADER_FOG_KERNEL_SLANGH
+
+#define VKR_FOG_MAX_OPTICAL_DEPTH 80.0f
+#define VKR_FOG_LOG_LIMIT 1e20f
+
+struct VkrFogParams
+{
+    // rgb: scene-linear equilibrium radiance, w: base-height extinction.
+    float4 color_density;
+    // x: base height, y: nonnegative height falloff, z: surface cap,
+    // w: finite sky distance. All distances are world units.
+    float4 height_distance;
+};
+
+struct VkrFogSample
+{
+    float transmittance;
+    float inscatter_weight;
+};
+
+float vkr_fog_optical_depth(VkrFogParams params, float camera_height,
+                            float ray_height_direction, float distance)
+{
+    float density = params.color_density.w;
+    float travelled = distance;
+    if (density <= 0.0f || travelled <= 0.0f)
+        return 0.0f;
+
+    float falloff = params.height_distance.y;
+    float base_relative_height = camera_height - params.height_distance.x;
+    // Integrate rho(s)=rho0*exp(-falloff*(height+s*ray_y)) in log space.
+    // This preserves a far denser endpoint on descending rays and never forms
+    // density*exp(large), which can otherwise become inf/inf before clamping.
+    float log_start_density = log(density) +
+        clamp(-falloff * base_relative_height, -VKR_FOG_LOG_LIMIT,
+              VKR_FOG_LOG_LIMIT);
+    float exponent = clamp(falloff * ray_height_direction * travelled,
+                           -VKR_FOG_LOG_LIMIT, VKR_FOG_LOG_LIMIT);
+    float log_ratio;
+    // log((1-exp(-x))/x), with a series near the horizontal limit.
+    if (abs(exponent) <= 1e-3f)
+        log_ratio = log(max(1.0f - 0.5f * exponent, 1e-20f));
+    else if (exponent > 0.0f)
+        log_ratio = log(max(1.0f - exp(-exponent), 1e-20f)) - log(exponent);
+    else
+    {
+        float downward = -exponent;
+        // expm1(downward) is evaluated as exp(downward)-1 only where finite.
+        log_ratio = downward < 50.0f
+                        ? log(exp(downward) - 1.0f) - log(downward)
+                        : downward +
+                              log(max(1.0f - exp(-downward), 1e-20f)) -
+                              log(downward);
+    }
+    float log_optical_depth = clamp(log_start_density + log(travelled) +
+                                        log_ratio,
+                                    -VKR_FOG_LOG_LIMIT, VKR_FOG_LOG_LIMIT);
+    if (log_optical_depth >= log(VKR_FOG_MAX_OPTICAL_DEPTH))
+        return VKR_FOG_MAX_OPTICAL_DEPTH;
+    return max(exp(log_optical_depth), 0.0f);
+}
+
+VkrFogSample vkr_fog_sample(VkrFogParams params, float camera_height,
+                             float ray_height_direction, float distance)
+{
+    float optical_depth = vkr_fog_optical_depth(
+        params, camera_height, ray_height_direction, distance);
+    VkrFogSample result;
+    result.transmittance = exp(-optical_depth);
+    result.inscatter_weight = 1.0f - result.transmittance;
+    return result;
+}
+
+float3 vkr_fog_apply_sample(float3 radiance, VkrFogParams params,
+                             VkrFogSample sample)
+{
+    return radiance * sample.transmittance +
+           params.color_density.rgb * sample.inscatter_weight;
+}
+
+// `feedback_weight` is the per-channel coefficient of an already-fogged
+// ordered background. Its complement alone receives this layer's in-scatter.
+float3 vkr_fog_apply_local_over_feedback(float3 local_radiance,
+                                          float3 feedback_weight,
+                                          VkrFogParams params,
+                                          VkrFogSample sample)
+{
+    return local_radiance * sample.transmittance +
+           params.color_density.rgb * sample.inscatter_weight *
+               (1.0f - feedback_weight);
+}
+
+VkrFogSample vkr_fog_surface_sample(VkrFogParams params,
+                                    float3 camera_position,
+                                    float3 world_position)
+{
+    float3 camera_to_surface = world_position - camera_position;
+    float distance_squared = dot(camera_to_surface, camera_to_surface);
+    if (distance_squared <= 1e-12f)
+        return vkr_fog_sample(params, camera_position.y, 0.0f, 0.0f);
+    float world_distance = sqrt(distance_squared);
+    float distance = min(world_distance, params.height_distance.z);
+    if (distance <= 0.0f)
+        return vkr_fog_sample(params, camera_position.y, 0.0f, 0.0f);
+    float3 direction = camera_to_surface / world_distance;
+    return vkr_fog_sample(params, camera_position.y, direction.y, distance);
+}
+
+float3 vkr_fog_apply_surface(float3 radiance, VkrFogParams params,
+                             float3 camera_position, float3 world_position)
+{
+    return vkr_fog_apply_sample(
+        radiance, params,
+        vkr_fog_surface_sample(params, camera_position, world_position));
+}
+
+VkrFogSample vkr_fog_sky_sample(VkrFogParams params, float3 camera_position,
+                                float3 ray_direction)
+{
+    float direction_length_squared = dot(ray_direction, ray_direction);
+    if (direction_length_squared <= 1e-12f)
+        return vkr_fog_sample(params, camera_position.y, 0.0f, 0.0f);
+    float3 direction = ray_direction * rsqrt(direction_length_squared);
+    float distance = params.height_distance.w;
+    return vkr_fog_sample(params, camera_position.y, direction.y, distance);
+}
+
+float3 vkr_fog_apply_sky(float3 radiance, VkrFogParams params,
+                         float3 camera_position, float3 ray_direction)
+{
+    return vkr_fog_apply_sample(
+        radiance, params,
+        vkr_fog_sky_sample(params, camera_position, ray_direction));
+}
+
+#endif

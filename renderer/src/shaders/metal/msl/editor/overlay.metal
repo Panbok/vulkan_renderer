@@ -4,7 +4,8 @@ struct VkrMetalPacketEditorOverlayRoot {
   float4x4 model_view_projection;
   float4 color;
   uint object_id;
-  uint reserved[3];
+  uint reserved;
+  constant VkrDisplayOutputParams *display_output;
 };
 
 static_assert(sizeof(VkrMetalPacketEditorOverlayRoot) == 112,
@@ -29,7 +30,9 @@ vertex VkrMetalPacketEditorOverlayOutput vkr_metal_packet_editor_overlay_vertex(
 }
 
 fragment float4 vkr_metal_packet_editor_overlay_fragment(
-    VkrMetalPacketEditorOverlayOutput input [[stage_in]]) {
+    VkrMetalPacketEditorOverlayOutput input [[stage_in]],
+    constant VkrMetalPacketEditorOverlayRoot *root [[buffer(1)]]) {
+  input.color.rgb = vkr_display_output_ui(input.color.rgb, *root->display_output);
   return input.color;
 }
 

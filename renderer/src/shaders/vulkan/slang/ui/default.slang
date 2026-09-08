@@ -1,6 +1,16 @@
+// UI draws carry a VkrVulkanUiRoot, not a world draw root. Keeping this
+// physical pointer typed makes the compiled UI entries expose the same 80-byte
+// record that the Vulkan host validates. The push payload remains 16 bytes.
+struct VkrVulkanUiPush
+{
+    VkrVulkanUiRoot* root;
+    uint2 reserved;
+};
+[[vk::push_constant]] ConstantBuffer<VkrVulkanUiPush> g_ui_push;
+
 VkrVulkanUiOutput vkr_ui_vertex_output(uint vertex_id)
 {
-    VkrVulkanUiRoot* root = (VkrVulkanUiRoot*)g_push.root;
+    VkrVulkanUiRoot* root = g_ui_push.root;
     VkrVulkanTextVertex* vertices = (VkrVulkanTextVertex*)root.vertices;
     VkrVulkanTextVertex vertex_data = vertices[vertex_id];
     float2 target = max(root.target_unit_range.xy, float2(1.0f, 1.0f));
@@ -22,16 +32,22 @@ VkrVulkanUiOutput ui_vertex(uint vertex_id : SV_VertexID)
 [shader("fragment")]
 float4 ui_fragment(VkrVulkanUiOutput input) : SV_Target0
 {
-    VkrVulkanUiRoot* root = (VkrVulkanUiRoot*)g_push.root;
+    VkrVulkanUiRoot* root = g_ui_push.root;
     if (root.mode == 0u)
     {
         if ((root.flags & 1u) == 0u)
+        {
+            input.color.rgb = vkr_display_output_ui(input.color.rgb,
+                                                     root.display_output[0]);
             return input.color;
+        }
         uint texture_index = NonUniformResourceIndex(root.texture_index);
         uint sampler_index = NonUniformResourceIndex(root.sampler_index);
-        return input.color *
-               g_textures[texture_index].Sample(g_samplers[sampler_index],
-                                                input.uv);
+        float4 color = input.color *
+                       g_textures[texture_index].Sample(g_samplers[sampler_index],
+                                                        input.uv);
+        color.rgb = vkr_display_output_ui(color.rgb, root.display_output[0]);
+        return color;
     }
 
     uint texture_index = NonUniformResourceIndex(root.texture_index);
@@ -53,7 +69,9 @@ float4 ui_fragment(VkrVulkanUiOutput input) : SV_Target0
                              min(max(atlas.r, atlas.g), atlas.b)) - 0.5f;
         alpha = saturate(range * distance + 0.5f);
     }
-    return float4(input.color.rgb, input.color.a * alpha);
+    return float4(vkr_display_output_ui(input.color.rgb,
+                                        root.display_output[0]),
+                  input.color.a * alpha);
 }
 
 [shader("vertex")]
@@ -65,7 +83,7 @@ VkrVulkanUiOutput ui_rect_vertex(uint vertex_id : SV_VertexID)
 [shader("fragment")]
 float4 ui_rect_fragment(VkrVulkanUiOutput input) : SV_Target0
 {
-    VkrVulkanUiRoot* root = (VkrVulkanUiRoot*)g_push.root;
+    VkrVulkanUiRoot* root = g_ui_push.root;
     float2 local = input.uv * root.rect_extent;
     float2 centered = local - root.rect_extent * 0.5f;
     bool left = centered.x < 0.0f;
@@ -77,5 +95,7 @@ float4 ui_rect_fragment(VkrVulkanUiOutput input) : SV_Target0
                      min(max(q.x, q.y), 0.0f) - radius;
     float edge = max(fwidth(distance), 1e-4f);
     float alpha = saturate(0.5f - distance / edge);
-    return float4(input.color.rgb, input.color.a * alpha);
+    return float4(vkr_display_output_ui(input.color.rgb,
+                                        root.display_output[0]),
+                  input.color.a * alpha);
 }

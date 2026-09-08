@@ -10,6 +10,8 @@
 #include "vkr_prepared_frame.h"
 #include "vkr_render_graph.h"
 #include "vkr_renderer_impl.h"
+#include "vkr_ssgi.h"
+#include "vkr_ssr.h"
 #include "vulkan/vkr_vulkan_device.h"
 
 enum {
@@ -28,10 +30,15 @@ typedef struct VkrVulkanRendererConfig {
   VkrBloomConfig bloom;
   /** A zeroed record selects the production GTAO defaults. */
   VkrGtaoConfig gtao;
+  /** Set explicitly with vkr_ssr_config_default() for production defaults. */
+  VkrSsrConfig ssr;
+  /** Set explicitly with vkr_ssgi_config_default() for production defaults. */
+  VkrSsgiConfig ssgi;
   const char *graph_path;
   VkrNativeSurface surface;
   VkrPresentTargetKind target_kind;
   VkrPresentMode requested_present_mode;
+  VkrDisplayOutputMode display_output_mode;
   uint32_t width;
   uint32_t height;
   uint32_t image_count;
@@ -48,9 +55,10 @@ typedef struct VkrVulkanRendererConfig {
   uint32_t geometry_capacity;
   /**
    * Logical texture IDs admitted by the asset publisher. Must cover the texture
-   * system's whole ID space for the same reason, and must not exceed
-   * `sampled_image_capacity`, since every published texture also consumes one
-   * sampled-image descriptor slot.
+   * system's whole ID space for the same reason. The sampled-image heap also
+   * reserves its sentinel, immutable DFG row, two immutable LTC rows, two
+   * atmosphere LUT rows and five immutable sheen rows, so this must fit
+   * within `sampled_image_capacity - 9`.
    */
   uint32_t texture_capacity;
   /** Maximum logical material IDs admitted by the asset publisher. */
@@ -169,6 +177,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
                                           uint64_t source_frame_index,
                                           uint32_t shadow_map_size,
                                           uint32_t shadow_cascade_count,
+                                          uint32_t local_shadow_map_size,
+                                          uint32_t local_shadow_face_budget,
                                           VkrFrame *out_setup);
 /** Returns the extent only when the retained editor image has committed
  * contents. */
@@ -178,6 +188,9 @@ void vkr_vulkan_renderer_retained_editor_extent(VkrVulkanRenderer *renderer,
 void vkr_vulkan_renderer_retained_shadow_token(
     VkrVulkanRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);
+void vkr_vulkan_renderer_retained_local_shadow_token(
+    VkrVulkanRenderer *renderer, uint32_t image_index,
+    VkrRetainedLocalShadowToken *out_token);
 bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                           const VkrPreparedFrame *packet,
                                           VkrVulkanResult *out_result);
@@ -226,6 +239,8 @@ void vkr_vulkan_renderer_target_information(
     VkrSurfaceColorFormat *out_color_format,
     VkrSurfaceDepthFormat *out_depth_format,
     VkrSurfaceColorSpace *out_color_space, float32_t *out_max_anisotropy);
+VkrDisplayOutputParams
+vkr_vulkan_renderer_display_output(const VkrVulkanRenderer *renderer);
 
 const VkrVulkanCapabilityProfile *
 vkr_vulkan_renderer_profile(const VkrVulkanRenderer *renderer);

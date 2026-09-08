@@ -1,3 +1,93 @@
+// Prepared once per shaded surface, outside its punctual-light loop. DFG is
+// the integral of the same single-scatter D*V*Schlick model used below.
+struct VkrGgxMaterialEnergy
+{
+    float3 specular_scale;
+    float3 reflectance;
+    float3 diffuse_weight;
+    float3 back_diffuse_weight;
+    float diffuse_transmission_strength;
+    float no_v;
+    float alpha_squared;
+    float view_root;
+    float anisotropy_strength;
+    float3 anisotropy_tangent;
+    float3 anisotropy_bitangent;
+    float2 anisotropy_alpha;
+    float2 directional_dfg;
+    float anisotropy_support_z;
+    float anisotropy_rectangle_b;
+};
+
+float2 vkr_ggx_dfg_uv(float no_v, float roughness)
+{
+    return (float2(sqrt(saturate(no_v)), saturate(roughness)) *
+                float(VKR_DFG_LUT_SIZE - 1u) + 0.5f) /
+           float(VKR_DFG_LUT_SIZE);
+}
+
+VkrGgxMaterialEnergy vkr_ggx_prepare_material(float no_v, float roughness,
+                                             float3 f0, float2 dfg)
+{
+    VkrGgxMaterialEnergy result;
+    result.back_diffuse_weight = float3(0.0f);
+    result.diffuse_transmission_strength = 0.0f;
+    result.directional_dfg = dfg;
+    result.anisotropy_support_z = 1.0f;
+    result.anisotropy_rectangle_b = 0.0f;
+    result.anisotropy_strength = 0.0f;
+    result.anisotropy_tangent = float3(0.0f);
+    result.anisotropy_bitangent = float3(0.0f);
+    result.anisotropy_alpha = float2(0.0f);
+    result.no_v = saturate(no_v);
+    float alpha = roughness * roughness;
+    result.alpha_squared = alpha * alpha;
+    result.view_root = sqrt(result.no_v * result.no_v *
+                               (1.0f - result.alpha_squared) +
+                           result.alpha_squared);
+    // The immutable table proves A+B >= .25, including filtered samples.
+    result.specular_scale = 1.0f + f0 * (1.0f / (dfg.x + dfg.y) - 1.0f);
+    float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
+    result.reflectance = saturate((f0 * dfg.x + f90 * dfg.y) *
+                                  result.specular_scale);
+    // Allocate only the remaining directional energy to the Lambert lobe.
+    // A per-light Schlick diffuse weight can exceed unit total energy at
+    // grazing views when combined with the compensated specular lobe.
+    result.diffuse_weight = 1.0f - result.reflectance;
+    return result;
+}
+
+// Split the residual diffuse budget without changing either reflective layer.
+VkrGgxMaterialEnergy vkr_ggx_diffuse_transmission(
+    VkrGgxMaterialEnergy energy, float4 transmission)
+{
+    if (transmission.w > 0.0f)
+    {
+        energy.back_diffuse_weight = energy.diffuse_weight *
+            transmission.w * transmission.rgb;
+        energy.diffuse_weight *= 1.0f - transmission.w;
+        energy.diffuse_transmission_strength = transmission.w;
+    }
+    return energy;
+}
+
+float3 vkr_ggx_diffuse_shadow_normal(float3 normal, float3 light,
+                                     VkrGgxMaterialEnergy energy)
+{
+    return energy.diffuse_transmission_strength > 0.0f &&
+                   dot(normal, light) < 0.0f ? -normal : normal;
+}
+
+float vkr_ggx_visibility(float no_l, VkrGgxMaterialEnergy material)
+{
+    // Retain the existing zero-direct-specular shading-normal hemisphere rule.
+    if (material.no_v <= 0.0f)
+        return 0.0f;
+    float light_root = sqrt(no_l * no_l * (1.0f - material.alpha_squared) +
+                            material.alpha_squared);
+    return 0.5f / (no_l * material.view_root + material.no_v * light_root);
+}
+
 // Zero means no direct contribution. Keep subnormal lengths out of rsqrt so
 // denormal flushing cannot turn an almost opposite pair into a NaN. Preserve
 // the existing shading-normal policy for finite directions with N.V <= 0.
@@ -33,4 +123,109 @@ float vkr_ggx_distribution(float no_h, float roughness)
                         alpha * alpha * cosine * cosine;
     float ratio = alpha / denominator;
     return ratio * ratio * (1.0f / 3.14159265358979323846f);
+}
+
+// KHR_materials_anisotropy: the tangent width grows with strength squared.
+float2 vkr_anisotropy_widths(float roughness, float strength)
+{
+    float alpha = roughness * roughness;
+    return float2(alpha + (1.0f - alpha) * strength * strength, alpha);
+}
+
+float vkr_ggx_surface_distribution(float3 normal, float3 half_vector,
+                                   float roughness, VkrGgxMaterialEnergy energy)
+{
+    if (energy.anisotropy_strength == 0.0f)
+        return vkr_ggx_distribution(dot(normal, half_vector), roughness);
+    float3 h = float3(dot(energy.anisotropy_tangent, half_vector) /
+                         energy.anisotropy_alpha.x,
+                     dot(energy.anisotropy_bitangent, half_vector) /
+                         energy.anisotropy_alpha.y,
+                     dot(normal, half_vector));
+    float denominator = dot(h, h);
+    return 1.0f / (3.14159265358979323846f * energy.anisotropy_alpha.x *
+                   energy.anisotropy_alpha.y * denominator * denominator);
+}
+
+float vkr_ggx_surface_visibility(float no_l, float3 light,
+                                 VkrGgxMaterialEnergy energy)
+{
+    if (energy.anisotropy_strength == 0.0f)
+        return vkr_ggx_visibility(no_l, energy);
+    if (energy.no_v <= 0.0f)
+        return 0.0f;
+    float2 projected = float2(dot(energy.anisotropy_tangent, light),
+                               dot(energy.anisotropy_bitangent, light)) *
+                       energy.anisotropy_alpha;
+    float light_root = sqrt(dot(projected, projected) + no_l * no_l);
+    return 0.5f / (no_l * energy.view_root + energy.no_v * light_root);
+}
+
+float3 vkr_anisotropy_axis(float3 geometric_normal, float3 normal,
+                           float4 mesh_tangent, float2 direction,
+                           float2 rotation)
+{
+    float direction_length = dot(direction, direction);
+    direction = direction_length > 1e-12f ? direction * rsqrt(direction_length)
+                                         : float2(1.0f, 0.0f);
+    direction = float2(rotation.x * direction.x - rotation.y * direction.y,
+                       rotation.y * direction.x + rotation.x * direction.y);
+    direction.y = -direction.y;
+    float3 tangent = normalize(mesh_tangent.xyz - geometric_normal *
+                                  dot(mesh_tangent.xyz, geometric_normal));
+    float3 bitangent = cross(geometric_normal, tangent) * mesh_tangent.w;
+    float3 axis = tangent * direction.x + bitangent * direction.y;
+    axis -= normal * dot(normal, axis);
+    float length_squared = dot(axis, axis);
+    // A normal map can align its normal with the authored axis. The other
+    // authored tangent direction supplies the continuous finite boundary.
+    if (length_squared <= 1e-12f) {
+        axis = cross(normal, tangent * -direction.y + bitangent * direction.x);
+        length_squared = dot(axis, axis);
+    }
+    return axis * rsqrt(length_squared);
+}
+
+float2 vkr_anisotropy_encode_axis(float3 axis)
+{
+    axis /= abs(axis.x) + abs(axis.y) + abs(axis.z);
+    float2 result = axis.xy;
+    if (axis.z < 0.0f)
+        result = (1.0f - abs(result.yx)) *
+                 float2(result.x >= 0.0f ? 1.0f : -1.0f,
+                        result.y >= 0.0f ? 1.0f : -1.0f);
+    return result * 0.5f + 0.5f;
+}
+
+float3 vkr_anisotropy_decode_axis(float2 encoded, float3 normal)
+{
+    float2 oct = encoded * 2.0f - 1.0f;
+    float3 axis = float3(oct, 1.0f - abs(oct.x) - abs(oct.y));
+    float fold = max(-axis.z, 0.0f);
+    axis.x += axis.x >= 0.0f ? -fold : fold;
+    axis.y += axis.y >= 0.0f ? -fold : fold;
+    return normalize(axis - normal * dot(normal, axis));
+}
+
+float vkr_anisotropy_environment_roughness(float roughness,
+                                          VkrGgxMaterialEnergy energy)
+{
+    return energy.anisotropy_strength == 0.0f ? roughness :
+               sqrt(sqrt(energy.anisotropy_alpha.x * energy.anisotropy_alpha.y));
+}
+
+float3 vkr_anisotropy_environment_normal(float3 normal, float3 view,
+                                         VkrGgxMaterialEnergy energy)
+{
+    if (energy.anisotropy_strength == 0.0f)
+        return normal;
+    float3 projected = view - energy.anisotropy_bitangent *
+                                 dot(energy.anisotropy_bitangent, view);
+    float length_squared = dot(projected, projected);
+    if (length_squared <= 1e-12f)
+        return normal;
+    float amount = energy.anisotropy_strength *
+                   (1.0f - energy.anisotropy_alpha.y);
+    return normalize(normal * (1.0f - amount) +
+                     projected * (amount * rsqrt(length_squared)));
 }

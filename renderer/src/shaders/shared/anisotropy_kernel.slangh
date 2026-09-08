@@ -1,0 +1,140 @@
+#ifndef VKR_ANISOTROPY_KERNEL_SLANGH
+#define VKR_ANISOTROPY_KERNEL_SLANGH
+struct VkrAnisotropyLookup {
+    float2 uv;
+    uint4 layers;
+    float2 blend;
+    float2 signs;
+};
+
+VkrAnisotropyLookup vkr_anisotropy_lookup(float3 normal, float3 tangent,
+                                         float3 view, float roughness,
+                                         float strength) {
+    float2 projected = float2(dot(view, tangent),
+                               dot(view, cross(normal, tangent)));
+    float azimuth = dot(projected, projected) > 1e-12f
+                        ? atan2(abs(projected.y), abs(projected.x)) : 0.0f;
+    float2 layer = float2(strength, azimuth * 0.63661977236758134f) * 7.0f;
+    uint2 lower = uint2(floor(layer));
+    uint2 upper = min(lower + 1u, uint2(7u));
+    VkrAnisotropyLookup result;
+    result.uv = (float2((roughness - 0.04f) / 0.96f,
+                        (1.0f - sqrt(clamp(dot(normal, view), 0.0001f, 1.0f))) / 0.99f) *
+                     63.0f + 0.5f) / 64.0f;
+    result.layers = uint4(lower.x * 8u + lower.y, upper.x * 8u + lower.y,
+                          lower.x * 8u + upper.y, upper.x * 8u + upper.y);
+    result.blend = layer - float2(lower);
+    result.signs = float2(projected.x < 0.0f ? -1.0f : 1.0f,
+                          projected.y < 0.0f ? -1.0f : 1.0f);
+    return result;
+}
+
+VkrGgxMaterialEnergy vkr_anisotropy_prepare(float3 normal, float3 tangent,
+                                           float3 view, float roughness,
+                                           float strength, float3 f0,
+                                           float2 dfg) {
+    VkrGgxMaterialEnergy energy = vkr_ggx_prepare_material(
+        max(dot(normal, view), 0.0f), roughness, f0, dfg);
+    energy.anisotropy_strength = strength;
+    energy.anisotropy_tangent = tangent;
+    energy.anisotropy_bitangent = cross(normal, tangent);
+    energy.anisotropy_alpha = vkr_anisotropy_widths(roughness, strength);
+    float2 projected = float2(dot(view, tangent),
+                               dot(view, energy.anisotropy_bitangent)) *
+                       energy.anisotropy_alpha;
+    energy.view_root = sqrt(dot(projected, projected) + energy.no_v * energy.no_v);
+    return energy;
+}
+
+struct VkrAnisotropyLtc {
+    float3 row0;
+    float3 row1;
+    float3 row2;
+    float3 amplitude;
+};
+
+VkrAnisotropyLtc vkr_anisotropy_ltc_decode(float4 table0, float4 table1,
+                                          float4 table2, float2 signs,
+                                          float3 f0,
+                                          VkrGgxMaterialEnergy energy) {
+    float3 diagonal = float3(exp2(table0.xy), 1.0f);
+    float h = table0.w, j = table1.x, k = table1.y;
+    float3 u = normalize(float3(table1.zw, table2.x));
+    // Express support relative to the transformed receiver plane. Positive
+    // stored u.z makes every interpolant retain the fitted physical mass.
+    float3 plane = normalize(float3(h * k - j * diagonal.y,
+                                    -k * diagonal.x, diagonal.x * diagonal.y));
+    float plane_inverse = -1.0f / (1.0f + plane.z);
+    float plane_xy = plane.x * plane.y * plane_inverse;
+    float3 plane_x = float3(1.0f + plane.x * plane.x * plane_inverse,
+                            plane_xy, -plane.x);
+    float3 plane_y = float3(plane_xy,
+                            1.0f + plane.y * plane.y * plane_inverse, -plane.y);
+    float3 q = plane_x * u.x + plane_y * u.y + plane * u.z;
+    // Duff/Frisvad basis has no singularity at a fit aligned with world Y.
+    float z_sign = q.z >= 0.0f ? 1.0f : -1.0f;
+    float inverse = -1.0f / (z_sign + q.z);
+    float xy = q.x * q.y * inverse;
+    float3 e1 = float3(1.0f + z_sign * q.x * q.x * inverse,
+                       z_sign * xy, -z_sign * q.x);
+    float3 e2 = float3(xy, z_sign + q.y * q.y * inverse, -q.y);
+    float3 column0 = float3(diagonal.x, h, j);
+    float3 column1 = float3(0.0f, diagonal.y, k);
+    float3 column2 = float3(0.0f, 0.0f, diagonal.z);
+    float3 fold = float3(signs, 1.0f);
+    VkrAnisotropyLtc result;
+    result.row0 = float3(dot(e1, column0), dot(e1, column1), dot(e1, column2)) * fold;
+    result.row1 = float3(dot(e2, column0), dot(e2, column1), dot(e2, column2)) * fold;
+    result.row2 = float3(dot(q, column0), dot(q, column1), dot(q, column2)) * fold;
+    // Reflection of one local axis reverses polygon winding. Reverse the
+    // cosine-plane X axis as well; the density and support are unchanged.
+    result.row0 *= signs.x * signs.y;
+    float mass = 0.5f * (1.0f + u.z);
+    float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
+    result.amplitude = energy.no_v > 0.0f
+        ? (f0 * table0.z + f90 * table2.y) * energy.specular_scale / mass
+        : float3(0.0f);
+    return result;
+}
+
+float3 vkr_anisotropy_ltc_transform(float3 point, VkrAnisotropyLtc sample) {
+    return float3(dot(sample.row0, point), dot(sample.row1, point),
+                   dot(sample.row2, point));
+}
+
+float vkr_anisotropy_ltc_rectangle(VkrLtcRectangle rectangle,
+                                   VkrAnisotropyLtc sample) {
+    float3 source[4] = {rectangle.vertex0, rectangle.vertex1,
+                        rectangle.vertex2, rectangle.vertex3};
+    float3 physical[5];
+    uint count = 0u;
+    for (uint i = 0u; i < 4u; ++i) {
+        float3 a = source[i], b = source[(i + 1u) & 3u];
+        bool inside_a = a.z > 0.0f, inside_b = b.z > 0.0f;
+        if (inside_a) physical[count++] = a;
+        if (inside_a != inside_b)
+            physical[count++] = a + (b - a) * (a.z / (a.z - b.z));
+    }
+    if (count < 3u) return 0.0f;
+    float3 clipped[6];
+    uint clipped_count = 0u;
+    for (uint i = 0u; i < count; ++i) {
+        float3 a = vkr_anisotropy_ltc_transform(physical[i], sample);
+        float3 b = vkr_anisotropy_ltc_transform(physical[(i + 1u) % count], sample);
+        bool inside_a = a.z > 0.0f, inside_b = b.z > 0.0f;
+        if (inside_a) clipped[clipped_count++] = a;
+        if (inside_a != inside_b)
+            clipped[clipped_count++] = a + (b - a) * (a.z / (a.z - b.z));
+    }
+    if (clipped_count < 3u) return 0.0f;
+    for (uint i = 0u; i < clipped_count; ++i) {
+        float length_squared = dot(clipped[i], clipped[i]);
+        if (length_squared <= 1e-12f) return 0.0f;
+        clipped[i] *= rsqrt(length_squared);
+    }
+    float sum = 0.0f;
+    for (uint i = 0u; i < clipped_count; ++i)
+        sum += vkr_ltc_integrate_edge(clipped[i], clipped[(i + 1u) % clipped_count]);
+    return max(0.0f, -sum * VKR_LTC_INV_TWO_PI);
+}
+#endif

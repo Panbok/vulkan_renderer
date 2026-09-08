@@ -1,15 +1,51 @@
+struct VkrVulkanFullscreenPush
+{
+    VkrVulkanPacketUtilityRoot* root;
+    uint material_index;
+    uint flags;
+};
+[[vk::push_constant]] ConstantBuffer<VkrVulkanFullscreenPush> g_fullscreen_push;
+
+// Set only by the editor Scene composite, whose sampled image has already
+// passed the final output scale.
+static const uint VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED = 1u << 0u;
 static const uint VKR_FULLSCREEN_TONEMAP = 1u << 1u;
 static const uint VKR_FULLSCREEN_FXAA = 1u << 2u;
 static const uint VKR_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u;
+// The unset default is AgX. Bit 4 selects the retained ACES comparison path.
+static const uint VKR_FULLSCREEN_ACES_FITTED = 1u << 4u;
 
 float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
-                       bool tonemap, float exposure)
+                       bool tonemap, bool aces_fitted, float exposure,
+                       VkrColorGrading grading,
+                       VkrDisplayOutputParams display_output)
 {
     float4 source = g_textures[texture_index].SampleLevel(
         g_samplers[sampler_index], uv, 0.0f);
-    source.rgb = max(source.rgb * exposure, 0.0f);
-    source.rgb = tonemap ? vkr_aces_fitted(source.rgb) : saturate(source.rgb);
+    // The editor Scene composite samples presentation-linear pixels from the
+    // retained scene image. They already carry the physical-output scale, so a
+    // second grade or SDR clamp would destroy extended-linear highlights.
+    if ((g_fullscreen_push.flags & VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED) != 0u)
+        return source;
+    source.rgb = vkr_color_grade(max(source.rgb * exposure, 0.0f), grading);
+    float3 display_linear = tonemap
+                                ? (aces_fitted ? vkr_aces_fitted(source.rgb)
+                                               : vkr_agx_tonemap(source.rgb))
+                                : saturate(source.rgb);
+    source.rgb = tonemap
+                     ? vkr_display_output_scene_relative(source.rgb,
+                                                         display_linear,
+                                                         display_output)
+                     : display_linear;
     return source;
+}
+
+float4 vkr_finish_output(float4 color, uint flags,
+                         VkrDisplayOutputParams display_output)
+{
+    if ((flags & VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED) == 0u)
+        color.rgb = vkr_display_output_scale(color.rgb, display_output);
+    return color;
 }
 
 float vkr_fxaa_luminance(float3 color)
@@ -19,34 +55,36 @@ float vkr_fxaa_luminance(float3 color)
 }
 
 float4 vkr_fxaa(uint texture_index, uint sampler_index, float2 uv,
-                float2 inverse_extent, bool tonemap, float exposure,
-                float sharpness)
+                float2 inverse_extent, bool tonemap, bool aces_fitted,
+                float exposure, float sharpness, VkrColorGrading grading,
+                VkrDisplayOutputParams display_output)
 {
     float4 center = vkr_post_sample(texture_index, sampler_index, uv, tonemap,
-                                    exposure);
+                                    aces_fitted, exposure, grading, display_output);
     float4 north = vkr_post_sample(
         texture_index, sampler_index, uv - float2(0.0f, inverse_extent.y),
-        tonemap, exposure);
+        tonemap, aces_fitted, exposure, grading, display_output);
     float4 south = vkr_post_sample(
         texture_index, sampler_index, uv + float2(0.0f, inverse_extent.y),
-        tonemap, exposure);
+        tonemap, aces_fitted, exposure, grading, display_output);
     float4 west = vkr_post_sample(
         texture_index, sampler_index, uv - float2(inverse_extent.x, 0.0f),
-        tonemap, exposure);
+        tonemap, aces_fitted, exposure, grading, display_output);
     float4 east = vkr_post_sample(
         texture_index, sampler_index, uv + float2(inverse_extent.x, 0.0f),
-        tonemap, exposure);
+        tonemap, aces_fitted, exposure, grading, display_output);
     float4 northwest = vkr_post_sample(
         texture_index, sampler_index, uv + float2(-1.0f, -1.0f) * inverse_extent,
-        tonemap, exposure);
+        tonemap, aces_fitted, exposure, grading, display_output);
     float4 northeast = vkr_post_sample(
         texture_index, sampler_index, uv + float2(1.0f, -1.0f) * inverse_extent,
-        tonemap, exposure);
+        tonemap, aces_fitted, exposure, grading, display_output);
     float4 southwest = vkr_post_sample(
         texture_index, sampler_index, uv + float2(-1.0f, 1.0f) * inverse_extent,
-        tonemap, exposure);
+        tonemap, aces_fitted, exposure, grading, display_output);
     float4 southeast = vkr_post_sample(
-        texture_index, sampler_index, uv + inverse_extent, tonemap, exposure);
+        texture_index, sampler_index, uv + inverse_extent, tonemap, aces_fitted,
+        exposure, grading, display_output);
     float luma_center = vkr_fxaa_luminance(center.rgb);
     float luma_northwest = vkr_fxaa_luminance(northwest.rgb);
     float luma_northeast = vkr_fxaa_luminance(northeast.rgb);
@@ -99,17 +137,19 @@ float4 vkr_fxaa(uint texture_index, uint sampler_index, float2 uv,
         0.5f *
         (vkr_post_sample(texture_index, sampler_index,
                          uv + direction * (1.0f / 3.0f - 0.5f), tonemap,
-                         exposure) +
+                         aces_fitted, exposure, grading, display_output) +
          vkr_post_sample(texture_index, sampler_index,
                          uv + direction * (2.0f / 3.0f - 0.5f), tonemap,
-                         exposure));
+                         aces_fitted, exposure, grading, display_output));
     float4 result_b =
         result_a * 0.5f +
         0.25f *
             (vkr_post_sample(texture_index, sampler_index,
-                             uv + direction * -0.5f, tonemap, exposure) +
+                             uv + direction * -0.5f, tonemap, aces_fitted,
+                             exposure, grading, display_output) +
              vkr_post_sample(texture_index, sampler_index,
-                             uv + direction * 0.5f, tonemap, exposure));
+                             uv + direction * 0.5f, tonemap, aces_fitted,
+                             exposure, grading, display_output));
     float result_b_luma = vkr_fxaa_luminance(result_b.rgb);
     float4 result =
         result_b_luma < luma_min || result_b_luma > luma_max ? result_a
@@ -139,31 +179,38 @@ float4 vkr_fxaa(uint texture_index, uint sampler_index, float2 uv,
 float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
 {
     VkrVulkanPacketUtilityRoot* root =
-        (VkrVulkanPacketUtilityRoot*)g_push.root;
+        g_fullscreen_push.root;
     uint texture_index =
         NonUniformResourceIndex(root.transmission_texture);
     uint sampler_index =
         NonUniformResourceIndex(root.transmission_sampler);
-    bool tonemap = (g_push.flags & VKR_FULLSCREEN_TONEMAP) != 0u;
+    bool tonemap = (g_fullscreen_push.flags & VKR_FULLSCREEN_TONEMAP) != 0u;
+    bool aces_fitted = (g_fullscreen_push.flags & VKR_FULLSCREEN_ACES_FITTED) != 0u;
     float exposure = root.exposure_state->exposure_multiplier;
+    VkrDisplayOutputParams display_output = root.display_output[0];
     uint2 extent = uint2(root.point_light_grid_origin_cell_size.xy);
     float sharpness = root.point_light_grid_origin_cell_size.z;
     float4 result;
-    if ((g_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
+    if ((g_fullscreen_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
     {
         result = vkr_post_sample(texture_index, sampler_index, input.uv, tonemap,
-                                 exposure);
+                                 aces_fitted, exposure, *root.color_grading,
+                                 display_output);
         if (sharpness > 0.0f)
         {
             float2 step = 1.0f / float2(extent);
             float3 north = vkr_post_sample(texture_index, sampler_index,
-                input.uv - float2(0.0f, step.y), tonemap, exposure).rgb;
+                input.uv - float2(0.0f, step.y), tonemap, aces_fitted,
+                exposure, *root.color_grading, display_output).rgb;
             float3 south = vkr_post_sample(texture_index, sampler_index,
-                input.uv + float2(0.0f, step.y), tonemap, exposure).rgb;
+                input.uv + float2(0.0f, step.y), tonemap, aces_fitted,
+                exposure, *root.color_grading, display_output).rgb;
             float3 west = vkr_post_sample(texture_index, sampler_index,
-                input.uv - float2(step.x, 0.0f), tonemap, exposure).rgb;
+                input.uv - float2(step.x, 0.0f), tonemap, aces_fitted,
+                exposure, *root.color_grading, display_output).rgb;
             float3 east = vkr_post_sample(texture_index, sampler_index,
-                input.uv + float2(step.x, 0.0f), tonemap, exposure).rgb;
+                input.uv + float2(step.x, 0.0f), tonemap, aces_fitted,
+                exposure, *root.color_grading, display_output).rgb;
             result.rgb = vkr_sharpen_color(result.rgb,
                 0.25f * (north + south + west + east),
                 min(min(north, south), min(west, east)),
@@ -172,9 +219,11 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
     }
     else
         result = vkr_fxaa(texture_index, sampler_index, input.uv,
-                          1.0f / float2(extent), tonemap, exposure, sharpness);
+                          1.0f / float2(extent), tonemap, aces_fitted,
+                          exposure, sharpness, *root.color_grading,
+                          display_output);
     // FSR output alpha carries a private static-history sample count.
-    if ((g_push.flags & VKR_FULLSCREEN_OPAQUE_ALPHA) != 0u)
+    if ((g_fullscreen_push.flags & VKR_FULLSCREEN_OPAQUE_ALPHA) != 0u)
         result.a = 1.0f;
-    return result;
+    return vkr_finish_output(result, g_fullscreen_push.flags, display_output);
 }

@@ -1,3 +1,6 @@
+#include "vkr_dfg_lut.h"
+#include "vkr_ltc_lut.h"
+#include "vkr_sheen_lut.h"
 #include "vulkan/vkr_vulkan_internal.h"
 
 VkDevice vkr_vk_renderer_device(const VkrVulkanRenderer *renderer) {
@@ -26,7 +29,8 @@ vkr_internal bool8_t vkr_vk_choose_memory_type(
   if (best_index == UINT32_MAX) {
     if (memory_class == VKR_VULKAN_MEMORY_CLASS_PUBLICATION)
       log_error("Vulkan publication tables require compatible host-visible "
-                "HOST_COHERENT memory (memoryTypeBits=0x%x)", memory_type_bits);
+                "HOST_COHERENT memory (memoryTypeBits=0x%x)",
+                memory_type_bits);
     return false_v;
   }
   *out_index = best_index;
@@ -70,6 +74,8 @@ VkFormat vkr_vk_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
     return VK_FORMAT_R16G16B16A16_SFLOAT;
+  case VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT:
+    return VK_FORMAT_R32G32B32A32_SFLOAT;
   case VKR_TEXTURE_FORMAT_R8_UNORM:
     return VK_FORMAT_R8_UNORM;
   case VKR_TEXTURE_FORMAT_R16_SFLOAT:
@@ -126,6 +132,9 @@ bool8_t vkr_vk_format_block_info(VkFormat format, uint32_t *out_width,
   case VK_FORMAT_R32G32_UINT:
   case VK_FORMAT_R16G16B16A16_SFLOAT:
     bytes = 8u;
+    break;
+  case VK_FORMAT_R32G32B32A32_SFLOAT:
+    bytes = 16u;
     break;
   case VK_FORMAT_BC7_UNORM_BLOCK:
   case VK_FORMAT_BC7_SRGB_BLOCK:
@@ -394,7 +403,7 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
   const VkDeviceSize alignment =
       (allocation->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
           ? Max(requirements.memoryRequirements.alignment,
-                (VkDeviceSize)_Alignof(Vec4))
+                (VkDeviceSize) _Alignof(Vec4))
           : requirements.memoryRequirements.alignment;
   if (!dedicated &&
       !vkr_vulkan_memory_pool_allocate(
@@ -437,8 +446,7 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
         requirements.memoryRequirements.memoryTypeBits;
     for (;;) {
       VkDeviceMemory memory = VK_NULL_HANDLE;
-      allocate_result =
-          vkAllocateMemory(device, &allocate_info, NULL, &memory);
+      allocate_result = vkAllocateMemory(device, &allocate_info, NULL, &memory);
       if (allocate_result == VK_SUCCESS) {
         allocation->memory = memory;
         if (remaining_memory_types !=
@@ -456,10 +464,9 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
       if (allocate_result != VK_ERROR_OUT_OF_DEVICE_MEMORY ||
           (memory_class != VKR_VULKAN_MEMORY_CLASS_UPLOAD &&
            memory_class != VKR_VULKAN_MEMORY_CLASS_PUBLICATION) ||
-          !vkr_vk_choose_memory_type(renderer, remaining_memory_types,
-                                     memory_class,
-                                     &allocation->memory_type_index,
-                                     &allocation->properties))
+          !vkr_vk_choose_memory_type(
+              renderer, remaining_memory_types, memory_class,
+              &allocation->memory_type_index, &allocation->properties))
         break;
       allocate_info.memoryTypeIndex = allocation->memory_type_index;
       allocation->pool_key.memory_type_index = allocation->memory_type_index;
@@ -601,21 +608,24 @@ vkr_internal VkrRendererError vkr_vk_native_resource_error(VkResult result) {
              : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
 }
 
-bool8_t
-vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
-                       uint32_t height, uint32_t mip_levels,
-                       uint32_t array_layers, VkFormat format,
-                       VkImageCreateFlags flags, VkImageViewType view_type,
-                       VkImageUsageFlags usage, VkrGpuAllocationOwner owner,
-                       VkrVulkanImage *out_image, VkrRendererError *out_error) {
+bool8_t vkr_vk_create_image_ex(
+    VkrVulkanRenderer *renderer, uint32_t width, uint32_t height,
+    uint32_t depth, uint32_t mip_levels, uint32_t array_layers, VkFormat format,
+    VkImageCreateFlags flags, VkImageType image_type, VkImageViewType view_type,
+    VkImageUsageFlags usage, VkrGpuAllocationOwner owner,
+    VkrVulkanImage *out_image, VkrRendererError *out_error) {
   if (out_error)
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-  if (!width || !height || !mip_levels || !array_layers ||
-      format == VK_FORMAT_UNDEFINED)
+  if (!width || !height || !depth || !mip_levels || !array_layers ||
+      format == VK_FORMAT_UNDEFINED ||
+      (image_type == VK_IMAGE_TYPE_3D &&
+       (array_layers != 1u || view_type != VK_IMAGE_VIEW_TYPE_3D)) ||
+      (image_type != VK_IMAGE_TYPE_3D && depth != 1u))
     return false_v;
   MemZero(out_image, sizeof(*out_image));
   out_image->width = width;
   out_image->height = height;
+  out_image->depth = depth;
   out_image->mip_levels = mip_levels;
   out_image->array_layers = array_layers;
   out_image->format = format;
@@ -623,9 +633,9 @@ vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   VkImageCreateInfo image_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .flags = flags,
-      .imageType = VK_IMAGE_TYPE_2D,
+      .imageType = image_type,
       .format = format,
-      .extent = {.width = width, .height = height, .depth = 1u},
+      .extent = {.width = width, .height = height, .depth = depth},
       .mipLevels = mip_levels,
       .arrayLayers = array_layers,
       .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -774,21 +784,705 @@ vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   return true_v;
 }
 
+vkr_internal bool8_t vkr_vk_create_dfg_resources(VkrVulkanRenderer *renderer) {
+  _Static_assert(sizeof(vkr_dfg_lut_pixels) == 256u * 1024u,
+                 "DFG LUT must remain one 256 KiB RG16F mip");
+  const VkDeviceSize upload_size = sizeof(vkr_dfg_lut_pixels);
+  VkFormatProperties format_properties = {0};
+  vkGetPhysicalDeviceFormatProperties(
+      vkr_vulkan_device_physical(renderer->device), VK_FORMAT_R16G16_SFLOAT,
+      &format_properties);
+  const VkFormatFeatureFlags required_features =
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  if ((format_properties.optimalTilingFeatures & required_features) !=
+      required_features) {
+    log_error("Vulkan RG16F DFG format lacks sampled/transfer-destination "
+              "support");
+    return false_v;
+  }
+  if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                            VKR_GPU_ALLOCATION_OWNER_STAGING, upload_size,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            &renderer->dfg_upload) ||
+      !renderer->dfg_upload.allocation.mapped ||
+      !vkr_vk_create_image_ex(
+          renderer, VKR_DFG_LUT_SIZE, VKR_DFG_LUT_SIZE, 1u, 1u, 1u,
+          VK_FORMAT_R16G16_SFLOAT, 0u, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+          VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->dfg_image, NULL)) {
+    goto cleanup;
+  }
+  const VkSamplerCreateInfo sampler_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = VK_FILTER_LINEAR,
+      .minFilter = VK_FILTER_LINEAR,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .maxLod = 0.0f,
+  };
+  if (vkCreateSampler(vkr_vk_renderer_device(renderer), &sampler_info, NULL,
+                      &renderer->dfg_sampler) != VK_SUCCESS) {
+    goto cleanup;
+  }
+  MemCopy(renderer->dfg_upload.allocation.mapped, vkr_dfg_lut_pixels,
+          upload_size);
+  if (!vkr_vk_flush(renderer, &renderer->dfg_upload.allocation, 0u,
+                    upload_size)) {
+    goto cleanup;
+  }
+  renderer->dfg_upload_pending = true_v;
+  return true_v;
+
+cleanup:
+  if (renderer->dfg_sampler)
+    vkDestroySampler(vkr_vk_renderer_device(renderer), renderer->dfg_sampler,
+                     NULL);
+  renderer->dfg_sampler = VK_NULL_HANDLE;
+  if (renderer->dfg_image.handle)
+    vkr_vk_destroy_image(renderer, &renderer->dfg_image);
+  if (renderer->dfg_upload.handle)
+    vkr_vk_destroy_buffer(renderer, &renderer->dfg_upload);
+  return false_v;
+}
+
+void vkr_vk_record_dfg_upload(VkrVulkanRenderer *renderer,
+                              VkrVulkanFrameSlot *slot,
+                              VkCommandBuffer command) {
+  if (!renderer->dfg_upload_pending)
+    return;
+  vkr_vk_cmd_image_barrier(
+      command, renderer->dfg_image.handle, VK_PIPELINE_STAGE_2_NONE,
+      VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
+      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  const VkBufferImageCopy2 copy_region = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+      .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .layerCount = 1u},
+      .imageExtent = {.width = VKR_DFG_LUT_SIZE,
+                      .height = VKR_DFG_LUT_SIZE,
+                      .depth = 1u},
+  };
+  const VkCopyBufferToImageInfo2 copy_info = {
+      .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+      .srcBuffer = renderer->dfg_upload.handle,
+      .dstImage = renderer->dfg_image.handle,
+      .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .regionCount = 1u,
+      .pRegions = &copy_region,
+  };
+  vkCmdCopyBufferToImage2(command, &copy_info);
+  vkr_vk_cmd_image_barrier(
+      command, renderer->dfg_image.handle, VK_PIPELINE_STAGE_2_COPY_BIT,
+      VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  slot->dfg_upload_recorded = true_v;
+}
+
+bool8_t vkr_vk_commit_dfg_upload(VkrVulkanRenderer *renderer,
+                                 VkrVulkanFrameSlot *slot,
+                                 uint64_t retire_value) {
+  if (!slot->dfg_upload_recorded)
+    return true_v;
+  if (!renderer->dfg_upload_pending || !renderer->dfg_upload.handle ||
+      !vkr_vk_retire_buffer(renderer, &renderer->dfg_upload, retire_value))
+    return false_v;
+  renderer->dfg_upload_pending = false_v;
+  renderer->dfg_upload_retire_value = retire_value;
+  renderer->dfg_image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  slot->dfg_upload_recorded = false_v;
+  return true_v;
+}
+
+void vkr_vk_collect_dfg_upload(VkrVulkanRenderer *renderer,
+                               uint64_t completed) {
+  if (!renderer->dfg_upload_retire_value ||
+      renderer->dfg_upload_retire_value > completed)
+    return;
+  vkr_vk_destroy_buffer(renderer, &renderer->dfg_upload);
+  renderer->dfg_upload_retire_value = 0u;
+}
+
+void vkr_vk_retire_dfg_descriptor_slots(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = renderer->completed_value;
+  if (renderer->dfg_sampler_slot.generation && renderer->sampler_slots) {
+    if (vkr_gpu_slot_table_retire(renderer->sampler_slots,
+                                  renderer->dfg_sampler_slot,
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire the DFG sampler descriptor");
+    renderer->dfg_sampler_slot = (VkrGpuSlotHandle){0};
+  }
+  if (renderer->dfg_texture_slot.generation && renderer->sampled_image_slots) {
+    if (vkr_gpu_slot_table_retire(renderer->sampled_image_slots,
+                                  renderer->dfg_texture_slot,
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire the DFG sampled-image descriptor");
+    renderer->dfg_texture_slot = (VkrGpuSlotHandle){0};
+  }
+  if (renderer->sampler_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->sampler_slots, completed, NULL);
+  if (renderer->sampled_image_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
+                                     NULL);
+}
+
+vkr_internal bool8_t vkr_vk_create_ltc_resources(VkrVulkanRenderer *renderer) {
+  _Static_assert(sizeof(vkr_ltc_lut_pixels) == 64u * 1024u,
+                 "LTC LUTs must remain two 64x64 RGBA16F tables");
+  const VkDeviceSize upload_size = sizeof(vkr_ltc_lut_pixels);
+  VkFormatProperties format_properties = {0};
+  vkGetPhysicalDeviceFormatProperties(
+      vkr_vulkan_device_physical(renderer->device),
+      VK_FORMAT_R16G16B16A16_SFLOAT, &format_properties);
+  const VkFormatFeatureFlags required_features =
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  if ((format_properties.optimalTilingFeatures & required_features) !=
+      required_features) {
+    log_error("Vulkan RGBA16F LTC format lacks sampled/transfer-destination "
+              "support");
+    return false_v;
+  }
+  if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                            VKR_GPU_ALLOCATION_OWNER_STAGING, upload_size,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            &renderer->ltc_upload) ||
+      !renderer->ltc_upload.allocation.mapped)
+    goto cleanup;
+  for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table)
+    if (!vkr_vk_create_image_ex(renderer, VKR_LTC_LUT_SIZE, VKR_LTC_LUT_SIZE,
+                                1u, 1u, 1u, VK_FORMAT_R16G16B16A16_SFLOAT, 0u,
+                                VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
+                                VK_IMAGE_USAGE_SAMPLED_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                VKR_GPU_ALLOCATION_OWNER_SHADER,
+                                &renderer->ltc_images[table], NULL))
+      goto cleanup;
+  MemCopy(renderer->ltc_upload.allocation.mapped, vkr_ltc_lut_pixels,
+          upload_size);
+  if (!vkr_vk_flush(renderer, &renderer->ltc_upload.allocation, 0u,
+                    upload_size))
+    goto cleanup;
+  renderer->ltc_upload_pending = true_v;
+  return true_v;
+
+cleanup:
+  for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table)
+    if (renderer->ltc_images[table].handle)
+      vkr_vk_destroy_image(renderer, &renderer->ltc_images[table]);
+  if (renderer->ltc_upload.handle)
+    vkr_vk_destroy_buffer(renderer, &renderer->ltc_upload);
+  return false_v;
+}
+
+void vkr_vk_record_ltc_upload(VkrVulkanRenderer *renderer,
+                              VkrVulkanFrameSlot *slot,
+                              VkCommandBuffer command) {
+  if (!renderer->ltc_upload_pending)
+    return;
+  for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table) {
+    VkrVulkanImage *image = &renderer->ltc_images[table];
+    vkr_vk_cmd_image_barrier(
+        command, image->handle, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const VkBufferImageCopy2 copy_region = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+        .bufferOffset = (VkDeviceSize)table * VKR_LTC_LUT_TABLE_BYTE_SIZE,
+        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1u},
+        .imageExtent = {.width = VKR_LTC_LUT_SIZE,
+                        .height = VKR_LTC_LUT_SIZE,
+                        .depth = 1u},
+    };
+    const VkCopyBufferToImageInfo2 copy_info = {
+        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+        .srcBuffer = renderer->ltc_upload.handle,
+        .dstImage = image->handle,
+        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .regionCount = 1u,
+        .pRegions = &copy_region,
+    };
+    vkCmdCopyBufferToImage2(command, &copy_info);
+    vkr_vk_cmd_image_barrier(command, image->handle,
+                             VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  }
+  slot->ltc_upload_recorded = true_v;
+}
+
+bool8_t vkr_vk_commit_ltc_upload(VkrVulkanRenderer *renderer,
+                                 VkrVulkanFrameSlot *slot,
+                                 uint64_t retire_value) {
+  if (!slot->ltc_upload_recorded)
+    return true_v;
+  if (!renderer->ltc_upload_pending || !renderer->ltc_upload.handle ||
+      !vkr_vk_retire_buffer(renderer, &renderer->ltc_upload, retire_value))
+    return false_v;
+  renderer->ltc_upload_pending = false_v;
+  renderer->ltc_upload_retire_value = retire_value;
+  for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table)
+    renderer->ltc_images[table].layout =
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  slot->ltc_upload_recorded = false_v;
+  return true_v;
+}
+
+void vkr_vk_collect_ltc_upload(VkrVulkanRenderer *renderer,
+                               uint64_t completed) {
+  if (!renderer->ltc_upload_retire_value ||
+      renderer->ltc_upload_retire_value > completed)
+    return;
+  vkr_vk_destroy_buffer(renderer, &renderer->ltc_upload);
+  renderer->ltc_upload_retire_value = 0u;
+}
+
+void vkr_vk_retire_ltc_descriptor_slots(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = renderer->completed_value;
+  for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table) {
+    VkrGpuSlotHandle *slot = &renderer->ltc_texture_slots[table];
+    if (!slot->generation || !renderer->sampled_image_slots)
+      continue;
+    if (vkr_gpu_slot_table_retire(renderer->sampled_image_slots, *slot,
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire the LTC sampled-image descriptor");
+    *slot = (VkrGpuSlotHandle){0};
+  }
+  if (renderer->sampled_image_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
+                                     NULL);
+}
+
+vkr_internal bool8_t vkr_vk_create_sheen_resources(
+    VkrVulkanRenderer *renderer) {
+  _Static_assert(sizeof(vkr_sheen_energy_lut_pixels) == 128u * 1024u,
+                 "Sheen energy LUT must remain R16F 256x256");
+  _Static_assert(sizeof(vkr_sheen_ltc_lut_pixels) == 128u * 1024u,
+                 "Sheen LTC LUTs must remain four RGBA16F 64x64 tables");
+  const VkDeviceSize energy_bytes = sizeof(vkr_sheen_energy_lut_pixels);
+  const VkDeviceSize upload_size =
+      energy_bytes + sizeof(vkr_sheen_ltc_lut_pixels);
+  VkFormatProperties energy_properties = {0};
+  VkFormatProperties ltc_properties = {0};
+  vkGetPhysicalDeviceFormatProperties(vkr_vulkan_device_physical(renderer->device),
+                                      VK_FORMAT_R16_SFLOAT,
+                                      &energy_properties);
+  vkGetPhysicalDeviceFormatProperties(
+      vkr_vulkan_device_physical(renderer->device),
+      VK_FORMAT_R16G16B16A16_SFLOAT, &ltc_properties);
+  const VkFormatFeatureFlags required =
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+      VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  if ((energy_properties.optimalTilingFeatures & required) != required ||
+      (ltc_properties.optimalTilingFeatures & required) != required) {
+    log_error("Vulkan sheen LUT formats lack linear sampled/transfer-destination "
+              "support");
+    return false_v;
+  }
+  if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                            VKR_GPU_ALLOCATION_OWNER_STAGING, upload_size,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            &renderer->sheen_upload) ||
+      !renderer->sheen_upload.allocation.mapped ||
+      !vkr_vk_create_image_ex(renderer, VKR_SHEEN_ENERGY_LUT_SIZE,
+                              VKR_SHEEN_ENERGY_LUT_SIZE, 1u, 1u, 1u,
+                              VK_FORMAT_R16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
+                              VK_IMAGE_VIEW_TYPE_2D,
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                              VKR_GPU_ALLOCATION_OWNER_SHADER,
+                              &renderer->sheen_directional_albedo_image, NULL))
+    goto cleanup;
+  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+    if (!vkr_vk_create_image_ex(
+            renderer, VKR_SHEEN_LTC_LUT_SIZE, VKR_SHEEN_LTC_LUT_SIZE, 1u,
+            1u, 1u, VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
+            VK_IMAGE_VIEW_TYPE_2D,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->sheen_ltc_images[table],
+            NULL))
+      goto cleanup;
+  uint8_t *upload = renderer->sheen_upload.allocation.mapped;
+  MemCopy(upload, vkr_sheen_energy_lut_pixels, energy_bytes);
+  MemCopy(upload + energy_bytes, vkr_sheen_ltc_lut_pixels,
+          sizeof(vkr_sheen_ltc_lut_pixels));
+  if (!vkr_vk_flush(renderer, &renderer->sheen_upload.allocation, 0u,
+                    upload_size))
+    goto cleanup;
+  renderer->sheen_upload_pending = true_v;
+  return true_v;
+
+cleanup:
+  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+    if (renderer->sheen_ltc_images[table].handle)
+      vkr_vk_destroy_image(renderer, &renderer->sheen_ltc_images[table]);
+  if (renderer->sheen_directional_albedo_image.handle)
+    vkr_vk_destroy_image(renderer, &renderer->sheen_directional_albedo_image);
+  if (renderer->sheen_upload.handle)
+    vkr_vk_destroy_buffer(renderer, &renderer->sheen_upload);
+  return false_v;
+}
+
+void vkr_vk_record_sheen_upload(VkrVulkanRenderer *renderer,
+                                VkrVulkanFrameSlot *slot,
+                                VkCommandBuffer command) {
+  if (!renderer->sheen_upload_pending)
+    return;
+  const VkDeviceSize energy_bytes = sizeof(vkr_sheen_energy_lut_pixels);
+  VkrVulkanImage *images[1u + VKR_SHEEN_LTC_LUT_TABLE_COUNT];
+  images[0] = &renderer->sheen_directional_albedo_image;
+  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+    images[1u + table] = &renderer->sheen_ltc_images[table];
+  for (uint32_t image_index = 0u; image_index < ArrayCount(images);
+       ++image_index) {
+    VkrVulkanImage *image = images[image_index];
+    const bool8_t energy = image_index == 0u;
+    vkr_vk_cmd_image_barrier(
+        command, image->handle, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const VkBufferImageCopy2 copy_region = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+        .bufferOffset = energy
+                            ? 0u
+                            : energy_bytes +
+                                  (VkDeviceSize)(image_index - 1u) *
+                                      VKR_SHEEN_LTC_LUT_TABLE_BYTE_SIZE,
+        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1u},
+        .imageExtent = {.width = energy ? VKR_SHEEN_ENERGY_LUT_SIZE
+                                        : VKR_SHEEN_LTC_LUT_SIZE,
+                        .height = energy ? VKR_SHEEN_ENERGY_LUT_SIZE
+                                         : VKR_SHEEN_LTC_LUT_SIZE,
+                        .depth = 1u},
+    };
+    const VkCopyBufferToImageInfo2 copy_info = {
+        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+        .srcBuffer = renderer->sheen_upload.handle,
+        .dstImage = image->handle,
+        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .regionCount = 1u,
+        .pRegions = &copy_region,
+    };
+    vkCmdCopyBufferToImage2(command, &copy_info);
+    vkr_vk_cmd_image_barrier(command, image->handle,
+                             VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  }
+  slot->sheen_upload_recorded = true_v;
+}
+
+bool8_t vkr_vk_commit_sheen_upload(VkrVulkanRenderer *renderer,
+                                   VkrVulkanFrameSlot *slot,
+                                   uint64_t retire_value) {
+  if (!slot->sheen_upload_recorded)
+    return true_v;
+  if (!renderer->sheen_upload_pending || !renderer->sheen_upload.handle ||
+      !vkr_vk_retire_buffer(renderer, &renderer->sheen_upload, retire_value))
+    return false_v;
+  renderer->sheen_upload_pending = false_v;
+  renderer->sheen_upload_retire_value = retire_value;
+  renderer->sheen_directional_albedo_image.layout =
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+    renderer->sheen_ltc_images[table].layout =
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  slot->sheen_upload_recorded = false_v;
+  return true_v;
+}
+
+void vkr_vk_collect_sheen_upload(VkrVulkanRenderer *renderer,
+                                 uint64_t completed) {
+  if (!renderer->sheen_upload_retire_value ||
+      renderer->sheen_upload_retire_value > completed)
+    return;
+  vkr_vk_destroy_buffer(renderer, &renderer->sheen_upload);
+  renderer->sheen_upload_retire_value = 0u;
+}
+
+void vkr_vk_retire_sheen_descriptor_slots(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = renderer->completed_value;
+  for (uint32_t image_index = 0u;
+       image_index < ArrayCount(renderer->sheen_texture_slots); ++image_index) {
+    VkrGpuSlotHandle *slot = &renderer->sheen_texture_slots[image_index];
+    if (!slot->generation || !renderer->sampled_image_slots)
+      continue;
+    if (vkr_gpu_slot_table_retire(renderer->sampled_image_slots, *slot,
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire a sheen sampled-image descriptor");
+    *slot = (VkrGpuSlotHandle){0};
+  }
+  if (renderer->sampled_image_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
+                                     NULL);
+}
+
+vkr_internal bool8_t vkr_vk_create_anisotropy_resources(
+    VkrVulkanRenderer *renderer) {
+  _Static_assert(sizeof(vkr_anisotropy_lut_pixels) ==
+                     VKR_ANISOTROPY_LUT_TABLE_COUNT *
+                         VKR_ANISOTROPY_LUT_TABLE_BYTE_SIZE,
+                 "Anisotropy LUT storage must remain three RGBA16F arrays");
+  VkFormatProperties properties = {0};
+  vkGetPhysicalDeviceFormatProperties(vkr_vulkan_device_physical(renderer->device),
+                                      VK_FORMAT_R16G16B16A16_SFLOAT,
+                                      &properties);
+  const VkFormatFeatureFlags required =
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+      VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  if ((properties.optimalTilingFeatures & required) != required) {
+    log_error("Vulkan anisotropy LUT format lacks linear sampled/transfer "
+              "destination support");
+    return false_v;
+  }
+  if (!vkr_vk_create_buffer(
+          renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+          VKR_GPU_ALLOCATION_OWNER_STAGING,
+          sizeof(vkr_anisotropy_lut_pixels), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          &renderer->anisotropy_upload) ||
+      !renderer->anisotropy_upload.allocation.mapped)
+    goto cleanup;
+  for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
+    if (!vkr_vk_create_image_ex(
+            renderer, VKR_ANISOTROPY_LUT_SIZE, VKR_ANISOTROPY_LUT_SIZE, 1u,
+            1u, VKR_ANISOTROPY_LUT_LAYER_COUNT,
+            VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
+            VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VKR_GPU_ALLOCATION_OWNER_SHADER,
+            &renderer->anisotropy_images[table], NULL))
+      goto cleanup;
+  MemCopy(renderer->anisotropy_upload.allocation.mapped,
+          vkr_anisotropy_lut_pixels, sizeof(vkr_anisotropy_lut_pixels));
+  if (!vkr_vk_flush(renderer, &renderer->anisotropy_upload.allocation, 0u,
+                    sizeof(vkr_anisotropy_lut_pixels)))
+    goto cleanup;
+  renderer->anisotropy_upload_pending = true_v;
+  return true_v;
+
+cleanup:
+  for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
+    if (renderer->anisotropy_images[table].handle)
+      vkr_vk_destroy_image(renderer, &renderer->anisotropy_images[table]);
+  if (renderer->anisotropy_upload.handle)
+    vkr_vk_destroy_buffer(renderer, &renderer->anisotropy_upload);
+  return false_v;
+}
+
+void vkr_vk_record_anisotropy_upload(VkrVulkanRenderer *renderer,
+                                     VkrVulkanFrameSlot *slot,
+                                     VkCommandBuffer command) {
+  if (!renderer->anisotropy_upload_pending)
+    return;
+  for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table) {
+    VkrVulkanImage *image = &renderer->anisotropy_images[table];
+    vkr_vk_cmd_image_barrier_range(
+        command, image->handle, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u,
+        VKR_ANISOTROPY_LUT_LAYER_COUNT);
+    const VkBufferImageCopy2 region = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+        .bufferOffset = (VkDeviceSize)table *
+                        VKR_ANISOTROPY_LUT_TABLE_BYTE_SIZE,
+        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = VKR_ANISOTROPY_LUT_LAYER_COUNT},
+        .imageExtent = {.width = VKR_ANISOTROPY_LUT_SIZE,
+                        .height = VKR_ANISOTROPY_LUT_SIZE,
+                        .depth = 1u},
+    };
+    const VkCopyBufferToImageInfo2 copy = {
+        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+        .srcBuffer = renderer->anisotropy_upload.handle,
+        .dstImage = image->handle,
+        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .regionCount = 1u,
+        .pRegions = &region,
+    };
+    vkCmdCopyBufferToImage2(command, &copy);
+    vkr_vk_cmd_image_barrier_range(
+        command, image->handle, VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1u,
+        VKR_ANISOTROPY_LUT_LAYER_COUNT);
+  }
+  slot->anisotropy_upload_recorded = true_v;
+}
+
+bool8_t vkr_vk_commit_anisotropy_upload(VkrVulkanRenderer *renderer,
+                                        VkrVulkanFrameSlot *slot,
+                                        uint64_t retire_value) {
+  if (!slot->anisotropy_upload_recorded)
+    return true_v;
+  if (!renderer->anisotropy_upload_pending || !renderer->anisotropy_upload.handle ||
+      !vkr_vk_retire_buffer(renderer, &renderer->anisotropy_upload, retire_value))
+    return false_v;
+  renderer->anisotropy_upload_pending = false_v;
+  renderer->anisotropy_upload_retire_value = retire_value;
+  for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
+    renderer->anisotropy_images[table].layout =
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  slot->anisotropy_upload_recorded = false_v;
+  return true_v;
+}
+
+void vkr_vk_collect_anisotropy_upload(VkrVulkanRenderer *renderer,
+                                      uint64_t completed) {
+  if (!renderer->anisotropy_upload_retire_value ||
+      renderer->anisotropy_upload_retire_value > completed)
+    return;
+  vkr_vk_destroy_buffer(renderer, &renderer->anisotropy_upload);
+  renderer->anisotropy_upload_retire_value = 0u;
+}
+
+void vkr_vk_retire_anisotropy_descriptor_slots(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = renderer->completed_value;
+  for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table) {
+    VkrGpuSlotHandle *slot = &renderer->anisotropy_texture_slots[table];
+    if (!slot->generation || !renderer->sampled_image_slots)
+      continue;
+    if (vkr_gpu_slot_table_retire(renderer->sampled_image_slots, *slot,
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire an anisotropy sampled-image descriptor");
+    *slot = (VkrGpuSlotHandle){0};
+  }
+  if (renderer->sampled_image_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
+                                     NULL);
+}
+
+vkr_internal bool8_t vkr_vk_create_atmosphere_storage_view(
+    VkrVulkanRenderer *renderer, const VkrVulkanImage *image,
+    VkImageView *out_view) {
+  const VkImageViewCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = image->handle,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = image->format,
+      .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .levelCount = 1u,
+                           .layerCount = 1u},
+  };
+  return vkCreateImageView(vkr_vk_renderer_device(renderer), &info, NULL,
+                           out_view) == VK_SUCCESS;
+}
+
+bool8_t vkr_vk_create_atmosphere_resources(VkrVulkanRenderer *renderer) {
+  VkFormatProperties properties = {0};
+  vkGetPhysicalDeviceFormatProperties(
+      vkr_vulkan_device_physical(renderer->device),
+      VK_FORMAT_R16G16B16A16_SFLOAT, &properties);
+  const VkFormatFeatureFlags required =
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+  if ((properties.optimalTilingFeatures & required) != required) {
+    log_error(
+        "Vulkan RGBA16F atmosphere LUT format lacks sampled/storage support");
+    return false_v;
+  }
+  if (!vkr_vk_create_image_ex(renderer, VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
+                              VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT, 1u, 1u, 1u,
+                              VK_FORMAT_R16G16B16A16_SFLOAT, 0u,
+                              VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                                  VK_IMAGE_USAGE_STORAGE_BIT,
+                              VKR_GPU_ALLOCATION_OWNER_SHADER,
+                              &renderer->atmosphere_transmittance, NULL) ||
+      !vkr_vk_create_image_ex(
+          renderer, VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
+          VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE, 1u, 1u, 1u,
+          VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
+          VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+          VKR_GPU_ALLOCATION_OWNER_SHADER,
+          &renderer->atmosphere_multiple_scattering, NULL) ||
+      !vkr_vk_create_atmosphere_storage_view(
+          renderer, &renderer->atmosphere_transmittance,
+          &renderer->atmosphere_storage_views[0]) ||
+      !vkr_vk_create_atmosphere_storage_view(
+          renderer, &renderer->atmosphere_multiple_scattering,
+          &renderer->atmosphere_storage_views[1])) {
+    vkr_vk_destroy_atmosphere_resources(renderer);
+    return false_v;
+  }
+  return true_v;
+}
+
+void vkr_vk_retire_atmosphere_descriptor_slots(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = renderer->completed_value;
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    if (renderer->atmosphere_sampled_slots[i].generation &&
+        renderer->sampled_image_slots) {
+      (void)vkr_gpu_slot_table_retire(renderer->sampled_image_slots,
+                                      renderer->atmosphere_sampled_slots[i],
+                                      completed);
+      renderer->atmosphere_sampled_slots[i] = (VkrGpuSlotHandle){0};
+    }
+    if (renderer->atmosphere_storage_slots[i].generation &&
+        renderer->storage_image_slots) {
+      (void)vkr_gpu_slot_table_retire(renderer->storage_image_slots,
+                                      renderer->atmosphere_storage_slots[i],
+                                      completed);
+      renderer->atmosphere_storage_slots[i] = (VkrGpuSlotHandle){0};
+    }
+  }
+  if (renderer->sampled_image_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
+                                     NULL);
+  if (renderer->storage_image_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->storage_image_slots, completed,
+                                     NULL);
+}
+
+void vkr_vk_destroy_atmosphere_resources(VkrVulkanRenderer *renderer) {
+  VkDevice device = vkr_vk_renderer_device(renderer);
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    if (renderer->atmosphere_storage_views[i]) {
+      vkDestroyImageView(device, renderer->atmosphere_storage_views[i], NULL);
+      renderer->atmosphere_storage_views[i] = VK_NULL_HANDLE;
+    }
+  }
+  vkr_vk_destroy_image(renderer, &renderer->atmosphere_multiple_scattering);
+  vkr_vk_destroy_image(renderer, &renderer->atmosphere_transmittance);
+  renderer->atmosphere_lut_revision = 0u;
+  renderer->atmosphere_lut_valid = false_v;
+}
+
 bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
-                                      VkrVulkanFrameSlot *slot,
-                                      uint64_t direct_bytes,
-                                      uint64_t candidate_bytes) {
+                                     VkrVulkanFrameSlot *slot,
+                                     uint64_t direct_bytes,
+                                     uint64_t candidate_bytes) {
   // Called before packet packing, after this slot's last submission completed.
   if (slot->retire_value > renderer->completed_value ||
       candidate_bytes > VKR_VULKAN_CANDIDATE_UPLOAD_SIZE)
     return false_v;
   VkrVulkanBuffer *buffers[] = {&slot->frame_upload, &slot->candidate_upload};
   const uint64_t required[] = {
-      Min(direct_bytes, (uint64_t)VKR_VULKAN_FRAME_UPLOAD_SIZE), candidate_bytes};
+      Min(direct_bytes, (uint64_t)VKR_VULKAN_FRAME_UPLOAD_SIZE),
+      candidate_bytes};
   const uint64_t limits[] = {VKR_VULKAN_FRAME_UPLOAD_SIZE,
-                              VKR_VULKAN_CANDIDATE_UPLOAD_SIZE};
+                             VKR_VULKAN_CANDIDATE_UPLOAD_SIZE};
   const VkrVulkanMemoryClass classes[] = {VKR_VULKAN_MEMORY_CLASS_UPLOAD,
-                                           VKR_VULKAN_MEMORY_CLASS_STAGING};
+                                          VKR_VULKAN_MEMORY_CLASS_STAGING};
   const VkBufferUsageFlags usages[] = {
       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
           VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -899,17 +1593,41 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
     return false_v;
   }
   if (!vkr_vk_create_image_ex(
-          renderer, 1u, 1u, 1u, 1u, VK_FORMAT_R8G8B8A8_UNORM, 0u,
-          VK_IMAGE_VIEW_TYPE_2D,
+          renderer, 1u, 1u, 1u, 1u, 1u, VK_FORMAT_R8G8B8A8_UNORM, 0u,
+          VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
               VK_IMAGE_USAGE_TRANSFER_DST_BIT,
           VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->sentinel_image, NULL)) {
     log_error("Vulkan failed to create the sentinel image");
     return false_v;
   }
+  if (!vkr_vk_create_dfg_resources(renderer)) {
+    log_error("Vulkan failed to create the DFG lookup resources");
+    return false_v;
+  }
+  if (!vkr_vk_create_ltc_resources(renderer)) {
+    log_error("Vulkan failed to create the LTC lookup resources");
+    return false_v;
+  }
+  if (!vkr_vk_create_sheen_resources(renderer)) {
+    log_error("Vulkan failed to create the sheen lookup resources");
+    return false_v;
+  }
+  if (!vkr_vk_create_anisotropy_resources(renderer)) {
+    log_error("Vulkan failed to create anisotropy lookup resources");
+    return false_v;
+  }
+  if (!vkr_vk_create_atmosphere_resources(renderer)) {
+    log_error("Vulkan failed to create atmosphere lookup resources");
+    return false_v;
+  }
   if (!vkr_vk_create_target_set(
           renderer, renderer->config.width, renderer->config.height,
-          renderer->config.image_count, &renderer->targets)) {
+          renderer->config.image_count,
+          renderer->config.target_kind == VKR_PRESENT_TARGET_OFFSCREEN
+              ? VK_FORMAT_R8G8B8A8_SRGB
+              : renderer->window_target.format,
+          &renderer->targets)) {
     log_error("Vulkan failed to create render targets");
     return false_v;
   }
@@ -978,8 +1696,8 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
 
 bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
   if (!vkr_geometry_ranges_create(&renderer->geometry_ranges,
-                                   renderer->allocator,
-                                   renderer->config.geometry_capacity))
+                                  renderer->allocator,
+                                  renderer->config.geometry_capacity))
     return false_v;
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
       vkr_vulkan_device_descriptor_properties(renderer->device);
@@ -1118,9 +1836,9 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
       !renderer->sampler_slot_storage || !renderer->material_slot_storage ||
       !renderer->descriptor_scratch || !renderer->published_geometries ||
       !renderer->geometry_table_rows || !renderer->retired_geometries ||
-      !renderer->published_textures ||
-      !renderer->retired_textures || !renderer->published_samplers ||
-      !renderer->published_materials || !renderer->retired_materials ||
+      !renderer->published_textures || !renderer->retired_textures ||
+      !renderer->published_samplers || !renderer->published_materials ||
+      !renderer->retired_materials ||
       !renderer->pending_texture_initializations ||
       !renderer->pending_buffer_initializations ||
       !renderer->retired_staging_buffers) {
@@ -1210,6 +1928,123 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
       sampled_handle.index != 0u) {
     return false_v;
   }
+  const VkDescriptorImageInfo dfg_image_info = {
+      .imageView = renderer->dfg_image.view,
+      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+  };
+  const VkDescriptorGetInfoEXT dfg_image_get = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+      .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+      .data.pSampledImage = &dfg_image_info,
+  };
+  VkrGpuSlotHandle dfg_texture_handle = {0};
+  get_descriptor(vkr_vk_renderer_device(renderer), &dfg_image_get,
+                 properties->sampledImageDescriptorSize,
+                 renderer->descriptor_scratch);
+  if (vkr_gpu_slot_table_publish(
+          renderer->sampled_image_slots, renderer->descriptor_scratch,
+          &dfg_texture_handle) != VKR_GPU_SLOT_STATUS_OK) {
+    return false_v;
+  }
+  renderer->dfg_texture_slot = dfg_texture_handle;
+  if (dfg_texture_handle.index != 1u)
+    return false_v;
+  for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table) {
+    const VkDescriptorImageInfo ltc_image_info = {
+        .imageView = renderer->ltc_images[table].view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorGetInfoEXT ltc_image_get = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .data.pSampledImage = &ltc_image_info,
+    };
+    VkrGpuSlotHandle ltc_texture_handle = {0};
+    get_descriptor(vkr_vk_renderer_device(renderer), &ltc_image_get,
+                   properties->sampledImageDescriptorSize,
+                   renderer->descriptor_scratch);
+    if (vkr_gpu_slot_table_publish(
+            renderer->sampled_image_slots, renderer->descriptor_scratch,
+            &ltc_texture_handle) != VKR_GPU_SLOT_STATUS_OK ||
+        ltc_texture_handle.index != 2u + table)
+      return false_v;
+    renderer->ltc_texture_slots[table] = ltc_texture_handle;
+  }
+  const VkrVulkanImage *atmosphere_images[] = {
+      &renderer->atmosphere_transmittance,
+      &renderer->atmosphere_multiple_scattering,
+  };
+  for (uint32_t image_index = 0u; image_index < ArrayCount(atmosphere_images);
+       ++image_index) {
+    const VkDescriptorImageInfo atmosphere_image_info = {
+        .imageView = atmosphere_images[image_index]->view,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+    };
+    const VkDescriptorGetInfoEXT atmosphere_image_get = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .data.pSampledImage = &atmosphere_image_info,
+    };
+    VkrGpuSlotHandle atmosphere_handle = {0};
+    get_descriptor(vkr_vk_renderer_device(renderer), &atmosphere_image_get,
+                   properties->sampledImageDescriptorSize,
+                   renderer->descriptor_scratch);
+    if (vkr_gpu_slot_table_publish(
+            renderer->sampled_image_slots, renderer->descriptor_scratch,
+            &atmosphere_handle) != VKR_GPU_SLOT_STATUS_OK ||
+        atmosphere_handle.index != 4u + image_index)
+      return false_v;
+    renderer->atmosphere_sampled_slots[image_index] = atmosphere_handle;
+  }
+  const VkrVulkanImage *sheen_images[1u + VKR_SHEEN_LTC_LUT_TABLE_COUNT];
+  sheen_images[0] = &renderer->sheen_directional_albedo_image;
+  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+    sheen_images[1u + table] = &renderer->sheen_ltc_images[table];
+  for (uint32_t image_index = 0u; image_index < ArrayCount(sheen_images);
+       ++image_index) {
+    const VkDescriptorImageInfo sheen_image_info = {
+        .imageView = sheen_images[image_index]->view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorGetInfoEXT sheen_image_get = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .data.pSampledImage = &sheen_image_info,
+    };
+    VkrGpuSlotHandle sheen_texture_handle = {0};
+    get_descriptor(vkr_vk_renderer_device(renderer), &sheen_image_get,
+                   properties->sampledImageDescriptorSize,
+                   renderer->descriptor_scratch);
+    if (vkr_gpu_slot_table_publish(renderer->sampled_image_slots,
+                                  renderer->descriptor_scratch,
+                                  &sheen_texture_handle) !=
+            VKR_GPU_SLOT_STATUS_OK ||
+        sheen_texture_handle.index != 6u + image_index)
+      return false_v;
+    renderer->sheen_texture_slots[image_index] = sheen_texture_handle;
+  }
+  for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table) {
+    const VkDescriptorImageInfo anisotropy_image_info = {
+        .imageView = renderer->anisotropy_images[table].view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorGetInfoEXT anisotropy_image_get = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .data.pSampledImage = &anisotropy_image_info,
+    };
+    VkrGpuSlotHandle anisotropy_texture_handle = {0};
+    get_descriptor(vkr_vk_renderer_device(renderer), &anisotropy_image_get,
+                   properties->sampledImageDescriptorSize,
+                   renderer->descriptor_scratch);
+    if (vkr_gpu_slot_table_publish(renderer->sampled_image_slots,
+                                  renderer->descriptor_scratch,
+                                  &anisotropy_texture_handle) !=
+            VKR_GPU_SLOT_STATUS_OK ||
+        anisotropy_texture_handle.index != 11u + table)
+      return false_v;
+    renderer->anisotropy_texture_slots[table] = anisotropy_texture_handle;
+  }
   get_descriptor(vkr_vk_renderer_device(renderer), &sampler_get,
                  properties->samplerDescriptorSize,
                  renderer->descriptor_scratch);
@@ -1254,6 +2089,23 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
     return false_v;
   }
   renderer->transmission_sampler_slot = transmission_handle.index;
+  const VkDescriptorGetInfoEXT dfg_sampler_get = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
+      .data.pSampler = &renderer->dfg_sampler,
+  };
+  VkrGpuSlotHandle dfg_sampler_handle = {0};
+  get_descriptor(vkr_vk_renderer_device(renderer), &dfg_sampler_get,
+                 properties->samplerDescriptorSize,
+                 renderer->descriptor_scratch);
+  if (vkr_gpu_slot_table_publish(
+          renderer->sampler_slots, renderer->descriptor_scratch,
+          &dfg_sampler_handle) != VKR_GPU_SLOT_STATUS_OK) {
+    return false_v;
+  }
+  renderer->dfg_sampler_slot = dfg_sampler_handle;
+  if (dfg_sampler_handle.index != 3u)
+    return false_v;
 
   get_descriptor(vkr_vk_renderer_device(renderer), &storage_get,
                  properties->storageImageDescriptorSize,
@@ -1263,6 +2115,29 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
                                  &storage_handle) != VKR_GPU_SLOT_STATUS_OK ||
       storage_handle.index != 0u) {
     return false_v;
+  }
+  for (uint32_t image_index = 0u;
+       image_index < ArrayCount(renderer->atmosphere_storage_views);
+       ++image_index) {
+    const VkDescriptorImageInfo atmosphere_storage_info = {
+        .imageView = renderer->atmosphere_storage_views[image_index],
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+    };
+    const VkDescriptorGetInfoEXT atmosphere_storage_get = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        .data.pStorageImage = &atmosphere_storage_info,
+    };
+    VkrGpuSlotHandle atmosphere_handle = {0};
+    get_descriptor(vkr_vk_renderer_device(renderer), &atmosphere_storage_get,
+                   properties->storageImageDescriptorSize,
+                   renderer->descriptor_scratch);
+    if (vkr_gpu_slot_table_publish(
+            renderer->storage_image_slots, renderer->descriptor_scratch,
+            &atmosphere_handle) != VKR_GPU_SLOT_STATUS_OK ||
+        atmosphere_handle.index != 1u + image_index)
+      return false_v;
+    renderer->atmosphere_storage_slots[image_index] = atmosphere_handle;
   }
   const VkrVulkanMaterialPublishedRow material = {
       .material =
@@ -1280,6 +2155,17 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
               .material_surface = {0.0f, 1.0f, 1.0f, 1.0f},
               .material_alpha = {0.5f, 0.0f, 1.5f, 0.0f},
               .material_attenuation_color = {1.0f, 1.0f, 1.0f, 0.0f},
+              .material_clearcoat = {0.0f, 0.0f, 1.0f, 0.0f},
+              .clearcoat_texture = sampled_handle.index,
+              .clearcoat_roughness_texture = sampled_handle.index,
+              .clearcoat_normal_texture = sampled_handle.index,
+              .clearcoat_sampler = sampler_handle.index,
+              .clearcoat_roughness_sampler = sampler_handle.index,
+              .clearcoat_normal_sampler = sampler_handle.index,
+              .sheen_color_texture = sampled_handle.index,
+              .sheen_roughness_texture = sampled_handle.index,
+              .sheen_color_sampler = sampler_handle.index,
+              .sheen_roughness_sampler = sampler_handle.index,
           },
       .transmission =
           {
@@ -1300,16 +2186,17 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
   return vkr_vk_mark_dirty(&renderer->resource_descriptor_dirty,
                            &renderer->resource_descriptors,
                            resource_layout->sampled_image_offset,
-                           properties->sampledImageDescriptorSize) &&
+                           properties->sampledImageDescriptorSize * 14u) &&
          vkr_vk_mark_dirty(&renderer->resource_descriptor_dirty,
                            &renderer->resource_descriptors,
                            resource_layout->storage_image_offset,
-                           properties->storageImageDescriptorSize) &&
-         /* Three permanent rows: sentinel, shadow comparison, transmission. */
+                           properties->storageImageDescriptorSize * 3u) &&
+         /* Four permanent rows: sentinel, shadow comparison, transmission, DFG.
+          */
          vkr_vk_mark_dirty(&renderer->sampler_descriptor_dirty,
                            &renderer->sampler_descriptors,
                            sampler_layout->sampler_offset,
-                           properties->samplerDescriptorSize * 3u) &&
+                           properties->samplerDescriptorSize * 4u) &&
          vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials, 0u,
                            sizeof(material.material)) &&
          vkr_vk_mark_dirty(&renderer->transmission_material_dirty,

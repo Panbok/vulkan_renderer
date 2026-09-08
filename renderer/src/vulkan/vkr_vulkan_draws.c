@@ -185,9 +185,95 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->prefilter_sampler = 0u;
   slot->sh_global_slot = VKR_SH_SLOT_BLACK;
   slot->ibl_ready = false_v;
+  slot->subsurface_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->diffuse_volume_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->diffuse_volume_origin = (Vec4){0};
+  slot->diffuse_volume_inverse_spacing = (Vec4){0};
+  MemZero(slot->diffuse_volume_dimensions,
+          sizeof(slot->diffuse_volume_dimensions));
+  slot->ltc = 0u;
+  slot->sheen = 0u;
+  slot->anisotropy = 0u;
+  slot->fog = 0u;
+  slot->froxel_fog = 0u;
+  slot->froxel_fog_params = NULL;
+  slot->froxel_integrated_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   slot->sh_referenced_slot_count = 0u;
 
+  uint64_t fog_address = 0u;
+  VkrFogGpuParams *fog =
+      vkr_vk_frame_upload_allocate(slot, sizeof(*fog), 16u, &fog_address, NULL);
+  if (!fog)
+    return false_v;
+  *fog = packet->fog;
+  slot->fog = fog_address;
+
+  uint64_t froxel_fog_address = 0u;
+  VkrFroxelFogGpuParams *froxel_fog = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*froxel_fog), _Alignof(VkrFroxelFogGpuParams),
+      &froxel_fog_address, NULL);
+  if (!froxel_fog)
+    return false_v;
+  *froxel_fog = packet->froxel_fog;
+  slot->froxel_fog = froxel_fog_address;
+  slot->froxel_fog_params = froxel_fog;
+
   const VkrFrameLighting *lighting = packet->input.lighting;
+  uint64_t ltc_address = 0u;
+  VkrVulkanLtc *ltc = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*ltc), _Alignof(VkrVulkanLtc), &ltc_address, NULL);
+  if (!ltc)
+    return false_v;
+  const uint32_t rectangle_count =
+      lighting ? lighting->rectangle_light_count : 0u;
+  uint64_t rectangle_lights = 0u;
+  if (rectangle_count) {
+    VkrGpuRectangleLightRow *rows = vkr_vk_frame_upload_allocate(
+        slot, (uint64_t)rectangle_count * sizeof(*rows),
+        _Alignof(VkrGpuRectangleLightRow), &rectangle_lights, NULL);
+    if (!rows)
+      return false_v;
+    for (uint32_t i = 0u; i < rectangle_count; ++i)
+      vkr_rectangle_light_pack(&lighting->rectangle_lights[i], &rows[i]);
+  }
+  *ltc = (VkrVulkanLtc){
+      .lights = rectangle_lights,
+      .matrix_texture = renderer->ltc_texture_slots[0].index,
+      .amplitude_texture = renderer->ltc_texture_slots[1].index,
+      .count = rectangle_count,
+      .sampler = renderer->dfg_sampler_slot.index,
+  };
+  slot->ltc = ltc_address;
+
+  uint64_t sheen_address = 0u;
+  VkrVulkanSheen *sheen = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*sheen), _Alignof(VkrVulkanSheen), &sheen_address, NULL);
+  if (!sheen)
+    return false_v;
+  *sheen = (VkrVulkanSheen){
+      .directional_albedo_texture = renderer->sheen_texture_slots[0].index,
+      .ltc_matrix_texture = renderer->sheen_texture_slots[1].index,
+      .ltc_amplitude_texture = renderer->sheen_texture_slots[2].index,
+      .sampler = renderer->dfg_sampler_slot.index,
+      .ltc_matrix_texture_b = renderer->sheen_texture_slots[3].index,
+      .ltc_amplitude_texture_b = renderer->sheen_texture_slots[4].index,
+  };
+  slot->sheen = sheen_address;
+
+  uint64_t anisotropy_address = 0u;
+  VkrVulkanAnisotropy *anisotropy = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*anisotropy), _Alignof(VkrVulkanAnisotropy),
+      &anisotropy_address, NULL);
+  if (!anisotropy)
+    return false_v;
+  *anisotropy = (VkrVulkanAnisotropy){
+      .table0_texture = renderer->anisotropy_texture_slots[0].index,
+      .table1_texture = renderer->anisotropy_texture_slots[1].index,
+      .table2_texture = renderer->anisotropy_texture_slots[2].index,
+      .sampler_index = renderer->dfg_sampler_slot.index,
+  };
+  slot->anisotropy = anisotropy_address;
+
   if (lighting && lighting->point_light_count) {
     const uint64_t light_bytes =
         (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
@@ -231,7 +317,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
       cascades[i] = (VkrVulkanPacketShadowCascade){
           .light_view_projection = source->light_view_projection,
           .split_near_far_texel_depth = source->split_near_far_texel_depth,
-          .origin_inv_size_pad = source->origin_inv_size_pad,
+          .origin_inv_size_sun = source->origin_inv_size_sun,
       };
     }
   }
@@ -245,6 +331,49 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     if (!views)
       return false_v;
     MemCopy(views, packet->input.local_shadow->views, bytes);
+  }
+
+  if (packet->subsurface_enabled) {
+    const VkrSubsurfaceBinding *binding = &lighting->subsurface;
+    VkrVulkanPublishedTexture *texture =
+        vkr_vk_published_texture(renderer, binding->texture, NULL);
+    if (!texture || texture->initialization_pending ||
+        binding->profile_count == 0u || binding->profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
+        texture->image.format != VK_FORMAT_R32G32B32A32_SFLOAT ||
+        texture->image.width != VKR_SUBSURFACE_TABLE_WIDTH ||
+        texture->image.height != VKR_SUBSURFACE_TABLE_HEIGHT ||
+        texture->image.depth != 1u || texture->image.mip_levels != 1u ||
+        texture->image.array_layers != 1u)
+      return false_v;
+    uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    if (!vkr_vk_resolve_sampled_pair(renderer, binding->texture,
+                                     &slot->subsurface_texture, &ignored_sampler))
+      return false_v;
+  }
+  if (lighting && lighting->diffuse_volume.texture.id != 0u) {
+    const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
+    VkrVulkanPublishedTexture *texture =
+        vkr_vk_published_texture(renderer, volume->texture, NULL);
+    const uint64_t row_count = (uint64_t)volume->dimensions[0] *
+                               volume->dimensions[1] * volume->dimensions[2];
+    if (!texture || texture->initialization_pending ||
+        texture->image.format != VK_FORMAT_R32G32B32A32_SFLOAT ||
+        texture->image.width != 8u || texture->image.height != row_count ||
+        texture->image.mip_levels != 1u || texture->image.array_layers != 1u)
+      return false_v;
+    uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    if (!vkr_vk_resolve_sampled_pair(renderer, volume->texture,
+                                     &slot->diffuse_volume_texture,
+                                     &ignored_sampler))
+      return false_v;
+    slot->diffuse_volume_origin =
+        (Vec4){volume->origin.x, volume->origin.y, volume->origin.z, 0.0f};
+    slot->diffuse_volume_inverse_spacing =
+        (Vec4){volume->inverse_spacing.x, volume->inverse_spacing.y,
+               volume->inverse_spacing.z, 0.0f};
+    slot->diffuse_volume_dimensions[0] = volume->dimensions[0];
+    slot->diffuse_volume_dimensions[1] = volume->dimensions[1];
+    slot->diffuse_volume_dimensions[2] = volume->dimensions[2];
   }
 
   if (lighting && lighting->ibl_enabled && lighting->ibl_source.id) {
@@ -290,6 +419,8 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     }
     if (!slot->ibl_probe_count)
       slot->ibl_probes = 0u;
+    else
+      slot->ibl_ready = true_v;
   }
   return true_v;
 }
@@ -330,6 +461,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->frame_upload_cursor = 0u;
   slot->candidate_upload_cursor = 0u;
   slot->frame_upload_exhaustions = 0u;
+  slot->display_output = 0u;
   // Bound variable uploads before publishing any mapped pointer or GPU address.
   // A capped conservative bound preserves the former 75 MiB direct-only limit.
   const uint64_t geometry_table_bytes =
@@ -337,7 +469,11 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                     sizeof(VkrGpuGeometryRow)
                               : 0u;
   uint64_t direct_bytes =
-      geometry_table_bytes +
+      geometry_table_bytes + sizeof(VkrFogGpuParams) +
+      sizeof(VkrDisplayOutputParams) + sizeof(VkrVulkanLtc) +
+      sizeof(VkrVulkanSheen) + sizeof(VkrVulkanAnisotropy) +
+      (uint64_t)VKR_MAX_SCENE_RECTANGLE_LIGHTS *
+          sizeof(VkrGpuRectangleLightRow) +
       256u; // Alignment between the fixed packet tables below.
   uint64_t candidate_bytes = 0u;
   uint64_t draw_bytes = 0u;
@@ -384,6 +520,12 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   if (!vkr_vk_reserve_frame_uploads(renderer, slot, direct_bytes,
                                     candidate_bytes))
     return false_v;
+  VkrDisplayOutputParams *display_output = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*display_output), _Alignof(VkrDisplayOutputParams),
+      &slot->display_output, NULL);
+  if (!display_output)
+    return false_v;
+  *display_output = renderer->display_output_params;
   slot->world_instances = 0u;
   slot->ui_vertices = 0u;
   slot->ui_index_offset = 0u;
@@ -772,6 +914,20 @@ void vkr_vk_fill_packet_frame_root(
   root->shadow_comparison_sampler = renderer->shadow_comparison_sampler_slot;
   root->transmission_texture = transmission_texture;
   root->transmission_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  root->dfg_texture = renderer->dfg_texture_slot.index;
+  root->dfg_sampler = renderer->dfg_sampler_slot.index;
+  root->ltc = slot->ltc;
+  root->sheen = slot->sheen;
+  root->anisotropy = slot->anisotropy;
+  root->fog = slot->fog;
+  root->froxel_fog = slot->froxel_fog;
+  root->froxel_integrated_texture = slot->froxel_integrated_texture;
+  root->froxel_sampler = renderer->transmission_sampler_slot;
+  root->diffuse_volume_texture = slot->diffuse_volume_texture;
+  root->diffuse_volume_origin = slot->diffuse_volume_origin;
+  root->diffuse_volume_inverse_spacing = slot->diffuse_volume_inverse_spacing;
+  MemCopy(root->diffuse_volume_dimensions, slot->diffuse_volume_dimensions,
+          sizeof(root->diffuse_volume_dimensions));
   root->flags = vkr_packet_derive_frame_flags(renderer->graph->packet,
                                               lighting_pass, slot->ibl_ready);
   root->point_light_data = slot->point_light_data;
@@ -899,6 +1055,7 @@ bool8_t vkr_vk_prepare_editor_overlay(VkrVulkanRenderer *renderer,
                 .first_vertex = geometry->gpu_row.first_vertex,
                 .decode_index = range->decode_index,
                 .object_id = source->object_id,
+                .display_output = slot->display_output,
             },
         .indices = geometry->indices.handle,
         .index_offset = index_offset,
@@ -1129,6 +1286,7 @@ bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
                 .point_light_grid_origin_cell_size = {(float32_t)target_width,
                                                       (float32_t)target_height,
                                                       0.0f, 0.0f},
+                .display_output = slot->display_output,
             },
         .index_offset = upload_offset + index_offset,
         .index_size = index_bytes,
@@ -1223,6 +1381,7 @@ bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
                 .mode = batch->mode,
                 .flags = textured ? 1u : 0u,
                 .corner_radii = batch->corner_radius_px,
+                .display_output = slot->display_output,
             },
         .scissor =
             {
@@ -1260,8 +1419,19 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
   VkrExposureGpuState *manual_state = vkr_vk_frame_upload_allocate(
       slot, sizeof(*manual_state), _Alignof(VkrExposureGpuState),
       &manual_state_address, NULL);
-  if (!root || !manual_state)
+  uint64_t color_grading_address = 0u;
+  VkrColorGradingGpu *color_grading = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*color_grading), _Alignof(VkrColorGradingGpu),
+      &color_grading_address, NULL);
+  if (!root || !manual_state || !color_grading)
     return false_v;
+  *color_grading =
+      !composite && renderer->graph->packet->input.globals.render_mode ==
+                        VKR_RENDER_MODE_DEFAULT
+          ? renderer->graph->packet->color_grading
+          : (VkrColorGradingGpu){0};
+  root->color_grading = color_grading_address;
+  root->display_output = slot->display_output;
   *manual_state = (VkrExposureGpuState){
       .exposure_multiplier =
           composite ? 1.0f : renderer->graph->packet->exposure.manual,
@@ -1273,14 +1443,13 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
                         VKR_RENDER_MODE_DEFAULT
           ? renderer->graph->packet->input.globals.image_sharpness
           : 0.0f;
-  root->transmission_sampler = (composite || renderer->config.fxaa_enabled ||
-                               image_sharpness > 0.0f)
-                                   ? renderer->transmission_sampler_slot
-                                   : 0u;
+  root->transmission_sampler =
+      (composite || renderer->config.fxaa_enabled || image_sharpness > 0.0f)
+          ? renderer->transmission_sampler_slot
+          : 0u;
   root->exposure_state = exposure_state ? exposure_state : manual_state_address;
-  root->point_light_grid_origin_cell_size =
-      (Vec4){(float32_t)output_width, (float32_t)output_height, image_sharpness,
-             0.0f};
+  root->point_light_grid_origin_cell_size = (Vec4){
+      (float32_t)output_width, (float32_t)output_height, image_sharpness, 0.0f};
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,

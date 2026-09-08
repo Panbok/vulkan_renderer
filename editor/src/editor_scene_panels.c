@@ -43,8 +43,8 @@ struct VkrEditorScenePanels {
   uint32_t long_name_capacity;
   VkrSceneEditValues values;
   VkrSceneEditValues original_values;
-  char numbers[18][48];
-  char original_numbers[18][48];
+  char numbers[21][48];
+  char original_numbers[21][48];
   char error[128];
   bool8_t changed;
   float32_t inspector_scroll;
@@ -427,7 +427,7 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
   float32_t rotation[3];
   vkr_quat_to_euler(p->values.rotation, &rotation[0], &rotation[1],
                     &rotation[2]);
-  float32_t values[18] = {p->values.position.x,      p->values.position.y,
+  float32_t values[21] = {p->values.position.x,      p->values.position.y,
                           p->values.position.z,      rotation[0] * 57.2957795f,
                           rotation[1] * 57.2957795f, rotation[2] * 57.2957795f,
                           p->values.scale.x,         p->values.scale.y,
@@ -444,6 +444,11 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
     color = p->values.directional_light.color;
     intensity = p->values.directional_light.intensity;
     direction = p->values.directional_light.direction_local;
+  } else if (p->values.fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) {
+    color = p->values.rectangle_light.color;
+    intensity = p->values.rectangle_light.radiance;
+    values[19] = p->values.rectangle_light.size.x;
+    values[20] = p->values.rectangle_light.size.y;
   }
   values[9] = color.x;
   values[10] = color.y;
@@ -456,7 +461,8 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
   values[15] = atan2f(direction.y, horizontal) * 57.2957795f;
   values[16] = p->values.point_light.inner_cone_angle * 57.2957795f;
   values[17] = p->values.point_light.outer_cone_angle * 57.2957795f;
-  for (uint32_t i = 0; i < 18; i++)
+  values[18] = p->values.directional_light.sun_angular_diameter_degrees;
+  for (uint32_t i = 0; i < 21; i++)
     snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", values[i]);
   const String8 full_name = vkr_scene_get_name(f->scene, f->selected_entity);
   const uint32_t name_capacity =
@@ -507,9 +513,9 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
     out->visibility = p->values.visibility;
     out->fields |= VKR_SCENE_EDIT_VISIBILITY;
   }
-  float32_t v[18] = {0};
-  bool8_t numeric_changed[18] = {0};
-  for (uint32_t i = 0; i < 18; ++i) {
+  float32_t v[21] = {0};
+  bool8_t numeric_changed[21] = {0};
+  for (uint32_t i = 0; i < 21; ++i) {
     if (!strcmp(p->numbers[i], p->original_numbers[i]))
       continue;
     char *end;
@@ -542,11 +548,13 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
       out->fields |= VKR_SCENE_EDIT_TRANSFORM;
   }
   if (p->original_values.fields &
-      (VKR_SCENE_EDIT_POINT_LIGHT | VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)) {
+      (VKR_SCENE_EDIT_POINT_LIGHT | VKR_SCENE_EDIT_DIRECTIONAL_LIGHT |
+       VKR_SCENE_EDIT_RECTANGLE_LIGHT)) {
     for (uint32_t axis = 0; axis < 3; ++axis) {
       if (numeric_changed[9 + axis]) {
         out->point_light.color.elements[axis] = v[9 + axis];
         out->directional_light.color.elements[axis] = v[9 + axis];
+        out->rectangle_light.color.elements[axis] = v[9 + axis];
       }
     }
     if (numeric_changed[14] || numeric_changed[15]) {
@@ -567,12 +575,22 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
     }
     if (numeric_changed[12])
       out->point_light.intensity = out->directional_light.intensity = v[12];
+    if (numeric_changed[12])
+      out->rectangle_light.radiance = v[12];
     if (numeric_changed[13])
       out->point_light.range = v[13];
     if (numeric_changed[16])
       out->point_light.inner_cone_angle = v[16] * 0.0174532925f;
     if (numeric_changed[17])
       out->point_light.outer_cone_angle = v[17] * 0.0174532925f;
+    if (numeric_changed[18]) {
+      if (v[18] < 0.0f || v[18] >= 180.0f) {
+        snprintf(p->error, sizeof(p->error),
+                 "Sun angular diameter must be in [0, 180) degrees.");
+        return false_v;
+      }
+      out->directional_light.sun_angular_diameter_degrees = v[18];
+    }
     if ((numeric_changed[16] || numeric_changed[17]) &&
         (out->point_light.inner_cone_angle < 0 ||
          out->point_light.outer_cone_angle <
@@ -597,6 +615,7 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
     }
     out->point_light.enabled = p->values.point_light.enabled;
     out->directional_light.enabled = p->values.directional_light.enabled;
+    out->rectangle_light.enabled = p->values.rectangle_light.enabled;
     if ((p->original_values.fields & VKR_SCENE_EDIT_POINT_LIGHT) &&
         MemCompare(&out->point_light, &p->original_values.point_light,
                    sizeof(out->point_light)))
@@ -606,6 +625,15 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
                    &p->original_values.directional_light,
                    sizeof(out->directional_light)))
       out->fields |= VKR_SCENE_EDIT_DIRECTIONAL_LIGHT;
+    if (numeric_changed[19])
+      out->rectangle_light.size.x = v[19];
+    if (numeric_changed[20])
+      out->rectangle_light.size.y = v[20];
+    if ((p->original_values.fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) &&
+        MemCompare(&out->rectangle_light,
+                   &p->original_values.rectangle_light,
+                   sizeof(out->rectangle_light)))
+      out->fields |= VKR_SCENE_EDIT_RECTANGLE_LIGHT;
   }
   if (out->fields && !vkr_scene_edit_validate(out)) {
     snprintf(p->error, sizeof(p->error),
@@ -618,9 +646,18 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
 static void inspector_clear_focus(VkrUiSystem *ui) {
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.scroll"));
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.fields"));
-  const char *labels[] = {"name",  "visibility", "inherit", "apply", "revert",
-                          "frame", "undo",       "redo",    "save",
-                          "light.point.enabled", "light.directional.enabled"};
+  const char *labels[] = {"name",
+                          "visibility",
+                          "inherit",
+                          "apply",
+                          "revert",
+                          "frame",
+                          "undo",
+                          "redo",
+                          "save",
+                          "light.point.enabled",
+                          "light.directional.enabled",
+                          "light.rectangle.enabled"};
   for (uint32_t i = 0; i < ArrayCount(labels); ++i) {
     VkrUiId id = vkr_ui_id_stack_widget_label(
         &ui->id_stack, string8_create((uint8_t *)labels[i], strlen(labels[i])));
@@ -629,7 +666,7 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
     if (ui->active_id == id)
       ui->active_id = 0;
   }
-  for (uint32_t i = 0; i < 18; ++i) {
+  for (uint32_t i = 0; i < 21; ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
     VkrUiId id =
         vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
@@ -704,13 +741,17 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
   const bool8_t point = (p->values.fields & VKR_SCENE_EDIT_POINT_LIGHT) != 0;
   const bool8_t directional =
       (p->values.fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) != 0;
-  const bool8_t spot = point &&
-      p->values.point_light.kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
-  const bool8_t light = point || directional;
+  const bool8_t rectangle =
+      (p->values.fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) != 0;
+  const bool8_t spot =
+      point && p->values.point_light.kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
+  const bool8_t light = point || directional || rectangle;
   const bool8_t aimed = directional || spot;
   if (light)
     content_height += 26 + (point + directional) * 27 +
                       (4 + point + (aimed ? 4 : 0) + (spot ? 4 : 0)) * 26;
+  if (rectangle)
+    content_height += 3 * 26;
   if (!(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
     content_height -= 9 * 26;
   if (tr && !tr->trs_editable)
@@ -780,16 +821,28 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
   vkr_ui_label(ui, string8_lit("transform.title"),
                string8_lit("Local transform"), &c);
   y += 26;
-  const char *labels[18] = {"Position X",       "Position Y",
-                            "Position Z",       "Rotation X (deg)",
-                            "Rotation Y (deg)", "Rotation Z (deg)",
-                            "Scale X",          "Scale Y",
-                            "Scale Z",          "Linear red",
-                            "Linear green",     "Linear blue",
-                            "Intensity",        "Range (0 = unlimited)",
-                            "Local yaw (deg)",  "Local elevation (deg)",
-                            "Inner cone (deg)", "Outer cone (deg)"};
-  uint32_t total = light ? 18u : 9u;
+  const char *labels[21] = {"Position X",
+                            "Position Y",
+                            "Position Z",
+                            "Rotation X (deg)",
+                            "Rotation Y (deg)",
+                            "Rotation Z (deg)",
+                            "Scale X",
+                            "Scale Y",
+                            "Scale Z",
+                            "Linear red",
+                            "Linear green",
+                            "Linear blue",
+                            "Intensity",
+                            "Range (0 = unlimited)",
+                            "Local yaw (deg)",
+                            "Local elevation (deg)",
+                            "Inner cone (deg)",
+                            "Outer cone (deg)",
+                            "Sun angular diameter (deg)",
+                            "Rectangle width",
+                            "Rectangle height"};
+  uint32_t total = rectangle ? 21u : light ? 19u : 9u;
   for (uint32_t i = 0; i < total; i++) {
     if (i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
       continue;
@@ -797,9 +850,10 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
       c = widget_at(5, y, w - 10, 24);
       c.text.font = heading;
       vkr_ui_label(ui, string8_lit("light.title"),
-                   spot    ? string8_lit("Spot light")
-                   : point ? string8_lit("Point light")
-                           : string8_lit("Directional light"),
+                   rectangle ? string8_lit("Rectangle light")
+                   : spot     ? string8_lit("Spot light")
+                   : point    ? string8_lit("Point light")
+                              : string8_lit("Directional light"),
                    &c);
       y += 26;
       if (point) {
@@ -822,14 +876,24 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
                             &p->values.directional_light.enabled, &c);
         y += 27;
       }
+      if (rectangle) {
+        c = widget_at(5, y, w - 10, 24);
+        p->changed |= vkr_ui_checkbox(
+            ui, string8_lit("light.rectangle.enabled"),
+            string8_lit("Rectangle light enabled"),
+            &p->values.rectangle_light.enabled, &c);
+        y += 27;
+      }
     }
     if ((i == 13 && !point) || (i >= 14 && i < 16 && !aimed) ||
-        (i >= 16 && !spot))
+        (i >= 16 && i < 18 && !spot) || (i == 18 && !directional) ||
+        (i >= 19 && !rectangle))
       continue;
     (void)vkr_ui_push_id_u64(ui, i);
     c = widget_at(5, y, w * 0.53f - 6, 24);
+    const char *label = i == 12 && rectangle ? "Radiance" : labels[i];
     vkr_ui_label(ui, string8_lit("label"),
-                 string8_create((uint8_t *)labels[i], strlen(labels[i])), &c);
+                 string8_create((uint8_t *)label, strlen(label)), &c);
     c = widget_at(w * 0.53f, y, w * 0.47f - 6, 24);
     c.read_only = i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM);
     vkr_editor_field_style(&c);
@@ -842,21 +906,28 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
         ui->focused_id ==
             vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
     y += 26;
-    if (i >= 14) {
+    if (i >= 14 && i < 19) {
       const float32_t minimum = i == 14 ? -180.0f : i == 15 ? -90.0f : 0.0f;
-      const float32_t maximum = i == 14 ? 180.0f : 90.0f;
+      const float32_t maximum = i == 14   ? 180.0f
+                                : i == 15 ? 90.0f
+                                : i == 18 ? 179.999f
+                                          : 90.0f;
       char *end;
       float32_t angle = strtof(p->numbers[i], &end);
       const bool8_t valid = end != p->numbers[i] && !*end && isfinite(angle);
       c = widget_at(5, y, w - 11, 24);
       c.disabled = !valid;
-      c.tooltip = i < 16
-                      ? string8_lit("Local light direction; node rotation also applies")
-                        : string8_lit("Cone half-angle; inner must be less than outer");
+      c.tooltip =
+          i < 16
+              ? string8_lit("Local light direction; node rotation also applies")
+          : i < 18
+              ? string8_lit("Cone half-angle; inner must be less than outer")
+              : string8_lit("Solar-disc diameter; zero keeps a hard PCF edge");
       // The slider owns only this draft string. Apply creates the undo entry.
-      float32_t slider_angle = valid ? vkr_clamp_f32(angle, minimum, maximum) : 0;
-      if (vkr_ui_slider_f32(ui, string8_lit("slider"), &slider_angle,
-                            minimum, maximum, &c)) {
+      float32_t slider_angle =
+          valid ? vkr_clamp_f32(angle, minimum, maximum) : 0;
+      if (vkr_ui_slider_f32(ui, string8_lit("slider"), &slider_angle, minimum,
+                            maximum, &c)) {
         snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", slider_angle);
         p->changed = true_v;
       }

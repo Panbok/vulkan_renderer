@@ -34,6 +34,89 @@ vkr_internal void vkr_vk_cmd_ibl_image_barrier(
   vkCmdPipelineBarrier2(command, &dependency);
 }
 
+vkr_internal bool8_t vkr_vk_prepare_atmosphere_dispatch(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    VkrVulkanAtmospherePipeline pipeline,
+    const VkrVulkanPendingIblBake *job,
+    const VkrVulkanPublishedTexture *source, uint32_t width, uint32_t height,
+    uint32_t depth) {
+  if (!job->atmosphere_sun_readback.address || !source ||
+      !source->storage_slot_count ||
+      !renderer->atmosphere_sampled_slots[0].generation ||
+      !renderer->atmosphere_sampled_slots[1].generation ||
+      !renderer->atmosphere_storage_slots[0].generation ||
+      !renderer->atmosphere_storage_slots[1].generation ||
+      !renderer->dfg_sampler_slot.generation)
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t root_address = 0u;
+  VkrVulkanAtmosphereRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanAtmosphereRoot), &root_address,
+      NULL);
+  if (!root)
+    return false_v;
+  *root = (VkrVulkanAtmosphereRoot){
+      .params = job->atmosphere_params,
+      .transmittance_sample = renderer->atmosphere_sampled_slots[0].index,
+      .transmittance_storage = renderer->atmosphere_storage_slots[0].index,
+      .multiple_scattering_sample = renderer->atmosphere_sampled_slots[1].index,
+      .multiple_scattering_storage = renderer->atmosphere_storage_slots[1].index,
+      .source_storage = source->storage_slots[0].index,
+      .sampler = renderer->dfg_sampler_slot.index,
+      .sun_output = job->atmosphere_sun_readback.address,
+      .extent = {width, height},
+      .face_size = source->image.width,
+  };
+  prepared->root_address = root_address;
+  prepared->pipelines[0] = renderer->atmosphere_pipelines[pipeline];
+  prepared->groups[0][0] = (width + 7u) / 8u;
+  prepared->groups[0][1] = (height + 7u) / 8u;
+  prepared->groups[0][2] = depth;
+  if (pipeline == VKR_VULKAN_ATMOSPHERE_PIPELINE_MULTIPLE_SCATTERING) {
+    prepared->groups[0][0] = width;
+    prepared->groups[0][1] = height;
+    prepared->groups[0][2] = 1u;
+  } else if (pipeline == VKR_VULKAN_ATMOSPHERE_PIPELINE_SUN) {
+    prepared->groups[0][0] = 1u;
+    prepared->groups[0][1] = 1u;
+    prepared->groups[0][2] = 1u;
+  }
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+vkr_internal void vkr_vk_record_atmosphere_cache_barrier(
+    VkCommandBuffer command, const VkrVulkanImage *image,
+    VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+    VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
+    VkImageLayout old_layout) {
+  vkr_vk_cmd_ibl_image_barrier(command, image->handle, 0u, 1u, src_stage,
+                               src_access, dst_stage, dst_access, old_layout,
+                               VK_IMAGE_LAYOUT_GENERAL);
+}
+
+vkr_internal void vkr_vk_record_atmosphere_readback_visibility(
+    VkCommandBuffer command, VkBuffer buffer) {
+  const VkBufferMemoryBarrier2 barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+      .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = buffer,
+      .size = sizeof(Vec4),
+  };
+  const VkDependencyInfo dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1u,
+      .pBufferMemoryBarriers = &barrier,
+  };
+  vkCmdPipelineBarrier2(command, &dependency);
+}
+
 vkr_internal bool8_t vkr_vk_prepare_ibl_dispatch(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
     VkrVulkanIblPipeline pipeline, const VkrVulkanPublishedTexture *source,
@@ -284,6 +367,8 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
   }
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
     VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    if (job->submitted || job->atmosphere_failed)
+      continue;
     job->recorded = false_v;
     VkrVulkanPublishedTexture *source =
         vkr_vk_texture_publication(renderer, job->source);
@@ -300,6 +385,14 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
     if (input->initialization_pending) {
       continue;
     }
+    if (job->is_atmosphere &&
+        (source->image.width != VKR_ATMOSPHERE_SOURCE_SIZE ||
+         source->image.mip_levels != VKR_IBL_PREFILTER_MIP_COUNT ||
+         source->storage_slot_count != source->image.mip_levels ||
+         !job->atmosphere_sun_readback.handle)) {
+      job->atmosphere_failed = true_v;
+      continue;
+    }
     VkrVulkanPreparedIblBake *bake = &prepared->bakes[prepared->count];
     bake->source = source;
     bake->prefilter = prefilter;
@@ -311,6 +404,34 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
                                        VKR_VULKAN_IBL_PIPELINE_EQUIRECT,
                                        equirect, source, 0u, 1u, 0.0f))
         return false_v;
+    }
+    if (job->is_atmosphere) {
+      bake->is_atmosphere = true_v;
+      bake->atmosphere_rebuild_luts = job->atmosphere_rebuild_luts;
+      bake->atmosphere_readback = job->atmosphere_sun_readback.handle;
+      if (job->atmosphere_rebuild_luts &&
+          (!vkr_vk_prepare_atmosphere_dispatch(
+               renderer, &bake->atmosphere[0],
+               VKR_VULKAN_ATMOSPHERE_PIPELINE_TRANSMITTANCE, job, source,
+               VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
+               VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT, 1u) ||
+           !vkr_vk_prepare_atmosphere_dispatch(
+               renderer, &bake->atmosphere[1],
+               VKR_VULKAN_ATMOSPHERE_PIPELINE_MULTIPLE_SCATTERING, job,
+               source, VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
+               VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE, 1u)))
+        return false_v;
+      if (!vkr_vk_prepare_atmosphere_dispatch(
+              renderer, &bake->atmosphere[2],
+              VKR_VULKAN_ATMOSPHERE_PIPELINE_SOURCE, job, source,
+              source->image.width, source->image.height,
+              source->image.array_layers) ||
+          !vkr_vk_prepare_atmosphere_dispatch(
+              renderer, &bake->atmosphere[3],
+              VKR_VULKAN_ATMOSPHERE_PIPELINE_SUN, job, source, 1u, 1u,
+              1u))
+        return false_v;
+      bake->atmosphere_dispatch_count = job->atmosphere_rebuild_luts ? 4u : 2u;
     }
     /* Exhaustion and projection failure are cold-path errors: the logical
        source keeps its prior publication, or black. */
@@ -355,20 +476,24 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer) {
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
-    const VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
-    const VkrTextureHandle handles[] = {job->equirect, job->source,
-                                        job->prefilter};
-    for (uint32_t handle_index = job->convert_equirect ? 0u : 1u;
-         handle_index < ArrayCount(handles); ++handle_index) {
-      VkrVulkanPublishedTexture *texture =
-          vkr_vk_texture_publication(renderer, handles[handle_index]);
-      if (!texture || !texture->ibl_reference_count) {
-        log_error("Vulkan discarded IBL bake lost texture %u:%u ownership",
-                  handles[handle_index].id, handles[handle_index].generation);
-        continue;
+    VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    if (!job->submitted || job->is_atmosphere) {
+      const VkrTextureHandle handles[] = {job->equirect, job->source,
+                                          job->prefilter};
+      for (uint32_t handle_index = job->convert_equirect ? 0u : 1u;
+           handle_index < ArrayCount(handles); ++handle_index) {
+        VkrVulkanPublishedTexture *texture =
+            vkr_vk_texture_publication(renderer, handles[handle_index]);
+        if (!texture || !texture->ibl_reference_count) {
+          log_error("Vulkan discarded IBL bake lost texture %u:%u ownership",
+                    handles[handle_index].id, handles[handle_index].generation);
+          continue;
+        }
+        texture->ibl_reference_count--;
       }
-      texture->ibl_reference_count--;
     }
+    if (job->atmosphere_sun_readback.handle)
+      vkr_vk_destroy_buffer(renderer, &job->atmosphere_sun_readback);
     MemZero(&renderer->pending_ibl_bakes[i],
             sizeof(renderer->pending_ibl_bakes[i]));
   }
@@ -382,6 +507,8 @@ void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer) {
        submitted. Keep the queued bake and its texture ownership, but return
        the candidate so the retry does not leak one pool slot per cancellation.
      */
+    if (job->submitted || job->atmosphere_failed)
+      continue;
     if (job->sh_slot != VKR_SH_SLOT_BLACK) {
       (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, job->sh_slot);
       job->sh_slot = VKR_SH_SLOT_BLACK;
@@ -395,11 +522,55 @@ void vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                              const VkrVulkanPreparedIbl *prepared) {
   if (prepared->clear_coefficients)
     vkr_vk_record_sh_clear(renderer, command);
+  bool8_t atmosphere_cache_written = renderer->atmosphere_lut_valid;
   for (uint32_t i = 0u; i < prepared->count; ++i) {
     const VkrVulkanPreparedIblBake *bake = &prepared->bakes[i];
     if (bake->convert) {
       vkr_vk_record_prepared_compute(renderer, command, &bake->conversion);
       vkr_vk_record_ibl_source_mips(command, bake->source);
+    }
+    if (bake->is_atmosphere) {
+      if (bake->atmosphere_rebuild_luts) {
+        const VkImageLayout cache_layout = atmosphere_cache_written
+                                              ? VK_IMAGE_LAYOUT_GENERAL
+                                              : VK_IMAGE_LAYOUT_UNDEFINED;
+        vkr_vk_record_atmosphere_cache_barrier(
+            command, &renderer->atmosphere_transmittance,
+            atmosphere_cache_written ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                     : VK_PIPELINE_STAGE_2_NONE,
+            atmosphere_cache_written ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                                     : VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, cache_layout);
+        vkr_vk_record_prepared_compute(renderer, command, &bake->atmosphere[0]);
+        vkr_vk_record_atmosphere_cache_barrier(
+            command, &renderer->atmosphere_transmittance,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_GENERAL);
+        vkr_vk_record_atmosphere_cache_barrier(
+            command, &renderer->atmosphere_multiple_scattering,
+            atmosphere_cache_written ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                     : VK_PIPELINE_STAGE_2_NONE,
+            atmosphere_cache_written ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                                     : VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, cache_layout);
+        vkr_vk_record_prepared_compute(renderer, command, &bake->atmosphere[1]);
+        vkr_vk_record_atmosphere_cache_barrier(
+            command, &renderer->atmosphere_multiple_scattering,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_GENERAL);
+        atmosphere_cache_written = true_v;
+      }
+      vkr_vk_record_prepared_compute(renderer, command, &bake->atmosphere[2]);
+      vkr_vk_record_ibl_source_mips(command, bake->source);
+      vkr_vk_record_prepared_compute(renderer, command, &bake->atmosphere[3]);
+      vkr_vk_record_atmosphere_readback_visibility(command,
+                                                    bake->atmosphere_readback);
     }
     if (bake->project)
       vkr_vk_record_prepared_compute(renderer, command, &bake->projection);

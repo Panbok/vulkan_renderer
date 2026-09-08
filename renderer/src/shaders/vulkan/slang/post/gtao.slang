@@ -41,6 +41,20 @@ void vkr_vk_gtao_store(VkrVkGtaoRoot *root, uint texture_index, uint2 pixel,
         float4(value, 0.0f, 0.0f, 1.0f);
 }
 
+float4 vkr_vk_gtao_sample_tuple(VkrVkGtaoRoot *root, uint texture_index,
+                                float2 pixel)
+{
+    return g_textures[NonUniformResourceIndex(texture_index)]
+        .SampleLevel(g_samplers[NonUniformResourceIndex(root.point_sampler)],
+                     vkr_vk_gtao_uv(pixel, root.destination_extent), 0.0f);
+}
+
+void vkr_vk_gtao_store_tuple(VkrVkGtaoRoot *root, uint texture_index,
+                             uint2 pixel, float4 value)
+{
+    g_storage_2d[NonUniformResourceIndex(texture_index)][pixel] = value;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_gtao_depth_prefilter(uint3 thread_id : SV_DispatchThreadID)
@@ -101,7 +115,8 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][pixel];
     if (encoded.x == 0u)
     {
-        vkr_vk_gtao_store(root, root.destination_texture, pixel, 1.0f);
+        vkr_vk_gtao_store_tuple(root, root.destination_texture, pixel,
+                                float4(0.5f, 0.5f, 1.0f, 1.0f));
         vkr_vk_gtao_store(root, root.edges_texture, pixel,
                           vkr_gtao_pack_edges(float4(1.0f)));
         return;
@@ -143,6 +158,7 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
     float2 noise = vkr_gtao_spatiotemporal_noise(pixel,
                                                   root.params.noise_index);
     float visibility = 0.0f;
+    float3 bent_moment = 0.0f;
 
     for (uint slice = 0u; slice < root.params.slice_count; ++slice)
     {
@@ -211,10 +227,15 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
         visibility += vkr_gtao_integrate_slice(
             projected_normal_length, cos_normal, normal_angle, horizon_cos0,
             horizon_cos1);
+        bent_moment += vkr_gtao_integrate_bent_slice(
+            projected_normal_length, normal_angle, horizon_cos0, horizon_cos1,
+            view_direction, view_slice_direction);
     }
 
-    vkr_vk_gtao_store(root, root.destination_texture, pixel,
-                      vkr_gtao_finalize_visibility(root.params, visibility));
+    vkr_vk_gtao_store_tuple(
+        root, root.destination_texture, pixel,
+        vkr_gtao_finalize_directional(root.params, visibility, bent_moment,
+                                      world_normal));
 }
 
 float vkr_vk_gtao_denoise_sample(VkrVkGtaoRoot *root, uint texture_index,
@@ -293,19 +314,27 @@ void vk_gtao_denoise(uint3 thread_id : SV_DispatchThreadID)
                      beta);
 
     float visibility = 0.0f;
+    float3 bent_direction = 0.0f;
     float weight_sum = 0.0f;
     uint index = 0u;
     for (int y = -1; y <= 1; ++y)
     {
         for (int x = -1; x <= 1; ++x)
         {
-            visibility += weights[index] * vkr_vk_gtao_denoise_sample(
-                                               root, root.source_texture,
-                                               p + float2(float(x), float(y)));
+            float4 raw = vkr_vk_gtao_sample_tuple(
+                root, root.source_texture, p + float2(float(x), float(y)));
+            visibility += weights[index] * vkr_gtao_decode_visibility(raw);
+            bent_direction += weights[index] * vkr_gtao_decode_bent_direction(
+                                                    raw, float3(0.0f, 0.0f, 1.0f));
             weight_sum += weights[index];
             ++index;
         }
     }
-    vkr_vk_gtao_store(root, root.destination_texture, pixel,
-                      visibility / max(weight_sum, 1e-6f));
+    float inverse_weight = 1.0f / max(weight_sum, 1e-6f);
+    vkr_vk_gtao_store_tuple(
+        root, root.destination_texture, pixel,
+        vkr_gtao_encode_directional(
+            vkr_gtao_normalize_or(bent_direction * inverse_weight,
+                                  float3(0.0f, 0.0f, 1.0f)),
+            visibility * inverse_weight));
 }

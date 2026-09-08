@@ -43,6 +43,28 @@ typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   Vec4 material_surface;
   Vec4 material_alpha;
   Vec4 material_attenuation_color;
+  uint64_t clearcoat_texture_id;
+  uint64_t clearcoat_roughness_texture_id;
+  uint64_t clearcoat_normal_texture_id;
+  uint64_t clearcoat_sampler_id;
+  uint64_t clearcoat_roughness_sampler_id;
+  uint64_t clearcoat_normal_sampler_id;
+  /** x factor, y roughness, z coat-normal scale, w reserved. */
+  Vec4 material_clearcoat;
+  uint64_t sheen_color_texture_id;
+  uint64_t sheen_roughness_texture_id;
+  uint64_t sheen_color_sampler_id;
+  uint64_t sheen_roughness_sampler_id;
+  /** Linear RGB sheen colour in xyz and Charlie roughness in w. */
+  Vec4 material_sheen;
+  /** x strength, y cos(rotation), z sin(rotation), w reserved. */
+  Vec4 material_anisotropy;
+  uint64_t anisotropy_texture_id;
+  uint64_t anisotropy_sampler_id;
+  /** Linear RGB thin-sheet tint in xyz, direct-light strength in w. */
+  Vec4 material_diffuse_transmission;
+  /** x strength, y scene profile index, zw reserved. */
+  Vec4 material_subsurface;
 } VkrMetalMaterialGpuRow;
 
 // Cold transmission-only resource identifiers are segmented from the common

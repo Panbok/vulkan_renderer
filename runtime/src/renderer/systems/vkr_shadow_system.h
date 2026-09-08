@@ -11,9 +11,12 @@
 #include "math/mat.h"
 #include "math/vec.h"
 #include "renderer/resources/vkr_resources.h"
+#include "vkr_frame_input.h"
 #include "vkr_renderer.h"
 
 struct VkrCamera;
+struct VkrLocalShadowPassPayload;
+struct VkrPointLight;
 
 #include "vkr_shadow.h"
 
@@ -131,12 +134,6 @@ typedef struct VkrShadowCasterDepthBounds {
   Vec3 max;
   bool8_t valid;
 } VkrShadowCasterDepthBounds;
-
-
-
-
-
-
 
 /**
  * @brief Shadow system configuration.
@@ -418,6 +415,47 @@ typedef struct VkrShadowPendingHistory {
   bool8_t active;
 } VkrShadowPendingHistory;
 
+/** One complete local-light group in the compact shadow-map layout. */
+typedef struct VkrLocalShadowSelectionGroup {
+  uint32_t render_id;
+  uint32_t light_kind;
+  uint32_t face_count;
+} VkrLocalShadowSelectionGroup;
+
+/**
+ * CPU-owned membership and compact layout for local shadow faces. The layout
+ * remains stable while the selected light identities and face budget match.
+ * Retained-image validity belongs to the later native-token cache.
+ */
+typedef struct VkrLocalShadowSelection {
+  VkrLocalShadowSelectionGroup groups[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+  uint32_t group_count;
+  uint32_t face_count;
+  uint32_t face_budget;
+  uint64_t layout_generation;
+  bool8_t valid;
+} VkrLocalShadowSelection;
+
+typedef struct VkrLocalShadowFaceHistory {
+  VkrLocalShadowView view;
+  uint64_t static_generation;
+  uint64_t publication_generation;
+  uint64_t resource_generation;
+  uint64_t layout_generation;
+  uint64_t last_submit_value;
+  uint32_t render_id;
+  uint32_t light_kind;
+  uint32_t face_in_group;
+  bool8_t static_only_contents;
+} VkrLocalShadowFaceHistory;
+
+typedef struct VkrLocalShadowPendingHistory {
+  VkrLocalShadowFaceHistory faces[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+  uint32_t image_index;
+  uint32_t render_mask;
+  bool8_t active;
+} VkrLocalShadowPendingHistory;
+
 /**
  * @brief Shadow system state.
  *
@@ -442,6 +480,12 @@ typedef struct VkrShadowSystem {
   VkrShadowCascadeHistory cascade_history[VKR_SHADOW_TARGET_IMAGE_COUNT_MAX]
                                          [VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowPendingHistory pending_history;
+
+  /** Local-light membership and compact face layout. */
+  VkrLocalShadowSelection local_selection;
+  VkrLocalShadowFaceHistory local_history[VKR_SHADOW_TARGET_IMAGE_COUNT_MAX]
+                                         [VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+  VkrLocalShadowPendingHistory pending_local_history;
 
   VkrShadowDepthRangeSample pending_sdsm_sample;
   float32_t sdsm_linear_near;
@@ -469,10 +513,25 @@ typedef struct VkrShadowSystem {
  */
 void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system);
 
-
 void vkr_shadow_system_set_depth_range_sample(
     VkrShadowSystem *system, const VkrShadowDepthRangeSample *sample,
     uint64_t current_frame_index, uint64_t current_scene_generation);
+
+/**
+ * Selects complete local-light shadow groups and fills the current frame's
+ * payload. `face_budget` is capped at the supported maximum, never raised.
+ */
+void vkr_shadow_system_resolve_local_selection(
+    VkrShadowSystem *system, const struct VkrPointLight *lights,
+    uint32_t light_count, Vec3 camera_position, uint32_t face_budget,
+    uint32_t map_size, struct VkrLocalShadowPassPayload *out_payload);
+
+void vkr_shadow_system_resolve_local_shadows(
+    VkrShadowSystem *system, uint32_t image_index,
+    VkrRetainedLocalShadowToken retained_token,
+    const struct VkrWorldPassPayload *candidates,
+    const struct VkrPointLight *lights, uint32_t light_count,
+    Vec3 camera_position, struct VkrLocalShadowPassPayload *out_payload);
 
 /**
  * @brief Rounds a light-space extent up to a whole texel multiple.

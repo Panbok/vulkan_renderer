@@ -155,6 +155,9 @@ VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window);
  * remains the descriptor context and must outlive the renderer. */
 VkrNativeSurface vkr_window_get_render_surface(VkrWindow *window);
 
+/** Copy the platform-owned current display capability on the render thread. */
+VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window);
+
 /**
  * @brief Gets one coherent content-scale snapshot.
  *

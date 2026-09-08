@@ -1,0 +1,25 @@
+#ifndef VKR_SUBSURFACE_KERNEL_SLANGH
+#define VKR_SUBSURFACE_KERNEL_SLANGH
+struct VkrSubsurfaceGpuParams {
+  float4 projection; // Near, far, x/y pixel scale at one metre view depth.
+  uint4 dimensions;  // Internal width/height, active profile count, reserved.
+};
+// F can exceed final HDR for dark albedo. Bound it before half storage so
+// a constant field never becomes infinity minus infinity during diffusion.
+// Extreme irradiance is truncated to the approved source image range.
+float3 vkr_subsurface_source_storage(float3 source) {
+  return clamp(source, float3(-65504.0f), float3(65504.0f));
+}
+float3 vkr_subsurface_root_amplitude(float3 diffuse_albedo) {
+  return sqrt(max(diffuse_albedo, float3(0.0f)));
+}
+float vkr_subsurface_surface_weight(float3 center_world, float3 tap_world,
+                                    float3 center_normal, float3 tap_normal,
+                                    float tolerance) {
+  float normal_weight =
+      clamp((dot(center_normal, tap_normal) - 0.5f) * 2.0f, 0.0f, 1.0f);
+  float plane_distance = max(abs(dot(tap_world - center_world, center_normal)),
+                             abs(dot(tap_world - center_world, tap_normal)));
+  return normal_weight * clamp(1.0f - plane_distance / tolerance, 0.0f, 1.0f);
+}
+#endif

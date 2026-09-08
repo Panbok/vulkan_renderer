@@ -1,0 +1,62 @@
+// Thin-lens optics and circular gather weights shared by native production
+// paths.
+#ifndef VKR_DOF_KERNEL_SLANGH
+#define VKR_DOF_KERNEL_SLANGH
+struct VkrDofGpuParams {
+  float4
+      lens; // Output-pixel radius scale, focus metres, near metres, far metres.
+  float4 depth_uv;  // Canonical output UV to current opaque-depth UV.
+  uint4 dimensions; // Full width/height, half width/height.
+};
+float vkr_dof_radius(VkrDofGpuParams params, float depth, bool sky) {
+  return clamp(sky ? params.lens.x
+                   : params.lens.x * (1.0f - params.lens.y / depth),
+               -16.0f, 16.0f);
+}
+// Equal-area disk positions include the center for isolated HDR texels.
+#if defined(__METAL_VERSION__)
+constant float2 vkr_dof_disk_positions[32] = {
+#else
+static const float2 vkr_dof_disk_positions[32] = {
+#endif
+    float2(0.0000000000f, 0.0000000000f),
+    float2(-0.1324353601f, 0.1213216383f),
+    float2(0.0222061563f, -0.2530276974f),
+    float2(0.1892765124f, 0.2468776932f),
+    float2(-0.3537195259f, -0.0625680036f),
+    float2(0.3388602808f, -0.2155551731f),
+    float2(-0.1142106671f, 0.4248579888f),
+    float2(-0.2190188531f, -0.4217074740f),
+    float2(0.4771756957f, 0.1742637987f),
+    float2(-0.4980520884f, 0.2055886620f),
+    float2(0.2407283488f, -0.5144224988f),
+    float2(0.1782784291f, 0.5683797247f),
+    float2(-0.5383093382f, -0.3119612647f),
+    float2(0.6324719137f, -0.1390471760f),
+    float2(-0.3864993446f, 0.5497555456f),
+    float2(-0.0893931081f, -0.6898404453f),
+    float2(0.5493400551f, 0.4629843800f),
+    float2(-0.7398992572f, 0.0305971572f),
+    float2(0.5401285538f, -0.5375000527f),
+    float2(-0.0361624221f, 0.7820457180f),
+    float2(-0.5146299694f, -0.6166986986f),
+    float2(0.8157045282f, 0.1097518906f),
+    float2(-0.6915103854f, 0.4811349148f),
+    float2(0.1890517631f, -0.8403540413f),
+    float2(0.4374608457f, 0.7634275059f),
+    float2(-0.8555433699f, -0.2729416697f),
+    float2(0.8313650512f, -0.3841117404f),
+    float2(-0.3602940241f, 0.8609041515f),
+    float2(-0.3216589294f, -0.8942937658f),
+    float2(0.8561588989f, 0.4499731224f),
+    float2(-0.9512458678f, 0.2507453579f),
+    float2(0.5408377384f, -0.8411269469f),
+};
+float2 vkr_dof_disk(uint index) { return vkr_dof_disk_positions[index]; }
+float vkr_dof_coverage(float radius) {
+  return clamp(abs(radius) - 0.5f, 0.0f, 1.0f);
+}
+float vkr_dof_disk_weight(float radius, float distance) {
+  return clamp(radius - distance + 0.5f, 0.0f, 1.0f);
+}
+#endif

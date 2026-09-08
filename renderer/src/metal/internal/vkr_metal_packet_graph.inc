@@ -26,11 +26,35 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_EVALUATE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_BASE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_MIP,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TRACE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TEMPORAL,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_COMPOSITE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_BASE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_MIP,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TRACE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TEMPORAL,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_COMPOSITE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_FOG,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INJECT,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INTEGRATE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_APPLY,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STAGE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SUBSURFACE_GATHER,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_COC,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_PREFILTER,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_GATHER,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_COMPOSITE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_PREFILTER,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
@@ -90,11 +114,35 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.gtao.evaluate", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.gtao.denoise", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssgi.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssgi.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssgi.trace", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssgi.temporal", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssgi.composite", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssr.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssr.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssr.trace", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssr.temporal", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ssr.composite", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.fog.apply", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.froxel.inject", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.froxel.integrate", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.froxel.apply", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.temporal.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.metalfx.stage", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.metalfx.temporal", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.subsurface.gather", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.motion_blur.tile_max", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.motion_blur.neighbor_max", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.motion_blur.reconstruct", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.dof.coc", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.dof.dilate_horizontal", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.dof.dilate_vertical", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.dof.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.dof.gather", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.dof.composite", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.bloom.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
@@ -188,6 +236,8 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
     return MTLPixelFormatEAC_RG11Unorm;
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
     return MTLPixelFormatRGBA16Float;
+  case VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT:
+    return MTLPixelFormatRGBA32Float;
   case VKR_TEXTURE_FORMAT_R8_UNORM:
     return MTLPixelFormatR8Unorm;
   case VKR_TEXTURE_FORMAT_R16_SFLOAT:
@@ -213,13 +263,22 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
   }
 }
 
-vkr_internal MTLPixelFormat
-vkr_metal_packet_target_pixel_format(const VkrMetalPacketRenderer *renderer) {
-  if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW)
+vkr_internal MTLPixelFormat vkr_metal_packet_target_pixel_format_for(
+    const VkrMetalPacketRenderer *renderer, bool8_t extended_linear) {
+  if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
+    if (extended_linear)
+      return MTLPixelFormatRGBA16Float;
     return renderer->srgb_output ? MTLPixelFormatBGRA8Unorm_sRGB
                                  : MTLPixelFormatBGRA8Unorm;
+  }
   return renderer->srgb_output ? MTLPixelFormatRGBA8Unorm_sRGB
                                : MTLPixelFormatRGBA8Unorm;
+}
+
+vkr_internal MTLPixelFormat
+vkr_metal_packet_target_pixel_format(const VkrMetalPacketRenderer *renderer) {
+  return vkr_metal_packet_target_pixel_format_for(
+      renderer, renderer->display_output.extended_linear != 0u);
 }
 
 vkr_internal MTLTextureUsage
@@ -238,6 +297,7 @@ vkr_metal_packet_texture_usage(VkrTextureUsageFlags usage) {
 vkr_internal bool8_t vkr_metal_packet_image_desc_equal(
     const VkrRgImageDesc *a, const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
+         a->depth == b->depth &&
          a->format == b->format && a->usage.set == b->usage.set &&
          a->samples == b->samples && a->layers == b->layers &&
          a->mip_levels == b->mip_levels && a->type == b->type;
@@ -492,29 +552,34 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
   if (!vkr_metal_packet_graph_image_format_supported(renderer, &image->desc) ||
       !vkr_metal_packet_metalfx_image_contract(renderer, image) ||
       format == MTLPixelFormatInvalid || image->desc.width == 0 ||
-      image->desc.height == 0 || image->desc.layers == 0 ||
+      image->desc.height == 0 || image->desc.depth == 0 ||
+      image->desc.layers == 0 ||
       image->desc.mip_levels == 0 ||
       image->desc.mip_levels > VKR_METAL_PACKET_MAX_TEXTURE_MIPS) {
     log_error("Metal graph image '%.*s' has unsupported descriptor: format=%u "
-              "extent=%ux%u layers=%u mips=%u samples=%u usage=0x%x",
+              "extent=%ux%ux%u layers=%u mips=%u samples=%u usage=0x%x",
               (int)image->name.length, image->name.str, image->desc.format,
-              image->desc.width, image->desc.height, image->desc.layers,
+              image->desc.width, image->desc.height, image->desc.depth,
+              image->desc.layers,
               image->desc.mip_levels, image->desc.samples,
               image->desc.usage.set);
     return false_v;
   }
 
+  const bool8_t texture_3d = image->desc.type == VKR_TEXTURE_TYPE_3D;
   const bool8_t array_texture =
-      image->desc.layers > 1u ||
-      (image->desc.flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY) != 0u;
+      !texture_3d &&
+      (image->desc.layers > 1u ||
+       (image->desc.flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY) != 0u);
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-  descriptor.textureType =
-      array_texture ? MTLTextureType2DArray : MTLTextureType2D;
+  descriptor.textureType = texture_3d ? MTLTextureType3D
+                                       : (array_texture ? MTLTextureType2DArray
+                                                        : MTLTextureType2D);
   descriptor.pixelFormat = format;
   descriptor.width = image->desc.width;
   descriptor.height = image->desc.height;
-  descriptor.depth = 1;
-  descriptor.arrayLength = image->desc.layers;
+  descriptor.depth = texture_3d ? image->desc.depth : 1u;
+  descriptor.arrayLength = texture_3d ? 1u : image->desc.layers;
   descriptor.mipmapLevelCount = image->desc.mip_levels;
   descriptor.sampleCount = image->desc.samples;
   descriptor.usage = vkr_metal_packet_texture_usage(image->desc.usage);
@@ -531,10 +596,11 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
     *out_failure = (VkrMetalPacketImageAllocationFailure){image, status};
     VKR_METAL_DIAGNOSTIC(
         renderer, "graph_image_allocation_failed",
-        "name=%.*s status=%s format=%u extent=%ux%u layers=%u mips=%u usage=0x%x",
+        "name=%.*s status=%s format=%u extent=%ux%ux%u layers=%u mips=%u usage=0x%x",
         (int)image->name.length, image->name.str,
         vkr_metal_memory_status_string(status), image->desc.format,
-        image->desc.width, image->desc.height, image->desc.layers,
+        image->desc.width, image->desc.height, image->desc.depth,
+        image->desc.layers,
         image->desc.mip_levels, image->desc.usage.set);
     return false_v;
   }
@@ -545,20 +611,25 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
       .owned = true_v,
   };
   VKR_METAL_DIAGNOSTIC(renderer, "graph_image_create",
-                       "name=%.*s resource=%llu extent=%ux%u mips=%u layers=%u",
+                       "name=%.*s resource=%llu extent=%ux%ux%u mips=%u layers=%u",
                        (int)image->name.length, image->name.str,
                        (unsigned long long)resource.resource_id,
                        image->desc.width, image->desc.height,
+                       image->desc.depth,
                        image->desc.mip_levels, image->desc.layers);
   id<MTLTexture> texture = (id<MTLTexture>)resource.metal_texture;
-  const MTLTextureType view_type =
-      array_texture ? MTLTextureType2DArray : MTLTextureType2D;
+  const MTLTextureType view_type = texture_3d
+                                       ? MTLTextureType3D
+                                       : (array_texture ? MTLTextureType2DArray
+                                                        : MTLTextureType2D);
   for (uint32_t mip = 0u; mip < image->desc.mip_levels; ++mip) {
     id<MTLTexture> view = [texture
         newTextureViewWithPixelFormat:format
                           textureType:view_type
                                levels:NSMakeRange(mip, 1u)
-                               slices:NSMakeRange(0u, image->desc.layers)];
+                               slices:NSMakeRange(0u,
+                                                  texture_3d ? 1u
+                                                             : image->desc.layers)];
     if (!view) {
       log_error("Metal graph image '%.*s' mip %u view creation failed",
                 (int)image->name.length, image->name.str, mip);
@@ -1052,6 +1123,391 @@ vkr_metal_packet_select_temporal_history(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
+/* Existing temporal consumers keep their chosen predecessor. Motion blur
+ * alone can borrow the newest completed transform without enabling jitter or
+ * introducing a dependency on an in-flight producer. */
+vkr_internal bool8_t
+vkr_metal_packet_select_motion_history(VkrMetalPacketRenderer *renderer) {
+  renderer->selected_motion_history_instance = UINT32_MAX;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet->motion_blur_enabled || packet->temporal.reset_reasons != 0u ||
+      renderer->selected_temporal_history_instance != UINT32_MAX ||
+      renderer->selected_ssr_history_instance != UINT32_MAX ||
+      renderer->selected_ssgi_history_instance != UINT32_MAX)
+    return true_v;
+  if (!vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle))
+    return false_v;
+  const uint32_t current = renderer->history_output_index;
+  const uint64_t frame = packet->input.frame.frame_index;
+  const uint64_t completed = renderer->completion.signaledValue;
+  uint64_t newest = 0u;
+  for (uint32_t i = 0u; i < renderer->history_instance_count; ++i) {
+    VkrMetalPacketGraphBufferInstance *transform =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->temporal_transform_history_handle, i);
+    if (i == current || !transform || !transform->history_valid ||
+        !transform->history_motion_valid ||
+        transform->history_producer_submit_value > completed ||
+        transform->history_frame_index >= frame ||
+        frame - transform->history_frame_index >
+            renderer->history_instance_count ||
+        transform->history_scene_generation !=
+            packet->input.frame.scene_generation ||
+        transform->history_width != renderer->prepared_frame.viewport_width ||
+        transform->history_height != renderer->prepared_frame.viewport_height)
+      continue;
+    if (renderer->selected_motion_history_instance == UINT32_MAX ||
+        transform->history_producer_submit_value > newest) {
+      renderer->selected_motion_history_instance = i;
+      newest = transform->history_producer_submit_value;
+    }
+  }
+  return true_v;
+}
+
+/* Current shadow content is shared by froxel and SSGI history proofs. Froxel
+ * scattering is local to a view cell and can be reprojected; the integrated
+ * camera-ray volume is transient and never enters this history. */
+vkr_internal void vkr_metal_packet_current_shadow_tokens(
+    VkrMetalPacketRenderer *renderer, VkrRetainedShadowToken *out_shadow,
+    VkrRetainedLocalShadowToken *out_local_shadow) {
+  vkr_metal_packet_renderer_retained_shadow_token(
+      renderer, renderer->prepared_frame.image_index, out_shadow);
+  vkr_metal_packet_renderer_retained_local_shadow_token(
+      renderer, renderer->prepared_frame.image_index, out_local_shadow);
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet)
+    return;
+  /* Consumers follow the shadow passes in this submission. Their scheduled
+   * layers are valid for the current history producer even though retained
+   * state still describes the image before this command buffer commits. */
+  if (packet->input.shadow)
+    out_shadow->valid_layer_mask |= packet->input.shadow->cascade_render_mask;
+  if (packet->input.local_shadow)
+    out_local_shadow->valid_layer_mask |= packet->input.local_shadow->render_mask;
+}
+
+vkr_internal bool8_t
+vkr_metal_packet_select_froxel_history(VkrMetalPacketRenderer *renderer) {
+  renderer->selected_froxel_history_instance = UINT32_MAX;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || packet->froxel_fog.grid_dimensions_cell_pixels[0] == 0u)
+    return true_v;
+
+  VkrMetalPacketImage *history = vkr_metal_packet_named_image_slot(
+      renderer, "froxel_scattering_history");
+  if (!history || history->instance_count != renderer->history_instance_count ||
+      history->desc.type != VKR_TEXTURE_TYPE_3D ||
+      history->desc.format != VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT ||
+      history->desc.mip_levels != 1u || history->desc.layers != 1u)
+    return false_v;
+
+  const uint32_t current = renderer->history_output_index;
+  const uint32_t *dimensions = packet->froxel_fog.grid_dimensions_cell_pixels;
+  if (current >= history->instance_count ||
+      history->desc.width != dimensions[0] ||
+      history->desc.height != dimensions[1] ||
+      history->desc.depth != dimensions[2])
+    return false_v;
+
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE)
+    return true_v;
+
+  VkrRetainedShadowToken shadow = {0};
+  VkrRetainedLocalShadowToken local_shadow = {0};
+  vkr_metal_packet_current_shadow_tokens(renderer, &shadow, &local_shadow);
+  const uint64_t completed = renderer->completion.signaledValue;
+  const uint64_t frame_index = packet->input.frame.frame_index;
+  uint64_t newest_submit = 0u;
+  for (uint32_t i = 0u; i < history->instance_count; ++i) {
+    const VkrMetalPacketFroxelHistoryState *candidate =
+        &renderer->froxel_history[i];
+    VkrMetalPacketImageInstance *image = &history->instances[i];
+    const bool8_t source_age_in_ring =
+        candidate->frame_index < frame_index &&
+        frame_index - candidate->frame_index <= history->instance_count;
+    if (i == current || !candidate->valid || !image->live ||
+        !image->history_valid || !source_age_in_ring ||
+        candidate->producer_submit_value > completed ||
+        image->history_producer_submit_value !=
+            candidate->producer_submit_value ||
+        candidate->signature != packet->froxel_fog_signature ||
+        candidate->graph_generation != history->graph_generation ||
+        candidate->shadow.resource_generation != shadow.resource_generation ||
+        candidate->shadow.valid_layer_mask != shadow.valid_layer_mask ||
+        candidate->local_shadow.resource_generation !=
+            local_shadow.resource_generation ||
+        candidate->local_shadow.valid_layer_mask !=
+            local_shadow.valid_layer_mask ||
+        MemCompare(candidate->dimensions, dimensions, sizeof(candidate->dimensions)) !=
+            0)
+      continue;
+    if (renderer->selected_froxel_history_instance == UINT32_MAX ||
+        candidate->producer_submit_value > newest_submit) {
+      renderer->selected_froxel_history_instance = i;
+      newest_submit = candidate->producer_submit_value;
+    }
+  }
+  return true_v;
+}
+
+/* SSR history is deliberately independent of TAA. Motion/depth/identity
+ * reject changing receivers in the shader, while these cold checks prove a
+ * completed, same-content tuple before any prior texture is bound. */
+vkr_internal bool8_t
+vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
+  renderer->selected_ssr_history_instance = UINT32_MAX;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.ssr_enabled ||
+      packet->temporal.reset_reasons != 0u)
+    return true_v;
+  VkrMetalPacketImage *colors =
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_color");
+  VkrMetalPacketImage *depths =
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_depth");
+  VkrMetalPacketImage *identities =
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_identity");
+  if (!colors || !depths || !identities ||
+      colors->instance_count != renderer->history_instance_count ||
+      depths->instance_count != colors->instance_count ||
+      identities->instance_count != colors->instance_count ||
+      !vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle))
+    return false_v;
+
+  const uint32_t current = renderer->history_output_index;
+  const uint32_t trace_width = Max(renderer->prepared_frame.viewport_width / 2u,
+                                   1u);
+  const uint32_t trace_height =
+      Max(renderer->prepared_frame.viewport_height / 2u, 1u);
+  /* The shared kernel maps NDC Y with `uv * 2 - 1`; the opaque Metal roots
+   * map top-left pixels with `0.5 - ndc.y * 0.5`. Flip the projection here so
+   * shared canonical UV remains aligned with Metal's depth attachment. */
+  const Mat4 projection = vkr_metal_packet_clip_matrix(
+      !renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection);
+  const VkrTemporalSceneSignature content = vkr_ssr_content_signature(packet);
+  if (!content.eligible)
+    return true_v;
+  const uint64_t completed = renderer->completion.signaledValue;
+  const uint64_t frame_index = packet->input.frame.frame_index;
+  uint64_t newest_producer = 0u;
+  for (uint32_t i = 0u; i < colors->instance_count; ++i) {
+    VkrMetalPacketImageInstance *color = &colors->instances[i];
+    VkrMetalPacketImageInstance *depth = &depths->instances[i];
+    VkrMetalPacketImageInstance *identity = &identities->instances[i];
+    VkrMetalPacketGraphBufferInstance *transform =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->temporal_transform_history_handle, i);
+    const bool8_t source_age_in_ring =
+        color->history_frame_index < frame_index &&
+        frame_index - color->history_frame_index <= colors->instance_count;
+    if (i == current || !color->live || !depth->live || !identity->live ||
+        !color->history_valid || !depth->history_valid ||
+        !identity->history_valid || !source_age_in_ring ||
+        color->history_producer_submit_value > completed ||
+        depth->history_producer_submit_value !=
+            color->history_producer_submit_value ||
+        identity->history_producer_submit_value !=
+            color->history_producer_submit_value ||
+        depth->history_producer_submit_value > completed ||
+        identity->history_producer_submit_value > completed ||
+        depth->history_frame_index != color->history_frame_index ||
+        identity->history_frame_index != color->history_frame_index ||
+        depth->history_scene_generation != color->history_scene_generation ||
+        identity->history_scene_generation != color->history_scene_generation ||
+        color->history_scene_generation !=
+            packet->input.frame.scene_generation ||
+        depth->history_width != color->history_width ||
+        depth->history_height != color->history_height ||
+        identity->history_width != color->history_width ||
+        identity->history_height != color->history_height ||
+        color->history_width != trace_width ||
+        color->history_height != trace_height ||
+        MemCompare(&color->history_view_projection, &projection,
+                   sizeof(projection)) != 0 ||
+        MemCompare(&depth->history_view_projection,
+                   &color->history_view_projection,
+                   sizeof(color->history_view_projection)) != 0 ||
+        MemCompare(&identity->history_view_projection,
+                   &color->history_view_projection,
+                   sizeof(color->history_view_projection)) != 0 ||
+        !color->history_scene.signature.eligible ||
+        color->history_scene.signature.hash[0] != content.hash[0] ||
+        color->history_scene.signature.hash[1] != content.hash[1] ||
+        depth->history_scene.signature.hash[0] != color->history_scene.signature.hash[0] ||
+        depth->history_scene.signature.hash[1] != color->history_scene.signature.hash[1] ||
+        identity->history_scene.signature.hash[0] != color->history_scene.signature.hash[0] ||
+        identity->history_scene.signature.hash[1] != color->history_scene.signature.hash[1] ||
+        color->history_scene.radiance_revision != renderer->radiance_revision ||
+        color->history_scene.publication_generation !=
+            renderer->candidate_publication_generation ||
+        color->history_scene.graph_revision != renderer->graph_revision ||
+        depth->history_scene.radiance_revision !=
+            color->history_scene.radiance_revision ||
+        depth->history_scene.publication_generation !=
+            color->history_scene.publication_generation ||
+        depth->history_scene.graph_revision != color->history_scene.graph_revision ||
+        identity->history_scene.radiance_revision !=
+            color->history_scene.radiance_revision ||
+        identity->history_scene.publication_generation !=
+            color->history_scene.publication_generation ||
+        identity->history_scene.graph_revision != color->history_scene.graph_revision ||
+        !transform || !transform->history_valid ||
+        transform->history_producer_submit_value !=
+            color->history_producer_submit_value ||
+        transform->history_producer_submit_value > completed ||
+        transform->history_frame_index != color->history_frame_index ||
+        transform->history_scene_generation != color->history_scene_generation ||
+        transform->history_width != renderer->prepared_frame.viewport_width ||
+        transform->history_height != renderer->prepared_frame.viewport_height ||
+        (packet->temporal.enabled && !renderer->metalfx_enabled &&
+         renderer->selected_temporal_history_instance != i))
+      continue;
+    if (renderer->selected_ssr_history_instance == UINT32_MAX ||
+        color->history_producer_submit_value > newest_producer) {
+      renderer->selected_ssr_history_instance = i;
+      newest_producer = color->history_producer_submit_value;
+    }
+  }
+  return true_v;
+}
+
+
+/* SSGI history is deliberately independent of TAA. Motion/depth/identity
+ * reject changing receivers in the shader, while these cold checks prove a
+ * completed, same-content tuple before any prior texture is bound. */
+vkr_internal bool8_t
+vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
+  renderer->selected_ssgi_history_instance = UINT32_MAX;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.ssgi_enabled ||
+      packet->temporal.reset_reasons != 0u)
+    return true_v;
+  VkrMetalPacketImage *colors =
+      vkr_metal_packet_named_image_slot(renderer, "ssgi_history_color");
+  VkrMetalPacketImage *depths =
+      vkr_metal_packet_named_image_slot(renderer, "ssgi_history_depth");
+  VkrMetalPacketImage *identities =
+      vkr_metal_packet_named_image_slot(renderer, "ssgi_history_identity");
+  if (!colors || !depths || !identities ||
+      colors->instance_count != renderer->history_instance_count ||
+      depths->instance_count != colors->instance_count ||
+      identities->instance_count != colors->instance_count ||
+      !vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle))
+    return false_v;
+
+  const uint32_t current = renderer->history_output_index;
+  const uint32_t trace_width = Max(renderer->prepared_frame.viewport_width / 2u,
+                                   1u);
+  const uint32_t trace_height =
+      Max(renderer->prepared_frame.viewport_height / 2u, 1u);
+  /* Compatibility excludes the per-frame sample offset. The shared kernel
+   * maps NDC Y with `uv * 2 - 1`, so use its matching Metal clip conversion. */
+  const Mat4 stable_projection = vkr_metal_packet_clip_matrix(
+      !renderer->convert_vulkan_clip_y, packet->input.globals.projection);
+  const VkrTemporalSceneSignature content = vkr_ssgi_content_signature(packet);
+  if (!content.eligible)
+    return true_v;
+  VkrRetainedShadowToken shadow = {0};
+  VkrRetainedLocalShadowToken local_shadow = {0};
+  vkr_metal_packet_current_shadow_tokens(renderer, &shadow, &local_shadow);
+  const uint64_t completed = renderer->completion.signaledValue;
+  const uint64_t frame_index = packet->input.frame.frame_index;
+  uint64_t newest_producer = 0u;
+  for (uint32_t i = 0u; i < colors->instance_count; ++i) {
+    const VkrMetalPacketSsgiHistoryState *candidate =
+        &renderer->ssgi_history[i];
+    VkrMetalPacketImageInstance *color = &colors->instances[i];
+    VkrMetalPacketImageInstance *depth = &depths->instances[i];
+    VkrMetalPacketImageInstance *identity = &identities->instances[i];
+    VkrMetalPacketGraphBufferInstance *transform =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->temporal_transform_history_handle, i);
+    const bool8_t source_age_in_ring =
+        color->history_frame_index < frame_index &&
+        frame_index - color->history_frame_index <= colors->instance_count;
+    if ((renderer->selected_ssr_history_instance != UINT32_MAX &&
+         renderer->selected_ssr_history_instance != i) ||
+        i == current || !candidate->valid || !color->live || !depth->live ||
+        !identity->live ||
+        !color->history_valid || !depth->history_valid ||
+        !identity->history_valid || !source_age_in_ring ||
+        color->history_producer_submit_value > completed ||
+        candidate->producer_submit_value !=
+            color->history_producer_submit_value ||
+        candidate->graph_generation != colors->graph_generation ||
+        candidate->shadow.resource_generation != shadow.resource_generation ||
+        candidate->shadow.valid_layer_mask != shadow.valid_layer_mask ||
+        candidate->local_shadow.resource_generation !=
+            local_shadow.resource_generation ||
+        candidate->local_shadow.valid_layer_mask !=
+            local_shadow.valid_layer_mask ||
+        depth->history_producer_submit_value !=
+            color->history_producer_submit_value ||
+        identity->history_producer_submit_value !=
+            color->history_producer_submit_value ||
+        depth->history_producer_submit_value > completed ||
+        identity->history_producer_submit_value > completed ||
+        depth->history_frame_index != color->history_frame_index ||
+        identity->history_frame_index != color->history_frame_index ||
+        depth->history_scene_generation != color->history_scene_generation ||
+        identity->history_scene_generation != color->history_scene_generation ||
+        color->history_scene_generation !=
+            packet->input.frame.scene_generation ||
+        depth->history_width != color->history_width ||
+        depth->history_height != color->history_height ||
+        identity->history_width != color->history_width ||
+        identity->history_height != color->history_height ||
+        color->history_width != trace_width ||
+        color->history_height != trace_height ||
+        MemCompare(&color->history_view_projection, &stable_projection,
+                   sizeof(stable_projection)) != 0 ||
+        MemCompare(&depth->history_view_projection,
+                   &color->history_view_projection,
+                   sizeof(color->history_view_projection)) != 0 ||
+        MemCompare(&identity->history_view_projection,
+                   &color->history_view_projection,
+                   sizeof(color->history_view_projection)) != 0 ||
+        !color->history_scene.signature.eligible ||
+        color->history_scene.signature.hash[0] != content.hash[0] ||
+        color->history_scene.signature.hash[1] != content.hash[1] ||
+        depth->history_scene.signature.hash[0] != color->history_scene.signature.hash[0] ||
+        depth->history_scene.signature.hash[1] != color->history_scene.signature.hash[1] ||
+        identity->history_scene.signature.hash[0] != color->history_scene.signature.hash[0] ||
+        identity->history_scene.signature.hash[1] != color->history_scene.signature.hash[1] ||
+        color->history_scene.radiance_revision != renderer->radiance_revision ||
+        color->history_scene.publication_generation !=
+            renderer->candidate_publication_generation ||
+        color->history_scene.graph_revision != renderer->graph_revision ||
+        depth->history_scene.radiance_revision !=
+            color->history_scene.radiance_revision ||
+        depth->history_scene.publication_generation !=
+            color->history_scene.publication_generation ||
+        depth->history_scene.graph_revision != color->history_scene.graph_revision ||
+        identity->history_scene.radiance_revision !=
+            color->history_scene.radiance_revision ||
+        identity->history_scene.publication_generation !=
+            color->history_scene.publication_generation ||
+        identity->history_scene.graph_revision != color->history_scene.graph_revision ||
+        !transform || !transform->history_valid ||
+        transform->history_producer_submit_value !=
+            color->history_producer_submit_value ||
+        transform->history_producer_submit_value > completed ||
+        transform->history_frame_index != color->history_frame_index ||
+        transform->history_scene_generation != color->history_scene_generation ||
+        transform->history_width != renderer->prepared_frame.viewport_width ||
+        transform->history_height != renderer->prepared_frame.viewport_height ||
+        (packet->temporal.enabled && !renderer->metalfx_enabled &&
+         renderer->selected_temporal_history_instance != i))
+      continue;
+    if (renderer->selected_ssgi_history_instance == UINT32_MAX ||
+        color->history_producer_submit_value > newest_producer) {
+      renderer->selected_ssgi_history_instance = i;
+      newest_producer = color->history_producer_submit_value;
+    }
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t
 vkr_metal_packet_select_exposure_history(VkrMetalPacketRenderer *renderer) {
   renderer->selected_exposure_history_instance = UINT32_MAX;
@@ -1367,6 +1823,39 @@ void vkr_metal_packet_renderer_retained_shadow_token(
   }
 }
 
+void vkr_metal_packet_renderer_retained_local_shadow_token(
+    VkrMetalPacketRenderer *renderer, uint32_t image_index,
+    VkrRetainedLocalShadowToken *out_token) {
+  *out_token = (VkrRetainedLocalShadowToken){0};
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, "local_shadow_map"))
+      continue;
+    VkrMetalPacketImage *slot = &renderer->images[i];
+    if (!slot->live || slot->graph_generation != image->generation ||
+        slot->instance_count != renderer->command_slot_count ||
+        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
+        slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
+        slot->desc.type != VKR_TEXTURE_TYPE_2D ||
+        slot->desc.width != renderer->prepared_frame.local_shadow_map_size ||
+        slot->desc.height != renderer->prepared_frame.local_shadow_map_size ||
+        slot->desc.format != renderer->prepared_frame.shadow_depth_format ||
+        slot->desc.layers != renderer->prepared_frame.local_shadow_map_layer_count)
+      return;
+    const VkrMetalPacketImageInstance *instance = &slot->instances[image_index];
+    if (!instance->live)
+      return;
+    out_token->resource_generation = slot->graph_generation;
+    const uint32_t layer_count = MIN(slot->desc.layers, 32u);
+    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+      if (instance->retained_states[layer].content_valid)
+        out_token->valid_layer_mask |= UINT32_C(1) << layer;
+    }
+    return;
+  }
+}
+
 vkr_internal void
 vkr_metal_packet_mark_graph_images_submitted(VkrMetalPacketRenderer *renderer,
                                              uint64_t submit_value) {
@@ -1446,10 +1935,21 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
       instance->history_valid = true_v;
     }
   }
+  renderer->motion_seconds += packet->motion_blur_delta_seconds;
+  if (packet->temporal.reset_reasons != 0u)
+    for (uint32_t i = 0u; i < renderer->history_instance_count; ++i) {
+      VkrMetalPacketGraphBufferInstance *transform =
+          vkr_metal_packet_graph_buffer_instance(
+              renderer, renderer->temporal_transform_history_handle, i);
+      if (transform)
+        transform->history_motion_valid = false_v;
+    }
   VkrMetalPacketGraphBufferInstance *current_transform =
       vkr_metal_packet_graph_buffer_instance(
           renderer, renderer->temporal_transform_history_handle, current);
   if (current_transform) {
+    current_transform->history_motion_seconds = renderer->motion_seconds;
+    current_transform->history_motion_valid = true_v;
     current_transform->history_producer_submit_value = submit_value;
     current_transform->history_frame_index = packet->input.frame.frame_index;
     current_transform->history_scene_generation =
@@ -1463,6 +1963,14 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
     current_transform->history_valid = true_v;
   }
 
+  if (renderer->selected_motion_history_instance != UINT32_MAX) {
+    VkrMetalPacketGraphBufferInstance *motion_transform =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->temporal_transform_history_handle,
+            renderer->selected_motion_history_instance);
+    motion_transform->last_use_submit_value =
+        MAX(motion_transform->last_use_submit_value, submit_value);
+  }
   if (selected == UINT32_MAX)
     return;
   if (!renderer->metalfx_enabled) {
@@ -1478,6 +1986,191 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
   if (selected_transform)
     selected_transform->last_use_submit_value =
         MAX(selected_transform->last_use_submit_value, submit_value);
+}
+
+vkr_internal void
+vkr_metal_packet_mark_froxel_history_submitted(
+    VkrMetalPacketRenderer *renderer, uint64_t submit_value) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || packet->froxel_fog.grid_dimensions_cell_pixels[0] == 0u)
+    return;
+  VkrMetalPacketImage *history = vkr_metal_packet_named_image_slot(
+      renderer, "froxel_scattering_history");
+  if (!history || history->instance_count != renderer->history_instance_count ||
+      history->desc.type != VKR_TEXTURE_TYPE_3D || history->desc.mip_levels != 1u ||
+      history->desc.layers != 1u)
+    return;
+  const uint32_t current = renderer->history_output_index;
+  if (current >= history->instance_count)
+    return;
+
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE) {
+    for (uint32_t i = 0u; i < history->instance_count; ++i) {
+      history->instances[i].history_valid = false_v;
+      renderer->froxel_history[i].valid = false_v;
+    }
+  }
+
+  VkrRetainedShadowToken shadow = {0};
+  VkrRetainedLocalShadowToken local_shadow = {0};
+  vkr_metal_packet_current_shadow_tokens(renderer, &shadow, &local_shadow);
+  VkrMetalPacketImageInstance *output = &history->instances[current];
+  const uint32_t dimensions[3] = {history->desc.width, history->desc.height,
+                                  history->desc.depth};
+  renderer->froxel_history[current] = (VkrMetalPacketFroxelHistoryState){
+      .view_projection = vkr_metal_packet_clip_matrix(
+          renderer->convert_vulkan_clip_y,
+          packet->temporal.current_view_projection),
+      .view = packet->input.globals.view,
+      .signature = packet->froxel_fog_signature,
+      .producer_submit_value = submit_value,
+      .frame_index = packet->input.frame.frame_index,
+      .dimensions = {dimensions[0], dimensions[1], dimensions[2]},
+      .graph_generation = history->graph_generation,
+      .shadow = shadow,
+      .local_shadow = local_shadow,
+      .valid = true_v,
+  };
+  output->history_producer_submit_value = submit_value;
+  output->history_frame_index = packet->input.frame.frame_index;
+  output->history_valid = true_v;
+
+  const uint32_t selected = renderer->selected_froxel_history_instance;
+  if (selected < history->instance_count)
+    history->instances[selected].last_use_submit_value = MAX(
+        history->instances[selected].last_use_submit_value, submit_value);
+}
+
+vkr_internal void
+vkr_metal_packet_mark_ssr_history_submitted(VkrMetalPacketRenderer *renderer,
+                                            uint64_t submit_value) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.ssr_enabled)
+    return;
+  VkrMetalPacketImage *slots[] = {
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_color"),
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_depth"),
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_identity"),
+  };
+  if (!slots[0] || !slots[1] || !slots[2])
+    return;
+  const uint32_t current = renderer->history_output_index;
+  const uint32_t selected = renderer->selected_ssr_history_instance;
+  const uint32_t trace_width = Max(renderer->prepared_frame.viewport_width / 2u,
+                                   1u);
+  const uint32_t trace_height =
+      Max(renderer->prepared_frame.viewport_height / 2u, 1u);
+  const Mat4 projection = vkr_metal_packet_clip_matrix(
+      !renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection);
+  if (packet->temporal.reset_reasons != 0u) {
+    for (uint32_t slot = 0u; slot < ArrayCount(slots); ++slot)
+      for (uint32_t i = 0u; i < slots[slot]->instance_count; ++i)
+        slots[slot]->instances[i].history_valid = false_v;
+  }
+  for (uint32_t slot = 0u; slot < ArrayCount(slots); ++slot) {
+    if (current >= slots[slot]->instance_count)
+      continue;
+    VkrMetalPacketImageInstance *instance = &slots[slot]->instances[current];
+    instance->history_producer_submit_value = submit_value;
+    instance->history_frame_index = packet->input.frame.frame_index;
+    instance->history_scene_generation = packet->input.frame.scene_generation;
+    instance->history_view_projection = projection;
+    instance->history_width = trace_width;
+    instance->history_height = trace_height;
+    instance->history_scene = (VkrMetalPacketTemporalSceneState){
+        .signature = vkr_ssr_content_signature(packet),
+        .radiance_revision = renderer->radiance_revision,
+        .publication_generation = renderer->candidate_publication_generation,
+        .graph_revision = renderer->graph_revision,
+    };
+    instance->history_valid = true_v;
+  }
+  if (selected == UINT32_MAX)
+    return;
+  for (uint32_t slot = 0u; slot < ArrayCount(slots); ++slot)
+    if (selected < slots[slot]->instance_count)
+      slots[slot]->instances[selected].last_use_submit_value = MAX(
+          slots[slot]->instances[selected].last_use_submit_value, submit_value);
+  VkrMetalPacketGraphBufferInstance *transform =
+      vkr_metal_packet_graph_buffer_instance(
+          renderer, renderer->temporal_transform_history_handle, selected);
+  if (transform)
+    transform->last_use_submit_value =
+        MAX(transform->last_use_submit_value, submit_value);
+}
+
+
+vkr_internal void
+vkr_metal_packet_mark_ssgi_history_submitted(VkrMetalPacketRenderer *renderer,
+                                            uint64_t submit_value) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.ssgi_enabled)
+    return;
+  VkrMetalPacketImage *slots[] = {
+      vkr_metal_packet_named_image_slot(renderer, "ssgi_history_color"),
+      vkr_metal_packet_named_image_slot(renderer, "ssgi_history_depth"),
+      vkr_metal_packet_named_image_slot(renderer, "ssgi_history_identity"),
+  };
+  if (!slots[0] || !slots[1] || !slots[2])
+    return;
+  const uint32_t current = renderer->history_output_index;
+  const uint32_t selected = renderer->selected_ssgi_history_instance;
+  const uint32_t trace_width = Max(renderer->prepared_frame.viewport_width / 2u,
+                                   1u);
+  const uint32_t trace_height =
+      Max(renderer->prepared_frame.viewport_height / 2u, 1u);
+  const Mat4 stable_projection = vkr_metal_packet_clip_matrix(
+      !renderer->convert_vulkan_clip_y, packet->input.globals.projection);
+  if (packet->temporal.reset_reasons != 0u) {
+    for (uint32_t slot = 0u; slot < ArrayCount(slots); ++slot)
+      for (uint32_t i = 0u; i < slots[slot]->instance_count; ++i)
+        slots[slot]->instances[i].history_valid = false_v;
+    for (uint32_t i = 0u; i < ArrayCount(renderer->ssgi_history); ++i)
+      renderer->ssgi_history[i].valid = false_v;
+  }
+  for (uint32_t slot = 0u; slot < ArrayCount(slots); ++slot) {
+    if (current >= slots[slot]->instance_count)
+      continue;
+    VkrMetalPacketImageInstance *instance = &slots[slot]->instances[current];
+    instance->history_producer_submit_value = submit_value;
+    instance->history_frame_index = packet->input.frame.frame_index;
+    instance->history_scene_generation = packet->input.frame.scene_generation;
+    instance->history_view_projection = stable_projection;
+    instance->history_width = trace_width;
+    instance->history_height = trace_height;
+    instance->history_scene = (VkrMetalPacketTemporalSceneState){
+        .signature = vkr_ssgi_content_signature(packet),
+        .radiance_revision = renderer->radiance_revision,
+        .publication_generation = renderer->candidate_publication_generation,
+        .graph_revision = renderer->graph_revision,
+    };
+    instance->history_valid = true_v;
+  }
+  VkrRetainedShadowToken shadow = {0};
+  VkrRetainedLocalShadowToken local_shadow = {0};
+  vkr_metal_packet_current_shadow_tokens(renderer, &shadow, &local_shadow);
+  renderer->ssgi_history[current] = (VkrMetalPacketSsgiHistoryState){
+      .raster_projection = vkr_metal_packet_clip_matrix(
+          !renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection),
+      .producer_submit_value = submit_value,
+      .frame_index = packet->input.frame.frame_index,
+      .graph_generation = slots[0]->graph_generation,
+      .shadow = shadow,
+      .local_shadow = local_shadow,
+      .valid = true_v,
+  };
+  if (selected == UINT32_MAX)
+    return;
+  for (uint32_t slot = 0u; slot < ArrayCount(slots); ++slot)
+    if (selected < slots[slot]->instance_count)
+      slots[slot]->instances[selected].last_use_submit_value = MAX(
+          slots[slot]->instances[selected].last_use_submit_value, submit_value);
+  VkrMetalPacketGraphBufferInstance *transform =
+      vkr_metal_packet_graph_buffer_instance(
+          renderer, renderer->temporal_transform_history_handle, selected);
+  if (transform)
+    transform->last_use_submit_value =
+        MAX(transform->last_use_submit_value, submit_value);
 }
 
 vkr_internal void
@@ -1608,11 +2301,43 @@ vkr_internal bool8_t vkr_metal_packet_material_info_valid(
       pbr->attenuation_color.z,
       pbr->attenuation_distance,
       pbr->temporal_reactivity,
+      pbr->clearcoat_factor,
+      pbr->clearcoat_roughness,
+      pbr->clearcoat_normal_scale,
+      pbr->anisotropy_strength,
+      pbr->anisotropy_rotation,
+      pbr->diffuse_transmission_strength,
+      pbr->diffuse_transmission_color.x,
+      pbr->diffuse_transmission_color.y,
+      pbr->diffuse_transmission_color.z,
   };
   for (uint32_t i = 0; i < ArrayCount(values); ++i) {
     if (!isfinite(values[i]))
       return false_v;
   }
+  if (pbr->clearcoat_factor < 0.0f || pbr->clearcoat_factor > 1.0f ||
+      pbr->clearcoat_roughness < 0.0f || pbr->clearcoat_roughness > 1.0f ||
+      pbr->anisotropy_strength < 0.0f || pbr->anisotropy_strength > 1.0f ||
+      pbr->diffuse_transmission_strength < 0.0f ||
+      pbr->diffuse_transmission_strength > 1.0f ||
+      pbr->diffuse_transmission_color.x < 0.0f ||
+      pbr->diffuse_transmission_color.x > 1.0f ||
+      pbr->diffuse_transmission_color.y < 0.0f ||
+      pbr->diffuse_transmission_color.y > 1.0f ||
+      pbr->diffuse_transmission_color.z < 0.0f ||
+      pbr->diffuse_transmission_color.z > 1.0f ||
+      (pbr->anisotropy_strength > 0.0f && pbr->transmission_factor > 0.0f) ||
+      (pbr->diffuse_transmission_strength > 0.0f &&
+       (create_info->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+        pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f)))
+    return false_v;
+  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
+      pbr->subsurface_strength > 1.0f || pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT ||
+      (pbr->subsurface_strength > 0.0f &&
+       (create_info->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+        pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
+        pbr->diffuse_transmission_strength > 0.0f)))
+    return false_v;
   for (uint32_t i = 0; i < ArrayCount(create_info->tint); ++i) {
     if (!isfinite(create_info->tint[i]))
       return false_v;
@@ -1708,6 +2433,10 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
         format_info.block_width != 1 || format_info.block_height != 1 ||
         format_info.bytes_per_block == 0)
       return false_v;
+    const bool8_t extended_linear_final =
+        string_equals(channel->name, "final_color") &&
+        format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT &&
+        renderer->display_output.extended_linear != 0u;
     if (texture.width > UINT32_MAX || texture.height > UINT32_MAX ||
         texture.width > UINT64_MAX / format_info.bytes_per_block)
       return false_v;
@@ -1732,7 +2461,12 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
                    .row_pitch = row_pitch,
                    .format = format,
                    .value_kind = channel->value_kind,
-                   .color_space = channel->color_space,
+                   .color_space = extended_linear_final
+                                      ? VKR_CAPTURE_COLOR_SPACE_EXTENDED_LINEAR
+                                      : channel->color_space,
+                   .display_output = extended_linear_final
+                                         ? renderer->display_output
+                                         : (VkrDisplayOutputParams){0},
                    .origin = VKR_CAPTURE_ORIGIN_TOP_LEFT,
                    .data_size = data_size,
                    .mip = 0,

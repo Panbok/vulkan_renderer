@@ -1,6 +1,8 @@
 #include "../../../shared/local_shadow.slangh"
 #include "../../../shared/normal_map_kernel.slangh"
 #include "../../../shared/point_light.slangh"
+#include "../../../shared/fog_kernel.slangh"
+#include "../../../shared/froxel_fog_kernel.slangh"
 
 struct VkrMetalPacketVertex
 {
@@ -31,7 +33,7 @@ struct VkrMetalPacketShadowCascade
 {
     column_major float4x4 light_view_projection;
     float4 split_near_far_texel_depth;
-    float4 origin_inv_size_pad;
+    float4 origin_inv_size_sun;
 };
 
 struct VkrMetalPacketIblProbe
@@ -66,6 +68,43 @@ struct VkrMetalPacketTemporalDrawState
     uint2 reserved;
 };
 
+struct VkrMetalPacketDiffuseVolume {
+    float4 origin;
+    float4 inverse_spacing;
+    uint4 dimensions;
+};
+
+struct VkrMetalPacketSheen {
+    uint64_t directional_albedo_texture;
+    uint64_t ltc_matrix_texture;
+    uint64_t ltc_amplitude_texture;
+    uint64_t ltc_matrix_texture_b;
+    uint64_t ltc_amplitude_texture_b;
+    uint2 reserved;
+};
+
+struct VkrGpuRectangleLightRow {
+    float4 center_half_width;
+    float4 right_half_height;
+    float4 up_radiance;
+    float4 color;
+};
+
+struct VkrMetalPacketLtc {
+    VkrGpuRectangleLightRow* lights;
+    uint64_t matrix_texture;
+    uint64_t amplitude_texture;
+    uint light_count;
+    uint reserved;
+};
+
+struct VkrMetalPacketAnisotropy {
+    uint64_t table0;
+    uint64_t table1;
+    uint64_t table2;
+    uint2 reserved;
+};
+
 struct VkrMetalPacketFrameRoot
 {
     StructuredBuffer<VkrMetalPacketInstance> instances;
@@ -80,7 +119,7 @@ struct VkrMetalPacketFrameRoot
     float4 view_position;
     uint prefilter_mip_count;
     uint flags;
-    uint2 reserved_0;
+    VkrFroxelFogParams* froxel_fog;
     float4 ibl_controls;
     float4 directional_direction_enabled;
     float4 directional_color_intensity;
@@ -89,8 +128,7 @@ struct VkrMetalPacketFrameRoot
     // Scalar padding matches the host/native-MSL arrays. Metal aligns uint3 to
     // 16 bytes and would move every following field.
     uint shadow_debug_mode;
-    uint reserved_1_0;
-    uint reserved_1_1;
+    Texture3D<float4> froxel_integrated;
     StructuredBuffer<VkrGpuPointLightRow> point_light_data;
     StructuredBuffer<uint4> point_light_masks;
     float4 point_light_grid_origin_cell_size;
@@ -122,6 +160,13 @@ struct VkrMetalPacketFrameRoot
     VkrMetalPacketTemporalDrawState* temporal_draw_state;
     Texture2DArray<float> local_shadow_map;
     StructuredBuffer<VkrLocalShadowView> local_shadow_views;
+    Texture2D<float4> dfg_lut;
+    Texture2D<float4> diffuse_volume;
+    VkrMetalPacketDiffuseVolume* diffuse_volume_params;
+    VkrMetalPacketLtc* ltc;
+    VkrFogParams* fog;
+    VkrMetalPacketSheen* sheen;
+    VkrMetalPacketAnisotropy* anisotropy;
 };
 
 #include "../../../shared/gpu_draw.slangh"

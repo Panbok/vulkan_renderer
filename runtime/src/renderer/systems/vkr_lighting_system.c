@@ -27,6 +27,11 @@ typedef struct PointLightSyncContext {
   uint32_t total_considered;
 } PointLightSyncContext;
 
+typedef struct RectangleLightSyncContext {
+  VkrLightingSystem *system;
+  const VkrScene *scene;
+} RectangleLightSyncContext;
+
 vkr_internal bool8_t point_light_stable_precedes(const VkrPointLight *light,
                                                  const VkrPointLight *other) {
   const uint32_t stable_id = light->render_id ? light->render_id : UINT32_MAX;
@@ -68,6 +73,49 @@ vkr_internal void point_light_insert_stable(PointLightSyncContext *ctx,
   ctx->system->point_lights[insert] = candidate;
   ctx->system->point_light_count =
       Min(ctx->system->point_light_count + 1u, VKR_MAX_SCENE_POINT_LIGHTS);
+}
+
+vkr_internal bool8_t rectangle_light_stable_precedes(
+    const VkrRectangleLight *light, const VkrRectangleLight *other) {
+  return light->render_id < other->render_id;
+}
+
+/* Rectangle area and axes are authored in the entity's rigid transform frame.
+ * Follow the hierarchy's quaternion chain instead of extracting axes from the
+ * scaled world matrix: nonuniform parent scale must not alter either fact. */
+vkr_internal bool8_t rectangle_light_world_rotation(
+    const VkrScene *scene, const SceneTransform *transform,
+    VkrQuat *out_rotation) {
+  VkrQuat rotation = transform->rotation;
+  VkrEntityId ancestor = transform->parent;
+  for (uint32_t depth = 0u;
+       ancestor.u64 != VKR_ENTITY_ID_INVALID.u64 && depth < scene->topo_count;
+       ++depth) {
+    const SceneTransform *parent =
+        (const SceneTransform *)vkr_entity_get_component(scene->world, ancestor,
+                                                         scene->comp_transform);
+    if (!parent || !parent->trs_editable)
+      return false_v;
+    rotation = vkr_quat_mul(parent->rotation, rotation);
+    ancestor = parent->parent;
+  }
+  if (ancestor.u64 != VKR_ENTITY_ID_INVALID.u64)
+    return false_v;
+  *out_rotation = vkr_quat_normalize(rotation);
+  return true_v;
+}
+
+vkr_internal void rectangle_light_insert_stable(RectangleLightSyncContext *ctx,
+                                                VkrRectangleLight candidate) {
+  uint32_t insert = 0u;
+  while (insert < ctx->system->rectangle_light_count &&
+         !rectangle_light_stable_precedes(
+             &candidate, &ctx->system->rectangle_lights[insert]))
+    insert++;
+  for (uint32_t i = ctx->system->rectangle_light_count; i > insert; --i)
+    ctx->system->rectangle_lights[i] = ctx->system->rectangle_lights[i - 1u];
+  ctx->system->rectangle_lights[insert] = candidate;
+  ctx->system->rectangle_light_count++;
 }
 
 vkr_internal void point_light_mask_add(VkrPointLightMask *mask,
@@ -188,6 +236,8 @@ vkr_internal void sync_directional_light_cb(const VkrArchetype *arch,
     ctx->system->directional.direction = world_direction;
     ctx->system->directional.color = lights[i].color;
     ctx->system->directional.intensity = lights[i].intensity;
+    ctx->system->directional.sun_angular_diameter_degrees =
+        lights[i].sun_angular_diameter_degrees;
     ctx->found = true_v;
     ctx->best_render_id = render_id;
     ctx->best_has_render_id = has_render_id;
@@ -239,6 +289,43 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
   }
 }
 
+vkr_internal void sync_rectangle_lights_cb(const VkrArchetype *arch,
+                                           VkrChunk *chunk, void *user) {
+  (void)arch;
+  RectangleLightSyncContext *ctx = (RectangleLightSyncContext *)user;
+  const VkrScene *scene = ctx->scene;
+  const uint32_t count = vkr_entity_chunk_count(chunk);
+  VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
+  SceneTransform *transforms =
+      (SceneTransform *)vkr_entity_chunk_column(chunk, scene->comp_transform);
+  SceneRectangleLight *lights = (SceneRectangleLight *)vkr_entity_chunk_column(
+      chunk, scene->comp_rectangle_light);
+  if (!entities || !transforms || !lights)
+    return;
+
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!lights[i].enabled)
+      continue;
+    VkrQuat world_rotation;
+    if (!rectangle_light_world_rotation(scene, &transforms[i], &world_rotation))
+      continue;
+    const VkrRectangleLight candidate = {
+        .position = mat4_position(transforms[i].world),
+        .right = vec3_normalize(
+            vkr_quat_rotate_vec3(world_rotation, vec3_new(1.0f, 0.0f, 0.0f))),
+        .up = vec3_normalize(
+            vkr_quat_rotate_vec3(world_rotation, vec3_new(0.0f, 1.0f, 0.0f))),
+        .color = lights[i].color,
+        .half_width = lights[i].size.x * 0.5f,
+        .half_height = lights[i].size.y * 0.5f,
+        .radiance = lights[i].radiance,
+        .render_id = vkr_scene_get_render_id(scene, entities[i]),
+    };
+    if (vkr_rectangle_light_valid(&candidate))
+      rectangle_light_insert_stable(ctx, candidate);
+  }
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -254,8 +341,11 @@ bool8_t vkr_lighting_system_init(VkrLightingSystem *system) {
   system->directional.direction = (Vec3){0.0f, -1.0f, 0.0f};
   system->directional.color = (Vec3){1.0f, 1.0f, 1.0f};
   system->directional.intensity = 1.0f;
+  system->directional.sun_angular_diameter_degrees =
+      VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
 
   system->point_light_count = 0;
+  system->rectangle_light_count = 0;
   system->dirty = true_v;
 
   return true_v;
@@ -280,6 +370,7 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
   system->directional.enabled = false_v;
   system->point_light_count = 0;
   system->point_light_dropped_count = 0;
+  system->rectangle_light_count = 0;
 
   // Sync directional light (take first enabled)
   DirectionalLightSyncContext dir_ctx = {
@@ -306,7 +397,34 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
       point_ctx.total_considered > system->point_light_count
           ? point_ctx.total_considered - system->point_light_count
           : 0u;
+  RectangleLightSyncContext rectangle_ctx = {
+      .system = system,
+      .scene = scene,
+  };
+  vkr_entity_query_compiled_each_chunk(
+      (VkrQueryCompiled *)&scene->query_rectangle_lights,
+      sync_rectangle_lights_cb, &rectangle_ctx);
   vkr_lighting_system_build_point_light_grid(system);
+  system->dirty = true_v;
+}
+
+void vkr_lighting_system_apply_atmosphere_sun(
+    VkrLightingSystem *system, const VkrAtmosphereSettings *settings,
+    const VkrAtmosphereBakeResult *result) {
+  if (!system || !settings || !result)
+    return;
+
+  /* Atmosphere sun_direction points from the observer toward the sun. The
+     directional-light record points along incoming light, which shaders negate
+     when forming their surface-to-light vector. */
+  system->directional.enabled = true_v;
+  system->directional.direction = vec3_new(-settings->sun_direction.x,
+                                            -settings->sun_direction.y,
+                                            -settings->sun_direction.z);
+  system->directional.color = result->solar_irradiance;
+  system->directional.intensity = 1.0f;
+  system->directional.sun_angular_diameter_degrees =
+      settings->sun_angular_diameter_degrees;
   system->dirty = true_v;
 }
 

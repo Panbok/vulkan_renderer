@@ -92,6 +92,7 @@ typedef struct VkrStandardSceneRuntimeConfig {
   VkrRendererBackendType renderer_backend;
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
+  VkrDisplayOutputMode display_output_mode;
   /** Internal Scene resolution relative to its presentation extent. Zero
    * selects 1.0. Metal currently supports values in (0, 1]. */
   float32_t render_scale;

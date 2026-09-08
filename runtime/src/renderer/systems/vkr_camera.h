@@ -198,6 +198,14 @@ void vkr_camera_rotate(VkrCamera *camera, float32_t yaw_delta,
 void vkr_camera_set_pose(VkrCamera *camera, Vec3 position,
                          float32_t yaw_degrees, float32_t pitch_degrees);
 
+/**
+ * Applies an authored orthonormal camera basis without converting it through
+ * yaw/pitch. Returns false when the position or basis is non-finite or
+ * degenerate.
+ */
+bool8_t vkr_camera_set_basis(VkrCamera *camera, Vec3 position, Vec3 forward,
+                             Vec3 up);
+
 /** Applies authored perspective lens values and an explicit render extent. */
 bool8_t vkr_camera_set_perspective_lens(VkrCamera *camera,
                                         float32_t vertical_fov_degrees,

@@ -76,11 +76,17 @@ vkr_window_render_surface_pixel_size(void *context) {
   return (VkrSurfaceSize){.width = size.width, .height = size.height};
 }
 
+vkr_internal VkrDisplayOutputSnapshot
+vkr_window_render_surface_display_output(void *context) {
+  return vkr_window_get_display_output((VkrWindow *)context);
+}
+
 VkrNativeSurface vkr_window_get_render_surface(VkrWindow *window) {
   assert_log(window && window->platform_state, "Window not initialized");
   VkrNativeSurface surface = {
       .context = window,
       .pixel_size = vkr_window_render_surface_pixel_size,
+      .display_output_snapshot = vkr_window_render_surface_display_output,
   };
 #if defined(PLATFORM_APPLE)
   surface.metal_layer = vkr_window_get_metal_layer(window);

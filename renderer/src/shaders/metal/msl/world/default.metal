@@ -70,20 +70,106 @@ static float4 vkr_metal_packet_shade(
                                                       shadow_sample),
                   1.0);
   }
+  float anisotropy_strength = material.material_anisotropy.x;
+  float3 anisotropy_axis = float3(0.0f);
+  if (anisotropy_strength > 0.0f) {
+    float3 map = float3(1.0f, 0.5f, 1.0f);
+    if ((material.flags & 1024u) != 0u)
+      map = material.anisotropy_texture.sample(material.anisotropy_sampler, input.texcoord).rgb;
+    anisotropy_strength *= map.b;
+    anisotropy_axis = vkr_anisotropy_axis(geometric_normal, normal,
+        input.world_tangent, map.rg * 2.0f - 1.0f, material.material_anisotropy.yz);
+  }
+  VkrGgxMaterialEnergy energy =
+      vkr_metal_packet_prepare_brdf(frame, no_v, roughness, f0);
+  if (anisotropy_strength > 0.0f)
+    energy = vkr_metal_prepare_anisotropy(frame, normal, anisotropy_axis, view, roughness, anisotropy_strength, f0);
+    energy = vkr_ggx_diffuse_transmission(energy, material.material_diffuse_transmission);
+  float clearcoat_factor = saturate(material.material_clearcoat.x);
+  if (clearcoat_factor > 0.0 && (material.flags & 32u) != 0u)
+    clearcoat_factor *= material.clearcoat_texture
+                            .sample(material.clearcoat_sampler, input.texcoord)
+                            .r;
+  bool clearcoat_active = vkr_clearcoat_active(clearcoat_factor);
+  VkrClearcoatLayer clearcoat;
+  if (clearcoat_active) {
+    float clearcoat_roughness = material.material_clearcoat.y;
+    if ((material.flags & 64u) != 0u)
+      clearcoat_roughness *= material.clearcoat_roughness_texture
+                                 .sample(material.clearcoat_roughness_sampler,
+                                         input.texcoord)
+                                 .g;
+    float3 clearcoat_normal = geometric_normal;
+    if ((material.flags & 128u) != 0u) {
+      float3 sampled = vkr_normal_map_decode(
+          material.clearcoat_normal_texture
+              .sample(material.clearcoat_normal_sampler, input.texcoord)
+              .xyz,
+          material.material_clearcoat.z);
+      float3 tangent = normalize(input.world_tangent.xyz);
+      tangent = normalize(tangent - dot(tangent, geometric_normal) *
+                                      geometric_normal);
+      float3 bitangent = normalize(cross(geometric_normal, tangent)) *
+                         input.world_tangent.w;
+      clearcoat_normal = normalize(tangent * sampled.x + bitangent * sampled.y +
+                                   geometric_normal * sampled.z);
+    }
+    clearcoat = vkr_metal_packet_prepare_clearcoat(
+        frame, clearcoat_factor, clearcoat_roughness, clearcoat_normal, view);
+  }
 
+  float3 sheen_color = max(material.material_sheen.rgb, float3(0.0f));
+  if (vkr_sheen_active(sheen_color) && (material.flags & 256u) != 0u)
+    sheen_color *= material.sheen_color_texture
+                       .sample(material.sheen_color_sampler, input.texcoord).rgb;
+  bool sheen_active = vkr_sheen_active(sheen_color);
+  float sheen_roughness = 0.0f;
+  VkrSheenLayer sheen;
+  float sheen_normalization = 0.0f;
+  if (sheen_active) {
+    sheen_roughness = material.material_sheen.w;
+    if ((material.flags & 512u) != 0u)
+      sheen_roughness *= material.sheen_roughness_texture
+                             .sample(material.sheen_roughness_sampler,
+                                     input.texcoord).a;
+    sheen = vkr_metal_packet_prepare_sheen(frame, sheen_color, sheen_roughness,
+                                            normal, view);
+    sheen_normalization = vkr_metal_packet_sheen_ltc_sample(
+        frame, no_v, sheen.roughness).energy_normalization;
+  }
   float3 analytic_diffuse = 0.0;
   float3 analytic_specular = 0.0;
+  float3 clearcoat_direct = 0.0;
+  float3 sheen_direct = 0.0;
   if (frame->directional_direction_enabled.w > 0.5) {
-    VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, input.world_position,
-                                                   normal);
+    float3 sun_direction = normalize(-frame->directional_direction_enabled.xyz);
+    bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
+                    dot(normal, sun_direction) < 0.0f;
+    float base_shadow = vkr_metal_packet_directional_shadow_sample(
+        frame, input.world_position, back_lit ? -normal : normal).factor;
+    float layer_shadow = base_shadow;
+    if (back_lit && clearcoat_active)
+      layer_shadow = vkr_metal_packet_directional_shadow_sample(
+          frame, input.world_position, normal).factor;
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
-            frame->directional_color_intensity.w * shadow_sample.factor,
-        base.rgb, metallic, roughness, f0);
+            frame->directional_color_intensity.w * base_shadow,
+        base.rgb, metallic, roughness, f0, energy);
     analytic_diffuse = direct.diffuse;
     analytic_specular = direct.specular;
+    if (clearcoat_active)
+      clearcoat_direct += vkr_metal_packet_clearcoat_direct(
+          view, normalize(-frame->directional_direction_enabled.xyz),
+          frame->directional_color_intensity.rgb *
+              frame->directional_color_intensity.w * layer_shadow,
+          clearcoat);
+    if (sheen_active)
+      sheen_direct += vkr_metal_packet_sheen_direct(
+          normal, view, normalize(-frame->directional_direction_enabled.xyz),
+          frame->directional_color_intensity.rgb *
+              frame->directional_color_intensity.w * layer_shadow,
+          sheen, sheen_normalization);
   }
   uint4 point_mask =
       vkr_metal_packet_point_light_mask(frame, input.world_position);
@@ -134,27 +220,54 @@ static float4 vkr_metal_packet_shade(
           attenuation *= cone_attenuation;
         }
       }
-      attenuation *= vkr_metal_packet_local_shadow_sample(
-          frame, uint(p3.w), kind, input.world_position, normal);
+      bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
+                      dot(normal, light_direction) < 0.0f;
+      float base_attenuation = attenuation * vkr_metal_packet_local_shadow_sample(
+          frame, uint(p3.w), kind, input.world_position, back_lit ? -normal : normal);
+      if (back_lit && clearcoat_active)
+        attenuation *= vkr_metal_packet_local_shadow_sample(
+            frame, uint(p3.w), kind, input.world_position, normal);
+      else
+        attenuation = base_attenuation;
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
-          normal, view, light_direction, p1.rgb * p2.x * attenuation, base.rgb,
-          metallic, roughness, f0);
+          normal, view, light_direction, p1.rgb * p2.x * base_attenuation, base.rgb,
+          metallic, roughness, f0, energy);
       analytic_diffuse += direct.diffuse;
       analytic_specular += direct.specular;
+      if (clearcoat_active)
+        clearcoat_direct += vkr_metal_packet_clearcoat_direct(
+            view, light_direction, p1.rgb * p2.x * attenuation, clearcoat);
+      if (sheen_active)
+        sheen_direct += vkr_metal_packet_sheen_direct(
+            normal, view, light_direction, p1.rgb * p2.x * attenuation,
+            sheen, sheen_normalization);
     }
   }
-  float3 color = analytic_diffuse + analytic_specular;
+  VkrMetalPacketDirectResult rectangles =
+      vkr_metal_packet_rectangle_lights<true>(
+          frame, input.world_position, normal, view, base.rgb, metallic,
+          roughness, f0, energy);
+  analytic_diffuse += rectangles.diffuse;
+  analytic_specular += rectangles.specular;
+  if (clearcoat_active)
+    clearcoat_direct += vkr_metal_packet_clearcoat_rectangle_lights(
+        frame, input.world_position, view, clearcoat);
+  if (sheen_active)
+    sheen_direct += vkr_metal_packet_sheen_rectangle_lights(
+        frame, input.world_position, normal, view, sheen);
+  float3 clearcoat_indirect = 0.0;
+  float3 sheen_indirect = 0.0;
+  float3 indirect_specular = 0.0;
+  float4 volume_response = vkr_metal_packet_diffuse_volume(frame, input.world_position, normal);
+  float3 indirect_diffuse = 0.0f;
 
   if ((frame->flags & 2u) != 0u) {
     constexpr sampler environment_sampler(coord::normalized,
                                           address::clamp_to_edge,
                                           filter::linear, mip_filter::linear);
-    float3 reflection = reflect(-view, normal);
-    float3 fresnel = vkr_metal_packet_fresnel_roughness(no_v, f0, roughness);
-    float3 kd = (1.0 - fresnel) * (1.0 - metallic);
+    roughness = vkr_anisotropy_environment_roughness(roughness, energy);
+    float3 reflection = reflect(-view, vkr_anisotropy_environment_normal(normal, view, energy));
     VkrShL2Evaluation sh_evaluation = vkr_sh_l2_prepare_evaluation(normal);
-    float2 brdf = vkr_metal_packet_brdf_approximation(no_v, roughness);
-    float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
     float horizon = saturate(1.0 + dot(reflection, geometric_normal));
     float specular_visibility =
         horizon * horizon * vkr_metal_packet_specular_ao(ao, no_v, roughness);
@@ -182,46 +295,78 @@ static float4 vkr_metal_packet_shade(
                       reflection, input.world_position, probe.center_blend.xyz,
                       max(probe.extents_weight.xyz, 0.0))
                 : reflection;
-        float3 probe_irradiance =
-            vkr_sh_l2_evaluate(frame->sh_coefficients[probe.sh_slot],
-                               sh_evaluation);
+        float3 probe_irradiance = volume_response.w != 0.0f ? float3(0.0f) : vkr_sh_l2_evaluate(
+            frame->sh_coefficients[probe.sh_slot], sh_evaluation);
         float3 probe_prefiltered =
             probe.prefilter
                 .sample(environment_sampler, probe_reflection,
                         level(roughness *
                               float(max(frame->prefilter_mip_count, 1u) - 1u)))
                 .rgb;
-        diffuse += kd * probe_irradiance * base.rgb * ao *
-                   probe.intensity_box.x * probe.intensity_box.y * weight;
-        specular += probe_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
+        diffuse += energy.diffuse_weight * (1.0 - metallic) * probe_irradiance *
+                   base.rgb * ao * probe.intensity_box.x *
+                   probe.intensity_box.y * weight;
+        specular += probe_prefiltered * energy.reflectance *
                     specular_visibility * probe.intensity_box.x *
                     probe.intensity_box.z * weight;
       }
     }
     float global_weight = max(1.0 - min(local_weight_sum, 1.0), 0.0);
-    float3 global_irradiance = vkr_sh_l2_evaluate(
+    float3 global_irradiance = volume_response.w != 0.0f ? float3(0.0f) : vkr_sh_l2_evaluate(
         frame->sh_coefficients[frame->sh_global_slot], sh_evaluation);
-    diffuse += kd * global_irradiance * base.rgb * ao * global_weight;
+    diffuse += energy.diffuse_weight * (1.0 - metallic) * global_irradiance *
+               base.rgb * ao * global_weight;
     float3 global_prefiltered =
         frame->prefilter
             .sample(environment_sampler, reflection,
                     level(roughness *
                           float(max(frame->prefilter_mip_count, 1u) - 1u)))
             .rgb;
-    specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
-                specular_visibility * global_weight;
-    color +=
-        (diffuse * frame->ibl_controls.y + specular * frame->ibl_controls.z) *
-        frame->ibl_controls.x;
+    specular += global_prefiltered * energy.reflectance * specular_visibility *
+                global_weight;
+    indirect_diffuse = diffuse * frame->ibl_controls.y * frame->ibl_controls.x;
+    indirect_specular = specular * frame->ibl_controls.z * frame->ibl_controls.x;
+    clearcoat_indirect = clearcoat_active
+                              ? vkr_metal_packet_clearcoat_environment(
+                                    frame, input.world_position, view, ao, 1.0,
+                                    clearcoat)
+                              : float3(0.0);
+    sheen_indirect = sheen_active
+                         ? vkr_metal_packet_sheen_environment(
+                               frame, input.world_position, normal, view, ao,
+                               1.0f, sheen) *
+                               (clearcoat_active ? clearcoat.base_transmission : 1.0f)
+                         : float3(0.0f);
   } else {
-    color += frame->ambient_color.rgb * base.rgb * ao;
+    indirect_diffuse = frame->ambient_color.rgb * energy.diffuse_weight *
+             (1.0 - metallic) * base.rgb * ao;
   }
+  if (volume_response.w != 0.0f)
+    indirect_diffuse = volume_response.rgb * energy.diffuse_weight * (1.0 - metallic) * base.rgb * ao;
+  if (sheen_active) {
+    analytic_diffuse *= sheen.base_transmission;
+    analytic_specular *= sheen.base_transmission;
+    indirect_diffuse *= sheen.base_transmission;
+    indirect_specular *= sheen.base_transmission;
+    emissive *= sheen.base_transmission;
+  }
+  if (clearcoat_active) {
+    analytic_diffuse *= clearcoat.base_transmission;
+    analytic_specular *= clearcoat.base_transmission;
+    indirect_diffuse *= clearcoat.base_transmission;
+    indirect_specular *= clearcoat.base_transmission;
+    emissive *= clearcoat.base_transmission;
+    sheen_direct *= clearcoat.base_transmission;
+  }
+  float3 color = analytic_diffuse + analytic_specular + clearcoat_direct + sheen_direct +
+                 indirect_diffuse + indirect_specular + clearcoat_indirect +
+                 sheen_indirect;
   if (frame->render_mode == 1u)
-    return float4(analytic_diffuse + analytic_specular, 1.0);
+    return float4(analytic_diffuse + analytic_specular + clearcoat_direct + sheen_direct, 1.0);
   if (frame->render_mode == 4u)
     return float4(analytic_diffuse, 1.0);
   if (frame->render_mode == 5u)
-    return float4(analytic_specular, 1.0);
+    return float4(analytic_specular + clearcoat_direct + sheen_direct, 1.0);
   color += emissive;
   return float4(color, material.alpha_mode == 0u ? 1.0 : base.a);
 }
@@ -259,6 +404,15 @@ vkr_metal_packet_temporal_blend_fragment(
   output.color = vkr_metal_packet_shade(surface, root, front_facing);
   if (output.color.a <= 1e-4)
     discard_fragment();
+  if (vkr_froxel_enabled(*root->frame->froxel_fog)) {
+    VkrFroxelSample froxel =
+        vkr_metal_packet_froxel_sample(root->frame, input.world_position);
+    output.color.rgb = vkr_froxel_apply_integrated(output.color.rgb, froxel).inscatter;
+  } else if (root->frame->fog->color_density.w > 0.0f) {
+    output.color.rgb = vkr_fog_apply_surface(
+        output.color.rgb, *root->frame->fog,
+        root->frame->view_position.xyz, input.world_position);
+  }
 
   constexpr uint overlay_bit = 0x80000000u;
   constexpr uint generation_mask = 0x7fffffffu;

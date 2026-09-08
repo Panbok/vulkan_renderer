@@ -306,7 +306,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
     VkrRendererError *out_error) {
 #if defined(PLATFORM_APPLE)
   (void)device_requirements;
-  /* Two completion-protected slots; backing heaps grow only at resource creation. */
+  /* Two completion-protected slots; backing heaps grow only at resource
+   * creation. */
   const uint32_t frame_slot_count = 2u;
   uint64_t managed_budget_mb = 4096u;
   const char *budget_env = getenv("VKR_METAL_MEMORY_BUDGET_MB");
@@ -328,6 +329,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   if (!pipeline_archive_path || pipeline_archive_path[0] == '\0')
     pipeline_archive_path = VKR_METAL_PACKET_ARCHIVE_PATH;
   VkrMetalPacketRendererConfig metal_config = {
+      .ssr = vkr_ssr_config_default(),
+      .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
       .graph_path = "assets/render_graphs/main.rendergraph.json",
       .slang_msl_path = VKR_METAL_PACKET_SLANG_MSL,
@@ -343,6 +346,9 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .upscale_mode = renderer->upscale_mode,
       .dynamic_resolution = renderer->dynamic_resolution_config,
       .metal_layer = surface ? surface->metal_layer : NULL,
+      .display_output_mode = backend_config->display_output_mode,
+      .display_output_context = surface ? surface->context : NULL,
+      .display_output_snapshot = surface ? surface->display_output_snapshot : NULL,
       .requested_present_mode = backend_config->requested_present_mode,
       .managed_budget_size = managed_budget_mb * MB(1),
       .heap_chunk_size = MB(64),
@@ -374,6 +380,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
     *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
     return false_v;
   }
+  renderer->impl.caps.present_color_format =
+      vkr_metal_packet_renderer_present_color_format(renderer->metal_renderer);
   vkr_metal_packet_renderer_get_asset_publisher(renderer->metal_renderer,
                                                 &renderer->asset_publisher);
   /* Caps are seeded with a backend-neutral default before any renderer exists.
@@ -389,15 +397,18 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
 #else
   (void)device_requirements;
   VkrVulkanRendererConfig config = {
+      .ssr = vkr_ssr_config_default(),
+      .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
       .graph_path = "assets/render_graphs/main.rendergraph.json",
       .surface = surface ? *surface : (VkrNativeSurface){0},
+      .display_output_mode = backend_config->display_output_mode,
       .target_kind = renderer->present_target.kind,
       .requested_present_mode = backend_config->requested_present_mode,
       .width = width,
       .height = height,
       .image_count = renderer->present_target.image_count,
-      .sampled_image_capacity = 16384u,
+      .sampled_image_capacity = 16390u,
       .storage_image_capacity = 1024u,
       .sampler_capacity = 2048u,
       // Publication records are indexed directly by logical handle id, so these
@@ -529,6 +540,25 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   VkrPresentTargetConfig requested_target = backend_config
                                                 ? backend_config->present_target
                                                 : (VkrPresentTargetConfig){0};
+  VkrDisplayOutputMode requested_display_output = backend_config
+      ? backend_config->display_output_mode : VKR_DISPLAY_OUTPUT_SDR;
+  const char *display_output_env = getenv("VKR_DISPLAY_OUTPUT");
+  if (display_output_env && display_output_env[0] != '\0') {
+    if (strcmp(display_output_env, "sdr") == 0)
+      requested_display_output = VKR_DISPLAY_OUTPUT_SDR;
+    else if (strcmp(display_output_env, "auto_extended_linear") == 0)
+      requested_display_output = VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR;
+    else {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      log_error("VKR_DISPLAY_OUTPUT must be sdr or auto_extended_linear");
+      return false_v;
+    }
+  }
+  if (requested_display_output != VKR_DISPLAY_OUTPUT_SDR &&
+      requested_display_output != VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
   float32_t requested_render_scale =
       backend_config && backend_config->render_scale != 0.0f
           ? backend_config->render_scale
@@ -651,6 +681,8 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
      and without it must not require a rebuild. */
   renderer->bloom_forced_disabled =
       vkr_renderer_env_enabled("VKR_BLOOM_DISABLED");
+  renderer->ssr_forced_disabled = vkr_renderer_env_enabled("VKR_SSR_DISABLED");
+  renderer->ssgi_forced_disabled = vkr_renderer_env_enabled("VKR_SSGI_DISABLED");
   renderer->gtao_forced_disabled =
       vkr_renderer_env_enabled("VKR_GTAO_DISABLED");
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
@@ -711,6 +743,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     resolved_backend_config.upscale_mode = requested_upscale_mode;
     resolved_backend_config.dynamic_resolution = requested_dynamic_resolution;
   }
+  resolved_backend_config.display_output_mode = requested_display_output;
   const VkrRendererBackendConfig *backend_cfg = &resolved_backend_config;
   if (!vkr_renderer_backend_initialize(renderer, surface, width, height,
                                        device_requirements, backend_cfg,
@@ -764,18 +797,19 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.scene_output_width = rf->scene_output_width;
   prepared->frame.scene_output_height = rf->scene_output_height;
   prepared->frame.render_scale = rf->render_scale;
-  prepared->frame.fsr31_enabled =
-      rf->upscale_mode == VKR_UPSCALE_MODE_FSR31;
+  prepared->frame.fsr31_enabled = rf->upscale_mode == VKR_UPSCALE_MODE_FSR31;
   if (packet->editor) {
     const Vec4 rect = packet->editor->image_rect_px;
     const bool8_t rendering = prepared->frame.scene_rendering;
     if (!rendering) {
 #if defined(PLATFORM_APPLE)
       vkr_metal_packet_renderer_retained_editor_extent(
-          rf->metal_renderer, &rf->editor_image_width, &rf->editor_image_height);
+          rf->metal_renderer, &rf->editor_image_width,
+          &rf->editor_image_height);
 #else
-      vkr_vulkan_renderer_retained_editor_extent(
-          rf->vulkan_renderer, &rf->editor_image_width, &rf->editor_image_height);
+      vkr_vulkan_renderer_retained_editor_extent(rf->vulkan_renderer,
+                                                 &rf->editor_image_width,
+                                                 &rf->editor_image_height);
 #endif
     }
     const uint32_t width =
@@ -825,6 +859,28 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE;
   rf->ibl_probes_packed =
       packet->lighting ? packet->lighting->ibl_probe_count : 0u;
+  prepared->frame.ssgi_enabled =
+      packet->globals.ssgi_enabled && !rf->ssgi_forced_disabled &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+  prepared->frame.fog = vkr_fog_prepare(&packet->globals.fog);
+  prepared->frame.froxel_fog = prepared->frame.scene_rendering
+      ? vkr_froxel_fog_prepare(&prepared->frame.input, temporal_width, temporal_height)
+      : (VkrFroxelFogGpuParams){0};
+  prepared->frame.froxel_fog_signature = vkr_froxel_fog_content_signature(
+      &prepared->frame.input, &prepared->frame.froxel_fog);
+  if (prepared->frame.froxel_fog.grid_dimensions_cell_pixels[0])
+    prepared->frame.fog = (VkrFogGpuParams){0};
+  if (packet->globals.render_mode != VKR_RENDER_MODE_DEFAULT)
+    prepared->frame.fog = (VkrFogGpuParams){0};
+  const bool8_t fog_changed = MemCompare(&rf->submitted_fog,
+      &prepared->frame.fog, sizeof(prepared->frame.fog)) != 0 ||
+      MemCompare(&rf->submitted_froxel_fog.color_density,
+                 &prepared->frame.froxel_fog.color_density, 2u * sizeof(Vec4)) != 0 ||
+      MemCompare(rf->submitted_froxel_fog.boxes,
+                 prepared->frame.froxel_fog.boxes,
+                 sizeof(prepared->frame.froxel_fog.boxes)) != 0 ||
+      (rf->submitted_froxel_fog.grid_dimensions_cell_pixels[0] != 0u) !=
+      (prepared->frame.froxel_fog.grid_dimensions_cell_pixels[0] != 0u);
   prepared->temporal_input = (VkrTemporalFrameInput){
       .view = packet->globals.view,
       .projection = packet->globals.projection,
@@ -834,16 +890,21 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       .width = temporal_width,
       .height = temporal_height,
       .render_mode = packet->globals.render_mode,
-      .jitter_phase_count =
-          prepared->frame.fsr31_enabled
-              ? vkr_temporal_upscale_sequence_length(temporal_width,
-                                                       rf->scene_output_width)
-              : VKR_TEMPORAL_SEQUENCE_LENGTH,
-      .explicit_reset_reasons = rf->temporal_reset_reasons,
+      .jitter_phase_count = prepared->frame.fsr31_enabled
+                                ? vkr_temporal_upscale_sequence_length(
+                                      temporal_width, rf->scene_output_width)
+                                : VKR_TEMPORAL_SEQUENCE_LENGTH,
+      .explicit_reset_reasons = rf->temporal_reset_reasons |
+          ((fog_changed || rf->submitted_ssgi_enabled != prepared->frame.ssgi_enabled)
+               ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u),
       .enabled = rf->temporal_enabled && !indirect_diffuse_only,
   };
   prepared->frame.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);
+  if (prepared->frame.froxel_fog.grid_dimensions_cell_pixels[0])
+    prepared->frame.froxel_fog.inverse_raster_view_projection = mat4_inverse(
+        mat4_mul(prepared->frame.temporal.jittered_projection,
+                 packet->globals.view));
 
   /* Exposure reuses the discontinuities temporal already derived at this same
      boundary rather than re-deriving them from the same inputs. */
@@ -858,6 +919,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.exposure =
       vkr_exposure_prepare(&rf->exposure_state, &prepared->exposure_input);
 
+  prepared->frame.color_grading = vkr_color_grading_prepare(
+      packet->globals.white_balance_temperature,
+      packet->globals.white_balance_tint, packet->globals.color_contrast,
+      packet->globals.color_saturation);
+
   /* Bloom carries no history, so it has no prepare/commit chain: the frame
      block is a pure function of the validated packet fields. */
   prepared->frame.bloom = vkr_bloom_prepare(
@@ -865,8 +931,44 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
           !indirect_diffuse_only,
       packet->globals.bloom_threshold, packet->globals.bloom_knee,
       packet->globals.bloom_intensity);
+  prepared->frame.subsurface_enabled = prepared->frame.scene_rendering &&
+      packet->lighting && packet->lighting->subsurface.profile_count > 0u &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+  if (prepared->frame.subsurface_enabled) {
+    const Mat4 projection = packet->globals.projection;
+    prepared->frame.subsurface = (VkrSubsurfaceGpuParams){
+        .projection = {projection.m23 / projection.m22,
+                       projection.m23 / (projection.m22 + 1.0f),
+                       0.5f * fabsf(projection.m00) * temporal_width,
+                       0.5f * fabsf(projection.m11) * temporal_height},
+        .dimensions = {temporal_width, temporal_height,
+                       packet->lighting->subsurface.profile_count, 0u}};
+  }
+  prepared->frame.dof_enabled = prepared->frame.scene_rendering &&
+      packet->globals.dof_enabled &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+  if (prepared->frame.dof_enabled)
+    prepared->frame.dof = vkr_dof_prepare(
+        packet->globals.dof_focus_distance, packet->globals.dof_f_stop,
+        packet->globals.projection, prepared->frame.temporal.jitter_pixels,
+        prepared->frame.scene_output_width, prepared->frame.scene_output_height,
+        temporal_width, temporal_height);
+  prepared->frame.motion_blur_delta_seconds = packet->frame.delta_time;
+  prepared->frame.motion_blur_enabled = prepared->frame.scene_rendering &&
+      packet->globals.motion_blur_enabled &&
+      packet->globals.motion_blur_shutter_angle > 0.0f &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+  if (prepared->frame.motion_blur_enabled)
+    prepared->frame.motion_blur = vkr_motion_blur_prepare(
+        packet->globals.motion_blur_shutter_angle, packet->globals.projection,
+        prepared->frame.temporal.jitter_pixels,
+        prepared->frame.scene_output_width, prepared->frame.scene_output_height,
+        temporal_width, temporal_height);
   /* GTAO is current-frame spatial state: like bloom, it has no prepare/commit
      history chain. */
+  prepared->frame.ssr_enabled =
+      packet->globals.ssr_enabled && !rf->ssr_forced_disabled &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.gtao = vkr_gtao_prepare(
       packet->globals.gtao_enabled && !rf->gtao_forced_disabled,
       packet->globals.gtao_radius, packet->globals.gtao_power);
@@ -877,6 +979,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
     Arena *temp_arena) {
 #if defined(PLATFORM_APPLE)
   (void)temp_arena;
+  const VkrDisplayOutputParams display_output =
+      vkr_metal_packet_renderer_display_output(renderer->metal_renderer);
   const VkrPresentMode actual_present_mode =
       vkr_metal_packet_renderer_present_mode(renderer->metal_renderer);
   VkrDeviceTypeFlags device_types = bitset8_create();
@@ -912,12 +1016,16 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .actual_target_height = renderer->last_window_height,
       .actual_render_width = renderer->render_width,
       .actual_render_height = renderer->render_height,
-      .actual_color_format =
-          renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
+      .actual_color_format = display_output.extended_linear
+          ? VKR_SURFACE_COLOR_FORMAT_RGBA16_SFLOAT
+          : renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? VKR_SURFACE_COLOR_FORMAT_RGBA8_SRGB
               : VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB,
       .actual_depth_format = VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT,
-      .actual_color_space = VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
+      .actual_color_space = display_output.extended_linear
+          ? VKR_SURFACE_COLOR_SPACE_EXTENDED_SRGB_LINEAR
+          : VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
+      .display_output = display_output,
       .actual_world_renderer_topology = VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
   };
 #else
@@ -1015,6 +1123,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .actual_color_format = color_format,
       .actual_depth_format = depth_format,
       .actual_color_space = color_space,
+      .display_output =
+          vkr_vulkan_renderer_display_output(renderer->vulkan_renderer),
       .actual_world_renderer_topology = VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
   };
 #endif
@@ -1621,6 +1731,16 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   if (renderer->frame_active) {
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
   }
+  bool8_t output_format_changed = false_v;
+  if (!vkr_metal_packet_renderer_refresh_display_output(
+          renderer->metal_renderer, &output_format_changed))
+    return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
+  renderer->impl.caps.present_color_format =
+      vkr_metal_packet_renderer_present_color_format(renderer->metal_renderer);
+  if (output_format_changed) {
+    ++renderer->target_generation;
+    renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+  }
   if (renderer->present_target.kind == VKR_PRESENT_TARGET_WINDOWED) {
     VkrSurfaceSize pixels =
         renderer->surface.pixel_size(renderer->surface.context);
@@ -1705,6 +1825,8 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
                                     VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL},
       .shadow_depth_format = renderer->impl.caps.shadow_depth_format,
       .shadow_map_size = config->shadow_map_size,
+      .local_shadow_map_size = config->local_shadow_map_size,
+      .local_shadow_map_layer_count = config->local_shadow_face_budget,
       .shadow_map_layer_count = config->shadow_cascade_count,
       .shadow_cascade_count = config->shadow_cascade_count,
   };
@@ -1726,6 +1848,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   };
   vkr_metal_packet_renderer_retained_shadow_token(
       renderer->metal_renderer, frame.image_index, &out_setup->retained_shadow);
+  vkr_metal_packet_renderer_retained_local_shadow_token(
+      renderer->metal_renderer, frame.image_index,
+      &out_setup->retained_local_shadow);
   return VKR_RENDERER_ERROR_NONE;
 #else
   if (renderer->frame_active) {
@@ -1733,7 +1858,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   }
   if (!vkr_vulkan_renderer_prepare_frame(
           renderer->vulkan_renderer, renderer->frame_number + 1u,
-          config->shadow_map_size, config->shadow_cascade_count, out_setup)) {
+          config->shadow_map_size, config->shadow_cascade_count,
+          config->local_shadow_map_size, config->local_shadow_face_budget,
+          out_setup)) {
     const VkrRendererError error =
         vkr_vulkan_renderer_get_error(renderer->vulkan_renderer);
     return error != VKR_RENDERER_ERROR_NONE
@@ -1742,9 +1869,15 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   }
   renderer->frame_active = true_v;
   renderer->frame_number++;
+  const bool8_t output_format_changed =
+      renderer->impl.caps.present_color_format != out_setup->swapchain_format;
   if (renderer->last_window_width != out_setup->window_width ||
-      renderer->last_window_height != out_setup->window_height)
+      renderer->last_window_height != out_setup->window_height ||
+      output_format_changed)
     renderer->target_generation++;
+  renderer->impl.caps.present_color_format = out_setup->swapchain_format;
+  if (output_format_changed)
+    renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
   renderer->last_window_width = out_setup->window_width;
   renderer->last_window_height = out_setup->window_height;
   if (!renderer->scene_output_extent_overridden) {
@@ -1774,7 +1907,10 @@ VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
                                           VkrFrame *out_frame) {
   if (!renderer || !out_frame || !config || config->shadow_map_size == 0u ||
       config->shadow_cascade_count == 0u ||
-      config->shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX)
+      config->shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX ||
+      config->local_shadow_face_budget > VKR_LOCAL_SHADOW_FACE_COUNT_MAX ||
+      (config->local_shadow_face_budget != 0u &&
+       config->local_shadow_map_size == 0u))
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   if (renderer->frame_active)
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
@@ -1806,11 +1942,10 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
     /* A post-submit failure cannot roll back native histories or GPU uses.
      * Stop the device path instead of retrying with uncommitted CPU history. */
     const bool8_t committed = result.submit_value != 0u;
-    const VkrRendererError error =
-        committed ? VKR_RENDERER_ERROR_DEVICE_ERROR
-        : result.error != VKR_RENDERER_ERROR_NONE
-            ? result.error
-            : VKR_RENDERER_ERROR_SUBMISSION_FAILED;
+    const VkrRendererError error = committed ? VKR_RENDERER_ERROR_DEVICE_ERROR
+                                   : result.error != VKR_RENDERER_ERROR_NONE
+                                       ? result.error
+                                       : VKR_RENDERER_ERROR_SUBMISSION_FAILED;
     return vkr_renderer_validation_fail(
         out_validation_error, error, "metal",
         committed ? "Metal frame failed after queue submission"
@@ -1820,6 +1955,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
   }
   if (prepared.frame.scene_rendering) {
     vkr_temporal_commit(&renderer->temporal_state, &prepared.temporal_input);
+    renderer->submitted_ssgi_enabled = prepared.frame.ssgi_enabled;
+    renderer->submitted_fog = prepared.frame.fog;
+    renderer->submitted_froxel_fog = prepared.frame.froxel_fog;
     renderer->temporal_reset_reasons = 0u;
     vkr_exposure_commit(&renderer->exposure_state, &prepared.exposure_input);
     renderer->exposure_reset_reasons = 0u;
@@ -1963,6 +2101,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
   }
   if (prepared.frame.scene_rendering) {
     vkr_temporal_commit(&renderer->temporal_state, &prepared.temporal_input);
+    renderer->submitted_ssgi_enabled = prepared.frame.ssgi_enabled;
+    renderer->submitted_fog = prepared.frame.fog;
+    renderer->submitted_froxel_fog = prepared.frame.froxel_fog;
     renderer->temporal_reset_reasons = 0u;
     vkr_exposure_commit(&renderer->exposure_state, &prepared.exposure_input);
     renderer->exposure_reset_reasons = 0u;
@@ -2240,11 +2381,12 @@ vkr_renderer_backend_cancel_frame(VkrRenderer *renderer) {
   vkr_vulkan_renderer_cancel_frame(renderer->vulkan_renderer);
   renderer->frame_active = false_v;
   /* Cancellation may follow a rejected submission. Its allocation error is
-     still available to that submit caller, but is not a cancellation failure. */
+     still available to that submit caller, but is not a cancellation failure.
+   */
   const VkrRendererError error =
       vkr_vulkan_renderer_get_error(renderer->vulkan_renderer);
   return error == VKR_RENDERER_ERROR_DEVICE_ERROR ? error
-                                                : VKR_RENDERER_ERROR_NONE;
+                                                  : VKR_RENDERER_ERROR_NONE;
 #endif
 }
 
@@ -2272,8 +2414,8 @@ vkr_renderer_get_pixel_readback_result(VkrRenderer *renderer,
   return vkr_metal_packet_renderer_get_pixel_readback_result(
       renderer->metal_renderer, out_result);
 #else
-  return vkr_vulkan_renderer_get_pixel_readback_result(renderer->vulkan_renderer,
-                                                       out_result);
+  return vkr_vulkan_renderer_get_pixel_readback_result(
+      renderer->vulkan_renderer, out_result);
 #endif
 }
 

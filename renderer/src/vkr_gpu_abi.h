@@ -223,6 +223,17 @@ typedef struct VkrGpuPointLightRow {
   Vec4 p3;
 } VkrGpuPointLightRow;
 
+typedef struct VkrGpuRectangleLightRow {
+  Vec4 center_half_width;
+  Vec4 right_half_height;
+  Vec4 up_radiance;
+  Vec4 color;
+} VkrGpuRectangleLightRow;
+_Static_assert(sizeof(VkrGpuRectangleLightRow) == 64u,
+               "Rectangle light row ABI drift");
+_Static_assert(_Alignof(VkrGpuRectangleLightRow) == 16u,
+               "Rectangle light row alignment drift");
+
 /** GPU-written compacted work volume and parity-aware bucket prefix state. */
 typedef struct VkrGpuDrawCompactionState {
   uint32_t execution_ranges[VKR_WORLD_DRAW_STATE_BUCKET_COUNT][2];
@@ -271,6 +282,8 @@ typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_VISIBLE_DRAW_ROW,
   VKR_GPU_ABI_POINT_LIGHT_ROW,
   VKR_GPU_ABI_LOCAL_SHADOW_VIEW,
+  VKR_GPU_ABI_COLOR_GRADING,
+  VKR_GPU_ABI_RECTANGLE_LIGHT_ROW,
   VKR_GPU_ABI_RECORD_COUNT,
 } VkrGpuAbiRecordId;
 

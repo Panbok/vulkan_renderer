@@ -27,6 +27,8 @@
 #define VKR_TEXTURE_CACHE_EXT ".vkt"
 #define VKR_TEXTURE_SYSTEM_ASYNC_DMEMORY_INITIAL MB(1)
 #define VKR_TEXTURE_SYSTEM_ASYNC_DMEMORY_RESERVE MB(16)
+/* Vulkan VkFormat 97, recorded directly in KTX2 without a Vulkan dependency. */
+#define VKR_KTX2_VK_FORMAT_R16G16B16A16_SFLOAT 97u
 
 vkr_internal String8 vkr_texture_strip_resource_key_prefix(String8 name);
 vkr_internal String8 vkr_texture_strip_query(String8 name, String8 *out_query);
@@ -2347,10 +2349,98 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
   }
 
   if (!ktxTexture2_NeedsTranscoding(ktx_texture)) {
-    log_error("KTX2 texture '%s' does not require Basis transcoding; this "
-              "runtime path currently expects UASTC/Basis payloads.",
-              path_cstr);
-    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    const uint64_t direct_region_count_u64 =
+        (uint64_t)base_texture->numLevels * physical_layers;
+    if (ktx_texture->vkFormat != VKR_KTX2_VK_FORMAT_R16G16B16A16_SFLOAT ||
+        !cubemap || base_texture->numLayers != 1u ||
+        base_texture->baseDepth != 1u || direct_region_count_u64 == 0u ||
+        direct_region_count_u64 > VKR_TEXTURE_MAX_UPLOAD_REGIONS) {
+      log_error("Unsupported direct KTX2 texture '%s': expected uncompressed "
+                "R16G16B16A16_SFLOAT with one six-face cubemap layer",
+                path_cstr);
+      out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      goto cleanup;
+    }
+
+    uint8_t *direct_data = ktxTexture_GetData(base_texture);
+    const ktx_size_t direct_data_size = ktxTexture_GetDataSize(base_texture);
+    if (!direct_data || direct_data_size == 0u) {
+      out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      goto cleanup;
+    }
+
+    const uint32_t direct_region_count = (uint32_t)direct_region_count_u64;
+    upload_data = (uint8_t *)malloc((size_t)direct_data_size);
+    upload_regions = (VkrTextureUploadRegion *)malloc(
+        sizeof(VkrTextureUploadRegion) * direct_region_count);
+    if (!upload_data || !upload_regions) {
+      out_result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      goto cleanup;
+    }
+    MemCopy(upload_data, direct_data, (size_t)direct_data_size);
+
+    uint64_t expected_data_size = 0u;
+    uint32_t region_index = 0u;
+    for (uint32_t face = 0u; face < face_count; ++face) {
+      for (uint32_t mip = 0u; mip < base_texture->numLevels; ++mip) {
+        const uint32_t mip_width = Max(1u, base_texture->baseWidth >> mip);
+        const uint32_t mip_height = Max(1u, base_texture->baseHeight >> mip);
+        const uint64_t expected_image_size =
+            (uint64_t)mip_width * mip_height * 8u;
+        ktx_size_t image_offset = 0u;
+        ktx_result = ktxTexture_GetImageOffset(base_texture, mip, 0u, face,
+                                               &image_offset);
+        const ktx_size_t image_size =
+            ktxTexture_GetImageSize(base_texture, mip);
+        if (ktx_result != KTX_SUCCESS || image_size != expected_image_size ||
+            image_offset > direct_data_size ||
+            image_size > direct_data_size - image_offset ||
+            expected_data_size > UINT64_MAX - image_size) {
+          log_error("Invalid direct RGBA16F KTX2 image layout for '%s' "
+                    "(face=%u mip=%u)",
+                    path_cstr, face, mip);
+          out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          goto cleanup;
+        }
+        expected_data_size += image_size;
+        upload_regions[region_index++] = (VkrTextureUploadRegion){
+            .mip_level = mip,
+            .array_layer = face,
+            .width = mip_width,
+            .height = mip_height,
+            .depth = 1u,
+            .byte_offset = image_offset,
+            .byte_size = image_size,
+        };
+      }
+    }
+    if (expected_data_size != direct_data_size) {
+      log_error("Invalid direct RGBA16F KTX2 data size for '%s' "
+                "(expected=%llu actual=%llu)",
+                path_cstr, (unsigned long long)expected_data_size,
+                (unsigned long long)direct_data_size);
+      out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      goto cleanup;
+    }
+
+    out_result->upload_data = upload_data;
+    out_result->upload_data_size = direct_data_size;
+    out_result->upload_regions = upload_regions;
+    out_result->upload_region_count = direct_region_count;
+    out_result->upload_mip_levels = base_texture->numLevels;
+    out_result->upload_array_layers = face_count;
+    out_result->upload_format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+    out_result->upload_type = VKR_TEXTURE_TYPE_CUBE_MAP;
+    out_result->upload_is_compressed = false_v;
+    out_result->width = (int32_t)base_texture->baseWidth;
+    out_result->height = (int32_t)base_texture->baseHeight;
+    out_result->original_channels = VKR_TEXTURE_RGBA_CHANNELS;
+    out_result->has_transparency = false_v;
+    out_result->alpha_mask = false_v;
+    out_result->success = true_v;
+    upload_data = NULL;
+    upload_regions = NULL;
+    success = true_v;
     goto cleanup;
   }
 

@@ -224,6 +224,185 @@ float vkr_gtao_finalize_visibility(VkrGtaoParams params, float visibility)
     return max(0.03f, pow(visibility, params.final_value_power));
 }
 
+// Algorithm 2 from Jimenez et al. (2016), as implemented in XeGTAO 1.30.
+// The current renderer's slice direction already contains the signed
+// projection scale.  Projecting it into the view-direction plane keeps the
+// directional moment aligned with the scalar horizon integration.
+float3 vkr_gtao_integrate_bent_slice(
+    float projected_normal_length, float normal_angle, float horizon_cos0,
+    float horizon_cos1, float3 view_direction, float3 view_slice_direction)
+{
+    float h0 = -acos(clamp(horizon_cos1, -1.0f, 1.0f));
+    float h1 = acos(clamp(horizon_cos0, -1.0f, 1.0f));
+    float t0 =
+        (6.0f * sin(h0 - normal_angle) - sin(3.0f * h0 - normal_angle) +
+         6.0f * sin(h1 - normal_angle) - sin(3.0f * h1 - normal_angle) +
+         16.0f * sin(normal_angle) -
+         3.0f * (sin(h0 + normal_angle) + sin(h1 + normal_angle))) /
+        12.0f;
+    float t1 =
+        (-cos(3.0f * h0 - normal_angle) -
+         cos(3.0f * h1 - normal_angle) + 8.0f * cos(normal_angle) -
+         3.0f * (cos(h0 + normal_angle) + cos(h1 + normal_angle))) /
+        12.0f;
+    float3 plane_direction =
+        view_slice_direction - view_direction *
+                                   dot(view_slice_direction, view_direction);
+    float plane_length_squared = dot(plane_direction, plane_direction);
+    if (plane_length_squared <= 1e-12f)
+        return float3(0.0f);
+
+    plane_direction *= rsqrt(plane_length_squared);
+    return projected_normal_length *
+           (plane_direction * t0 + view_direction * t1);
+}
+
+float4 vkr_gtao_matrix_vector(float4x4 matrix, float4 vector)
+{
+#if defined(__METAL_VERSION__)
+    return matrix * vector;
+#else
+    return mul(matrix, vector);
+#endif
+}
+
+// `view` is world-to-view.  It contains a rigid camera rotation, so its
+// transpose is the inverse direction transform and requires no per-pixel
+// inverse.
+float3 vkr_gtao_view_to_world_direction(VkrGtaoParams params,
+                                        float3 view_direction)
+{
+    return vkr_gtao_matrix_vector(transpose(params.view),
+                                  float4(view_direction, 0.0f))
+        .xyz;
+}
+
+float3 vkr_gtao_normalize_or(float3 value, float3 fallback)
+{
+    float value_length_squared = dot(value, value);
+    if (value_length_squared > 1e-12f)
+        return value * rsqrt(value_length_squared);
+
+    float fallback_length_squared = dot(fallback, fallback);
+    if (fallback_length_squared > 1e-12f)
+        return fallback * rsqrt(fallback_length_squared);
+    return float3(0.0f, 0.0f, 1.0f);
+}
+
+float4 vkr_gtao_encode_directional(float3 world_bent_normal,
+                                   float visibility)
+{
+    return float4(clamp(world_bent_normal * 0.5f + 0.5f, 0.0f, 1.0f),
+                  clamp(visibility, 0.0f, 1.0f));
+}
+
+// This raw decode is for the 3x3 denoiser.  It intentionally does not blend
+// visibility: filtering applies that blend once, after it has normalized the
+// weighted directional sum.
+float3 vkr_gtao_decode_bent_direction(float4 packed,
+                                      float3 fallback_world_normal)
+{
+    return vkr_gtao_normalize_or(packed.xyz * 2.0f - 1.0f,
+                                 fallback_world_normal);
+}
+
+float vkr_gtao_decode_visibility(float4 packed)
+{
+    return clamp(packed.w, 0.0f, 1.0f);
+}
+
+// At full visibility no screen-space occluder changes diffuse direction.  The
+// visibility blend also makes an RGBA(1) disabled target exactly neutral.
+float3 vkr_gtao_decode_bent_normal(float4 packed,
+                                   float3 fallback_world_normal)
+{
+    float visibility = vkr_gtao_decode_visibility(packed);
+    float3 bent = vkr_gtao_decode_bent_direction(packed,
+                                                  fallback_world_normal);
+    return vkr_gtao_normalize_or(
+        bent * (1.0f - visibility) + fallback_world_normal * visibility,
+        fallback_world_normal);
+}
+
+float4 vkr_gtao_finalize_directional(VkrGtaoParams params,
+                                     float visibility_sum,
+                                     float3 bent_moment_view,
+                                     float3 fallback_world_normal)
+{
+    float3 bent_world =
+        vkr_gtao_view_to_world_direction(params, bent_moment_view);
+    bent_world = vkr_gtao_normalize_or(bent_world, fallback_world_normal);
+    return vkr_gtao_encode_directional(
+        bent_world, vkr_gtao_finalize_visibility(params, visibility_sum));
+}
+
+// Jimenez et al. (2016) multi-bounce fit.  This belongs to global/probe
+// diffuse irradiance only; baked-volume irradiance retains scalar visibility.
+float3 vkr_gtao_multibounce(float visibility, float3 albedo)
+{
+    float x = clamp(visibility, 0.0f, 1.0f);
+    if (x <= 0.0f)
+        return float3(0.0f);
+    if (x >= 1.0f)
+        return float3(1.0f);
+    float3 clamped_albedo = clamp(albedo, 0.0f, 1.0f);
+    float3 a = 2.0404f * clamped_albedo - 0.3324f;
+    float3 b = -4.7951f * clamped_albedo + 0.6417f;
+    float3 c = 2.7552f * clamped_albedo + 0.6903f;
+    return clamp(max(float3(x), ((x * a + b) * x + c) * x), 0.0f, 1.0f);
+}
+
+// Oat and Sander's spherical-cap overlap approximation used by Jimenez et
+// al. for GTSO.  The result is a solid angle divided by 2*pi.
+float vkr_gtao_spherical_caps_intersection(float cos_cap0, float cos_cap1,
+                                           float cos_distance)
+{
+    cos_cap0 = clamp(cos_cap0, -1.0f, 1.0f);
+    cos_cap1 = clamp(cos_cap1, -1.0f, 1.0f);
+    float radius0 = acos(cos_cap0);
+    float radius1 = acos(cos_cap1);
+    float distance = acos(clamp(cos_distance, -1.0f, 1.0f));
+    if (min(radius0, radius1) <= max(radius0, radius1) - distance)
+        return max(0.0f, 1.0f - max(cos_cap0, cos_cap1));
+    if (radius0 + radius1 <= distance)
+        return 0.0f;
+
+    float delta = abs(radius0 - radius1);
+    float x = 1.0f - clamp(
+                         (distance - delta) /
+                             max(radius0 + radius1 - delta, 1e-4f),
+                         0.0f, 1.0f);
+    return x * x * (3.0f - 2.0f * x) *
+           max(0.0f, 1.0f - max(cos_cap0, cos_cap1));
+}
+
+// GTSO: normalize the overlap of the visibility and GGX specular cones by
+// the specular cone's area.  The [0.01, 0.09] roughness fade is the bounded
+// practical approximation adopted by Filament for near-mirror lobes.
+float vkr_gtao_cone_specular(float visibility, float3 world_bent_normal,
+                             float3 world_reflection_direction,
+                             float roughness)
+{
+    float visibility_clamped = clamp(visibility, 0.0f, 1.0f);
+    if (visibility_clamped >= 1.0f)
+        return 1.0f;
+
+    float roughness_clamped = clamp(roughness, 0.0f, 1.0f);
+    float cos_visibility_cap = sqrt(max(0.0f, 1.0f -
+                                                   visibility_clamped));
+    float cos_specular_cap = exp2(-3.32192809488736234787f *
+                                  roughness_clamped * roughness_clamped);
+    float overlap = vkr_gtao_spherical_caps_intersection(
+        cos_visibility_cap, cos_specular_cap,
+        dot(vkr_gtao_normalize_or(world_bent_normal, float3(0.0f, 0.0f, 1.0f)),
+            vkr_gtao_normalize_or(world_reflection_direction,
+                                  float3(0.0f, 0.0f, 1.0f))));
+    float cone_visibility = clamp(
+        overlap / max(1.0f - cos_specular_cap, 1e-6f), 0.0f, 1.0f);
+    float fade = smoothstep(0.01f, 0.09f, roughness_clamped);
+    return 1.0f + (cone_visibility - 1.0f) * fade;
+}
+
 float vkr_gtao_diagonal_edge_weight(float center_edge0,
                                     float neighbor_edge0,
                                     float center_edge1,

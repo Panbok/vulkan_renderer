@@ -1,0 +1,6 @@
+#ifndef VKR_SSGI_CONTRACT
+#define VKR_SSGI_CONTRACT
+
+#define VKR_SSGI_SEQUENCE_LENGTH 256u
+
+#endif

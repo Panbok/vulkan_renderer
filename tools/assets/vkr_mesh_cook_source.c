@@ -50,6 +50,7 @@ typedef struct VkrMeshLoaderSubsetBuilder {
   String8 name;
   String8 material_name;
   bool8_t material_is_path;
+  bool8_t preserve_tangents;
   VkrPipelineDomain pipeline_domain;
   String8 shader_override;
 } VkrMeshLoaderSubsetBuilder;
@@ -351,6 +352,7 @@ vkr_internal bool8_t vkr_mesh_loader_builder_init(
   builder->name = vkr_string8_duplicate_cstr(allocator, "default");
   builder->material_name = (String8){0};
   builder->material_is_path = false_v;
+  builder->preserve_tangents = false_v;
   builder->pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD;
   builder->shader_override = (String8){0};
   return builder->name.str != NULL;
@@ -731,7 +733,8 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
     return false_v;
   }
 
-  vkr_geometry_generate_tangents(state->scratch_allocator, dedup_vertices,
+  if (!builder->preserve_tangents)
+    vkr_geometry_generate_tangents(state->scratch_allocator, dedup_vertices,
                                  dedup_vertex_count, indices_copy, index_count);
 
   Vec3 min, max, center;
@@ -1161,6 +1164,7 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
   VkrMeshLoaderSubsetBuilder *builder = &bucket->builder;
   builder->material_name = bucket->material_name;
   builder->material_is_path = true_v;
+  builder->preserve_tangents = primitive->preserve_tangents;
   builder->pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD;
   builder->shader_override = (String8){0};
 
@@ -1219,6 +1223,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
   if (string8_equalsi(&state->source_extension, &gltf_ext) ||
       string8_equalsi(&state->source_extension, &glb_ext)) {
     Vector_String8 dependency_paths = {.allocator = state->load_allocator};
+    Vector_String8 generated_asset_paths = {.allocator = state->load_allocator};
     VkrMeshLoaderGltfParseInfo parse_info = {
         .source_path = state->source_path,
         .source_dir = state->source_dir,
@@ -1231,12 +1236,21 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
         .out_source = &state->source,
         .out_dependency_paths = &dependency_paths,
         .out_generated_material_paths = &dependency_paths,
+        .out_generated_asset_paths = &generated_asset_paths,
     };
     if (!vkr_mesh_loader_gltf_parse(&parse_info)) {
       return false_v;
     }
     if (!vkr_mesh_loader_finalize_all_buckets(state)) {
       return false_v;
+    }
+
+    for (uint64_t i = 0; i < generated_asset_paths.length; ++i) {
+      String8 *path = vector_get_String8(&generated_asset_paths, i);
+      if (!vector_push_String8(&dependency_paths, *path)) {
+        *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        return false_v;
+      }
     }
 
     return vkr_mesh_loader_collect_source_dependencies(state,

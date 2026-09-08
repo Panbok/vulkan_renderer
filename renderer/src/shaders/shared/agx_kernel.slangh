@@ -1,0 +1,108 @@
+// Compact AgX Base display transform for scene-linear sRGB / D65.
+//
+// Contract: `vkr_agx_tonemap` accepts exposed scene-linear sRGB / D65 and
+// returns finite display-linear sRGB in [0, 1]. The presentation attachment
+// performs the one sRGB encoding after this helper. The initial sanitizer
+// replaces negative, NaN, and infinite input components with [0, 65504]; the
+// final clamp contains the Rec.2020-to-sRGB display-gamut conversion.
+//
+// AgX's published formation matrices operate in linear Rec.2020 / D65, so
+// this header explicitly converts the renderer's sRGB input into that gamut
+// and its display-linear result back out. The formation interval is
+// log2(0.18 * 2^-10) = -12.473931188 to
+// log2(0.18 * 2^6.5) = 4.026068812: 16.5 stops.
+//
+// The inset/outset values and seventh-order sigmoid approximation are the
+// compact AgX path used by Filament's AgxToneMapper. Its fitted polynomial has
+// a small reverse toe near zero, so this helper applies a constant lower
+// envelope at the polynomial's x=0 value to preserve a monotonic response:
+// https://github.com/google/filament/blob/main/filament/src/ToneMapper.cpp
+// The matrices originate with the Blender AgX Rec.2020 generator:
+// https://github.com/EaryChow/AgX_LUT_Gen/blob/master/AgXBaseRec2020.py
+// This is deliberately not Blender's full OCIO transform: it omits its lower
+// guard rail, HSV hue-angle correction, and LUT interpolation, and follows
+// Filament's 2.2 display linearization rather than Blender's 2.4 exponent.
+
+#ifndef VKR_SHADER_AGX_KERNEL_SLANGH
+#define VKR_SHADER_AGX_KERNEL_SLANGH
+
+#define VKR_AGX_LOG2_MIN -12.473931188f
+#define VKR_AGX_LOG2_MAX 4.026068812f
+#define VKR_AGX_LOG2_RANGE_INVERSE 0.060606060606060606f
+#define VKR_AGX_INPUT_MAX 65504.0f
+
+float vkr_agx_sanitize_component(float value) {
+  // The comparison rejects NaN and negative infinity. `min` turns positive
+  // infinity into the finite cap before the gamut matrix can form inf - inf.
+  return value > 0.0f ? min(value, VKR_AGX_INPUT_MAX) : 0.0f;
+}
+
+float3 vkr_agx_sanitize(float3 color) {
+  return float3(vkr_agx_sanitize_component(color.r),
+                vkr_agx_sanitize_component(color.g),
+                vkr_agx_sanitize_component(color.b));
+}
+
+// Linear sRGB / D65 to linear Rec.2020 / D65. Coefficients are rows so the
+// component equations remain independent of Slang/MSL matrix layout rules.
+float3 vkr_agx_srgb_to_rec2020(float3 color) {
+  return float3(0.627403895934699f * color.r + 0.329283038377884f * color.g +
+                    0.043313065687417f * color.b,
+                0.069097289358232f * color.r + 0.919540395075459f * color.g +
+                    0.011362315566309f * color.b,
+                0.016391438875151f * color.r + 0.088013307877226f * color.g +
+                    0.895595253247624f * color.b);
+}
+
+float3 vkr_agx_rec2020_to_srgb(float3 color) {
+  return float3(1.660491002108434f * color.r - 0.587641138788550f * color.g -
+                    0.072849863319884f * color.b,
+                -0.124550474521590f * color.r + 1.132899897125961f * color.g -
+                    0.008349422604371f * color.b,
+                -0.018150763354905f * color.r - 0.100578898008007f * color.g +
+                    1.118729661362913f * color.b);
+}
+
+// Blender's source stores these as row-vector matrices. Expanding them keeps
+// neutral values neutral and avoids backend-specific float3x3 construction.
+float3 vkr_agx_inset(float3 color) {
+  return float3(0.856627153315983f * color.r + 0.095121240538159f * color.g +
+                    0.048251606145858f * color.b,
+                0.137318972929847f * color.r + 0.761241990602591f * color.g +
+                    0.101439036467562f * color.b,
+                0.111898212999950f * color.r + 0.076799418603190f * color.g +
+                    0.811302368396859f * color.b);
+}
+
+float3 vkr_agx_outset(float3 color) {
+  return float3(1.127100581814437f * color.r - 0.110606643096603f * color.g -
+                    0.016493938717835f * color.b,
+                -0.141329763498438f * color.r + 1.157823702216272f * color.g -
+                    0.016493938717834f * color.b,
+                -0.141329763498438f * color.r - 0.110606643096603f * color.g +
+                    1.251936406595040f * color.b);
+}
+
+float3 vkr_agx_default_contrast_approx(float3 value) {
+  float3 value2 = value * value;
+  float3 value4 = value2 * value2;
+  float3 value6 = value4 * value2;
+  float3 contrast = -17.86f * value6 * value + 78.01f * value6 -
+                    126.7f * value4 * value + 92.06f * value4 -
+                    28.72f * value2 * value + 4.361f * value2 -
+                    0.1718f * value + 0.002857f;
+  return max(contrast, 0.002857f);
+}
+
+float3 vkr_agx_tonemap(float3 linear_srgb) {
+  float3 color = vkr_agx_srgb_to_rec2020(vkr_agx_sanitize(linear_srgb));
+  color = max(vkr_agx_inset(color), 1e-10f);
+  color = clamp((log2(color) - VKR_AGX_LOG2_MIN) * VKR_AGX_LOG2_RANGE_INVERSE,
+                0.0f, 1.0f);
+  color = vkr_agx_default_contrast_approx(color);
+  color = vkr_agx_outset(color);
+  color = pow(max(color, 0.0f), 2.2f);
+  return clamp(vkr_agx_rec2020_to_srgb(color), 0.0f, 1.0f);
+}
+
+#endif

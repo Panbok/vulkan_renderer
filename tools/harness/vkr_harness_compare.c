@@ -1,4 +1,5 @@
 #include "vkr_harness_runtime.h"
+#include "vkr_harness_json.h"
 
 #include <stb_image.h>
 
@@ -134,12 +135,13 @@ VkrHarnessComparisonResult vkr_harness_compare_f32_le(
   return vkr_harness_comparison_finish(result, config, false_v);
 }
 
-VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
+static VkrHarnessComparisonResult vkr_harness_compare_float16_le(
     const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
-    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba) {
+    uint32_t component_count, const VkrHarnessCompareConfig *config,
+    uint8_t *diff_rgba) {
   VkrHarnessComparisonResult result = {
       .outcome = VKR_HARNESS_COMPARISON_INCOMPATIBLE,
-      .value_count = pixel_count * 4u,
+      .value_count = pixel_count * component_count,
       .pixel_count = pixel_count,
   };
   if (!actual || !baseline || !config) {
@@ -148,8 +150,9 @@ VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
   for (uint64_t pixel = 0; pixel < pixel_count; ++pixel) {
     bool8_t failed = false_v;
     float64_t pixel_error = 0.0;
-    for (uint32_t component = 0; component < 4u; ++component) {
-      const uint64_t index = pixel * 8u + component * 2u;
+    for (uint32_t component = 0; component < component_count; ++component) {
+      const uint64_t index =
+          (pixel * component_count + component) * 2u;
       const float32_t actual_value =
           vkr_harness_half_to_float(vkr_harness_read_u16_le(actual + index));
       const float32_t baseline_value =
@@ -172,6 +175,20 @@ VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
     vkr_harness_diff_pixel(diff_rgba, pixel, pixel_error, failed);
   }
   return vkr_harness_comparison_finish(result, config, false_v);
+}
+
+VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
+    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
+    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba) {
+  return vkr_harness_compare_float16_le(actual, baseline, pixel_count, 4u,
+                                         config, diff_rgba);
+}
+
+VkrHarnessComparisonResult vkr_harness_compare_rg16f_le(
+    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
+    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba) {
+  return vkr_harness_compare_float16_le(actual, baseline, pixel_count, 2u,
+                                         config, diff_rgba);
 }
 
 VkrHarnessComparisonResult vkr_harness_compare_u32_le(const uint8_t *actual,
@@ -470,6 +487,71 @@ vkr_harness_capture_file_verified(const char *root, const char *relative,
   return string_equals(digest, expected);
 }
 
+/** Extended-linear raw values are in the producer's display units. The
+ * metadata sidecar is part of the digest-protected capture contract, so it is
+ * the durable source for the headroom and native-unit scale omitted from the
+ * fixed-layout capture summary. */
+static bool8_t vkr_harness_capture_extended_display_metadata(
+    const char *root, const VkrHarnessCaptureResult *capture, Arena *arena,
+    float64_t *out_headroom, float64_t *out_scale) {
+  if (!root || !capture || !arena || !out_headroom || !out_scale ||
+      !string_equals(capture->color_space, "extended_srgb_linear"))
+    return false_v;
+  char path[VKR_HARNESS_PATH_MAX];
+  uint8_t *bytes = NULL;
+  uint64_t length = 0u;
+  float64_t headroom = 0.0;
+  float64_t scale = 0.0;
+  char color_space[32] = {0};
+  VkrHarnessError ignored = {0};
+  Scratch scratch = scratch_create(arena);
+  VkrHarnessJsonDocument *document =
+      arena_alloc(arena, sizeof(*document), ARENA_MEMORY_TAG_STRUCT);
+  bool8_t duplicate = false_v;
+  const bool8_t loaded =
+      vkr_harness_capture_file_verified(root, capture->metadata_path,
+                                        capture->metadata_sha256, path) &&
+      document && vkr_harness_read_file(path, arena, &bytes, &length) &&
+      vkr_harness_json_parse(document, (const char *)bytes, length, &ignored);
+  const int32_t color_space_token =
+      loaded ? vkr_harness_json_object_get(document, 0, "color_space",
+                                            &duplicate)
+             : -1;
+  const bool8_t color_space_valid =
+      loaded && !duplicate && color_space_token >= 0 &&
+      vkr_harness_json_string(document, color_space_token, color_space,
+                              sizeof(color_space), "color_space", &ignored) &&
+      string_equals(color_space, "extended_srgb_linear");
+  duplicate = false_v;
+  const int32_t headroom_token =
+      color_space_valid
+          ? vkr_harness_json_object_get(document, 0, "display_headroom",
+                                        &duplicate)
+          : -1;
+  const bool8_t headroom_valid =
+      color_space_valid && !duplicate && headroom_token >= 0 &&
+      vkr_harness_json_f64(document, headroom_token, &headroom,
+                           "display_headroom", &ignored);
+  duplicate = false_v;
+  const int32_t scale_token =
+      headroom_valid
+          ? vkr_harness_json_object_get(document, 0, "display_output_scale",
+                                        &duplicate)
+          : -1;
+  const bool8_t scale_valid =
+      headroom_valid && !duplicate && scale_token >= 0 &&
+      vkr_harness_json_f64(document, scale_token, &scale,
+                           "display_output_scale", &ignored) &&
+      vkr_is_finite_f64(headroom) && vkr_is_finite_f64(scale) &&
+      headroom >= 1.0 && scale > 0.0 && headroom * scale <= 65504.0;
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRUCT);
+  if (!scale_valid)
+    return false_v;
+  *out_headroom = headroom;
+  *out_scale = scale;
+  return true_v;
+}
+
 VkrHarnessExitCode vkr_harness_compare_capture_sets(
     const char *actual_root, const char *baseline_root,
     VkrHarnessCaptureResult *actual, uint32_t actual_count,
@@ -489,6 +571,25 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
                     "incompatible");
       verdict = VKR_HARNESS_EXIT_MISSING_BASELINE;
       continue;
+    }
+    if (string_equals(row->color_space, "extended_srgb_linear")) {
+      float64_t actual_headroom = 0.0;
+      float64_t actual_scale = 0.0;
+      float64_t baseline_headroom = 0.0;
+      float64_t baseline_scale = 0.0;
+      if (!vkr_harness_capture_extended_display_metadata(
+              actual_root, row, arenas->transient, &actual_headroom,
+              &actual_scale) ||
+          !vkr_harness_capture_extended_display_metadata(
+              baseline_root, reference, arenas->transient, &baseline_headroom,
+              &baseline_scale) ||
+          actual_headroom != baseline_headroom || actual_scale != baseline_scale) {
+        row->comparison.outcome = VKR_HARNESS_COMPARISON_INCOMPATIBLE;
+        string_format(row->comparison_status, sizeof(row->comparison_status),
+                      "incompatible");
+        verdict = VKR_HARNESS_EXIT_MISSING_BASELINE;
+        continue;
+      }
     }
     char actual_path[VKR_HARNESS_PATH_MAX];
     char baseline_path[VKR_HARNESS_PATH_MAX];
@@ -522,6 +623,8 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
         string_equals(row->canonical_encoding, "RGBA8_UNORM_PNG");
     const bool8_t rgba16f =
         string_equals(row->canonical_encoding, "RGBA16_FLOAT_LE");
+    const bool8_t rg16f =
+        string_equals(row->canonical_encoding, "RG16_FLOAT_LE");
     if (rgba8_png) {
       int actual_width = 0, actual_height = 0, actual_channels = 0;
       int baseline_width = 0, baseline_height = 0, baseline_channels = 0;
@@ -581,6 +684,9 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
           rgba16f
               ? vkr_harness_compare_rgba16f_le(actual_bytes, baseline_bytes,
                                                pixels, &row->thresholds, diff)
+          : rg16f
+              ? vkr_harness_compare_rg16f_le(actual_bytes, baseline_bytes,
+                                             pixels, &row->thresholds, diff)
           : string_equals(row->value_kind, "depth")
               ? vkr_harness_compare_f32_le(actual_bytes, baseline_bytes, pixels,
                                            &row->thresholds, diff)

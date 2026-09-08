@@ -3,7 +3,9 @@
 #include "metal/vkr_metal_material_table.h"
 #include "metal/vkr_metal_memory_device.h"
 #include "vkr_asset_publisher.h"
+#include "vkr_atmosphere.h"
 #include "vkr_bloom.h"
+#include "vkr_display_output.h"
 #include "vkr_buffer.h"
 #include "vkr_gpu_abi.h"
 #include "vkr_gtao.h"
@@ -11,6 +13,8 @@
 #include "vkr_prepared_frame.h"
 #include "vkr_render_graph.h"
 #include "vkr_renderer_impl.h"
+#include "vkr_ssr.h"
+#include "vkr_ssgi.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
 struct VkrGeometryUpload;
@@ -48,6 +52,10 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrBloomConfig bloom;
   /** A zeroed record selects the production GTAO defaults. */
   VkrGtaoConfig gtao;
+  /** Set explicitly with vkr_ssr_config_default() for production defaults. */
+  VkrSsrConfig ssr;
+  /** Set explicitly with vkr_ssgi_config_default() for production defaults. */
+  VkrSsgiConfig ssgi;
   const char *graph_path;
   const char *slang_msl_path;
   const char *fragment_msl_path;
@@ -61,6 +69,11 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrDynamicResolutionConfig dynamic_resolution;
   /** Borrowed CAMetalLayer pointer; required only for WINDOW. */
   void *metal_layer;
+  /** Window presentation policy; offscreen targets always resolve to SDR. */
+  VkrDisplayOutputMode display_output_mode;
+  /** Borrowed context and optional platform snapshot callback for window output. */
+  void *display_output_context;
+  VkrDisplayOutputSnapshot (*display_output_snapshot)(void *context);
   /** Requested window presentation policy; offscreen targets ignore it. */
   VkrPresentMode requested_present_mode;
   /** Managed native heaps, transfer rings and explicit buffers/ICBs. */
@@ -126,6 +139,12 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
   VKR_METAL_PACKET_MATERIAL_TEXTURE_EMISSIVE = 1u << 2u,
   VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION = 1u << 3u,
   VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS = 1u << 4u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT = 1u << 5u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS = 1u << 6u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_CLEARCOAT_NORMAL = 1u << 7u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_COLOR = 1u << 8u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_ROUGHNESS = 1u << 9u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_ANISOTROPY = 1u << 10u,
 } VkrMetalPacketMaterialTextureFlag;
 
 typedef struct VkrMetalPacketRgba8TextureCreateInfo {
@@ -136,7 +155,7 @@ typedef struct VkrMetalPacketRgba8TextureCreateInfo {
 
 typedef struct VkrMetalPacketMaterialCreateInfo {
   float32_t tint[4];
-  VkrMetalPacketRgba8TextureCreateInfo textures[6];
+  VkrMetalPacketRgba8TextureCreateInfo textures[12];
   uint32_t material_id;
   uint32_t texture_flags;
   VkrPbrProperties pbr;
@@ -309,6 +328,15 @@ bool8_t vkr_metal_packet_renderer_update_texture_sampler(
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source,
     VkrTextureHandle prefilter, float32_t sh_deringing);
+/** Queues one source-owned atmosphere candidate. Query completion separately;
+ * this never blocks ordinary publication polling. */
+bool8_t vkr_metal_packet_renderer_bake_atmosphere(
+    VkrMetalPacketRenderer *renderer, const VkrAtmosphereGpuParams *params,
+    VkrTextureHandle source, VkrTextureHandle prefilter,
+    float32_t sh_deringing);
+VkrAtmosphereBakeStatus vkr_metal_packet_renderer_atmosphere_bake_status(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle source,
+    VkrAtmosphereBakeResult *out_result);
 bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect,
     VkrTextureHandle source, VkrTextureHandle prefilter,
@@ -326,6 +354,17 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
  * Selection is coarse: submit contains no backend-type branch or callback
  * through the Vulkan-shaped backend interface.
  */
+/** Refreshes the platform snapshot before target graph realization. Returns false
+ * only when a completion-safe layer/presentation-pipeline transition fails. */
+bool8_t vkr_metal_packet_renderer_refresh_display_output(
+    VkrMetalPacketRenderer *renderer, bool8_t *out_format_changed);
+/** Current native present attachment format after the most recent refresh. */
+VkrTextureFormat vkr_metal_packet_renderer_present_color_format(
+    const VkrMetalPacketRenderer *renderer);
+/** Current shader-visible output transfer parameters. */
+VkrDisplayOutputParams vkr_metal_packet_renderer_display_output(
+    const VkrMetalPacketRenderer *renderer);
+
 bool8_t vkr_metal_packet_renderer_prepare_frame(
     VkrMetalPacketRenderer *renderer,
     const VkrRenderGraphFrameInfo *frame_info);
@@ -337,6 +376,9 @@ void vkr_metal_packet_renderer_retained_editor_extent(
 void vkr_metal_packet_renderer_retained_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);
+void vkr_metal_packet_renderer_retained_local_shadow_token(
+    VkrMetalPacketRenderer *renderer, uint32_t image_index,
+    VkrRetainedLocalShadowToken *out_token);
 
 /** Releases a prepared drawable and command slot that were not submitted. */
 bool8_t

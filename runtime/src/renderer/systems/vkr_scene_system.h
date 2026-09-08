@@ -11,6 +11,9 @@
  * - Picking result to entity mapping
  */
 #pragma once
+#include "vkr_atmosphere.h"
+#include "vkr_fog.h"
+#include "vkr_froxel_fog.h"
 #include "vkr_lighting.h"
 
 #include "containers/str.h"
@@ -171,6 +174,8 @@ typedef struct SceneShape {
 // Light Components
 // ============================================================================
 
+#define VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES 0.53f
+
 /**
  * @brief Directional light component.
  *
@@ -182,10 +187,10 @@ typedef struct SceneDirectionalLight {
   Vec3 color;           // Linear RGB
   float32_t intensity;  // Light intensity multiplier
   Vec3 direction_local; // Local-space direction (default: {0, -1, 0})
-  bool8_t enabled;      // Whether this light is active
+  /** Apparent solar-disc diameter in degrees; zero keeps a hard PCF edge. */
+  float32_t sun_angular_diameter_degrees;
+  bool8_t enabled; // Whether this light is active
 } SceneDirectionalLight;
-
-
 
 /**
  * @brief Point light component.
@@ -204,9 +209,18 @@ typedef struct ScenePointLight {
   float32_t inner_cone_angle;
   float32_t outer_cone_angle;
   VkrPointLightKind kind;
-  bool8_t enabled; // Whether this light is active
+  bool8_t enabled;      // Whether this light is active
   bool8_t casts_shadow; // Requires a finite positive range.
 } ScenePointLight;
+
+/** One-sided rectangular emitter. Entity translation is its center; rotation
+ * maps local +X/+Y to its axes; entity scale is ignored; local -Z emits. */
+typedef struct SceneRectangleLight {
+  Vec3 color;
+  float32_t radiance;
+  Vec2 size;
+  bool8_t enabled;
+} SceneRectangleLight;
 
 /**
  * @brief Runtime status of scene environment IBL bake products.
@@ -311,6 +325,35 @@ typedef struct VkrSceneEnvironment {
   VkrSceneEnvironmentBakeState bake_state;
 } VkrSceneEnvironment;
 
+/** Candidate output stays private until every native bake product is ready. */
+typedef enum VkrSceneAtmosphereBakeState {
+  VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE = 0,
+  VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING,
+  VKR_SCENE_ATMOSPHERE_BAKE_STATE_READY,
+  VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED,
+} VkrSceneAtmosphereBakeState;
+
+/**
+ * Scene-owned atmosphere publication state. `environment` remains the sole
+ * frame-visible sky/IBL tuple. A single retired tuple preserves ownership when
+ * its cold release cannot complete; it must drain before another replacement.
+ */
+typedef struct VkrSceneAtmosphere {
+  VkrAtmosphereSettings requested_settings;
+  VkrAtmosphereSettings candidate_settings;
+  VkrAtmosphereSettings active_settings;
+  VkrAtmosphereBakeResult active_result;
+  VkrSceneEnvironment retired_environment;
+  VkrTextureHandle candidate_source_cubemap;
+  VkrTextureHandle candidate_prefilter_cubemap;
+  float32_t requested_sh_deringing;
+  float32_t candidate_sh_deringing;
+  uint64_t requested_revision;
+  uint64_t candidate_revision;
+  uint64_t active_revision;
+  VkrSceneAtmosphereBakeState bake_state;
+} VkrSceneAtmosphere;
+
 // ============================================================================
 // Scene Type
 // ============================================================================
@@ -323,7 +366,7 @@ typedef struct VkrScene {
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets
   uint64_t structure_revision;
-  uint16_t world_id;              // Copied into entity IDs
+  uint16_t world_id; // Copied into entity IDs
 
   // Component type IDs (cached after registration)
   VkrComponentTypeId comp_source_identity;
@@ -336,6 +379,8 @@ typedef struct VkrScene {
   VkrComponentTypeId comp_shape;
   VkrComponentTypeId comp_directional_light;
   VkrComponentTypeId comp_point_light;
+  VkrComponentTypeId comp_rectangle_light;
+  uint32_t rectangle_light_count;
 
   // Compiled queries for efficient per-frame iteration
   VkrQueryCompiled query_transforms;  // Entities with SceneTransform
@@ -343,8 +388,9 @@ typedef struct VkrScene {
   VkrQueryCompiled
       query_directional_light;         // Entities with SceneDirectionalLight
   VkrQueryCompiled query_point_lights; // (SceneTransform, ScenePointLight)
-  VkrQueryCompiled query_shapes;       // (SceneTransform, SceneShape)
-  bool8_t queries_valid;               // False until first compile
+  VkrQueryCompiled query_rectangle_lights;
+  VkrQueryCompiled query_shapes; // (SceneTransform, SceneShape)
+  bool8_t queries_valid;         // False until first compile
 
   // Transform hierarchy support
   VkrEntityId *topo_order; // Topologically sorted entity IDs (full IDs, not
@@ -380,6 +426,13 @@ typedef struct VkrScene {
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
 
   VkrSceneEnvironment environment; // Scene environment and bake state
+  VkrSceneAtmosphere atmosphere;
+  /** Scene-authored analytic fog, copied into each frame by the runtime. */
+  VkrFogSettings fog;
+  VkrFroxelFogSettings froxel_fog;
+  /** Scene-owned baked diffuse-volume texture and lattice mapping. */
+  VkrDiffuseVolumeBinding diffuse_volume;
+  VkrSubsurfaceBinding subsurface;
   VkrSceneReflectionProbe reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t reflection_probe_count;
 } VkrScene;
@@ -408,6 +461,15 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
  * GPU idle at the caller before teardown; drain retirement before another load.
  */
 void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets);
+
+/** Releases the scene's diffuse-volume texture and disables volume sampling. */
+void vkr_scene_reset_diffuse_volume(VkrScene *scene,
+                                    struct VkrRenderAssets *assets);
+
+/** Queues an atmosphere revision. GPU work begins at the cold world seam. */
+bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
+                                     const VkrAtmosphereSettings *settings,
+                                     float32_t sh_deringing);
 
 /**
  * @brief Update scene transforms and prepare for renderer sync.
@@ -652,6 +714,11 @@ bool8_t vkr_scene_set_point_light(VkrScene *scene, VkrEntityId entity,
  * @return Pointer to component, or NULL if entity lacks point light.
  */
 ScenePointLight *vkr_scene_get_point_light(VkrScene *scene, VkrEntityId entity);
+
+bool8_t vkr_scene_set_rectangle_light(VkrScene *scene, VkrEntityId entity,
+                                      const SceneRectangleLight *light);
+SceneRectangleLight *vkr_scene_get_rectangle_light(VkrScene *scene,
+                                                   VkrEntityId entity);
 
 /**
  * @brief Add a directional light component.

@@ -410,11 +410,13 @@ typedef enum VkrSurfaceColorFormat {
   VKR_SURFACE_COLOR_FORMAT_RGBA8_SRGB,
   VKR_SURFACE_COLOR_FORMAT_BGRA8_UNORM,
   VKR_SURFACE_COLOR_FORMAT_RGBA8_UNORM,
+  VKR_SURFACE_COLOR_FORMAT_RGBA16_SFLOAT,
 } VkrSurfaceColorFormat;
 
 typedef enum VkrSurfaceColorSpace {
   VKR_SURFACE_COLOR_SPACE_UNKNOWN = 0,
   VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
+  VKR_SURFACE_COLOR_SPACE_EXTENDED_SRGB_LINEAR,
 } VkrSurfaceColorSpace;
 
 typedef enum VkrSurfaceDepthFormat {
@@ -466,6 +468,7 @@ typedef struct VkrDeviceInformation {
   VkrSurfaceColorFormat actual_color_format;
   VkrSurfaceDepthFormat actual_depth_format;
   VkrSurfaceColorSpace actual_color_space;
+  VkrDisplayOutputParams display_output;
   VkrWorldRendererTopology actual_world_renderer_topology;
 } VkrDeviceInformation;
 
@@ -531,6 +534,7 @@ typedef enum VkrTextureType {
   VKR_TEXTURE_TYPE_CUBE_MAP = 1,
   VKR_TEXTURE_TYPE_2D_ARRAY = 2,
   VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY = 3,
+  VKR_TEXTURE_TYPE_3D = 4,
   VKR_TEXTURE_TYPE_COUNT,
 } VkrTextureType;
 
@@ -570,6 +574,9 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_R16G16_SNORM,
   /** Two-channel half-float temporal motion in output UV units. */
   VKR_TEXTURE_FORMAT_R16G16_SFLOAT,
+
+  /** Immutable full-precision SH coefficients and exact room IDs. */
+  VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;
@@ -618,6 +625,7 @@ typedef enum VkrCaptureColorSpace {
   VKR_CAPTURE_COLOR_SPACE_NONE = 0,
   VKR_CAPTURE_COLOR_SPACE_LINEAR,
   VKR_CAPTURE_COLOR_SPACE_SRGB,
+  VKR_CAPTURE_COLOR_SPACE_EXTENDED_LINEAR,
 } VkrCaptureColorSpace;
 
 typedef enum VkrCaptureOrigin {
@@ -667,6 +675,8 @@ typedef struct VkrCaptureItemResult {
   /** Exposure used when canonicalizing an HDR color source. Automatic-mode
    * captures receive the completed GPU multiplier before collection. */
   float32_t display_exposure;
+  /** Producer output units for extended-linear final-color captures. */
+  VkrDisplayOutputParams display_output;
 } VkrCaptureItemResult;
 
 typedef struct VkrCapturePollResult {
@@ -945,6 +955,7 @@ typedef struct VkrRendererBackendConfig {
   VkrRendererBootMetrics *boot_metrics;
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
+  VkrDisplayOutputMode display_output_mode;
   /** Internal Scene resolution relative to its presentation extent. Zero
    * selects 1.0. Editor UI always remains at the physical target extent. */
   float32_t render_scale;
@@ -987,12 +998,20 @@ typedef struct VkrRetainedShadowToken {
   uint32_t valid_layer_mask;
 } VkrRetainedShadowToken;
 
+/** Proven retained state for the selected physical local-shadow-map image. */
+typedef struct VkrRetainedLocalShadowToken {
+  uint64_t resource_generation;
+  uint32_t valid_layer_mask;
+} VkrRetainedLocalShadowToken;
+
 /* Acquired target and command-slot context. Do not copy or modify it.
  * Render or cancel consumes this context; number identifies this acquisition,
  * not GPU completion. The renderer must outlive the frame. */
 typedef struct VkrFrameConfig {
   uint32_t shadow_map_size;
   uint32_t shadow_cascade_count;
+  uint32_t local_shadow_map_size;
+  uint32_t local_shadow_face_budget;
 } VkrFrameConfig;
 
 typedef struct VkrFrame {
@@ -1007,6 +1026,7 @@ typedef struct VkrFrame {
   uint32_t render_width;
   uint32_t render_height;
   VkrRetainedShadowToken retained_shadow;
+  VkrRetainedLocalShadowToken retained_local_shadow;
 } VkrFrame;
 
 typedef struct VkrRendererUploadWaitStats {

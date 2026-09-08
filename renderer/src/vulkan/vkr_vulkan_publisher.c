@@ -1,4 +1,41 @@
 #include "vulkan/vkr_vulkan_internal.h"
+
+#include <math.h>
+
+vkr_internal Vec4 vkr_vk_material_anisotropy(float32_t strength,
+                                              float32_t rotation) {
+  const float32_t normalized_rotation =
+      remainderf(rotation, 6.28318530717958647692f);
+  return (Vec4){strength, cosf(normalized_rotation), sinf(normalized_rotation),
+                0.0f};
+}
+
+vkr_internal bool8_t
+vkr_vk_material_diffuse_extensions_valid(const VkrMaterial *material) {
+  const VkrPbrProperties *pbr = &material->pbr;
+  const float32_t strength = pbr->diffuse_transmission_strength;
+  const Vec3 tint = pbr->diffuse_transmission_color;
+  if (!isfinite(strength) || !isfinite(tint.x) || !isfinite(tint.y) ||
+      !isfinite(tint.z) || strength < 0.0f || strength > 1.0f ||
+      tint.x < 0.0f || tint.x > 1.0f || tint.y < 0.0f || tint.y > 1.0f ||
+      tint.z < 0.0f || tint.z > 1.0f)
+    return false_v;
+  if (strength > 0.0f &&
+      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f))
+    return false_v;
+  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
+      pbr->subsurface_strength > 1.0f || pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT)
+    return false_v;
+  if (pbr->subsurface_strength > 0.0f &&
+      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
+       pbr->diffuse_transmission_strength > 0.0f))
+    return false_v;
+  return true_v;
+}
 void vkr_vk_advance_radiance_revision(VkrVulkanRenderer *renderer) {
   if (renderer->radiance_revision == UINT64_MAX) {
     renderer->terminal_failure = true_v;
@@ -33,7 +70,7 @@ vkr_internal uint64_t vkr_vk_candidate_publication_generation(void *state) {
   return renderer ? renderer->candidate_publication_generation : 0u;
 }
 
-vkr_internal void vkr_vk_cmd_image_barrier_range(
+void vkr_vk_cmd_image_barrier_range(
     VkCommandBuffer command_buffer, VkImage image,
     VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
     VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
@@ -245,9 +282,10 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
                                                  : VK_IMAGE_VIEW_TYPE_2D;
   if (!vkr_vk_create_image_ex(
           renderer, prepared->description.width, prepared->description.height,
-          prepared->upload_mip_levels, prepared->upload_array_layers, format,
+          1u, prepared->upload_mip_levels, prepared->upload_array_layers,
+          format,
           (cube || cube_array) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0u,
-          view_type,
+          VK_IMAGE_TYPE_2D, view_type,
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
           prepared->description.allocation_owner, out_image, out_error)) {
     log_error("Vulkan failed to create prepared texture image "
@@ -1587,6 +1625,10 @@ void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
     log_fatal("Vulkan failed to collect completed geometry ranges");
   (void)vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL);
   vkr_vk_collect_samplers(renderer, completed);
+  vkr_vk_collect_dfg_upload(renderer, completed);
+  vkr_vk_collect_ltc_upload(renderer, completed);
+  vkr_vk_collect_sheen_upload(renderer, completed);
+  vkr_vk_collect_anisotropy_upload(renderer, completed);
   for (uint32_t i = 0u; i < ArrayCount(renderer->geometry_megabuffer.retired);
        ++i) {
     VkrVulkanRetiredGeometryMegabuffer *retired =
@@ -1745,7 +1787,7 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
     geometry->vertices = mega->vertices;
     geometry->indices = mega->indices;
     vkr_gpu_geometry_row_relocate(&geometry->gpu_row, mega->vertices.address,
-                                   mega->indices.address, mega->generation);
+                                  mega->indices.address, mega->generation);
     if (!geometry->pending_initialization_count) {
       renderer->geometry_table_rows[i] = geometry->gpu_row;
       relocated_geometry_rows = true_v;
@@ -1791,8 +1833,9 @@ vkr_internal bool8_t vkr_vk_prepare_published_upload(
   return true_v;
 }
 
-vkr_internal void vkr_vk_release_unused_geometry_ranges(
-    VkrVulkanRenderer *renderer, VkrGeometryRangeAllocation ranges) {
+vkr_internal void
+vkr_vk_release_unused_geometry_ranges(VkrVulkanRenderer *renderer,
+                                      VkrGeometryRangeAllocation ranges) {
   /* Publication has queued no native writes for this reservation. */
   if (!vkr_geometry_ranges_retire(&renderer->geometry_ranges, ranges, 0u) ||
       !vkr_geometry_ranges_collect(&renderer->geometry_ranges, 0u))
@@ -2128,9 +2171,9 @@ vkr_internal bool8_t vkr_vk_asset_publish_writable_texture(
   VkrVulkanPublishedTexture pending = {.handle = handle};
   VkrVulkanPendingTextureInitialization initialization = {0};
   const bool8_t image_created = vkr_vk_create_image_ex(
-      renderer, description->width, description->height, mip_levels,
+      renderer, description->width, description->height, 1u, mip_levels,
       cube ? 6u : 1u, format, cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0u,
-      cube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D,
+      VK_IMAGE_TYPE_2D, cube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D,
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
       description->allocation_owner, &pending.image, NULL);
@@ -2188,23 +2231,43 @@ vkr_internal void
 vkr_vk_material_row_set_sampler(VkrVulkanMaterialPublishedRow *row,
                                 uint32_t texture_slot, uint32_t sampler_index) {
   switch (texture_slot) {
-  case 0u:
+  case VKR_TEXTURE_SLOT_DIFFUSE:
     row->material.base_color_sampler = sampler_index;
     break;
-  case 1u:
+  case VKR_TEXTURE_SLOT_NORMAL:
     row->material.normal_sampler = sampler_index;
     break;
-  case 2u:
+  case VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS:
     row->material.orm_sampler = sampler_index;
     break;
-  case 3u:
+  case VKR_TEXTURE_SLOT_EMISSION:
     row->material.emissive_sampler = sampler_index;
     break;
-  case 4u:
+  case VKR_TEXTURE_SLOT_TRANSMISSION:
     row->transmission.transmission_sampler = sampler_index;
     break;
-  default:
+  case VKR_TEXTURE_SLOT_THICKNESS:
     row->transmission.thickness_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_CLEARCOAT:
+    row->material.clearcoat_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS:
+    row->material.clearcoat_roughness_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL:
+    row->material.clearcoat_normal_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_SHEEN_COLOR:
+    row->material.sheen_color_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS:
+    row->material.sheen_roughness_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_ANISOTROPY:
+    row->material.anisotropy_sampler = sampler_index;
+    break;
+  default:
     break;
   }
 }
@@ -2363,7 +2426,7 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   const uint64_t last_use =
       Max(record->last_use_submit_value, renderer->submit_value);
   if (!vkr_geometry_ranges_retire(&renderer->geometry_ranges, record->ranges,
-                                   last_use)) {
+                                  last_use)) {
     log_error("Vulkan failed to retire geometry ranges");
     return false_v;
   }
@@ -2527,6 +2590,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
       handle.id > renderer->config.material_record_capacity ||
       material->id != handle.id || material->generation != handle.generation)
     return false_v;
+  if (!vkr_vk_material_diffuse_extensions_valid(material))
+    return false_v;
   VkrVulkanPublishedMaterial *record =
       &renderer->published_materials[handle.id - 1u];
   if (record->live && record->handle.generation != handle.generation)
@@ -2536,22 +2601,16 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
   if (record->live && !retirement)
     return false_v;
 
-  vkr_local_persist const VkrTextureSlot row_slots[6] = {
-      VKR_TEXTURE_SLOT_DIFFUSE,
-      VKR_TEXTURE_SLOT_NORMAL,
-      VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS,
-      VKR_TEXTURE_SLOT_EMISSION,
-      VKR_TEXTURE_SLOT_TRANSMISSION,
-      VKR_TEXTURE_SLOT_THICKNESS,
-  };
-  uint32_t texture_indices[6] = {0};
-  uint32_t sampler_indices[6] = {0};
-  uint32_t texture_record_indices[6] = {
-      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
-  };
+  uint32_t texture_indices[VKR_TEXTURE_SLOT_COUNT] = {0};
+  uint32_t sampler_indices[VKR_TEXTURE_SLOT_COUNT] = {0};
+  uint32_t texture_record_indices[VKR_TEXTURE_SLOT_COUNT];
+  for (uint32_t texture_slot = 0u;
+       texture_slot < ArrayCount(texture_record_indices); ++texture_slot)
+    texture_record_indices[texture_slot] = UINT32_MAX;
   uint32_t material_flags = 0u;
-  for (uint32_t i = 0; i < ArrayCount(row_slots); ++i) {
-    const VkrMaterialTexture *source = &material->textures[row_slots[i]];
+  for (uint32_t texture_slot = 0u;
+       texture_slot < ArrayCount(texture_record_indices); ++texture_slot) {
+    const VkrMaterialTexture *source = &material->textures[texture_slot];
     if (!source->enabled)
       continue;
     uint32_t record_index = 0u;
@@ -2559,10 +2618,10 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
         vkr_vk_published_texture(renderer, source->handle, &record_index);
     if (!texture)
       return false_v;
-    texture_indices[i] = texture->sampled_slot.index;
-    sampler_indices[i] =
+    texture_indices[texture_slot] = texture->sampled_slot.index;
+    sampler_indices[texture_slot] =
         renderer->published_samplers[texture->sampler_record_index].slot.index;
-    texture_record_indices[i] = record_index;
+    texture_record_indices[texture_slot] = record_index;
   }
   if (material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled)
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_NORMAL;
@@ -2574,6 +2633,18 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_TRANSMISSION;
   if (material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled)
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_THICKNESS;
+  if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_CLEARCOAT;
+  if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS;
+  if (material->textures[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_CLEARCOAT_NORMAL;
+  if (material->textures[VKR_TEXTURE_SLOT_SHEEN_COLOR].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_SHEEN_COLOR;
+  if (material->textures[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_SHEEN_ROUGHNESS;
+  if (material->textures[VKR_TEXTURE_SLOT_ANISOTROPY].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_ANISOTROPY;
   const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                         ? material->pbr.base_color
                         : material->phong.diffuse_color;
@@ -2581,6 +2652,12 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
   if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
     pbr.base_color = material->phong.diffuse_color;
     pbr.emissive_factor = material->phong.emission_color;
+    pbr.sheen_color = (Vec3){0.0f, 0.0f, 0.0f};
+    pbr.sheen_roughness = 0.0f;
+    pbr.anisotropy_strength = 0.0f;
+    pbr.anisotropy_rotation = 0.0f;
+    pbr.diffuse_transmission_strength = 0.0f;
+    pbr.diffuse_transmission_color = (Vec3){0.0f, 0.0f, 0.0f};
   }
   const VkrPacketMaterialConstants material_constants =
       vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
@@ -2589,14 +2666,16 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
       .material =
           {
               .tint = {tint.x, tint.y, tint.z, tint.w},
-              .base_color_texture = texture_indices[0],
-              .normal_texture = texture_indices[1],
-              .orm_texture = texture_indices[2],
-              .emissive_texture = texture_indices[3],
-              .base_color_sampler = sampler_indices[0],
-              .normal_sampler = sampler_indices[1],
-              .orm_sampler = sampler_indices[2],
-              .emissive_sampler = sampler_indices[3],
+              .base_color_texture = texture_indices[VKR_TEXTURE_SLOT_DIFFUSE],
+              .normal_texture = texture_indices[VKR_TEXTURE_SLOT_NORMAL],
+              .orm_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS],
+              .emissive_texture = texture_indices[VKR_TEXTURE_SLOT_EMISSION],
+              .base_color_sampler = sampler_indices[VKR_TEXTURE_SLOT_DIFFUSE],
+              .normal_sampler = sampler_indices[VKR_TEXTURE_SLOT_NORMAL],
+              .orm_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS],
+              .emissive_sampler = sampler_indices[VKR_TEXTURE_SLOT_EMISSION],
               .material_id = handle.id,
               .flags = material_flags,
               .alpha_mode = material_constants.alpha_mode,
@@ -2608,13 +2687,53 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
               .material_alpha = material_constants.alpha,
               .material_attenuation_color =
                   material_constants.attenuation_color,
+              .material_clearcoat = {pbr.clearcoat_factor,
+                                     pbr.clearcoat_roughness,
+                                     pbr.clearcoat_normal_scale, 0.0f},
+              .clearcoat_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_CLEARCOAT],
+              .clearcoat_roughness_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS],
+              .clearcoat_normal_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL],
+              .clearcoat_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_CLEARCOAT],
+              .clearcoat_roughness_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS],
+              .clearcoat_normal_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL],
+              .material_sheen = {pbr.sheen_color.x, pbr.sheen_color.y,
+                                 pbr.sheen_color.z, pbr.sheen_roughness},
+              .sheen_color_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_SHEEN_COLOR],
+              .sheen_roughness_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS],
+              .sheen_color_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_SHEEN_COLOR],
+              .sheen_roughness_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS],
+              .material_anisotropy = vkr_vk_material_anisotropy(
+                  pbr.anisotropy_strength, pbr.anisotropy_rotation),
+              .anisotropy_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_ANISOTROPY],
+              .anisotropy_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_ANISOTROPY],
+              .material_diffuse_transmission = {
+                  pbr.diffuse_transmission_color.x,
+                  pbr.diffuse_transmission_color.y,
+                  pbr.diffuse_transmission_color.z,
+                  pbr.diffuse_transmission_strength},
+                  .material_subsurface = {pbr.subsurface_strength,
+                      (float32_t)pbr.subsurface_profile, 0.0f, 0.0f},
           },
       .transmission =
           {
-              .transmission_texture = texture_indices[4],
-              .thickness_texture = texture_indices[5],
-              .transmission_sampler = sampler_indices[4],
-              .thickness_sampler = sampler_indices[5],
+              .transmission_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_TRANSMISSION],
+              .thickness_texture = texture_indices[VKR_TEXTURE_SLOT_THICKNESS],
+              .transmission_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_TRANSMISSION],
+              .thickness_sampler = sampler_indices[VKR_TEXTURE_SLOT_THICKNESS],
           },
   };
   VkrGpuSlotHandle new_slot = {0};
@@ -2759,6 +2878,161 @@ vkr_internal bool8_t vkr_vk_asset_bake_hdr_environment(
                                sh_deringing);
 }
 
+vkr_internal void
+vkr_vk_release_atmosphere_references(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPendingIblBake *job) {
+  const VkrTextureHandle handles[] = {job->source, job->prefilter};
+  for (uint32_t i = 0u; i < ArrayCount(handles); ++i) {
+    VkrVulkanPublishedTexture *texture =
+        vkr_vk_texture_publication(renderer, handles[i]);
+    if (texture && texture->ibl_reference_count) {
+      texture->ibl_reference_count--;
+      if (!texture->ibl_reference_count && texture->unpublish_requested) {
+        texture->live = false_v;
+        texture->pending_retire = true_v;
+      }
+    }
+  }
+}
+
+vkr_internal void
+vkr_vk_clear_atmosphere_prefilter(VkrVulkanRenderer *renderer,
+                                  const VkrVulkanPendingIblBake *job) {
+  VkrVulkanPublishedTexture *source =
+      vkr_vk_texture_publication(renderer, job->source);
+  if (source && source->ibl_prefilter.id == job->prefilter.id &&
+      source->ibl_prefilter.generation == job->prefilter.generation)
+    source->ibl_prefilter = VKR_TEXTURE_HANDLE_INVALID;
+}
+
+vkr_internal void vkr_vk_remove_atmosphere_bake(VkrVulkanRenderer *renderer,
+                                                uint32_t index) {
+  VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[index];
+  if (job->atmosphere_sun_readback.handle)
+    vkr_vk_destroy_buffer(renderer, &job->atmosphere_sun_readback);
+  const uint32_t last = renderer->pending_ibl_bake_count - 1u;
+  if (index != last)
+    renderer->pending_ibl_bakes[index] = renderer->pending_ibl_bakes[last];
+  MemZero(&renderer->pending_ibl_bakes[last],
+          sizeof(renderer->pending_ibl_bakes[last]));
+  renderer->pending_ibl_bake_count = last;
+}
+
+vkr_internal bool8_t vkr_vk_asset_bake_atmosphere(
+    void *state, const VkrAtmosphereGpuParams *params, VkrTextureHandle source,
+    VkrTextureHandle prefilter, float32_t sh_deringing) {
+  VkrVulkanRenderer *renderer = state;
+  if (!renderer || !params ||
+      renderer->pending_ibl_bake_count >= VKR_VULKAN_PENDING_IBL_BAKE_MAX)
+    return false_v;
+  for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
+    const VkrVulkanPendingIblBake *existing = &renderer->pending_ibl_bakes[i];
+    if (existing->is_atmosphere && existing->source.id == source.id &&
+        existing->source.generation == source.generation)
+      return false_v;
+  }
+  VkrVulkanPublishedTexture *source_texture =
+      vkr_vk_published_texture(renderer, source, NULL);
+  if (!source_texture ||
+      source_texture->image.width != VKR_ATMOSPHERE_SOURCE_SIZE ||
+      source_texture->image.height != VKR_ATMOSPHERE_SOURCE_SIZE ||
+      source_texture->image.mip_levels != VKR_IBL_PREFILTER_MIP_COUNT ||
+      source_texture->storage_slot_count != source_texture->image.mip_levels)
+    return false_v;
+  VkrVulkanBuffer readback = {0};
+  if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
+                            VKR_GPU_ALLOCATION_OWNER_READBACK, sizeof(Vec4),
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                            &readback) ||
+      !readback.allocation.mapped || !readback.address)
+    goto cleanup;
+  if (!vkr_vk_queue_ibl_bake(renderer, VKR_TEXTURE_HANDLE_INVALID, source,
+                             prefilter, false_v, sh_deringing))
+    goto cleanup;
+  VkrVulkanPendingIblBake *job =
+      &renderer->pending_ibl_bakes[renderer->pending_ibl_bake_count - 1u];
+  job->is_atmosphere = true_v;
+  job->atmosphere_params = *params;
+  job->atmosphere_sun_readback = readback;
+  job->atmosphere_rebuild_luts = !renderer->atmosphere_lut_valid ||
+                                 MemCompare(&renderer->atmosphere_lut_params,
+                                            params, sizeof(*params)) != 0;
+  source_texture->atmosphere_bake_result = (VkrAtmosphereBakeResult){0};
+  source_texture->atmosphere_bake_ready = false_v;
+  return true_v;
+
+cleanup:
+  vkr_vk_destroy_buffer(renderer, &readback);
+  return false_v;
+}
+
+vkr_internal VkrAtmosphereBakeStatus vkr_vk_asset_atmosphere_bake_status(
+    void *state, VkrTextureHandle source, VkrAtmosphereBakeResult *out_result) {
+  if (out_result)
+    *out_result = (VkrAtmosphereBakeResult){0};
+  VkrVulkanRenderer *renderer = state;
+  if (!renderer)
+    return VKR_ATMOSPHERE_BAKE_FAILED;
+  const uint64_t completed = vkr_vk_refresh_completed(renderer);
+  for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
+    VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    if (!job->is_atmosphere || job->source.id != source.id ||
+        job->source.generation != source.generation)
+      continue;
+    if (job->atmosphere_failed) {
+      vkr_vk_release_atmosphere_references(renderer, job);
+      vkr_vk_clear_atmosphere_prefilter(renderer, job);
+      vkr_vk_remove_atmosphere_bake(renderer, i);
+      return VKR_ATMOSPHERE_BAKE_FAILED;
+    }
+    if (!job->submitted || !job->atmosphere_submit_value ||
+        job->atmosphere_submit_value > completed)
+      return VKR_ATMOSPHERE_BAKE_PENDING;
+    VkrVulkanPublishedTexture *texture =
+        vkr_vk_texture_publication(renderer, job->source);
+    if (!texture || texture->ibl_sh_slot == VKR_SH_SLOT_BLACK ||
+        !vkr_vk_invalidate(renderer, &job->atmosphere_sun_readback.allocation,
+                           0u, sizeof(Vec4))) {
+      vkr_vk_release_atmosphere_references(renderer, job);
+      vkr_vk_clear_atmosphere_prefilter(renderer, job);
+      vkr_vk_remove_atmosphere_bake(renderer, i);
+      return VKR_ATMOSPHERE_BAKE_FAILED;
+    }
+    const Vec4 irradiance =
+        *(const Vec4 *)job->atmosphere_sun_readback.allocation.mapped;
+    if (!isfinite(irradiance.x) || !isfinite(irradiance.y) ||
+        !isfinite(irradiance.z) || irradiance.x < 0.0f || irradiance.y < 0.0f ||
+        irradiance.z < 0.0f || !(job->atmosphere_params.solar.w > 0.0f)) {
+      vkr_vk_release_atmosphere_references(renderer, job);
+      vkr_vk_clear_atmosphere_prefilter(renderer, job);
+      vkr_vk_remove_atmosphere_bake(renderer, i);
+      return VKR_ATMOSPHERE_BAKE_FAILED;
+    }
+    const VkrAtmosphereBakeResult result = {
+        .solar_irradiance = {irradiance.x, irradiance.y, irradiance.z},
+        .solar_disk_radiance = {irradiance.x / job->atmosphere_params.solar.w,
+                                irradiance.y / job->atmosphere_params.solar.w,
+                                irradiance.z / job->atmosphere_params.solar.w},
+    };
+    texture->atmosphere_bake_result = result;
+    texture->atmosphere_bake_ready = true_v;
+    if (out_result)
+      *out_result = result;
+    vkr_vk_release_atmosphere_references(renderer, job);
+    vkr_vk_remove_atmosphere_bake(renderer, i);
+    return VKR_ATMOSPHERE_BAKE_READY;
+  }
+  const VkrVulkanPublishedTexture *texture =
+      vkr_vk_texture_publication(renderer, source);
+  if (texture && texture->atmosphere_bake_ready) {
+    if (out_result)
+      *out_result = texture->atmosphere_bake_result;
+    return VKR_ATMOSPHERE_BAKE_READY;
+  }
+  return VKR_ATMOSPHERE_BAKE_FAILED;
+}
+
 vkr_internal bool8_t vkr_vk_asset_publications_idle(void *state) {
   const VkrVulkanRenderer *renderer = state;
   return renderer && !renderer->pending_texture_initialization_count &&
@@ -2796,6 +3070,9 @@ void vkr_vulkan_renderer_get_asset_publisher(VkrVulkanRenderer *renderer,
                                   vkr_vk_asset_bake_ibl_cubemap,
                               .bake_hdr_environment =
                                   vkr_vk_asset_bake_hdr_environment,
+                              .bake_atmosphere = vkr_vk_asset_bake_atmosphere,
+                              .atmosphere_bake_status =
+                                  vkr_vk_asset_atmosphere_bake_status,
                               .ibl_sh_slot = vkr_vk_asset_ibl_sh_slot,
                              .unpublish_texture =
                                  vkr_vk_asset_unpublish_texture,

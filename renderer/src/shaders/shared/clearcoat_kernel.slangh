@@ -1,0 +1,46 @@
+// KHR_materials_clearcoat subset over ADR-053's compensated GGX model.
+// Callers skip preparation for factor == 0 so an uncoated material retains the
+// existing arithmetic path. `base_transmission` reserves the coat's integrated
+// directional reflectance for every base lobe, including emission/transmission.
+#define VKR_CLEARCOAT_F0 0.04f
+#define VKR_CLEARCOAT_MIN_ROUGHNESS 0.04f
+
+struct VkrClearcoatLayer
+{
+    float factor;
+    float roughness;
+    float3 normal;
+    float base_transmission;
+    VkrGgxMaterialEnergy energy;
+};
+
+bool vkr_clearcoat_active(float factor)
+{
+    return factor > 0.0f;
+}
+
+// Coating is evaluated on the visible side of its independent normal. This
+// preserves the existing shading-normal hemisphere convention in GGX while
+// allowing an authored coat map to point away from the base normal.
+float3 vkr_clearcoat_view_facing_normal(float3 normal, float3 view)
+{
+    return dot(normal, view) < 0.0f ? -normal : normal;
+}
+
+VkrClearcoatLayer vkr_clearcoat_prepare_layer(float factor, float roughness,
+                                               float3 normal, float3 view,
+                                               float2 dfg)
+{
+    VkrClearcoatLayer result;
+    result.factor = saturate(factor);
+    result.roughness = clamp(roughness, VKR_CLEARCOAT_MIN_ROUGHNESS, 1.0f);
+    result.normal = vkr_clearcoat_view_facing_normal(normal, view);
+    result.energy = vkr_ggx_prepare_material(
+        max(dot(result.normal, view), 0.0f), result.roughness,
+        float3(VKR_CLEARCOAT_F0), dfg);
+    // ADR-053's directional integral, rather than a per-light Schlick term,
+    // allocates the portion of base transport hidden by this dielectric layer.
+    result.base_transmission = saturate(
+        1.0f - result.factor * result.energy.reflectance.x);
+    return result;
+}

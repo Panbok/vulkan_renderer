@@ -130,12 +130,17 @@ struct VkrRenderer {
   uint32_t editor_image_width;
   uint32_t editor_image_height;
   VkrTemporalState temporal_state;
+  VkrFogGpuParams submitted_fog;
+  VkrFroxelFogGpuParams submitted_froxel_fog;
   uint32_t temporal_reset_reasons;
   bool8_t temporal_enabled;
   VkrExposureState exposure_state;
   uint32_t exposure_reset_reasons;
   bool8_t bloom_forced_disabled;
   bool8_t gtao_forced_disabled;
+  bool8_t ssr_forced_disabled;
+  bool8_t ssgi_forced_disabled;
+  bool8_t submitted_ssgi_enabled;
 
   // Per-frame render statistics for UI/debug use.
   VkrRendererFrameMetrics frame_metrics;

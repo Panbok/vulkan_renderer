@@ -7,11 +7,10 @@
 #define VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT 0.5f
 
 uint32_t vkr_temporal_upscale_sequence_length(uint32_t render_width,
-                                               uint32_t output_width) {
-  return Max((uint32_t)floorf(8.0f * (float32_t)output_width /
-                                 (float32_t)render_width *
-                                 (float32_t)output_width /
-                                 (float32_t)render_width),
+                                              uint32_t output_width) {
+  return Max((uint32_t)floorf(
+                 8.0f * (float32_t)output_width / (float32_t)render_width *
+                 (float32_t)output_width / (float32_t)render_width),
              VKR_TEMPORAL_SEQUENCE_LENGTH);
 }
 
@@ -84,6 +83,67 @@ temporal_scene_candidates(VkrTemporalSceneSignature *signature,
   }
 }
 
+vkr_internal void temporal_scene_lighting(VkrTemporalSceneSignature *signature,
+                                          const VkrFrameLighting *lighting) {
+  temporal_scene_lane(signature, lighting != NULL);
+  if (lighting) {
+    temporal_scene_pair(signature, lighting->directional_enabled,
+                        lighting->ibl_enabled);
+    temporal_scene_vec3(signature, lighting->directional_direction);
+    temporal_scene_vec3(signature, lighting->directional_color);
+    temporal_scene_floats(signature, lighting->directional_intensity,
+                          lighting->ibl_intensity);
+    temporal_scene_pair(signature, lighting->ibl_source.id,
+                        lighting->ibl_source.generation);
+    temporal_scene_floats(signature, lighting->ibl_diffuse_intensity,
+                          lighting->ibl_specular_intensity);
+    temporal_scene_lane(signature, lighting->rectangle_light_count);
+    for (uint32_t i = 0u; i < lighting->rectangle_light_count; ++i) {
+      const VkrRectangleLight *light = &lighting->rectangle_lights[i];
+      temporal_scene_vec3(signature, light->position);
+      temporal_scene_vec3(signature, light->right);
+      temporal_scene_vec3(signature, light->up);
+      temporal_scene_vec3(signature, light->color);
+      temporal_scene_floats(signature, light->half_width, light->half_height);
+      temporal_scene_floats(signature, light->radiance, 0.0f);
+      temporal_scene_lane(signature, light->render_id);
+    }
+    temporal_scene_lane(signature, lighting->point_light_count);
+    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
+      const VkrPointLight *light = &lighting->point_lights[i];
+      temporal_scene_vec3(signature, light->position);
+      temporal_scene_vec3(signature, light->color);
+      temporal_scene_floats(signature, light->intensity, light->constant);
+      temporal_scene_floats(signature, light->linear, light->quadratic);
+      temporal_scene_floats(signature, light->range, light->inner_cone_angle);
+      temporal_scene_vec3(signature, light->direction);
+      temporal_scene_floats(signature, light->outer_cone_angle, 0.0f);
+      temporal_scene_pair(signature, light->kind, light->render_id);
+    }
+    temporal_scene_pair(signature, lighting->diffuse_volume.texture.id,
+                        lighting->diffuse_volume.texture.generation);
+    temporal_scene_vec3(signature, lighting->diffuse_volume.origin);
+    temporal_scene_vec3(signature, lighting->diffuse_volume.inverse_spacing);
+    temporal_scene_pair(signature, lighting->diffuse_volume.dimensions[0],
+                        lighting->diffuse_volume.dimensions[1]);
+    temporal_scene_lane(signature, lighting->diffuse_volume.dimensions[2]);
+    temporal_scene_lane(signature, lighting->ibl_probe_count);
+    for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
+      const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
+      temporal_scene_pair(signature, probe->sh_slot,
+                          probe->box_projection_enabled);
+      temporal_scene_pair(signature, probe->prefilter.id,
+                          probe->prefilter.generation);
+      temporal_scene_vec3(signature, probe->center);
+      temporal_scene_vec3(signature, probe->extents);
+      temporal_scene_floats(signature, probe->blend_distance, probe->weight);
+      temporal_scene_floats(signature, probe->intensity,
+                            probe->diffuse_intensity);
+      temporal_scene_floats(signature, probe->specular_intensity, 0.0f);
+    }
+  }
+}
+
 VkrTemporalSceneSignature
 vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
   VkrTemporalSceneSignature signature = {
@@ -102,6 +162,11 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
   temporal_scene_pair(
       &signature, packet->input.globals.render_mode,
       packet->input.debug ? packet->input.debug->shadow_debug_mode : 0u);
+  temporal_scene_lane(&signature, packet->ssr_enabled);
+  temporal_scene_lane(&signature, packet->ssgi_enabled);
+  temporal_scene_vec4(&signature, packet->fog.color_density);
+  temporal_scene_vec4(&signature, packet->fog.height_distance);
+  temporal_scene_lane(&signature, packet->froxel_fog_signature);
   temporal_scene_lane(&signature, packet->gtao.enabled);
   temporal_scene_floats(&signature, packet->gtao.radius, packet->gtao.power);
   temporal_scene_lane(&signature, world != NULL);
@@ -130,58 +195,20 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
     }
   }
   const VkrFrameLighting *lighting = packet->input.lighting;
-  temporal_scene_lane(&signature, lighting != NULL);
-  if (lighting) {
-    temporal_scene_pair(&signature, lighting->directional_enabled,
-                        lighting->ibl_enabled);
-    temporal_scene_vec3(&signature, lighting->directional_direction);
-    temporal_scene_vec3(&signature, lighting->directional_color);
-    temporal_scene_floats(&signature, lighting->directional_intensity,
-                          lighting->ibl_intensity);
-    temporal_scene_pair(&signature, lighting->ibl_source.id,
-                        lighting->ibl_source.generation);
-    temporal_scene_floats(&signature, lighting->ibl_diffuse_intensity,
-                          lighting->ibl_specular_intensity);
-    temporal_scene_lane(&signature, lighting->point_light_count);
-    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-      const VkrPointLight *light = &lighting->point_lights[i];
-      temporal_scene_vec3(&signature, light->position);
-      temporal_scene_vec3(&signature, light->color);
-      temporal_scene_floats(&signature, light->intensity, light->constant);
-      temporal_scene_floats(&signature, light->linear, light->quadratic);
-      temporal_scene_floats(&signature, light->range, light->inner_cone_angle);
-      temporal_scene_vec3(&signature, light->direction);
-      temporal_scene_floats(&signature, light->outer_cone_angle, 0.0f);
-      temporal_scene_pair(&signature, light->kind, light->render_id);
-    }
-    if (lighting->point_light_count) {
-      const VkrPointLightGrid *grid = lighting->point_light_grid;
-      temporal_scene_vec3(&signature, grid->origin);
-      temporal_scene_floats(&signature, grid->cell_size, 0.0f);
-      temporal_scene_pair(&signature, grid->dimensions[0], grid->dimensions[1]);
-      temporal_scene_pair(&signature, grid->dimensions[2], grid->cell_count);
+  temporal_scene_lighting(&signature, lighting);
+  if (lighting && lighting->point_light_count) {
+    const VkrPointLightGrid *grid = lighting->point_light_grid;
+    temporal_scene_vec3(&signature, grid->origin);
+    temporal_scene_floats(&signature, grid->cell_size, 0.0f);
+    temporal_scene_pair(&signature, grid->dimensions[0], grid->dimensions[1]);
+    temporal_scene_pair(&signature, grid->dimensions[2], grid->cell_count);
+    for (uint32_t i = 0u; i < VKR_POINT_LIGHT_GRID_MASK_WORDS; i += 2u)
+      temporal_scene_pair(&signature, grid->global_mask.words[i],
+                          grid->global_mask.words[i + 1u]);
+    for (uint32_t cell = 0u; cell < grid->cell_count; ++cell)
       for (uint32_t i = 0u; i < VKR_POINT_LIGHT_GRID_MASK_WORDS; i += 2u)
-        temporal_scene_pair(&signature, grid->global_mask.words[i],
-                            grid->global_mask.words[i + 1u]);
-      for (uint32_t cell = 0u; cell < grid->cell_count; ++cell)
-        for (uint32_t i = 0u; i < VKR_POINT_LIGHT_GRID_MASK_WORDS; i += 2u)
-          temporal_scene_pair(&signature, grid->masks[cell].words[i],
-                              grid->masks[cell].words[i + 1u]);
-    }
-    temporal_scene_lane(&signature, lighting->ibl_probe_count);
-    for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
-      const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
-      temporal_scene_pair(&signature, probe->sh_slot,
-                          probe->box_projection_enabled);
-      temporal_scene_pair(&signature, probe->prefilter.id,
-                          probe->prefilter.generation);
-      temporal_scene_vec3(&signature, probe->center);
-      temporal_scene_vec3(&signature, probe->extents);
-      temporal_scene_floats(&signature, probe->blend_distance, probe->weight);
-      temporal_scene_floats(&signature, probe->intensity,
-                            probe->diffuse_intensity);
-      temporal_scene_floats(&signature, probe->specular_intensity, 0.0f);
-    }
+        temporal_scene_pair(&signature, grid->masks[cell].words[i],
+                            grid->masks[cell].words[i + 1u]);
   }
   const VkrShadowPassPayload *shadow = packet->input.shadow;
   temporal_scene_lane(&signature, shadow != NULL);
@@ -193,8 +220,8 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
                             shadow->cascades[i].light_view_projection);
       temporal_scene_vec4(&signature,
                           shadow->cascades[i].split_near_far_texel_depth);
-      const Vec4 origin = shadow->cascades[i].origin_inv_size_pad;
-      temporal_scene_vec3(&signature, (Vec3){origin.x, origin.y, origin.z});
+      const Vec4 origin = shadow->cascades[i].origin_inv_size_sun;
+      temporal_scene_vec4(&signature, origin);
     }
     const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
     temporal_scene_floats(&signature, receiver->receiver_bias_texels,
@@ -232,6 +259,98 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
                         packet->input.skybox->cubemap.generation);
     temporal_scene_pair(&signature, packet->input.skybox->material.id,
                         packet->input.skybox->material.generation);
+    temporal_scene_vec3(&signature, packet->input.skybox->solar_disk_radiance);
+  }
+  return signature;
+}
+
+VkrTemporalSceneSignature
+vkr_ssr_content_signature(const VkrPreparedFrame *packet) {
+  VkrTemporalSceneSignature signature = {
+      .hash = {UINT64_C(0x243f6a8885a308d3), UINT64_C(0x13198a2e03707344)},
+      .eligible =
+          !packet->input.world || !packet->input.world->publication_pending,
+  };
+  temporal_scene_lane(&signature, packet->input.frame.scene_generation);
+  temporal_scene_lane(&signature, packet->ssr_enabled);
+  temporal_scene_lane(&signature, packet->ssgi_enabled);
+  temporal_scene_vec4(&signature, packet->fog.color_density);
+  temporal_scene_vec4(&signature, packet->fog.height_distance);
+  temporal_scene_lane(&signature, packet->froxel_fog_signature);
+  temporal_scene_vec4(&signature, packet->input.globals.ambient_color);
+  temporal_scene_lane(&signature, packet->gtao.enabled);
+  temporal_scene_floats(&signature, packet->gtao.radius, packet->gtao.power);
+  temporal_scene_lighting(&signature, packet->input.lighting);
+  const VkrShadowPassPayload *shadow = packet->input.shadow;
+  temporal_scene_lane(&signature, shadow != NULL);
+  if (shadow) {
+    temporal_scene_lane(&signature, shadow->cascade_count);
+    for (uint32_t i = 0u; i < shadow->cascade_count; ++i)
+      temporal_scene_floats(&signature,
+                            shadow->cascades[i].origin_inv_size_sun.w, 0.0f);
+    const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
+    temporal_scene_floats(&signature, receiver->receiver_bias_texels,
+                          receiver->slope_bias_texels);
+    temporal_scene_floats(&signature, receiver->normal_offset_texels,
+                          receiver->pcf_radius_texels);
+    temporal_scene_pair(&signature, receiver->pcf_sample_count,
+                        receiver->pcf_uniform_early_out);
+  }
+  temporal_scene_lane(&signature, packet->input.skybox != NULL);
+  if (packet->input.skybox) {
+    temporal_scene_pair(&signature, packet->input.skybox->cubemap.id,
+                        packet->input.skybox->cubemap.generation);
+    temporal_scene_pair(&signature, packet->input.skybox->material.id,
+                        packet->input.skybox->material.generation);
+    temporal_scene_vec3(&signature, packet->input.skybox->solar_disk_radiance);
+  }
+  return signature;
+}
+
+VkrTemporalSceneSignature
+vkr_ssgi_content_signature(const VkrPreparedFrame *packet) {
+  VkrTemporalSceneSignature signature = {
+      .hash = {UINT64_C(0x9e3779b97f4a7c15), UINT64_C(0xd1b54a32d192ed03)},
+      .eligible = !packet->input.world ||
+                  !packet->input.world->publication_pending,
+  };
+  temporal_scene_lane(&signature, packet->input.frame.scene_generation);
+  temporal_scene_lane(&signature, packet->ssgi_enabled);
+  /* The complete lighting publication also covers baked-volume replacement.
+     Camera matrices and the progressive ray phase are not content revisions. */
+  temporal_scene_lighting(&signature, packet->input.lighting);
+  const VkrWorldPassPayload *world = packet->input.world;
+  if (world) {
+    temporal_scene_lane(&signature, world->static_generation);
+    temporal_scene_lane(&signature, world->dynamic_generation);
+    temporal_scene_lane(&signature, world->publication_generation);
+    temporal_scene_lane(&signature, world->caster_bounds_generation);
+  }
+  const VkrShadowPassPayload *shadow = packet->input.shadow;
+  temporal_scene_lane(&signature, shadow != NULL);
+  if (shadow) {
+    temporal_scene_lane(&signature, shadow->cascade_count);
+    for (uint32_t i = 0u; i < shadow->cascade_count; ++i)
+      temporal_scene_floats(&signature,
+          shadow->cascades[i].origin_inv_size_sun.w, 0.0f);
+    const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
+    temporal_scene_floats(&signature, receiver->receiver_bias_texels,
+                          receiver->slope_bias_texels);
+    temporal_scene_floats(&signature, receiver->normal_offset_texels,
+                          receiver->pcf_radius_texels);
+    temporal_scene_pair(&signature, receiver->pcf_sample_count,
+                        receiver->pcf_uniform_early_out);
+  }
+  const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
+  temporal_scene_lane(&signature, local != NULL);
+  if (local) {
+    temporal_scene_lane(&signature, local->view_count);
+    for (uint32_t i = 0u; i < local->view_count; ++i) {
+      temporal_scene_matrix(&signature, local->views[i].light_view_projection);
+      temporal_scene_vec4(&signature, local->views[i].light_position_near);
+      temporal_scene_vec4(&signature, local->views[i].light_direction_far);
+      temporal_scene_vec4(&signature, local->views[i].projection_params);
+    }
   }
   return signature;
 }

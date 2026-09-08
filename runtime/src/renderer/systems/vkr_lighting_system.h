@@ -20,12 +20,16 @@ typedef struct VkrLightingSystem {
     Vec3 direction; // world space
     Vec3 color;
     float32_t intensity;
+    float32_t sun_angular_diameter_degrees;
   } directional;
 
   VkrPointLight point_lights[VKR_MAX_SCENE_POINT_LIGHTS];
   uint32_t point_light_count;
   uint32_t point_light_dropped_count;
   VkrPointLightGrid point_light_grid;
+
+  VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];
+  uint32_t rectangle_light_count;
 
   // Dirty tracking
   bool8_t dirty;
@@ -52,6 +56,11 @@ void vkr_lighting_system_shutdown(VkrLightingSystem *system);
  */
 void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
                                          const VkrScene *scene);
+
+/** Replaces the selected authored sun with the active atmosphere sun. */
+void vkr_lighting_system_apply_atmosphere_sun(
+    VkrLightingSystem *system, const VkrAtmosphereSettings *settings,
+    const VkrAtmosphereBakeResult *result);
 
 /** Rebuilds the conservative world-space lookup from point_lights. Public for
  * deterministic CPU coverage tests; scene sync calls it automatically. */

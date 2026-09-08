@@ -1,0 +1,258 @@
+// Shared screen-space diffuse-GI arithmetic. Native paths own texture access,
+// root bindings and workgroups. This header intentionally reuses the proven SSR
+// positive-depth hierarchy traversal rather than defining a second traversal
+// representation. It must follow ssr_kernel.slangh in each shader library.
+#ifndef VKR_SHADER_SSGI_KERNEL_SLANGH
+#define VKR_SHADER_SSGI_KERNEL_SLANGH
+
+#ifndef VKR_SSGI_CONTRACT
+#include "ssgi_contract.slangh"
+#endif
+
+#ifndef VKR_SHADER_SSR_KERNEL_SLANGH
+#error "ssgi_kernel.slangh requires ssr_kernel.slangh first"
+#endif
+
+#define VKR_SSGI_MAX_STEPS 24u
+#define VKR_SSGI_EPSILON 1e-6f
+#define VKR_SSGI_NEAR_EPSILON 1e-4f
+#define VKR_SSGI_TWO_PI 6.28318530717958647692f
+
+// Mirrors VkrSsgiGpuParams exactly. It intentionally occupies the same 288 B
+// physical layout as VkrSsrParams, while sample_phase and normal_bias have
+// diffuse-GI meanings.
+struct VkrSsgiParams
+{
+    float4x4 projection;
+    float4x4 inverse_projection;
+    float4x4 view;
+
+    uint source_width;
+    uint source_height;
+    uint trace_width;
+    uint trace_height;
+
+    uint depth_mip_count;
+    uint max_steps;
+    uint history_valid;
+    uint sample_phase;
+
+    float thickness;
+    float max_distance;
+    float normal_bias;
+    float edge_fade_pixels;
+
+    float temporal_weight;
+    float temporal_depth_relative;
+    float temporal_depth_absolute;
+    float reserved_float_0;
+
+    float previous_projection_m22;
+    float previous_projection_m23;
+    float previous_projection_m32;
+    float previous_projection_m33;
+
+    float trace_texel_size_x;
+    float trace_texel_size_y;
+    float trace_extent_x;
+    float trace_extent_y;
+};
+
+struct VkrSsgiReceiver
+{
+    uint2 pixel;
+    float positive_depth;
+    uint valid;
+};
+
+// The SSR representation is an internal screen-hierarchy view only. Its
+// reflection-only roughness field is never read by SSGI; keeping traversal and
+// temporal acceptance in one implementation prevents odd-tail and perspective
+// depth policies from drifting between the two screen-space features.
+VkrSsrParams vkr_ssgi_screen_trace_params(VkrSsgiParams params)
+{
+    VkrSsrParams result;
+    result.projection = params.projection;
+    result.inverse_projection = params.inverse_projection;
+    result.view = params.view;
+    result.source_width = params.source_width;
+    result.source_height = params.source_height;
+    result.trace_width = params.trace_width;
+    result.trace_height = params.trace_height;
+    result.depth_mip_count = params.depth_mip_count;
+    result.max_steps = params.max_steps;
+    result.history_valid = params.history_valid;
+    result.reserved_u32_0 = 0u;
+    result.thickness = params.thickness;
+    result.max_distance = params.max_distance;
+    result.roughness_cutoff = 0.0f;
+    result.edge_fade_pixels = params.edge_fade_pixels;
+    result.temporal_weight = params.temporal_weight;
+    result.temporal_depth_relative = params.temporal_depth_relative;
+    result.temporal_depth_absolute = params.temporal_depth_absolute;
+    result.reserved_float_0 = 0.0f;
+    result.previous_projection_m22 = params.previous_projection_m22;
+    result.previous_projection_m23 = params.previous_projection_m23;
+    result.previous_projection_m32 = params.previous_projection_m32;
+    result.previous_projection_m33 = params.previous_projection_m33;
+    result.trace_texel_size_x = params.trace_texel_size_x;
+    result.trace_texel_size_y = params.trace_texel_size_y;
+    result.trace_extent_x = params.trace_extent_x;
+    result.trace_extent_y = params.trace_extent_y;
+    return result;
+}
+
+VkrSsgiReceiver vkr_ssgi_empty_receiver()
+{
+    VkrSsgiReceiver result;
+    result.pixel = uint2(0u);
+    result.positive_depth = 0.0f;
+    result.valid = 0u;
+    return result;
+}
+
+// Native base/trace/temporal/composite loops visit children in top-left order.
+// Strict comparison retains that first child when depths tie.
+VkrSsgiReceiver vkr_ssgi_consider_receiver(VkrSsgiReceiver result,
+                                           uint2 pixel, float positive_depth,
+                                           uint covered)
+{
+    if (covered != 0u && vkr_ssr_valid_depth(positive_depth) &&
+        (result.valid == 0u || positive_depth < result.positive_depth))
+    {
+        result.pixel = pixel;
+        result.positive_depth = positive_depth;
+        result.valid = 1u;
+    }
+    return result;
+}
+
+float3 vkr_ssgi_faceforward_view_normal(float3 view_normal, float3 origin_view)
+{
+    return dot(view_normal, -origin_view) < 0.0f ? -view_normal : view_normal;
+}
+
+float vkr_ssgi_radical_inverse(uint bits)
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xaaaaaaaau) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xccccccccu) >> 2u);
+    bits = ((bits & 0x0f0f0f0fu) << 4u) | ((bits & 0xf0f0f0f0u) >> 4u);
+    bits = ((bits & 0x00ff00ffu) << 8u) | ((bits & 0xff00ff00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10f;
+}
+
+uint vkr_ssgi_hash(uint2 pixel)
+{
+    uint value = pixel.x * 0x8da6b343u ^ pixel.y * 0xd8163841u;
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    return value ^ (value >> 16u);
+}
+
+// A 256-sample Hammersley sequence provides independent dimensions: u advances
+// uniformly and v is its base-two radical inverse. A per-pixel Cranley rotation
+// changes the sequence phase without coupling the two dimensions.
+float2 vkr_ssgi_sample_2d(uint2 pixel, uint sample_phase)
+{
+    uint hash = vkr_ssgi_hash(pixel);
+    uint sequence_index = sample_phase & (VKR_SSGI_SEQUENCE_LENGTH - 1u);
+    float2 sequence = float2((float(sequence_index) + 0.5f) * (1.0f / float(VKR_SSGI_SEQUENCE_LENGTH)),
+                             vkr_ssgi_radical_inverse(sequence_index));
+    float2 rotation = float2(vkr_ssgi_radical_inverse(hash),
+                             vkr_ssgi_radical_inverse(hash * 0x9e3779b9u));
+    float2 result = sequence + rotation;
+    return result - floor(result);
+}
+
+float3 vkr_ssgi_normalize_or(float3 value, float3 fallback)
+{
+    float length_squared = dot(value, value);
+    return length_squared > 1e-12f ? value * rsqrt(length_squared) : fallback;
+}
+
+float3 vkr_ssgi_cosine_direction(float2 sample, float3 normal_view)
+{
+    float3 normal = vkr_ssgi_normalize_or(normal_view, float3(0.0f, 0.0f, 1.0f));
+    float3 axis = abs(normal.z) < 0.999f ? float3(0.0f, 0.0f, 1.0f)
+                                           : float3(0.0f, 1.0f, 0.0f);
+    float3 tangent = vkr_ssgi_normalize_or(cross(axis, normal), float3(1.0f, 0.0f, 0.0f));
+    float3 bitangent = cross(normal, tangent);
+    float radius = sqrt(saturate(sample.x));
+    float angle = VKR_SSGI_TWO_PI * sample.y;
+    float2 disk = radius * float2(cos(angle), sin(angle));
+    return tangent * disk.x + bitangent * disk.y +
+           normal * sqrt(max(1.0f - sample.x, 0.0f));
+}
+
+bool vkr_ssgi_hit_valid(uint covered, float hierarchy_depth,
+                         float ray_depth, float3 hit_view_normal,
+                         float3 ray_direction_view, VkrSsgiParams params)
+{
+    return covered != 0u && vkr_ssr_valid_depth(hierarchy_depth) &&
+           vkr_ssr_valid_depth(ray_depth) &&
+           abs(hierarchy_depth - ray_depth) <= params.thickness &&
+           dot(hit_view_normal, -ray_direction_view) > VKR_SSGI_NEAR_EPSILON;
+}
+
+// For p(w)=cos(theta)/pi, Li * cos(theta)/pi / p(w) is Li. The composite owns
+// the receiver's diffuse BRDF, so raw SSGI stores this bare E/pi estimator.
+float3 vkr_ssgi_bare_diffuse_estimate(float3 direct_source_radiance)
+{
+    return max(direct_source_radiance, float3(0.0f));
+}
+
+float vkr_ssgi_trace_confidence(float2 hit_uv, VkrSsrParams screen)
+{
+    return vkr_ssr_edge_confidence(hit_uv, screen);
+}
+
+// The temporal pass applies this only to valid nearest-covered neighbors. A
+// trace miss is still a zero-valued Monte-Carlo sample and retains its weight.
+// The inherited compact spatial term is 1 / (1 + squared pixel distance).
+float vkr_ssgi_spatial_weight(float2 offset, float center_depth,
+                              float neighbor_depth, float3 center_normal,
+                              float3 neighbor_normal, VkrSsrParams screen)
+{
+    return vkr_ssr_receiver_bilateral_weight(
+        offset, center_depth, neighbor_depth, center_normal, neighbor_normal,
+        screen);
+}
+
+float4 vkr_ssgi_temporal_filter(float4 raw, float4 history,
+                                float3 neighborhood_mean,
+                                float3 neighborhood_variance,
+                                VkrSsrHistoryDecision decision)
+{
+    if (raw.w <= 0.0f)
+        return float4(0.0f);
+    // A zero-valued ray is a valid cosine sample. Do not clamp a stable bright
+    // history to zero merely because one 3x3 phase contains only misses; that
+    // would turn Monte-Carlo convergence into dark flicker. Where the current
+    // neighborhood contains energy, a two-sigma box bounds fireflies without a
+    // second moments image. Motion/depth/identity rejection owns stale history.
+    float3 sigma = sqrt(max(neighborhood_variance, float3(0.0f)));
+    float peak = max(neighborhood_mean.x,
+                     max(neighborhood_mean.y, neighborhood_mean.z));
+    float3 clamped_history = peak > VKR_SSGI_EPSILON
+        ? clamp(history.rgb, max(neighborhood_mean - 2.0f * sigma, float3(0.0f)),
+                neighborhood_mean + 2.0f * sigma)
+        : history.rgb;
+    return float4(vkr_ssr_lerp(raw.rgb, clamped_history, decision.weight),
+                  1.0f);
+}
+
+// Composite adds a diffuse residual. It does not receive GTAO, IBL controls,
+// SSR receiver weighting, or any baked-volume response; those terms either
+// belong to independent transport or would apply visibility twice.
+float3 vkr_ssgi_add_diffuse(float3 opaque_hdr, float3 bare_radiance,
+                            float3 diffuse_weight, float3 diffuse_albedo,
+                            float material_ao, float confidence)
+{
+    return opaque_hdr + bare_radiance * diffuse_weight * diffuse_albedo *
+                            saturate(material_ao) * saturate(confidence);
+}
+
+#endif

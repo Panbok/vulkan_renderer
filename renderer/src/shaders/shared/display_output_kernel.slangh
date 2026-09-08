@@ -1,0 +1,75 @@
+#ifndef VKR_SHADER_DISPLAY_OUTPUT_KERNEL_SLANGH
+#define VKR_SHADER_DISPLAY_OUTPUT_KERNEL_SLANGH
+
+// Display-relative output contract. `headroom` is the native display peak in
+// units of SDR white. `output_scale` converts that white to the presentation
+// attachment's extended-linear unit (1 on Metal EDR; SDR-white nits / 80 for
+// scRGB). The host proves finite positive values before publication.
+struct VkrDisplayOutputParams
+{
+    float headroom;
+    float output_scale;
+    uint extended_linear;
+    uint reserved;
+};
+
+float vkr_display_output_luminance(float3 color)
+{
+    return dot(max(color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+// Preserve the selected SDR display transform through scene white. Above
+// scene-linear one, the four-stop shoulder approaches `headroom`; the final
+// component cap preserves hue while keeping the FP16 presentation value in
+// the display's relative range. This is deliberately after AgX/ACES and
+// before spatial post filters so their samples share one linear unit.
+float3 vkr_display_output_scene_relative(float3 scene_linear,
+                                         float3 display_linear,
+                                         VkrDisplayOutputParams output)
+{
+    if (output.extended_linear == 0u || output.headroom <= 1.0f)
+        return display_linear;
+
+    float3 result = max(display_linear, 0.0f);
+    float scene_luminance = vkr_display_output_luminance(scene_linear);
+    // Avoid the ratio path below SDR white: it has no shoulder contribution
+    // and its epsilon would otherwise perturb near-black display values.
+    if (scene_luminance <= 1.0f)
+        return result;
+
+    float scene_stops = log2(scene_luminance);
+    float shoulder = 1.0f - exp2(-0.25f * scene_stops);
+    float display_luminance = vkr_display_output_luminance(result);
+    float target_luminance = display_luminance +
+                             (output.headroom - display_luminance) * shoulder;
+    float luminance_scale = target_luminance / max(display_luminance, 1e-6f);
+    float component_scale = output.headroom / max(max(result.r, result.g),
+                                                   max(result.b, 1e-6f));
+    return result * min(luminance_scale, component_scale);
+}
+
+float3 vkr_display_output_scale(float3 display_linear,
+                                VkrDisplayOutputParams output)
+{
+    return output.extended_linear != 0u
+               ? display_linear * output.output_scale
+               : display_linear;
+}
+
+float3 vkr_display_output_scene(float3 scene_linear, float3 display_linear,
+                                VkrDisplayOutputParams output)
+{
+    return vkr_display_output_scale(
+        vkr_display_output_scene_relative(scene_linear, display_linear, output),
+        output);
+}
+
+// UI colors already express SDR display-linear values. Scale them once when
+// the destination is extended-linear; alpha and blend factors remain unitless.
+float3 vkr_display_output_ui(float3 display_linear,
+                             VkrDisplayOutputParams output)
+{
+    return vkr_display_output_scale(display_linear, output);
+}
+
+#endif

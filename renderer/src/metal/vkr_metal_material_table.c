@@ -2,8 +2,10 @@
 
 #include "vkr_gpu_slot_table.h"
 
-_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 176,
-               "Metal material row ABI must remain 176 bytes");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_subsurface) == 336u,
+               "Subsurface material ABI offset drift");
+_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 352,
+               "Metal material row ABI must remain 352 bytes");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_texture_id) == 16,
                "Metal material base texture offset changed");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_sampler_id) == 48,
@@ -12,6 +14,30 @@ _Static_assert(offsetof(VkrMetalMaterialGpuRow, material_id) == 80,
                "Metal material identifier offset changed");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, material_emissive) == 96,
                "Metal material parameter offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, clearcoat_texture_id) == 176,
+               "Metal clearcoat texture ABI offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, clearcoat_sampler_id) == 200,
+               "Metal clearcoat sampler ABI offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_clearcoat) == 224,
+               "Metal clearcoat parameter ABI offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, sheen_color_texture_id) == 240 &&
+                   offsetof(VkrMetalMaterialGpuRow,
+                            sheen_roughness_texture_id) == 248 &&
+                   offsetof(VkrMetalMaterialGpuRow, sheen_color_sampler_id) ==
+                       256 &&
+                   offsetof(VkrMetalMaterialGpuRow,
+                            sheen_roughness_sampler_id) == 264 &&
+                   offsetof(VkrMetalMaterialGpuRow, material_sheen) == 272,
+               "Metal sheen material ABI offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_anisotropy) == 288 &&
+                   offsetof(VkrMetalMaterialGpuRow, anisotropy_texture_id) ==
+                       304 &&
+                   offsetof(VkrMetalMaterialGpuRow, anisotropy_sampler_id) ==
+                       312,
+               "Metal anisotropy material ABI offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_diffuse_transmission) ==
+                   320,
+               "Metal diffuse-transmission material ABI offset changed");
 _Static_assert(sizeof(VkrMetalTransmissionMaterialGpuRow) == 32,
                "Metal transmission material row ABI must remain 32 bytes");
 _Static_assert(offsetof(VkrMetalTransmissionMaterialGpuRow,

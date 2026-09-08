@@ -37,7 +37,7 @@ esac
   echo "Using build directory: ${BUILD_DIR}"
   cmake -S . -B "${BUILD_DIR}" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING="${BUILD_TYPE}" -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL="${VKR_EDITOR_LOGGING}" ${GENERATOR} ${COMPILERS}
 
-  BUILD_TARGETS="${VKR_BUILD_TARGET} vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer"
+  BUILD_TARGETS="${VKR_BUILD_TARGET} vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer vkr_diffuse_baker"
   cmake --build "./${BUILD_DIR}" --target $BUILD_TARGETS --config "${BUILD_TYPE}"
 
 )

@@ -1,0 +1,704 @@
+// Portable current-frame screen-space reflection math.
+//
+// Native roots own texture access, bindings, and dispatch. This header owns
+// coordinate/depth conventions, hierarchy decisions, confidence, temporal
+// acceptance and the algebra that replaces environment/probe specular.
+// Canonical UV is top-left. The renderer is right handed with forward -Z, and
+// every hierarchy/history depth is positive view depth (`-view.z`); zero marks
+// no covered opaque surface. `params.view` transforms world-space G-buffer
+// normals before reflection. The independent SSR pyramid is current-frame only.
+
+#ifndef VKR_SHADER_SSR_KERNEL_SLANGH
+#define VKR_SHADER_SSR_KERNEL_SLANGH
+
+#define VKR_SSR_MAX_STEPS 48u
+#define VKR_SSR_EPSILON 1e-6f
+#define VKR_SSR_NEAR_EPSILON 1e-4f
+// View-space normal offset only for reconstructed-receiver self separation.
+// It is deliberately independent of the depth-hit slab (`params.thickness`).
+#define VKR_SSR_RAY_ORIGIN_BIAS 1e-3f
+// RGBA16F stores authored 0.04 as this value; keep that minimum roughness a
+// single exact mirror tap instead of entering the rough bilateral filter.
+#define VKR_SSR_MIRROR_ROUGHNESS 0.040008544921875f
+#define VKR_SSR_HIT_FILTER_TAP_COUNT 5u
+#define VKR_SSR_HIT_FILTER_RADIUS_PIXELS 4.0f
+
+struct VkrSsrParams
+{
+    float4x4 projection;
+    float4x4 inverse_projection;
+    float4x4 view;
+
+    uint source_width;
+    uint source_height;
+    uint trace_width;
+    uint trace_height;
+
+    uint depth_mip_count;
+    uint max_steps;
+    uint history_valid;
+    uint reserved_u32_0;
+
+    float thickness;
+    float max_distance;
+    float roughness_cutoff;
+    float edge_fade_pixels;
+
+    float temporal_weight;
+    float temporal_depth_relative;
+    float temporal_depth_absolute;
+    float reserved_float_0;
+
+    float previous_projection_m22;
+    float previous_projection_m23;
+    float previous_projection_m32;
+    float previous_projection_m33;
+
+    float trace_texel_size_x;
+    float trace_texel_size_y;
+    float trace_extent_x;
+    float trace_extent_y;
+};
+
+struct VkrSsrTrace
+{
+    float2 start_uv;
+    float2 end_uv;
+    float start_depth;
+    float end_depth;
+    float start_clip_w;
+    float end_clip_w;
+    float t;
+    uint mip;
+    uint max_mip;
+    uint active;
+};
+
+struct VkrSsrProjectedPoint
+{
+    float2 uv;
+    float positive_depth;
+    float clip_w;
+    uint valid;
+};
+
+struct VkrSsrClipRange
+{
+    float begin;
+    float end;
+    uint valid;
+    float reserved_float_0;
+};
+
+struct VkrSsrTraceResolve
+{
+    uint hit;
+    uint descend;
+    uint advance;
+    float depth_confidence;
+    float hit_t;
+};
+
+struct VkrSsrHistoryDecision
+{
+    uint accepted;
+    float weight;
+    float expected_previous_depth;
+    float reserved_float_0;
+};
+
+VkrSsrTrace vkr_ssr_empty_trace()
+{
+    VkrSsrTrace result;
+    result.start_uv = 0.0f;
+    result.end_uv = 0.0f;
+    result.start_depth = 0.0f;
+    result.end_depth = 0.0f;
+    result.start_clip_w = 0.0f;
+    result.end_clip_w = 0.0f;
+    result.t = 0.0f;
+    result.mip = 0u;
+    result.max_mip = 0u;
+    result.active = 0u;
+    return result;
+}
+
+float vkr_ssr_saturate(float value)
+{
+    return clamp(value, 0.0f, 1.0f);
+}
+
+// MSL uses matrix-vector operators and `mix`; Slang's Vulkan target uses HLSL
+// `mul` and `lerp`. Keep that spelling difference local to this header.
+float4 vkr_ssr_matrix_vector(float4x4 matrix, float4 value)
+{
+#if defined(__METAL_VERSION__)
+    return matrix * value;
+#else
+    return mul(matrix, value);
+#endif
+}
+
+float vkr_ssr_lerp(float a, float b, float t)
+{
+#if defined(__METAL_VERSION__)
+    return mix(a, b, t);
+#else
+    return lerp(a, b, t);
+#endif
+}
+
+float2 vkr_ssr_lerp(float2 a, float2 b, float t)
+{
+#if defined(__METAL_VERSION__)
+    return mix(a, b, t);
+#else
+    return lerp(a, b, t);
+#endif
+}
+
+float3 vkr_ssr_lerp(float3 a, float3 b, float t)
+{
+#if defined(__METAL_VERSION__)
+    return mix(a, b, t);
+#else
+    return lerp(a, b, t);
+#endif
+}
+
+float4 vkr_ssr_lerp(float4 a, float4 b, float t)
+{
+#if defined(__METAL_VERSION__)
+    return mix(a, b, t);
+#else
+    return lerp(a, b, t);
+#endif
+}
+
+bool vkr_ssr_finite(float value)
+{
+    return value == value && abs(value) < 3.402823466e+38f;
+}
+
+bool vkr_ssr_valid_depth(float positive_view_depth)
+{
+    return vkr_ssr_finite(positive_view_depth) && positive_view_depth > 0.0f;
+}
+
+uint vkr_ssr_reduced_extent(uint extent)
+{
+    return extent > 1u ? extent / 2u : extent;
+}
+
+float2 vkr_ssr_uv_from_pixel(uint2 pixel, uint2 extent)
+{
+    return (float2(pixel) + 0.5f) / float2(extent);
+}
+
+float3 vkr_ssr_homogeneous_position(float4 value)
+{
+    float reciprocal_w = 1.0f / max(abs(value.w), VKR_SSR_EPSILON);
+    return value.xyz * reciprocal_w * (value.w < 0.0f ? -1.0f : 1.0f);
+}
+
+float3 vkr_ssr_reconstruct_view_position(VkrSsrParams params, float2 uv,
+                                          float device_depth)
+{
+    float2 ndc = uv * 2.0f - 1.0f;
+    return vkr_ssr_homogeneous_position(
+        vkr_ssr_matrix_vector(params.inverse_projection,
+                              float4(ndc, device_depth, 1.0f)));
+}
+
+VkrSsrProjectedPoint vkr_ssr_project_view_position(VkrSsrParams params,
+                                                    float3 view_position)
+{
+    VkrSsrProjectedPoint result;
+    result.uv = 0.0f;
+    result.positive_depth = 0.0f;
+    result.clip_w = 0.0f;
+    result.valid = 0u;
+    float4 clip = vkr_ssr_matrix_vector(params.projection,
+                                         float4(view_position, 1.0f));
+    result.positive_depth = -view_position.z;
+    if (!vkr_ssr_valid_depth(result.positive_depth) || !vkr_ssr_finite(clip.w) ||
+        abs(clip.w) <= VKR_SSR_EPSILON)
+        return result;
+    result.uv = clip.xy / clip.w * 0.5f + 0.5f;
+    result.clip_w = clip.w;
+    result.valid = all(result.uv == result.uv) &&
+                           all(abs(result.uv) < 3.402823466e+38f)
+                       ? 1u
+                       : 0u;
+    return result;
+}
+
+// The base pass calls this over all valid children in a 2x2 footprint, except
+// at the final floor-half cell where a dimension may contribute three children.
+// Zero/invalid samples do not participate, so min positive depth is a
+// conservative nearest surface for a forward -Z camera.
+float vkr_ssr_depth_reduce(float d0, float d1, float d2, float d3,
+                           float d4, float d5, float d6, float d7,
+                           float d8, uint child_count)
+{
+    float result = 3.402823466e+38f;
+    if (child_count > 0u && vkr_ssr_valid_depth(d0)) result = min(result, d0);
+    if (child_count > 1u && vkr_ssr_valid_depth(d1)) result = min(result, d1);
+    if (child_count > 2u && vkr_ssr_valid_depth(d2)) result = min(result, d2);
+    if (child_count > 3u && vkr_ssr_valid_depth(d3)) result = min(result, d3);
+    if (child_count > 4u && vkr_ssr_valid_depth(d4)) result = min(result, d4);
+    if (child_count > 5u && vkr_ssr_valid_depth(d5)) result = min(result, d5);
+    if (child_count > 6u && vkr_ssr_valid_depth(d6)) result = min(result, d6);
+    if (child_count > 7u && vkr_ssr_valid_depth(d7)) result = min(result, d7);
+    if (child_count > 8u && vkr_ssr_valid_depth(d8)) result = min(result, d8);
+    return result == 3.402823466e+38f ? 0.0f : result;
+}
+
+uint vkr_ssr_reduction_child_begin(uint destination_cell)
+{
+    return destination_cell * 2u;
+}
+
+// Floor-half resources give the final destination cell the remaining child
+// pixels. At a 5-wide parent, two children own [0,2) and [2,5), rather than
+// dropping index four or pretending each child is uniformly 2-wide.
+uint vkr_ssr_reduction_child_end(uint destination_cell,
+                                 uint destination_extent,
+                                 uint source_extent)
+{
+    uint begin = vkr_ssr_reduction_child_begin(destination_cell);
+    return destination_cell + 1u == destination_extent
+               ? source_extent
+               : min(begin + 2u, source_extent);
+}
+
+// `cell` is at `mip_extent`; these are source-UV bounds. A native pass derives
+// the cell by `min(source_pixel >> (mip + 1), mip_extent - 1)`: mip zero is
+// already the floor-half base reduction. The final cell takes the remaining
+// source pixels, so its bounds are nonuniform at every odd ancestor.
+float4 vkr_ssr_mip_cell_bounds(uint2 cell, uint mip, uint2 source_extent,
+                               uint2 mip_extent)
+{
+    uint source_shift = mip + 1u;
+    uint2 begin = cell << source_shift;
+    uint2 end = (cell + 1u) << source_shift;
+    end.x = cell.x + 1u == mip_extent.x ? source_extent.x
+                                         : min(end.x, source_extent.x);
+    end.y = cell.y + 1u == mip_extent.y ? source_extent.y
+                                         : min(end.y, source_extent.y);
+    return float4(float2(begin) / float2(source_extent),
+                  float2(end) / float2(source_extent));
+}
+
+float vkr_ssr_linearize_previous_depth(VkrSsrParams params, float device_depth)
+{
+    float denominator = device_depth * params.previous_projection_m32 -
+                        params.previous_projection_m22;
+    if (!vkr_ssr_finite(device_depth) || abs(denominator) <= VKR_SSR_EPSILON)
+        return 0.0f;
+    float view_z = (params.previous_projection_m23 -
+                    device_depth * params.previous_projection_m33) /
+                   denominator;
+    float positive_depth = -view_z;
+    return vkr_ssr_valid_depth(positive_depth) ? positive_depth : 0.0f;
+}
+
+bool vkr_ssr_eligible(float roughness, bool covered, VkrSsrParams params)
+{
+    return covered && vkr_ssr_finite(roughness) && roughness >= 0.0f &&
+           roughness <= params.roughness_cutoff;
+}
+
+float vkr_ssr_trace_depth_at(VkrSsrTrace trace, float t)
+{
+    float reciprocal_w = vkr_ssr_lerp(1.0f / trace.start_clip_w,
+                               1.0f / trace.end_clip_w, t);
+    if (abs(reciprocal_w) <= VKR_SSR_EPSILON)
+        return 0.0f;
+    float view_z_over_w = vkr_ssr_lerp(-trace.start_depth / trace.start_clip_w,
+                                -trace.end_depth / trace.end_clip_w, t);
+    float positive_depth = -view_z_over_w / reciprocal_w;
+    return vkr_ssr_valid_depth(positive_depth) ? positive_depth : 0.0f;
+}
+
+VkrSsrClipRange vkr_ssr_clip_axis(VkrSsrClipRange range, float start,
+                                   float direction)
+{
+    if (range.valid == 0u)
+        return range;
+    if (abs(direction) <= VKR_SSR_EPSILON)
+    {
+        range.valid = start >= 0.0f && start <= 1.0f ? 1u : 0u;
+        return range;
+    }
+    float t0 = -start / direction;
+    float t1 = (1.0f - start) / direction;
+    range.begin = max(range.begin, min(t0, t1));
+    range.end = min(range.end, max(t0, t1));
+    range.valid = range.begin <= range.end ? 1u : 0u;
+    return range;
+}
+
+VkrSsrClipRange vkr_ssr_clip_uv_segment(float2 start_uv, float2 end_uv)
+{
+    VkrSsrClipRange result;
+    result.begin = 0.0f;
+    result.end = 1.0f;
+    result.valid = 1u;
+    result.reserved_float_0 = 0.0f;
+    float2 direction = end_uv - start_uv;
+    result = vkr_ssr_clip_axis(result, start_uv.x, direction.x);
+    return vkr_ssr_clip_axis(result, start_uv.y, direction.y);
+}
+
+VkrSsrTrace vkr_ssr_trace_slice(VkrSsrTrace trace, float begin, float end)
+{
+    float2 uv_begin = vkr_ssr_lerp(trace.start_uv, trace.end_uv, begin);
+    float2 uv_end = vkr_ssr_lerp(trace.start_uv, trace.end_uv, end);
+    float start_depth = vkr_ssr_trace_depth_at(trace, begin);
+    float end_depth = vkr_ssr_trace_depth_at(trace, end);
+    float start_reciprocal_w = vkr_ssr_lerp(1.0f / trace.start_clip_w,
+                                     1.0f / trace.end_clip_w, begin);
+    float end_reciprocal_w = vkr_ssr_lerp(1.0f / trace.start_clip_w,
+                                   1.0f / trace.end_clip_w, end);
+    if (!vkr_ssr_valid_depth(start_depth) || !vkr_ssr_valid_depth(end_depth) ||
+        abs(start_reciprocal_w) <= VKR_SSR_EPSILON ||
+        abs(end_reciprocal_w) <= VKR_SSR_EPSILON)
+    {
+        trace.active = 0u;
+        return trace;
+    }
+    trace.start_uv = uv_begin;
+    trace.end_uv = uv_end;
+    trace.start_depth = start_depth;
+    trace.end_depth = end_depth;
+    trace.start_clip_w = 1.0f / start_reciprocal_w;
+    trace.end_clip_w = 1.0f / end_reciprocal_w;
+    trace.t = 0.0f;
+    return trace;
+}
+
+VkrSsrTrace vkr_ssr_trace_begin(VkrSsrParams params, float3 origin_view,
+                                float3 direction_view, uint max_mip)
+{
+    VkrSsrTrace trace = vkr_ssr_empty_trace();
+    if (!all(direction_view == direction_view) ||
+        dot(direction_view, direction_view) <= VKR_SSR_EPSILON)
+        return trace;
+
+    direction_view = normalize(direction_view);
+    float maximum_distance = params.max_distance;
+    if (direction_view.z > VKR_SSR_EPSILON)
+        maximum_distance = min(maximum_distance,
+                               (-VKR_SSR_NEAR_EPSILON - origin_view.z) /
+                                   direction_view.z);
+    if (!(maximum_distance > VKR_SSR_EPSILON))
+        return trace;
+
+    VkrSsrProjectedPoint start =
+        vkr_ssr_project_view_position(params, origin_view);
+    VkrSsrProjectedPoint end = vkr_ssr_project_view_position(
+        params, origin_view + direction_view * maximum_distance);
+    if (start.valid == 0u || end.valid == 0u)
+        return trace;
+
+    trace.start_uv = start.uv;
+    trace.end_uv = end.uv;
+    trace.start_depth = start.positive_depth;
+    trace.end_depth = end.positive_depth;
+    trace.start_clip_w = start.clip_w;
+    trace.end_clip_w = end.clip_w;
+    trace.t = 0.0f;
+    trace.mip = min(max_mip, max(params.depth_mip_count, 1u) - 1u);
+    trace.max_mip = trace.mip;
+    trace.active = 1u;
+    VkrSsrClipRange clip_range = vkr_ssr_clip_uv_segment(start.uv, end.uv);
+    if (clip_range.valid != 0u && clip_range.end > clip_range.begin)
+        return vkr_ssr_trace_slice(trace, clip_range.begin, clip_range.end);
+    return vkr_ssr_empty_trace();
+}
+
+float2 vkr_ssr_trace_uv(VkrSsrTrace trace)
+{
+    return vkr_ssr_lerp(trace.start_uv, trace.end_uv, trace.t);
+}
+
+float vkr_ssr_trace_depth(VkrSsrTrace trace)
+{
+    return vkr_ssr_trace_depth_at(trace, trace.t);
+}
+
+bool vkr_ssr_trace_in_bounds(VkrSsrTrace trace)
+{
+    float2 uv = vkr_ssr_trace_uv(trace);
+    return all(uv >= 0.0f) && all(uv < 1.0f);
+}
+
+// The bounds are derived from full source pixels, not `uv * mip_extent`: a
+// floor-half hierarchy has a nonuniform final cell at every odd source extent.
+float vkr_ssr_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
+                              VkrSsrParams params)
+{
+    if (trace.active == 0u || any(mip_extent == 0u) ||
+        !vkr_ssr_trace_in_bounds(trace))
+        return trace.t;
+    float2 uv = vkr_ssr_trace_uv(trace);
+    float2 uv_direction = trace.end_uv - trace.start_uv;
+    uint2 source_pixel = min(uint2(floor(uv * float2(params.source_width,
+                                                      params.source_height))),
+                             uint2(params.source_width - 1u,
+                                   params.source_height - 1u));
+    uint2 cell = min(source_pixel >> (trace.mip + 1u), mip_extent - 1u);
+    float4 bounds = vkr_ssr_mip_cell_bounds(
+        cell, trace.mip, uint2(params.source_width, params.source_height), mip_extent);
+    float tx = abs(uv_direction.x) > VKR_SSR_EPSILON
+                   ? ((uv_direction.x > 0.0f ? bounds.z : bounds.x) -
+                      uv.x) /
+                         uv_direction.x
+                   : 3.402823466e+38f;
+    float ty = abs(uv_direction.y) > VKR_SSR_EPSILON
+                   ? ((uv_direction.y > 0.0f ? bounds.w : bounds.y) -
+                      uv.y) /
+                         uv_direction.y
+                   : 3.402823466e+38f;
+    float delta = max(min(tx, ty), 0.0f);
+    return min(trace.t + delta, 1.0f);
+}
+
+// Re-ascending one level retains the projected DDA's bounded 48-step work.
+// The post-boundary epsilon is directional through the ray's UV slope and
+// prevents floor() from selecting the just-exited cell on either slope sign.
+VkrSsrTrace vkr_ssr_trace_advance(VkrSsrTrace trace, float cell_exit_t)
+{
+    trace.t = min(cell_exit_t + VKR_SSR_EPSILON, 1.0f);
+    trace.mip = min(trace.mip + 1u, trace.max_mip);
+    if (!(trace.t < 1.0f) || !vkr_ssr_trace_in_bounds(trace))
+        trace.active = 0u;
+    return trace;
+}
+
+VkrSsrTraceResolve vkr_ssr_trace_resolve(VkrSsrTrace trace,
+                                         float hierarchy_depth,
+                                         float cell_exit_t,
+                                         VkrSsrParams params)
+{
+    VkrSsrTraceResolve result;
+    result.hit = 0u;
+    result.descend = 0u;
+    result.advance = 0u;
+    result.depth_confidence = 0.0f;
+    result.hit_t = 0.0f;
+    if (trace.active == 0u || !vkr_ssr_valid_depth(hierarchy_depth))
+    {
+        result.advance = trace.active;
+        return result;
+    }
+
+    if (!(cell_exit_t > trace.t))
+    {
+        result.advance = 1u;
+        return result;
+    }
+    float entry_depth = vkr_ssr_trace_depth(trace);
+    VkrSsrTrace exit_trace = trace;
+    exit_trace.t = cell_exit_t;
+    float exit_depth = vkr_ssr_trace_depth(exit_trace);
+    float depth_min = min(entry_depth, exit_depth);
+    float depth_max = max(entry_depth, exit_depth);
+    if (depth_max < hierarchy_depth - params.thickness)
+    {
+        result.advance = 1u;
+        return result;
+    }
+    if (trace.mip > 0u)
+    {
+        result.descend = 1u;
+        return result;
+    }
+    if (depth_min <= hierarchy_depth + params.thickness)
+    {
+        result.hit = 1u;
+        float target_depth = clamp(hierarchy_depth, depth_min, depth_max);
+        float low_t = trace.t;
+        float high_t = cell_exit_t;
+        // Positive depth is Q(t) / K(t), where both terms are affine over the
+        // projected segment. Solve Q(t) = target_depth * K(t) directly: this
+        // is exact for both perspective projection and the affine/orthographic
+        // equal-W case. A constant-depth segment has no unique crossing, so
+        // its verified cell entry is the stable representative.
+        float q0 = trace.start_depth / trace.start_clip_w;
+        float dq = trace.end_depth / trace.end_clip_w - q0;
+        float k0 = 1.0f / trace.start_clip_w;
+        float dk = 1.0f / trace.end_clip_w - k0;
+        float denominator = dq - target_depth * dk;
+        if (abs(denominator) <= VKR_SSR_EPSILON)
+            result.hit_t = low_t;
+        else
+            result.hit_t = clamp((target_depth * k0 - q0) / denominator,
+                                 low_t, high_t);
+        // The hierarchy only proposes a leaf candidate. Its residual within
+        // the accepted slab is DDA grid phase, not fractional coverage: the
+        // native trace validates full-resolution depth and facing before it
+        // publishes this result. Edge and roughness still attenuate a valid
+        // reflection, but a valid planar hit must retain full confidence.
+        result.depth_confidence = 1.0f;
+        return result;
+    }
+    result.advance = 1u;
+    return result;
+}
+
+VkrSsrTrace vkr_ssr_trace_descend(VkrSsrTrace trace)
+{
+    if (trace.mip > 0u)
+        --trace.mip;
+    return trace;
+}
+
+float vkr_ssr_edge_confidence(float2 hit_uv, VkrSsrParams params)
+{
+    if (params.edge_fade_pixels <= 0.0f)
+        return 1.0f;
+    float2 source_extent = float2(params.source_width, params.source_height);
+    float edge_pixels = min(min(hit_uv.x, 1.0f - hit_uv.x) * source_extent.x,
+                            min(hit_uv.y, 1.0f - hit_uv.y) * source_extent.y);
+    return vkr_ssr_saturate(edge_pixels / params.edge_fade_pixels);
+}
+
+float vkr_ssr_roughness_confidence(float roughness, VkrSsrParams params)
+{
+    // The exact RGBA16F mirror threshold receives full confidence. The linear
+    // fade then reaches one half at the accepted roughness cutoff.
+    float span = max(params.roughness_cutoff - VKR_SSR_MIRROR_ROUGHNESS,
+                     VKR_SSR_EPSILON);
+    float normalized = vkr_ssr_saturate(
+        (roughness - VKR_SSR_MIRROR_ROUGHNESS) / span);
+    return 1.0f - normalized * 0.5f;
+}
+
+float vkr_ssr_trace_confidence(float roughness, float2 hit_uv,
+                                float depth_confidence, VkrSsrParams params)
+{
+    return vkr_ssr_roughness_confidence(roughness, params) *
+           vkr_ssr_edge_confidence(hit_uv, params) *
+           vkr_ssr_saturate(depth_confidence);
+}
+
+// Roughness is not a one-sample GGX estimator here. Mirror surfaces retain one
+// exact hit tap; rougher accepted surfaces use the five fixed offsets below to
+// approximate a finite reflection cone without allocating an HDR mip chain.
+uint vkr_ssr_hit_filter_tap_count(float roughness)
+{
+    return roughness <= VKR_SSR_MIRROR_ROUGHNESS
+               ? 1u
+               : VKR_SSR_HIT_FILTER_TAP_COUNT;
+}
+
+float2 vkr_ssr_hit_filter_offset(uint tap)
+{
+    if (tap == 1u) return float2(1.0f, 0.0f);
+    if (tap == 2u) return float2(-1.0f, 0.0f);
+    if (tap == 3u) return float2(0.0f, 1.0f);
+    if (tap == 4u) return float2(0.0f, -1.0f);
+    return 0.0f;
+}
+
+float vkr_ssr_hit_filter_radius_pixels(float roughness, VkrSsrParams params)
+{
+    float span = max(params.roughness_cutoff - VKR_SSR_MIRROR_ROUGHNESS,
+                     VKR_SSR_EPSILON);
+    float normalized = vkr_ssr_saturate(
+        (roughness - VKR_SSR_MIRROR_ROUGHNESS) / span);
+    return VKR_SSR_HIT_FILTER_RADIUS_PIXELS * normalized * normalized;
+}
+
+// Native resolve loops a fixed 3x3 around the half-resolution receiver. The
+// source-depth tolerance grows with view distance; normal rejection prevents
+// crossing a crease or a different opaque object. Mirror pixels take only the
+// center path and therefore remain exact.
+float vkr_ssr_receiver_bilateral_weight(float2 offset, float center_depth,
+                                        float neighbor_depth,
+                                        float3 center_normal,
+                                        float3 neighbor_normal,
+                                        VkrSsrParams params)
+{
+    if (!vkr_ssr_valid_depth(center_depth) ||
+        !vkr_ssr_valid_depth(neighbor_depth))
+        return 0.0f;
+    float depth_tolerance = max(params.thickness, center_depth * 0.05f);
+    float depth_weight = vkr_ssr_saturate(
+        1.0f - abs(neighbor_depth - center_depth) / depth_tolerance);
+    float normal_weight = vkr_ssr_saturate(
+        (dot(center_normal, neighbor_normal) - 0.5f) * 2.0f);
+    float spatial_weight = 1.0f / (1.0f + dot(offset, offset));
+    return depth_weight * normal_weight * spatial_weight;
+}
+
+VkrSsrHistoryDecision vkr_ssr_temporal_accept(
+    VkrSsrParams params, uint2 current_identity, uint2 history_identity,
+    float history_depth, float previous_device_depth, float2 previous_uv,
+    float motion_validity)
+{
+    VkrSsrHistoryDecision result;
+    result.accepted = 0u;
+    result.weight = 0.0f;
+    result.expected_previous_depth = 0.0f;
+    result.reserved_float_0 = 0.0f;
+    result.expected_previous_depth =
+        vkr_ssr_linearize_previous_depth(params, previous_device_depth);
+    float2 half_texel =
+        float2(params.trace_texel_size_x, params.trace_texel_size_y) * 0.5f;
+    bool in_bounds = all(previous_uv >= half_texel) &&
+                     all(previous_uv <= 1.0f - half_texel);
+    float allowed_depth_error =
+        max(params.temporal_depth_absolute,
+            params.temporal_depth_relative * result.expected_previous_depth);
+    bool depth_matches = vkr_ssr_valid_depth(history_depth) &&
+                         vkr_ssr_valid_depth(result.expected_previous_depth) &&
+                         abs(history_depth - result.expected_previous_depth) <=
+                             allowed_depth_error;
+    result.accepted = params.history_valid != 0u && current_identity.x != 0u &&
+                              all(current_identity == history_identity) && in_bounds &&
+                              motion_validity > 0.5f && depth_matches
+                          ? 1u
+                          : 0u;
+    result.weight = result.accepted != 0u ? params.temporal_weight : 0.0f;
+    return result;
+}
+
+float3 vkr_ssr_history_clamp(float3 history_color, float3 neighborhood_min,
+                             float3 neighborhood_max)
+{
+    return clamp(history_color, neighborhood_min, neighborhood_max);
+}
+
+float4 vkr_ssr_temporal_filter(VkrSsrParams params, float4 raw,
+                               float4 history, float3 neighborhood_min,
+                               float3 neighborhood_max,
+                               VkrSsrHistoryDecision decision)
+{
+    float raw_confidence = vkr_ssr_saturate(raw.w);
+    float history_weight = decision.weight * raw_confidence *
+                           vkr_ssr_saturate(history.w);
+    float3 clamped_history =
+        vkr_ssr_history_clamp(history.xyz, neighborhood_min, neighborhood_max);
+    return float4(vkr_ssr_lerp(raw.xyz, clamped_history, history_weight), raw_confidence);
+}
+
+// `old_environment_specular` is the exact local-probe/global-environment term
+// already present in opaque HDR. `receiver_weight` is its receiver-side DFG
+// reflectance, specular visibility and IBL controls. Replacing only its
+// incoming radiance preserves all other opaque lighting on both a hit and miss.
+float3 vkr_ssr_replace_environment_specular(float3 opaque_hdr,
+                                             float3 old_environment_specular,
+                                             float3 ssr_incoming_radiance,
+                                             float3 receiver_weight,
+                                             float confidence)
+{
+    float3 replacement = ssr_incoming_radiance * receiver_weight;
+    return opaque_hdr - old_environment_specular +
+           vkr_ssr_lerp(old_environment_specular, replacement,
+                vkr_ssr_saturate(confidence));
+}
+
+#endif

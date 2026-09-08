@@ -24,6 +24,7 @@ typedef enum VkrSceneEditField {
   VKR_SCENE_EDIT_VISIBILITY = 1u << 2,
   VKR_SCENE_EDIT_POINT_LIGHT = 1u << 3,
   VKR_SCENE_EDIT_DIRECTIONAL_LIGHT = 1u << 4,
+  VKR_SCENE_EDIT_RECTANGLE_LIGHT = 1u << 5,
 } VkrSceneEditField;
 
 typedef struct VkrSceneEditValues {
@@ -35,6 +36,7 @@ typedef struct VkrSceneEditValues {
   SceneVisibility visibility;
   ScenePointLight point_light;
   SceneDirectionalLight directional_light;
+  SceneRectangleLight rectangle_light;
 } VkrSceneEditValues;
 
 typedef struct VkrSceneEditRequest {

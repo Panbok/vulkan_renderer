@@ -3,6 +3,16 @@
 
 #if defined(PLATFORM_WINDOWS)
 
+#ifndef COBJMACROS
+#define COBJMACROS
+#endif
+#include <dxgi1_6.h>
+
+#include <math.h>
+#include <wchar.h>
+
+enum { VKR_WIN32_DISPLAY_PATH_MAX = 32u, VKR_WIN32_DISPLAY_MODE_MAX = 64u };
+
 typedef struct PlatformState {
   HINSTANCE instance;
   HWND window;
@@ -32,6 +42,15 @@ typedef struct PlatformState {
   uint32_t window_width;
   uint32_t window_height;
   uint16_t pending_high_surrogate;
+  /* The window pump owns DXGI and DisplayConfig. The render thread only
+   * requests and copies this seqlock-published capability snapshot. */
+  IDXGIFactory1 *display_factory;
+  HMONITOR display_monitor;
+  VkrAtomicUint64 display_output_state;
+  VkrAtomicUint32 display_output_scale_bits;
+  VkrAtomicUint32 display_output_sequence;
+  VkrAtomicUint32 display_output_requested;
+  bool8_t display_output_dirty;
 } PlatformState;
 
 // Forward declarations
@@ -43,6 +62,229 @@ static void show_cursor(PlatformState *state);
 static void update_cursor_image(PlatformState *state);
 static void center_cursor_in_window(PlatformState *state);
 static bool8_t cursor_in_content_area(PlatformState *state);
+static void vkr_win32_refresh_display_output(PlatformState *state);
+
+vkr_internal uint32_t vkr_win32_float_bits(float32_t value) {
+  uint32_t bits = 0u;
+  MemCopy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+vkr_internal bool8_t vkr_win32_display_output_equal(
+    VkrDisplayOutputSnapshot a, VkrDisplayOutputSnapshot b) {
+  return a.available == b.available &&
+         vkr_win32_float_bits(a.headroom) == vkr_win32_float_bits(b.headroom) &&
+         vkr_win32_float_bits(a.output_scale) ==
+             vkr_win32_float_bits(b.output_scale);
+}
+
+vkr_internal uint64_t vkr_win32_display_output_pack(
+    uint32_t revision, bool8_t available, float32_t headroom) {
+  const uint32_t state = (revision & 0x7fffffffu) |
+                         (available ? 0x80000000u : 0u);
+  return ((uint64_t)state << 32u) |
+         (uint64_t)vkr_win32_float_bits(headroom);
+}
+
+vkr_internal VkrDisplayOutputSnapshot
+vkr_win32_display_output_current(const PlatformState *state) {
+  const uint64_t packed = vkr_atomic_uint64_load(
+      &state->display_output_state, VKR_MEMORY_ORDER_SEQ_CST);
+  const uint32_t state_bits = (uint32_t)(packed >> 32u);
+  const uint32_t headroom_bits = (uint32_t)packed;
+  float32_t headroom = 0.0f;
+  float32_t output_scale = 0.0f;
+  MemCopy(&headroom, &headroom_bits, sizeof(headroom));
+  const uint32_t scale_bits = vkr_atomic_uint32_load(
+      &state->display_output_scale_bits, VKR_MEMORY_ORDER_SEQ_CST);
+  MemCopy(&output_scale, &scale_bits, sizeof(output_scale));
+  return (VkrDisplayOutputSnapshot){
+      .headroom = headroom,
+      .output_scale = output_scale,
+      .revision = state_bits & 0x7fffffffu,
+      .available = (state_bits & 0x80000000u) != 0u,
+  };
+}
+
+vkr_internal void vkr_win32_publish_display_output(
+    PlatformState *state, VkrDisplayOutputSnapshot snapshot) {
+  const VkrDisplayOutputSnapshot previous =
+      vkr_win32_display_output_current(state);
+  if (vkr_win32_display_output_equal(previous, snapshot))
+    return;
+  uint32_t revision = (uint32_t)previous.revision + 1u;
+  if (revision == 0u || revision > 0x7fffffffu)
+    revision = 1u;
+  uint32_t sequence = vkr_atomic_uint32_load(&state->display_output_sequence,
+                                              VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint32_store(&state->display_output_sequence, sequence | 1u,
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint32_store(&state->display_output_scale_bits,
+                          vkr_win32_float_bits(snapshot.output_scale),
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint64_store(
+      &state->display_output_state,
+      vkr_win32_display_output_pack(revision, snapshot.available,
+                                    snapshot.headroom),
+      VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint32_store(&state->display_output_sequence,
+                          (sequence | 1u) + 1u, VKR_MEMORY_ORDER_SEQ_CST);
+}
+
+vkr_internal bool8_t vkr_win32_sdr_white_nits(
+    const DISPLAYCONFIG_PATH_TARGET_INFO *target, float32_t *out_nits) {
+  if (!target || !out_nits)
+    return false_v;
+  DISPLAYCONFIG_SDR_WHITE_LEVEL white_level = {
+      .header =
+          {
+              .type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+              .size = sizeof(white_level),
+              .adapterId = target->adapterId,
+              .id = target->id,
+          },
+  };
+  if (DisplayConfigGetDeviceInfo(&white_level.header) != ERROR_SUCCESS)
+    return false_v;
+  const float32_t nits = (float32_t)white_level.SDRWhiteLevel * 0.08f;
+  if (!isfinite(nits) || nits <= 0.0f)
+    return false_v;
+  *out_nits = nits;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_win32_output_target_for_name(
+    const WCHAR *device_name, DISPLAYCONFIG_PATH_TARGET_INFO *out_target) {
+  if (!device_name || !out_target)
+    return false_v;
+  DISPLAYCONFIG_PATH_INFO paths[VKR_WIN32_DISPLAY_PATH_MAX];
+  DISPLAYCONFIG_MODE_INFO modes[VKR_WIN32_DISPLAY_MODE_MAX];
+  for (uint32_t attempt = 0u; attempt < 2u; ++attempt) {
+    UINT32 path_count = 0u;
+    UINT32 mode_count = 0u;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count,
+                                    &mode_count) != ERROR_SUCCESS ||
+        path_count == 0u || path_count > ArrayCount(paths) ||
+        mode_count > ArrayCount(modes))
+      return false_v;
+    const LONG result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count,
+                                           paths, &mode_count, modes, NULL);
+    if (result == ERROR_INSUFFICIENT_BUFFER)
+      continue;
+    if (result != ERROR_SUCCESS)
+      return false_v;
+    for (uint32_t path_index = 0u; path_index < path_count; ++path_index) {
+      const DISPLAYCONFIG_PATH_INFO *path = &paths[path_index];
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME source_name = {
+          .header =
+              {
+                  .type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                  .size = sizeof(source_name),
+                  .adapterId = path->sourceInfo.adapterId,
+                  .id = path->sourceInfo.id,
+              },
+      };
+      if (DisplayConfigGetDeviceInfo(&source_name.header) != ERROR_SUCCESS ||
+          wcscmp(source_name.viewGdiDeviceName, device_name) != 0)
+        continue;
+      *out_target = path->targetInfo;
+      return true_v;
+    }
+    return false_v;
+  }
+  return false_v;
+}
+
+vkr_internal VkrDisplayOutputSnapshot
+vkr_win32_query_display_output(IDXGIFactory1 *factory, HMONITOR monitor) {
+  VkrDisplayOutputSnapshot result = {0};
+  if (!factory || !monitor)
+    return result;
+  for (UINT adapter_index = 0u;; ++adapter_index) {
+    IDXGIAdapter1 *adapter = NULL;
+    const HRESULT adapter_result =
+        IDXGIFactory1_EnumAdapters1(factory, adapter_index, &adapter);
+    if (adapter_result == DXGI_ERROR_NOT_FOUND)
+      break;
+    if (FAILED(adapter_result))
+      break;
+    for (UINT output_index = 0u;; ++output_index) {
+      IDXGIOutput *output = NULL;
+      const HRESULT output_result =
+          IDXGIAdapter1_EnumOutputs(adapter, output_index, &output);
+      if (output_result == DXGI_ERROR_NOT_FOUND)
+        break;
+      if (FAILED(output_result))
+        break;
+      DXGI_OUTPUT_DESC desc = {0};
+      const bool8_t matching_monitor =
+          SUCCEEDED(IDXGIOutput_GetDesc(output, &desc)) &&
+          desc.Monitor == monitor;
+      if (!matching_monitor) {
+        IDXGIOutput_Release(output);
+        continue;
+      }
+      IDXGIOutput6 *output6 = NULL;
+      DXGI_OUTPUT_DESC1 desc1 = {0};
+      DISPLAYCONFIG_PATH_TARGET_INFO target = {0};
+      const bool8_t queried =
+          SUCCEEDED(IDXGIOutput_QueryInterface(output, &IID_IDXGIOutput6,
+                                                (void **)&output6)) &&
+          output6 && SUCCEEDED(IDXGIOutput6_GetDesc1(output6, &desc1)) &&
+          vkr_win32_output_target_for_name(desc.DeviceName, &target);
+      float32_t sdr_white_nits = 0.0f;
+      if (queried &&
+          vkr_win32_sdr_white_nits(&target, &sdr_white_nits) &&
+          desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 &&
+          isfinite(desc1.MaxFullFrameLuminance) &&
+          isfinite(desc1.MaxLuminance) && desc1.MaxFullFrameLuminance > 0.0f &&
+          desc1.MaxLuminance >= desc1.MaxFullFrameLuminance) {
+        const float32_t headroom = desc1.MaxFullFrameLuminance / sdr_white_nits;
+        const float32_t output_scale = sdr_white_nits / 80.0f;
+        if (isfinite(headroom) && isfinite(output_scale) && headroom > 1.0f &&
+            output_scale > 0.0f) {
+          result = (VkrDisplayOutputSnapshot){
+              .headroom = headroom,
+              .output_scale = output_scale,
+              .available = true_v,
+          };
+        }
+      }
+      if (output6)
+        IDXGIOutput6_Release(output6);
+      IDXGIOutput_Release(output);
+      IDXGIAdapter1_Release(adapter);
+      return result;
+    }
+    IDXGIAdapter1_Release(adapter);
+  }
+  return result;
+}
+
+static void vkr_win32_refresh_display_output(PlatformState *state) {
+  if (!state || !state->window)
+    return;
+  const HMONITOR monitor =
+      MonitorFromWindow(state->window, MONITOR_DEFAULTTONEAREST);
+  if (monitor != state->display_monitor) {
+    state->display_monitor = monitor;
+    state->display_output_dirty = true_v;
+  }
+  if (state->display_factory && !IDXGIFactory1_IsCurrent(state->display_factory)) {
+    IDXGIFactory1_Release(state->display_factory);
+    state->display_factory = NULL;
+    state->display_output_dirty = true_v;
+  }
+  if (!state->display_output_dirty)
+    return;
+  if (!state->display_factory &&
+      FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1,
+                                (void **)&state->display_factory)))
+    state->display_factory = NULL;
+  vkr_win32_publish_display_output(
+      state, vkr_win32_query_display_output(state->display_factory, monitor));
+  state->display_output_dirty = false_v;
+}
 
 bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
                           const char *title, int32_t x, int32_t y,
@@ -80,6 +322,17 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   state->window_width = width;
   state->window_height = height;
   state->pending_high_surrogate = 0u;
+  state->display_factory = NULL;
+  state->display_monitor = NULL;
+  vkr_atomic_uint64_store(&state->display_output_state, 0u,
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint32_store(&state->display_output_scale_bits, 0u,
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint32_store(&state->display_output_sequence, 0u,
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint32_store(&state->display_output_requested, 0u,
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  state->display_output_dirty = true_v;
 
   // Initialize mouse capture state
   state->cursor_hidden = false_v;
@@ -173,7 +426,6 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
                awareness, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2),
            GetDpiForWindow(state->window), client_rect.right - client_rect.left,
            client_rect.bottom - client_rect.top);
-
   // Dispatch window init event
   event_manager_dispatch(event_manager,
                          (Event){.type = EVENT_TYPE_WINDOW_INIT});
@@ -191,6 +443,10 @@ void vkr_window_destroy(VkrWindow *window) {
   if (state->window) {
     DestroyWindow(state->window);
     state->window = NULL;
+  }
+  if (state->display_factory) {
+    IDXGIFactory1_Release(state->display_factory);
+    state->display_factory = NULL;
   }
 
   input_shutdown(state->input_state);
@@ -213,6 +469,9 @@ bool8_t vkr_window_update(VkrWindow *window) {
     TranslateMessage(&msg);
     DispatchMessage(&msg);
   }
+  if (vkr_atomic_uint32_exchange(&state->display_output_requested, 0u,
+                                 VKR_MEMORY_ORDER_SEQ_CST) != 0u)
+    vkr_win32_refresh_display_output(state);
 
   // Re-center cursor if in capture mode and it has moved since the last call
   // This prevents the cursor from hitting window boundaries and stopping
@@ -247,6 +506,26 @@ bool8_t vkr_window_update(VkrWindow *window) {
   }
 
   return !state->quit_flagged;
+}
+
+VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  PlatformState *state = (PlatformState *)window->platform_state;
+  vkr_atomic_uint32_store(&state->display_output_requested, 1u,
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  for (;;) {
+    const uint32_t begin = vkr_atomic_uint32_load(
+        &state->display_output_sequence, VKR_MEMORY_ORDER_SEQ_CST);
+    if (begin & 1u)
+      continue;
+    const VkrDisplayOutputSnapshot snapshot =
+        vkr_win32_display_output_current(state);
+    const uint32_t end = vkr_atomic_uint32_load(
+        &state->display_output_sequence, VKR_MEMORY_ORDER_SEQ_CST);
+    if (begin == end)
+      return snapshot;
+  }
 }
 
 VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
@@ -443,6 +722,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   }
 
   case WM_DPICHANGED: {
+    state->display_output_dirty = true_v;
     const UINT dpi = LOWORD(wparam);
     if (dpi > 0u) {
       vkr_window_content_scale_publish(state->owner, (float32_t)dpi / 96.0f);
@@ -457,6 +737,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     return FALSE;
   }
+
+  case WM_DISPLAYCHANGE:
+  case WM_DEVICECHANGE:
+  case WM_SETTINGCHANGE:
+  case WM_WINDOWPOSCHANGED:
+    state->display_output_dirty = true_v;
+    return DefWindowProc(hwnd, msg, wparam, lparam);
 
   case WM_SIZE: {
     uint32_t new_width = LOWORD(lparam);

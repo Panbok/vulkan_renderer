@@ -104,9 +104,9 @@ vkr_internal bool8_t vkr_vk_deferred_push_root(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_vk_temporal_scene_equal(
-    const VkrVulkanTemporalSceneState *current,
-    const VkrVulkanTemporalSceneState *previous) {
+vkr_internal bool8_t
+vkr_vk_temporal_scene_equal(const VkrVulkanTemporalSceneState *current,
+                            const VkrVulkanTemporalSceneState *previous) {
   return current->signature.eligible && previous->signature.eligible &&
          current->signature.hash[0] == previous->signature.hash[0] &&
          current->signature.hash[1] == previous->signature.hash[1] &&
@@ -205,7 +205,8 @@ bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
           .image = previous->image.handle,
           .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                               .levelCount = 1u, .layerCount = 1u},
+                               .levelCount = 1u,
+                               .layerCount = 1u},
       };
       prepared->image_barrier_count = 1u;
     }
@@ -219,7 +220,8 @@ bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
                                  &prepared->root_address))
     return false_v;
   prepared->pipelines[0] =
-      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FSR31_STABILIZE];
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FSR31_STABILIZE];
   prepared->groups[0][0] = (root.output_extent[0] + 7u) / 8u;
   prepared->groups[0][1] = (root.output_extent[1] + 7u) / 8u;
   prepared->groups[0][2] = 1u;
@@ -727,6 +729,42 @@ bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
           selected_index = i;
         }
       }
+    } else if ((renderer->prepared_frame.ssr_enabled ||
+                renderer->prepared_frame.ssgi_enabled ||
+                packet->motion_blur_enabled) &&
+               packet->temporal.reset_reasons == VKR_TEMPORAL_RESET_NONE) {
+      VkrVulkanGraphBuffer *transforms =
+          &renderer
+               ->graph_buffers[renderer->temporal_transform_history_handle.id -
+                               1u];
+      for (uint32_t i = 0u; i < colors->instance_count; ++i) {
+        VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
+        if (i == current || !candidate->history_valid ||
+            candidate->history_producer_submit_value >
+                renderer->completed_value ||
+            candidate->history_frame_index >= packet->input.frame.frame_index ||
+            packet->input.frame.frame_index - candidate->history_frame_index >
+                colors->instance_count ||
+            candidate->history_scene_generation !=
+                packet->input.frame.scene_generation ||
+            candidate->history_width !=
+                renderer->prepared_frame.viewport_width ||
+            candidate->history_height !=
+                renderer->prepared_frame.viewport_height ||
+            i >= transforms->instance_count)
+          continue;
+        VkrVulkanGraphBufferInstance *previous = &transforms->instances[i];
+        if (!previous->history_valid ||
+            previous->history_producer_submit_value !=
+                candidate->history_producer_submit_value ||
+            previous->history_frame_index != candidate->history_frame_index)
+          continue;
+        if (!selected || candidate->history_producer_submit_value >
+                             selected->history_producer_submit_value) {
+          selected = candidate;
+          selected_index = i;
+        }
+      }
     }
     if (selected) {
       VkrVulkanGraphBuffer *transforms =
@@ -743,10 +781,11 @@ bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
           &identities->instances[selected_index];
       VkrVulkanGraphImageInstance *previous_surface =
           &surfaces->instances[selected_index];
-      if (!previous_transform->history_valid || !selected->has_sampled_slot ||
-          !previous_depth->has_storage_slot ||
-          !previous_identity->has_storage_slot ||
-          !previous_surface->has_storage_slot) {
+      if (!previous_transform->history_valid ||
+          (packet->temporal.enabled &&
+           (!selected->has_sampled_slot || !previous_depth->has_storage_slot ||
+            !previous_identity->has_storage_slot ||
+            !previous_surface->has_storage_slot))) {
         selected = NULL;
       } else {
         /* The preceding submission may still be in flight. All render work
@@ -767,47 +806,55 @@ bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
         VkImageMemoryBarrier2 image_barriers[4] = {0};
         VkrVulkanGraphImageInstance *history_images[] = {
             selected, previous_depth, previous_identity, previous_surface};
-        for (uint32_t i = 0u; i < ArrayCount(history_images); ++i) {
-          image_barriers[i] = (VkImageMemoryBarrier2){
-              .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-              .srcStageMask =
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                  (i == 0u ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0u),
-              .srcAccessMask =
-                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                  (i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0u),
-              .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-              .dstAccessMask = i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                                       : VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-              .oldLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                   : VK_IMAGE_LAYOUT_GENERAL,
-              .newLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                   : VK_IMAGE_LAYOUT_GENERAL,
-              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-              .image = history_images[i]->image.handle,
-              .subresourceRange =
-                  {
-                      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                      .levelCount = 1u,
-                      .layerCount = 1u,
-                  },
-          };
+        if (packet->temporal.enabled)
+          for (uint32_t i = 0u; i < ArrayCount(history_images); ++i) {
+            image_barriers[i] = (VkImageMemoryBarrier2){
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask =
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                    (i == 0u ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0u),
+                .srcAccessMask =
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                    (i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0u),
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                                         : VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .oldLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                     : VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = i == 0u ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                     : VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = history_images[i]->image.handle,
+                .subresourceRange =
+                    {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .levelCount = 1u,
+                        .layerCount = 1u,
+                    },
+            };
+          }
+        if (packet->temporal.enabled) {
+          MemCopy(prepared->image_barriers, image_barriers,
+                  sizeof(image_barriers));
+          prepared->image_barrier_count = ArrayCount(image_barriers);
         }
-        MemCopy(prepared->image_barriers, image_barriers,
-                sizeof(image_barriers));
-        prepared->image_barrier_count = ArrayCount(image_barriers);
         prepared->buffer_barrier = buffer_barrier;
         prepared->has_buffer_barrier = true_v;
         slot->temporal_transform_input = previous_transform;
-        slot->temporal_color_input = selected;
         slot->temporal_previous_view_projection =
             selected->history_view_projection;
         slot->temporal_previous_frame_index = selected->history_frame_index;
-        slot->temporal_depth_input = previous_depth;
-        slot->temporal_identity_input = previous_identity;
-        slot->temporal_surface_input = previous_surface;
         slot->temporal_history_valid = true_v;
+        /* SSR and SSGI consume this transform predecessor even when final TAA
+         * is disabled. Keep final TAA's color tuple absent in that mode so its
+         * resolve remains current-frame-only. */
+        if (packet->temporal.enabled) {
+          slot->temporal_color_input = selected;
+          slot->temporal_depth_input = previous_depth;
+          slot->temporal_identity_input = previous_identity;
+          slot->temporal_surface_input = previous_surface;
+        }
       }
     }
   }
@@ -875,7 +922,17 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
     instance->history_height = instance->image.height;
     instance->history_valid = true_v;
   }
+  renderer->motion_seconds += packet->motion_blur_delta_seconds;
+  if (packet->temporal.reset_reasons != 0u &&
+      vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)) {
+    VkrVulkanGraphBuffer *transforms = &renderer->graph_buffers[
+        renderer->temporal_transform_history_handle.id - 1u];
+    for (uint32_t i = 0u; i < transforms->instance_count; ++i)
+      transforms->instances[i].history_motion_valid = false_v;
+  }
   if (slot->temporal_transform_output) {
+    slot->temporal_transform_output->history_motion_seconds = renderer->motion_seconds;
+    slot->temporal_transform_output->history_motion_valid = true_v;
     slot->temporal_transform_output->history_producer_submit_value =
         submit_value;
     slot->temporal_transform_output->history_frame_index =
@@ -1053,10 +1110,10 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       vkr_vk_deferred_buffer(renderer, pass, 1u);
   VkrVulkanGraphBufferInstance *state =
       vkr_vk_deferred_buffer(renderer, pass, 7u);
-  uint32_t indices[7] = {0};
+  uint32_t indices[10] = {0};
   if (!visible || !state || !vkr_vk_deferred_buffer(renderer, pass, 10u))
     return false_v;
-  const uint32_t bindings[] = {0u, 2u, 3u, 4u, 8u, 11u, 12u};
+  const uint32_t bindings[] = {0u, 2u, 3u, 4u, 8u, 11u, 12u, 13u, 14u, 15u};
   for (uint32_t i = 0u; i < ArrayCount(bindings); ++i)
     if (!vkr_vk_deferred_storage_index(renderer, pass, bindings[i],
                                        &indices[i]))
@@ -1079,6 +1136,17 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       (resolve_debug_capture &&
        !vkr_vk_deferred_storage_index(renderer, pass, 6u, &debug_texture)))
     return false_v;
+  slot->motion_blur_interval_scale = 0.0f;
+  if (packet->motion_blur_enabled && packet->temporal.reset_reasons == 0u &&
+      slot->temporal_history_valid &&
+      slot->temporal_transform_input->history_motion_valid) {
+    const float64_t elapsed = renderer->motion_seconds +
+        packet->motion_blur_delta_seconds -
+        slot->temporal_transform_input->history_motion_seconds;
+    if (elapsed > 0.0)
+      slot->motion_blur_interval_scale =
+          (float32_t)(packet->motion_blur_delta_seconds / elapsed);
+  }
   const VkrVulkanResolveRoot root = {
       .geometry_rows = slot->gpu_geometry_rows,
       .visible_rows = visible->buffer.address,
@@ -1107,6 +1175,9 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .scene_texture = indices[4],
       .motion_texture = indices[5],
       .validity_texture = indices[6],
+      .clearcoat_texture = indices[7],
+      .sheen_texture = indices[8],
+      .anisotropy_texture = indices[9],
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
       .visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity,
@@ -1153,13 +1224,19 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint32_t vbuffer = 0u, depth = 0u, albedo = 0u, specular = 0u, normal = 0u,
-           scene = 0u;
+           scene = 0u, clearcoat = 0u, sheen = 0u, anisotropy = 0u;
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 13u);
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 2u, &albedo) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 3u, &specular) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 6u, &scene))
+      !vkr_vk_deferred_storage_index(renderer, pass, 6u, &scene) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 10u, &clearcoat) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 11u, &sheen) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 12u, &anisotropy) ||
+      !visible)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
@@ -1178,6 +1255,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   uint32_t gtao_visibility = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (vkr_rg_pass_find_image_use(&pass->desc, 7u, 0u) &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &gtao_visibility))
+    return false_v;
+  uint32_t direct_source = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (renderer->prepared_frame.ssgi_enabled &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 9u, &direct_source))
     return false_v;
   /* A cubemap still publishing its initial upload is not sampled this frame;
      the fallback colour matches the authored forward skybox clear. */
@@ -1208,6 +1289,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                 slot->gpu_candidate_instances, view_projection,
                                 shadow_texture, VKR_VULKAN_SENTINEL_SLOT_INDEX,
                                 local_shadow_texture, true_v);
+  uint32_t subsurface_source = scene;
+  if (packet->subsurface_enabled &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 14u, &subsurface_source))
+    return false_v;
   const VkrVulkanLightingRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1223,6 +1308,20 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .sky_sampler = sky_sampler,
       .sky_enabled = sky_enabled,
       .gtao_visibility_texture = gtao_visibility,
+      .solar_disk_radiance =
+          packet->input.skybox
+              ? (Vec4){packet->input.skybox->solar_disk_radiance.x,
+                       packet->input.skybox->solar_disk_radiance.y,
+                       packet->input.skybox->solar_disk_radiance.z, 0.0f}
+              : (Vec4){0},
+      .direct_source_texture = direct_source,
+      .ssgi_enabled = renderer->prepared_frame.ssgi_enabled,
+      .clearcoat_texture = clearcoat,
+      .sheen_texture = sheen,
+      .anisotropy_texture = anisotropy,
+      .visible_rows = visible->buffer.address,
+      .subsurface_source_texture = subsurface_source,
+      .subsurface_profile_count = packet->subsurface_enabled ? packet->subsurface.dimensions[2] : 0u,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLightingRoot),
@@ -1278,11 +1377,11 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
                                       &transmission_depth)))
     return false_v;
 
-  const bool8_t history_valid =
-      slot->temporal_history_valid && slot->temporal_color_input &&
-      slot->temporal_depth_input && slot->temporal_identity_input &&
-      slot->temporal_surface_input;
   const VkrPreparedFrame *packet = renderer->graph->packet;
+  const bool8_t history_valid =
+      packet->temporal.enabled && slot->temporal_history_valid &&
+      slot->temporal_color_input && slot->temporal_depth_input &&
+      slot->temporal_identity_input && slot->temporal_surface_input;
   const VkrVulkanTemporalResolveRoot root = {
       .visible_rows = visible->buffer.address,
       .instances = instances->buffer.address,
@@ -1318,10 +1417,9 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
                                       &packet->temporal.current_view_projection,
                                       sizeof(Mat4)) == 0,
       .scene_stationary =
-          history_valid &&
-          vkr_vk_temporal_scene_equal(
-              &slot->temporal_scene,
-              &slot->temporal_color_input->history_scene),
+          history_valid && vkr_vk_temporal_scene_equal(
+                               &slot->temporal_scene,
+                               &slot->temporal_color_input->history_scene),
       .transmission_visible_rows =
           transmission_visible ? transmission_visible->buffer.address : 0u,
       .transmission_instances =
@@ -1402,6 +1500,1295 @@ bool8_t vkr_vk_prepare_deferred_hzb(VkrVulkanRenderer *renderer,
   }
   return true_v;
 }
+
+vkr_internal VkrSsrGpuParams vkr_vk_ssr_params(VkrVulkanRenderer *renderer,
+                                               bool8_t history_valid,
+                                               Mat4 previous_projection) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 projection = packet->temporal.jittered_projection;
+  return vkr_ssr_gpu_params(
+      &renderer->ssr_config, projection, mat4_inverse(projection),
+      packet->input.globals.view, previous_projection,
+      renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height, history_valid);
+}
+
+bool8_t vkr_vk_prepare_ssr_depth_base(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass) {
+  uint32_t depth = 0u, vbuffer = 0u, destination = 0u, receiver = 0u;
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &vbuffer) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 2u, &destination) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 3u, &receiver))
+    return false_v;
+  const VkrSsrGpuParams params = vkr_vk_ssr_params(
+      renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
+  if (!params.trace_width || !params.trace_height)
+    return false_v;
+  const VkrVulkanSsrDepthBaseRoot root = {
+      .params = params,
+      .depth_texture = depth,
+      .vbuffer_texture = vbuffer,
+      .destination_depth_texture = destination,
+      .receiver_texture = receiver,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsrDepthBaseRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSR_DEPTH_BASE];
+  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssr_depth_mip(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass) {
+  const VkrRgImageUse *source_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  VkrVulkanGraphImageInstance *source =
+      source_use ? vkr_vk_deferred_image(renderer, source_use->image) : NULL;
+  VkrVulkanGraphImageInstance *destination =
+      destination_use ? vkr_vk_deferred_image(renderer, destination_use->image)
+                      : NULL;
+  uint32_t source_texture = 0u, destination_texture = 0u;
+  if (!source || !destination ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &source_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 1u, &destination_texture))
+    return false_v;
+  const uint32_t source_mip =
+      source_use->has_slice ? source_use->slice.mip_level : 0u;
+  const uint32_t destination_mip =
+      destination_use->has_slice ? destination_use->slice.mip_level : 0u;
+  const VkrVulkanSsrDepthMipRoot root = {
+      .source_depth_texture = source_texture,
+      .destination_depth_texture = destination_texture,
+      .source_extent = {Max(1u, source->image.width >> source_mip),
+                        Max(1u, source->image.height >> source_mip)},
+      .destination_extent = {Max(1u,
+                                 destination->image.width >> destination_mip),
+                             Max(1u,
+                                 destination->image.height >> destination_mip)},
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsrDepthMipRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSR_DEPTH_MIP];
+  prepared->groups[0][0] = (root.destination_extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.destination_extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
+                                 VkrVulkanPreparedCompute *prepared,
+                                 const VkrRgPass *pass) {
+  uint32_t textures[9] = {0};
+  for (uint32_t binding = 0u; binding < 7u; ++binding)
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
+                                       &textures[binding]))
+      return false_v;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 7u, &textures[7]))
+    return false_v;
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 8u, &textures[8]))
+    return false_v;
+  const VkrSsrGpuParams params = vkr_vk_ssr_params(
+      renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
+  if (params.depth_mip_count != renderer->prepared_frame.ssr_depth_mip_count)
+    return false_v;
+  const VkrVulkanSsrTraceRoot root = {
+      .params = params,
+      .depth_texture = textures[0],
+      .vbuffer_texture = textures[1],
+      .normal_texture = textures[2],
+      .specular_texture = textures[3],
+      .depth_pyramid_texture = textures[4],
+      .receiver_texture = textures[5],
+      .source_texture = textures[6],
+      .destination_texture = textures[7],
+      .clearcoat_texture = textures[8],
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsrTraceRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSR_TRACE];
+  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+vkr_internal bool8_t
+vkr_vk_ssr_history_scene_equal(const VkrVulkanTemporalSceneState *current,
+                               const VkrVulkanTemporalSceneState *previous) {
+  return current->signature.eligible && previous->signature.eligible &&
+         current->signature.hash[0] == previous->signature.hash[0] &&
+         current->signature.hash[1] == previous->signature.hash[1] &&
+         current->radiance_revision == previous->radiance_revision &&
+         current->publication_generation == previous->publication_generation &&
+         current->graph_revision == previous->graph_revision;
+}
+
+vkr_internal bool8_t vkr_vk_prepare_ssr_history(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    VkrVulkanGraphImage **out_colors, VkrVulkanGraphImage **out_depths,
+    VkrVulkanGraphImage **out_identities, Mat4 *out_previous_projection) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImage *colors =
+      vkr_vk_temporal_graph_image(renderer, "ssr_history_color");
+  VkrVulkanGraphImage *depths =
+      vkr_vk_temporal_graph_image(renderer, "ssr_history_depth");
+  VkrVulkanGraphImage *identities =
+      vkr_vk_temporal_graph_image(renderer, "ssr_history_identity");
+  if (!colors || !depths || !identities ||
+      colors->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
+      depths->instance_count != colors->instance_count ||
+      identities->instance_count != colors->instance_count)
+    return false_v;
+  const uint32_t current = renderer->history_output_index;
+  if (current >= colors->instance_count)
+    return false_v;
+  slot->ssr_color_output = &colors->instances[current];
+  slot->ssr_depth_output = &depths->instances[current];
+  slot->ssr_identity_output = &identities->instances[current];
+  *out_previous_projection =
+      renderer->graph->packet->temporal.jittered_projection;
+
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrVulkanTemporalSceneState scene = {
+      .signature = vkr_ssr_content_signature(packet),
+      .radiance_revision = renderer->radiance_revision,
+      .publication_generation = renderer->candidate_publication_generation,
+      .graph_revision = renderer->graph_revision,
+  };
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE ||
+      !scene.signature.eligible)
+    goto selected;
+
+  VkrVulkanGraphImageInstance *selected = NULL;
+  uint32_t selected_index = UINT32_MAX;
+  for (uint32_t i = 0u; i < colors->instance_count; ++i) {
+    VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
+    if (i == current || !candidate->history_valid ||
+        candidate->history_producer_submit_value > renderer->completed_value ||
+        !slot->temporal_history_valid ||
+        candidate->history_frame_index != slot->temporal_previous_frame_index ||
+        candidate->history_scene_generation !=
+            packet->input.frame.scene_generation ||
+        candidate->history_width != slot->ssr_color_output->image.width ||
+        candidate->history_height != slot->ssr_color_output->image.height ||
+        !vkr_vk_ssr_history_scene_equal(&scene, &candidate->history_scene))
+      continue;
+    VkrVulkanGraphImageInstance *depth = &depths->instances[i];
+    VkrVulkanGraphImageInstance *identity = &identities->instances[i];
+    if (!depth->history_valid || !identity->history_valid ||
+        depth->history_producer_submit_value !=
+            candidate->history_producer_submit_value ||
+        identity->history_producer_submit_value !=
+            candidate->history_producer_submit_value ||
+        depth->history_frame_index != candidate->history_frame_index ||
+        identity->history_frame_index != candidate->history_frame_index ||
+        depth->history_width != candidate->history_width ||
+        depth->history_height != candidate->history_height ||
+        identity->history_width != candidate->history_width ||
+        identity->history_height != candidate->history_height ||
+        !candidate->has_sampled_slot || !depth->has_sampled_slot ||
+        !identity->has_storage_slot)
+      continue;
+    if (!selected || candidate->history_producer_submit_value >
+                         selected->history_producer_submit_value) {
+      selected = candidate;
+      selected_index = i;
+    }
+  }
+  if (selected) {
+    VkrVulkanGraphImageInstance *depth = &depths->instances[selected_index];
+    VkrVulkanGraphImageInstance *identity =
+        &identities->instances[selected_index];
+    const VkImageMemoryBarrier2 color_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = selected->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    const VkImageMemoryBarrier2 depth_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = depth->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    const VkImageMemoryBarrier2 identity_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = identity->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    prepared->image_barriers[0] = color_barrier;
+    prepared->image_barriers[1] = depth_barrier;
+    prepared->image_barriers[2] = identity_barrier;
+    prepared->image_barrier_count = 3u;
+    slot->ssr_color_input = selected;
+    slot->ssr_depth_input = depth;
+    slot->ssr_identity_input = identity;
+    slot->ssr_history_valid = true_v;
+    *out_previous_projection = selected->history_projection;
+  }
+selected:
+  *out_colors = colors;
+  *out_depths = depths;
+  *out_identities = identities;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImage *colors = NULL, *depths = NULL, *identities = NULL;
+  Mat4 previous_projection;
+  if (!vkr_vk_prepare_ssr_history(renderer, prepared, &colors, &depths,
+                                  &identities, &previous_projection))
+    return false_v;
+  uint32_t sampled[7] = {0};
+  for (uint32_t binding = 0u; binding < ArrayCount(sampled); ++binding)
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
+                                       &sampled[binding]))
+      return false_v;
+  uint32_t output_color = 0u, output_depth = 0u, output_identity = 0u,
+           specular = 0u, clearcoat = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 10u, &output_color) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 11u, &output_depth) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 12u, &output_identity) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 15u, &specular) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 16u, &clearcoat))
+    return false_v;
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 13u);
+  VkrVulkanGraphBufferInstance *instances =
+      vkr_vk_deferred_buffer(renderer, pass, 14u);
+  if (!visible || !instances)
+    return false_v;
+  const uint32_t history_color =
+      slot->ssr_history_valid ? slot->ssr_color_input->sampled_slot.index
+                              : slot->ssr_color_output->sampled_slot.index;
+  const uint32_t history_depth =
+      slot->ssr_history_valid ? slot->ssr_depth_input->sampled_slot.index
+                              : slot->ssr_depth_output->sampled_slot.index;
+  const uint32_t history_identity =
+      slot->ssr_history_valid ? slot->ssr_identity_input->storage_slot.index
+                              : slot->ssr_identity_output->storage_slot.index;
+  const VkrSsrGpuParams params =
+      vkr_vk_ssr_params(renderer, slot->ssr_history_valid, previous_projection);
+  const VkrVulkanSsrTemporalRoot root = {
+      .params = params,
+      .visible_rows = visible->buffer.address,
+      .instances = instances->buffer.address,
+      .raw_texture = sampled[0],
+      .receiver_texture = sampled[1],
+      .vbuffer_texture = sampled[2],
+      .depth_texture = sampled[3],
+      .normal_texture = sampled[4],
+      .motion_texture = sampled[5],
+      .validity_texture = sampled[6],
+      .history_color_texture = history_color,
+      .history_depth_texture = history_depth,
+      .history_identity_texture = history_identity,
+      .output_color_texture = output_color,
+      .output_depth_texture = output_depth,
+      .output_identity_texture = output_identity,
+      .linear_sampler = renderer->transmission_sampler_slot,
+      .specular_texture = specular,
+      .clearcoat_texture = clearcoat,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsrTemporalRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSR_TEMPORAL];
+  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass) {
+  uint32_t scene = 0u, reflection = 0u, vbuffer = 0u, depth = 0u, albedo = 0u,
+           specular = 0u, normal = 0u, history_depth = 0u, receiver = 0u,
+           clearcoat = 0u, sheen = 0u, anisotropy = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &scene) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &reflection) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &vbuffer) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 3u, &depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 4u, &albedo) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &specular) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &normal) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 8u, &history_depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 9u, &receiver) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 10u, &clearcoat) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 11u, &sheen) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 12u, &anisotropy))
+    return false_v;
+  uint32_t gtao = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 7u, 0u) &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &gtao))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t frame_address = 0u;
+  if (!vkr_vk_packet_frame_root(slot, &frame_address))
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrSsrGpuParams params = vkr_vk_ssr_params(
+      renderer, false_v, packet->temporal.jittered_projection);
+  const VkrVulkanSsrCompositeRoot root = {
+      .params = params,
+      .frame = frame_address,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .scene_texture = scene,
+      .reflection_texture = reflection,
+      .vbuffer_texture = vbuffer,
+      .depth_texture = depth,
+      .albedo_texture = albedo,
+      .specular_texture = specular,
+      .normal_texture = normal,
+      .gtao_visibility_texture = gtao,
+      .history_depth_texture = history_depth,
+      .receiver_texture = receiver,
+      .linear_sampler = renderer->transmission_sampler_slot,
+      .clearcoat_texture = clearcoat,
+      .sheen_texture = sheen,
+      .anisotropy_texture = anisotropy,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsrCompositeRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSR_COMPOSITE];
+  prepared->groups[0][0] = (params.source_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.source_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_fog_apply(VkrVulkanRenderer *renderer,
+                                 VkrVulkanPreparedCompute *prepared,
+                                 const VkrRgPass *pass) {
+  uint32_t depth = 0u, target = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &target) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth))
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrVulkanFogRoot root = {
+      .params = packet->fog,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .camera_position = {packet->input.globals.view_position.x,
+                          packet->input.globals.view_position.y,
+                          packet->input.globals.view_position.z, 1.0f},
+      .depth_texture = depth,
+      .target_texture = target,
+      .extent = {renderer->prepared_frame.viewport_width,
+                 renderer->prepared_frame.viewport_height},
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanFogRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FOG_APPLY];
+  prepared->groups[0][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_vk_prepare_froxel_frame_root(
+    VkrVulkanRenderer *renderer, const VkrRgPass *pass,
+    uint64_t *out_frame_address) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint32_t shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint32_t local_shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &shadow_texture))
+    return false_v;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u) &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 3u, &local_shadow_texture))
+    return false_v;
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, out_frame_address);
+  if (!frame_root)
+    return false_v;
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
+      packet->temporal.current_view_projection, shadow_texture,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, local_shadow_texture, true_v);
+  return true_v;
+}
+
+vkr_internal VkrVulkanGraphImage *
+vkr_vk_froxel_graph_image(VkrVulkanRenderer *renderer, const char *name) {
+  VkrVulkanGraphImage *image = vkr_vk_temporal_graph_image(renderer, name);
+  return image && image->live && image->desc.type == VKR_TEXTURE_TYPE_3D &&
+                 image->desc.depth == VKR_FROXEL_FOG_DEPTH
+             ? image
+             : NULL;
+}
+
+vkr_internal uint32_t
+vkr_vk_froxel_image_generation(VkrVulkanRenderer *renderer, const char *name) {
+  VkrVulkanGraphImage *image = vkr_vk_temporal_graph_image(renderer, name);
+  return image && image->live ? image->graph_generation : 0u;
+}
+
+vkr_internal uint32_t vkr_vk_froxel_shadow_valid_mask(
+    const VkrPreparedFrame *packet, uint32_t retained_mask) {
+  return retained_mask |
+         (packet->input.shadow ? packet->input.shadow->cascade_render_mask
+                               : 0u);
+}
+
+vkr_internal uint32_t vkr_vk_froxel_local_shadow_valid_mask(
+    const VkrPreparedFrame *packet, uint32_t retained_mask) {
+  return retained_mask |
+         (packet->input.local_shadow ? packet->input.local_shadow->render_mask
+                                     : 0u);
+}
+
+vkr_internal bool8_t vkr_vk_prepare_froxel_history(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    VkrVulkanGraphImage **out_history) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImage *history =
+      vkr_vk_froxel_graph_image(renderer, "froxel_scattering_history");
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!history ||
+      history->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
+      !slot->froxel_fog_params)
+    return false_v;
+  const uint32_t current = renderer->history_output_index;
+  if (current >= history->instance_count)
+    return false_v;
+  VkrVulkanGraphImageInstance *output = &history->instances[current];
+  if (!output->has_sampled_slot || !output->has_storage_slot)
+    return false_v;
+  slot->froxel_history_output = output;
+
+  const uint32_t dimensions[3] = {output->image.width, output->image.height,
+                                  output->image.depth};
+  const uint32_t shadow_generation =
+      vkr_vk_froxel_image_generation(renderer, "shadow_map");
+  const uint32_t local_shadow_generation =
+      vkr_vk_froxel_image_generation(renderer, "local_shadow_map");
+  VkrRetainedShadowToken shadow_token;
+  VkrRetainedLocalShadowToken local_shadow_token;
+  vkr_vulkan_renderer_retained_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  const uint32_t shadow_valid_mask =
+      vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
+  const uint32_t local_shadow_valid_mask =
+      vkr_vk_froxel_local_shadow_valid_mask(
+          packet, local_shadow_token.valid_layer_mask);
+  VkrVulkanGraphImageInstance *selected = NULL;
+  uint32_t selected_index = UINT32_MAX;
+  if (packet->temporal.reset_reasons == VKR_TEMPORAL_RESET_NONE) {
+    for (uint32_t i = 0u; i < history->instance_count; ++i) {
+      const VkrVulkanFroxelHistory *candidate = &renderer->froxel_histories[i];
+      VkrVulkanGraphImageInstance *image = &history->instances[i];
+      if (i == current || !candidate->valid || !image->history_valid ||
+          candidate->producer_submit_value > renderer->completed_value ||
+          candidate->producer_submit_value !=
+              image->history_producer_submit_value ||
+          candidate->signature != packet->froxel_fog_signature ||
+          candidate->frame_index >= packet->input.frame.frame_index ||
+          candidate->scattering_generation != history->graph_generation ||
+          candidate->shadow_generation != shadow_generation ||
+          candidate->local_shadow_generation != local_shadow_generation ||
+          candidate->shadow_valid_layer_mask != shadow_valid_mask ||
+          candidate->local_shadow_valid_layer_mask != local_shadow_valid_mask ||
+          MemCompare(candidate->dimensions, dimensions, sizeof(dimensions)) !=
+              0 ||
+          !image->has_sampled_slot)
+        continue;
+      if (!selected || candidate->producer_submit_value >
+                           renderer->froxel_histories[selected_index]
+                               .producer_submit_value) {
+        selected = image;
+        selected_index = i;
+      }
+    }
+  }
+
+  VkrFroxelFogGpuParams *params = slot->froxel_fog_params;
+  params->previous_view_projection = packet->temporal.current_view_projection;
+  params->previous_view = packet->input.globals.view;
+  if (selected) {
+    const VkrVulkanFroxelHistory *metadata =
+        &renderer->froxel_histories[selected_index];
+    params->previous_view_projection = metadata->view_projection;
+    params->previous_view = metadata->view;
+    const VkImageMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = selected->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    prepared->image_barriers[0] = barrier;
+    prepared->image_barrier_count = 1u;
+    slot->froxel_history_input = selected;
+    slot->froxel_history_valid = true_v;
+  }
+  *out_history = history;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_froxel_inject(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass) {
+  VkrVulkanGraphImage *history = NULL;
+  if (!vkr_vk_prepare_froxel_history(renderer, prepared, &history))
+    return false_v;
+  uint32_t output = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 1u, &output))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t frame = 0u;
+  if (!vkr_vk_prepare_froxel_frame_root(renderer, pass, &frame))
+    return false_v;
+  const VkrVulkanGraphImageInstance *source = slot->froxel_history_valid
+                                                  ? slot->froxel_history_input
+                                                  : slot->froxel_history_output;
+  const VkrVulkanFroxelInjectRoot root = {
+      .frame = frame,
+      .params = slot->froxel_fog,
+      .history_texture = source->sampled_slot.index,
+      .history_sampler = renderer->transmission_sampler_slot,
+      .output_texture = output,
+      .history_valid = slot->froxel_history_valid,
+      .extent = {slot->froxel_fog_params->grid_dimensions_cell_pixels[0],
+                 slot->froxel_fog_params->grid_dimensions_cell_pixels[1],
+                 slot->froxel_fog_params->grid_dimensions_cell_pixels[2]},
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanFroxelInjectRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_INJECT];
+  prepared->groups[0][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = (root.extent[2] + 3u) / 4u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_froxel_integrate(VkrVulkanRenderer *renderer,
+                                        VkrVulkanPreparedCompute *prepared,
+                                        const VkrRgPass *pass) {
+  uint32_t scattering = 0u, integrated = 0u;
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &scattering) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 1u, &integrated))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!slot->froxel_fog_params)
+    return false_v;
+  slot->froxel_integrated_texture = integrated;
+  uint64_t frame = 0u;
+  if (!vkr_vk_prepare_froxel_frame_root(renderer, pass, &frame))
+    return false_v;
+  const VkrVulkanFroxelIntegrateRoot root = {
+      .frame = frame,
+      .params = slot->froxel_fog,
+      .scattering_texture = scattering,
+      .scattering_sampler = renderer->transmission_sampler_slot,
+      .integrated_texture = integrated,
+      .extent = {slot->froxel_fog_params->grid_dimensions_cell_pixels[0],
+                 slot->froxel_fog_params->grid_dimensions_cell_pixels[1],
+                 slot->froxel_fog_params->grid_dimensions_cell_pixels[2]},
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanFroxelIntegrateRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_INTEGRATE];
+  prepared->groups[0][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_froxel_apply(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass) {
+  uint32_t target = 0u, depth = 0u, integrated = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &target) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &integrated))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!slot->froxel_fog_params || integrated != slot->froxel_integrated_texture)
+    return false_v;
+  uint64_t frame = 0u;
+  if (!vkr_vk_prepare_froxel_frame_root(renderer, pass, &frame))
+    return false_v;
+  const VkrVulkanFroxelApplyRoot root = {
+      .frame = frame,
+      .params = slot->froxel_fog,
+      .depth_texture = depth,
+      .integrated_texture = integrated,
+      .integrated_sampler = renderer->transmission_sampler_slot,
+      .target_texture = target,
+      .extent = {renderer->prepared_frame.viewport_width,
+                 renderer->prepared_frame.viewport_height},
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanFroxelApplyRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_APPLY];
+  prepared->groups[0][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
+                                  uint64_t submit_value) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (slot->froxel_history_input)
+    slot->froxel_history_input->last_use_submit_value = submit_value;
+  if (!slot->froxel_history_output || !slot->froxel_fog_params)
+    return;
+  const uint32_t current = renderer->history_output_index;
+  if (current >= VKR_VULKAN_HISTORY_INSTANCE_COUNT)
+    return;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const uint32_t dimensions[3] = {slot->froxel_history_output->image.width,
+                                  slot->froxel_history_output->image.height,
+                                  slot->froxel_history_output->image.depth};
+  VkrRetainedShadowToken shadow_token;
+  VkrRetainedLocalShadowToken local_shadow_token;
+  vkr_vulkan_renderer_retained_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  const uint32_t shadow_valid_mask =
+      vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
+  const uint32_t local_shadow_valid_mask =
+      vkr_vk_froxel_local_shadow_valid_mask(
+          packet, local_shadow_token.valid_layer_mask);
+  VkrVulkanFroxelHistory *history = &renderer->froxel_histories[current];
+  *history = (VkrVulkanFroxelHistory){
+      .view_projection = packet->temporal.current_view_projection,
+      .view = packet->input.globals.view,
+      .signature = packet->froxel_fog_signature,
+      .producer_submit_value = submit_value,
+      .frame_index = packet->input.frame.frame_index,
+      .dimensions = {dimensions[0], dimensions[1], dimensions[2]},
+      .scattering_generation =
+          vkr_vk_froxel_image_generation(renderer, "froxel_scattering_history"),
+      .shadow_generation =
+          vkr_vk_froxel_image_generation(renderer, "shadow_map"),
+      .local_shadow_generation =
+          vkr_vk_froxel_image_generation(renderer, "local_shadow_map"),
+      .shadow_valid_layer_mask = shadow_valid_mask,
+      .local_shadow_valid_layer_mask = local_shadow_valid_mask,
+      .valid = true_v,
+  };
+  slot->froxel_history_output->history_producer_submit_value = submit_value;
+  slot->froxel_history_output->history_valid = true_v;
+}
+
+void vkr_vk_mark_ssr_submitted(VkrVulkanRenderer *renderer,
+                               uint64_t submit_value) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImageInstance *inputs[] = {
+      slot->ssr_color_input, slot->ssr_depth_input, slot->ssr_identity_input};
+  for (uint32_t i = 0u; i < ArrayCount(inputs); ++i)
+    if (inputs[i])
+      inputs[i]->last_use_submit_value = submit_value;
+  VkrVulkanGraphImageInstance *outputs[] = {slot->ssr_color_output,
+                                            slot->ssr_depth_output,
+                                            slot->ssr_identity_output};
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrVulkanTemporalSceneState scene = {
+      .signature = vkr_ssr_content_signature(packet),
+      .radiance_revision = renderer->radiance_revision,
+      .publication_generation = renderer->candidate_publication_generation,
+      .graph_revision = renderer->graph_revision,
+  };
+  for (uint32_t i = 0u; i < ArrayCount(outputs); ++i) {
+    VkrVulkanGraphImageInstance *instance = outputs[i];
+    if (!instance)
+      continue;
+    instance->history_producer_submit_value = submit_value;
+    instance->history_frame_index = packet->input.frame.frame_index;
+    instance->history_scene_generation = packet->input.frame.scene_generation;
+    instance->history_projection = packet->temporal.jittered_projection;
+    instance->history_width = instance->image.width;
+    instance->history_height = instance->image.height;
+    instance->history_scene = scene;
+    instance->history_valid = true_v;
+  }
+}
+
+vkr_internal VkrSsgiGpuParams vkr_vk_ssgi_params(VkrVulkanRenderer *renderer,
+                                                 bool8_t history_valid,
+                                                 Mat4 previous_projection) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 projection = packet->temporal.jittered_projection;
+  return vkr_ssgi_gpu_params(&renderer->ssgi_config, projection,
+                             mat4_inverse(projection),
+                             packet->input.globals.view, previous_projection,
+                             renderer->prepared_frame.viewport_width,
+                             renderer->prepared_frame.viewport_height,
+                             history_valid, packet->input.frame.frame_index);
+}
+
+bool8_t vkr_vk_prepare_ssgi_depth_base(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass) {
+  uint32_t depth = 0u, vbuffer = 0u, destination = 0u;
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &vbuffer) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 2u, &destination))
+    return false_v;
+  const VkrSsgiGpuParams params = vkr_vk_ssgi_params(
+      renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
+  if (!params.trace_width || !params.trace_height)
+    return false_v;
+  const VkrVulkanSsgiDepthBaseRoot root = {
+      .params = params,
+      .depth_texture = depth,
+      .vbuffer_texture = vbuffer,
+      .destination_depth_texture = destination,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsgiDepthBaseRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSGI_DEPTH_BASE];
+  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssgi_depth_mip(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass) {
+  const VkrRgImageUse *source_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  VkrVulkanGraphImageInstance *source =
+      source_use ? vkr_vk_deferred_image(renderer, source_use->image) : NULL;
+  VkrVulkanGraphImageInstance *destination =
+      destination_use ? vkr_vk_deferred_image(renderer, destination_use->image)
+                      : NULL;
+  uint32_t source_texture = 0u, destination_texture = 0u;
+  if (!source || !destination ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &source_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 1u, &destination_texture))
+    return false_v;
+  const uint32_t source_mip =
+      source_use->has_slice ? source_use->slice.mip_level : 0u;
+  const uint32_t destination_mip =
+      destination_use->has_slice ? destination_use->slice.mip_level : 0u;
+  const VkrVulkanSsgiDepthMipRoot root = {
+      .source_depth_texture = source_texture,
+      .destination_depth_texture = destination_texture,
+      .source_extent = {Max(1u, source->image.width >> source_mip),
+                        Max(1u, source->image.height >> source_mip)},
+      .destination_extent = {Max(1u,
+                                 destination->image.width >> destination_mip),
+                             Max(1u,
+                                 destination->image.height >> destination_mip)},
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsgiDepthMipRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSGI_DEPTH_MIP];
+  prepared->groups[0][0] = (root.destination_extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.destination_extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssgi_trace(VkrVulkanRenderer *renderer,
+                                  VkrVulkanPreparedCompute *prepared,
+                                  const VkrRgPass *pass) {
+  uint32_t textures[7] = {0};
+  for (uint32_t binding = 0u; binding < 6u; ++binding)
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
+                                       &textures[binding]))
+      return false_v;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 6u, &textures[6]))
+    return false_v;
+  const VkrSsgiGpuParams params = vkr_vk_ssgi_params(
+      renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
+  if (params.depth_mip_count != renderer->prepared_frame.ssgi_depth_mip_count)
+    return false_v;
+  const VkrVulkanSsgiTraceRoot root = {
+      .params = params,
+      .depth_texture = textures[0],
+      .vbuffer_texture = textures[1],
+      .normal_texture = textures[2],
+      .albedo_texture = textures[3],
+      .depth_pyramid_texture = textures[4],
+      .direct_source_texture = textures[5],
+      .destination_texture = textures[6],
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsgiTraceRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSGI_TRACE];
+  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    VkrVulkanGraphImage **out_colors, VkrVulkanGraphImage **out_depths,
+    VkrVulkanGraphImage **out_identities, Mat4 *out_previous_projection) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImage *colors =
+      vkr_vk_temporal_graph_image(renderer, "ssgi_history_color");
+  VkrVulkanGraphImage *depths =
+      vkr_vk_temporal_graph_image(renderer, "ssgi_history_depth");
+  VkrVulkanGraphImage *identities =
+      vkr_vk_temporal_graph_image(renderer, "ssgi_history_identity");
+  if (!colors || !depths || !identities ||
+      colors->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
+      depths->instance_count != colors->instance_count ||
+      identities->instance_count != colors->instance_count)
+    return false_v;
+  const uint32_t current = renderer->history_output_index;
+  if (current >= colors->instance_count)
+    return false_v;
+  slot->ssgi_color_output = &colors->instances[current];
+  slot->ssgi_depth_output = &depths->instances[current];
+  slot->ssgi_identity_output = &identities->instances[current];
+  *out_previous_projection =
+      renderer->graph->packet->temporal.jittered_projection;
+
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrVulkanTemporalSceneState scene = {
+      .signature = vkr_ssgi_content_signature(packet),
+      .radiance_revision = renderer->radiance_revision,
+      .publication_generation = renderer->candidate_publication_generation,
+      .graph_revision = renderer->graph_revision,
+  };
+  const uint32_t dimensions[2] = {slot->ssgi_color_output->image.width,
+                                  slot->ssgi_color_output->image.height};
+  const uint32_t shadow_generation =
+      vkr_vk_froxel_image_generation(renderer, "shadow_map");
+  const uint32_t local_shadow_generation =
+      vkr_vk_froxel_image_generation(renderer, "local_shadow_map");
+  VkrRetainedShadowToken shadow_token;
+  VkrRetainedLocalShadowToken local_shadow_token;
+  vkr_vulkan_renderer_retained_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  const uint32_t shadow_valid_mask =
+      vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
+  const uint32_t local_shadow_valid_mask =
+      vkr_vk_froxel_local_shadow_valid_mask(
+          packet, local_shadow_token.valid_layer_mask);
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE ||
+      !scene.signature.eligible)
+    goto selected;
+
+  VkrVulkanGraphImageInstance *selected = NULL;
+  uint32_t selected_index = UINT32_MAX;
+  for (uint32_t i = 0u; i < colors->instance_count; ++i) {
+    VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
+    const VkrVulkanSsgiHistory *metadata = &renderer->ssgi_histories[i];
+    if (i == current || !metadata->valid || !candidate->history_valid ||
+        metadata->producer_submit_value > renderer->completed_value ||
+        metadata->producer_submit_value !=
+            candidate->history_producer_submit_value ||
+        !slot->temporal_history_valid ||
+        candidate->history_frame_index != slot->temporal_previous_frame_index ||
+        candidate->history_scene_generation !=
+            packet->input.frame.scene_generation ||
+        MemCompare(metadata->dimensions, dimensions, sizeof(dimensions)) != 0 ||
+        metadata->shadow_generation != shadow_generation ||
+        metadata->local_shadow_generation != local_shadow_generation ||
+        metadata->shadow_valid_layer_mask != shadow_valid_mask ||
+        metadata->local_shadow_valid_layer_mask != local_shadow_valid_mask ||
+        !vkr_vk_ssr_history_scene_equal(&scene, &candidate->history_scene))
+      continue;
+    VkrVulkanGraphImageInstance *depth = &depths->instances[i];
+    VkrVulkanGraphImageInstance *identity = &identities->instances[i];
+    if (!depth->history_valid || !identity->history_valid ||
+        depth->history_producer_submit_value !=
+            candidate->history_producer_submit_value ||
+        identity->history_producer_submit_value !=
+            candidate->history_producer_submit_value ||
+        depth->history_frame_index != candidate->history_frame_index ||
+        identity->history_frame_index != candidate->history_frame_index ||
+        !candidate->has_sampled_slot || !depth->has_sampled_slot ||
+        !identity->has_storage_slot)
+      continue;
+    if (!selected ||
+        metadata->producer_submit_value >
+            renderer->ssgi_histories[selected_index].producer_submit_value) {
+      selected = candidate;
+      selected_index = i;
+    }
+  }
+  if (selected) {
+    VkrVulkanGraphImageInstance *depth = &depths->instances[selected_index];
+    VkrVulkanGraphImageInstance *identity =
+        &identities->instances[selected_index];
+    prepared->image_barriers[0] = (VkImageMemoryBarrier2){
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = selected->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    prepared->image_barriers[1] = (VkImageMemoryBarrier2){
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = depth->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    prepared->image_barriers[2] = (VkImageMemoryBarrier2){
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = identity->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    prepared->image_barrier_count = 3u;
+    slot->ssgi_color_input = selected;
+    slot->ssgi_depth_input = depth;
+    slot->ssgi_identity_input = identity;
+    slot->ssgi_history_valid = true_v;
+    *out_previous_projection = selected->history_projection;
+  }
+selected:
+  *out_colors = colors;
+  *out_depths = depths;
+  *out_identities = identities;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssgi_temporal(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImage *colors = NULL, *depths = NULL, *identities = NULL;
+  Mat4 previous_projection;
+  if (!vkr_vk_prepare_ssgi_history(renderer, prepared, &colors, &depths,
+                                   &identities, &previous_projection))
+    return false_v;
+  uint32_t sampled[6] = {0};
+  for (uint32_t binding = 0u; binding < ArrayCount(sampled); ++binding)
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
+                                       &sampled[binding]))
+      return false_v;
+  uint32_t output_color = 0u, output_depth = 0u, output_identity = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 9u, &output_color) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 10u, &output_depth) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 11u, &output_identity))
+    return false_v;
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 12u);
+  VkrVulkanGraphBufferInstance *instances =
+      vkr_vk_deferred_buffer(renderer, pass, 13u);
+  if (!visible || !instances)
+    return false_v;
+  const uint32_t history_color =
+      slot->ssgi_history_valid ? slot->ssgi_color_input->sampled_slot.index
+                               : slot->ssgi_color_output->sampled_slot.index;
+  const uint32_t history_depth =
+      slot->ssgi_history_valid ? slot->ssgi_depth_input->sampled_slot.index
+                               : slot->ssgi_depth_output->sampled_slot.index;
+  const uint32_t history_identity =
+      slot->ssgi_history_valid ? slot->ssgi_identity_input->storage_slot.index
+                               : slot->ssgi_identity_output->storage_slot.index;
+  const VkrSsgiGpuParams params = vkr_vk_ssgi_params(
+      renderer, slot->ssgi_history_valid, previous_projection);
+  const VkrVulkanSsgiTemporalRoot root = {
+      .params = params,
+      .visible_rows = visible->buffer.address,
+      .instances = instances->buffer.address,
+      .raw_texture = sampled[0],
+      .vbuffer_texture = sampled[1],
+      .depth_texture = sampled[2],
+      .normal_texture = sampled[3],
+      .motion_texture = sampled[4],
+      .validity_texture = sampled[5],
+      .history_color_texture = history_color,
+      .history_depth_texture = history_depth,
+      .history_identity_texture = history_identity,
+      .output_color_texture = output_color,
+      .output_depth_texture = output_depth,
+      .output_identity_texture = output_identity,
+      .linear_sampler = renderer->transmission_sampler_slot,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsgiTemporalRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSGI_TEMPORAL];
+  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_ssgi_composite(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass) {
+  uint32_t scene = 0u, reflection = 0u, vbuffer = 0u, depth = 0u, albedo = 0u,
+           normal = 0u, history_depth = 0u, specular = 0u, clearcoat = 0u,
+           sheen = 0u, anisotropy = 0u;
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 11u);
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &scene) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &reflection) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &vbuffer) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 3u, &depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 4u, &albedo) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &normal) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &history_depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &specular) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 8u, &clearcoat) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 9u, &sheen) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 10u, &anisotropy) ||
+      !visible)
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t frame_address = 0u;
+  if (!vkr_vk_packet_frame_root(slot, &frame_address))
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrSsgiGpuParams params = vkr_vk_ssgi_params(
+      renderer, false_v, packet->temporal.jittered_projection);
+  uint32_t subsurface_source = scene;
+  if (packet->subsurface_enabled &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 12u, &subsurface_source))
+    return false_v;
+  const VkrVulkanSsgiCompositeRoot root = {
+      .params = params,
+      .frame = frame_address,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .scene_texture = scene,
+      .reflection_texture = reflection,
+      .vbuffer_texture = vbuffer,
+      .depth_texture = depth,
+      .albedo_texture = albedo,
+      .normal_texture = normal,
+      .history_depth_texture = history_depth,
+      .specular_texture = specular,
+      .linear_sampler = renderer->transmission_sampler_slot,
+      .clearcoat_texture = clearcoat,
+      .sheen_texture = sheen,
+      .anisotropy_texture = anisotropy,
+      .visible_rows = visible->buffer.address,
+      .subsurface_source_texture = subsurface_source,
+      .subsurface_profile_count = packet->subsurface_enabled ? packet->subsurface.dimensions[2] : 0u,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSsgiCompositeRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSGI_COMPOSITE];
+  prepared->groups[0][0] = (params.source_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.source_height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+void vkr_vk_mark_ssgi_submitted(VkrVulkanRenderer *renderer,
+                                uint64_t submit_value) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImageInstance *inputs[] = {slot->ssgi_color_input,
+                                           slot->ssgi_depth_input,
+                                           slot->ssgi_identity_input};
+  for (uint32_t i = 0u; i < ArrayCount(inputs); ++i)
+    if (inputs[i])
+      inputs[i]->last_use_submit_value = submit_value;
+  VkrVulkanGraphImageInstance *outputs[] = {slot->ssgi_color_output,
+                                            slot->ssgi_depth_output,
+                                            slot->ssgi_identity_output};
+  if (!outputs[0] || !outputs[1] || !outputs[2])
+    return;
+  const uint32_t current = renderer->history_output_index;
+  if (current >= VKR_VULKAN_HISTORY_INSTANCE_COUNT)
+    return;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrVulkanTemporalSceneState scene = {
+      .signature = vkr_ssgi_content_signature(packet),
+      .radiance_revision = renderer->radiance_revision,
+      .publication_generation = renderer->candidate_publication_generation,
+      .graph_revision = renderer->graph_revision,
+  };
+  for (uint32_t i = 0u; i < ArrayCount(outputs); ++i) {
+    VkrVulkanGraphImageInstance *instance = outputs[i];
+    instance->history_producer_submit_value = submit_value;
+    instance->history_frame_index = packet->input.frame.frame_index;
+    instance->history_scene_generation = packet->input.frame.scene_generation;
+    instance->history_projection = packet->temporal.jittered_projection;
+    instance->history_width = instance->image.width;
+    instance->history_height = instance->image.height;
+    instance->history_scene = scene;
+    instance->history_valid = true_v;
+  }
+  VkrRetainedShadowToken shadow_token;
+  VkrRetainedLocalShadowToken local_shadow_token;
+  vkr_vulkan_renderer_retained_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(
+      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  renderer->ssgi_histories[current] = (VkrVulkanSsgiHistory){
+      .producer_submit_value = submit_value,
+      .frame_index = packet->input.frame.frame_index,
+      .dimensions = {outputs[0]->image.width, outputs[0]->image.height},
+      .shadow_generation =
+          vkr_vk_froxel_image_generation(renderer, "shadow_map"),
+      .local_shadow_generation =
+          vkr_vk_froxel_image_generation(renderer, "local_shadow_map"),
+      .shadow_valid_layer_mask = vkr_vk_froxel_shadow_valid_mask(
+          packet, shadow_token.valid_layer_mask),
+      .local_shadow_valid_layer_mask = vkr_vk_froxel_local_shadow_valid_mask(
+          packet, local_shadow_token.valid_layer_mask),
+      .valid = true_v,
+  };
+}
+
 bool8_t vkr_vk_prepare_deferred_sdsm(VkrVulkanRenderer *renderer,
                                      VkrVulkanPreparedCompute *prepared,
                                      const VkrRgPass *pass) {
@@ -1612,6 +2999,152 @@ void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
   slot->exposure_state_output->history_valid = true_v;
 }
 
+bool8_t vkr_vk_prepare_subsurface(VkrVulkanRenderer *renderer,
+                                  VkrVulkanPreparedCompute *prepared,
+                                  const VkrRgPass *pass) {
+  static const uint32_t bindings[] = {0u, 1u, 2u, 3u, 4u, 7u, 9u, 10u, 11u, 12u};
+  uint32_t textures[ArrayCount(bindings)] = {0};
+  for (uint32_t i = 0u; i < ArrayCount(bindings); ++i)
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, bindings[i], &textures[i]))
+      return false_v;
+  uint32_t destination = 0u;
+  VkrVulkanGraphBufferInstance *visible = vkr_vk_deferred_buffer(renderer, pass, 6u);
+  if (!visible || !vkr_vk_deferred_storage_index(renderer, pass, 8u, &destination))
+    return false_v;
+  VkrVulkanFrameSlot *slot = &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t frame_address = 0u;
+  if (!vkr_vk_packet_frame_root(slot, &frame_address))
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrVulkanSubsurfaceRoot root = {
+      .params = packet->subsurface,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .frame = frame_address,
+      .visible_rows = visible->buffer.address,
+      .hdr = textures[0],
+      .source = textures[1],
+      .depth = textures[2],
+      .normal = textures[3],
+      .vbuffer = textures[4],
+      .albedo = textures[5],
+      .specular = textures[6],
+      .clearcoat = textures[7],
+      .sheen = textures[8],
+      .anisotropy = textures[9],
+      .profile_bank = slot->subsurface_texture,
+      .destination = destination,
+      .source_sampler = renderer->transmission_sampler_slot,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSubsurfaceRoot), &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] = renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SUBSURFACE_GATHER];
+  prepared->groups[0][0] = (root.params.dimensions[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.params.dimensions[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_motion_blur(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedCompute *prepared,
+                                   const VkrRgPass *pass,
+                                   VkrVulkanDeferredPipeline pipeline) {
+  static const uint32_t source_counts[] = {3u, 1u, 5u};
+  const uint32_t stage =
+      pipeline - VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_TILE_MAX;
+  uint32_t sources[5] = {0};
+  for (uint32_t i = 0u; i < source_counts[stage]; ++i)
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, i, &sources[i]))
+      return false_v;
+  for (uint32_t i = source_counts[stage]; i < ArrayCount(sources); ++i)
+    sources[i] = sources[0];
+  uint32_t destination_index = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 8u, &destination_index))
+    return false_v;
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u);
+  VkrVulkanGraphImageInstance *destination =
+      vkr_vk_deferred_image(renderer, destination_use->image);
+  if (!destination)
+    return false_v;
+  VkrVulkanMotionBlurRoot root = {
+      .params = renderer->graph->packet->motion_blur,
+      .source0 = sources[0],
+      .source1 = sources[1],
+      .source2 = sources[2],
+      .source3 = sources[3],
+      .source4 = sources[4],
+      .destination0 = destination_index,
+      .source_sampler = renderer->transmission_sampler_slot,
+  };
+  root.params.motion.x *= renderer->frame_slots[renderer->active_frame_slot]
+                              .motion_blur_interval_scale;
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanMotionBlurRoot),
+                                 &prepared->root_address))
+    return false_v;
+  const uint32_t dispatch = prepared->dispatch_count++;
+  prepared->pipelines[dispatch] = renderer->deferred_pipelines[pipeline];
+  const uint32_t divisor = stage == 0u ? 1u : 8u;
+  prepared->groups[dispatch][0] =
+      (destination->image.width + divisor - 1u) / divisor;
+  prepared->groups[dispatch][1] =
+      (destination->image.height + divisor - 1u) / divisor;
+  prepared->groups[dispatch][2] = 1u;
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_dof(VkrVulkanRenderer *renderer,
+                           VkrVulkanPreparedCompute *prepared,
+                           const VkrRgPass *pass,
+                           VkrVulkanDeferredPipeline pipeline) {
+  static const uint32_t source_counts[] = {1u, 1u, 1u, 3u, 4u, 5u};
+  static const uint32_t destination_counts[] = {1u, 1u, 1u, 2u, 2u, 1u};
+  const uint32_t stage = pipeline - VKR_VULKAN_DEFERRED_PIPELINE_DOF_COC;
+  uint32_t sources[5] = {0};
+  uint32_t destinations[2] = {0};
+  for (uint32_t i = 0u; i < source_counts[stage]; ++i)
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, i, &sources[i]))
+      return false_v;
+  for (uint32_t i = source_counts[stage]; i < ArrayCount(sources); ++i)
+    sources[i] = sources[0];
+  for (uint32_t i = 0u; i < destination_counts[stage]; ++i)
+    if (!vkr_vk_deferred_storage_index(renderer, pass, 8u + i,
+                                       &destinations[i]))
+      return false_v;
+  if (destination_counts[stage] == 1u)
+    destinations[1] = destinations[0];
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u);
+  VkrVulkanGraphImageInstance *destination =
+      vkr_vk_deferred_image(renderer, destination_use->image);
+  if (!destination)
+    return false_v;
+  const VkrVulkanDofRoot root = {
+      .params = renderer->graph->packet->dof,
+      .source0 = sources[0],
+      .source1 = sources[1],
+      .source2 = sources[2],
+      .source3 = sources[3],
+      .source4 = sources[4],
+      .destination0 = destinations[0],
+      .destination1 = destinations[1],
+      .source_sampler = renderer->transmission_sampler_slot,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanDofRoot),
+                                 &prepared->root_address))
+    return false_v;
+  const uint32_t dispatch = prepared->dispatch_count++;
+  prepared->pipelines[dispatch] = renderer->deferred_pipelines[pipeline];
+  prepared->groups[dispatch][0] = (destination->image.width + 7u) / 8u;
+  prepared->groups[dispatch][1] = (destination->image.height + 7u) / 8u;
+  prepared->groups[dispatch][2] = 1u;
+  return true_v;
+}
 /**
  * @brief Builds the root shared by all four bloom pass kinds.
  *

@@ -44,12 +44,13 @@ vkr_internal int vkr_harness_snapshot_spawn(
                 "%s/build/_asset_cache", repo_root);
   const VkrPlatformEnvironmentVariable environment_defaults[] = {
       {.name = "VKR_ASSET_CACHE_ROOT", .value = asset_cache_path},
+      {.name = "VKR_DISPLAY_OUTPUT", .value = renderer->display_output},
       {.name = "VKR_TONEMAP_DISABLED",
        .value = renderer->tonemap_enabled ? "0" : "1"},
       {.name = "VKR_FXAA_DISABLED",
        .value = renderer->fxaa_enabled ? "0" : "1"},
   };
-  VkrPlatformEnvironmentVariable environment[4] = {0};
+  VkrPlatformEnvironmentVariable environment[ArrayCount(environment_defaults) + 1u] = {0};
   MemCopy(environment, environment_defaults, sizeof(environment_defaults));
   uint32_t environment_count = ArrayCount(environment_defaults);
   if (cache_path && cache_path[0]) {

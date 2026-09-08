@@ -1,0 +1,248 @@
+// Linearly transformed cosine rectangle integration. The fitted tables are
+// adapted from selfshadow/ltc_code (Heitz, Dupuy, Hill, Neubelt 2016); the
+// immutable data module retains the complete attribution and license.
+//
+// This header is resource-free portable math. Native shaders sample the two
+// RGBA16F tables and pass VkrLtcSample to these helpers.
+
+#ifndef VKR_SHADER_LTC_KERNEL_SLANGH
+#define VKR_SHADER_LTC_KERNEL_SLANGH
+
+#define VKR_LTC_INV_TWO_PI 0.15915494309189533577f
+#define VKR_LTC_LUT_SIZE 64u
+
+struct VkrLtcSample
+{
+    // Primary-fit tuple (m00, m20, m02, m22), laid out by GLSL columns.
+    float4 inverse_matrix;
+    // Correlated-GGX norm and integrated Schlick weight.
+    float2 amplitude_fresnel;
+};
+
+float2 vkr_ltc_lut_uv(float no_v, float roughness)
+{
+    return (float2(clamp(roughness, 0.0f, 1.0f),
+                   sqrt(max(0.0f, 1.0f - clamp(no_v, 0.0f, 1.0f)))) *
+                float(VKR_LTC_LUT_SIZE - 1u) +
+            0.5f) /
+           float(VKR_LTC_LUT_SIZE);
+}
+
+float3 vkr_ltc_normalize_or(float3 value, float3 fallback)
+{
+    float length_squared = dot(value, value);
+    if (length_squared > 1e-12f)
+        return value * rsqrt(length_squared);
+    return fallback;
+}
+
+// Matches the reference fit's local frame: tangent is the projected view,
+// bitangent is cross(normal, tangent). At N.V=1 matrix off-diagonals vanish,
+// so the deterministic orthogonal fallback does not alter the lobe. Construct
+// it once per receiver; every rectangle vertex shares this frame.
+struct VkrLtcFrame
+{
+    float3 tangent;
+    float3 bitangent;
+    float3 normal;
+};
+
+VkrLtcFrame vkr_ltc_make_frame(float3 normal, float3 view)
+{
+    float3 projected = view - normal * dot(normal, view);
+    float projected_length_squared = dot(projected, projected);
+    float3 tangent;
+    if (projected_length_squared > 1e-12f)
+        tangent = projected * rsqrt(projected_length_squared);
+    else
+    {
+        float3 axis = abs(normal.z) < 0.999f ? float3(0.0f, 0.0f, 1.0f)
+                                             : float3(0.0f, 1.0f, 0.0f);
+        tangent = vkr_ltc_normalize_or(cross(axis, normal),
+                                       float3(1.0f, 0.0f, 0.0f));
+    }
+    VkrLtcFrame result;
+    result.tangent = tangent;
+    result.bitangent = cross(normal, tangent);
+    result.normal = normal;
+    return result;
+}
+
+float3 vkr_ltc_apply_inverse_matrix(float3 local_vertex,
+                                    float4 inverse_matrix)
+{
+    return float3(inverse_matrix.x * local_vertex.x +
+                      inverse_matrix.z * local_vertex.z,
+                  local_vertex.y,
+                  inverse_matrix.y * local_vertex.x +
+                      inverse_matrix.w * local_vertex.z);
+}
+
+float3 vkr_ltc_project_vertex_in_frame(float3 relative_light_vertex,
+                                       VkrLtcFrame frame)
+{
+    return float3(dot(relative_light_vertex, frame.tangent),
+                  dot(relative_light_vertex, frame.bitangent),
+                  dot(relative_light_vertex, frame.normal));
+}
+
+struct VkrLtcRectangle
+{
+    float3 vertex0;
+    float3 vertex1;
+    float3 vertex2;
+    float3 vertex3;
+};
+
+// Projection is linear: derive the four local vertices from center/right/up
+// once, then share those vertices between diffuse and specular integration.
+VkrLtcRectangle vkr_ltc_project_rectangle_in_frame(
+    float3 relative_center, float3 right, float3 up, VkrLtcFrame frame)
+{
+    float3 center = vkr_ltc_project_vertex_in_frame(relative_center, frame);
+    float3 local_right = vkr_ltc_project_vertex_in_frame(right, frame);
+    float3 local_up = vkr_ltc_project_vertex_in_frame(up, frame);
+    VkrLtcRectangle result;
+    result.vertex0 = center - local_right - local_up;
+    result.vertex1 = center - local_right + local_up;
+    result.vertex2 = center + local_right + local_up;
+    result.vertex3 = center + local_right - local_up;
+    return result;
+}
+
+// `relative_light_vertex` is light vertex minus shaded position in world
+// space. The return value is in the transformed LTC local frame.
+float3 vkr_ltc_transform_vertex_in_frame(float3 relative_light_vertex,
+                                         VkrLtcFrame frame,
+                                         float4 inverse_matrix)
+{
+    float3 local_vertex = vkr_ltc_project_vertex_in_frame(relative_light_vertex,
+                                                           frame);
+    return vkr_ltc_apply_inverse_matrix(local_vertex, inverse_matrix);
+}
+
+float3 vkr_ltc_transform_vertex(float3 relative_light_vertex, float3 normal,
+                                float3 view, float4 inverse_matrix)
+{
+    return vkr_ltc_transform_vertex_in_frame(relative_light_vertex,
+                                              vkr_ltc_make_frame(normal, view),
+                                              inverse_matrix);
+}
+
+float vkr_ltc_integrate_edge(float3 first, float3 second)
+{
+    float cosine = clamp(dot(first, second), -1.0f, 1.0f);
+    float sine = sqrt(max(1.0f - cosine * cosine, 1e-12f));
+    return cross(first, second).z * acos(cosine) / sine;
+}
+
+// The common fully visible quad skips horizon clipping and its dynamic arrays.
+// Keep this arithmetic identical to the clipped path's normalize-and-edge sum.
+float vkr_ltc_integrate_front_quad(float3 vertex0, float3 vertex1,
+                                   float3 vertex2, float3 vertex3)
+{
+    float length_squared0 = dot(vertex0, vertex0);
+    float length_squared1 = dot(vertex1, vertex1);
+    float length_squared2 = dot(vertex2, vertex2);
+    float length_squared3 = dot(vertex3, vertex3);
+    if (length_squared0 <= 1e-12f || length_squared1 <= 1e-12f ||
+        length_squared2 <= 1e-12f || length_squared3 <= 1e-12f)
+        return 0.0f;
+    float3 normalized0 = vertex0 * rsqrt(length_squared0);
+    float3 normalized1 = vertex1 * rsqrt(length_squared1);
+    float3 normalized2 = vertex2 * rsqrt(length_squared2);
+    float3 normalized3 = vertex3 * rsqrt(length_squared3);
+    float sum = vkr_ltc_integrate_edge(normalized0, normalized1) +
+                vkr_ltc_integrate_edge(normalized1, normalized2) +
+                vkr_ltc_integrate_edge(normalized2, normalized3) +
+                vkr_ltc_integrate_edge(normalized3, normalized0);
+    return max(0.0f, -sum * VKR_LTC_INV_TWO_PI);
+}
+
+// Vertices are wound (-right-up), (-right+up), (+right+up), (+right-up), so
+// their emitting front is -cross(right, up). Sutherland-Hodgman clips the
+// transformed convex quad to z>=0, producing at most five vertices. The
+// edge-vector sum is twice the cosine solid-angle integral. The required
+// input winding has emitting normal -cross(right, up), which makes that sum
+// negative in the local +Z convention; negate it before the physical 1/(2pi)
+// normalization.
+float vkr_ltc_integrate_transformed_rectangle(float3 vertex0, float3 vertex1,
+                                              float3 vertex2, float3 vertex3)
+{
+    bool front0 = vertex0.z > 0.0f;
+    bool front1 = vertex1.z > 0.0f;
+    bool front2 = vertex2.z > 0.0f;
+    bool front3 = vertex3.z > 0.0f;
+    if (front0 && front1 && front2 && front3)
+        return vkr_ltc_integrate_front_quad(vertex0, vertex1, vertex2, vertex3);
+    if (!front0 && !front1 && !front2 && !front3)
+        return 0.0f;
+
+    float3 source[4] = {vertex0, vertex1, vertex2, vertex3};
+    float3 clipped[5];
+    uint clipped_count = 0u;
+    for (uint index = 0u; index < 4u; ++index)
+    {
+        float3 first = source[index];
+        float3 second = source[(index + 1u) & 3u];
+        bool first_inside = first.z > 0.0f;
+        bool second_inside = second.z > 0.0f;
+        if (first_inside)
+            clipped[clipped_count++] = first;
+        if (first_inside != second_inside)
+        {
+            float denominator = first.z - second.z;
+            if (abs(denominator) > 1e-12f)
+                clipped[clipped_count++] =
+                    first + (second - first) * (first.z / denominator);
+        }
+    }
+    if (clipped_count < 3u)
+        return 0.0f;
+
+    float3 normalized[5];
+    for (uint index = 0u; index < clipped_count; ++index)
+    {
+        float length_squared = dot(clipped[index], clipped[index]);
+        if (length_squared <= 1e-12f)
+            return 0.0f;
+        normalized[index] = clipped[index] * rsqrt(length_squared);
+    }
+
+    float sum = 0.0f;
+    for (uint index = 0u; index < clipped_count; ++index)
+        sum += vkr_ltc_integrate_edge(normalized[index],
+                                      normalized[(index + 1u) % clipped_count]);
+    return max(0.0f, -sum * VKR_LTC_INV_TWO_PI);
+}
+
+// Current renderer F90 and multi-scatter compensation differ from the
+// reference demo's fixed F90=1. Apply both after the fitted geometry integral
+// so rectangle lights match vkr_ggx_prepare_material/direct-light semantics.
+// Direct GGX rejects the shading-normal back-view hemisphere. Retain that
+// rule for LTC before the per-rectangle loop; diffuse remains valid there.
+float3 vkr_ltc_specular_amplitude(VkrLtcSample sample, float no_v, float3 f0,
+                                  float f90, float3 specular_scale)
+{
+    if (no_v <= 0.0f)
+        return 0.0f;
+    float norm = max(sample.amplitude_fresnel.x, 0.0f);
+    float schlick_weight = max(sample.amplitude_fresnel.y, 0.0f);
+    float3 fresnel_integral =
+        f0 * norm + (float3(clamp(f90, 0.0f, 1.0f)) - f0) * schlick_weight;
+    return max(float3(0.0f), fresnel_integral * specular_scale);
+}
+
+float3 vkr_ltc_evaluate_specular_rectangle(
+    VkrLtcRectangle local_rectangle, float4 inverse_matrix,
+    float3 specular_amplitude)
+{
+    float integral = vkr_ltc_integrate_transformed_rectangle(
+        vkr_ltc_apply_inverse_matrix(local_rectangle.vertex0, inverse_matrix),
+        vkr_ltc_apply_inverse_matrix(local_rectangle.vertex1, inverse_matrix),
+        vkr_ltc_apply_inverse_matrix(local_rectangle.vertex2, inverse_matrix),
+        vkr_ltc_apply_inverse_matrix(local_rectangle.vertex3, inverse_matrix));
+    return integral * specular_amplitude;
+}
+
+#endif

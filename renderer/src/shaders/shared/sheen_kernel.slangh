@@ -1,0 +1,351 @@
+// KHR_materials_sheen's Charlie lobe, evaluated below clearcoat. The C cooker
+// generates the matching directional-energy and fitted-LTC tables from the
+// same Estevez/Kulla correlated visibility. `energy_normalization` reserves
+// headroom for the sharp grazing lobe; it multiplies direct Charlie D*V, while
+// the directional-energy LUT and LTC amplitude already contain the same scale.
+#ifndef VKR_SHADER_SHEEN_KERNEL_SLANGH
+#define VKR_SHADER_SHEEN_KERNEL_SLANGH
+
+#define VKR_SHEEN_MIN_ROUGHNESS 0.04f
+#define VKR_SHEEN_ENERGY_LUT_SIZE 256u
+#define VKR_SHEEN_LTC_LUT_SIZE 64u
+#define VKR_SHEEN_INV_TWO_PI 0.15915494309189533577f
+#define VKR_SHEEN_MIN_NOV 1e-4f
+// The cooker proves every stored lobe has larger clipped support. This only
+// bounds FP16 interpolation and cannot raise a valid lobe's contribution.
+#define VKR_SHEEN_LTC_CLIPPED_MASS_FLOOR 1e-4f
+#define VKR_SHEEN_LTC_LOG_SCALE_MIN -6.0f
+#define VKR_SHEEN_LTC_LOG_SCALE_MAX 6.0f
+#define VKR_SHEEN_LTC_SHEAR_MIN -6.0f
+#define VKR_SHEEN_LTC_SHEAR_MAX 6.0f
+#define VKR_SHEEN_LTC_BETA_MIN -3.10f
+#define VKR_SHEEN_LTC_BETA_MAX 3.10f
+
+struct VkrSheenLayer
+{
+    float3 color;
+    float roughness;
+    float base_transmission;
+    float directional_albedo;
+};
+
+struct VkrSheenLtcSample
+{
+    // Same GLSL-column tuple as VkrLtcSample: (m00, m20, m02, m22).
+    float4 inverse_matrix;
+    // Exact upper-hemisphere support from the encoded rotation angle.
+    float clipped_mass;
+    // E-scaled coefficient prepared once before the rectangle-light loop.
+    float amplitude;
+    // Table 1 GB: relative/absolute residual allocation reserve.
+    float2 allocation_reserve;
+    // Table 1 A: per-roughness D*V normalization, replicated across NoV.
+    float energy_normalization;
+    // Tables 2/3: second fitted Charlie integral and its amplitude.
+    float4 inverse_matrix_b;
+    float clipped_mass_b;
+    // E-scaled coefficient prepared once before the rectangle-light loop.
+    float amplitude_b;
+    // Table 1/3 R: nonnegative mixture fractions before filtered
+    // normalization. The cooker proves their clipped supports are nonzero.
+    float table_weight;
+    float table_weight_b;
+};
+
+struct VkrSheenLtcTransform
+{
+    float4 inverse_matrix;
+    float clipped_mass;
+};
+
+bool vkr_sheen_active(float3 color)
+{
+    return max(color.x, max(color.y, color.z)) > 0.0f;
+}
+
+// Matrix LUTs encode a positive-orientation inverse transform as
+// (log2(s), log2(k), shear_h, beta_radians), not its four matrix entries.
+// Filtering happens in this bounded parameter domain before this one-time
+// per-surface decode. Constructor validation bounds every table record, and
+// bilinear interpolation preserves those bounds. The output tuple is
+// (m00, m20, m02, m22), matching vkr_ltc_apply_inverse_matrix.
+VkrSheenLtcTransform vkr_sheen_ltc_decode_transform(float4 encoded)
+{
+    float scale = exp2(encoded.x);
+    float orthogonal_scale = exp2(encoded.y);
+    float sine = sin(encoded.w);
+    float cosine = cos(encoded.w);
+    float m00 = scale * cosine;
+    float m20 = scale * sine;
+    VkrSheenLtcTransform result;
+    result.inverse_matrix =
+        float4(m00, m20, encoded.z * m00 - orthogonal_scale * sine,
+               encoded.z * m20 + orthogonal_scale * cosine);
+    // det(A)=s*k is positive by construction. The clipped cosine mass thus
+    // depends only on beta; evaluating it here avoids a poorly conditioned
+    // determinant subtraction from the decoded matrix.
+    result.clipped_mass = 0.5f * (1.0f + cosine);
+    return result;
+}
+
+float vkr_sheen_roughness(float roughness)
+{
+    return clamp(roughness, VKR_SHEEN_MIN_ROUGHNESS, 1.0f);
+}
+
+// The Estevez/Kulla fit diverges below this grazing domain. The cooker,
+// runtime and offline baker evaluate the bounded endpoint for every lower NoV.
+float vkr_sheen_no_v(float no_v)
+{
+    return max(saturate(no_v), VKR_SHEEN_MIN_NOV);
+}
+
+float2 vkr_sheen_energy_lut_uv(float no_v, float roughness)
+{
+    float normalized_roughness =
+        (vkr_sheen_roughness(roughness) - VKR_SHEEN_MIN_ROUGHNESS) /
+        (1.0f - VKR_SHEEN_MIN_ROUGHNESS);
+    return (float2(sqrt(vkr_sheen_no_v(no_v)), normalized_roughness) *
+                float(VKR_SHEEN_ENERGY_LUT_SIZE - 1u) +
+            0.5f) /
+           float(VKR_SHEEN_ENERGY_LUT_SIZE);
+}
+
+float2 vkr_sheen_ltc_lut_uv(float no_v, float roughness)
+{
+    float normalized_roughness =
+        (vkr_sheen_roughness(roughness) - VKR_SHEEN_MIN_ROUGHNESS) /
+        (1.0f - VKR_SHEEN_MIN_ROUGHNESS);
+    return (float2(normalized_roughness,
+                   1.0f - sqrt(vkr_sheen_no_v(no_v))) *
+                float(VKR_SHEEN_LTC_LUT_SIZE - 1u) +
+            0.5f) /
+           float(VKR_SHEEN_LTC_LUT_SIZE);
+}
+
+// Estevez and Kulla's fitted Smith-Lambda terms, as used to generate the
+// immutable tables. The reciprocal symmetry branch avoids an unstable fit near
+// the tangent without adding a non-reciprocal terminator softening term.
+float vkr_sheen_lambda(float cosine, float alpha)
+{
+    float interpolation = (1.0f - alpha) * (1.0f - alpha);
+    float a = 21.5473f + (25.3245f - 21.5473f) * interpolation;
+    float b = 3.82987f + (3.32435f - 3.82987f) * interpolation;
+    float c = 0.19823f + (0.16801f - 0.19823f) * interpolation;
+    float d = -1.97760f + (-1.27393f + 1.97760f) * interpolation;
+    float e = -4.32054f + (-4.85967f + 4.32054f) * interpolation;
+    float x = saturate(abs(cosine));
+    float l = a / (1.0f + b * pow(max(x, 1e-8f), c)) + d * x + e;
+    if (x < 0.5f)
+        return exp(l);
+    float midpoint = a / (1.0f + b * pow(0.5f, c)) + d * 0.5f + e;
+    float reflected = 1.0f - x;
+    float reflected_l =
+        a / (1.0f + b * pow(max(reflected, 1e-8f), c)) + d * reflected + e;
+    return exp(2.0f * midpoint - reflected_l);
+}
+
+float vkr_sheen_distribution(float no_h, float roughness)
+{
+    float alpha = vkr_sheen_roughness(roughness);
+    alpha *= alpha;
+    float inverse_alpha = 1.0f / alpha;
+    float sine_squared = max(1.0f - no_h * no_h, 0.0f);
+    return (2.0f + inverse_alpha) *
+           pow(sine_squared, 0.5f * inverse_alpha) * VKR_SHEEN_INV_TWO_PI;
+}
+
+float vkr_sheen_visibility(float no_v, float no_l, float roughness)
+{
+    if (no_l <= 0.0f)
+        return 0.0f;
+    no_v = vkr_sheen_no_v(no_v);
+    no_l = max(saturate(no_l), VKR_SHEEN_MIN_NOV);
+    float alpha = vkr_sheen_roughness(roughness);
+    alpha *= alpha;
+    float denominator =
+        (1.0f + vkr_sheen_lambda(no_v, alpha) +
+         vkr_sheen_lambda(no_l, alpha)) *
+        (4.0f * no_v * no_l);
+    return denominator > 1e-12f ? 1.0f / denominator : 0.0f;
+}
+
+float vkr_sheen_direct_brdf(float no_v, float no_l, float no_h,
+                             float roughness, float energy_normalization)
+{
+    return max(energy_normalization, 0.0f) *
+           vkr_sheen_distribution(max(no_h, 0.0f), roughness) *
+           vkr_sheen_visibility(no_v, no_l, roughness);
+}
+
+VkrSheenLayer vkr_sheen_prepare_layer(float3 color, float roughness,
+                                      float directional_albedo,
+                                      float2 allocation_reserve)
+{
+    VkrSheenLayer result;
+    result.color = max(color, 0.0f);
+    result.roughness = vkr_sheen_roughness(roughness);
+    result.directional_albedo = saturate(directional_albedo);
+    float relative_reserve = max(allocation_reserve.x, 0.0f);
+    float absolute_reserve = max(allocation_reserve.y, 0.0f);
+    float allocated = min(1.0f, result.directional_albedo +
+                                    min(result.directional_albedo * relative_reserve,
+                                        absolute_reserve));
+    result.base_transmission =
+        max(0.0f, 1.0f - max(result.color.x, max(result.color.y, result.color.z)) *
+                          allocated);
+    return result;
+}
+
+float3 vkr_sheen_direct(float3 view, float3 light, float3 normal,
+                         float3 radiance, VkrSheenLayer sheen,
+                         float energy_normalization)
+{
+    float no_v = max(dot(normal, view), 0.0f);
+    float no_l = max(dot(normal, light), 0.0f);
+    float3 half_vector = view + light;
+    float half_length_squared = dot(half_vector, half_vector);
+    if (no_l <= 0.0f || half_length_squared <= 1e-12f)
+        return 0.0f;
+    no_v = vkr_sheen_no_v(no_v);
+    half_vector *= rsqrt(half_length_squared);
+    float brdf = vkr_sheen_direct_brdf(no_v, no_l,
+                                       max(dot(normal, half_vector), 0.0f),
+                                       sheen.roughness, energy_normalization);
+    return sheen.color * radiance * (no_l * brdf);
+}
+
+// Convert bilinearly sampled upper-hemisphere mixture fractions into actual
+// coefficients once per surface. Dividing by clipped support makes each
+// component integrate to its fraction of the raw directional albedo.
+VkrSheenLtcSample vkr_sheen_ltc_prepare_sample(VkrSheenLtcSample sample,
+                                                float directional_albedo)
+{
+    float2 weights = float2(sample.table_weight, sample.table_weight_b);
+    weights /= weights.x + weights.y;
+    float mass_a = max(sample.clipped_mass, VKR_SHEEN_LTC_CLIPPED_MASS_FLOOR);
+    float mass_b =
+        max(sample.clipped_mass_b, VKR_SHEEN_LTC_CLIPPED_MASS_FLOOR);
+    float albedo = saturate(directional_albedo);
+    sample.amplitude = albedo * weights.x / mass_a;
+    sample.amplitude_b = albedo * weights.y / mass_b;
+    return sample;
+}
+
+struct VkrSheenLtcPhysicalPolygon
+{
+    float3 vertices[5];
+    uint count;
+};
+
+// Mixture amplitudes are normalized over the receiver's physical NoL>=0
+// hemisphere. Clip that hemisphere before each transformed lobe clips its own
+// horizon; clipping only after the LTC transform admits below-receiver-horizon
+// radiance when the transform tilts Z.
+float vkr_sheen_ltc_integrate_physical_polygon(
+    VkrSheenLtcPhysicalPolygon polygon, float4 inverse_matrix)
+{
+    float3 clipped[6];
+    uint clipped_count = 0u;
+    for (uint index = 0u; index < polygon.count; ++index)
+    {
+        float3 first = vkr_ltc_apply_inverse_matrix(
+            polygon.vertices[index], inverse_matrix);
+        float3 second = vkr_ltc_apply_inverse_matrix(
+            polygon.vertices[(index + 1u) % polygon.count], inverse_matrix);
+        bool first_inside = first.z > 0.0f;
+        bool second_inside = second.z > 0.0f;
+        if (first_inside)
+            clipped[clipped_count++] = first;
+        if (first_inside != second_inside)
+        {
+            float denominator = first.z - second.z;
+            if (abs(denominator) > 1e-12f)
+                clipped[clipped_count++] =
+                    first + (second - first) * (first.z / denominator);
+        }
+    }
+    if (clipped_count < 3u)
+        return 0.0f;
+
+    float3 normalized[6];
+    for (uint index = 0u; index < clipped_count; ++index)
+    {
+        float length_squared = dot(clipped[index], clipped[index]);
+        if (length_squared <= 1e-12f)
+            return 0.0f;
+        normalized[index] = clipped[index] * rsqrt(length_squared);
+    }
+    float sum = 0.0f;
+    for (uint index = 0u; index < clipped_count; ++index)
+        sum += vkr_ltc_integrate_edge(normalized[index],
+                                      normalized[(index + 1u) % clipped_count]);
+    return max(0.0f, -sum * VKR_LTC_INV_TWO_PI);
+}
+
+float vkr_sheen_ltc_rectangle(VkrLtcRectangle local_rectangle,
+                              VkrSheenLtcSample sample)
+{
+    bool front0 = local_rectangle.vertex0.z > 0.0f;
+    bool front1 = local_rectangle.vertex1.z > 0.0f;
+    bool front2 = local_rectangle.vertex2.z > 0.0f;
+    bool front3 = local_rectangle.vertex3.z > 0.0f;
+    if (!front0 && !front1 && !front2 && !front3)
+        return 0.0f;
+
+    float integral_a;
+    float integral_b;
+    if (front0 && front1 && front2 && front3)
+    {
+        integral_a = vkr_ltc_integrate_transformed_rectangle(
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex0,
+                                          sample.inverse_matrix),
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex1,
+                                          sample.inverse_matrix),
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex2,
+                                          sample.inverse_matrix),
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex3,
+                                          sample.inverse_matrix));
+        integral_b = vkr_ltc_integrate_transformed_rectangle(
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex0,
+                                          sample.inverse_matrix_b),
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex1,
+                                          sample.inverse_matrix_b),
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex2,
+                                          sample.inverse_matrix_b),
+            vkr_ltc_apply_inverse_matrix(local_rectangle.vertex3,
+                                          sample.inverse_matrix_b));
+    }
+    else
+    {
+        float3 source[4] = {local_rectangle.vertex0, local_rectangle.vertex1,
+                            local_rectangle.vertex2, local_rectangle.vertex3};
+        VkrSheenLtcPhysicalPolygon polygon;
+        polygon.count = 0u;
+        for (uint index = 0u; index < 4u; ++index)
+        {
+            float3 first = source[index];
+            float3 second = source[(index + 1u) & 3u];
+            bool first_inside = first.z > 0.0f;
+            bool second_inside = second.z > 0.0f;
+            if (first_inside)
+                polygon.vertices[polygon.count++] = first;
+            if (first_inside != second_inside)
+            {
+                float denominator = first.z - second.z;
+                if (abs(denominator) > 1e-12f)
+                    polygon.vertices[polygon.count++] =
+                        first + (second - first) * (first.z / denominator);
+            }
+        }
+        if (polygon.count < 3u)
+            return 0.0f;
+        integral_a = vkr_sheen_ltc_integrate_physical_polygon(
+            polygon, sample.inverse_matrix);
+        integral_b = vkr_sheen_ltc_integrate_physical_polygon(
+            polygon, sample.inverse_matrix_b);
+    }
+    return integral_a * sample.amplitude + integral_b * sample.amplitude_b;
+}
+
+#endif

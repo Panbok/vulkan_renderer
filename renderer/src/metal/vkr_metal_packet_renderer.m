@@ -26,6 +26,10 @@
 #include "metal/vkr_metal_packet_abi.h"
 #include "vkr_candidate_residency.h"
 #include "vkr_capture_ring.h"
+#include "vkr_dfg_lut.h"
+#include "vkr_anisotropy_lut.h"
+#include "vkr_ltc_lut.h"
+#include "vkr_sheen_lut.h"
 #include "vkr_geometry_ranges.h"
 #include "vkr_geometry_upload.h"
 #include "vkr_ibl_math.h"
@@ -49,6 +53,8 @@ enum {
   VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
       VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
   VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY = 16,
+  /* Must match the shared atmosphere kernel's workgroup reduction width. */
+  VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS = 64,
   /* Four address modes on three axes, two min/mag filters, one canonical
      non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
      on/off. Samplers remain alive with immutable material rows, so this cache
@@ -57,6 +63,9 @@ enum {
       VKR_TEXTURE_REPEAT_MODE_COUNT * VKR_TEXTURE_REPEAT_MODE_COUNT *
       VKR_TEXTURE_REPEAT_MODE_COUNT * VKR_FILTER_COUNT * VKR_FILTER_COUNT *
       (1 + (VKR_MIP_FILTER_COUNT - 1) * VKR_METAL_PACKET_MAX_TEXTURE_MIPS) * 2,
+  /* Editor Scene resolve has already applied the scene display transfer; its
+   * composite only samples those encoded pixels. */
+  VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED = 1u << 3u,
 };
 
 /**
@@ -112,6 +121,31 @@ typedef struct VkrMetalPacketTemporalSceneState {
   uint64_t graph_revision;
 } VkrMetalPacketTemporalSceneState;
 
+/** Completion-gated metadata for one SSGI history ring instance. */
+typedef struct VkrMetalPacketSsgiHistoryState {
+  /** Previous raster projection only linearizes reprojected depth. */
+  Mat4 raster_projection;
+  uint64_t producer_submit_value;
+  uint64_t frame_index;
+  uint32_t graph_generation;
+  VkrRetainedShadowToken shadow;
+  VkrRetainedLocalShadowToken local_shadow;
+  bool8_t valid;
+} VkrMetalPacketSsgiHistoryState;
+
+typedef struct VkrMetalPacketFroxelHistoryState {
+  Mat4 view_projection;
+  Mat4 view;
+  uint64_t signature;
+  uint64_t producer_submit_value;
+  uint64_t frame_index;
+  uint32_t dimensions[3];
+  uint32_t graph_generation;
+  VkrRetainedShadowToken shadow;
+  VkrRetainedLocalShadowToken local_shadow;
+  bool8_t valid;
+} VkrMetalPacketFroxelHistoryState;
+
 typedef struct VkrMetalPacketImageInstance {
   VkrMetalPacketTemporalSceneState history_scene;
   VkrMetalTextureResource resource;
@@ -164,6 +198,8 @@ typedef struct VkrMetalPacketGraphBufferInstance {
   uint64_t history_frame_index;
   uint64_t history_scene_generation;
   float64_t history_exposure_seconds;
+  float64_t history_motion_seconds;
+  bool8_t history_motion_valid;
   bool8_t history_valid;
   bool8_t live;
 } VkrMetalPacketGraphBufferInstance;
@@ -209,8 +245,8 @@ typedef struct VkrMetalPacketGeometryMegabuffer {
 } VkrMetalPacketGeometryMegabuffer;
 
 typedef struct VkrMetalPacketMaterial {
-  VkrMetalTextureResource textures[6];
-  VkrTextureHandle texture_handles[6];
+  VkrMetalTextureResource textures[12];
+  VkrTextureHandle texture_handles[12];
   VkrMetalMaterialHandle row;
   VkrPbrProperties pbr;
   VkrMaterialAlphaMode alpha_mode;
@@ -247,6 +283,13 @@ typedef struct VkrMetalPacketTexture {
   /** Published L2 coefficient slot projected from this source cubemap, or
       VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
+  id<MTLBuffer> atmosphere_sun_readback;
+  uint64_t atmosphere_completion_submit_value;
+  float32_t atmosphere_projected_solid_angle;
+  VkrAtmosphereBakeResult atmosphere_result;
+  VkrAtmosphereBakeStatus atmosphere_status;
+  bool8_t atmosphere_bake_active;
+  bool8_t atmosphere_ibl_failed;
   bool8_t live;
 } VkrMetalPacketTexture;
 
@@ -320,6 +363,15 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t local_shadow_views_gpu;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
+  uint64_t subsurface_texture_id;
+  uint64_t diffuse_volume_texture_id;
+  uint64_t diffuse_volume_params_gpu;
+  uint64_t ltc_gpu;
+  uint64_t sheen_gpu;
+  uint64_t fog_gpu;
+  uint64_t froxel_fog_gpu;
+  uint64_t froxel_integrated_texture_id;
+  uint64_t display_output_gpu;
   /** Submission-local SH publication. Nonzero only after projection recording
       succeeds; cancellation returns it to the pool and restores the prior
       global slot. */
@@ -345,6 +397,8 @@ typedef struct VkrMetalPacketCapturePlan {
 } VkrMetalPacketCapturePlan;
 
 typedef struct VkrMetalPacketReadbackLayout {
+  uint64_t shadow_depth;
+  uint64_t picking;
   uint64_t ibl_prefilter;
   uint64_t deferred_diagnostics;
   uint64_t deferred_diagnostics_size;
@@ -357,10 +411,15 @@ typedef struct VkrMetalPacketReadbackLayout {
 } VkrMetalPacketReadbackLayout;
 
 vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
-    bool8_t picking, bool8_t ibl, bool8_t deferred_diagnostics,
-    bool8_t transmission_diagnostics, bool8_t sdsm, bool8_t exposure,
+    bool8_t ibl, bool8_t deferred_diagnostics, bool8_t transmission_diagnostics,
+    bool8_t sdsm, bool8_t exposure,
     uint32_t shadow_cascade_count) {
-  const uint64_t ibl_prefilter_offset = picking ? 16u : 8u;
+  /* The final target can be RGBA8 or RGBA16F. Reserve an eight-byte pixel
+     before the fixed diagnostic fields so the transfer stays valid across an
+     extended-linear target transition. */
+  const uint64_t shadow_depth_offset = 8u;
+  const uint64_t picking_offset = shadow_depth_offset + sizeof(float32_t);
+  const uint64_t ibl_prefilter_offset = 16u;
   const uint64_t probe_size =
       ibl ? ibl_prefilter_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u
           : ibl_prefilter_offset;
@@ -387,6 +446,8 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
           ? sdsm_offset + sdsm_bytes
           : probe_size;
   return (VkrMetalPacketReadbackLayout){
+      .shadow_depth = shadow_depth_offset,
+      .picking = picking_offset,
       .ibl_prefilter = ibl_prefilter_offset,
       .deferred_diagnostics = deferred_offset,
       .deferred_diagnostics_size = deferred_bytes,
@@ -427,7 +488,8 @@ typedef struct VkrMetalPacketCommandSlot {
       gpu_draw_icbs[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   id<MTLIndirectCommandBuffer> transmission_gpu_draw_icb;
   /* Native command capacities; retained until this completed slot grows. */
-  uint32_t gpu_draw_icb_capacities[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
+  uint32_t
+      gpu_draw_icb_capacities[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   uint32_t transmission_gpu_draw_icb_capacity;
   VkrMetalPacketResult pending_result;
   VkrMetalPacketCommitFeedbackRecord *commit_feedback;
@@ -481,9 +543,14 @@ struct VkrMetalPacketRenderer {
   VkrExposureMeteringConfig exposure_metering;
   /** Bounded simulation time of the last submitted automatic exposure. */
   float64_t exposure_seconds;
+  float64_t motion_seconds;
   VkrBloomConfig bloom_config;
   VkrGtaoConfig gtao_config;
   VkrGtaoGpuParams gtao_params;
+  VkrSsrConfig ssr_config;
+  VkrSsrGpuParams ssr_params;
+  VkrSsgiConfig ssgi_config;
+  VkrSsgiGpuParams ssgi_params;
   VkrMetalMemoryDevice *memory;
   VkrMetalMaterialTableDevice *materials;
   VkrCaptureRing capture_ring;
@@ -525,6 +592,9 @@ struct VkrMetalPacketRenderer {
   id<MTLDevice> device;
   char device_name[256];
   id<MTL4Compiler> compiler;
+  /** Retained only so completion-safe presentation format changes can rebuild
+   * the four physical-output pipelines without borrowing config paths. */
+  id<MTLLibrary> fragment_library;
   id<MTL4FXTemporalScaler> metalfx_temporal_scaler;
   uint32_t metalfx_output_width;
   uint32_t metalfx_output_height;
@@ -544,6 +614,12 @@ struct VkrMetalPacketRenderer {
   uint32_t command_slot_count;
   uint32_t history_instance_count;
   uint32_t history_output_index;
+  uint32_t selected_froxel_history_instance;
+  uint32_t selected_ssgi_history_instance;
+  VkrMetalPacketSsgiHistoryState
+      ssgi_history[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
+  VkrMetalPacketFroxelHistoryState
+      froxel_history[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
   uint32_t next_command_slot;
   uint32_t next_completed_timing;
   uint32_t next_commit_feedback;
@@ -570,6 +646,10 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> ibl_equirect_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;
   id<MTLComputePipelineState> ibl_sh_pipeline;
+  id<MTLComputePipelineState> atmosphere_transmittance_pipeline;
+  id<MTLComputePipelineState> atmosphere_multiple_scattering_pipeline;
+  id<MTLComputePipelineState> atmosphere_source_pipeline;
+  id<MTLComputePipelineState> atmosphere_sun_pipeline;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
@@ -581,6 +661,20 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gtao_depth_mip_pipeline;
   id<MTLComputePipelineState> gtao_evaluate_pipeline;
   id<MTLComputePipelineState> gtao_denoise_pipeline;
+  id<MTLComputePipelineState> ssr_depth_base_pipeline;
+  id<MTLComputePipelineState> ssr_depth_mip_pipeline;
+  id<MTLComputePipelineState> ssr_trace_pipeline;
+  id<MTLComputePipelineState> ssr_temporal_pipeline;
+  id<MTLComputePipelineState> ssr_composite_pipeline;
+  id<MTLComputePipelineState> ssgi_depth_base_pipeline;
+  id<MTLComputePipelineState> ssgi_depth_mip_pipeline;
+  id<MTLComputePipelineState> ssgi_trace_pipeline;
+  id<MTLComputePipelineState> ssgi_temporal_pipeline;
+  id<MTLComputePipelineState> ssgi_composite_pipeline;
+  id<MTLComputePipelineState> fog_pipeline;
+  id<MTLComputePipelineState> froxel_inject_pipeline;
+  id<MTLComputePipelineState> froxel_integrate_pipeline;
+  id<MTLComputePipelineState> froxel_apply_pipeline;
   id<MTLComputePipelineState> temporal_resolve_pipeline;
   id<MTLComputePipelineState> transmission_shade_pipeline;
   id<MTLComputePipelineState> transmission_shade_partitioned_pipeline;
@@ -600,6 +694,9 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> exposure_clear_pipeline;
   id<MTLComputePipelineState> exposure_histogram_pipeline;
   id<MTLComputePipelineState> exposure_resolve_pipeline;
+  id<MTLComputePipelineState> subsurface_pipeline;
+  id<MTLComputePipelineState> motion_blur_pipelines[3];
+  id<MTLComputePipelineState> dof_pipelines[6];
   id<MTLComputePipelineState> bloom_prefilter_pipeline;
   /* Both filters are resident; the cold configuration selects which one a
      build measures. Neither is a fallback for the other. */
@@ -617,6 +714,9 @@ struct VkrMetalPacketRenderer {
   VkrShSlotPool sh_pool;
   CAMetalLayer *layer;
   id<CAMetalDrawable> drawable;
+  void *display_output_context;
+  VkrDisplayOutputSnapshot (*display_output_snapshot)(void *context);
+  VkrDisplayOutputParams display_output;
   VkrRenderGraphFrameInfo prepared_frame;
   uint64_t submit_value;
   uint64_t candidate_publication_generation;
@@ -629,6 +729,9 @@ struct VkrMetalPacketRenderer {
   Mat4 current_hzb_raster_view_projection;
   uint32_t selected_hzb_history_instance;
   uint32_t selected_temporal_history_instance;
+  uint32_t selected_motion_history_instance;
+  float32_t motion_blur_interval_scale;
+  uint32_t selected_ssr_history_instance;
   uint32_t selected_exposure_history_instance;
   /** Accumulated during this frame's packet lowering; copied into the result.
    */
@@ -650,6 +753,7 @@ struct VkrMetalPacketRenderer {
   bool8_t graph_memory_recovery_pending;
   VkrMetalPacketTargetKind target_kind;
   VkrPresentMode actual_present_mode;
+  VkrDisplayOutputMode display_output_mode;
   bool8_t srgb_output;
   bool8_t tonemap_enabled;
   bool8_t metalfx_enabled;
@@ -664,12 +768,38 @@ struct VkrMetalPacketRenderer {
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;
   VkrMetalTextureResource ibl_prefilter;
+  VkrMetalTextureResource atmosphere_luts[2];
+  uint64_t atmosphere_luts_last_use_submit_value;
+  uint32_t atmosphere_lut_live_count;
+  bool8_t atmosphere_luts_live;
+  /* Immutable black cubemap for frames with local probes but no global IBL.
+     It prevents an earlier scene's retained prefilter from becoming the
+     residual outside a local probe's influence. */
+  VkrMetalTextureResource ibl_black_prefilter;
   /** Published coefficient slot for the active global environment source. */
   uint32_t ibl_sh_slot;
   VkrTextureHandle ibl_source;
   uint64_t ibl_last_use_submit_value;
+  uint64_t ibl_black_last_use_submit_value;
   bool8_t ibl_live;
+  bool8_t ibl_black_live;
   bool8_t ibl_ready;
+  /* Immutable RG16Float split-sum BRDF coefficients. Renderer lifetime;
+     retirement waits for the last submitted frame root that references it. */
+  VkrMetalTextureResource dfg_lut;
+  uint64_t dfg_lut_last_use_submit_value;
+  bool8_t dfg_lut_live;
+  VkrMetalTextureResource ltc_luts[2];
+  uint64_t ltc_last_use_submit_value;
+  uint32_t ltc_lut_live_count;
+  VkrMetalTextureResource sheen_directional_albedo_lut;
+  VkrMetalTextureResource sheen_ltc_luts[VKR_SHEEN_LTC_LUT_TABLE_COUNT];
+  uint64_t sheen_lut_last_use_submit_value;
+  uint32_t sheen_ltc_lut_live_count;
+  bool8_t sheen_directional_albedo_lut_live;
+  VkrMetalTextureResource anisotropy_luts[VKR_ANISOTROPY_LUT_TABLE_COUNT];
+  uint64_t anisotropy_lut_last_use_submit_value;
+  uint32_t anisotropy_lut_live_count;
   VkrMetalTextureResource gtao_white_visibility;
   uint64_t gtao_white_last_use_submit_value;
   bool8_t gtao_white_live;
@@ -833,8 +963,8 @@ VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
   return VKR_RENDERER_ERROR_NONE;
 }
 
-String8 vkr_metal_packet_renderer_device_name(
-    const VkrMetalPacketRenderer *renderer) {
+String8
+vkr_metal_packet_renderer_device_name(const VkrMetalPacketRenderer *renderer) {
   return string8_create_from_cstr((const uint8_t *)renderer->device_name,
                                   strlen(renderer->device_name));
 }
@@ -861,7 +991,8 @@ bool8_t vkr_metal_packet_renderer_graph_resource_stats(
     uint64_t texels = 0u;
     for (uint32_t mip = 0u; mip < Max(image->desc.mip_levels, 1u); ++mip) {
       texels += (uint64_t)Max(image->desc.width >> mip, 1u) *
-                Max(image->desc.height >> mip, 1u);
+                Max(image->desc.height >> mip, 1u) *
+                Max(image->desc.depth >> mip, 1u);
     }
     const uint64_t bytes_per_image = texels * Max(image->desc.layers, 1u) *
                                      Max(image->desc.samples, 1u) *

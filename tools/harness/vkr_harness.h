@@ -125,6 +125,14 @@ typedef enum VkrHarnessCameraMode {
   VKR_HARNESS_CAMERA_KEYFRAMES,
   VKR_HARNESS_CAMERA_ORBIT,
   VKR_HARNESS_CAMERA_FLYTHROUGH,
+  /** Capture-only KTX cubemap faces, in canonical +X, -X, +Y, -Y, +Z, -Z order.
+   */
+  VKR_HARNESS_CAMERA_CUBEMAP_PX,
+  VKR_HARNESS_CAMERA_CUBEMAP_NX,
+  VKR_HARNESS_CAMERA_CUBEMAP_PY,
+  VKR_HARNESS_CAMERA_CUBEMAP_NY,
+  VKR_HARNESS_CAMERA_CUBEMAP_PZ,
+  VKR_HARNESS_CAMERA_CUBEMAP_NZ,
 } VkrHarnessCameraMode;
 
 typedef enum VkrHarnessCameraInterpolation {
@@ -203,6 +211,15 @@ typedef struct VkrHarnessCameraPose {
   float32_t pitch_degrees;
 } VkrHarnessCameraPose;
 
+/** Evaluated pose for one harness frame. This is transient and not serialized.
+ */
+typedef struct VkrHarnessCameraScriptPose {
+  VkrHarnessCameraPose pose;
+  Vec3 forward;
+  Vec3 up;
+  bool8_t exact_basis;
+} VkrHarnessCameraScriptPose;
+
 typedef struct VkrHarnessCamera {
   VkrHarnessCameraMode mode;
   VkrHarnessCameraInterpolation interpolation;
@@ -272,7 +289,8 @@ typedef struct VkrHarnessRendererConfig {
    */
   uint32_t render_width;
   uint32_t render_height;
-  /** Reconstruction implementation: `spatial`, `metalfx_temporal`, or `fsr31`. */
+  /** Reconstruction implementation: `spatial`, `metalfx_temporal`, or `fsr31`.
+   */
   char upscaler[24];
   /** Completion-driven MetalFX resolution policy. FSR 3.1 uses fixed scale. */
   bool8_t dynamic_resolution;
@@ -286,6 +304,33 @@ typedef struct VkrHarnessRendererConfig {
   uint32_t editor_resume_frame;
   /** Image-space sharpness after reconstruction. Zero disables the control. */
   float32_t image_sharpness;
+  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
+  char display_transform[16];
+  float32_t white_balance_temperature;
+  float32_t white_balance_tint;
+  float32_t color_contrast;
+  float32_t color_saturation;
+  /** Half-resolution opaque reflections; opt-in for deterministic cases. */
+  bool8_t ssr_enabled;
+  bool8_t ssgi_enabled;
+  /** Requested presentation policy; offscreen targets remain SDR. */
+  char display_output[24];
+  /** Opaque-depth depth of field. Disabled cases leave scene color unchanged. */
+  bool8_t dof_enabled;
+  /** Focus plane distance in metres. */
+  float32_t dof_focus_distance;
+  /** Photographic aperture denominator. */
+  float32_t dof_f_stop;
+  /** Optional velocity-based opaque motion blur. */
+  bool8_t motion_blur_enabled;
+  /** Shutter interval in degrees; zero bypasses motion blur. */
+  float32_t motion_blur_shutter_angle;
+  /** Optional scene entity translated deterministically before each frame. */
+  char motion_blur_entity[VKR_HARNESS_ID_MAX];
+  /** Entity translation velocity in metres per second. */
+  float32_t motion_blur_entity_velocity_x;
+  float32_t motion_blur_entity_velocity_y;
+  float32_t motion_blur_entity_velocity_z;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {
@@ -655,6 +700,10 @@ bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
 bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
                                     float64_t authored_time_seconds,
                                     VkrHarnessCameraPose *out_pose);
+bool8_t
+vkr_harness_camera_evaluate_script(const VkrHarnessCamera *camera,
+                                   float64_t authored_time_seconds,
+                                   VkrHarnessCameraScriptPose *out_pose);
 /**
  * @brief Authored camera time for one case frame index.
  *
@@ -805,6 +854,9 @@ VkrHarnessComparisonResult vkr_harness_compare_f32_le(
     const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
     const VkrHarnessCompareConfig *config, uint8_t *diff_rgba);
 VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
+    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
+    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba);
+VkrHarnessComparisonResult vkr_harness_compare_rg16f_le(
     const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
     const VkrHarnessCompareConfig *config, uint8_t *diff_rgba);
 VkrHarnessComparisonResult vkr_harness_compare_u32_le(const uint8_t *actual,

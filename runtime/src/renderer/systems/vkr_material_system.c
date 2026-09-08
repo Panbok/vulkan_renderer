@@ -1,3 +1,4 @@
+#include <math.h>
 #include "renderer/systems/vkr_material_system.h"
 
 #include "containers/vkr_sort.h"
@@ -142,9 +143,11 @@ vkr_internal void vkr_material_system_init_surface_material(
   material->phong.emission_color = vec3_zero();
   material->phong.shininess = shininess;
   material->pbr.base_color = diffuse_color;
+  material->pbr.diffuse_transmission_color = vec3_new(1, 1, 1);
   material->pbr.metallic = 1.0f;
   material->pbr.roughness = 1.0f;
   material->pbr.normal_scale = 1.0f;
+  material->pbr.clearcoat_normal_scale = 1.0f;
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_zero();
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
@@ -177,10 +180,46 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
   }
 
   VkrMaterial *material = &system->materials.data[handle.id - 1];
+  if (!isfinite(material->pbr.subsurface_strength) ||
+      material->pbr.subsurface_strength < 0.0f || material->pbr.subsurface_strength > 1.0f ||
+      material->pbr.subsurface_profile >= 8u ||
+      (material->pbr.subsurface_strength > 0.0f &&
+       (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+        material->pbr.transmission_factor > 0.0f || material->pbr.thickness_factor > 0.0f ||
+        material->pbr.diffuse_transmission_strength > 0.0f)) ||
+      !isfinite(material->pbr.diffuse_transmission_strength) ||
+      material->pbr.diffuse_transmission_strength < 0.0f || material->pbr.diffuse_transmission_strength > 1.0f ||
+      !isfinite(material->pbr.diffuse_transmission_color.x) || material->pbr.diffuse_transmission_color.x < 0.0f || material->pbr.diffuse_transmission_color.x > 1.0f ||
+      !isfinite(material->pbr.diffuse_transmission_color.y) || material->pbr.diffuse_transmission_color.y < 0.0f || material->pbr.diffuse_transmission_color.y > 1.0f ||
+      !isfinite(material->pbr.diffuse_transmission_color.z) || material->pbr.diffuse_transmission_color.z < 0.0f || material->pbr.diffuse_transmission_color.z > 1.0f ||
+      (material->pbr.diffuse_transmission_strength > 0.0f &&
+       (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+        material->pbr.transmission_factor > 0.0f || material->pbr.thickness_factor > 0.0f)) ||
+      !isfinite(material->pbr.anisotropy_strength) ||
+      material->pbr.anisotropy_strength < 0.0f || material->pbr.anisotropy_strength > 1.0f ||
+      !isfinite(material->pbr.anisotropy_rotation) ||
+      (material->pbr.anisotropy_strength > 0.0f && material->pbr.transmission_factor > 0.0f) ||
+      !isfinite(material->pbr.clearcoat_factor) || material->pbr.clearcoat_factor < 0.0f ||
+      material->pbr.clearcoat_factor > 1.0f || !isfinite(material->pbr.clearcoat_roughness) ||
+      material->pbr.clearcoat_roughness < 0.0f || material->pbr.clearcoat_roughness > 1.0f ||
+      !isfinite(material->pbr.clearcoat_normal_scale) ||
+      !isfinite(material->pbr.sheen_color.x) || material->pbr.sheen_color.x < 0.0f || material->pbr.sheen_color.x > 1.0f ||
+      !isfinite(material->pbr.sheen_color.y) || material->pbr.sheen_color.y < 0.0f || material->pbr.sheen_color.y > 1.0f ||
+      !isfinite(material->pbr.sheen_color.z) || material->pbr.sheen_color.z < 0.0f || material->pbr.sheen_color.z > 1.0f ||
+      !isfinite(material->pbr.sheen_roughness) || material->pbr.sheen_roughness < 0.0f || material->pbr.sheen_roughness > 1.0f) {
+    if (out_error) *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
   VkrMaterial published = *material;
   published.alpha_mode =
       vkr_material_system_material_alpha_mode(system, material);
   published.alpha_mode_explicit = true_v;
+  if ((published.pbr.diffuse_transmission_strength > 0.0f ||
+       published.pbr.subsurface_strength > 0.0f) &&
+      published.alpha_mode == VKR_MATERIAL_ALPHA_BLEND) {
+    if (out_error) *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
   if (material->id != handle.id || material->generation != handle.generation ||
       !system->asset_publisher->publish_material(system->asset_publisher->state,
                                                  handle, &published)) {

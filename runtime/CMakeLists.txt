@@ -17,7 +17,7 @@ target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats PRIVATE 
 if(APPLE)
     target_link_libraries(vkr_runtime PRIVATE "-framework Cocoa" "-framework GameController")
 elseif(WIN32)
-    target_link_libraries(vkr_runtime PRIVATE Xinput)
+    target_link_libraries(vkr_runtime PRIVATE Xinput dxgi)
 endif()
 
 # Demo controls and presentation policy are optional consumers of the runtime.

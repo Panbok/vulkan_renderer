@@ -212,6 +212,14 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.shadow_pcf_early_out,
       case_manifest->renderer.shadow_sdsm);
   ADD("renderer.render_mode", "%s", case_manifest->renderer.render_mode);
+  ADD("renderer.display_transform", "%s",
+      case_manifest->renderer.display_transform);
+  ADD("renderer.white_balance", "%.9g,%.9g",
+      case_manifest->renderer.white_balance_temperature,
+      case_manifest->renderer.white_balance_tint);
+  ADD("renderer.color_grading", "%.9g,%.9g",
+      case_manifest->renderer.color_contrast,
+      case_manifest->renderer.color_saturation);
   ADD("renderer.exposure", "%s,%.9g,%.9g,%u",
       case_manifest->renderer.exposure_mode,
       case_manifest->renderer.manual_exposure,
@@ -222,6 +230,31 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.bloom_threshold,
       case_manifest->renderer.bloom_knee,
       case_manifest->renderer.bloom_intensity);
+  ADD("renderer.ssr", "%u", case_manifest->renderer.ssr_enabled);
+  if (case_manifest->renderer.ssgi_enabled)
+    ADD("renderer.ssgi", "%u", case_manifest->renderer.ssgi_enabled);
+  /* Disabled DoF has no output or workload effect, preserving legacy identity. */
+  if (case_manifest->renderer.dof_enabled) {
+    ADD("renderer.dof", "%u,%.9g,%.9g",
+        case_manifest->renderer.dof_enabled,
+        case_manifest->renderer.dof_focus_distance,
+        case_manifest->renderer.dof_f_stop);
+  }
+  if (case_manifest->renderer.motion_blur_enabled &&
+      case_manifest->renderer.motion_blur_shutter_angle > 0.0f) {
+    ADD("renderer.motion_blur", "%.9g",
+        case_manifest->renderer.motion_blur_shutter_angle);
+  }
+  if (case_manifest->renderer.motion_blur_entity[0] != '\0') {
+    ADD("case.motion_entity", "%s,%.9g,%.9g,%.9g",
+        case_manifest->renderer.motion_blur_entity,
+        case_manifest->renderer.motion_blur_entity_velocity_x,
+        case_manifest->renderer.motion_blur_entity_velocity_y,
+        case_manifest->renderer.motion_blur_entity_velocity_z);
+  }
+  if (string_equals(case_manifest->renderer.display_output, "auto_extended_linear"))
+    ADD("renderer.display_output", "%s",
+        case_manifest->renderer.display_output);
   ADD("renderer.gtao", "%u,%.9g,%.9g", case_manifest->renderer.gtao_enabled,
       case_manifest->renderer.gtao_radius, case_manifest->renderer.gtao_power);
   /* Existing cases predate this opt-in control. Preserve their workload

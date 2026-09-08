@@ -3,6 +3,48 @@
 #include "vulkan/vkr_vulkan_internal.h"
 #include <math.h>
 
+vkr_internal VkrTextureFormat
+vkr_vk_present_texture_format(VkFormat format) {
+  if (format == VK_FORMAT_R16G16B16A16_SFLOAT)
+    return VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+  if (format == VK_FORMAT_B8G8R8A8_SRGB)
+    return VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
+  return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+}
+
+vkr_internal VkrDisplayOutputParams
+vkr_vk_requested_display_output(VkrVulkanRenderer *renderer,
+                                uint64_t *out_revision) {
+  VkrDisplayOutputSnapshot snapshot = {0};
+  if (renderer->config.display_output_mode ==
+          VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR &&
+      renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN &&
+      renderer->config.surface.display_output_snapshot) {
+    snapshot = renderer->config.surface.display_output_snapshot(
+        renderer->config.surface.context);
+  }
+  if (out_revision)
+    *out_revision = snapshot.revision;
+  return vkr_display_output_resolve(
+      renderer->config.display_output_mode, snapshot,
+      renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN);
+}
+
+vkr_internal void
+vkr_vk_commit_display_output(VkrVulkanRenderer *renderer) {
+  const bool8_t extended_linear =
+      renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN &&
+      renderer->window_target.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+      renderer->window_target.color_space ==
+          VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+  renderer->display_output_params = extended_linear
+                                        ? renderer->display_output_requested
+                                        : (VkrDisplayOutputParams){
+                                              .headroom = 1.0f,
+                                              .output_scale = 1.0f,
+                                          };
+}
+
 vkr_internal bool8_t vkr_vk_create_timeline(VkrVulkanRenderer *renderer) {
   VkSemaphoreTypeCreateInfo type_info = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -68,13 +110,15 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
        !config->image_count) ||
       config->image_count > VKR_VULKAN_TARGET_IMAGE_MAX ||
       !config->sampled_image_capacity || !config->storage_image_capacity ||
-      /* Sentinel, shadow comparison and transmission-feedback samplers occupy
-         the first three permanent rows before asset publication begins. */
-      config->sampler_capacity < 3u || !config->geometry_capacity ||
+      /* Sentinel, shadow comparison, transmission-feedback and DFG samplers
+         occupy the first four permanent rows before asset publication begins.
+       */
+      config->sampler_capacity < 4u || !config->geometry_capacity ||
       !config->texture_capacity ||
-      /* Every published texture also takes one sampled descriptor slot, so a
-         texture ID space wider than the heap could never be fully resident. */
-      config->texture_capacity > config->sampled_image_capacity ||
+      /* Sentinel, DFG, two LTC tables, two atmosphere LUTs, five sheen and
+         three anisotropy tables use permanent sampled-image rows. */
+      config->sampled_image_capacity < 14u ||
+      config->texture_capacity > config->sampled_image_capacity - 14u ||
       !config->material_record_capacity || !config->device_buffer_block_size ||
       !config->device_image_block_size || !config->upload_buffer_block_size ||
       !config->readback_buffer_block_size || !config->memory_block_capacity ||
@@ -104,9 +148,18 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   MemZero(renderer, sizeof(*renderer));
   renderer->allocator = config->allocator;
   renderer->config = *config;
+  renderer->display_output_requested =
+      vkr_vk_requested_display_output(renderer,
+                                      &renderer->display_output_snapshot_revision);
+  renderer->display_output_params = (VkrDisplayOutputParams){
+      .headroom = 1.0f,
+      .output_scale = 1.0f,
+  };
   renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
   renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
   renderer->gtao_config = vkr_gtao_config_normalize(&config->gtao);
+  renderer->ssr_config = vkr_ssr_config_normalize(&config->ssr);
+  renderer->ssgi_config = vkr_ssgi_config_normalize(&config->ssgi);
   renderer->capture_storage_size = vkr_capture_ring_storage_requirement(
       config->capture_ring_capacity, config->capture_max_batch_bytes);
   if (config->capture_ring_capacity > 0u) {
@@ -261,6 +314,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
     renderer->config.width = renderer->window_target.width;
     renderer->config.height = renderer->window_target.height;
     renderer->config.image_count = renderer->window_target.image_count;
+    vkr_vk_commit_display_output(renderer);
   }
   if (!vkr_vk_create_resources(renderer)) {
     log_error("Vulkan failed to create renderer resources");
@@ -353,6 +407,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
                                           uint64_t source_frame_index,
                                           uint32_t shadow_map_size,
                                           uint32_t shadow_cascade_count,
+                                          uint32_t local_shadow_map_size,
+                                          uint32_t local_shadow_face_budget,
                                           VkrFrame *out_setup) {
   renderer->submit_error = VKR_RENDERER_ERROR_NONE;
   if (renderer->terminal_failure) {
@@ -364,6 +420,23 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   vkr_vk_collect_retired_targets(renderer, completed);
   vkr_vk_collect_retired_window_targets(renderer, completed);
   vkr_vk_collect_asset_publications(renderer, completed);
+  if (renderer->config.display_output_mode ==
+          VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR &&
+      renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
+    uint64_t snapshot_revision = 0u;
+    const VkrDisplayOutputParams requested =
+        vkr_vk_requested_display_output(renderer, &snapshot_revision);
+    if (snapshot_revision != renderer->display_output_snapshot_revision) {
+      renderer->display_output_snapshot_revision = snapshot_revision;
+      renderer->display_output_requested = requested;
+      if (requested.extended_linear !=
+          renderer->display_output_params.extended_linear) {
+        renderer->target_dirty = true_v;
+      } else {
+        renderer->display_output_params = requested;
+      }
+    }
+  }
   if (renderer->target_dirty &&
       !vkr_vk_recreate_window_target(renderer, renderer->config.width,
                                      renderer->config.height,
@@ -409,6 +482,10 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   renderer->active_frame_slot = slot_index;
   renderer->frame_active = true_v;
   slot->sh_coefficients_clear_recorded = false_v;
+  slot->dfg_upload_recorded = false_v;
+  slot->ltc_upload_recorded = false_v;
+  slot->sheen_upload_recorded = false_v;
+  slot->anisotropy_upload_recorded = false_v;
   slot->source_frame_index = source_frame_index;
   slot->acquired_window_image = false_v;
   slot->reacquired_presented_image = false_v;
@@ -464,6 +541,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       }
     }
   }
+  const VkrVulkanImage *target = &renderer->targets.images[slot->image_index];
   *out_setup = (VkrFrame){
       .image_index = slot->image_index,
       .window_width =
@@ -474,10 +552,9 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
           renderer->config.target_kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? renderer->targets.height
               : renderer->window_target.height,
-      .swapchain_format = VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB,
+      .swapchain_format = vkr_vk_present_texture_format(target->format),
       .swapchain_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
   };
-  const VkrVulkanImage *target = &renderer->targets.images[slot->image_index];
   renderer->prepared_frame = (VkrRenderGraphFrameInfo){
       .frame_index = (uint32_t)source_frame_index,
       .image_index = slot->image_index,
@@ -490,7 +567,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       .scene_output_height = out_setup->window_height,
       .viewport_width = out_setup->window_width,
       .viewport_height = out_setup->window_height,
-      .target_color_format = VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB,
+      .target_color_format = vkr_vk_present_texture_format(target->format),
       .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .target_color_initial_state =
           target->layout == VK_IMAGE_LAYOUT_UNDEFINED
@@ -512,11 +589,15 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       },
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_map_size = shadow_map_size,
+      .local_shadow_map_size = local_shadow_map_size,
+      .local_shadow_map_layer_count = local_shadow_face_budget,
       .shadow_map_layer_count = shadow_cascade_count,
       .shadow_cascade_count = shadow_cascade_count,
   };
   vkr_vulkan_renderer_retained_shadow_token(renderer, slot->image_index,
                                             &out_setup->retained_shadow);
+  vkr_vulkan_renderer_retained_local_shadow_token(
+      renderer, slot->image_index, &out_setup->retained_local_shadow);
   return true_v;
 }
 
@@ -543,7 +624,9 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
                                                    VkrVulkanFrameSlot *slot) {
   slot->temporal_scene = (VkrVulkanTemporalSceneState){0};
   if (renderer->graph->packet->scene_rendering &&
-      renderer->graph->packet->temporal.enabled &&
+      (renderer->graph->packet->temporal.enabled ||
+       renderer->prepared_frame.ssr_enabled ||
+       renderer->prepared_frame.ssgi_enabled) &&
       vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)) {
     // Capture rendered inputs before upload/IBL commands publish new content.
     slot->temporal_scene = (VkrVulkanTemporalSceneState){
@@ -683,6 +766,10 @@ vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
   }
+  vkr_vk_record_dfg_upload(renderer, slot, command);
+  vkr_vk_record_ltc_upload(renderer, slot, command);
+  vkr_vk_record_sheen_upload(renderer, slot, command);
+  vkr_vk_record_anisotropy_upload(renderer, slot, command);
 
   vkr_vk_bind_descriptor_buffers(renderer, command);
 
@@ -1009,6 +1096,18 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     renderer->sh_coefficients_cleared = true_v;
     slot->sh_coefficients_clear_recorded = false_v;
   }
+  if (!vkr_vk_commit_dfg_upload(renderer, slot, signal_value))
+    return vkr_vk_fail_after_submit(renderer,
+                                    "the DFG upload could not retire");
+  if (!vkr_vk_commit_ltc_upload(renderer, slot, signal_value))
+    return vkr_vk_fail_after_submit(renderer,
+                                    "the LTC upload could not retire");
+  if (!vkr_vk_commit_sheen_upload(renderer, slot, signal_value))
+    return vkr_vk_fail_after_submit(renderer,
+                                    "the sheen upload could not retire");
+  if (!vkr_vk_commit_anisotropy_upload(renderer, slot, signal_value))
+    return vkr_vk_fail_after_submit(renderer,
+                                    "the anisotropy upload could not retire");
   if (slot->candidate_residency_pending) {
     slot->candidate_residency = slot->pending_candidate_residency;
     slot->candidate_residency_pending = false_v;
@@ -1021,6 +1120,9 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   if (packet->scene_rendering) {
     vkr_vk_mark_hzb_submitted(renderer, signal_value);
     vkr_vk_mark_temporal_submitted(renderer, signal_value);
+    vkr_vk_mark_ssr_submitted(renderer, signal_value);
+    vkr_vk_mark_ssgi_submitted(renderer, signal_value);
+    vkr_vk_mark_froxel_submitted(renderer, signal_value);
     vkr_vk_mark_exposure_submitted(renderer, signal_value);
   }
   vkr_vk_mark_graph_images_submitted(renderer, signal_value);
@@ -1084,6 +1186,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       if (texture) {
         texture->last_use_submit_value =
             Max(texture->last_use_submit_value, signal_value);
+        /* An atmosphere candidate is not publishable until its readback and
+           SH result are both complete. Its job retains this pair until the
+           status query consumes READY or FAILED. */
+        if (job->is_atmosphere)
+          continue;
         if (!texture->ibl_reference_count)
           return vkr_vk_fail_after_submit(
               renderer, "an IBL texture lost its ownership reference");
@@ -1093,6 +1200,26 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
           texture->pending_retire = true_v;
         }
       }
+    }
+    if (job->is_atmosphere) {
+      /* This mapped readback remains job-owned until the completion-safe CPU
+         status query consumes it. Retiring it here would permit reuse before
+         that query dereferences the result. */
+      job->atmosphere_submit_value = signal_value;
+      job->submitted = true_v;
+      job->recorded = false_v;
+      if (job->atmosphere_rebuild_luts) {
+        renderer->atmosphere_lut_params = job->atmosphere_params;
+        renderer->atmosphere_lut_valid = true_v;
+        renderer->atmosphere_lut_revision++;
+        renderer->atmosphere_transmittance.layout = VK_IMAGE_LAYOUT_GENERAL;
+        renderer->atmosphere_multiple_scattering.layout =
+            VK_IMAGE_LAYOUT_GENERAL;
+      }
+      if (pending_ibl_write != i)
+        renderer->pending_ibl_bakes[pending_ibl_write] = *job;
+      pending_ibl_write++;
+      continue;
     }
     MemZero(&renderer->pending_ibl_bakes[i],
             sizeof(renderer->pending_ibl_bakes[i]));
@@ -1646,7 +1773,8 @@ bool8_t vkr_vulkan_renderer_graph_resource_stats(
     uint64_t texels = 0u;
     for (uint32_t mip = 0u; mip < Max(image->desc.mip_levels, 1u); ++mip) {
       texels += (uint64_t)Max(image->desc.width >> mip, 1u) *
-                Max(image->desc.height >> mip, 1u);
+                Max(image->desc.height >> mip, 1u) *
+                Max(image->desc.depth >> mip, 1u);
     }
     const uint64_t bytes_per_image = texels * Max(image->desc.layers, 1u) *
                                      Max(image->desc.samples, 1u) *
@@ -1684,6 +1812,8 @@ void vkr_vulkan_renderer_target_information(
                             ? VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB
                         : format == VK_FORMAT_R8G8B8A8_SRGB
                             ? VKR_SURFACE_COLOR_FORMAT_RGBA8_SRGB
+                        : format == VK_FORMAT_R16G16B16A16_SFLOAT
+                            ? VKR_SURFACE_COLOR_FORMAT_RGBA16_SFLOAT
                         : format == VK_FORMAT_B8G8R8A8_UNORM
                             ? VKR_SURFACE_COLOR_FORMAT_BGRA8_UNORM
                             : VKR_SURFACE_COLOR_FORMAT_RGBA8_UNORM;
@@ -1691,10 +1821,20 @@ void vkr_vulkan_renderer_target_information(
   if (out_depth_format)
     *out_depth_format = VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT;
   if (out_color_space)
-    *out_color_space = VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR;
+    *out_color_space =
+        renderer->display_output_params.extended_linear
+            ? VKR_SURFACE_COLOR_SPACE_EXTENDED_SRGB_LINEAR
+            : VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR;
   if (out_max_anisotropy) {
     *out_max_anisotropy = vkr_vulkan_device_max_anisotropy(renderer->device);
   }
+}
+
+VkrDisplayOutputParams
+vkr_vulkan_renderer_display_output(const VkrVulkanRenderer *renderer) {
+  return renderer ? renderer->display_output_params
+                  : (VkrDisplayOutputParams){.headroom = 1.0f,
+                                              .output_scale = 1.0f};
 }
 
 vkr_internal void vkr_vk_drain_asset_publications(VkrVulkanRenderer *renderer) {
@@ -1788,6 +1928,10 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
       if (renderer->ibl_pipelines[i])
         vkDestroyPipeline(device, renderer->ibl_pipelines[i], NULL);
     }
+    for (uint32_t i = 0u; i < VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT; ++i) {
+      if (renderer->atmosphere_pipelines[i])
+        vkDestroyPipeline(device, renderer->atmosphere_pipelines[i], NULL);
+    }
     if (renderer->pipeline_layout) {
       vkDestroyPipelineLayout(device, renderer->pipeline_layout, NULL);
     }
@@ -1799,6 +1943,10 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
       if (renderer->ibl_shaders[i])
         vkDestroyShaderModule(device, renderer->ibl_shaders[i], NULL);
     }
+    for (uint32_t i = 0u; i < VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT; ++i) {
+      if (renderer->atmosphere_shaders[i])
+        vkDestroyShaderModule(device, renderer->atmosphere_shaders[i], NULL);
+    }
     if (renderer->sentinel_sampler) {
       vkDestroySampler(device, renderer->sentinel_sampler, NULL);
     }
@@ -1808,6 +1956,13 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     if (renderer->shadow_comparison_sampler) {
       vkDestroySampler(device, renderer->shadow_comparison_sampler, NULL);
     }
+    vkr_vk_retire_dfg_descriptor_slots(renderer);
+    vkr_vk_retire_ltc_descriptor_slots(renderer);
+    vkr_vk_retire_sheen_descriptor_slots(renderer);
+    vkr_vk_retire_anisotropy_descriptor_slots(renderer);
+    vkr_vk_retire_atmosphere_descriptor_slots(renderer);
+    if (renderer->dfg_sampler)
+      vkDestroySampler(device, renderer->dfg_sampler, NULL);
     for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
       if (renderer->published_samplers &&
           renderer->published_samplers[i].sampler)
@@ -1831,6 +1986,19 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     vkr_vk_destroy_buffer(renderer, &mega->indices);
     vkr_vk_destroy_buffer(renderer, &mega->vertices);
     *mega = (VkrVulkanGeometryMegabuffer){0};
+    vkr_vk_destroy_buffer(renderer, &renderer->dfg_upload);
+    vkr_vk_destroy_image(renderer, &renderer->dfg_image);
+    vkr_vk_destroy_buffer(renderer, &renderer->ltc_upload);
+    for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table)
+      vkr_vk_destroy_image(renderer, &renderer->ltc_images[table]);
+    vkr_vk_destroy_buffer(renderer, &renderer->sheen_upload);
+    vkr_vk_destroy_image(renderer, &renderer->sheen_directional_albedo_image);
+    for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+      vkr_vk_destroy_image(renderer, &renderer->sheen_ltc_images[table]);
+    vkr_vk_destroy_buffer(renderer, &renderer->anisotropy_upload);
+    for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
+      vkr_vk_destroy_image(renderer, &renderer->anisotropy_images[table]);
+    vkr_vk_destroy_atmosphere_resources(renderer);
     vkr_vk_destroy_image(renderer, &renderer->sentinel_image);
     vkr_vk_destroy_buffer(renderer, &renderer->materials);
     /* The pool has renderer lifetime and is released only here, after the

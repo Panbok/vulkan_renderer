@@ -18,6 +18,7 @@
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "vkr_gtao.h"
+#include "vkr_ssgi.h"
 #include "vkr_temporal.h"
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
@@ -28,10 +29,14 @@ _Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH ==
 
 vkr_internal uint32_t
 vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
+  _Static_assert(VKR_SSGI_SEQUENCE_LENGTH % VKR_GTAO_NOISE_SEQUENCE_LENGTH == 0u,
+                 "SSGI phase alignment must cover the GTAO sequence");
+  const uint32_t noise_sequence = renderer->submitted_ssgi_enabled
+      ? VKR_SSGI_SEQUENCE_LENGTH : VKR_GTAO_NOISE_SEQUENCE_LENGTH;
   // Stopped editor scenes and non-temporal diagnostic modes have no raster
   // sequence to align. In particular, no submitted Scene may exist yet.
   if (!renderer->temporal_state.valid || !renderer->temporal_state.enabled)
-    return VKR_GTAO_NOISE_SEQUENCE_LENGTH;
+    return noise_sequence;
   const uint32_t output_width = renderer->scene_output_extent_overridden
                                     ? renderer->scene_output_width
                                     : renderer->last_window_width;
@@ -40,14 +45,14 @@ vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
           ? vkr_temporal_upscale_sequence_length(renderer->temporal_state.width,
                                                  output_width)
           : VKR_TEMPORAL_SEQUENCE_LENGTH;
-  uint32_t a = VKR_GTAO_NOISE_SEQUENCE_LENGTH;
+  uint32_t a = noise_sequence;
   uint32_t b = jitter;
   while (b != 0u) {
     const uint32_t remainder = a % b;
     a = b;
     b = remainder;
   }
-  return (VKR_GTAO_NOISE_SEQUENCE_LENGTH / a) * jitter;
+  return (noise_sequence / a) * jitter;
 }
 
 vkr_internal bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b,
@@ -114,6 +119,9 @@ typedef struct VkrHarnessChildContext {
   float64_t load_started;
   /** The scene resource is resident and installed on the renderer frontend. */
   bool8_t scene_active;
+  bool8_t motion_blur_entity_ready;
+  VkrEntityId motion_blur_entity;
+  Vec3 motion_blur_entity_origin;
   /** First renderer frame whose packet was built from the active scene. */
   uint64_t scene_first_frame_index;
   /** Pass storage was sized from a frame rendered with the active scene. */
@@ -260,14 +268,16 @@ vkr_harness_present_to_renderer(VkrHarnessPresentMode mode) {
 vkr_internal const char *
 vkr_harness_surface_format_name(VkrSurfaceColorFormat format) {
   vkr_local_persist const char *const names[] = {
-      "unknown", "bgra8_srgb", "rgba8_srgb", "bgra8_unorm", "rgba8_unorm"};
+      "unknown", "bgra8_srgb", "rgba8_srgb", "bgra8_unorm", "rgba8_unorm",
+      "rgba16_sfloat"};
   return format < ArrayCount(names) ? names[format] : "unknown";
 }
 
 vkr_internal const char *
 vkr_harness_color_space_name(VkrSurfaceColorSpace space) {
   return space == VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR ? "srgb_nonlinear"
-                                                         : "unknown";
+      : space == VKR_SURFACE_COLOR_SPACE_EXTENDED_SRGB_LINEAR
+          ? "extended_srgb_linear" : "unknown";
 }
 
 vkr_internal const char *
@@ -564,6 +574,23 @@ vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
     vkr_harness_child_fail(application, "scene.null");
     return false_v;
   }
+  if (child->case_manifest->renderer.motion_blur_entity[0] != '\0') {
+    child->motion_blur_entity = vkr_scene_find_entity_by_name(
+        application->active_scene,
+        string8_create_from_cstr((const uint8_t *)child->case_manifest->renderer
+                                     .motion_blur_entity,
+                                 string_length(child->case_manifest->renderer
+                                                   .motion_blur_entity)));
+    SceneTransform *transform = vkr_scene_get_transform(
+        application->active_scene, child->motion_blur_entity);
+    if (child->motion_blur_entity.u64 == VKR_ENTITY_ID_INVALID.u64 ||
+        !transform) {
+      vkr_harness_child_fail(application, "motion_blur.entity_resolve_failed");
+      return false_v;
+    }
+    child->motion_blur_entity_origin = transform->position;
+    child->motion_blur_entity_ready = true_v;
+  }
   application->scene_generation = application->scene_generation == UINT64_MAX
                                       ? 1u
                                       : application->scene_generation + 1u;
@@ -571,6 +598,27 @@ vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
                              &application->assets);
   child->scene_first_frame_index = application->renderer.frame_number + 1u;
   child->scene_active = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t
+vkr_harness_child_apply_motion_entity(VkrStandardSceneRuntime *application) {
+  VkrHarnessChildContext *child = g_harness_child;
+  if (!child->motion_blur_entity_ready) {
+    return true_v;
+  }
+  const float32_t time = (float32_t)vkr_harness_camera_script_time(
+      child->completed_frames, child->case_manifest->warmup_frames,
+      child->case_manifest->fixed_delta_seconds);
+  const Vec3 velocity = vec3_new(
+      child->case_manifest->renderer.motion_blur_entity_velocity_x,
+      child->case_manifest->renderer.motion_blur_entity_velocity_y,
+      child->case_manifest->renderer.motion_blur_entity_velocity_z);
+  vkr_scene_set_position(
+      application->active_scene, child->motion_blur_entity,
+      vec3_new(child->motion_blur_entity_origin.x + velocity.x * time,
+               child->motion_blur_entity_origin.y + velocity.y * time,
+               child->motion_blur_entity_origin.z + velocity.z * time));
   return true_v;
 }
 
@@ -603,6 +651,21 @@ vkr_harness_child_texture_streams_ready(VkrStandardSceneRuntime *application) {
 vkr_internal bool8_t vkr_harness_child_renderer_publications_ready(
     VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
+  const VkrScene *scene = application->active_scene;
+  if (scene && scene->atmosphere.requested_settings.enabled) {
+    if (scene->atmosphere.bake_state == VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED) {
+      vkr_harness_child_fail(application, "scene.atmosphere_bake_failed");
+      return false_v;
+    }
+    if (scene->atmosphere.active_revision !=
+        scene->atmosphere.requested_revision) {
+      const float64_t elapsed =
+          vkr_platform_get_absolute_time() - child->load_started;
+      if (elapsed * 1000.0 > child->case_manifest->asset_ready_timeout_ms)
+        vkr_harness_child_fail(application, "scene.atmosphere_ready_timeout");
+      return false_v;
+    }
+  }
   const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
   if (publisher->publications_idle &&
       publisher->publications_idle(publisher->state)) {
@@ -939,8 +1002,8 @@ vkr_internal void vkr_harness_child_update(void *state,
              next_frame %
                      vkr_harness_temporal_alignment(&application->renderer) ==
                  0u) {
-    /* Bootstrap duration must not choose either the raster jitter or GTAO
-       noise phase consumed by authored warmup, including zero-warmup cases. */
+    /* Bootstrap duration must not choose the raster jitter, GTAO or SSGI
+       sampling phase consumed by authored warmup, including zero-warmup cases. */
     vkr_renderer_invalidate_temporal_history(&application->renderer);
     child->phase_started = true_v;
     child->phase_first_frame_index = next_frame;
@@ -984,15 +1047,19 @@ vkr_internal void vkr_harness_child_update(void *state,
       child->capture_requested = true_v;
     }
   }
+  if (!vkr_harness_child_apply_motion_entity(application)) {
+    vkr_harness_child_fail(application, "motion_blur.entity_update_failed");
+    return;
+  }
   vkr_scene_handle_update_and_sync(child->scene_resource.as.scene,
                                    &application->assets, delta);
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   /* Determinism rule 2: the pose is a function of the case-frame index and the
      fixed delta, never of wall-clock time or input. */
-  VkrHarnessCameraPose pose = {0};
+  VkrHarnessCameraScriptPose pose = {0};
   if (!camera ||
-      !vkr_harness_camera_evaluate(
+      !vkr_harness_camera_evaluate_script(
           &child->case_manifest->camera,
           vkr_harness_camera_script_time(
               child->completed_frames, child->case_manifest->warmup_frames,
@@ -1001,8 +1068,15 @@ vkr_internal void vkr_harness_child_update(void *state,
     vkr_harness_child_fail(application, "camera.evaluate_failed");
     return;
   }
-  vkr_camera_set_pose(camera, pose.position, pose.yaw_degrees,
-                      pose.pitch_degrees);
+  if (pose.exact_basis) {
+    if (!vkr_camera_set_basis(camera, pose.pose.position, pose.forward,
+                              pose.up)) {
+      vkr_harness_child_fail(application, "camera.basis_failed");
+    }
+    return;
+  }
+  vkr_camera_set_pose(camera, pose.pose.position, pose.pose.yaw_degrees,
+                      pose.pose.pitch_degrees);
 }
 
 #if VKR_METRICS_ENABLED
@@ -1121,6 +1195,11 @@ vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
           },
       .requested_present_mode =
           vkr_harness_present_to_renderer(case_manifest->present),
+      .display_output_mode =
+          string_equals(case_manifest->renderer.display_output,
+                        "auto_extended_linear")
+              ? VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR
+              : VKR_DISPLAY_OUTPUT_SDR,
       .render_scale = case_manifest->renderer.render_scale,
       .upscale_mode =
           string_equals(case_manifest->renderer.upscaler, "metalfx_temporal")
@@ -1222,6 +1301,17 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
       string_equals(case_manifest->renderer.exposure_mode, "automatic")
           ? VKR_EXPOSURE_MODE_AUTOMATIC
           : VKR_EXPOSURE_MODE_MANUAL;
+  application->globals.display_transform =
+      string_equals(case_manifest->renderer.display_transform, "aces_fitted")
+          ? VKR_DISPLAY_TRANSFORM_ACES_FITTED
+          : VKR_DISPLAY_TRANSFORM_AGX;
+  application->globals.white_balance_temperature =
+      case_manifest->renderer.white_balance_temperature;
+  application->globals.white_balance_tint =
+      case_manifest->renderer.white_balance_tint;
+  application->globals.color_contrast = case_manifest->renderer.color_contrast;
+  application->globals.color_saturation =
+      case_manifest->renderer.color_saturation;
   application->globals.manual_exposure =
       case_manifest->renderer.manual_exposure;
   application->globals.exposure_compensation_ev =
@@ -1232,6 +1322,16 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   application->globals.bloom_knee = case_manifest->renderer.bloom_knee;
   application->globals.bloom_intensity =
       case_manifest->renderer.bloom_intensity;
+  application->globals.ssr_enabled = case_manifest->renderer.ssr_enabled;
+  application->globals.ssgi_enabled = case_manifest->renderer.ssgi_enabled;
+  application->globals.dof_enabled = case_manifest->renderer.dof_enabled;
+  application->globals.dof_focus_distance =
+      case_manifest->renderer.dof_focus_distance;
+  application->globals.dof_f_stop = case_manifest->renderer.dof_f_stop;
+  application->globals.motion_blur_enabled =
+      case_manifest->renderer.motion_blur_enabled;
+  application->globals.motion_blur_shutter_angle =
+      case_manifest->renderer.motion_blur_shutter_angle;
   application->globals.gtao_enabled = case_manifest->renderer.gtao_enabled;
   application->globals.gtao_radius = case_manifest->renderer.gtao_radius;
   application->globals.gtao_power = case_manifest->renderer.gtao_power;

@@ -54,11 +54,17 @@ bool8_t vkr_scene_edit_read(const VkrScene *scene, VkrEntityId entity,
     out->fields |= VKR_SCENE_EDIT_DIRECTIONAL_LIGHT;
     out->directional_light = *directional;
   }
+  const SceneRectangleLight *rectangle = vkr_entity_get_component(
+      scene->world, entity, scene->comp_rectangle_light);
+  if (rectangle) {
+    out->fields |= VKR_SCENE_EDIT_RECTANGLE_LIGHT;
+    out->rectangle_light = *rectangle;
+  }
   return true_v;
 }
 
 bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *v) {
-  if (!v->fields || (v->fields & ~31u))
+  if (!v->fields || (v->fields & ~63u))
     return false_v;
   if ((v->fields & VKR_SCENE_EDIT_NAME) && !memchr(v->name, 0, sizeof(v->name)))
     return false_v;
@@ -102,8 +108,18 @@ bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *v) {
         p->color.z < 0 || !isfinite(p->intensity) || p->intensity < 0 ||
         !finite_vector(&p->direction_local.x, 3) ||
         !isfinite(vec3_dot(p->direction_local, p->direction_local)) ||
-        p->enabled > 1 ||
+        !isfinite(p->sun_angular_diameter_degrees) ||
+        p->sun_angular_diameter_degrees < 0.0f ||
+        p->sun_angular_diameter_degrees >= 180.0f || p->enabled > 1 ||
         vec3_dot(p->direction_local, p->direction_local) < 0.000001f)
+      return false_v;
+  }
+  if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) {
+    const SceneRectangleLight *p = &v->rectangle_light;
+    if (!finite_vector(&p->color.x, 3) || p->color.x < 0.0f ||
+        p->color.y < 0.0f || p->color.z < 0.0f || !isfinite(p->radiance) ||
+        p->radiance < 0.0f || !isfinite(p->size.x) || !isfinite(p->size.y) ||
+        p->size.x <= 0.0f || p->size.y <= 0.0f || p->enabled > 1u)
       return false_v;
   }
   return true_v;
@@ -202,6 +218,8 @@ static void edit_commit(VkrScene *scene, EditPrepared *p) {
     *vkr_scene_get_point_light(scene, entity) = v->point_light;
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
     *vkr_scene_get_directional_light(scene, entity) = v->directional_light;
+  if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
+    *vkr_scene_get_rectangle_light(scene, entity) = v->rectangle_light;
 }
 
 static bool8_t edit_write(VkrScene *scene, VkrEntityId entity,
@@ -342,7 +360,17 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
     if (!json_floats(w, "directional_color", &p->color.x, 3) ||
         !json_floats(w, "directional_direction", &p->direction_local.x, 3) ||
         !json_floats(w, "directional_intensity", &p->intensity, 1) ||
+        !json_floats(w, "directional_sun_angular_diameter_degrees",
+                     &p->sun_angular_diameter_degrees, 1) ||
         !WRITE_BOOL("directional_enabled", p->enabled))
+      return false_v;
+  }
+  if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) {
+    const SceneRectangleLight *p = &v->rectangle_light;
+    if (!json_floats(w, "rectangle_color", &p->color.x, 3) ||
+        !json_floats(w, "rectangle_radiance", &p->radiance, 1) ||
+        !json_floats(w, "rectangle_size", &p->size.x, 2) ||
+        !WRITE_BOOL("rectangle_enabled", p->enabled))
       return false_v;
   }
   return true_v;
@@ -644,13 +672,20 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "directional_direction",
                                "directional_intensity",
                                "directional_enabled",
-                               "point_casts_shadow"};
+                               "point_casts_shadow",
+                               "directional_sun_angular_diameter_degrees",
+                               "rectangle_color",
+                               "rectangle_radiance",
+                               "rectangle_size",
+                               "rectangle_enabled"};
   MemZero(v, sizeof(*v));
+  v->directional_light.sun_angular_diameter_degrees =
+      VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
   uint32_t seen = 0;
   if (!edit_json_take(j, '{'))
     return false_v;
   for (;;) {
-    char key[32];
+    char key[64];
     int64_t integer = 0;
     bool8_t ok = false_v;
     if (!edit_json_string(j, key, sizeof(key)) || !edit_json_take(j, ':'))
@@ -685,7 +720,7 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
       break;
     }
     case 3:
-      ok = edit_json_int(j, 1, 31, &integer);
+      ok = edit_json_int(j, 1, 63, &integer);
       v->fields = (uint32_t)integer;
       break;
     case 4:
@@ -743,11 +778,27 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 17:
       ok = edit_json_floats(j, &v->directional_light.intensity, 1);
       break;
+    case 20:
+      ok = edit_json_floats(
+          j, &v->directional_light.sun_angular_diameter_degrees, 1);
+      break;
     case 19:
       ok = edit_json_bool(j, &v->point_light.casts_shadow);
       break;
     case 18:
       ok = edit_json_bool(j, &v->directional_light.enabled);
+      break;
+    case 21:
+      ok = edit_json_floats(j, &v->rectangle_light.color.x, 3);
+      break;
+    case 22:
+      ok = edit_json_floats(j, &v->rectangle_light.radiance, 1);
+      break;
+    case 23:
+      ok = edit_json_floats(j, &v->rectangle_light.size.x, 2);
+      break;
+    case 24:
+      ok = edit_json_bool(j, &v->rectangle_light.enabled);
       break;
     }
     if (!ok)
@@ -768,8 +819,12 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     required |= 31u << 10u;
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
     required |= 15u << 15u;
+  if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
+    required |= seen & (1u << 20u); /* Old journals use the default angle. */
   if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
     required |= seen & (1u << 19u); /* Old journals default shadows off. */
+  if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
+    required |= 15u << 21u;
   return seen == required && vkr_scene_edit_validate(v);
 }
 

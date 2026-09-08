@@ -140,6 +140,7 @@ vkr_rg_resource_instance_domain(VkrRgResourceFlags flags);
 typedef struct VkrRgImageDesc {
   uint32_t width;  /**< Image width; 0 if derived from attachment/swapchain */
   uint32_t height; /**< Image height; 0 if derived */
+  uint32_t depth;  /**< Image depth; one for non-3D textures */
   VkrTextureFormat format;    /**< Pixel format */
   VkrTextureUsageFlags usage; /**< Vulkan usage flags */
   VkrSampleCount samples;     /**< Sample count (MSAA) */
@@ -153,6 +154,7 @@ typedef struct VkrRgImageDesc {
   ((VkrRgImageDesc){                                                           \
       .width = 0,                                                              \
       .height = 0,                                                             \
+      .depth = 1,                                                              \
       .format = VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB,                              \
       .usage = vkr_texture_usage_flags_create(),                               \
       .samples = VKR_SAMPLE_COUNT_1,                                           \
@@ -571,6 +573,8 @@ typedef struct VkrRenderGraphFrameInfo {
    * frame without bloom pays nothing for it.
    */
   bool8_t bloom_enabled;
+  bool8_t dof_enabled;
+  bool8_t motion_blur_enabled;
   /**
    * Chain length, derived from the viewport and the cold bloom configuration.
    * The downsample and upsample repeats are each one shorter than this: the
@@ -585,6 +589,14 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t gtao_enabled;
   /** Current-frame AO depth levels, including full-resolution mip zero. */
   uint32_t gtao_depth_mip_count;
+  /** Independent current-frame SSR resources, including reflection history. */
+  bool8_t ssr_enabled;
+  bool8_t ssgi_enabled;
+  bool8_t subsurface_enabled;
+  bool8_t fog_enabled;
+  bool8_t froxel_fog_enabled;
+  uint32_t ssr_depth_mip_count;
+  uint32_t ssgi_depth_mip_count;
   /** Metal P19 state; false only for the diagnostic full-screen rollback. */
   bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */
@@ -610,6 +622,8 @@ typedef struct VkrRenderGraphFrameInfo {
   /** Bits of repeated shadow passes that must be instantiated this frame. */
   uint32_t shadow_cascade_render_mask;
   uint32_t local_shadow_view_count;
+  /** Bits of repeated local-shadow passes that must be instantiated. */
+  uint32_t local_shadow_render_mask;
   uint32_t local_shadow_map_size;
   uint32_t local_shadow_map_layer_count;
 } VkrRenderGraphFrameInfo;

@@ -10,6 +10,7 @@ void vkr_vk_destroy_target_set(VkrVulkanRenderer *renderer,
 
 bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
                                  uint32_t height, uint32_t image_count,
+                                 VkFormat format,
                                  VkrVulkanTargetSet *out_targets) {
   if (!width || !height || !image_count ||
       image_count > VKR_VULKAN_TARGET_IMAGE_MAX) {
@@ -20,8 +21,8 @@ bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
   out_targets->height = height;
   out_targets->image_count = image_count;
   for (uint32_t i = 0; i < image_count; ++i) {
-    if (!vkr_vk_create_image_ex(renderer, width, height, 1u, 1u,
-                                VK_FORMAT_R8G8B8A8_SRGB, 0u,
+    if (!vkr_vk_create_image_ex(renderer, width, height, 1u, 1u, 1u, format,
+                                0u, VK_IMAGE_TYPE_2D,
                                 VK_IMAGE_VIEW_TYPE_2D,
                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -141,23 +142,25 @@ bool8_t vkr_vk_create_window_target(VkrVulkanRenderer *renderer,
             : formats[i].format;
     VkFormatProperties properties = {0};
     vkGetPhysicalDeviceFormatProperties(physical, format, &properties);
-    format_usable[i] = (properties.optimalTilingFeatures &
-                        VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0u;
+    /* The WSI image is the blit destination. Its renderer-owned mirror must
+     * also be a color attachment and blit source in the same format. */
+    const VkFormatFeatureFlags required_features =
+        VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    format_usable[i] =
+        (properties.optimalTilingFeatures & required_features) ==
+        required_features;
   }
-  const VkSurfaceFormatKHR surface_format =
-      vkr_vulkan_device_choose_surface_format(formats, format_usable,
-                                              format_count);
+  const bool8_t prefer_extended_linear =
+      renderer->display_output_requested.extended_linear != 0u &&
+      vkr_vulkan_device_extended_linear_present_enabled(renderer->device);
+  const VkSurfaceFormatKHR surface_format = vkr_vulkan_device_choose_surface_format(
+      formats, format_usable, format_count, prefer_extended_linear);
   if (surface_format.format == VK_FORMAT_UNDEFINED) {
-    log_error("Vulkan window surface exposes no BGRA8/RGBA8 sRGB format "
-              "compatible with linear presentation");
+    log_error("Vulkan window surface exposes no presentation format for "
+              "the selected display-output policy");
     return false_v;
   }
-  VkFormatProperties source_properties = {0};
-  vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_R8G8B8A8_SRGB,
-                                      &source_properties);
-  if ((source_properties.optimalTilingFeatures &
-       VK_FORMAT_FEATURE_BLIT_SRC_BIT) == 0u)
-    return false_v;
   VkExtent2D extent = capabilities.currentExtent;
   if (extent.width == UINT32_MAX) {
     extent.width = Clamp(requested_width, capabilities.minImageExtent.width,
@@ -302,7 +305,15 @@ bool8_t vkr_vk_recreate_window_target(VkrVulkanRenderer *renderer,
   VkrVulkanTargetSet replacement_targets = {0};
   if (!vkr_vk_create_target_set(
           renderer, replacement_window.width, replacement_window.height,
-          replacement_window.image_count, &replacement_targets)) {
+          replacement_window.image_count, replacement_window.format,
+          &replacement_targets)) {
+    vkr_vk_destroy_window_target(renderer, &replacement_window);
+    return false_v;
+  }
+  if (replacement_window.format != renderer->window_target.format &&
+      !vkr_vk_recreate_presentation_pipelines(renderer,
+                                               replacement_window.format)) {
+    vkr_vk_destroy_target_set(renderer, &replacement_targets);
     vkr_vk_destroy_window_target(renderer, &replacement_window);
     return false_v;
   }
@@ -314,6 +325,12 @@ bool8_t vkr_vk_recreate_window_target(VkrVulkanRenderer *renderer,
   renderer->config.width = replacement_window.width;
   renderer->config.height = replacement_window.height;
   renderer->config.image_count = replacement_window.image_count;
+  renderer->display_output_params =
+      replacement_window.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+              replacement_window.color_space ==
+                  VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT
+          ? renderer->display_output_requested
+          : (VkrDisplayOutputParams){.headroom = 1.0f, .output_scale = 1.0f};
   renderer->target_dirty = false_v;
   return true_v;
 }
@@ -445,6 +462,10 @@ void vkr_vulkan_renderer_cancel_frame(VkrVulkanRenderer *renderer) {
   vkr_vk_fail_picking_readback(renderer, slot);
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   slot->sh_coefficients_clear_recorded = false_v;
+  slot->dfg_upload_recorded = false_v;
+  slot->ltc_upload_recorded = false_v;
+  slot->sheen_upload_recorded = false_v;
+  slot->anisotropy_upload_recorded = false_v;
   vkr_vk_discard_unsubmitted_asset_uses(renderer);
   const bool8_t submitted = slot->acquired_window_image
                                 ? vkr_vk_present_cancelled_frame(renderer, slot)
@@ -486,7 +507,7 @@ bool8_t vkr_vulkan_renderer_resize(VkrVulkanRenderer *renderer, uint32_t width,
   }
   VkrVulkanTargetSet replacement;
   if (!vkr_vk_create_target_set(renderer, width, height, image_count,
-                                &replacement)) {
+                                VK_FORMAT_R8G8B8A8_SRGB, &replacement)) {
     return false_v;
   }
   retired->targets = renderer->targets;

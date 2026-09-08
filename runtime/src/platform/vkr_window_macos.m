@@ -7,6 +7,8 @@
 #include <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <math.h>
+
 bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length) {
   if (!buffer || capacity == 0u || !out_length)
@@ -65,6 +67,10 @@ typedef struct PlatformState {
   EventManager *event_manager;
   InputState *input_state;
   VkrWindow *owner;
+  /** Atomic `{availability|revision, IEEE-754 current-headroom bits}` cache.
+   * The window delegate and main-thread pump publish it; frame preparation only
+   * copies the settled snapshot. */
+  VkrAtomicUint64 display_output_state;
 
   // Mouse capture state
   bool8_t cursor_hidden;
@@ -74,6 +80,72 @@ typedef struct PlatformState {
   float64_t cursor_warp_delta_x;
   float64_t cursor_warp_delta_y;
 } PlatformState;
+
+static uint32_t vkr_window_display_output_float_bits(float32_t value) {
+  uint32_t bits = 0u;
+  MemCopy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+static float32_t vkr_window_display_output_bits_float(uint32_t bits) {
+  float32_t value = 0.0f;
+  MemCopy(&value, &bits, sizeof(value));
+  return value;
+}
+
+static uint64_t vkr_window_display_output_pack(uint32_t revision,
+                                               bool8_t available,
+                                               float32_t headroom) {
+  const uint32_t state = (revision & 0x7fffffffu) |
+                         (available ? 0x80000000u : 0u);
+  return ((uint64_t)state << 32u) |
+         (uint64_t)vkr_window_display_output_float_bits(headroom);
+}
+
+static void vkr_window_publish_display_output(PlatformState *state,
+                                              float32_t current_headroom,
+                                              bool8_t available) {
+  if (!isfinite(current_headroom) || current_headroom < 1.0f)
+    current_headroom = 1.0f;
+  const uint32_t bits =
+      vkr_window_display_output_float_bits(current_headroom);
+  uint64_t expected = vkr_atomic_uint64_load(&state->display_output_state,
+                                             VKR_MEMORY_ORDER_ACQUIRE);
+  for (;;) {
+    const uint32_t current_state = (uint32_t)(expected >> 32u);
+    const bool8_t current_available = (current_state & 0x80000000u) != 0u;
+    if ((uint32_t)expected == bits && current_available == available)
+      return;
+    uint32_t revision = (current_state & 0x7fffffffu) + 1u;
+    if (revision == 0u || revision > 0x7fffffffu)
+      revision = 1u;
+    const uint64_t desired =
+        vkr_window_display_output_pack(revision, available, current_headroom);
+    if (vkr_atomic_uint64_compare_exchange(
+            &state->display_output_state, &expected, desired,
+            VKR_MEMORY_ORDER_ACQ_REL, VKR_MEMORY_ORDER_ACQUIRE))
+      return;
+  }
+}
+
+static void vkr_window_refresh_display_output(PlatformState *state) {
+  if (!state->window) {
+    vkr_window_publish_display_output(state, 1.0f, false_v);
+    return;
+  }
+  NSScreen *screen = state->window.screen;
+  if (!screen)
+    screen = [NSScreen mainScreen];
+  const float32_t potential_headroom =
+      screen ? (float32_t)screen.maximumPotentialExtendedDynamicRangeColorComponentValue
+             : 1.0f;
+  const float32_t current_headroom =
+      screen ? (float32_t)screen.maximumExtendedDynamicRangeColorComponentValue
+             : 1.0f;
+  vkr_window_publish_display_output(
+      state, current_headroom,
+      isfinite(potential_headroom) && potential_headroom > 1.0f);
+}
 
 // Key translation
 static Keys translate_keycode(uint32_t ns_keycode);
@@ -199,6 +271,7 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification {
   (void)notification;
+  vkr_window_refresh_display_output(state);
   const CGFloat backingScale = [state->window backingScaleFactor];
   vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
   [state->layer setContentsScale:backingScale];
@@ -216,6 +289,16 @@ static bool8_t cursor_in_content_area(PlatformState *state);
   event_manager_dispatch(state->event_manager, event);
 }
 
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+  (void)notification;
+  vkr_window_refresh_display_output(state);
+}
+
+- (void)displayParametersChanged:(NSNotification *)notification {
+  (void)notification;
+  vkr_window_refresh_display_output(state);
+}
+
 - (void)windowDidMiniaturize:(NSNotification *)notification {
   VkrWindowResizeEventData resize_data = {.width = 0, .height = 0};
   Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
@@ -227,6 +310,7 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)windowDidDeminiaturize:(NSNotification *)notification {
+  vkr_window_refresh_display_output(state);
   const CGFloat backingScale = [state->window backingScaleFactor];
   vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
   const NSRect contentRect = [state->view frame];
@@ -255,6 +339,7 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 
     // The view and layer keep their owned references until window_destroy.
     state->window = nil;
+    vkr_window_publish_display_output(state, 1.0f, false_v);
   }
 }
 
@@ -652,6 +737,9 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   state->event_manager = event_manager;
   state->input_state = &window->input_state;
   state->owner = window;
+  vkr_atomic_uint64_store(&state->display_output_state,
+                          vkr_window_display_output_pack(1u, false_v, 1.0f),
+                          VKR_MEMORY_ORDER_RELEASE);
 
   // Initialize mouse capture state
   state->cursor_hidden = false_v;
@@ -729,6 +817,12 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     [state->window makeFirstResponder:state->view];
     [state->window setTitle:@(title)];
     [state->window setDelegate:state->wnd_delegate];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:state->wnd_delegate
+           selector:@selector(displayParametersChanged:)
+               name:NSApplicationDidChangeScreenParametersNotification
+             object:nil];
+    vkr_window_refresh_display_output(state);
     [state->window setAcceptsMouseMovedEvents:YES];
     [state->window setRestorable:NO];
 
@@ -775,6 +869,7 @@ void vkr_window_destroy(VkrWindow *window) {
     }
 
     if (state->wnd_delegate) {
+      [[NSNotificationCenter defaultCenter] removeObserver:state->wnd_delegate];
       [state->window setDelegate:nil];
       [state->wnd_delegate release];
       state->wnd_delegate = nil;
@@ -815,6 +910,7 @@ bool8_t vkr_window_update(VkrWindow *window) {
   }
 
   @autoreleasepool {
+    vkr_window_refresh_display_output(state);
 
     NSEvent *event;
 
@@ -858,6 +954,23 @@ VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
   return (VkrWindowPixelSize){
       .width = (uint32_t)framebufferRect.size.width,
       .height = (uint32_t)framebufferRect.size.height,
+  };
+}
+
+VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  PlatformState *state = (PlatformState *)window->platform_state;
+  const uint64_t packed = vkr_atomic_uint64_load(&state->display_output_state,
+                                                 VKR_MEMORY_ORDER_ACQUIRE);
+  const uint32_t state_bits = (uint32_t)(packed >> 32u);
+  const float32_t headroom =
+      vkr_window_display_output_bits_float((uint32_t)packed);
+  return (VkrDisplayOutputSnapshot){
+      .headroom = isfinite(headroom) && headroom >= 1.0f ? headroom : 1.0f,
+      .output_scale = 1.0f,
+      .revision = state_bits & 0x7fffffffu,
+      .available = (state_bits & 0x80000000u) != 0u,
   };
 }
 

@@ -1,0 +1,44 @@
+#ifndef VKR_DIFFUSE_VOLUME_KERNEL
+#define VKR_DIFFUSE_VOLUME_KERNEL
+
+// Texture rows follow x + nx * (y + ny * z). Row texels 0..6 contain
+// Sloan-packed E/pi; texel 7.y proves the entire interpolation cell is clear
+// and its eight probes belong to one room. The loader validates this contract.
+struct VkrDiffuseVolumeCell {
+    uint3 base;
+    float3 fraction;
+    uint row;
+    bool valid;
+};
+
+uint vkr_diffuse_volume_node_index(uint3 node, uint3 dimensions) {
+    return node.x + dimensions.x * (node.y + dimensions.y * node.z);
+}
+
+VkrDiffuseVolumeCell vkr_diffuse_volume_cell(float3 world_position,
+    float3 origin, float3 inverse_spacing, uint3 dimensions) {
+    VkrDiffuseVolumeCell cell;
+    cell.base = uint3(0);
+    cell.fraction = float3(0.0f);
+    cell.row = 0u;
+    float3 position = (world_position - origin) * inverse_spacing;
+    cell.valid = all(position >= float3(0.0f)) &&
+        all(position <= float3(dimensions - uint3(1u)));
+    if (!cell.valid)
+        return cell;
+    cell.base = min(uint3(floor(position)), dimensions - uint3(2u));
+    cell.fraction = position - float3(cell.base);
+    cell.row = vkr_diffuse_volume_node_index(cell.base, dimensions);
+    return cell;
+}
+
+uint3 vkr_diffuse_volume_corner(uint corner) {
+    return uint3(corner & 1u, (corner >> 1u) & 1u, (corner >> 2u) & 1u);
+}
+
+float vkr_diffuse_volume_weight(uint3 corner, float3 fraction) {
+    float3 weight = float3(1.0f) - fraction +
+        float3(corner) * (2.0f * fraction - float3(1.0f));
+    return weight.x * weight.y * weight.z;
+}
+#endif

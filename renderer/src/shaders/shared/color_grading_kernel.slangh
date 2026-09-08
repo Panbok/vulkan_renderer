@@ -1,0 +1,42 @@
+#ifndef VKR_SHADER_COLOR_GRADING_KERNEL_SLANGH
+#define VKR_SHADER_COLOR_GRADING_KERNEL_SLANGH
+
+struct VkrColorGrading
+{
+    float4 white_balance_rows[3];
+    // Contrast, saturation, enabled-as-float, reserved.
+    float4 controls;
+};
+
+float vkr_color_grade_luminance(float3 color)
+{
+    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float3 vkr_color_grade(float3 color, VkrColorGrading grading)
+{
+    if (grading.controls.z == 0.0f)
+        return color;
+
+    float3 result = float3(
+        dot(grading.white_balance_rows[0].xyz, color),
+        dot(grading.white_balance_rows[1].xyz, color),
+        dot(grading.white_balance_rows[2].xyz, color));
+    result = max(result, 0.0f);
+
+    const float contrast = grading.controls.x;
+    if (contrast != 1.0f)
+    {
+        const float luminance = vkr_color_grade_luminance(result);
+        if (luminance == 0.0f)
+            return result;
+        result *= pow(max(luminance / 0.18f, 1e-6f), contrast - 1.0f);
+    }
+
+    const float luminance = vkr_color_grade_luminance(result);
+    result = float3(luminance) +
+             (result - float3(luminance)) * grading.controls.y;
+    return max(result, 0.0f);
+}
+
+#endif

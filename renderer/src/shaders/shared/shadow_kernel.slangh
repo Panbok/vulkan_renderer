@@ -21,6 +21,9 @@
 #endif
 
 #define VKR_SHADOW_POISSON_COUNT 64
+#define VKR_SHADOW_PCSS_CASCADE_COUNT 2u
+#define VKR_SHADOW_PCSS_BLOCKER_COUNT 8u
+#define VKR_SHADOW_PCSS_FILTER_MAX_COUNT 16u
 
 VKR_SHADOW_KERNEL_CONST float2 vkr_shadow_poisson[VKR_SHADOW_POISSON_COUNT] = {
     float2(+0.000000f, +0.000000f), float2(-0.883484f, -0.392682f),
@@ -56,3 +59,35 @@ VKR_SHADOW_KERNEL_CONST float2 vkr_shadow_poisson[VKR_SHADOW_POISSON_COUNT] = {
     float2(-0.355954f, -0.428479f), float2(+0.448874f, +0.636056f),
     float2(-0.435902f, +0.170981f), float2(+0.458944f, +0.206565f),
 };
+
+// The nearest two directional cascades use a bounded PCSS estimate. Depths
+// are normalized orthographic-map depths; depth_span converts their difference
+// to world distance, and the final division expresses the footprint in texels.
+// A zero authored sun tangent preserves the existing PCF path exactly.
+uint vkr_shadow_pcss_enabled(uint cascade, float sun_tan_half_angle)
+{
+    return cascade < VKR_SHADOW_PCSS_CASCADE_COUNT && sun_tan_half_angle > 0.0f;
+}
+
+float vkr_shadow_pcss_search_radius_texels(float reference_depth,
+                                           float depth_span,
+                                           float sun_tan_half_angle,
+                                           float world_texel_size,
+                                           float pcf_radius_texels)
+{
+    float conservative_radius = max(reference_depth, 0.0f) * depth_span *
+                                sun_tan_half_angle / world_texel_size;
+    return max(pcf_radius_texels, conservative_radius);
+}
+
+float vkr_shadow_pcss_filter_radius_texels(float reference_depth,
+                                           float average_blocker_depth,
+                                           float depth_span,
+                                           float sun_tan_half_angle,
+                                           float world_texel_size,
+                                           float pcf_radius_texels)
+{
+    float penumbra = max(reference_depth - average_blocker_depth, 0.0f) *
+                     depth_span * sun_tan_half_angle / world_texel_size;
+    return max(pcf_radius_texels, penumbra);
+}

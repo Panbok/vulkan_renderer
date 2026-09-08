@@ -161,6 +161,35 @@ void vkr_camera_set_pose(VkrCamera *camera, Vec3 position,
   vkr_camera_update_orientation(camera);
 }
 
+bool8_t vkr_camera_set_basis(VkrCamera *camera, Vec3 position, Vec3 forward,
+                             Vec3 up) {
+  if (!camera || !isfinite(position.x) || !isfinite(position.y) ||
+      !isfinite(position.z) || !isfinite(forward.x) || !isfinite(forward.y) ||
+      !isfinite(forward.z) || !isfinite(up.x) || !isfinite(up.y) ||
+      !isfinite(up.z)) {
+    return false_v;
+  }
+  const float32_t forward_length_squared = vec3_length_squared(forward);
+  if (!isfinite(forward_length_squared) ||
+      forward_length_squared <= VKR_FLOAT_EPSILON) {
+    return false_v;
+  }
+  const Vec3 normalized_forward = vec3_normalize(forward);
+  const Vec3 right = vec3_cross(normalized_forward, up);
+  const float32_t right_length_squared = vec3_length_squared(right);
+  if (!isfinite(right_length_squared) ||
+      right_length_squared <= VKR_FLOAT_EPSILON) {
+    return false_v;
+  }
+  const Vec3 normalized_right = vec3_normalize(right);
+  camera->position = position;
+  camera->forward = normalized_forward;
+  camera->right = normalized_right;
+  camera->up = vec3_normalize(vec3_cross(normalized_right, normalized_forward));
+  camera->view_dirty = true_v;
+  return true_v;
+}
+
 bool8_t vkr_camera_set_perspective_lens(VkrCamera *camera,
                                         float32_t vertical_fov_degrees,
                                         float32_t near_clip, float32_t far_clip,

@@ -131,7 +131,10 @@ struct VkrVkResolveRoot
     uint render_mode;
     uint history_valid;
     uint previous_frame_index;
-    uint4 reserved_tail;
+    uint clearcoat_texture;
+    uint sheen_texture;
+    uint anisotropy_texture;
+    uint reserved_tail;
     float4x4 sky_reprojection;
 };
 
@@ -191,6 +194,19 @@ struct VkrVkLightingRoot
     uint sky_sampler;
     uint sky_enabled;
     uint gtao_visibility_texture;
+    // RGB radiance of the alpha-covered disc; source RGB deliberately omits it.
+    float4 solar_disk_radiance;
+    uint direct_source_texture;
+    uint ssgi_enabled;
+    uint clearcoat_texture;
+    uint sheen_texture;
+    uint anisotropy_texture;
+    uint visible_rows_reserved0;
+    uint visible_rows_reserved1;
+    uint visible_rows_reserved2;
+    VkrGpuVisibleDrawRow* visible_rows;
+    uint subsurface_source_texture;
+    uint subsurface_profile_count;
 };
 
 struct VkrVkHzbRoot
@@ -202,6 +218,84 @@ struct VkrVkHzbRoot
     uint source_is_depth;
     uint3 reserved;
 };
+struct VkrVkSsrDepthBaseRoot
+{
+    VkrSsrParams params;
+    uint depth_texture;
+    uint vbuffer_texture;
+    uint destination_depth_texture;
+    uint receiver_texture;
+};
+
+struct VkrVkSsrDepthMipRoot
+{
+    uint source_depth_texture;
+    uint destination_depth_texture;
+    uint2 source_extent;
+    uint2 destination_extent;
+    uint2 reserved;
+};
+
+struct VkrVkSsrTraceRoot
+{
+    VkrSsrParams params;
+    uint depth_texture;
+    uint vbuffer_texture;
+    uint normal_texture;
+    uint specular_texture;
+    uint depth_pyramid_texture;
+    uint receiver_texture;
+    uint source_texture;
+    uint destination_texture;
+    uint clearcoat_texture;
+    uint3 reserved;
+};
+
+struct VkrVkSsrTemporalRoot
+{
+    VkrSsrParams params;
+    VkrGpuVisibleDrawRow *visible_rows;
+    VkrVulkanInstance *instances;
+    uint raw_texture;
+    uint receiver_texture;
+    uint vbuffer_texture;
+    uint depth_texture;
+    uint normal_texture;
+    uint motion_texture;
+    uint validity_texture;
+    uint history_color_texture;
+    uint history_depth_texture;
+    uint history_identity_texture;
+    uint output_color_texture;
+    uint output_depth_texture;
+    uint output_identity_texture;
+    uint linear_sampler;
+    uint specular_texture;
+    uint clearcoat_texture;
+};
+
+struct VkrVkSsrCompositeRoot
+{
+    VkrSsrParams params;
+    VkrVulkanPacketFrameRoot *frame;
+    uint2 frame_address_padding;
+    float4x4 inverse_view_projection;
+    uint scene_texture;
+    uint reflection_texture;
+    uint vbuffer_texture;
+    uint depth_texture;
+    uint albedo_texture;
+    uint specular_texture;
+    uint normal_texture;
+    uint gtao_visibility_texture;
+    uint history_depth_texture;
+    uint receiver_texture;
+    uint linear_sampler;
+    uint clearcoat_texture;
+    uint sheen_texture;
+    uint anisotropy_texture;
+};
+
 struct VkrVkSdsmState
 {
     uint min_device_z_bits;
@@ -343,6 +437,31 @@ struct VkrVkSdsmPush
     VkrVkSdsmRoot *root;
     uint2 reserved;
 };
+struct VkrVkSsrDepthBasePush
+{
+    VkrVkSsrDepthBaseRoot *root;
+    uint2 reserved;
+};
+struct VkrVkSsrDepthMipPush
+{
+    VkrVkSsrDepthMipRoot *root;
+    uint2 reserved;
+};
+struct VkrVkSsrTracePush
+{
+    VkrVkSsrTraceRoot *root;
+    uint2 reserved;
+};
+struct VkrVkSsrTemporalPush
+{
+    VkrVkSsrTemporalRoot *root;
+    uint2 reserved;
+};
+struct VkrVkSsrCompositePush
+{
+    VkrVkSsrCompositeRoot *root;
+    uint2 reserved;
+};
 struct VkrVkPickingPush
 {
     VkrVkPickingRoot *root;
@@ -373,6 +492,11 @@ struct VkrVkTransmissionCompactPush
 [[vk::push_constant]] ConstantBuffer<VkrVkTemporalResolvePush>
     g_temporal_resolve_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkHzbPush> g_hzb_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkSsrDepthBasePush> g_ssr_depth_base_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkSsrDepthMipPush> g_ssr_depth_mip_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkSsrTracePush> g_ssr_trace_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkSsrTemporalPush> g_ssr_temporal_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkSsrCompositePush> g_ssr_composite_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkSdsmPush> g_sdsm_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkPickingPush> g_picking_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkTransmissionPush> g_transmission_push;
@@ -793,6 +917,9 @@ void vkr_vk_resolve_defaults(VkrVkResolveRoot *root, uint2 pixel, float marker)
     g_storage_2d[root.albedo_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_2d[root.specular_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_float2_2d[root.normal_texture][pixel] = 0.0f;
+    g_storage_2d[root.clearcoat_texture][pixel] = 0.0f;
+    g_storage_2d[root.sheen_texture][pixel] = 0.0f;
+    g_storage_2d[root.anisotropy_texture][pixel] = 0.0f;
 #if VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
     g_storage_2d[root.emissive_texture][pixel] = 0.0f;
 #endif
@@ -836,6 +963,7 @@ struct VkrVkSurface
 {
     float4 base;
     float3 normal;
+    float3 geometric_normal;
     float3 object_position;
     float3 object_normal;
     float4 object_tangent;
@@ -998,6 +1126,7 @@ bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
     if (!vkr_vk_finite_nonzero(transformed_normal))
         return vkr_vk_reject_surface(source);
     float3 normal = normalize(transformed_normal) * surface.face_sign;
+    surface.geometric_normal = normal;
     if (surface.normal_mapped != 0u)
     {
         if (!vkr_vk_finite_nonzero(surface.tangent_normal) ||
@@ -1120,6 +1249,99 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         float4(f0, surface.roughness);
     g_storage_float2_2d[root.normal_texture][thread_id.xy] =
         vkr_vk_octahedral_encode(surface.normal);
+    float clearcoat_factor = saturate(
+        root.materials[surface.material_index].material_clearcoat.x);
+    VkrVulkanMaterial clearcoat_material =
+        root.materials[surface.material_index];
+    if (clearcoat_factor > 0.0f && (clearcoat_material.flags & 32u) != 0u)
+        clearcoat_factor *= g_textures[NonUniformResourceIndex(
+                                clearcoat_material.clearcoat_texture)]
+                                .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                    clearcoat_material.clearcoat_sampler)],
+                                            surface.uv, surface.uv_dx,
+                                            surface.uv_dy)
+                                .r;
+    float clearcoat_roughness = 0.0f;
+    float3 clearcoat_normal = surface.geometric_normal;
+    if (clearcoat_factor > 0.0f)
+    {
+        clearcoat_roughness = clearcoat_material.material_clearcoat.y;
+        if ((clearcoat_material.flags & 64u) != 0u)
+            clearcoat_roughness *= g_textures[NonUniformResourceIndex(
+                                        clearcoat_material.clearcoat_roughness_texture)]
+                                        .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                            clearcoat_material.clearcoat_roughness_sampler)],
+                                                    surface.uv, surface.uv_dx,
+                                                    surface.uv_dy)
+                                        .g;
+        clearcoat_roughness = clamp(clearcoat_roughness, 0.04f, 1.0f);
+        if ((clearcoat_material.flags & 128u) != 0u)
+        {
+            float3 sampled = vkr_normal_map_decode(
+                g_textures[NonUniformResourceIndex(
+                    clearcoat_material.clearcoat_normal_texture)]
+                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                        clearcoat_material.clearcoat_normal_sampler)],
+                                surface.uv, surface.uv_dx, surface.uv_dy)
+                    .xyz,
+                clearcoat_material.material_clearcoat.z);
+            float3 tangent = mul(instance.model,
+                                 float4(surface.object_tangent.xyz, 0.0f)).xyz;
+            tangent = normalize(tangent - dot(tangent, surface.geometric_normal) *
+                                            surface.geometric_normal);
+            float tangent_handedness =
+                surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
+            float3 bitangent = normalize(cross(surface.geometric_normal, tangent)) *
+                              tangent_handedness;
+            clearcoat_normal = normalize(tangent * sampled.x + bitangent * sampled.y +
+                                         surface.geometric_normal * sampled.z);
+        }
+    }
+    g_storage_2d[root.clearcoat_texture][thread_id.xy] =
+        float4(clearcoat_factor, clearcoat_roughness,
+               vkr_vk_octahedral_encode(clearcoat_normal));
+    float3 sheen_color = max(clearcoat_material.material_sheen.rgb, 0.0f);
+    float sheen_roughness = 0.0f;
+    if (vkr_sheen_active(sheen_color))
+    {
+        if ((clearcoat_material.flags & 256u) != 0u)
+            sheen_color *= g_textures[NonUniformResourceIndex(
+                               clearcoat_material.sheen_color_texture)]
+                               .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                   clearcoat_material.sheen_color_sampler)],
+                                           surface.uv, surface.uv_dx,
+                                           surface.uv_dy)
+                               .rgb;
+        if (vkr_sheen_active(sheen_color))
+        {
+            sheen_roughness = clearcoat_material.material_sheen.w;
+            if ((clearcoat_material.flags & 512u) != 0u)
+                sheen_roughness *= g_textures[NonUniformResourceIndex(
+                                      clearcoat_material.sheen_roughness_texture)]
+                                      .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                          clearcoat_material.sheen_roughness_sampler)],
+                                                  surface.uv, surface.uv_dx,
+                                                  surface.uv_dy)
+                                      .a;
+            sheen_roughness = clamp(sheen_roughness,
+                                    VKR_SHEEN_MIN_ROUGHNESS, 1.0f);
+        }
+        else
+            sheen_roughness = 0.0f;
+    }
+    g_storage_2d[root.sheen_texture][thread_id.xy] =
+        float4(sheen_color, sheen_roughness);
+  float anisotropy_strength = clearcoat_material.material_anisotropy.x;
+  float3 anisotropy_axis = float3(0.0f);
+  if (anisotropy_strength > 0.0f) {
+    float3 map = float3(1.0f, 0.5f, 1.0f);
+    if ((clearcoat_material.flags & 1024u) != 0u)
+      map = g_textures[NonUniformResourceIndex(clearcoat_material.anisotropy_texture)].SampleGrad(g_samplers[NonUniformResourceIndex(clearcoat_material.anisotropy_sampler)], surface.uv, surface.uv_dx, surface.uv_dy).rgb;
+    anisotropy_strength *= map.b;
+    anisotropy_axis = vkr_anisotropy_axis(surface.geometric_normal, surface.normal,
+        float4(mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz, surface.object_tangent.w < 0.0f ? -1.0f : 1.0f), map.rg * 2.0f - 1.0f, clearcoat_material.material_anisotropy.yz);
+  }
+  g_storage_2d[root.anisotropy_texture][thread_id.xy] = float4(anisotropy_strength > 0.0f ? vkr_anisotropy_encode_axis(anisotropy_axis) : float2(0.0f), anisotropy_strength, 0.0f);
 #if VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
     g_storage_2d[root.emissive_texture][thread_id.xy] =
         float4(surface.emissive, 1.0f);
@@ -1160,9 +1382,9 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
     float3 direction = normalize(far_world - root.frame.view_position.xyz);
     // Pass-root descriptor indices are dynamically uniform; see
     // packet_directional_shadow.
-    return g_cube_textures[root.sky_texture]
-        .SampleLevel(g_samplers[root.sky_sampler], direction, 0.0f)
-        .rgb;
+    float4 sky_sample = g_cube_textures[root.sky_texture]
+        .SampleLevel(g_samplers[root.sky_sampler], direction, 0.0f);
+    return sky_sample.rgb + sky_sample.a * root.solar_disk_radiance.rgb;
 }
 
 float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
@@ -1195,6 +1417,10 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     if (any(thread_id.xy >= root.extent))
         return;
     VkrVulkanPacketFrameRoot *frame = root.frame;
+    if (root.subsurface_profile_count != 0u)
+        g_storage_2d[root.subsurface_source_texture][thread_id.xy] = float4(0.0f);
+    if (root.ssgi_enabled != 0u)
+        g_storage_2d[root.direct_source_texture][thread_id.xy] = float4(0.0f);
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
     if (encoded.x == 0u)
     {
@@ -1254,74 +1480,203 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     float3 view = normalize(frame.view_position.xyz - world);
     // The G-buffer already folded metallic into diffuse albedo and F0, so the
     // shared helpers take a zero metallic factor here.
+    VkrGgxMaterialEnergy energy = packet_prepare_gbuffer_brdf(
+        frame, normal, view, roughness, f0, g_storage_2d[root.anisotropy_texture][thread_id.xy]);
+    energy = vkr_ggx_diffuse_transmission(energy,
+        frame.materials[root.visible_rows[encoded.x - 1u].material_index].material_diffuse_transmission);
+    float4 clearcoat_packed = g_storage_2d[root.clearcoat_texture][thread_id.xy];
+    bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
+    VkrClearcoatLayer clearcoat;
+    if (clearcoat_active)
+        clearcoat = packet_prepare_clearcoat(
+            frame, clearcoat_packed.x, clearcoat_packed.y,
+            vkr_vk_octahedral_decode(clearcoat_packed.zw), view);
+    float4 sheen_packed = g_storage_2d[root.sheen_texture][thread_id.xy];
+    bool sheen_active = vkr_sheen_active(sheen_packed.rgb);
+    VkrSheenLayer sheen;
+    VkrSheenLtcSample sheen_ltc;
+    if (sheen_active)
+    {
+        sheen_ltc = packet_sheen_ltc_sample(
+            frame, max(dot(normal, view), 0.0f), sheen_packed.a);
+        sheen = packet_prepare_sheen(
+            frame, sheen_packed.rgb, sheen_packed.a, normal, view,
+            sheen_ltc.allocation_reserve);
+    }
+    float base_transmission =
+        (clearcoat_active ? clearcoat.base_transmission : 1.0f) *
+        (sheen_active ? sheen.base_transmission : 1.0f);
+    float sheen_transmission =
+        clearcoat_active ? clearcoat.base_transmission : 1.0f;
+    float3 diffuse_irradiance = float3(0.0f);
     float3 analytic_diffuse = 0.0f;
     float3 analytic_specular = 0.0f;
-    float directional_shadow = 0.0f;
+    float3 clearcoat_direct = 0.0f;
+    float3 sheen_direct = 0.0f;
     if (frame.directional_direction_enabled.w > 0.5f)
     {
-        directional_shadow = packet_directional_shadow(frame, world, normal);
+        float3 sun_direction = normalize(-frame.directional_direction_enabled.xyz);
+        bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
+                        dot(normal, sun_direction) < 0.0f;
+        float base_shadow = packet_directional_shadow(
+            frame, world, back_lit ? -normal : normal);
+        float directional_shadow = base_shadow;
+        if (back_lit && clearcoat_active)
+            directional_shadow = packet_directional_shadow(frame, world, normal);
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
-                frame.directional_color_intensity.w * directional_shadow,
-            diffuse_albedo, 0.0f, roughness, f0);
+                frame.directional_color_intensity.w * base_shadow,
+            diffuse_albedo, 0.0f, roughness, f0, energy);
+        diffuse_irradiance = direct.irradiance;
         analytic_diffuse = direct.diffuse;
         analytic_specular = direct.specular;
+        if (clearcoat_active)
+            clearcoat_direct += packet_clearcoat_direct(
+                view, normalize(-frame.directional_direction_enabled.xyz),
+                frame.directional_color_intensity.rgb *
+                    frame.directional_color_intensity.w * directional_shadow,
+                clearcoat);
+        if (sheen_active)
+            sheen_direct += packet_sheen_direct(
+                normal, view, normalize(-frame.directional_direction_enabled.xyz),
+                frame.directional_color_intensity.rgb *
+                    frame.directional_color_intensity.w * directional_shadow,
+                sheen, sheen_ltc.energy_normalization);
     }
     VkrVulkanDirectResult punctual = packet_punctual(
-        frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0);
+        frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy);
+    diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
+    if (clearcoat_active)
+    {
+        VkrVulkanDirectResult coat_punctual = packet_punctual(
+            frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
+            clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy);
+        clearcoat_direct += coat_punctual.specular * clearcoat.factor;
+    }
+    if (sheen_active)
+        sheen_direct += packet_punctual_sheen(
+            frame, world, normal, view, sheen, sheen_ltc.energy_normalization);
+    VkrVulkanDirectResult rectangles = packet_rectangle_lights(
+        frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0,
+        energy, true);
+    diffuse_irradiance += rectangles.irradiance;
+    analytic_diffuse += rectangles.diffuse;
+    analytic_specular += rectangles.specular;
+    if (clearcoat_active)
+    {
+        VkrVulkanDirectResult coat_rectangles = packet_rectangle_lights(
+            frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
+            clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy, false);
+        clearcoat_direct += coat_rectangles.specular * clearcoat.factor;
+    }
+    if (sheen_active)
+        sheen_direct += packet_sheen_rectangle_lights(
+            frame, world, normal, view, sheen, sheen_ltc);
+    if (root.ssgi_enabled != 0u && frame.render_mode == 0u &&
+        frame.shadow_debug_mode == 0u)
+        g_storage_2d[root.direct_source_texture][thread_id.xy] =
+            float4((analytic_diffuse + analytic_specular) * base_transmission +
+                   clearcoat_direct + sheen_direct * sheen_transmission +
+                   seed.rgb * base_transmission, 1.0f);
     if (frame.render_mode == 1u || frame.render_mode == 4u ||
         frame.render_mode == 5u)
     {
         float3 debug = frame.render_mode == 4u
-                           ? analytic_diffuse
+                           ? analytic_diffuse * base_transmission
                            : (frame.render_mode == 5u
-                                  ? analytic_specular
-                                  : analytic_diffuse + analytic_specular);
+                                  ? analytic_specular * base_transmission +
+                                        clearcoat_direct +
+                                        sheen_direct * sheen_transmission
+                                  : (analytic_diffuse + analytic_specular) *
+                                        base_transmission + clearcoat_direct +
+                                        sheen_direct * sheen_transmission);
         g_storage_2d[root.scene_texture][thread_id.xy] = float4(debug, 1.0f);
         return;
     }
     float2 gtao_uv =
         (float2(thread_id.xy) + 0.5f) / float2(root.extent);
-    float gtao_visibility =
+    float4 gtao =
         g_textures[root.gtao_visibility_texture]
-            .SampleLevel(g_samplers[0], gtao_uv, 0.0f)
-            .r;
-    float3 color = analytic_diffuse + analytic_specular;
+            .SampleLevel(g_samplers[0], gtao_uv, 0.0f);
+    float gtao_visibility = vkr_gtao_decode_visibility(gtao);
+    float3 bent_normal = vkr_gtao_decode_bent_normal(gtao, normal);
+    float gtao_cone = vkr_gtao_cone_specular(
+        gtao_visibility, bent_normal, reflect(-view, normal), roughness);
+    // Mode 9 reports the selected pre-GTAO indirect diffuse response.
+    float3 indirect_diffuse_normal =
+        frame.render_mode == 9u ? normal : bent_normal;
+    float3 indirect_irradiance;
+    float3 indirect_diffuse;
+    float3 indirect_specular = 0.0f;
+    float3 clearcoat_indirect = 0.0f;
+    float3 sheen_indirect = 0.0f;
+    bool environment_enabled = (frame.flags & 2u) != 0u;
     if ((frame.flags & 2u) != 0u)
     {
-        VkrVulkanEnvironmentResult environment = packet_environment_terms(
-            frame, world, normal, normal, view, diffuse_albedo, 0.0f, roughness,
-            ao, f0);
-        // Mode 9 isolates the environment diffuse term: no direct light, no
-        // specular IBL, no emissive seed, and no ambient fallback. The GTAO
-        // multiply is dropped too, so the channel isolates diffuse IBL rather
-        // than the occlusion applied on top of it.
-        if (frame.render_mode == 9u)
+        VkrVulkanEnvironmentResult environment =
+            packet_environment_terms_with_diffuse_normal(
+                frame, world, indirect_diffuse_normal, normal, normal, view,
+                diffuse_albedo, 0.0f, roughness, ao, energy);
+        indirect_irradiance = environment.irradiance;
+        indirect_diffuse = environment.diffuse;
+        indirect_specular = environment.specular * gtao_cone;
+        if (clearcoat_active)
+            clearcoat_indirect = clearcoat.factor * packet_environment_specular(
+                frame, world, clearcoat.normal, clearcoat.normal, view,
+                clearcoat.roughness, ao, clearcoat.energy);
+        if (sheen_active)
         {
-            g_storage_2d[root.scene_texture][thread_id.xy] =
-                float4(environment.diffuse, 1.0f);
-            return;
+            float sheen_cone = vkr_gtao_cone_specular(
+                gtao_visibility, bent_normal, reflect(-view, normal),
+                sheen.roughness);
+            sheen_indirect = packet_sheen_environment(
+                frame, world, normal, view, ao, sheen_cone, sheen);
         }
-        color += environment.diffuse * gtao_visibility +
-                 environment.specular;
     }
     else
     {
-        // Without an environment the channel has nothing to report, and the
-        // constant-ambient fallback must not stand in for one.
-        if (frame.render_mode == 9u)
-        {
-            g_storage_2d[root.scene_texture][thread_id.xy] =
-                float4(0.0f, 0.0f, 0.0f, 1.0f);
-            return;
-        }
-        color +=
-            frame.ambient_color.rgb * diffuse_albedo * ao * gtao_visibility;
+        indirect_irradiance = frame.ambient_color.rgb * ao;
+        indirect_diffuse = frame.ambient_color.rgb * diffuse_albedo * ao *
+                           energy.diffuse_weight;
     }
-    color += seed.rgb;
+    float3 volume_irradiance;
+    float3 volume_diffuse;
+    bool volume_valid = packet_diffuse_volume_terms(
+        frame, world, normal, diffuse_albedo, 0.0f, ao, energy, volume_diffuse, volume_irradiance);
+    if (volume_valid) {
+        indirect_diffuse = volume_diffuse;
+        indirect_irradiance = volume_irradiance;
+    }
+    // Mode 9 omits GTAO so it reports the selected indirect diffuse response.
+    if (frame.render_mode == 9u)
+    {
+        g_storage_2d[root.scene_texture][thread_id.xy] =
+            float4(indirect_diffuse * base_transmission, 1.0f);
+        return;
+    }
+    float3 indirect_visibility = volume_valid
+                                    ? float3(gtao_visibility)
+                                    : (environment_enabled
+                                           ? vkr_gtao_multibounce(
+                                                 gtao_visibility, diffuse_albedo)
+                                           : float3(gtao_visibility));
+    if (root.subsurface_profile_count != 0u) {
+        float4 subsurface = frame.materials[root.visible_rows[encoded.x-1u].material_index].material_subsurface;
+        if (subsurface.x > 0.0f && uint(subsurface.y) < root.subsurface_profile_count) {
+            float3 amplitude = vkr_subsurface_root_amplitude(diffuse_albedo);
+            g_storage_2d[root.subsurface_source_texture][thread_id.xy] =
+                float4(vkr_subsurface_source_storage(amplitude *
+                    (diffuse_irradiance + indirect_irradiance * indirect_visibility)), 1.0f);
+        }
+    }
+    float3 color = (analytic_diffuse + analytic_specular +
+                    indirect_diffuse * indirect_visibility + indirect_specular +
+                    seed.rgb) * base_transmission + clearcoat_direct +
+                   sheen_direct * sheen_transmission +
+                   clearcoat_indirect + sheen_indirect * sheen_transmission;
     g_storage_2d[root.scene_texture][thread_id.xy] = float4(color, 1.0f);
 }
 
@@ -1734,6 +2089,378 @@ void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
     g_storage_2d[root.destination_texture][thread_id.xy] =
         float4(maximum, 0.0f, 0.0f, 0.0f);
 }
+float vkr_vk_ssr_positive_depth(VkrSsrParams params, uint2 pixel,
+                                uint2 extent, float device_depth)
+{
+    float3 view = vkr_ssr_reconstruct_view_position(
+        params, vkr_ssr_uv_from_pixel(pixel, extent), device_depth);
+    float result = -view.z;
+    return vkr_ssr_valid_depth(result) ? result : 0.0f;
+}
+
+uint2 vkr_vk_ssr_identity(VkrVkSsrTemporalRoot *root, uint visible_index)
+{
+    if (visible_index == 0u)
+        return uint2(0u, 0u);
+    VkrGpuVisibleDrawRow visible = root.visible_rows[visible_index - 1u];
+    VkrVulkanInstance instance = root.instances[visible.instance_index];
+    return uint2(instance.temporal_index + 1u, instance.temporal_generation);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_ssr_depth_base(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSsrDepthBaseRoot *root = g_ssr_depth_base_push.root;
+    uint2 cell = thread_id.xy;
+    uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
+    uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
+    if (any(cell >= trace_extent)) return;
+    uint2 begin = uint2(vkr_ssr_reduction_child_begin(cell.x),
+                        vkr_ssr_reduction_child_begin(cell.y));
+    uint2 end = uint2(vkr_ssr_reduction_child_end(cell.x, trace_extent.x, source_extent.x),
+                      vkr_ssr_reduction_child_end(cell.y, trace_extent.y, source_extent.y));
+    float nearest = 0.0f;
+    uint2 receiver = uint2(0xffffffffu, 0xffffffffu);
+    for (uint y = begin.y; y < end.y; ++y)
+    for (uint x = begin.x; x < end.x; ++x)
+    {
+        uint2 p = uint2(x, y);
+        if (g_uint2_textures[root.vbuffer_texture].Load(int3(p, 0)).x == 0u)
+            continue;
+        float positive = vkr_vk_ssr_positive_depth(
+            root.params, p, source_extent,
+            g_depth_textures[root.depth_texture].Load(int3(p, 0)));
+        if (vkr_ssr_valid_depth(positive) &&
+            (!vkr_ssr_valid_depth(nearest) || positive < nearest))
+        {
+            nearest = positive;
+            receiver = p;
+        }
+    }
+    g_storage_2d[root.destination_depth_texture][cell] = float4(nearest, 0, 0, 0);
+    g_storage_uint2_2d[root.receiver_texture][cell] = receiver;
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_ssr_depth_mip(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSsrDepthMipRoot *root = g_ssr_depth_mip_push.root;
+    uint2 cell = thread_id.xy;
+    if (any(cell >= root.destination_extent)) return;
+    uint2 begin = uint2(vkr_ssr_reduction_child_begin(cell.x),
+                        vkr_ssr_reduction_child_begin(cell.y));
+    uint2 end = uint2(vkr_ssr_reduction_child_end(cell.x, root.destination_extent.x,
+                                                   root.source_extent.x),
+                      vkr_ssr_reduction_child_end(cell.y, root.destination_extent.y,
+                                                   root.source_extent.y));
+    float values[9] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; uint count = 0u;
+    for (uint y = begin.y; y < end.y; ++y)
+    for (uint x = begin.x; x < end.x; ++x)
+        values[count++] = g_depth_textures[root.source_depth_texture].Load(int3(x, y, 0));
+    g_storage_2d[root.destination_depth_texture][cell] = float4(
+        vkr_ssr_depth_reduce(values[0], values[1], values[2], values[3], values[4],
+                             values[5], values[6], values[7], values[8], count), 0, 0, 0);
+}
+
+float3 vkr_vk_ssr_selected_normal(uint normal_texture, uint clearcoat_texture,
+                                  uint2 pixel)
+{
+    float4 packed = g_textures[clearcoat_texture].Load(int3(pixel, 0));
+    return vkr_clearcoat_active(packed.x)
+        ? vkr_vk_octahedral_decode(packed.zw)
+        : vkr_vk_octahedral_decode(g_textures[normal_texture].Load(int3(pixel, 0)).xy);
+}
+
+float vkr_vk_ssr_selected_roughness(uint specular_texture, uint clearcoat_texture,
+                                    uint2 pixel)
+{
+    float4 packed = g_textures[clearcoat_texture].Load(int3(pixel, 0));
+    return vkr_clearcoat_active(packed.x) ? clamp(packed.y, 0.04f, 1.0f)
+        : clamp(g_textures[specular_texture].Load(int3(pixel, 0)).a, 0.04f, 1.0f);
+}
+
+float3 vkr_vk_ssr_trace_color(VkrVkSsrTraceRoot *root, float2 hit_uv,
+                               float roughness)
+{
+    uint2 extent = uint2(root.params.source_width, root.params.source_height);
+    int2 center = clamp(int2(hit_uv * float2(extent)), int2(0), int2(extent) - 1);
+    uint count = vkr_ssr_hit_filter_tap_count(roughness);
+    float radius = vkr_ssr_hit_filter_radius_pixels(roughness, root.params);
+    float3 result = 0.0f;
+    for (uint i = 0u; i < count; ++i)
+    {
+        int2 sample_pixel = clamp(center + int2(round(vkr_ssr_hit_filter_offset(i) * radius)),
+                                  int2(0), int2(extent) - 1);
+        result += g_textures[root.source_texture].Load(int3(sample_pixel, 0)).rgb;
+    }
+    return result / float(count);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSsrTraceRoot *root = g_ssr_trace_push.root;
+    uint2 cell = thread_id.xy;
+    uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
+    uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
+    if (any(cell >= trace_extent)) return;
+    uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(cell, 0));
+    float4 raw = 0.0f;
+    if (any(receiver >= source_extent)) { g_storage_2d[root.destination_texture][cell] = raw; return; }
+    uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
+    float roughness = vkr_vk_ssr_selected_roughness(
+        root.specular_texture, root.clearcoat_texture, receiver);
+    if (visible == 0u || !vkr_ssr_eligible(roughness, true, root.params)) {
+        g_storage_2d[root.destination_texture][cell] = raw; return;
+    }
+    float depth = g_depth_textures[root.depth_texture].Load(int3(receiver, 0));
+    float3 position = vkr_ssr_reconstruct_view_position(
+        root.params, vkr_ssr_uv_from_pixel(receiver, source_extent), depth);
+    if (!vkr_ssr_valid_depth(-position.z)) { g_storage_2d[root.destination_texture][cell] = raw; return; }
+    float3 world_normal = vkr_vk_ssr_selected_normal(
+        root.normal_texture, root.clearcoat_texture, receiver);
+    float3 normal = normalize(mul(root.params.view, float4(world_normal, 0.0f)).xyz);
+    if (dot(normal, -position) < 0.0f)
+        normal = -normal;
+    float3 view = normalize(-position);
+    VkrSsrTrace trace = vkr_ssr_trace_begin(root.params, position + normal * VKR_SSR_RAY_ORIGIN_BIAS,
+                                             reflect(-view, normal), root.params.depth_mip_count - 1u);
+    for (uint step = 0u; step < root.params.max_steps && trace.active != 0u; ++step)
+    {
+        uint2 mip_extent = max(trace_extent >> trace.mip, uint2(1u, 1u));
+        float2 uv = vkr_ssr_trace_uv(trace);
+        uint2 source_pixel = min(uint2(uv * float2(source_extent)), source_extent - 1u);
+        uint2 mip_cell = min(source_pixel >> (trace.mip + 1u), mip_extent - 1u);
+        float exit_t = vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
+        float hierarchy_depth = g_depth_textures[root.depth_pyramid_texture].Load(int3(mip_cell, trace.mip));
+        VkrSsrTraceResolve resolve = vkr_ssr_trace_resolve(trace, hierarchy_depth, exit_t, root.params);
+        if (resolve.hit != 0u)
+        {
+            VkrSsrTrace hit_trace = trace;
+            hit_trace.t = resolve.hit_t;
+            float2 hit_uv = vkr_ssr_trace_uv(hit_trace);
+            uint2 hit_pixel = min(uint2(hit_uv * float2(source_extent)), source_extent - 1u);
+            uint hit_visible = g_uint2_textures[root.vbuffer_texture].Load(int3(hit_pixel, 0)).x;
+            float hit_device_depth = g_depth_textures[root.depth_texture].Load(int3(hit_pixel, 0));
+            float hit_depth = vkr_vk_ssr_positive_depth(root.params, hit_pixel,
+                                                        source_extent, hit_device_depth);
+            float hit_trace_depth = vkr_ssr_trace_depth(hit_trace);
+            float3 hit_normal = vkr_vk_ssr_selected_normal(
+                root.normal_texture, root.clearcoat_texture, hit_pixel);
+            hit_normal = normalize(mul(root.params.view, float4(hit_normal, 0.0f)).xyz);
+            float3 ray = normalize(reflect(-view, normal));
+            if (hit_visible != 0u && vkr_ssr_valid_depth(hit_depth) &&
+                abs(hit_depth - hit_trace_depth) <= root.params.thickness &&
+                dot(hit_normal, -ray) > 0.0f)
+            {
+                raw = float4(vkr_vk_ssr_trace_color(root, hit_uv, roughness),
+                             vkr_ssr_trace_confidence(roughness, hit_uv,
+                                                      resolve.depth_confidence, root.params));
+                break;
+            }
+            trace = vkr_ssr_trace_advance(trace, exit_t);
+        }
+        else if (resolve.descend != 0u) trace = vkr_ssr_trace_descend(trace);
+        else if (resolve.advance != 0u) trace = vkr_ssr_trace_advance(trace, exit_t);
+        else break;
+    }
+    g_storage_2d[root.destination_texture][cell] = raw;
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSsrTemporalRoot *root = g_ssr_temporal_push.root;
+    uint2 cell = thread_id.xy;
+    uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
+    uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
+    if (any(cell >= trace_extent)) return;
+    float4 raw = g_textures[root.raw_texture].Load(int3(cell, 0));
+    uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(cell, 0));
+    uint2 identity = uint2(0u, 0u); float positive_depth = 0.0f;
+    if (all(receiver < source_extent))
+    {
+        uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
+        identity = vkr_vk_ssr_identity(root, visible);
+        positive_depth = vkr_vk_ssr_positive_depth(root.params, receiver, source_extent,
+            g_depth_textures[root.depth_texture].Load(int3(receiver, 0)));
+        float roughness = vkr_vk_ssr_selected_roughness(
+            root.specular_texture, root.clearcoat_texture, receiver);
+        if (vkr_ssr_hit_filter_tap_count(roughness) > 1u &&
+            vkr_ssr_valid_depth(positive_depth))
+        {
+            float3 normal = vkr_vk_ssr_selected_normal(
+                root.normal_texture, root.clearcoat_texture, receiver);
+            float4 filtered = 0.0f; float weights = 0.0f;
+            for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x)
+            {
+                int2 q = clamp(int2(cell) + int2(x, y), int2(0), int2(trace_extent) - 1);
+                uint2 other_receiver = g_uint2_textures[root.receiver_texture].Load(int3(q, 0));
+                if (any(other_receiver >= source_extent)) continue;
+                float other_depth = vkr_vk_ssr_positive_depth(root.params, other_receiver, source_extent,
+                    g_depth_textures[root.depth_texture].Load(int3(other_receiver, 0)));
+                float3 other_normal = vkr_vk_ssr_selected_normal(
+                    root.normal_texture, root.clearcoat_texture, other_receiver);
+                float w = vkr_ssr_receiver_bilateral_weight(float2(x, y), positive_depth, other_depth,
+                                                            normal, other_normal, root.params);
+                filtered += g_textures[root.raw_texture].Load(int3(q, 0)) * w; weights += w;
+            }
+            if (weights > 0.0f) raw = filtered / weights;
+        }
+    }
+    float2 uv = all(receiver < source_extent)
+                    ? vkr_ssr_uv_from_pixel(receiver, source_extent)
+                    : vkr_ssr_uv_from_pixel(cell, trace_extent);
+    float2 motion = all(receiver < source_extent) ? g_textures[root.motion_texture].Load(int3(receiver, 0)).xy : 0.0f;
+    float2 previous_uv = uv + motion;
+    int2 history_pixel = int2(previous_uv * float2(trace_extent));
+    uint2 history_identity = uint2(0u, 0u); float history_depth = 0.0f; float4 history = 0.0f;
+    float previous_device_depth = all(receiver < source_extent) ?
+        g_textures[root.validity_texture].Load(int3(receiver, 0)).y : 0.0f;
+    float motion_validity = all(receiver < source_extent) ?
+        g_textures[root.validity_texture].Load(int3(receiver, 0)).x : 0.0f;
+    if (root.params.history_valid != 0u && all(history_pixel >= 0) &&
+        all(history_pixel < int2(trace_extent))) {
+        // Nearest metadata and color share one accepted half-resolution
+        // receiver. Bilinear color would blend a different identity before its
+        // metadata can reject it.
+        history = g_textures[root.history_color_texture].Load(int3(history_pixel, 0));
+        history_depth = g_depth_textures[root.history_depth_texture].Load(
+            int3(history_pixel, 0));
+        history_identity = g_storage_uint2_2d[root.history_identity_texture][history_pixel];
+    }
+    float3 neighborhood_min = raw.rgb, neighborhood_max = raw.rgb;
+    for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+        int2 q = clamp(int2(cell) + int2(x, y), int2(0), int2(trace_extent) - 1);
+        float3 color = g_textures[root.raw_texture].Load(int3(q, 0)).rgb;
+        neighborhood_min = min(neighborhood_min, color); neighborhood_max = max(neighborhood_max, color);
+    }
+    VkrSsrHistoryDecision decision = vkr_ssr_temporal_accept(root.params, identity, history_identity,
+        history_depth, previous_device_depth, previous_uv, motion_validity);
+    float4 result = vkr_ssr_temporal_filter(root.params, raw, history, neighborhood_min,
+                                            neighborhood_max, decision);
+    g_storage_2d[root.output_color_texture][cell] = result;
+    g_storage_2d[root.output_depth_texture][cell] = float4(positive_depth, 0, 0, 0);
+    g_storage_uint2_2d[root.output_identity_texture][cell] = identity;
+}
+
+float vkr_vk_ssr_composite_filter_roughness(VkrVkSsrCompositeRoot *root,
+                                             uint2 pixel, uint visible,
+                                             float3 normal, float roughness)
+{
+    uint2 extent = uint2(root.params.source_width, root.params.source_height);
+    uint2 limit = extent - 1u;
+    uint2 pixel_x = min(pixel + uint2(1u, 0u), limit);
+    uint2 pixel_y = min(pixel + uint2(0u, 1u), limit);
+    float3 normal_x = vkr_vk_ssr_selected_normal(
+        root.normal_texture, root.clearcoat_texture, pixel_x);
+    float3 normal_y = vkr_vk_ssr_selected_normal(
+        root.normal_texture, root.clearcoat_texture, pixel_y);
+    float same_x = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel_x, 0)).x == visible ? 1.0f : 0.0f;
+    float same_y = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel_y, 0)).x == visible ? 1.0f : 0.0f;
+    float3 dx = (normal_x - normal) * same_x;
+    float3 dy = (normal_y - normal) * same_y;
+    return vkr_ggx_filter_roughness(roughness,
+                                    0.25f * (dot(dx, dx) + dot(dy, dy)));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSsrCompositeRoot *root = g_ssr_composite_push.root;
+    uint2 pixel = thread_id.xy;
+    uint2 extent = uint2(root.params.source_width, root.params.source_height);
+    uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
+    if (any(pixel >= extent)) return;
+    uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel, 0)).x;
+    if (visible == 0u) return;
+    float4 specular = g_textures[root.specular_texture].Load(int3(pixel, 0));
+    float4 clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
+    bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
+    float3 normal = clearcoat_active ? vkr_vk_octahedral_decode(clearcoat_packed.zw)
+                                     : vkr_vk_octahedral_decode(g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
+    float roughness = vkr_vk_ssr_composite_filter_roughness(
+        root, pixel, visible, normal, clearcoat_active ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
+                                                        : clamp(specular.a, 0.04f, 1.0f));
+    if (!vkr_ssr_eligible(roughness, true, root.params)) return;
+    float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+    float positive_depth = vkr_vk_ssr_positive_depth(root.params, pixel, extent, device_depth);
+    if (!vkr_ssr_valid_depth(positive_depth)) return;
+    float2 trace_coordinate = (float2(pixel) + 0.5f) * float2(trace_extent) /
+                              float2(extent) - 0.5f;
+    int2 first = int2(floor(trace_coordinate));
+    float3 reflected_radiance = 0.0f;
+    float accepted_weight = 0.0f;
+    float support_weight = 0.0f;
+    for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x)
+    {
+        int2 cell = first + int2(x, y);
+        if (any(cell < 0) || any(cell >= int2(trace_extent))) continue;
+        uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(cell, 0));
+        if (any(receiver >= extent)) continue;
+        float2 offset = float2(cell) - trace_coordinate;
+        float spatial = max(1.0f - abs(offset.x), 0.0f) *
+                        max(1.0f - abs(offset.y), 0.0f);
+        float receiver_depth = g_depth_textures[root.history_depth_texture].Load(int3(cell, 0));
+        float3 receiver_normal = vkr_vk_ssr_selected_normal(
+            root.normal_texture, root.clearcoat_texture, receiver);
+        float support = spatial * vkr_ssr_receiver_bilateral_weight(
+            offset, positive_depth, receiver_depth, normal, receiver_normal,
+            root.params);
+        support_weight += support;
+        float4 sample = g_textures[root.reflection_texture].Load(int3(cell, 0));
+        float accepted = support * vkr_ssr_saturate(sample.a);
+        reflected_radiance += sample.rgb * accepted;
+        accepted_weight += accepted;
+    }
+    if (accepted_weight <= 0.0f || support_weight <= 0.0f) return;
+    float3 reflection = reflected_radiance / accepted_weight;
+    float confidence = accepted_weight / support_weight;
+    float2 uv = vkr_ssr_uv_from_pixel(pixel, extent);
+    float3 world = vkr_vk_deferred_homogeneous(mul(root.inverse_view_projection,
+        float4(uv * 2.0f - 1.0f, device_depth, 1.0f)));
+    float4 albedo_ao = g_textures[root.albedo_texture].Load(int3(pixel, 0));
+    float3 view = normalize(root.frame.view_position.xyz - world);
+    VkrGgxMaterialEnergy energy = packet_prepare_brdf(root.frame, max(dot(normal, view), 0.0f),
+                                                       roughness, clearcoat_active ? float3(VKR_CLEARCOAT_F0) : saturate(specular.rgb));
+    if (!clearcoat_active)
+        energy = packet_prepare_gbuffer_brdf(root.frame, normal, view, roughness, saturate(specular.rgb), g_textures[root.anisotropy_texture].Load(int3(pixel, 0)));
+    float4 gtao = g_textures[root.gtao_visibility_texture].Load(int3(pixel, 0));
+    float gtao_visibility = vkr_gtao_decode_visibility(gtao);
+    float3 bent_normal = vkr_gtao_decode_bent_normal(gtao, normal);
+    float gtao_cone = vkr_gtao_cone_specular(
+        gtao_visibility, bent_normal, reflect(-view, normal), roughness);
+    float coat_factor = clearcoat_active ? clearcoat_packed.x : 1.0f;
+    float3 old_specular = (root.frame.flags & 2u) != 0u
+                              ? packet_environment_specular(
+                                    root.frame, world, normal, normal, view,
+                                    roughness, saturate(albedo_ao.a), energy)
+                              : 0.0f;
+    float sheen_base_transmission = 1.0f;
+    if (!clearcoat_active)
+    {
+        float4 sheen_packed = g_textures[root.sheen_texture].Load(int3(pixel, 0));
+        if (vkr_sheen_active(sheen_packed.rgb))
+            sheen_base_transmission = packet_prepare_sheen(
+                root.frame, sheen_packed.rgb, sheen_packed.a, normal, view,
+                packet_sheen_allocation_reserve(
+                    root.frame, max(dot(normal, view), 0.0f), sheen_packed.a))
+                .base_transmission;
+    }
+    old_specular *= gtao_cone * coat_factor * sheen_base_transmission;
+    float3 receiver_weight = packet_environment_specular_weight(
+        normal, normal, view, roughness, saturate(albedo_ao.a), energy) *
+                             gtao_cone * coat_factor * sheen_base_transmission;
+    float4 scene = g_storage_2d[root.scene_texture][pixel];
+    g_storage_2d[root.scene_texture][pixel] = float4(vkr_ssr_replace_environment_specular(
+        scene.rgb, old_specular, reflection, receiver_weight, confidence), scene.a);
+}
+
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void vk_sdsm_reduce(uint3 thread_id : SV_DispatchThreadID)
@@ -2130,9 +2857,110 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
     }
     else
     {
+  float anisotropy_strength = material.material_anisotropy.x;
+  float3 anisotropy_axis = float3(0.0f);
+  if (anisotropy_strength > 0.0f) {
+    float3 map = float3(1.0f, 0.5f, 1.0f);
+    if ((material.flags & 1024u) != 0u)
+      map = g_textures[NonUniformResourceIndex(material.anisotropy_texture)].SampleGrad(g_samplers[NonUniformResourceIndex(material.anisotropy_sampler)], surface.uv, surface.uv_dx, surface.uv_dy).rgb;
+    anisotropy_strength *= map.b;
+    anisotropy_axis = vkr_anisotropy_axis(surface.geometric_normal, surface.normal,
+        float4(mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz, surface.object_tangent.w < 0.0f ? -1.0f : 1.0f), map.rg * 2.0f - 1.0f, material.material_anisotropy.yz);
+  }
+        VkrGgxMaterialEnergy energy = packet_prepare_brdf(
+            frame, no_v, surface.roughness, f0);
+    if (anisotropy_strength > 0.0f)
+      energy = packet_prepare_anisotropy(frame, surface.normal, anisotropy_axis, view, surface.roughness, anisotropy_strength, f0);
+        float clearcoat_factor = saturate(material.material_clearcoat.x);
+        if (clearcoat_factor > 0.0f && (material.flags & 32u) != 0u)
+            clearcoat_factor *= g_textures[NonUniformResourceIndex(
+                                    material.clearcoat_texture)]
+                                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                        material.clearcoat_sampler)],
+                                                surface.uv, surface.uv_dx,
+                                                surface.uv_dy)
+                                    .r;
+        bool clearcoat_active = vkr_clearcoat_active(clearcoat_factor);
+        VkrClearcoatLayer clearcoat;
+        if (clearcoat_active)
+        {
+            float clearcoat_roughness = material.material_clearcoat.y;
+            if ((material.flags & 64u) != 0u)
+                clearcoat_roughness *= g_textures[NonUniformResourceIndex(
+                                            material.clearcoat_roughness_texture)]
+                                            .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                                material.clearcoat_roughness_sampler)],
+                                                        surface.uv, surface.uv_dx,
+                                                        surface.uv_dy)
+                                            .g;
+            float3 clearcoat_normal = surface.geometric_normal;
+            if ((material.flags & 128u) != 0u)
+            {
+                float3 tangent = mul(instance.model,
+                                     float4(surface.object_tangent.xyz, 0.0f)).xyz;
+                tangent -= dot(tangent, surface.geometric_normal) *
+                           surface.geometric_normal;
+                if (vkr_vk_finite_nonzero(tangent))
+                {
+                    tangent = normalize(tangent);
+                    float3 bitangent = cross(surface.geometric_normal, tangent) *
+                        (surface.object_tangent.w < 0.0f ? -1.0f : 1.0f);
+                    float3 sampled = vkr_normal_map_decode(
+                        g_textures[NonUniformResourceIndex(
+                            material.clearcoat_normal_texture)]
+                            .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                material.clearcoat_normal_sampler)],
+                                        surface.uv, surface.uv_dx, surface.uv_dy)
+                            .xyz,
+                        material.material_clearcoat.z);
+                    float3 mapped = tangent * sampled.x + bitangent * sampled.y +
+                                    surface.geometric_normal * sampled.z;
+                    if (vkr_vk_finite_nonzero(mapped))
+                        clearcoat_normal = normalize(mapped);
+                }
+            }
+            clearcoat = packet_prepare_clearcoat(
+                frame, clearcoat_factor, clearcoat_roughness,
+                clearcoat_normal, view);
+        }
+        float3 sheen_color = max(material.material_sheen.rgb, 0.0f);
+        if (vkr_sheen_active(sheen_color) && (material.flags & 256u) != 0u)
+            sheen_color *= g_textures[NonUniformResourceIndex(
+                                material.sheen_color_texture)]
+                               .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                               material.sheen_color_sampler)],
+                                           surface.uv, surface.uv_dx,
+                                           surface.uv_dy)
+                               .rgb;
+        bool sheen_active = vkr_sheen_active(sheen_color);
+        VkrSheenLayer sheen;
+        VkrSheenLtcSample sheen_ltc;
+        if (sheen_active)
+        {
+            float sheen_roughness = material.material_sheen.w;
+            if ((material.flags & 512u) != 0u)
+                sheen_roughness *= g_textures[NonUniformResourceIndex(
+                                        material.sheen_roughness_texture)]
+                                       .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                                       material.sheen_roughness_sampler)],
+                                                   surface.uv, surface.uv_dx,
+                                                   surface.uv_dy)
+                                       .a;
+            sheen_ltc = packet_sheen_ltc_sample(frame, no_v, sheen_roughness);
+            sheen = packet_prepare_sheen(
+                frame, sheen_color, sheen_roughness, surface.normal, view,
+                sheen_ltc.allocation_reserve);
+        }
+        float base_transmission =
+            (clearcoat_active ? clearcoat.base_transmission : 1.0f) *
+            (sheen_active ? sheen.base_transmission : 1.0f);
+        float sheen_transmission =
+            clearcoat_active ? clearcoat.base_transmission : 1.0f;
+        float3 clearcoat_direct = 0.0f;
+        float3 sheen_direct = 0.0f;
+        float directional_shadow = 0.0f;
         float3 analytic_diffuse = 0.0f;
         float3 analytic_specular = 0.0f;
-        float directional_shadow = 0.0f;
         if (frame.directional_direction_enabled.w > 0.5f)
         {
             directional_shadow =
@@ -2145,7 +2973,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             {
                 VkrVulkanDirectResult direct = packet_direct(
                     surface.normal, view, light, radiance, surface.base.rgb,
-                    surface.metallic, surface.roughness, f0);
+                    surface.metallic, surface.roughness, f0, energy);
                 analytic_diffuse = direct.diffuse;
                 analytic_specular = direct.specular;
             }
@@ -2153,31 +2981,69 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             {
                 analytic_specular = packet_direct_specular(
                     surface.normal, view, light, radiance, surface.roughness,
-                    f0);
+                    f0, energy);
             }
+            if (clearcoat_active)
+                clearcoat_direct += packet_clearcoat_direct(
+                    view, light, radiance, clearcoat);
+            if (sheen_active)
+                sheen_direct += packet_sheen_direct(
+                    surface.normal, view, light, radiance, sheen,
+                    sheen_ltc.energy_normalization);
         }
         if (diffuse_enabled)
         {
             VkrVulkanDirectResult punctual = packet_punctual(
                 frame, world, surface.normal, view, surface.base.rgb,
-                surface.metallic, surface.roughness, f0);
+                surface.metallic, surface.roughness, f0, energy);
             analytic_diffuse += punctual.diffuse;
             analytic_specular += punctual.specular;
         }
         else
         {
             analytic_specular += packet_punctual_specular(
-                frame, world, surface.normal, view, surface.roughness, f0);
+                frame, world, surface.normal, view, surface.roughness, f0, energy);
         }
+        if (clearcoat_active)
+        {
+            VkrVulkanDirectResult coat_punctual = packet_punctual(
+                frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
+                clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy);
+            clearcoat_direct += coat_punctual.specular * clearcoat.factor;
+        }
+        if (sheen_active)
+            sheen_direct += packet_punctual_sheen(
+                frame, world, surface.normal, view, sheen,
+                sheen_ltc.energy_normalization);
+        VkrVulkanDirectResult rectangles = packet_rectangle_lights(
+            frame, world, surface.normal, view, surface.base.rgb,
+            surface.metallic, surface.roughness, f0, energy, diffuse_enabled);
+        analytic_diffuse += rectangles.diffuse;
+        analytic_specular += rectangles.specular;
+        if (clearcoat_active)
+        {
+            VkrVulkanDirectResult coat_rectangles = packet_rectangle_lights(
+                frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
+                clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy,
+                false);
+            clearcoat_direct += coat_rectangles.specular * clearcoat.factor;
+        }
+        if (sheen_active)
+            sheen_direct += packet_sheen_rectangle_lights(
+                frame, world, surface.normal, view, sheen, sheen_ltc);
         if (diagnostic_enabled &&
             (frame.render_mode == 1u || frame.render_mode == 4u ||
              frame.render_mode == 5u))
         {
             color = frame.render_mode == 4u
-                        ? analytic_diffuse
+                        ? analytic_diffuse * base_transmission
                         : (frame.render_mode == 5u
-                               ? analytic_specular
-                               : analytic_diffuse + analytic_specular);
+                               ? analytic_specular * base_transmission +
+                                     clearcoat_direct +
+                                     sheen_direct * sheen_transmission
+                               : (analytic_diffuse + analytic_specular) *
+                                     base_transmission + clearcoat_direct +
+                                     sheen_direct * sheen_transmission);
         }
         else if (diagnostic_enabled && frame.render_mode == 9u)
         {
@@ -2185,19 +3051,31 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             // diffuse term the opaque path does, so a transmissive surface does
             // not read as black in the comparison channel.
             color = 0.0f;
-            if ((frame.flags & 2u) != 0u)
+            if (diffuse_enabled)
             {
-                color = packet_environment_terms(
-                            frame, world, surface.normal, surface.normal, view,
-                            surface.base.rgb, surface.metallic,
-                            surface.roughness, surface.occlusion, f0)
-                            .diffuse;
+                if ((frame.flags & 2u) != 0u)
+                {
+                    color = packet_environment_terms(
+                                frame, world, surface.normal, surface.normal,
+                                view, surface.base.rgb, surface.metallic,
+                                surface.roughness, surface.occlusion, energy)
+                                .diffuse;
+                }
+                float3 volume_diffuse;
+                if (packet_diffuse_volume(
+                        frame, world, surface.normal, surface.base.rgb,
+                        surface.metallic, surface.occlusion, energy,
+                        volume_diffuse))
+                    color = volume_diffuse;
+                color *= base_transmission;
             }
         }
         else
         {
             float3 diffuse = analytic_diffuse;
             float3 specular = analytic_specular;
+            float3 clearcoat_indirect = 0.0f;
+            float3 sheen_indirect = 0.0f;
             if ((frame.flags & 2u) != 0u)
             {
                 if (diffuse_enabled)
@@ -2206,7 +3084,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                         packet_environment_terms(
                             frame, world, surface.normal, surface.normal, view,
                             surface.base.rgb, surface.metallic,
-                            surface.roughness, surface.occlusion, f0);
+                            surface.roughness, surface.occlusion, energy);
                     diffuse += environment.diffuse;
                     specular += environment.specular;
                 }
@@ -2214,20 +3092,100 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                 {
                     specular += packet_environment_specular(
                         frame, world, surface.normal, surface.normal, view,
-                        surface.roughness, surface.occlusion, f0);
+                        surface.roughness, surface.occlusion, energy);
                 }
             }
             else if (diffuse_enabled)
             {
                 diffuse += frame.ambient_color.rgb * surface.base.rgb *
-                           surface.occlusion;
+                           surface.occlusion * (1.0f - surface.metallic) *
+                           energy.diffuse_weight;
             }
+            if (diffuse_enabled)
+            {
+                float3 volume_diffuse;
+                if (packet_diffuse_volume(
+                        frame, world, surface.normal, surface.base.rgb,
+                        surface.metallic, surface.occlusion, energy,
+                        volume_diffuse))
+                    diffuse = analytic_diffuse + volume_diffuse;
+            }
+            if (clearcoat_active)
+            {
+                if ((frame.flags & 2u) != 0u)
+                    clearcoat_indirect = clearcoat.factor *
+                        packet_environment_specular(
+                        frame, world, clearcoat.normal, clearcoat.normal, view,
+                        clearcoat.roughness, surface.occlusion, clearcoat.energy);
+            }
+            if (sheen_active && (frame.flags & 2u) != 0u)
+                sheen_indirect = packet_sheen_environment(
+                    frame, world, surface.normal, view, surface.occlusion,
+                    1.0f, sheen);
+            diffuse *= base_transmission;
+            specular *= base_transmission;
+            sheen_direct *= sheen_transmission;
+            sheen_indirect *= sheen_transmission;
+            specular += clearcoat_direct + clearcoat_indirect +
+                        sheen_direct + sheen_indirect;
+            float3 base_reflectance = sheen_active
+                ? sheen.color * sheen.directional_albedo +
+                      sheen.base_transmission * energy.reflectance
+                : energy.reflectance;
+            float3 layered_reflectance = clearcoat_active
+                ? clearcoat.factor * clearcoat.energy.reflectance +
+                      clearcoat.base_transmission * base_reflectance
+                : base_reflectance;
             VkrTransmissionLobes lobes = {
-                diffuse, specular, surface.emissive
+                diffuse, specular, surface.emissive * base_transmission
             };
-            color = vkr_transmission_compose(
-                lobes, transmitted, surface.base.rgb,
-                packet_fresnel(no_v, f0), transmission, surface.metallic);
+            VkrFroxelFogParams froxel_params = frame.froxel_fog[0];
+            if (vkr_froxel_enabled(froxel_params))
+            {
+                float dielectric = 1.0f - saturate(surface.metallic);
+                float3 feedback_weight = transmission * dielectric *
+                    surface.base.rgb * (1.0f - saturate(layered_reflectance));
+                float3 local = vkr_transmission_compose(
+                    lobes, float3(0.0f), surface.base.rgb,
+                    layered_reflectance, transmission, surface.metallic);
+                VkrTransmissionLobes empty_lobes = {
+                    float3(0.0f), float3(0.0f), float3(0.0f)
+                };
+                float3 feedback = vkr_transmission_compose(
+                    empty_lobes, transmitted, surface.base.rgb,
+                    layered_reflectance, transmission, surface.metallic);
+                VkrFroxelSample froxel = packet_froxel_sample(frame, world);
+                color = vkr_froxel_apply_local_over_feedback(
+                            local, feedback_weight, froxel) +
+                        feedback;
+            }
+            else if (frame.fog[0].color_density.w > 0.0f)
+            {
+                float dielectric = 1.0f - saturate(surface.metallic);
+                float3 feedback_weight = transmission * dielectric *
+                    surface.base.rgb * (1.0f - saturate(layered_reflectance));
+                float3 local = vkr_transmission_compose(
+                    lobes, float3(0.0f), surface.base.rgb,
+                    layered_reflectance, transmission, surface.metallic);
+                VkrTransmissionLobes empty_lobes = {
+                    float3(0.0f), float3(0.0f), float3(0.0f)
+                };
+                float3 feedback = vkr_transmission_compose(
+                    empty_lobes, transmitted, surface.base.rgb,
+                    layered_reflectance, transmission, surface.metallic);
+                color = vkr_fog_apply_local_over_feedback(
+                            local, feedback_weight, frame.fog[0],
+                            vkr_fog_surface_sample(
+                                frame.fog[0], frame.view_position.xyz,
+                                world)) +
+                        feedback;
+            }
+            else
+            {
+                color = vkr_transmission_compose(
+                    lobes, transmitted, surface.base.rgb,
+                    layered_reflectance, transmission, surface.metallic);
+            }
         }
     }
     g_storage_2d[root.output_texture][pixel] = float4(color, 1.0f);

@@ -38,6 +38,23 @@ typedef struct VkrTextureHandle {
 } VkrTextureHandle;
 Array(VkrTextureHandle);
 
+/** Borrowed scene-owned diffuse volume. An invalid texture disables sampling.
+ * Lattice positions are origin + index / inverse_spacing; room validity and
+ * packed SH live in the immutable 8-by-probe-count RGBA32F texture. */
+typedef struct VkrDiffuseVolumeBinding {
+  VkrTextureHandle texture;
+  Vec3 origin;
+  Vec3 inverse_spacing;
+  uint32_t dimensions[3];
+} VkrDiffuseVolumeBinding;
+
+/** Borrowed scene-owned 65-by-8 RGBA32F diffusion bank; zero count disables. */
+typedef struct VkrSubsurfaceBinding {
+  VkrTextureHandle texture;
+  uint32_t profile_count;
+} VkrSubsurfaceBinding;
+
+
 #define VKR_TEXTURE_MAX_DIMENSION 16384
 #define VKR_TEXTURE_MAX_ARRAY_LAYERS 2048
 #define VKR_TEXTURE_MAX_UPLOAD_REGIONS 32768
@@ -55,6 +72,12 @@ typedef enum VkrTextureSlot {
   VKR_TEXTURE_SLOT_OCCLUSION = 5,
   VKR_TEXTURE_SLOT_TRANSMISSION = 6,
   VKR_TEXTURE_SLOT_THICKNESS = 7,
+  VKR_TEXTURE_SLOT_CLEARCOAT = 8,
+  VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS = 9,
+  VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL = 10,
+  VKR_TEXTURE_SLOT_SHEEN_COLOR = 11,
+  VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS = 12,
+  VKR_TEXTURE_SLOT_ANISOTROPY = 13,
   VKR_TEXTURE_SLOT_COUNT
 } VkrTextureSlot;
 
@@ -113,6 +136,23 @@ typedef struct VkrPbrProperties {
   /** Authored rejection strength for temporally changing transparent shading.
    * Zero preserves stable accumulation; one rejects prior color completely. */
   float32_t temporal_reactivity;
+  /** Independent dielectric coating; zero factor preserves the base BSDF. */
+  float32_t clearcoat_factor;
+  float32_t clearcoat_roughness;
+  float32_t clearcoat_normal_scale;
+  /** Charlie sheen under clearcoat; zero RGB preserves existing layers. */
+  Vec3 sheen_color;
+  float32_t sheen_roughness;
+  /** Reflection-only GGX elongation; rotation is CCW in tangent-space radians. */
+  float32_t anisotropy_strength;
+  float32_t anisotropy_rotation;
+  /** Thin-sheet Lambert transmission; strength partitions the base diffuse
+   * lobe. Linear tint attenuates the transmitted fraction. No refraction. */
+  float32_t diffuse_transmission_strength;
+  Vec3 diffuse_transmission_color;
+  /** Opaque surface diffusion; profile indexes the scene RGB distance bank. */
+  float32_t subsurface_strength;
+  uint32_t subsurface_profile;
 } VkrPbrProperties;
 
 typedef struct VkrMaterialTexture {

@@ -1,0 +1,13 @@
+diff --git a/external/dfdutils/createdfd.c b/external/dfdutils/createdfd.c
+index bb79ebd7..daa9b7eb 100644
+--- a/external/dfdutils/createdfd.c
++++ b/external/dfdutils/createdfd.c
+@@ -120,7 +120,7 @@ static void writeSample(uint32_t *DFD, int sampleNo, int channel,
+     sample[KHR_DF_SAMPLEWORD_BITOFFSET] =
+         (offset << KHR_DF_SAMPLESHIFT_BITOFFSET) |
+         ((bits - 1) << KHR_DF_SAMPLESHIFT_BITLENGTH) |
+-        (channel << KHR_DF_SAMPLESHIFT_CHANNELID);
++        ((uint32_t)channel << KHR_DF_SAMPLESHIFT_CHANNELID);
+ 
+     sample[KHR_DF_SAMPLEWORD_SAMPLEPOSITION_ALL] = 0;
+ 

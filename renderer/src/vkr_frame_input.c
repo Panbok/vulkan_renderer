@@ -206,6 +206,9 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
                       "packet.version",
                       "does not match VKR_FRAME_INPUT_VERSION");
+  if (!isfinite(packet->frame.delta_time) || packet->frame.delta_time < 0.0)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.frame.delta_time", "must be finite and nonnegative");
 
   /* Tonemapping multiplies by the manual value and the metering passes raise
      two to the compensation bias with no recovery branch, so both are proven
@@ -223,6 +226,34 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.exposure_compensation_ev",
                       "must be finite");
+  if (packet->globals.display_transform >= VKR_DISPLAY_TRANSFORM_COUNT)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.display_transform",
+                      "must be a supported VkrDisplayTransform");
+  if (!isfinite(packet->globals.white_balance_temperature) ||
+      packet->globals.white_balance_temperature < -1.0f ||
+      packet->globals.white_balance_temperature > 1.0f)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.white_balance_temperature",
+                      "must be finite and within [-1, 1]");
+  if (!isfinite(packet->globals.white_balance_tint) ||
+      packet->globals.white_balance_tint < -1.0f ||
+      packet->globals.white_balance_tint > 1.0f)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.white_balance_tint",
+                      "must be finite and within [-1, 1]");
+  if (!isfinite(packet->globals.color_contrast) ||
+      packet->globals.color_contrast < 0.5f ||
+      packet->globals.color_contrast > 1.5f)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.color_contrast",
+                      "must be finite and within [0.5, 1.5]");
+  if (!isfinite(packet->globals.color_saturation) ||
+      packet->globals.color_saturation < 0.0f ||
+      packet->globals.color_saturation > 1.5f)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.color_saturation",
+                      "must be finite and within [0, 1.5]");
 
   if (!isfinite(packet->globals.image_sharpness) ||
       packet->globals.image_sharpness < 0.0f ||
@@ -234,6 +265,25 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
   if (packet->globals.bloom_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.bloom_enabled", "must be zero or one");
+  if (packet->globals.dof_enabled > true_v)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.dof_enabled", "must be zero or one");
+  if (packet->globals.motion_blur_enabled > true_v)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.motion_blur_enabled", "must be zero or one");
+  if (packet->globals.motion_blur_enabled &&
+      !vkr_motion_blur_controls_valid(packet->globals.motion_blur_shutter_angle,
+                                      packet->globals.projection))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.motion_blur",
+                      "requires finite perspective depth and shutter angle in [0,360]");
+  if (packet->globals.dof_enabled &&
+      !vkr_dof_controls_valid(packet->globals.dof_focus_distance,
+                              packet->globals.dof_f_stop,
+                              packet->globals.projection))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.dof",
+                      "requires finite perspective depth, positive f-stop and focus beyond the focal length");
   if (packet->globals.bloom_enabled &&
       (!isfinite(packet->globals.bloom_threshold) ||
        packet->globals.bloom_threshold < 0.0f))
@@ -252,6 +302,21 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                       "packet.globals.bloom_intensity",
                       "must be finite and non-negative when bloom is enabled");
 
+  if (!vkr_fog_settings_valid(&packet->globals.fog))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.fog", "invalid analytic fog parameters");
+  if (!vkr_froxel_fog_settings_valid(&packet->globals.froxel_fog) ||
+      !vkr_froxel_fog_projection_valid(&packet->globals.froxel_fog,
+                                       packet->globals.projection))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.froxel_fog", "invalid volumetric fog medium or depth range");
+  if (packet->globals.ssgi_enabled > true_v)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.ssgi_enabled", "must be zero or one");
+  if (packet->globals.ssr_enabled > true_v)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.ssr_enabled", "must be zero or one");
+
   if (packet->globals.gtao_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.gtao_enabled", "must be zero or one");
@@ -267,6 +332,15 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(
         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.globals.gtao_power",
         "must be finite and greater than zero when GTAO is enabled");
+
+  if (packet->skybox) {
+    const Vec3 solar = packet->skybox->solar_disk_radiance;
+    if (!isfinite(solar.x) || !isfinite(solar.y) || !isfinite(solar.z) ||
+        solar.x < 0.0f || solar.y < 0.0f || solar.z < 0.0f)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.skybox.solar_disk_radiance",
+                        "must be finite and non-negative");
+  }
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
@@ -341,6 +415,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow",
                         "invalid local shadow capacity or owners");
+    const uint32_t view_mask = (UINT32_C(1) << local->view_count) - UINT32_C(1);
+    if ((local->render_mask & ~view_mask) != 0u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.local_shadow.render_mask",
+                        "contains a bit outside view_count");
     uint32_t next_view = 0u;
     for (uint32_t i = 0; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i) {
       const uint32_t first = local->light_first_view[i];
@@ -479,13 +558,13 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.shadow.cascades.split_near_far_texel_depth",
                           "texel size and depth span must be positive");
-      const Vec4 origin = shadow->cascades[i].origin_inv_size_pad;
+      const Vec4 origin = shadow->cascades[i].origin_inv_size_sun;
       if (!isfinite(origin.x) || !isfinite(origin.y) || !isfinite(origin.z) ||
-          origin.z <= 0.0f)
-        VKR_REJECT_PACKET(
-            VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-            "packet.shadow.cascades.origin_inv_size_pad",
-            "light-space origin must be finite and inverse map size positive");
+          origin.z <= 0.0f || !isfinite(origin.w) || origin.w < 0.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.shadow.cascades.origin_inv_size_sun",
+                          "origin must be finite, inverse map size positive "
+                          "and sun tangent nonnegative");
     }
     const float32_t final_split = shadow->cascades[shadow->cascade_count - 1u]
                                       .split_near_far_texel_depth.y;
@@ -537,14 +616,13 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     for (uint32_t i = 0u; i < editor->overlay_draw_count; ++i) {
       const VkrEditorOverlayDraw *draw = &editor->overlay_draws[i];
       if (!draw->geometry.id || !draw->object_id ||
-          !vkr_renderer_ui_vec4_finite(draw->color) ||
-          draw->color.x < 0.0f || draw->color.x > 1.0f ||
-          draw->color.y < 0.0f || draw->color.y > 1.0f ||
-          draw->color.z < 0.0f || draw->color.z > 1.0f ||
-          draw->color.w != 1.0f)
-        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.editor.overlay_draws",
-                          "requires geometry, a pick ID and opaque linear color");
+          !vkr_renderer_ui_vec4_finite(draw->color) || draw->color.x < 0.0f ||
+          draw->color.x > 1.0f || draw->color.y < 0.0f ||
+          draw->color.y > 1.0f || draw->color.z < 0.0f ||
+          draw->color.z > 1.0f || draw->color.w != 1.0f)
+        VKR_REJECT_PACKET(
+            VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.editor.overlay_draws",
+            "requires geometry, a pick ID and opaque linear color");
       for (uint32_t component = 0u; component < 16u; ++component) {
         if (!isfinite(draw->model.elements[component]))
           VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
@@ -596,6 +674,49 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
 
   const VkrFrameLighting *lighting = packet->lighting;
   if (lighting) {
+    const Mat4 subsurface_projection = packet->globals.projection;
+    const float32_t subsurface_near = subsurface_projection.m23 / subsurface_projection.m22;
+    const float32_t subsurface_far = subsurface_projection.m23 / (subsurface_projection.m22 + 1.0f);
+    if (lighting->subsurface.profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
+        (lighting->subsurface.profile_count > 0u &&
+         (lighting->subsurface.texture.id == 0u ||
+          lighting->subsurface.texture.generation == VKR_INVALID_ID ||
+          subsurface_projection.m32 != -1.0f || subsurface_projection.m33 != 0.0f ||
+          !isfinite(subsurface_near) || subsurface_near <= 0.0f ||
+          !isfinite(subsurface_far) || subsurface_far <= subsurface_near)))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.lighting.subsurface",
+                        "requires up to eight profiles, a texture and finite perspective depth");
+    const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
+    if (volume->texture.id != 0u &&
+        volume->texture.generation != VKR_INVALID_ID) {
+      if (volume->dimensions[0] < 2u || volume->dimensions[1] < 2u ||
+          volume->dimensions[2] < 2u || volume->dimensions[0] > 256u ||
+          volume->dimensions[1] > 256u || volume->dimensions[2] > 256u ||
+          (uint64_t)volume->dimensions[0] * volume->dimensions[1] *
+                  volume->dimensions[2] >
+              256u ||
+          !isfinite(volume->origin.x) || !isfinite(volume->origin.y) ||
+          !isfinite(volume->origin.z) || !isfinite(volume->inverse_spacing.x) ||
+          !isfinite(volume->inverse_spacing.y) ||
+          !isfinite(volume->inverse_spacing.z) ||
+          volume->inverse_spacing.x <= 0.0f ||
+          volume->inverse_spacing.y <= 0.0f ||
+          volume->inverse_spacing.z <= 0.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.lighting.diffuse_volume",
+                          "invalid lattice dimensions or coordinates");
+    }
+    if (lighting->rectangle_light_count > VKR_MAX_SCENE_RECTANGLE_LIGHTS ||
+        (lighting->rectangle_light_count && !lighting->rectangle_lights))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.lighting.rectangle_lights",
+                        "requires a table of at most eight rectangles");
+    for (uint32_t i = 0u; i < lighting->rectangle_light_count; ++i)
+      if (!vkr_rectangle_light_valid(&lighting->rectangle_lights[i]))
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.lighting.rectangle_lights",
+                          "invalid rectangle dimensions, radiance or basis");
     if (lighting->point_light_count > VKR_MAX_SCENE_POINT_LIGHTS)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.lighting.point_light_count",

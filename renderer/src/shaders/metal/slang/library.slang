@@ -1,3 +1,5 @@
+#include "../../shared/atmosphere_kernel.slangh"
+#include "../../shared/froxel_fog_kernel.slangh"
 #include "common/draw.slangh"
 #include "world/default.slang"
 #include "picking/world.slang"

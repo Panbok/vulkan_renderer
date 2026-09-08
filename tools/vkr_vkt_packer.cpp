@@ -5,21 +5,28 @@
 #include <ktx.h>
 #include <vulkan/vulkan_core.h>
 
-#define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include "vkr_vkt_mips.h"
+#include "vkr_vkt_normal_roughness.h"
 #include "vkr_vkt_pack_contract.h"
+#include "vkr_vkt_packer.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <climits>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -39,6 +46,10 @@ constexpr uint64_t kFnvPrime = 1099511628211ull;
 constexpr uint32_t kMaxTextureDimension = 16384u;
 constexpr uint32_t kMaxPhysicalLayers = 2048u;
 constexpr uint32_t kMaxUploadRegions = 32768u;
+
+void destroy_ktx_texture(ktxTexture2 *texture) {
+  ktxTexture_Destroy(ktxTexture(texture));
+}
 
 struct AlphaAnalysis {
   bool has_transparency = false;
@@ -85,6 +96,14 @@ struct PackConfig {
   uint32_t basis_threads = 0;
   ktx_pack_uastc_flags uastc_level = KTX_PACK_UASTC_LEVEL_FASTER;
   bool write_source_hash = true;
+  bool cutout = false;
+  bool alpha_factor_explicit = false;
+  float alpha_cutoff = 0.5f;
+  float alpha_factor = 1.0f;
+  bool normal_roughness = false;
+  float normal_scale = 1.0f;
+  float roughness_factor = 1.0f;
+  bool roughness_source = false;
 };
 
 std::string to_lower_ascii(std::string value);
@@ -249,6 +268,28 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
       out_config.texture_class_explicit = true;
       continue;
     }
+    if (arg == "--alpha-cutoff" || arg == "--alpha-factor") {
+      if (index + 1 >= argc) {
+        std::cerr << "Missing value for " << arg << "\n";
+        return ParseResult::kError;
+      }
+      const char *value = argv[++index];
+      char *end = nullptr;
+      const float parsed = std::strtof(value, &end);
+      if (end == value || *end != '\0' || !std::isfinite(parsed) ||
+          parsed < 0.0f || parsed > 1.0f) {
+        std::cerr << "Invalid " << arg << " (expected a number in [0, 1])\n";
+        return ParseResult::kError;
+      }
+      if (arg == "--alpha-cutoff") {
+        out_config.cutout = true;
+        out_config.alpha_cutoff = parsed == 0.0f ? 0.0f : parsed;
+      } else {
+        out_config.alpha_factor_explicit = true;
+        out_config.alpha_factor = parsed == 0.0f ? 0.0f : parsed;
+      }
+      continue;
+    }
     if (arg == "--strict") {
       out_config.strict = true;
       continue;
@@ -328,6 +369,16 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
     std::cerr << "Missing required argument --input-dir\n";
     return ParseResult::kError;
   }
+  if ((out_config.alpha_factor_explicit && !out_config.cutout) ||
+      (out_config.cutout &&
+       (!out_config.layered_mode || !out_config.texture_class_explicit ||
+        (out_config.texture_class != TextureClass::kColorSrgb &&
+         out_config.texture_class != TextureClass::kColorLinear)))) {
+    std::cerr << "Cutout filtering requires --output, an explicit color "
+                 "--texture-class and --alpha-cutoff; --alpha-factor is "
+                 "optional\n";
+    return ParseResult::kError;
+  }
 
   return ParseResult::kOk;
 }
@@ -346,6 +397,8 @@ void print_usage(const char *program_name) {
          " [--progress|--no-progress] [--basis-threads <auto|n>]"
          " [--uastc-level <fastest|faster|default|slower|veryslow>]"
          " [--source-hash|--no-source-hash]\n";
+  std::cout << "Cutout color mips: --alpha-cutoff <0..1>"
+               " [--alpha-factor <0..1>] (explicit output/color class only)\n";
 }
 
 std::string format_duration(double seconds) {
@@ -438,7 +491,9 @@ uint32_t calculate_mip_levels(uint32_t width, uint32_t height) {
 }
 
 std::vector<LevelImage> build_mip_chain_rgba8(const uint8_t *base_pixels,
-                                              uint32_t width, uint32_t height) {
+                                              uint32_t width, uint32_t height,
+                                              TextureClass texture_class,
+                                              const PackConfig &config) {
   std::vector<LevelImage> levels;
   levels.reserve(calculate_mip_levels(width, height));
 
@@ -458,30 +513,27 @@ std::vector<LevelImage> build_mip_chain_rgba8(const uint8_t *base_pixels,
     next.height = next_height;
     next.pixels.resize(static_cast<size_t>(next_width) * next_height * 4u);
 
-    for (uint32_t y = 0; y < next_height; ++y) {
-      for (uint32_t x = 0; x < next_width; ++x) {
-        std::array<uint32_t, 4> accum = {0, 0, 0, 0};
-        for (uint32_t oy = 0; oy < 2; ++oy) {
-          const uint32_t sy = std::min(previous.height - 1, (y * 2u) + oy);
-          for (uint32_t ox = 0; ox < 2; ++ox) {
-            const uint32_t sx = std::min(previous.width - 1, (x * 2u) + ox);
-            const size_t src_index =
-                (static_cast<size_t>(sy) * previous.width + sx) * 4u;
-            for (uint32_t channel = 0; channel < 4; ++channel) {
-              accum[channel] += previous.pixels[src_index + channel];
-            }
-          }
-        }
-
-        const size_t dst_index = (static_cast<size_t>(y) * next_width + x) * 4u;
-        for (uint32_t channel = 0; channel < 4; ++channel) {
-          next.pixels[dst_index + channel] =
-              static_cast<uint8_t>(accum[channel] / 4u);
-        }
-      }
-    }
+    vkr_vkt_downsample_rgba8(previous.pixels.data(), previous.width,
+                             previous.height, next.pixels.data(), next_width,
+                             next_height,
+                             texture_class_prefers_srgb(texture_class),
+                             config.cutout && config.alpha_cutoff > 0.0f);
 
     levels.push_back(std::move(next));
+  }
+
+  if (config.cutout) {
+    const uint32_t pass_byte =
+        vkr_vkt_alpha_pass_byte(config.alpha_cutoff, config.alpha_factor);
+    const uint64_t base_count = static_cast<uint64_t>(width) * height;
+    const uint64_t base_covered =
+        vkr_vkt_alpha_covered(base_pixels, base_count, pass_byte);
+    for (size_t mip = 1; mip < levels.size(); ++mip) {
+      LevelImage &level = levels[mip];
+      vkr_vkt_preserve_alpha_coverage(
+          level.pixels.data(), static_cast<size_t>(level.width) * level.height,
+          pass_byte, base_covered, base_count);
+    }
   }
 
   return levels;
@@ -595,9 +647,22 @@ std::string pack_settings_identity(TextureClass texture_class,
   settings << "asset=1;shape=" << texture_shape_metadata_value(shape)
            << ";class=" << texture_class_metadata_value(texture_class)
            << ";uastc=" << uastc_level_to_string(config.uastc_level)
-           << ";mips=rgba8-box-v1;flip=vertical";
+           << ";mips=rgba8-area-srgb-v2;flip=vertical";
   if (texture_class == TextureClass::kNormalRg) {
     settings << ";basis_rg=source-ra-v1";
+  }
+  if (config.cutout) {
+    settings << ";cutout=weighted-coverage-v" << VKR_VKT_CUTOUT_POLICY_VERSION
+             << ";cutoff=" << std::hexfloat << config.alpha_cutoff
+             << ";factor=" << config.alpha_factor;
+  }
+  if (config.normal_roughness) {
+    settings << ";normal_roughness=vmf-alpha2-v"
+             << VKR_VKT_NORMAL_ROUGHNESS_POLICY_VERSION
+             << ";normal_scale=" << std::hexfloat << config.normal_scale
+             << ";roughness_factor=" << config.roughness_factor
+             << ";roughness_source=" << config.roughness_source
+             << ";uv=matched-extents-repeat-linear;variance_cap=0.25";
   }
   return settings.str();
 }
@@ -651,13 +716,14 @@ bool should_skip_output(const std::vector<fs::path> &source_paths,
       !texture) {
     return false;
   }
+  const std::unique_ptr<ktxTexture2, decltype(&destroy_ktx_texture)> owner(
+      texture, destroy_ktx_texture);
   const bool matches =
       texture_metadata_equals(texture, "vkr.source_hash",
                               to_hex_u64(source_hash)) &&
       texture_metadata_equals(
           texture, "vkr.pack_settings",
           pack_settings_identity(texture_class, shape, config));
-  ktxTexture_Destroy(ktxTexture(texture));
   return matches;
 }
 
@@ -690,94 +756,68 @@ struct PackedSource {
   AlphaAnalysis alpha = {};
 };
 
-bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
-                             const fs::path &dst_path,
-                             TextureClass texture_class, TextureShape shape,
-                             const PackConfig &config) {
-  const size_t source_count = source_paths.size();
-  const bool valid_count =
-      (shape == TextureShape::k2D && source_count == 1u) ||
-      (shape == TextureShape::k2DArray && source_count > 1u) ||
-      (shape == TextureShape::kCube && source_count == 6u) ||
-      (shape == TextureShape::kCubeArray && source_count > 6u &&
-       source_count % 6u == 0u);
-  if (!valid_count || source_count > kMaxPhysicalLayers) {
-    std::cerr << "Invalid source count " << source_count
-              << " for the requested texture shape or runtime layer limit\n";
+bool load_source_rgba8(const fs::path &path, LevelImage &image) {
+  std::ifstream source_file(path, std::ios::binary | std::ios::ate);
+  if (!source_file) {
+    std::cerr << "Failed to open texture: " << path << "\n";
     return false;
   }
+  const std::streamoff source_size = source_file.tellg();
+  if (source_size <= 0 || source_size > INT_MAX) {
+    std::cerr << "Texture source exceeds the decoder byte limit: " << path
+              << "\n";
+    return false;
+  }
+  std::vector<uint8_t> encoded(static_cast<size_t>(source_size));
+  source_file.seekg(0);
+  if (!source_file.read(reinterpret_cast<char *>(encoded.data()),
+                        source_size)) {
+    std::cerr << "Failed to read texture: " << path << "\n";
+    return false;
+  }
+  int source_width = 0;
+  int source_height = 0;
+  int channels = 0;
+  if (!stbi_info_from_memory(encoded.data(), static_cast<int>(encoded.size()),
+                             &source_width, &source_height, &channels) ||
+      source_width <= 0 || source_height <= 0 ||
+      source_width > static_cast<int>(kMaxTextureDimension) ||
+      source_height > static_cast<int>(kMaxTextureDimension)) {
+    std::cerr << "Texture extent exceeds the runtime contract: " << path
+              << "\n";
+    return false;
+  }
+  // The glTF cooker also decodes images on this thread. Keep its unflipped
+  // decode convention separate from the packed texture's vertical flip.
+  stbi_set_flip_vertically_on_load_thread(1);
+  const std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> loaded(
+      stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()),
+                            &source_width, &source_height, &channels, 4),
+      stbi_image_free);
+  stbi_set_flip_vertically_on_load_thread(0);
+  if (!loaded || source_width <= 0 || source_height <= 0 ||
+      source_width > static_cast<int>(kMaxTextureDimension) ||
+      source_height > static_cast<int>(kMaxTextureDimension)) {
+    std::cerr << "Failed to decode texture: " << path << "\n";
+    return false;
+  }
+  image.width = static_cast<uint32_t>(source_width);
+  image.height = static_cast<uint32_t>(source_height);
+  image.pixels.assign(loaded.get(),
+                      loaded.get() +
+                          static_cast<size_t>(image.width) * image.height * 4u);
+  return true;
+}
 
-  std::vector<PackedSource> sources;
-  sources.reserve(source_count);
-  uint32_t width = 0u;
-  uint32_t height = 0u;
-  size_t mip_count = 0u;
-  AlphaAnalysis aggregate_alpha = {};
-  for (const fs::path &path : source_paths) {
-    int source_width = 0;
-    int source_height = 0;
-    int channels = 0;
-    if (!stbi_info(path.string().c_str(), &source_width, &source_height,
-                   &channels) ||
-        source_width <= 0 || source_height <= 0 ||
-        source_width > static_cast<int>(kMaxTextureDimension) ||
-        source_height > static_cast<int>(kMaxTextureDimension)) {
-      std::cerr << "Texture extent exceeds the runtime contract: " << path
-                << "\n";
-      return false;
-    }
-    stbi_uc *loaded = stbi_load(path.string().c_str(), &source_width,
-                                &source_height, &channels, 4);
-    if (!loaded || source_width <= 0 || source_height <= 0 ||
-        source_width > static_cast<int>(kMaxTextureDimension) ||
-        source_height > static_cast<int>(kMaxTextureDimension)) {
-      std::cerr << "Failed to decode texture: " << path << "\n";
-      if (loaded) {
-        stbi_image_free(loaded);
-      }
-      return false;
-    }
-    PackedSource source;
-    source.path = path;
-    source.width = static_cast<uint32_t>(source_width);
-    source.height = static_cast<uint32_t>(source_height);
-    source.alpha = analyze_alpha(loaded, source.width, source.height);
-    if (texture_class == TextureClass::kNormalRg) {
-      vkr_vkt_prepare_normal_rg_for_basis(
-          loaded, static_cast<size_t>(source.width) * source.height);
-    }
-    source.levels = build_mip_chain_rgba8(loaded, source.width, source.height);
-    stbi_image_free(loaded);
-    if (sources.empty()) {
-      width = source.width;
-      height = source.height;
-      mip_count = source.levels.size();
-    } else if (source.width != width || source.height != height ||
-               source.levels.size() != mip_count) {
-      std::cerr << "Layered texture sources must have identical extents\n";
-      return false;
-    }
-    aggregate_alpha.transparent_count += source.alpha.transparent_count;
-    aggregate_alpha.intermediate_count += source.alpha.intermediate_count;
-    sources.push_back(std::move(source));
-  }
-  aggregate_alpha.has_transparency = aggregate_alpha.transparent_count > 0u;
-  aggregate_alpha.alpha_mask =
-      aggregate_alpha.has_transparency &&
-      static_cast<double>(aggregate_alpha.intermediate_count) /
-              static_cast<double>(aggregate_alpha.transparent_count) <=
-          kAlphaMaskIntermediateRatio;
-  if (mip_count == 0u ||
-      mip_count * source_count > static_cast<size_t>(kMaxUploadRegions)) {
-    std::cerr << "Layered texture exceeds the runtime upload-region limit\n";
-    return false;
-  }
-  if ((shape == TextureShape::kCube || shape == TextureShape::kCubeArray) &&
-      width != height) {
-    std::cerr << "Cubemap sources must be square\n";
-    return false;
-  }
-
+bool write_packed_sources(const std::vector<fs::path> &source_paths,
+                          const std::vector<PackedSource> &sources,
+                          const fs::path &dst_path, TextureClass texture_class,
+                          TextureShape shape, const PackConfig &config,
+                          AlphaAnalysis aggregate_alpha) {
+  const size_t source_count = sources.size();
+  const uint32_t width = sources.front().width;
+  const uint32_t height = sources.front().height;
+  const size_t mip_count = sources.front().levels.size();
   const bool cube =
       shape == TextureShape::kCube || shape == TextureShape::kCubeArray;
   const uint32_t face_count = cube ? 6u : 1u;
@@ -805,6 +845,8 @@ bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
               << "\n";
     return false;
   }
+  const std::unique_ptr<ktxTexture2, decltype(&destroy_ktx_texture)> owner(
+      texture, destroy_ktx_texture);
 
   bool success = false;
   do {
@@ -835,7 +877,8 @@ bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
                        texture_class_metadata_value(texture_class)) ||
         !add_kv_bool(texture, "vkr.has_transparency",
                      aggregate_alpha.has_transparency) ||
-        !add_kv_bool(texture, "vkr.alpha_mask", aggregate_alpha.alpha_mask) ||
+        !add_kv_bool(texture, "vkr.alpha_mask",
+                     config.cutout || aggregate_alpha.alpha_mask) ||
         !add_kv_string(texture, "vkr.asset_version", "1") ||
         !add_kv_string(texture, "vkr.pack_settings",
                        pack_settings_identity(texture_class, shape, config))) {
@@ -898,8 +941,181 @@ bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
     success = true;
   } while (false);
 
-  ktxTexture_Destroy(ktxTexture(texture));
   return success;
+}
+
+bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
+                             const fs::path &dst_path,
+                             TextureClass texture_class, TextureShape shape,
+                             const PackConfig &config) {
+  const size_t source_count = source_paths.size();
+  const bool valid_count =
+      (shape == TextureShape::k2D && source_count == 1u) ||
+      (shape == TextureShape::k2DArray && source_count > 1u) ||
+      (shape == TextureShape::kCube && source_count == 6u) ||
+      (shape == TextureShape::kCubeArray && source_count > 6u &&
+       source_count % 6u == 0u);
+  if (!valid_count || source_count > kMaxPhysicalLayers) {
+    std::cerr << "Invalid source count " << source_count
+              << " for the requested texture shape or runtime layer limit\n";
+    return false;
+  }
+
+  std::vector<PackedSource> sources;
+  sources.reserve(source_count);
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  size_t mip_count = 0u;
+  AlphaAnalysis aggregate_alpha = {};
+  for (const fs::path &path : source_paths) {
+    LevelImage image;
+    if (!load_source_rgba8(path, image)) {
+      return false;
+    }
+    PackedSource source;
+    source.path = path;
+    source.width = image.width;
+    source.height = image.height;
+    source.alpha =
+        analyze_alpha(image.pixels.data(), source.width, source.height);
+    if (texture_class == TextureClass::kNormalRg) {
+      vkr_vkt_prepare_normal_rg_for_basis(image.pixels.data(),
+                                          static_cast<size_t>(source.width) *
+                                              source.height);
+    }
+    source.levels = build_mip_chain_rgba8(image.pixels.data(), source.width,
+                                          source.height, texture_class, config);
+    if (sources.empty()) {
+      width = source.width;
+      height = source.height;
+      mip_count = source.levels.size();
+    } else if (source.width != width || source.height != height ||
+               source.levels.size() != mip_count) {
+      std::cerr << "Layered texture sources must have identical extents\n";
+      return false;
+    }
+    aggregate_alpha.transparent_count += source.alpha.transparent_count;
+    aggregate_alpha.intermediate_count += source.alpha.intermediate_count;
+    sources.push_back(std::move(source));
+  }
+  aggregate_alpha.has_transparency = aggregate_alpha.transparent_count > 0u;
+  aggregate_alpha.alpha_mask =
+      aggregate_alpha.has_transparency &&
+      static_cast<double>(aggregate_alpha.intermediate_count) /
+              static_cast<double>(aggregate_alpha.transparent_count) <=
+          kAlphaMaskIntermediateRatio;
+  if (mip_count == 0u ||
+      mip_count * source_count > static_cast<size_t>(kMaxUploadRegions)) {
+    std::cerr << "Layered texture exceeds the runtime upload-region limit\n";
+    return false;
+  }
+  if ((shape == TextureShape::kCube || shape == TextureShape::kCubeArray) &&
+      width != height) {
+    std::cerr << "Cubemap sources must be square\n";
+    return false;
+  }
+
+  return write_packed_sources(source_paths, sources, dst_path, texture_class,
+                              shape, config, aggregate_alpha);
+}
+
+// Both callers reduce the same area footprint: original decoded texels for
+// mip 1, retained moments thereafter. No full-resolution moment buffer is
+// needed.
+template <typename Sample>
+std::vector<VkrVktMaterialMoment>
+reduce_material_moments(uint32_t width, uint32_t height, uint32_t next_width,
+                        uint32_t next_height, Sample sample) {
+  std::vector<VkrVktMaterialMoment> result(static_cast<size_t>(next_width) *
+                                           next_height);
+  const double inverse_area = 1.0 / (static_cast<double>(width) * height);
+  for (uint32_t y = 0; y < next_height; ++y) {
+    const uint32_t top = y * height;
+    const uint32_t bottom = top + height;
+    for (uint32_t x = 0; x < next_width; ++x) {
+      const uint32_t left = x * width;
+      const uint32_t right = left + width;
+      VkrVktMaterialMoment sum = {};
+      for (uint32_t sy = top / next_height;
+           sy < (bottom + next_height - 1u) / next_height; ++sy) {
+        const uint32_t overlap_y = std::min(bottom, (sy + 1u) * next_height) -
+                                   std::max(top, sy * next_height);
+        for (uint32_t sx = left / next_width;
+             sx < (right + next_width - 1u) / next_width; ++sx) {
+          const uint32_t overlap_x = std::min(right, (sx + 1u) * next_width) -
+                                     std::max(left, sx * next_width);
+          const double weight = static_cast<double>(overlap_x) * overlap_y;
+          const VkrVktMaterialMoment value =
+              sample(static_cast<size_t>(sy) * width + sx);
+          sum.x += value.x * weight;
+          sum.y += value.y * weight;
+          sum.z += value.z * weight;
+          sum.roughness_fourth += value.roughness_fourth * weight;
+        }
+      }
+      sum.x *= inverse_area;
+      sum.y *= inverse_area;
+      sum.z *= inverse_area;
+      sum.roughness_fourth *= inverse_area;
+      result[static_cast<size_t>(y) * next_width + x] = sum;
+    }
+  }
+  return result;
+}
+
+void build_normal_roughness_mips(const LevelImage &normal_image,
+                                 const LevelImage &roughness_image,
+                                 const PackConfig &config, PackedSource &normal,
+                                 PackedSource &roughness) {
+  normal.width = roughness.width = normal_image.width;
+  normal.height = roughness.height = normal_image.height;
+  // Keep the existing area-filtered R/B/A contract. Only roughness G is
+  // coupled.
+  roughness.levels =
+      build_mip_chain_rgba8(roughness_image.pixels.data(), roughness.width,
+                            roughness.height, TextureClass::kDataMask, config);
+  normal.levels.reserve(roughness.levels.size());
+  std::vector<VkrVktMaterialMoment> moments;
+  const auto base_sample = [&](size_t index) {
+    return vkr_vkt_material_moment(normal_image.pixels.data() + index * 4u,
+                                   roughness_image.pixels[index * 4u + 1u],
+                                   config.normal_scale,
+                                   config.roughness_factor);
+  };
+  for (size_t mip = 0; mip < roughness.levels.size(); ++mip) {
+    LevelImage &roughness_level = roughness.levels[mip];
+    LevelImage normal_level;
+    normal_level.width = roughness_level.width;
+    normal_level.height = roughness_level.height;
+    normal_level.pixels.resize(roughness_level.pixels.size());
+    if (mip == 1u) {
+      moments = reduce_material_moments(normal.width, normal.height,
+                                        normal_level.width, normal_level.height,
+                                        base_sample);
+    } else if (mip > 1u) {
+      const LevelImage &previous = normal.levels.back();
+      auto next = reduce_material_moments(
+          previous.width, previous.height, normal_level.width,
+          normal_level.height, [&](size_t index) { return moments[index]; });
+      moments = std::move(next);
+    }
+    const size_t count =
+        static_cast<size_t>(normal_level.width) * normal_level.height;
+    if (mip == 0u) {
+      for (size_t index = 0; index < count; ++index) {
+        vkr_vkt_encode_material_moment(
+            base_sample(index), normal_level.pixels.data() + index * 4u,
+            &roughness_level.pixels[index * 4u + 1u]);
+      }
+    } else {
+      for (size_t index = 0; index < count; ++index) {
+        vkr_vkt_encode_material_moment(
+            moments[index], normal_level.pixels.data() + index * 4u,
+            &roughness_level.pixels[index * 4u + 1u]);
+      }
+    }
+    normal.levels.push_back(std::move(normal_level));
+  }
 }
 
 bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
@@ -934,7 +1150,129 @@ bool discover_source_textures(const fs::path &root_dir,
 
 } // namespace
 
-int main(int argc, char **argv) {
+int vkr_vkt_pack_cutout(const char *source, const char *output, float cutoff,
+                        float factor) {
+  if (!source || !source[0] || !output || !output[0] ||
+      !std::isfinite(cutoff) || !std::isfinite(factor) || cutoff < 0.0f ||
+      cutoff > 1.0f || factor < 0.0f || factor > 1.0f) {
+    return 0;
+  }
+  try {
+    PackConfig config = {};
+    config.cutout = true;
+    config.alpha_cutoff = cutoff == 0.0f ? 0.0f : cutoff;
+    config.alpha_factor = factor == 0.0f ? 0.0f : factor;
+    config.basis_threads = resolve_basis_thread_count(config.basis_threads);
+    const std::vector<fs::path> sources = {fs::path(source)};
+    const fs::path destination(output);
+    if (should_skip_output(sources, destination, TextureClass::kColorSrgb,
+                           TextureShape::k2D, config)) {
+      return 1;
+    }
+    return pack_texture_set_to_vkt(sources, destination,
+                                   TextureClass::kColorSrgb, TextureShape::k2D,
+                                   config)
+               ? 1
+               : 0;
+  } catch (const std::exception &error) {
+    std::cerr << "Cutout packing failed: " << error.what() << "\n";
+    return 0;
+  }
+}
+
+int vkr_vkt_pack_normal_roughness(const char *normal_source,
+                                  const char *roughness_source,
+                                  const char *normal_output,
+                                  const char *roughness_output,
+                                  float normal_scale, float roughness_factor) {
+  if (!normal_source || !normal_source[0] || !normal_output ||
+      !normal_output[0] || !roughness_output || !roughness_output[0] ||
+      (roughness_source && !roughness_source[0]) ||
+      !std::isfinite(normal_scale) || !std::isfinite(roughness_factor) ||
+      roughness_factor < 0.0f || roughness_factor > 1.0f) {
+    return VKR_VKT_PAIR_FAILED;
+  }
+  try {
+    const fs::path normal_path(normal_output);
+    const fs::path roughness_path(roughness_output);
+    std::vector<fs::path> sources = {fs::path(normal_source)};
+    if (roughness_source) {
+      sources.emplace_back(roughness_source);
+    }
+    // Publishing a pair must never overwrite either source or the other output.
+    const fs::path normal_absolute =
+        fs::absolute(normal_path).lexically_normal();
+    const fs::path roughness_absolute =
+        fs::absolute(roughness_path).lexically_normal();
+    if (normal_absolute == roughness_absolute) {
+      return VKR_VKT_PAIR_FAILED;
+    }
+    for (const fs::path &source : sources) {
+      const fs::path absolute = fs::absolute(source).lexically_normal();
+      if (absolute == normal_absolute || absolute == roughness_absolute) {
+        return VKR_VKT_PAIR_FAILED;
+      }
+    }
+    PackConfig config;
+    config.normal_roughness = true;
+    config.normal_scale = normal_scale == 0.0f ? 0.0f : normal_scale;
+    config.roughness_factor =
+        roughness_factor == 0.0f ? 0.0f : roughness_factor;
+    config.roughness_source = roughness_source != nullptr;
+    config.basis_threads = resolve_basis_thread_count(config.basis_threads);
+    const bool normal_cached =
+        should_skip_output(sources, normal_path, TextureClass::kNormalRg,
+                           TextureShape::k2D, config);
+    const bool roughness_cached =
+        should_skip_output(sources, roughness_path, TextureClass::kDataMask,
+                           TextureShape::k2D, config);
+    if (normal_cached && roughness_cached) {
+      return VKR_VKT_PAIR_SUCCESS;
+    }
+    LevelImage normal_image;
+    LevelImage roughness_image;
+    if (!load_source_rgba8(sources[0], normal_image)) {
+      return VKR_VKT_PAIR_FAILED;
+    }
+    if (roughness_source) {
+      if (!load_source_rgba8(sources[1], roughness_image)) {
+        return VKR_VKT_PAIR_FAILED;
+      }
+      if (normal_image.width != roughness_image.width ||
+          normal_image.height != roughness_image.height) {
+        return VKR_VKT_PAIR_INCOMPATIBLE;
+      }
+    } else {
+      roughness_image.width = normal_image.width;
+      roughness_image.height = normal_image.height;
+      roughness_image.pixels.assign(normal_image.pixels.size(), 255u);
+    }
+    std::vector<PackedSource> normal(1);
+    std::vector<PackedSource> roughness(1);
+    build_normal_roughness_mips(normal_image, roughness_image, config,
+                                normal.front(), roughness.front());
+    // Normal alpha is the Basis RG carrier, not surface transparency.
+    const AlphaAnalysis roughness_alpha =
+        analyze_alpha(roughness_image.pixels.data(), roughness_image.width,
+                      roughness_image.height);
+    if ((!normal_cached &&
+         !write_packed_sources(sources, normal, normal_path,
+                               TextureClass::kNormalRg, TextureShape::k2D,
+                               config, {})) ||
+        (!roughness_cached &&
+         !write_packed_sources(sources, roughness, roughness_path,
+                               TextureClass::kDataMask, TextureShape::k2D,
+                               config, roughness_alpha))) {
+      return VKR_VKT_PAIR_FAILED;
+    }
+    return VKR_VKT_PAIR_SUCCESS;
+  } catch (const std::exception &error) {
+    std::cerr << "Normal/roughness packing failed: " << error.what() << "\n";
+    return VKR_VKT_PAIR_FAILED;
+  }
+}
+
+int vkr_vkt_packer_main(int argc, char **argv) {
   PackConfig config = {};
   ParseResult parse_result = parse_args(argc, argv, config);
   if (parse_result == ParseResult::kHelp) {
@@ -947,7 +1285,6 @@ int main(int argc, char **argv) {
   }
 
   config.basis_threads = resolve_basis_thread_count(config.basis_threads);
-  stbi_set_flip_vertically_on_load(1);
   if (config.layered_mode) {
     for (const fs::path &layer : config.layers) {
       if (!fs::exists(layer) || !fs::is_regular_file(layer)) {

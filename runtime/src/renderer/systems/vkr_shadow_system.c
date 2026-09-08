@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "math/vkr_math.h"
 #include "renderer/systems/vkr_camera.h"
+#include "renderer/systems/vkr_local_shadow_system.h"
 #include "vkr_frame_input.h"
 
 // ============================================================================
@@ -86,6 +87,22 @@ void vkr_shadow_system_set_depth_range_sample(
   system->sdsm_current_scene_generation = current_scene_generation;
   system->pending_sdsm_sample =
       sample ? *sample : (VkrShadowDepthRangeSample){0};
+}
+
+void vkr_shadow_system_resolve_local_selection(
+    VkrShadowSystem *system, const VkrPointLight *lights, uint32_t light_count,
+    Vec3 camera_position, uint32_t face_budget, uint32_t map_size,
+    VkrLocalShadowPassPayload *out_payload) {
+  if (!out_payload)
+    return;
+  if (!system || !system->initialized) {
+    vkr_local_shadow_prepare(lights, light_count, face_budget, map_size,
+                             out_payload);
+    return;
+  }
+  vkr_local_shadow_prepare_selection(&system->local_selection, lights,
+                                     light_count, camera_position, face_budget,
+                                     map_size, out_payload);
 }
 
 vkr_internal void vkr_shadow_sdsm_use_fixed(VkrShadowSystem *system,
@@ -757,6 +774,8 @@ void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
     system->fit_history.valid = false_v;
     MemZero(system->cascade_history, sizeof(system->cascade_history));
     system->pending_history = (VkrShadowPendingHistory){0};
+    MemZero(system->local_history, sizeof(system->local_history));
+    system->pending_local_history = (VkrLocalShadowPendingHistory){0};
     system->pending_sdsm_sample = (VkrShadowDepthRangeSample){0};
     system->sdsm_range_valid = false_v;
     system->sdsm_source_frame_index = 0u;
@@ -1270,16 +1289,19 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
 }
 
 void vkr_shadow_system_discard_frame(VkrShadowSystem *system) {
-  if (system)
+  if (system) {
     system->pending_history = (VkrShadowPendingHistory){0};
+    system->pending_local_history = (VkrLocalShadowPendingHistory){0};
+  }
 }
 
 void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
                                     uint64_t submit_value) {
-  if (!system || !system->pending_history.active)
+  if (!system)
     return;
   VkrShadowPendingHistory *pending = &system->pending_history;
-  if (pending->image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX) {
+  if (pending->active &&
+      pending->image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX) {
     for (uint32_t cascade = 0u; cascade < system->config.cascade_count;
          ++cascade) {
       if ((pending->cascade_mask & (UINT32_C(1) << cascade)) == 0u)
@@ -1290,6 +1312,17 @@ void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
     }
   }
   *pending = (VkrShadowPendingHistory){0};
+
+  VkrLocalShadowPendingHistory *local = &system->pending_local_history;
+  if (local->active && local->image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX) {
+    for (uint32_t face = 0u; face < VKR_LOCAL_SHADOW_FACE_COUNT_MAX; ++face) {
+      if ((local->render_mask & (UINT32_C(1) << face)) == 0u)
+        continue;
+      local->faces[face].last_submit_value = submit_value;
+      system->local_history[local->image_index][face] = local->faces[face];
+    }
+  }
+  *local = (VkrLocalShadowPendingHistory){0};
 }
 
 vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
@@ -1512,4 +1545,140 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     };
   }
   pending->active = pending->cascade_mask != 0u;
+}
+
+vkr_internal bool8_t vkr_shadow_local_dynamic_overlaps_light(
+    const VkrWorldDrawCandidate *candidate, const VkrPointLight *light) {
+  if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID) == 0u)
+    return true_v;
+  Vec3 center = vec3_zero();
+  float32_t radius = 0.0f;
+  vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
+  if (!isfinite(center.x) || !isfinite(center.y) || !isfinite(center.z) ||
+      !isfinite(radius) || radius < 0.0f)
+    return true_v;
+  const Vec3 delta = vec3_sub(center, light->position);
+  const float32_t distance_squared = vec3_length_squared(delta);
+  const float32_t reach = light->range + radius;
+  return !isfinite(distance_squared) || !isfinite(reach) ||
+         distance_squared <= reach * reach;
+}
+
+vkr_internal bool8_t vkr_shadow_local_face_reusable(
+    const VkrLocalShadowFaceHistory *history,
+    VkrRetainedLocalShadowToken retained_token,
+    const VkrLocalShadowSelection *selection,
+    const VkrWorldPassPayload *candidates, const VkrPointLight *light,
+    uint32_t face_in_group, uint32_t face_index,
+    const VkrLocalShadowView *view) {
+  const uint32_t bit = UINT32_C(1) << face_index;
+  return selection->valid && (retained_token.valid_layer_mask & bit) != 0u &&
+         retained_token.resource_generation != 0u &&
+         history->last_submit_value != 0u && history->static_only_contents &&
+         history->static_generation == candidates->static_generation &&
+         history->publication_generation ==
+             candidates->publication_generation &&
+         history->resource_generation == retained_token.resource_generation &&
+         history->layout_generation == selection->layout_generation &&
+         history->render_id == light->render_id &&
+         history->light_kind == (uint32_t)light->kind &&
+         history->face_in_group == face_in_group &&
+         MemCompare(&history->view, view, sizeof(*view)) == 0;
+}
+
+void vkr_shadow_system_resolve_local_shadows(
+    VkrShadowSystem *system, uint32_t image_index,
+    VkrRetainedLocalShadowToken retained_token,
+    const VkrWorldPassPayload *candidates, const VkrPointLight *lights,
+    uint32_t light_count, Vec3 camera_position,
+    VkrLocalShadowPassPayload *out_payload) {
+  if (!out_payload)
+    return;
+  MemZero(out_payload, sizeof(*out_payload));
+  if (!system || !system->initialized || !lights || !candidates)
+    return;
+
+  vkr_local_shadow_prepare_selection(
+      &system->local_selection, lights, light_count, camera_position,
+      system->config.local_shadow_face_budget,
+      system->config.local_shadow_map_size, out_payload);
+  system->pending_local_history = (VkrLocalShadowPendingHistory){0};
+  if (out_payload->view_count == 0u)
+    return;
+
+  const uint32_t shadow_count = candidates->gpu_shadow_candidate_count;
+  const uint32_t static_count =
+      Min(candidates->static_candidate_count, shadow_count);
+  const uint32_t dynamic_count = shadow_count - static_count;
+  bool8_t dynamic_scan_failed =
+      dynamic_count > system->config.reuse_dynamic_scan_budget;
+  if (!dynamic_scan_failed) {
+    for (uint32_t index = static_count; index < shadow_count; ++index) {
+      const VkrWorldDrawCandidate *candidate =
+          &candidates->gpu_candidates[index];
+      if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID) == 0u) {
+        dynamic_scan_failed = true_v;
+        break;
+      }
+    }
+  }
+
+  const bool8_t image_valid = image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
+  const bool8_t publication_pending = candidates->publication_pending;
+  VkrLocalShadowPendingHistory *pending = &system->pending_local_history;
+  pending->image_index = image_index;
+  const uint32_t bounded_light_count =
+      Min(light_count, VKR_MAX_SCENE_POINT_LIGHTS);
+  for (uint32_t light_index = 0u; light_index < bounded_light_count;
+       ++light_index) {
+    const uint32_t first = out_payload->light_first_view[light_index];
+    if (first == 0u)
+      continue;
+    const VkrPointLight *light = &lights[light_index];
+    const uint32_t face_count =
+        light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
+    const uint32_t view_start = first - 1u;
+
+    bool8_t dynamic_overlap = dynamic_scan_failed;
+    if (!dynamic_overlap) {
+      for (uint32_t index = static_count; index < shadow_count; ++index) {
+        if (vkr_shadow_local_dynamic_overlaps_light(
+                &candidates->gpu_candidates[index], light)) {
+          dynamic_overlap = true_v;
+          break;
+        }
+      }
+    }
+
+    bool8_t reusable = image_valid && !publication_pending && !dynamic_overlap;
+    for (uint32_t face = 0u; reusable && face < face_count; ++face) {
+      const uint32_t view_index = view_start + face;
+      reusable = vkr_shadow_local_face_reusable(
+          &system->local_history[image_index][view_index], retained_token,
+          &system->local_selection, candidates, light, face, view_index,
+          &out_payload->views[view_index]);
+    }
+    if (reusable)
+      continue;
+
+    for (uint32_t face = 0u; face < face_count; ++face) {
+      const uint32_t view_index = view_start + face;
+      const uint32_t bit = UINT32_C(1) << view_index;
+      out_payload->render_mask |= bit;
+      pending->render_mask |= bit;
+      pending->faces[view_index] = (VkrLocalShadowFaceHistory){
+          .view = out_payload->views[view_index],
+          .static_generation = candidates->static_generation,
+          .publication_generation = candidates->publication_generation,
+          .resource_generation = retained_token.resource_generation,
+          .layout_generation = system->local_selection.layout_generation,
+          .render_id = light->render_id,
+          .light_kind = (uint32_t)light->kind,
+          .face_in_group = face,
+          .static_only_contents =
+              !publication_pending && !dynamic_scan_failed && !dynamic_overlap,
+      };
+    }
+  }
+  pending->active = pending->render_mask != 0u;
 }
