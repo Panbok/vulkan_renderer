@@ -1,3 +1,4 @@
+#include "vkr_atomic_file.h"
 #include "vkr_sheen_lut.h"
 
 #include <algorithm>
@@ -810,9 +811,7 @@ int main(int argc, char **argv) {
     std::cout << "Sheen LUT unchanged\n";
     return 0;
   }
-  std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
-  file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-  if (!file) return 1;
+  if (!vkr_tools::write_file_atomic(argv[1], contents)) return 1;
   std::cout << "Sheen LUT generated: raw_E_peak=" << raw_peak
             << " normalized_E_peak=" << normalized_peak
             << " scale_range=" << *std::min_element(scales.begin(), scales.end())

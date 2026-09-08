@@ -19,11 +19,17 @@ typedef enum EditorBakeKind {
   EDITOR_BAKE_FONT,
   EDITOR_BAKE_TEXTURE,
   EDITOR_BAKE_TEXTURES,
+  EDITOR_BAKE_DFG_TABLE,
+  EDITOR_BAKE_SHEEN_TABLE,
+  EDITOR_BAKE_ANISOTROPY_TABLE,
+  EDITOR_BAKE_DIFFUSE_VOLUME,
+  EDITOR_BAKE_REFLECTION_PROBE,
   EDITOR_BAKE_KIND_COUNT,
 } EditorBakeKind;
 
 static const char *const editor_bakery_kind_names[] = {
-    "Mesh", "Font", "Texture", "Texture folder"};
+    "Mesh",    "Font",       "Texture", "Texture folder", "GGX DFG",
+    "Charlie", "Anisotropy", "Diffuse", "Reflection"};
 
 typedef enum EditorBakeryView {
   EDITOR_BAKERY_SETUP,
@@ -70,6 +76,8 @@ struct VkrEditorBakery {
   bool8_t force;
   uint8_t source_paths[EDITOR_BAKE_KIND_COUNT][EDITOR_BAKERY_PATH_CAPACITY];
   uint32_t source_lengths[EDITOR_BAKE_KIND_COUNT];
+  uint8_t output_paths[EDITOR_BAKE_KIND_COUNT][EDITOR_BAKERY_PATH_CAPACITY];
+  uint32_t output_lengths[EDITOR_BAKE_KIND_COUNT];
   uint8_t log[EDITOR_BAKERY_LOG_CAPACITY];
   uint32_t log_length;
   float64_t next_log_read;
@@ -85,6 +93,30 @@ static const char *editor_bakery_status(EditorBakeStatus status) {
   static const char *const names[] = {"Queued", "Running", "Done", "Failed",
                                       "Cancelled"};
   return names[status];
+}
+
+static bool8_t editor_bakery_uses_explicit_output(EditorBakeKind kind) {
+  return kind == EDITOR_BAKE_DIFFUSE_VOLUME ||
+         kind == EDITOR_BAKE_REFLECTION_PROBE;
+}
+
+static bool8_t editor_bakery_is_static_table(EditorBakeKind kind) {
+  return kind == EDITOR_BAKE_DFG_TABLE || kind == EDITOR_BAKE_SHEEN_TABLE ||
+         kind == EDITOR_BAKE_ANISOTROPY_TABLE;
+}
+
+static bool8_t editor_bakery_supports_force(EditorBakeKind kind) {
+  return kind == EDITOR_BAKE_FONT || kind == EDITOR_BAKE_TEXTURE ||
+         kind == EDITOR_BAKE_TEXTURES;
+}
+
+static const char *editor_bakery_table_output(EditorBakeKind kind) {
+  static const char *const outputs[] = {
+      "renderer/src/vkr_dfg_lut_data.inc",
+      "renderer/src/vkr_sheen_lut_data.inc",
+      "renderer/src/vkr_anisotropy_lut_data.inc",
+  };
+  return outputs[kind - EDITOR_BAKE_DFG_TABLE];
 }
 
 static bool8_t editor_bakery_directory(const char *name) {
@@ -104,7 +136,8 @@ static bool8_t editor_bakery_is_cancelled(void *context) {
 static void *editor_bakery_worker(void *argument) {
   VkrEditorBakery *bakery = argument;
   EditorBakeJob *job = &bakery->jobs[bakery->running];
-  const char *arguments[12];
+  const char *arguments[24];
+  char manifest[EDITOR_BAKERY_PATH_CAPACITY + 20u];
   uint32_t count = 0u;
   const char *executable;
   if (job->kind == EDITOR_BAKE_MESH) {
@@ -117,7 +150,8 @@ static void *editor_bakery_worker(void *argument) {
     executable = VKR_EDITOR_FONT_COOKER_PATH;
     arguments[count++] = "--config";
     arguments[count++] = job->input;
-  } else {
+  } else if (job->kind == EDITOR_BAKE_TEXTURE ||
+             job->kind == EDITOR_BAKE_TEXTURES) {
     executable = VKR_EDITOR_TEXTURE_COOKER_PATH;
     if (job->kind == EDITOR_BAKE_TEXTURES) {
       arguments[count++] = "--input-dir";
@@ -133,8 +167,60 @@ static void *editor_bakery_worker(void *argument) {
     }
     arguments[count++] = "--basis-threads";
     arguments[count++] = "2";
+  } else if (job->kind == EDITOR_BAKE_DFG_TABLE) {
+    executable = VKR_EDITOR_DFG_COOKER_PATH;
+    arguments[count++] = job->output;
+  } else if (job->kind == EDITOR_BAKE_SHEEN_TABLE) {
+    executable = VKR_EDITOR_SHEEN_COOKER_PATH;
+    arguments[count++] = job->output;
+  } else if (job->kind == EDITOR_BAKE_ANISOTROPY_TABLE) {
+    executable = VKR_EDITOR_ANISOTROPY_COOKER_PATH;
+    arguments[count++] = job->output;
+  } else if (job->kind == EDITOR_BAKE_DIFFUSE_VOLUME) {
+    executable = VKR_EDITOR_PYTHON_PATH;
+    (void)snprintf(manifest, sizeof(manifest), "%s.manifest.json", job->output);
+    arguments[count++] = "tools/bake_diffuse_volume.py";
+    arguments[count++] = "--scene";
+    arguments[count++] = job->input;
+    arguments[count++] = "--output";
+    arguments[count++] = job->output;
+    arguments[count++] = "--manifest";
+    arguments[count++] = manifest;
+    arguments[count++] = "--baker";
+    arguments[count++] = VKR_EDITOR_DIFFUSE_BAKER_PATH;
+    arguments[count++] = "--grid";
+    arguments[count++] = "4";
+    arguments[count++] = "4";
+    arguments[count++] = "4";
+    arguments[count++] = "--face-size";
+    arguments[count++] = "16";
+    arguments[count++] = "--samples";
+    arguments[count++] = "64";
+    arguments[count++] = "--max-depth";
+    arguments[count++] = "12";
+    arguments[count++] = "--seed";
+    arguments[count++] = "1";
+    arguments[count++] = "--photons";
+    arguments[count++] = "1000000";
+  } else {
+    executable = VKR_EDITOR_PYTHON_PATH;
+    arguments[count++] = "tools/bake_reflection_probe.py";
+    arguments[count++] = "--scene";
+    arguments[count++] = job->input;
+    arguments[count++] = "--position";
+    arguments[count++] = "-7.5";
+    arguments[count++] = "2.2";
+    arguments[count++] = "9";
+    arguments[count++] = "--size";
+    arguments[count++] = "256";
+    arguments[count++] = "--output";
+    arguments[count++] = job->output;
+    arguments[count++] = "--harness";
+    arguments[count++] = VKR_EDITOR_HARNESS_PATH;
+    arguments[count++] = "--packer";
+    arguments[count++] = VKR_EDITOR_HDR_CUBE_PACKER_PATH;
   }
-  if (job->force && job->kind != EDITOR_BAKE_MESH)
+  if (job->force && editor_bakery_supports_force(job->kind))
     arguments[count++] = "--force";
   const VkrPlatformProcessConfig config = {
       .executable = executable,
@@ -143,8 +229,11 @@ static void *editor_bakery_worker(void *argument) {
       .working_directory = PROJECT_SOURCE_DIR,
       .stdout_path = job->stdout_path,
       .stderr_path = job->stderr_path,
-      .timeout_ms = 30u * 60u * 1000u,
+      .timeout_ms = job->kind == EDITOR_BAKE_REFLECTION_PROBE
+                        ? 35u * 60u * 1000u
+                        : 30u * 60u * 1000u,
       .termination_grace_ms = 250u,
+      .terminate_process_tree = true_v,
       .hidden = true_v,
       .is_cancelled = editor_bakery_is_cancelled,
       .cancel_context = bakery,
@@ -167,12 +256,33 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
   bakery->selected = EDITOR_BAKERY_NONE;
   bakery->running = EDITOR_BAKERY_NONE;
   static const char *const sources[] = {
-      "assets/models/bistro.gltf", "assets/fonts/UbuntuMono-cooked.fontcfg",
-      "assets/textures/UbuntuMono21px_0.png", "assets/textures"};
+      "assets/models/bistro.gltf",
+      "assets/fonts/UbuntuMono-cooked.fontcfg",
+      "assets/textures/UbuntuMono21px_0.png",
+      "assets/textures",
+      "renderer/src/vkr_dfg_lut_data.inc",
+      "renderer/src/vkr_sheen_lut_data.inc",
+      "renderer/src/vkr_anisotropy_lut_data.inc",
+      "assets/scenes/fixtures/diffuse_volume_local.scene.json",
+      "assets/scenes/bistro.scene.json"};
+  static const char *const outputs[] = {
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "assets/textures/diffuse_volume_local.vkdv",
+      "assets/textures/bistro_bakery_probe.vkt"};
   for (uint32_t i = 0u; i < ArrayCount(sources); ++i)
     bakery->source_lengths[i] =
         (uint32_t)snprintf((char *)bakery->source_paths[i],
                            EDITOR_BAKERY_PATH_CAPACITY, "%s", sources[i]);
+  for (uint32_t i = 0u; i < ArrayCount(outputs); ++i)
+    bakery->output_lengths[i] =
+        (uint32_t)snprintf((char *)bakery->output_paths[i],
+                           EDITOR_BAKERY_PATH_CAPACITY, "%s", outputs[i]);
   const int directory_length =
       snprintf(bakery->log_directory, sizeof(bakery->log_directory),
                PROJECT_SOURCE_DIR "build/_artifacts/bakery/%u",
@@ -322,7 +432,7 @@ void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
 }
 
 static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
-                                  const char *input) {
+                                  const char *input, const char *output) {
   if (!input[0]) {
     snprintf(bakery->message, sizeof(bakery->message),
              "Enter a source path or font configuration first.");
@@ -340,6 +450,25 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
              "Mesh source must end in .gltf, .glb or .obj.");
     return;
   }
+  if (editor_bakery_uses_explicit_output(kind) && !output[0]) {
+    snprintf(bakery->message, sizeof(bakery->message),
+             "Enter an output path before adding this bake.");
+    return;
+  }
+  const char *output_dot = output ? strrchr(output, '.') : NULL;
+  const String8 output_extension =
+      editor_bakery_string(output_dot ? output_dot : "");
+  const String8 vkdv = string8_lit(".vkdv"), vkt = string8_lit(".vkt");
+  if ((kind == EDITOR_BAKE_DIFFUSE_VOLUME &&
+       !string8_equalsi(&output_extension, &vkdv)) ||
+      (kind == EDITOR_BAKE_REFLECTION_PROBE &&
+       !string8_equalsi(&output_extension, &vkt))) {
+    snprintf(
+        bakery->message, sizeof(bakery->message), "%s output must end in %s.",
+        kind == EDITOR_BAKE_DIFFUSE_VOLUME ? "Diffuse volume" : "Reflection",
+        kind == EDITOR_BAKE_DIFFUSE_VOLUME ? ".vkdv" : ".vkt");
+    return;
+  }
   if (bakery->job_count == EDITOR_BAKERY_JOB_CAPACITY) {
     snprintf(bakery->message, sizeof(bakery->message),
              "Queue full; clear finished jobs first.");
@@ -347,16 +476,24 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
   }
   const uint32_t index = bakery->job_count++;
   EditorBakeJob *job = &bakery->jobs[index];
-  *job = (EditorBakeJob){.kind = kind,
-                         .status = EDITOR_BAKE_QUEUED,
-                         .force = bakery->force,
-                         .exit_code = -1};
+  *job = (EditorBakeJob){
+      .kind = kind,
+      .status = EDITOR_BAKE_QUEUED,
+      .force = editor_bakery_supports_force(kind) ? bakery->force : false_v,
+      .exit_code = -1};
   snprintf(job->input, sizeof(job->input), "%s", input);
-  if (kind == EDITOR_BAKE_MESH)
+  if (editor_bakery_is_static_table(kind)) {
+    snprintf(job->input, sizeof(job->input), "%s",
+             editor_bakery_table_output(kind));
+    snprintf(job->output, sizeof(job->output), "%s",
+             editor_bakery_table_output(kind));
+  } else if (kind == EDITOR_BAKE_MESH)
     snprintf(job->output, sizeof(job->output), "%.*s.vkb",
              (int)(extension - input), input);
   else if (kind == EDITOR_BAKE_TEXTURE)
     snprintf(job->output, sizeof(job->output), "%s.vkt", input);
+  else if (editor_bakery_uses_explicit_output(kind))
+    snprintf(job->output, sizeof(job->output), "%s", output);
   snprintf(job->stdout_path, sizeof(job->stdout_path), "%s/%u.stdout.log",
            bakery->log_directory, index);
   snprintf(job->stderr_path, sizeof(job->stderr_path), "%s/%u.stderr.log",
@@ -391,15 +528,19 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
                                 VkrFontHandle heading, float32_t width) {
   const bool8_t wide = width >= 628.0f;
   const uint32_t recipe_columns = wide ? 4u : width >= 224.0f ? 2u : 1u;
+  const uint32_t recipe_row_count =
+      (EDITOR_BAKE_KIND_COUNT + recipe_columns - 1u) / recipe_columns;
   const VkrUiTrack column = {.unit = VKR_UI_TRACK_FR, .value = 1.0f};
   VkrUiTrack rows[] = {
       {.unit = VKR_UI_TRACK_PX,
-       .value = (28.0f + 4.0f) * (4u / recipe_columns) - 4.0f},
+       .value = (28.0f + 4.0f) * recipe_row_count - 4.0f},
       {.unit = VKR_UI_TRACK_PX, .value = wide ? 30.0f : 82.0f},
       {.unit = VKR_UI_TRACK_PX,
-       .value = wide || bakery->kind != EDITOR_BAKE_FONT ? 28.0f
-                : width < 224.0f                         ? 92.0f
-                                                         : 60.0f},
+       .value = wide || (bakery->kind != EDITOR_BAKE_FONT &&
+                         !editor_bakery_uses_explicit_output(bakery->kind))
+                    ? 28.0f
+                : width < 224.0f ? 92.0f
+                                 : 60.0f},
       {.unit = VKR_UI_TRACK_AUTO},
   };
   VkrUiPanelConfig setup = vkr_ui_panel_config_default();
@@ -418,13 +559,18 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
       {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
       {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 28.0f},
   };
   VkrUiPanelConfig recipes = vkr_ui_panel_config_default();
   recipes.placement.row = 0u;
   recipes.columns = equal;
   recipes.column_count = recipe_columns;
   recipes.rows = recipe_rows;
-  recipes.row_count = 4u / recipe_columns;
+  recipes.row_count = recipe_row_count;
   recipes.style.gap_pt = 4.0f;
   if (vkr_ui_panel_begin(ui, string8_lit("types"), &recipes)) {
     for (uint32_t i = 0u; i < EDITOR_BAKE_KIND_COUNT; ++i) {
@@ -465,7 +611,11 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
   source.style.gap_pt = 3.0f;
   if (vkr_ui_panel_begin(ui, string8_lit("source"), &source)) {
     VkrUiWidgetConfig config = editor_bakery_widget(0u, 0u);
-    vkr_ui_label(ui, string8_lit("label"), string8_lit("Source"), &config);
+    vkr_ui_label(ui, string8_lit("label"),
+                 editor_bakery_is_static_table(bakery->kind)
+                     ? string8_lit("Table")
+                     : string8_lit("Source"),
+                 &config);
     config = editor_bakery_widget(wide ? 0u : 1u, wide ? 1u : 0u);
     vkr_editor_field_style(&config);
     static const char *const path_hints[] = {
@@ -473,8 +623,14 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
         "Font configuration: .fontcfg. Project-relative or absolute path.",
         "Single 2D texture source. Project-relative or absolute path.",
         "Texture directory. Project-relative or absolute path.",
+        "Fixed output for the shared GGX DFG static table.",
+        "Fixed output for the shared Charlie sheen static table.",
+        "Fixed output for the shared anisotropic GGX static table.",
+        "Scene JSON used to bake a diffuse volume.",
+        "Scene JSON captured into a six-face reflection probe.",
     };
     config.tooltip = editor_bakery_string(path_hints[bakery->kind]);
+    config.disabled = editor_bakery_is_static_table(bakery->kind);
     VkrUiTextEditBuffer buffer = {.data = bakery->source_paths[bakery->kind],
                                   .length =
                                       bakery->source_lengths[bakery->kind],
@@ -484,14 +640,17 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
     bakery->source_lengths[bakery->kind] = buffer.length;
     config = editor_bakery_widget(wide ? 0u : 2u, wide ? 2u : 0u);
     vkr_editor_action_style(&config, heading);
-    config.disabled =
-        !buffer.length || bakery->job_count == EDITOR_BAKERY_JOB_CAPACITY;
+    config.disabled = !buffer.length ||
+                      (editor_bakery_uses_explicit_output(bakery->kind) &&
+                       !bakery->output_lengths[bakery->kind]) ||
+                      bakery->job_count == EDITOR_BAKERY_JOB_CAPACITY;
     config.tooltip = string8_lit("Add this source to the bake queue");
     if (vkr_ui_button(ui, string8_lit("bake"),
                       width < 124.0f ? string8_lit("Bake")
                                      : string8_lit("Queue bake"),
                       &config))
-      editor_bakery_enqueue(bakery, bakery->kind, (char *)buffer.data);
+      editor_bakery_enqueue(bakery, bakery->kind, (char *)buffer.data,
+                            (char *)bakery->output_paths[bakery->kind]);
     (void)vkr_ui_panel_end(ui);
   }
 
@@ -500,19 +659,38 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
   options.columns = equal;
   options.column_count = wide ? 3u : 1u;
   options.rows = recipe_rows;
-  options.row_count = wide || bakery->kind != EDITOR_BAKE_FONT ? 1u
-                      : width < 224.0f                         ? 3u
-                                                               : 2u;
+  options.row_count =
+      wide || (bakery->kind != EDITOR_BAKE_FONT &&
+               !editor_bakery_uses_explicit_output(bakery->kind))
+          ? 1u
+      : width < 224.0f ? 3u
+                       : 2u;
   options.style.gap_pt = 4.0f;
   if (vkr_ui_panel_begin(ui, string8_lit("options"), &options)) {
     VkrUiWidgetConfig config = editor_bakery_widget(0u, 0u);
-    if (bakery->kind == EDITOR_BAKE_MESH) {
+    if (editor_bakery_uses_explicit_output(bakery->kind)) {
+      vkr_ui_label(ui, string8_lit("output-label"), string8_lit("Output"),
+                   &config);
+      config = editor_bakery_widget(wide ? 0u : 1u, wide ? 1u : 0u);
+      config.placement.column_span = wide ? 2u : 1u;
+      vkr_editor_field_style(&config);
+      config.tooltip = bakery->kind == EDITOR_BAKE_DIFFUSE_VOLUME
+                           ? string8_lit("Volume output: .vkdv")
+                           : string8_lit("Cubemap output: .vkt");
+      VkrUiTextEditBuffer output = {.data = bakery->output_paths[bakery->kind],
+                                    .length =
+                                        bakery->output_lengths[bakery->kind],
+                                    .capacity = EDITOR_BAKERY_PATH_CAPACITY};
+      if (vkr_ui_text_field(ui, string8_lit("output"), &output, &config))
+        bakery->message[0] = '\0';
+      bakery->output_lengths[bakery->kind] = output.length;
+    } else if (bakery->kind == EDITOR_BAKE_MESH) {
       config.tooltip = string8_lit("Meshes always rebuild their output");
       vkr_ui_label(ui, string8_lit("rebuild"),
                    width < 180.0f ? string8_lit("Rebuild")
                                   : string8_lit("Meshes always rebuild"),
                    &config);
-    } else {
+    } else if (editor_bakery_supports_force(bakery->kind)) {
       config.tooltip =
           string8_lit("Bake again even when the output is current");
       (void)vkr_ui_checkbox(ui, string8_lit("force"),
@@ -565,6 +743,17 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       "baked texture.",
       "Bakes all supported textures in this directory.\nReload the scene to "
       "use the baked textures.",
+      "Regenerates the checked-in GGX DFG static table. Rebuild the renderer "
+      "after this recipe succeeds.",
+      "Regenerates the checked-in Charlie sheen static table. Rebuild the "
+      "renderer after this recipe succeeds.",
+      "Regenerates the checked-in anisotropic GGX static table. Rebuild the "
+      "renderer after this recipe succeeds.",
+      "Writes a checked diffuse volume and dependency metadata. Uses the "
+      "existing bounded 4x4x4, 1M-photon recipe.",
+      "Captures six 256px HDR faces at Bistro's selected probe center and "
+      "writes a reflection cubemap. Uses the existing 330-second-per-face "
+      "recipe.",
   };
   VkrUiWidgetConfig hint = editor_bakery_widget(3u, 0u);
   hint.text.layout.word_wrap = true_v;

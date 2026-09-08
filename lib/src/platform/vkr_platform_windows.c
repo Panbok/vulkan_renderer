@@ -11,6 +11,8 @@
 #include <intrin.h>
 #endif
 
+vkr_internal const DWORD vkr_platform_process_stop_wait_ms = 5000u;
+
 bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length) {
   if (!buffer || capacity == 0u || !out_length)
@@ -531,6 +533,33 @@ vkr_platform_environment_restore(const VkrPlatformSavedEnvironment *saved,
   }
 }
 
+vkr_internal bool8_t vkr_platform_process_job_stop(HANDLE *job) {
+  if (!*job) {
+    return true_v;
+  }
+  bool8_t stopped = TerminateJobObject(*job, 1u);
+  const ULONGLONG started = GetTickCount64();
+  while (stopped) {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting = {0};
+    if (!QueryInformationJobObject(*job, JobObjectBasicAccountingInformation,
+                                   &accounting, sizeof(accounting), NULL)) {
+      stopped = false_v;
+      break;
+    }
+    if (accounting.ActiveProcesses == 0u) {
+      break;
+    }
+    if (GetTickCount64() - started >= vkr_platform_process_stop_wait_ms) {
+      stopped = false_v;
+      break;
+    }
+    Sleep(10u);
+  }
+  CloseHandle(*job);
+  *job = NULL;
+  return stopped;
+}
+
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
                                  bool8_t *out_timed_out) {
@@ -575,13 +604,36 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   };
   PROCESS_INFORMATION process = {0};
   VkrPlatformSavedEnvironment saved[16] = {0};
+  HANDLE job = NULL;
+  if (config->terminate_process_tree) {
+    job = CreateJobObjectA(NULL, NULL);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+    limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                         &limits, sizeof(limits))) {
+      if (job) {
+        CloseHandle(job);
+      }
+      for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
+        if (paths[i]) {
+          CloseHandle(output[i]);
+        }
+      }
+      return false_v;
+    }
+  }
   const bool8_t environment_applied = vkr_platform_environment_apply(
       config->environment, config->environment_count, saved);
   BOOL created = FALSE;
   if (environment_applied) {
-    created = CreateProcessA(NULL, command, NULL, NULL, TRUE,
-                             config->hidden ? CREATE_NO_WINDOW : 0u, NULL,
-                             config->working_directory, &startup, &process);
+    DWORD creation_flags = config->hidden ? CREATE_NO_WINDOW : 0u;
+    if (config->terminate_process_tree) {
+      creation_flags |= CREATE_SUSPENDED;
+    }
+    created =
+        CreateProcessA(NULL, command, NULL, NULL, TRUE, creation_flags, NULL,
+                       config->working_directory, &startup, &process);
     vkr_platform_environment_restore(saved, config->environment_count);
   }
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
@@ -590,11 +642,26 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     }
   }
   if (!created) {
+    if (job) {
+      CloseHandle(job);
+    }
+    return false_v;
+  }
+  if (config->terminate_process_tree &&
+      (!AssignProcessToJobObject(job, process.hProcess) ||
+       ResumeThread(process.hThread) == (DWORD)-1)) {
+    (void)TerminateProcess(process.hProcess, 1u);
+    (void)WaitForSingleObject(process.hProcess,
+                              vkr_platform_process_stop_wait_ms);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    CloseHandle(job);
     return false_v;
   }
   *out_exit_code = -1;
   *out_timed_out = false_v;
   const ULONGLONG started = GetTickCount64();
+  bool8_t tree_stopped = true_v;
   DWORD wait;
   for (;;) {
     wait = WaitForSingleObject(
@@ -610,8 +677,13 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                               GetTickCount64() - started >= config->timeout_ms;
     if (cancelled || timed_out) {
       *out_timed_out = timed_out;
-      (void)TerminateProcess(process.hProcess, 1u);
-      (void)WaitForSingleObject(process.hProcess, INFINITE);
+      if (job) {
+        tree_stopped = TerminateJobObject(job, 1u);
+      } else {
+        tree_stopped = TerminateProcess(process.hProcess, 1u);
+      }
+      wait = WaitForSingleObject(process.hProcess,
+                                 vkr_platform_process_stop_wait_ms);
       break;
     }
   }
@@ -620,9 +692,17 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     if (GetExitCodeProcess(process.hProcess, &exit_code))
       *out_exit_code = (int32_t)exit_code;
   }
+  const bool8_t wait_valid = wait == WAIT_OBJECT_0 || wait == WAIT_TIMEOUT;
+  bool8_t process_stopped = wait == WAIT_OBJECT_0;
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);
-  return wait == WAIT_OBJECT_0 || wait == WAIT_TIMEOUT;
+  if (job && !vkr_platform_process_job_stop(&job)) {
+    tree_stopped = false_v;
+  }
+  if (config->terminate_process_tree && tree_stopped) {
+    process_stopped = true_v;
+  }
+  return wait_valid && tree_stopped && process_stopped;
 }
 
 bool8_t vkr_platform_process_capture(const char *executable,

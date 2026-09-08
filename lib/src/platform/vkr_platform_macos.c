@@ -226,6 +226,9 @@ vkr_internal float64_t vkr_platform_monotonic_seconds(void) {
 
 vkr_internal void
 vkr_platform_process_child_setup(const VkrPlatformProcessConfig *config) {
+  if (config->terminate_process_tree && setpgid(0, 0) != 0) {
+    _exit(127);
+  }
   if (config->working_directory && chdir(config->working_directory) != 0) {
     _exit(127);
   }
@@ -252,6 +255,80 @@ vkr_platform_process_child_setup(const VkrPlatformProcessConfig *config) {
       _exit(127);
     }
   }
+}
+
+vkr_internal bool8_t vkr_platform_process_wait_nonblocking(
+    pid_t pid, int *status, bool8_t *out_reaped) {
+  if (*out_reaped) {
+    return true_v;
+  }
+  for (;;) {
+    const pid_t waited = waitpid(pid, status, WNOHANG);
+    if (waited == pid) {
+      *out_reaped = true_v;
+      return true_v;
+    }
+    if (waited == 0) {
+      return true_v;
+    }
+    if (errno != EINTR) {
+      return false_v;
+    }
+  }
+}
+
+vkr_internal bool8_t vkr_platform_process_wait_blocking(pid_t pid, int *status,
+                                                        bool8_t *out_reaped) {
+  if (*out_reaped) {
+    return true_v;
+  }
+  while (waitpid(pid, status, 0) < 0) {
+    if (errno != EINTR) {
+      return false_v;
+    }
+  }
+  *out_reaped = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_platform_process_group_exists(pid_t group) {
+  return kill(-group, 0) == 0 || errno == EPERM;
+}
+
+vkr_internal bool8_t vkr_platform_process_signal(pid_t pid,
+                                                 bool8_t process_tree,
+                                                 int signal) {
+  if (kill(process_tree ? -pid : pid, signal) == 0 || errno == ESRCH) {
+    return true_v;
+  }
+  return false_v;
+}
+
+vkr_internal bool8_t vkr_platform_process_stop(pid_t pid, bool8_t process_tree,
+                                               uint32_t grace_ms, int *status,
+                                               bool8_t *out_reaped) {
+  if (!vkr_platform_process_signal(pid, process_tree, SIGTERM)) {
+    return false_v;
+  }
+  const float64_t deadline =
+      vkr_platform_monotonic_seconds() + (float64_t)grace_ms / 1000.0;
+  for (;;) {
+    if (!vkr_platform_process_wait_nonblocking(pid, status, out_reaped)) {
+      return false_v;
+    }
+    if ((process_tree && !vkr_platform_process_group_exists(pid)) ||
+        (!process_tree && *out_reaped)) {
+      return true_v;
+    }
+    if (vkr_platform_monotonic_seconds() >= deadline) {
+      break;
+    }
+    vkr_platform_sleep(10u);
+  }
+  if (!vkr_platform_process_signal(pid, process_tree, SIGKILL)) {
+    return false_v;
+  }
+  return vkr_platform_process_wait_blocking(pid, status, out_reaped);
 }
 
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
@@ -281,22 +358,30 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     _exit(127);
   }
 
+  if (config->terminate_process_tree && setpgid(pid, pid) != 0 &&
+      getpgid(pid) != pid) {
+    (void)vkr_platform_process_signal(pid, false_v, SIGKILL);
+    int failed_status = 0;
+    bool8_t failed_reaped = false_v;
+    (void)vkr_platform_process_wait_blocking(pid, &failed_status,
+                                             &failed_reaped);
+    return false_v;
+  }
+
   int status = 0;
+  bool8_t reaped = false_v;
   if (config->timeout_ms == 0u && !config->is_cancelled) {
-    while (waitpid(pid, &status, 0) < 0) {
-      if (errno != EINTR) {
-        return false_v;
-      }
+    if (!vkr_platform_process_wait_blocking(pid, &status, &reaped)) {
+      return false_v;
     }
   } else {
     const float64_t started = vkr_platform_monotonic_seconds();
     for (;;) {
-      const pid_t waited = waitpid(pid, &status, WNOHANG);
-      if (waited == pid) {
-        break;
-      }
-      if (waited < 0 && errno != EINTR) {
+      if (!vkr_platform_process_wait_nonblocking(pid, &status, &reaped)) {
         return false_v;
+      }
+      if (reaped) {
+        break;
       }
       const bool8_t cancelled =
           config->is_cancelled && config->is_cancelled(config->cancel_context);
@@ -306,22 +391,21 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
               config->timeout_ms;
       if (cancelled || timed_out) {
         *out_timed_out = timed_out;
-        (void)kill(pid, SIGTERM);
-        const float64_t grace_started = vkr_platform_monotonic_seconds();
-        while (waitpid(pid, &status, WNOHANG) == 0 &&
-               (vkr_platform_monotonic_seconds() - grace_started) * 1000.0 <
-                   config->termination_grace_ms) {
-          vkr_platform_sleep(10u);
+        if (!vkr_platform_process_stop(pid, config->terminate_process_tree,
+                                       config->termination_grace_ms, &status,
+                                       &reaped)) {
+          return false_v;
         }
-        if (waitpid(pid, &status, WNOHANG) == 0) {
-          (void)kill(pid, SIGKILL);
-        }
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-        }
-        return true_v;
+        break;
       }
       vkr_platform_sleep(10u);
     }
+  }
+  if (config->terminate_process_tree &&
+      vkr_platform_process_group_exists(pid) &&
+      !vkr_platform_process_stop(pid, true_v, config->termination_grace_ms,
+                                 &status, &reaped)) {
+    return false_v;
   }
   if (WIFEXITED(status)) {
     *out_exit_code = WEXITSTATUS(status);

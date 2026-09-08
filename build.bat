@@ -62,7 +62,7 @@ cmake --fresh -S . -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE:STRING=%BUILD_TYPE% -DCMA
 if errorlevel 1 goto :vkr_cmake_configure_failed
 
 echo Building %VKR_BUILD_LABEL% (%BUILD_TYPE%)
-cmake --build ".\%BUILD_DIR%" --target %VKR_BUILD_TARGET% vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer vkr_diffuse_baker --config %BUILD_TYPE%
+cmake --build ".\%BUILD_DIR%" --target %VKR_BUILD_TARGET% vkr_harness --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
 echo Build completed successfully!
 endlocal

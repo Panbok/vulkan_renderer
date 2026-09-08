@@ -1,3 +1,4 @@
+#include "vkr_atomic_file.h"
 #include "vkr_dfg_lut.h"
 
 #include <algorithm>
@@ -133,9 +134,7 @@ int main(int argc, char **argv) {
     std::cout << "DFG unchanged\n";
     return 0;
   }
-  std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
-  file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-  if (!file)
+  if (!vkr_tools::write_file_atomic(argv[1], contents))
     return 1;
   std::cout << "DFG generated: " << VKR_DFG_LUT_SIZE << "x" << VKR_DFG_LUT_SIZE
             << " RG16F, " << sample_count << " samples/texel\n";

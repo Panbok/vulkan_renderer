@@ -1,4 +1,5 @@
 #include "vkr_anisotropy_lut.h"
+#include "vkr_atomic_file.h"
 extern "C" {
 #include "vkr_ltc_lut.h"
 }
@@ -359,9 +360,7 @@ int main(int argc, char **argv) {
   if (previous == contents)
     std::cout << "Anisotropy LUT unchanged\n";
   else {
-    std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
-    file.write(contents.data(), contents.size());
-    if (!file)
+    if (!vkr_tools::write_file_atomic(argv[1], contents))
       return 1;
   }
   std::cout << "Anisotropy fit: nodes=" << count

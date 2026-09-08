@@ -6,50 +6,22 @@ if(APPLE)
     enable_language(OBJC)
 endif()
 
-# Offline generator for the checked-in, shared immutable BRDF coefficients.
+# Offline generators for checked-in, shared immutable BRDF coefficients. The
+# editor's Bakery invokes these explicitly; configuring or building a renderer
+# must never rewrite its static table sources.
 add_executable(vkr_dfg_cooker vkr_dfg_cooker.cpp)
 target_compile_features(vkr_dfg_cooker PRIVATE cxx_std_17)
 target_include_directories(vkr_dfg_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
-set(VKR_DFG_DATA "${CMAKE_SOURCE_DIR}/renderer/src/vkr_dfg_lut_data.inc")
-add_custom_command(OUTPUT "${VKR_DFG_DATA}"
-    COMMAND $<TARGET_FILE:vkr_dfg_cooker> "${VKR_DFG_DATA}"
-    DEPENDS vkr_dfg_cooker vkr_dfg_cooker.cpp
-            "${CMAKE_SOURCE_DIR}/renderer/src/vkr_dfg_lut.h"
-            "${CMAKE_SOURCE_DIR}/renderer/src/shaders/shared/dfg_contract.slangh"
-    COMMENT "Cooking shared immutable GGX DFG coefficients"
-    VERBATIM)
-add_custom_target(vkr_dfg_data DEPENDS "${VKR_DFG_DATA}")
-add_dependencies(renderer_lib vkr_dfg_data)
 
 # Charlie energy and rectangle fits share one immutable payload in both backends.
 add_executable(vkr_sheen_cooker vkr_sheen_cooker.cpp)
 target_compile_features(vkr_sheen_cooker PRIVATE cxx_std_17)
 target_include_directories(vkr_sheen_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
-set(VKR_SHEEN_DATA "${CMAKE_SOURCE_DIR}/renderer/src/vkr_sheen_lut_data.inc")
-add_custom_command(OUTPUT "${VKR_SHEEN_DATA}"
-    COMMAND $<TARGET_FILE:vkr_sheen_cooker> "${VKR_SHEEN_DATA}"
-    DEPENDS vkr_sheen_cooker vkr_sheen_cooker.cpp
-            "${CMAKE_SOURCE_DIR}/renderer/src/vkr_sheen_lut.h"
-    COMMENT "Cooking shared Charlie energy and rectangle coefficients"
-    VERBATIM)
-add_custom_target(vkr_sheen_data DEPENDS "${VKR_SHEEN_DATA}")
-add_dependencies(renderer_lib vkr_sheen_data)
 
 add_executable(vkr_anisotropy_cooker vkr_anisotropy_cooker.cpp
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_ltc_lut.c")
 target_compile_features(vkr_anisotropy_cooker PRIVATE cxx_std_17)
 target_include_directories(vkr_anisotropy_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
-set(VKR_ANISOTROPY_DATA "${CMAKE_SOURCE_DIR}/renderer/src/vkr_anisotropy_lut_data.inc")
-add_custom_command(OUTPUT "${VKR_ANISOTROPY_DATA}"
-    COMMAND $<TARGET_FILE:vkr_anisotropy_cooker> "${VKR_ANISOTROPY_DATA}"
-    DEPENDS vkr_anisotropy_cooker vkr_anisotropy_cooker.cpp
-            assets/anisotropy_ltc_seed.inc
-            "${CMAKE_SOURCE_DIR}/renderer/src/vkr_ltc_lut.c"
-            "${CMAKE_SOURCE_DIR}/renderer/src/vkr_anisotropy_lut.h"
-    COMMENT "Cooking anisotropic GGX LTC and DFG tables"
-    VERBATIM)
-add_custom_target(vkr_anisotropy_data DEPENDS "${VKR_ANISOTROPY_DATA}")
-add_dependencies(renderer_lib vkr_anisotropy_data)
 
 find_package(Vulkan REQUIRED)
 
@@ -166,9 +138,6 @@ add_executable(vkr_hdr_cube_packer vkr_hdr_cube_packer.cpp)
 target_compile_features(vkr_hdr_cube_packer PRIVATE cxx_std_17)
 target_include_directories(vkr_hdr_cube_packer PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(vkr_hdr_cube_packer PRIVATE ktx)
-if(TARGET vkr_harness)
-    add_dependencies(vkr_harness vkr_hdr_cube_packer)
-endif()
 
 # CPU-only indirect-lighting preparation and portable baked assets.
 add_library(vkr_bake_core STATIC
@@ -189,7 +158,6 @@ target_compile_features(vkr_bake_core PRIVATE cxx_std_17)
 target_include_directories(vkr_bake_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src" "${CMAKE_SOURCE_DIR}/vendor" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(vkr_bake_core PUBLIC vkr_asset_formats PRIVATE ktx vkr_image_decode)
-add_dependencies(vkr_bake_core vkr_dfg_data vkr_sheen_data vkr_anisotropy_data)
 add_executable(vkr_diffuse_baker vkr_diffuse_baker.cpp)
 target_compile_features(vkr_diffuse_baker PRIVATE cxx_std_17)
 target_link_libraries(vkr_diffuse_baker PRIVATE vkr_bake_core)

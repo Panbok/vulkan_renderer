@@ -44,6 +44,10 @@ typedef struct VkrPlatformProcessConfig {
   uint32_t timeout_ms;           /**< Zero waits without a timeout. */
   uint32_t termination_grace_ms; /**< Grace before forced termination. */
   bool8_t hidden;
+  /** Makes this child the root of an owned process tree. The caller stops any
+   * remaining descendants before process_run returns. Nested default calls
+   * inherit the root's ownership without creating another tree. */
+  bool8_t terminate_process_tree;
   /** Optional cancellation query on the waiting thread. Context is borrowed
    * through process_run; the callback synchronizes its own state. */
   bool8_t (*is_cancelled)(void *context);
@@ -102,8 +106,11 @@ void vkr_platform_stderr_write(const char *message);
  * All config storage is borrowed only for this blocking call. A true return
  * means the platform launch/wait operations succeeded; the child result is in
  * `out_exit_code`. On timeout, `out_timed_out` is true and the child is
- * terminated. POSIX first allows `termination_grace_ms`; Windows termination
- * is immediate. A null environment value removes that variable in the child.
+ * terminated. When `terminate_process_tree` is true, process_run owns the
+ * launched process and descendants that remain in its process group or Job;
+ * it stops remaining descendants before returning. POSIX first allows
+ * `termination_grace_ms`; Windows termination is immediate. A null environment
+ * value removes that variable in the child.
  */
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
