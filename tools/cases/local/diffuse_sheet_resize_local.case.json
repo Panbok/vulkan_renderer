@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "local.diffuse_sheet.resize",
+  "suite": "local",
+  "description": "Thin-sheet resize witness with layered materials, SSR and SSGI.",
+  "scene": "assets/scenes/fixtures/diffuse_sheet_layers_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    512,
+    384
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 4,
+    "measure": 2
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "agx",
+    "gtao_enabled": false,
+    "ssr_enabled": true,
+    "ssgi_enabled": true,
+    "bloom_enabled": false,
+    "image_sharpness": 0
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.5,
+      7
+    ],
+    "yaw": -90,
+    "pitch": -10,
+    "vertical_fov_degrees": 45,
+    "near_plane": 0.1,
+    "far_plane": 50
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ],
+  "resize_round_trip": [
+    257,
+    193
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "id": "local.clearcoat.layers",
+  "suite": "local",
+  "description": "Scalar and textured clearcoat layers: coat-off, roughness limits, independent normals, coated glass, and coat-priority SSR.",
+  "scene": "assets/scenes/fixtures/clearcoat_local.scene.json",
+  "seed": 1,
+  "resolution": [512, 384],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 8, "measure": 2 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "agx",
+    "gtao_enabled": false,
+    "ssr_enabled": true,
+    "ssgi_enabled": false,
+    "bloom_enabled": false,
+    "image_sharpness": 0
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.5, 7],
+    "yaw": -90,
+    "pitch": -10,
+    "vertical_fov_degrees": 45,
+    "near_plane": 0.1,
+    "far_plane": 50
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "hdr_post_transmission",
+        "depth",
+        "gbuffer_normal",
+        "gbuffer_specular",
+        "ssr_raw",
+        "ssr_reflection"
+      ]
+    }
+  ],
+  "assertions": [
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}

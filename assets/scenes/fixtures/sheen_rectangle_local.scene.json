@@ -1,0 +1,314 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Rectangle",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          1.7,
+          2.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.92,
+          0.82
+        ],
+        "radiance": 12,
+        "size": [
+          3,
+          1.5
+        ]
+      }
+    },
+    {
+      "name": "Sheenoff",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -2.25,
+          1.5,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.2,
+          1.2,
+          0.12
+        ],
+        "material": {
+          "name": "sheen_off",
+          "path": "tests/fixtures/rendering/sheen/sheen_off.mt"
+        }
+      }
+    },
+    {
+      "name": "Sheensmooth",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -0.75,
+          1.5,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.2,
+          1.2,
+          0.12
+        ],
+        "material": {
+          "name": "sheen_smooth",
+          "path": "tests/fixtures/rendering/sheen/sheen_smooth.mt"
+        }
+      }
+    },
+    {
+      "name": "Sheenrough",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.75,
+          1.5,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.2,
+          1.2,
+          0.12
+        ],
+        "material": {
+          "name": "sheen_rough",
+          "path": "tests/fixtures/rendering/sheen/sheen_rough.mt"
+        }
+      }
+    },
+    {
+      "name": "Sheentextured",
+      "parent": null,
+      "transform": {
+        "pos": [
+          2.25,
+          1.5,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.2,
+          1.2,
+          0.12
+        ],
+        "material": {
+          "name": "sheen_textured",
+          "path": "tests/fixtures/rendering/sheen/sheen_textured.mt"
+        }
+      }
+    },
+    {
+      "name": "GlassBackdrop",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          -0.15,
+          -1.35
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          2.2,
+          1.3,
+          0.12
+        ],
+        "material": {
+          "name": "clearcoat_backdrop",
+          "path": "tests/fixtures/rendering/clearcoat/clearcoat_backdrop.mt"
+        }
+      }
+    },
+    {
+      "name": "CoatedGlass",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          -0.15,
+          -0.55
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.7,
+          1.05,
+          0.1
+        ],
+        "material": {
+          "name": "sheen_glass",
+          "path": "tests/fixtures/rendering/sheen/sheen_glass.mt"
+        }
+      }
+    },
+    {
+      "name": "CoatPriorityFloor",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          -0.78,
+          -1.4
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          6.0,
+          0.12,
+          4.5
+        ],
+        "material": {
+          "name": "sheen_ssr_floor",
+          "path": "tests/fixtures/rendering/sheen/sheen_ssr_floor.mt"
+        }
+      }
+    },
+    {
+      "name": "SSRRedEmitter",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -1.25,
+          0.35,
+          -3.0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          0.55,
+          1.5,
+          0.12
+        ],
+        "material": {
+          "name": "clearcoat_emitter",
+          "path": "tests/fixtures/rendering/clearcoat/clearcoat_emitter.mt"
+        }
+      }
+    }
+  ]
+}

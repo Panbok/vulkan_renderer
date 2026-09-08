@@ -1,0 +1,15 @@
+name=diffuse_sheet_layer_sheen_smooth
+type=pbr
+base_color=.3,.3,.3,1
+metallic=0
+roughness=.45
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world
+sheen_color=.9,.12,.04
+sheen_roughness=.04
+anisotropy_strength=.7
+anisotropy_rotation=.65
+diffuse_transmission_strength=0.4
+diffuse_transmission_color=0.25,1,0.25

@@ -224,6 +224,19 @@ static bool8_t gltf_test_file_exists(const char *path) {
   return true_v;
 }
 
+static uint64_t gltf_test_hash_file_bytes(const char *path) {
+  FILE *file = fopen(path, "rb");
+  assert(file != NULL);
+  uint64_t hash = GLTF_TEST_FNV1A64_OFFSET_BASIS;
+  for (int32_t byte = fgetc(file); byte != EOF; byte = fgetc(file)) {
+    hash ^= (uint8_t)byte;
+    hash *= GLTF_TEST_FNV1A64_PRIME;
+  }
+  assert(ferror(file) == 0);
+  assert(fclose(file) == 0);
+  return hash;
+}
+
 static bool8_t gltf_test_vector_contains_path(Vector_String8 *paths,
                                               const char *path_cstr) {
   if (!paths || !path_cstr) {
@@ -1769,6 +1782,475 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   printf("  test_gltf_import_prepares_spec_gloss_textures PASSED\n");
 }
 
+static void test_gltf_import_bakes_cutout_texture_variants(void) {
+  printf("  Running test_gltf_import_bakes_cutout_texture_variants...\n");
+
+  const char *stem = "gltf_import_cutout_variants";
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+
+  char texture_dir[1024];
+  snprintf(texture_dir, sizeof(texture_dir),
+           "%sassets/textures/gltf_importer_cutout", PROJECT_SOURCE_DIR);
+  assert(gltf_test_make_dir(texture_dir));
+  char texture_path[1024];
+  snprintf(texture_path, sizeof(texture_path), "%s/shared.png", texture_dir);
+  gltf_test_remove_file(texture_path);
+  const uint8_t texels[] = {255u, 0u,   0u,   255u, 0u,   255u, 0u,   0u,
+                            0u,   0u,   255u, 128u, 255u, 255u, 255u, 255u};
+  assert(stbi_write_png(texture_path, 2, 2, 4, texels, 8) != 0);
+  FILE *texture_file = fopen(texture_path, "rb");
+  assert(texture_file != NULL);
+  uint64_t texture_hash = 0xcbf29ce484222325ull;
+  for (int32_t byte = fgetc(texture_file); byte != EOF;
+       byte = fgetc(texture_file)) {
+    texture_hash ^= (uint8_t)byte;
+    texture_hash *= 0x100000001b3ull;
+  }
+  assert(ferror(texture_file) == 0);
+  assert(fclose(texture_file) == 0);
+  char variant_quarter_path[1024];
+  char variant_three_quarters_path[1024];
+  snprintf(variant_quarter_path, sizeof(variant_quarter_path),
+           "%sassets/textures/generated/cutout_v1/source_%016llx_cutoff_"
+           "3e800000_factor_3f800000.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)texture_hash);
+  snprintf(variant_three_quarters_path, sizeof(variant_three_quarters_path),
+           "%sassets/textures/generated/cutout_v1/source_%016llx_cutoff_"
+           "3f400000_factor_3f800000.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)texture_hash);
+  const bool8_t quarter_existed = gltf_test_file_exists(variant_quarter_path);
+  const bool8_t three_quarters_existed =
+      gltf_test_file_exists(variant_three_quarters_path);
+
+  char gltf_path[1024];
+  char bin_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+  gltf_test_write_basic_triangle_bin(bin_path);
+  FILE *bin = fopen(bin_path, "ab");
+  assert(bin != NULL);
+  const uint8_t color_padding[2] = {0u, 0u};
+  assert(fwrite(color_padding, sizeof(color_padding), 1u, bin) == 1u);
+  const float32_t vertex_colors[] = {1.0f, 1.0f, 1.0f, 0.25f,
+                                     1.0f, 1.0f, 1.0f, 0.75f,
+                                     1.0f, 1.0f, 1.0f, 1.0f};
+  assert(fwrite(vertex_colors, sizeof(vertex_colors), 1u, bin) == 1u);
+  assert(fclose(bin) == 0);
+
+  char json[8192];
+  snprintf(json, sizeof(json),
+           "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+           "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+           "\"meshes\":[{\"primitives\":["
+           "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0},"
+           "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":1},"
+           "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":2},"
+           "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":3},"
+           "{\"attributes\":{\"POSITION\":0,\"COLOR_0\":2},\"indices\":1,"
+           "\"material\":4}]}],"
+           "\"materials\":["
+           "{\"alphaMode\":\"MASK\",\"alphaCutoff\":0.25,\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}},"
+           "{\"alphaMode\":\"MASK\",\"alphaCutoff\":0.75,\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}},"
+           "{\"alphaMode\":\"MASK\",\"alphaCutoff\":0.25,\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}},"
+           "{\"alphaMode\":\"BLEND\",\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}},"
+           "{\"alphaMode\":\"MASK\",\"alphaCutoff\":0.25,\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}],"
+           "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"objects/gltf_importer_cutout/shared.png\"}],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":92}],"
+           "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36,\"target\":34962},"
+           "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6,\"target\":34963},"
+           "{\"buffer\":0,\"byteOffset\":44,\"byteLength\":48,\"target\":34962}],"
+           "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+           "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"},"
+           "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"}]}",
+           stem);
+  assert(gltf_test_write_file_text(gltf_path, json));
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
+  Vector_String8 generated_assets = vector_create_String8(&allocator);
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch_allocator, gltf_path, &error, NULL);
+  parse_info.out_generated_asset_paths = &generated_assets;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(generated_assets.length == 2u);
+
+  String8 variant_quarter = {0};
+  String8 variant_three_quarters = {0};
+  for (uint64_t i = 0; i < generated_assets.length; ++i) {
+    String8 *path = vector_get_String8(&generated_assets, i);
+    assert(path != NULL);
+    if (string8_contains_cstr(path, "cutoff_3e800000")) {
+      variant_quarter = *path;
+    } else if (string8_contains_cstr(path, "cutoff_3f400000")) {
+      variant_three_quarters = *path;
+    }
+  }
+  assert(variant_quarter.str != NULL && variant_three_quarters.str != NULL);
+  assert(gltf_test_file_exists(variant_quarter_path));
+  assert(gltf_test_file_exists(variant_three_quarters_path));
+
+  char material_paths[5][1024] = {{0}};
+  for (uint32_t i = 0; i < ArrayCount(material_paths); ++i) {
+    gltf_test_make_material_paths(stem, gltf_path, i, material_paths[i],
+                                  sizeof(material_paths[i]), NULL, 0, NULL, 0);
+  }
+  String8 material[5] = {0};
+  for (uint32_t i = 0; i < ArrayCount(material); ++i) {
+    assert(gltf_test_read_file_text(&allocator, material_paths[i],
+                                    &material[i]));
+  }
+  char quarter_reference[1200];
+  char three_quarters_reference[1200];
+  snprintf(quarter_reference, sizeof(quarter_reference),
+           "base_color_texture=%.*s?cs=srgb&tc=color_srgb",
+           (int32_t)variant_quarter.length, variant_quarter.str);
+  snprintf(three_quarters_reference, sizeof(three_quarters_reference),
+           "base_color_texture=%.*s?cs=srgb&tc=color_srgb",
+           (int32_t)variant_three_quarters.length,
+           variant_three_quarters.str);
+  const char *source_reference =
+      "base_color_texture=assets/textures/gltf_importer_cutout/shared.png?"
+      "cs=srgb&tc=color_srgb";
+  assert(strstr((const char *)material[0].str, quarter_reference) != NULL);
+  assert(strstr((const char *)material[1].str, three_quarters_reference) !=
+         NULL);
+  assert(strstr((const char *)material[2].str, quarter_reference) != NULL);
+  assert(strstr((const char *)material[3].str, source_reference) != NULL);
+  assert(strstr((const char *)material[4].str, source_reference) != NULL);
+
+  const String8 first_material = material[0];
+  vector_clear_String8(&generated_assets);
+  error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(generated_assets.length == 2u);
+  assert(gltf_test_vector_contains_path(&generated_assets,
+                                        (const char *)variant_quarter.str));
+  assert(gltf_test_vector_contains_path(
+      &generated_assets, (const char *)variant_three_quarters.str));
+  String8 recooked_material = {0};
+  assert(gltf_test_read_file_text(&allocator, material_paths[0],
+                                  &recooked_material));
+  assert(recooked_material.length == first_material.length);
+  assert(MemCompare(recooked_material.str, first_material.str,
+                    recooked_material.length) == 0);
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  if (!quarter_existed) {
+    gltf_test_remove_file(variant_quarter_path);
+  }
+  if (!three_quarters_existed) {
+    gltf_test_remove_file(variant_three_quarters_path);
+  }
+  for (uint32_t i = 0; i < ArrayCount(material_paths); ++i) {
+    gltf_test_remove_file(material_paths[i]);
+  }
+  gltf_test_remove_generated_material(stem);
+  gltf_test_remove_file(texture_path);
+  gltf_test_remove_dir(texture_dir);
+  gltf_test_remove_source_files(stem);
+  printf("  test_gltf_import_bakes_cutout_texture_variants PASSED\n");
+}
+
+static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
+  printf("  Running test_gltf_import_bakes_normal_roughness_texture_pairs...\n");
+
+  const char *stem = "gltf_import_normalrough_pairs";
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+
+  char texture_dir[1024];
+  snprintf(texture_dir, sizeof(texture_dir),
+           "%sassets/textures/gltf_importer_normalrough", PROJECT_SOURCE_DIR);
+  assert(gltf_test_make_dir(texture_dir));
+  char normal_path[1024];
+  char metallic_roughness_path[1024];
+  char mismatched_metallic_roughness_path[1024];
+  snprintf(normal_path, sizeof(normal_path), "%s/normal.png", texture_dir);
+  snprintf(metallic_roughness_path, sizeof(metallic_roughness_path), "%s/mr.png",
+           texture_dir);
+  snprintf(mismatched_metallic_roughness_path,
+           sizeof(mismatched_metallic_roughness_path), "%s/mr_small.png",
+           texture_dir);
+  gltf_test_remove_file(normal_path);
+  gltf_test_remove_file(metallic_roughness_path);
+  gltf_test_remove_file(mismatched_metallic_roughness_path);
+  const uint8_t normal_texels[16] = {128u, 128u, 255u, 255u,
+                                     160u, 96u,  255u, 255u,
+                                     96u,  160u, 255u, 255u,
+                                     128u, 128u, 255u, 255u};
+  const uint8_t metallic_roughness_texels[16] = {64u,  80u,  192u, 255u,
+                                                 96u,  112u, 160u, 255u,
+                                                 128u, 144u, 128u, 255u,
+                                                 160u, 176u, 96u,  255u};
+  const uint8_t mismatched_metallic_roughness_texel[4] = {32u, 64u, 128u,
+                                                           255u};
+  assert(stbi_write_png(normal_path, 2, 2, 4, normal_texels, 8) != 0);
+  assert(stbi_write_png(metallic_roughness_path, 2, 2, 4,
+                        metallic_roughness_texels, 8) != 0);
+  assert(stbi_write_png(mismatched_metallic_roughness_path, 1, 1, 4,
+                        mismatched_metallic_roughness_texel, 4) != 0);
+
+  const uint64_t normal_hash = gltf_test_hash_file_bytes(normal_path);
+  const uint64_t metallic_roughness_hash =
+      gltf_test_hash_file_bytes(metallic_roughness_path);
+  char expected_pair_paths[8][1200] = {{0}};
+  snprintf(expected_pair_paths[0], sizeof(expected_pair_paths[0]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_%016llx_scale_3f000000_factor_3e800000_normal.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
+           (unsigned long long)metallic_roughness_hash);
+  snprintf(expected_pair_paths[1], sizeof(expected_pair_paths[1]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_%016llx_scale_3f000000_factor_3e800000_metalrough.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
+           (unsigned long long)metallic_roughness_hash);
+  snprintf(expected_pair_paths[2], sizeof(expected_pair_paths[2]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_%016llx_scale_3f400000_factor_3e800000_normal.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
+           (unsigned long long)metallic_roughness_hash);
+  snprintf(expected_pair_paths[3], sizeof(expected_pair_paths[3]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_%016llx_scale_3f400000_factor_3e800000_metalrough.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
+           (unsigned long long)metallic_roughness_hash);
+  snprintf(expected_pair_paths[4], sizeof(expected_pair_paths[4]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_%016llx_scale_3f000000_factor_3f000000_normal.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
+           (unsigned long long)metallic_roughness_hash);
+  snprintf(expected_pair_paths[5], sizeof(expected_pair_paths[5]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_%016llx_scale_3f000000_factor_3f000000_metalrough.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
+           (unsigned long long)metallic_roughness_hash);
+  snprintf(expected_pair_paths[6], sizeof(expected_pair_paths[6]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_missing_scale_3f000000_factor_3e800000_normal.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
+  snprintf(expected_pair_paths[7], sizeof(expected_pair_paths[7]),
+           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "roughness_missing_scale_3f000000_factor_3e800000_metalrough.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
+  bool8_t pair_path_existed[ArrayCount(expected_pair_paths)] = {0};
+  bool8_t any_pair_path_existed = false_v;
+  for (uint32_t i = 0; i < ArrayCount(expected_pair_paths); ++i) {
+    pair_path_existed[i] = gltf_test_file_exists(expected_pair_paths[i]);
+    any_pair_path_existed = any_pair_path_existed || pair_path_existed[i];
+  }
+
+  char gltf_path[1024];
+  char bin_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+  gltf_test_write_basic_triangle_bin(bin_path);
+
+  char json[12288];
+  snprintf(
+      json, sizeof(json),
+      "{\"asset\":{\"version\":\"2.0\"},"
+      "\"materials\":["
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.75},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.5,\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":2}}},"
+      "{\"normalTexture\":{\"index\":0,\"texCoord\":1,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":3,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}}],"
+      "\"samplers\":[{\"magFilter\":9728,\"minFilter\":9728}],"
+      "\"textures\":[{\"source\":0},{\"source\":1},{\"source\":2},{\"source\":0,\"sampler\":0}],"
+      "\"images\":[{\"uri\":\"objects/gltf_importer_normalrough/normal.png\"},{\"uri\":\"objects/gltf_importer_normalrough/mr.png\"},{\"uri\":\"objects/gltf_importer_normalrough/mr_small.png\"}],"
+      "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":42}]}",
+      stem);
+  assert(gltf_test_write_file_text(gltf_path, json));
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
+  Vector_String8 generated_assets = vector_create_String8(&allocator);
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch_allocator, gltf_path, &error, NULL);
+  parse_info.out_generated_asset_paths = &generated_assets;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(generated_assets.length == 8u);
+
+  String8 shared_normal = {0};
+  String8 shared_metallic_roughness = {0};
+  String8 scaled_normal = {0};
+  String8 rougher_normal = {0};
+  String8 factor_only_metallic_roughness = {0};
+  for (uint64_t i = 0; i < generated_assets.length; ++i) {
+    String8 *path = vector_get_String8(&generated_assets, i);
+    assert(path != NULL);
+    assert(string8_contains_cstr(path, "normalrough_v1") == true_v);
+    if (string8_contains_cstr(path, "scale_3f000000_factor_3e800000") &&
+        string8_contains_cstr(path, "roughness_missing") &&
+        string8_contains_cstr(path, "_metalrough.vkt")) {
+      factor_only_metallic_roughness = *path;
+    } else if (string8_contains_cstr(path,
+                                     "scale_3f000000_factor_3e800000") &&
+               !string8_contains_cstr(path, "roughness_missing") &&
+               string8_contains_cstr(path, "_normal.vkt")) {
+      shared_normal = *path;
+    } else if (string8_contains_cstr(
+                   path, "scale_3f000000_factor_3e800000") &&
+               string8_contains_cstr(path, "_metalrough.vkt")) {
+      shared_metallic_roughness = *path;
+    } else if (string8_contains_cstr(
+                   path, "scale_3f400000_factor_3e800000") &&
+               string8_contains_cstr(path, "_normal.vkt")) {
+      scaled_normal = *path;
+    } else if (string8_contains_cstr(
+                   path, "scale_3f000000_factor_3f000000") &&
+               string8_contains_cstr(path, "_normal.vkt")) {
+      rougher_normal = *path;
+    }
+  }
+  assert(shared_normal.str && shared_metallic_roughness.str);
+  assert(scaled_normal.str && rougher_normal.str);
+  assert(factor_only_metallic_roughness.str);
+  assert(!string8_equals(&shared_normal, &scaled_normal));
+  assert(!string8_equals(&shared_normal, &rougher_normal));
+
+  char material_paths[8][1024] = {{0}};
+  String8 materials[8] = {0};
+  for (uint32_t i = 0; i < ArrayCount(material_paths); ++i) {
+    gltf_test_make_material_paths(stem, gltf_path, i, material_paths[i],
+                                  sizeof(material_paths[i]), NULL, 0, NULL, 0);
+    assert(gltf_test_read_file_text(&allocator, material_paths[i],
+                                    &materials[i]));
+  }
+  char shared_normal_reference[1200];
+  char shared_metallic_roughness_reference[1200];
+  snprintf(shared_normal_reference, sizeof(shared_normal_reference),
+           "normal_texture=%.*s?tc=normal_rg", (int32_t)shared_normal.length,
+           shared_normal.str);
+  snprintf(shared_metallic_roughness_reference,
+           sizeof(shared_metallic_roughness_reference),
+           "metallic_roughness_texture=%.*s?tc=data_mask",
+           (int32_t)shared_metallic_roughness.length,
+           shared_metallic_roughness.str);
+  for (uint32_t i = 0; i < 2u; ++i) {
+    assert(strstr((const char *)materials[i].str, shared_normal_reference));
+    assert(strstr((const char *)materials[i].str,
+                  shared_metallic_roughness_reference));
+    assert(strstr((const char *)materials[i].str, "normal_scale=1.000000"));
+    assert(strstr((const char *)materials[i].str, "roughness=1.000000"));
+  }
+  char factor_only_metallic_roughness_reference[1200];
+  snprintf(factor_only_metallic_roughness_reference,
+           sizeof(factor_only_metallic_roughness_reference),
+           "metallic_roughness_texture=%.*s?tc=data_mask",
+           (int32_t)factor_only_metallic_roughness.length,
+           factor_only_metallic_roughness.str);
+  assert(strstr((const char *)materials[4].str, "roughness=1.000000"));
+  assert(strstr((const char *)materials[4].str, "metallic=0.700000"));
+  assert(strstr((const char *)materials[4].str,
+                factor_only_metallic_roughness_reference));
+
+  const char *normal_source_reference =
+      "normal_texture=assets/textures/gltf_importer_normalrough/normal.png?"
+      "tc=normal_rg";
+  const char *metallic_roughness_source_reference =
+      "metallic_roughness_texture=assets/textures/gltf_importer_normalrough/"
+      "mr.png?tc=data_mask";
+  assert(strstr((const char *)materials[5].str, normal_source_reference));
+  assert(strstr((const char *)materials[5].str, "mr_small.png?tc=data_mask"));
+  assert(strstr((const char *)materials[5].str, "normal_scale=0.500000"));
+  assert(strstr((const char *)materials[5].str, "roughness=0.250000"));
+  for (uint32_t i = 6u; i < 8u; ++i) {
+    assert(strstr((const char *)materials[i].str, normal_source_reference));
+    assert(strstr((const char *)materials[i].str,
+                  metallic_roughness_source_reference));
+    assert(strstr((const char *)materials[i].str, "normal_scale=0.500000"));
+    assert(strstr((const char *)materials[i].str, "roughness=0.250000"));
+  }
+
+  const String8 first_material = materials[0];
+  String8 first_generated_assets[8] = {0};
+  for (uint64_t i = 0; i < generated_assets.length; ++i) {
+    first_generated_assets[i] = *vector_get_String8(&generated_assets, i);
+  }
+  vector_clear_String8(&generated_assets);
+  error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(generated_assets.length == 8u);
+  for (uint64_t i = 0; i < ArrayCount(first_generated_assets); ++i) {
+    assert(gltf_test_vector_contains_path(
+        &generated_assets, (const char *)first_generated_assets[i].str));
+  }
+  String8 recooked_material = {0};
+  assert(gltf_test_read_file_text(&allocator, material_paths[0],
+                                  &recooked_material));
+  assert(recooked_material.length == first_material.length);
+  assert(MemCompare(recooked_material.str, first_material.str,
+                    first_material.length) == 0);
+
+  for (uint64_t i = 0; i < generated_assets.length; ++i) {
+    String8 *path = vector_get_String8(&generated_assets, i);
+    char absolute_path[1200];
+    snprintf(absolute_path, sizeof(absolute_path), "%s%.*s", PROJECT_SOURCE_DIR,
+             (int32_t)path->length, path->str);
+    bool8_t expected_path = false_v;
+    bool8_t existed_before = false_v;
+    for (uint32_t j = 0; j < ArrayCount(expected_pair_paths); ++j) {
+      if (strcmp(absolute_path, expected_pair_paths[j]) == 0) {
+        expected_path = true_v;
+        existed_before = pair_path_existed[j];
+        break;
+      }
+    }
+    assert(expected_path == true_v);
+    if (!existed_before) {
+      gltf_test_remove_file(absolute_path);
+    }
+  }
+  char generated_dir[1024];
+  snprintf(generated_dir, sizeof(generated_dir),
+           "%sassets/textures/generated/normalrough_v1", PROJECT_SOURCE_DIR);
+  if (!any_pair_path_existed) {
+    gltf_test_remove_dir(generated_dir);
+  }
+  for (uint32_t i = 0; i < ArrayCount(material_paths); ++i) {
+    gltf_test_remove_file(material_paths[i]);
+  }
+  char material_dir[1024];
+  snprintf(material_dir, sizeof(material_dir), "%sassets/materials/%s",
+           PROJECT_SOURCE_DIR, stem);
+  gltf_test_remove_dir(material_dir);
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_file(normal_path);
+  gltf_test_remove_file(metallic_roughness_path);
+  gltf_test_remove_file(mismatched_metallic_roughness_path);
+  gltf_test_remove_dir(texture_dir);
+  gltf_test_remove_source_files(stem);
+
+  printf("  test_gltf_import_bakes_normal_roughness_texture_pairs PASSED\n");
+}
+
 static void test_gltf_import_material_ids_are_unique_per_source(void) {
   printf("  Running test_gltf_import_material_ids_are_unique_per_source...\n");
 
@@ -2039,6 +2521,8 @@ bool32_t run_gltf_importer_tests(void) {
   test_gltf_import_preserves_transmission_volume();
   test_gltf_spec_gloss_numeric_conversion();
   test_gltf_import_prepares_spec_gloss_textures();
+  test_gltf_import_bakes_cutout_texture_variants();
+  test_gltf_import_bakes_normal_roughness_texture_pairs();
   test_gltf_import_decodes_ext_meshopt_compression();
   test_gltf_import_material_ids_are_unique_per_source();
 

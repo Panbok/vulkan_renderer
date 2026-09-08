@@ -1,0 +1,11 @@
+name=subsurface_furnace_low
+type=pbr
+base_color=0.8,0.8,0.8,1.0
+metallic=0.0
+roughness=0.6
+subsurface_strength=0.25
+subsurface_profile=0
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

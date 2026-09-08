@@ -1,0 +1,113 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Floor",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          -0.1,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          8,
+          0.2,
+          8
+        ],
+        "material": {
+          "name": "ssgi_matte",
+          "path": "tests/fixtures/rendering/ssgi_matte.mt"
+        }
+      }
+    },
+    {
+      "name": "Back wall",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          2,
+          -3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          8,
+          4,
+          0.2
+        ],
+        "material": {
+          "name": "ssgi_matte",
+          "path": "tests/fixtures/rendering/ssgi_matte.mt"
+        }
+      }
+    },
+    {
+      "name": "Emitter",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -1,
+          1,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          0.15,
+          2,
+          2
+        ],
+        "material": {
+          "name": "ssgi_emitter",
+          "path": "tests/fixtures/rendering/ssgi_emitter.mt"
+        }
+      }
+    }
+  ],
+  "diffuse_volume": {
+    "path": "assets/textures/ssgi_volume_emission_local.vkdv"
+  }
+}

@@ -50,6 +50,8 @@ vkr_internal void test_packet_frame_constants(void) {
                   .view = view,
                   .view_position = {14.0f, 15.0f, 16.0f},
                   .ambient_color = {0.4f, 0.5f, 0.6f, 1.0f},
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f,
                   .render_mode = 17u,
               },
           .lighting = &lighting,

@@ -223,7 +223,9 @@ vkr_internal void test_exposure_packet_validation(void) {
   printf("  Running test_exposure_packet_validation...\n");
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
   };
   VkrValidationError validation = {0};
   assert(vkr_frame_input_validate(&packet, &validation) ==

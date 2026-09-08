@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "id": "local.edr.window.sdr",
+  "suite": "local",
+  "description": "Window display capability and output selection with the emissive grid.",
+  "scene": "assets/scenes/fixtures/display_transform_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    480,
+    480
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 24,
+    "measure": 8
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "agx",
+    "fxaa_enabled": false,
+    "display_output": "sdr"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      7
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 45,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [],
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

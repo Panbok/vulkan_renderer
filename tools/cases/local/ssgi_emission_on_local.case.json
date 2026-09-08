@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "local.ssgi.emission.on",
+  "suite": "local",
+  "description": "Independent diffuse screen-space bounce with SSR, GTAO and final TAA disabled.",
+  "scene": "assets/scenes/fixtures/ssgi_emission_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    384,
+    256
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 64,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "agx",
+    "gtao_enabled": false,
+    "ssr_enabled": false,
+    "image_sharpness": 0,
+    "gtao_radius": 0.8,
+    "gtao_power": 2.2,
+    "bloom_enabled": false,
+    "ssgi_enabled": true
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      4,
+      3,
+      7
+    ],
+    "yaw": -115,
+    "pitch": -17,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 50
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "hdr_post_transmission",
+        "depth"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

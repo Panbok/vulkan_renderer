@@ -70,7 +70,9 @@ editor_viewport_packet(const VkrEditorPassPayload *payload) {
               .viewport_height = 252u,
               .editor_enabled = true_v,
           },
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .editor = payload,
   };
 }

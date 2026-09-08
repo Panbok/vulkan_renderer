@@ -1,0 +1,15 @@
+name=anisotropy_layer_sheen_textured
+type=pbr
+base_color=.3,.3,.3,1
+metallic=0
+roughness=.45
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world
+sheen_color=.9,.7,.5
+sheen_roughness=.8
+sheen_color_texture=tests/fixtures/rendering/sheen/sheen_color.png?cs=srgb&tc=color_srgb
+sheen_roughness_texture=tests/fixtures/rendering/sheen/sheen_roughness.png?tc=data_mask
+anisotropy_strength=.7
+anisotropy_rotation=.65

@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Receivers",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/ltc-native/receivers.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Rectangle",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          1
+        ]
+      }
+    }
+  ]
+}

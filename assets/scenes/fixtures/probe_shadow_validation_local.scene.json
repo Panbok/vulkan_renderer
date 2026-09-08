@@ -1,0 +1,412 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Point",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          5,
+          2
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "intensity": 8,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30
+      }
+    },
+    {
+      "name": "Receiver",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          -0.25,
+          -5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          2.3333333333333335,
+          0.08333333333333333,
+          3.3333333333333335
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/probe-native/cube.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Caster",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          2,
+          -1
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          0.3333333333333333,
+          0.6666666666666666,
+          0.3333333333333333
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/probe-native/cube.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "BudgetLight1",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          -2.4,
+          5,
+          3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "intensity": 8,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30
+      }
+    },
+    {
+      "name": "BudgetLight2",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          -0.7999999999999998,
+          5,
+          3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "intensity": 150,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30,
+        "kind": 2,
+        "direction_local": [
+          0,
+          -0.7,
+          -1
+        ],
+        "inner_cone_angle": 0.2,
+        "outer_cone_angle": 0.65
+      }
+    },
+    {
+      "name": "BudgetLight3",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0.8000000000000007,
+          5,
+          3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "intensity": 150,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30,
+        "kind": 2,
+        "direction_local": [
+          0,
+          -0.7,
+          -1
+        ],
+        "inner_cone_angle": 0.2,
+        "outer_cone_angle": 0.65
+      }
+    },
+    {
+      "name": "BudgetLight4",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          2.4000000000000004,
+          5,
+          3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "intensity": 150,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30,
+        "kind": 2,
+        "direction_local": [
+          0,
+          -0.7,
+          -1
+        ],
+        "inner_cone_angle": 0.2,
+        "outer_cone_angle": 0.65
+      }
+    },
+    {
+      "name": "BudgetLight5",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          4.0,
+          5,
+          3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "intensity": 150,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30,
+        "kind": 2,
+        "direction_local": [
+          0,
+          -0.7,
+          -1
+        ],
+        "inner_cone_angle": 0.2,
+        "outer_cone_angle": 0.65
+      }
+    },
+    {
+      "name": "BudgetOverflow",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          5,
+          2
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "casts_shadow": true,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "intensity": 0,
+        "attenuation": {
+          "constant": 1,
+          "linear": 0.08,
+          "quadratic": 0.02
+        },
+        "range": 30
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "directional_light": {
+        "enabled": true,
+        "intensity": 0.3,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "direction": [
+          0.3,
+          -1,
+          0.2
+        ]
+      }
+    }
+  ],
+  "reflection_probes": [
+    {
+      "center": [
+        0,
+        0,
+        0
+      ],
+      "extents": [
+        20,
+        20,
+        20
+      ],
+      "cubemap": {
+        "path": "assets/textures/probe_room_local.vkt"
+      }
+    }
+  ]
+}

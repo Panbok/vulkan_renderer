@@ -361,7 +361,7 @@ vkr_internal VkrShadowPassPayload test_shadow_valid_payload(void) {
   shadow.cascades[0].light_view_projection = mat4_identity();
   shadow.cascades[0].split_near_far_texel_depth =
       (Vec4){0.1f, 200.0f, 0.01f, 120.0f};
-  shadow.cascades[0].origin_inv_size_pad =
+  shadow.cascades[0].origin_inv_size_sun =
       (Vec4){3.0f, 4.0f, 1.0f / 2048.0f, 0.0f};
   return shadow;
 }
@@ -376,7 +376,9 @@ vkr_internal void test_shadow_raster_bias_packet_validation(void) {
   shadow.config_override = &bias;
   const VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .shadow = &shadow,
   };
   VkrValidationError validation = {0};
@@ -412,7 +414,9 @@ vkr_internal void test_shadow_receiver_packet_validation(void) {
   VkrShadowPassPayload shadow = test_shadow_valid_payload();
   const VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .shadow = &shadow,
   };
   VkrValidationError validation = {0};
@@ -487,19 +491,19 @@ vkr_internal void test_shadow_receiver_packet_validation(void) {
                 "packet.shadow.cascades.split_near_far_texel_depth") == 0);
   shadow.cascades[0].split_near_far_texel_depth.w = 120.0f;
 
-  shadow.cascades[0].origin_inv_size_pad.x = NAN;
+  shadow.cascades[0].origin_inv_size_sun.x = NAN;
   assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
-                "packet.shadow.cascades.origin_inv_size_pad") == 0);
-  shadow.cascades[0].origin_inv_size_pad.x = 3.0f;
+                "packet.shadow.cascades.origin_inv_size_sun") == 0);
+  shadow.cascades[0].origin_inv_size_sun.x = 3.0f;
 
-  shadow.cascades[0].origin_inv_size_pad.z = 0.0f;
+  shadow.cascades[0].origin_inv_size_sun.z = 0.0f;
   assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
-                "packet.shadow.cascades.origin_inv_size_pad") == 0);
-  shadow.cascades[0].origin_inv_size_pad.z = 1.0f / 2048.0f;
+                "packet.shadow.cascades.origin_inv_size_sun") == 0);
+  shadow.cascades[0].origin_inv_size_sun.z = 1.0f / 2048.0f;
 
   shadow.cascades[0].split_near_far_texel_depth.y =
       shadow.cascades[0].split_near_far_texel_depth.x;
@@ -565,6 +569,144 @@ vkr_internal VkrWorldPassPayload retained_static_payload(void) {
       .publication_generation = 17u,
       .caster_bounds_generation = 13u,
   };
+}
+
+vkr_internal VkrPointLight local_shadow_test_light(uint32_t render_id,
+                                                   VkrPointLightKind kind,
+                                                   float32_t intensity,
+                                                   Vec3 position) {
+  return (VkrPointLight){
+      .position = position,
+      .color = {1.0f, 1.0f, 1.0f},
+      .intensity = intensity,
+      .range = 10.0f,
+      .direction = {0.0f, -1.0f, 0.0f},
+      .outer_cone_angle = 0.5f,
+      .kind = kind,
+      .render_id = render_id,
+      .casts_shadow = true_v,
+  };
+}
+
+vkr_internal void
+test_local_shadow_selection_hysteresis_and_point_groups(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.local_shadow_face_budget = 1u;
+  assert(vkr_shadow_system_init(&system, &config));
+
+  VkrPointLight spots[2] = {
+      local_shadow_test_light(10u, VKR_POINT_LIGHT_KIND_GLTF_SPOT, 100.0f,
+                              vec3_zero()),
+      local_shadow_test_light(20u, VKR_POINT_LIGHT_KIND_GLTF_SPOT, 84.0f,
+                              vec3_zero()),
+  };
+  VkrLocalShadowPassPayload local = {0};
+  vkr_shadow_system_resolve_local_selection(&system, spots, ArrayCount(spots),
+                                            vec3_zero(), 1u, 512u, &local);
+  assert(local.view_count == 1u && local.light_first_view[0] == 1u);
+
+  /* The incumbent score is 100 * 1.15, so 110 cannot churn the one slot. */
+  spots[1].intensity = 110.0f;
+  vkr_shadow_system_resolve_local_selection(&system, spots, ArrayCount(spots),
+                                            vec3_zero(), 1u, 512u, &local);
+  assert(local.light_first_view[0] == 1u && local.light_first_view[1] == 0u);
+
+  spots[1].intensity = 116.0f;
+  vkr_shadow_system_resolve_local_selection(&system, spots, ArrayCount(spots),
+                                            vec3_zero(), 1u, 512u, &local);
+  assert(local.light_first_view[0] == 0u && local.light_first_view[1] == 1u);
+  vkr_shadow_system_shutdown(&system);
+
+  config.local_shadow_face_budget = 7u;
+  assert(vkr_shadow_system_init(&system, &config));
+  VkrPointLight groups[2] = {
+      local_shadow_test_light(10u, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f,
+                              vec3_zero()),
+      local_shadow_test_light(20u, VKR_POINT_LIGHT_KIND_GLTF_SPOT, 100.0f,
+                              vec3_zero()),
+  };
+  vkr_shadow_system_resolve_local_selection(&system, groups, ArrayCount(groups),
+                                            vec3_zero(), 7u, 512u, &local);
+  assert(local.view_count == 7u);
+  assert(local.light_first_view[0] == 1u);
+  assert(local.light_first_view[1] == 7u);
+  vkr_shadow_system_shutdown(&system);
+}
+
+vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.local_shadow_face_budget = 1u;
+  assert(vkr_shadow_system_init(&system, &config));
+
+  VkrWorldPassPayload payload = retained_static_payload();
+  VkrPointLight light = local_shadow_test_light(
+      10u, VKR_POINT_LIGHT_KIND_GLTF_SPOT, 100.0f, vec3_new(0.0f, 2.0f, -5.0f));
+  VkrLocalShadowPassPayload local = {0};
+  const VkrRetainedLocalShadowToken valid = {
+      .resource_generation = 9u,
+      .valid_layer_mask = UINT32_C(1),
+  };
+
+  /* A cancelled render never promotes its speculative face descriptor. */
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(1));
+  vkr_shadow_system_discard_frame(&system);
+  assert(system.local_history[0][0].last_submit_value == 0u);
+
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(1));
+  vkr_shadow_system_commit_frame(&system, 31u);
+  assert(system.local_history[0][0].last_submit_value == 31u);
+
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == 0u);
+
+  /* History is per physical image even when the native token is valid. */
+  vkr_shadow_system_resolve_local_shadows(&system, 1u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(1));
+  vkr_shadow_system_discard_frame(&system);
+
+  payload.static_generation++;
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(1));
+  vkr_shadow_system_discard_frame(&system);
+  payload.static_generation--;
+
+  VkrWorldDrawCandidate dynamic = {
+      .instance = {.model = mat4_identity()},
+      .local_bounding_sphere = {light.position.x, light.position.y,
+                                light.position.z, 1.0f},
+      .flags = VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID,
+  };
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  payload.static_candidate_count = 0u;
+  payload.dynamic_generation++;
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(1));
+  vkr_shadow_system_discard_frame(&system);
+
+  /* Ambiguous identities may still render, but cannot retain an image layer. */
+  payload.gpu_candidates = NULL;
+  payload.gpu_shadow_candidate_count = 0u;
+  light.render_id = 0u;
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(1));
+  vkr_shadow_system_commit_frame(&system, 32u);
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                          1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(1));
+  vkr_shadow_system_discard_frame(&system);
+  vkr_shadow_system_shutdown(&system);
 }
 
 vkr_internal uint32_t cascade_mask(const VkrShadowSystem *system) {
@@ -1246,6 +1388,8 @@ bool32_t run_shadow_system_tests(void) {
   test_disabled_stabilization_does_not_publish_history();
   printf("  test_disabled_stabilization_does_not_publish_history PASSED\n");
   printf("  Running retained cascade reuse tests...\n");
+  test_local_shadow_selection_hysteresis_and_point_groups();
+  test_local_shadow_cache_lifecycle_and_invalidation();
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();
   test_dynamic_overlap_and_publication_fail_closed();

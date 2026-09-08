@@ -1,6 +1,14 @@
 #include "lighting_system_tests.h"
 
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_lighting_system.h"
+
+vkr_internal bool8_t lighting_test_vec3_near(Vec3 left, Vec3 right) {
+  return fabsf(left.x - right.x) < 0.00001f &&
+         fabsf(left.y - right.y) < 0.00001f &&
+         fabsf(left.z - right.z) < 0.00001f;
+}
 
 static VkrPointLight make_gltf_point(uint32_t render_id, Vec3 position,
                                      float32_t range) {
@@ -176,6 +184,61 @@ static bool32_t test_point_light_gpu_row_packing(void) {
   return true_v;
 }
 
+/* A scaled parent must move the rectangle's center, but must not distort its
+ * authored area or replace the rigid parent/child orientation with world-matrix
+ * axes. This independently catches the local-rotation-only regression. */
+static bool32_t test_rectangle_light_uses_rigid_parent_rotation(void) {
+  printf("  Running test_rectangle_light_uses_rigid_parent_rotation...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 31u, 8u, &error));
+  VkrLightingSystem system;
+  assert(vkr_lighting_system_init(&system));
+
+  const VkrQuat parent_rotation =
+      vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), 1.57079632679f);
+  const VkrQuat child_rotation =
+      vkr_quat_from_axis_angle(vec3_new(1.0f, 0.0f, 0.0f), 1.57079632679f);
+  VkrEntityId parent = vkr_scene_create_entity(&scene, &error);
+  VkrEntityId child = vkr_scene_create_entity(&scene, &error);
+  assert(parent.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+         child.u64 != VKR_ENTITY_ID_INVALID.u64);
+  assert(vkr_scene_set_transform(&scene, parent, vec3_new(3.0f, 4.0f, 5.0f),
+                                 parent_rotation, vec3_new(2.0f, 3.0f, 4.0f)));
+  assert(vkr_scene_set_transform(&scene, child, vec3_new(1.0f, 2.0f, 3.0f),
+                                 child_rotation, vec3_new(5.0f, 7.0f, 11.0f)));
+  vkr_scene_set_parent(&scene, child, parent);
+  assert(vkr_scene_set_rectangle_light(&scene, child,
+                                       &(SceneRectangleLight){
+                                           .color = vec3_one(),
+                                           .radiance = 2.0f,
+                                           .size = vec2_new(2.0f, 4.0f),
+                                           .enabled = true_v,
+                                       }));
+  vkr_scene_update(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+
+  assert(system.rectangle_light_count == 1u);
+  const VkrRectangleLight *light = &system.rectangle_lights[0];
+  // Ry(90) * Rx(90) maps +X to -Z and +Y to +X. Parent TRS maps
+  // child translation (1,2,3) to (15,10,3); child scale cannot change it.
+  assert(lighting_test_vec3_near(light->right, vec3_new(0.0f, 0.0f, -1.0f)));
+  assert(lighting_test_vec3_near(light->up, vec3_new(1.0f, 0.0f, 0.0f)));
+  assert(lighting_test_vec3_near(light->position, vec3_new(15.0f, 10.0f, 3.0f)));
+  assert(light->half_width == 1.0f && light->half_height == 2.0f);
+
+  vkr_lighting_system_shutdown(&system);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_rectangle_light_uses_rigid_parent_rotation PASSED\n");
+  return true_v;
+}
+
 bool32_t run_lighting_system_tests(void) {
   printf("--- Running Lighting System tests... ---\n");
   bool32_t passed = true_v;
@@ -186,6 +249,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_unbounded_point_lights_are_global();
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_gpu_row_packing();
+  passed &= test_rectangle_light_uses_rigid_parent_rotation();
   printf("--- Lighting System tests completed. ---\n");
   return passed;
 }

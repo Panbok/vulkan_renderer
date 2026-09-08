@@ -1,0 +1,59 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Near red card",
+      "parent": null,
+      "transform": {
+        "pos": [-0.075, 1.5, 0.95],
+        "rot": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.09, 0.09, 0.02],
+        "material": {
+          "name": "dof_foreground",
+          "path": "tests/fixtures/rendering/dof/foreground.mt"
+        }
+      }
+    },
+    {
+      "name": "Focus green card",
+      "parent": null,
+      "transform": {
+        "pos": [0, 1.5, 0.7],
+        "rot": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.12, 0.12, 0.02],
+        "material": {
+          "name": "dof_focus",
+          "path": "tests/fixtures/rendering/dof/focus.mt"
+        }
+      }
+    },
+    {
+      "name": "Far blue card",
+      "parent": null,
+      "transform": {
+        "pos": [0.55, 1.5, -0.4],
+        "rot": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.4, 0.4, 0.02],
+        "material": {
+          "name": "dof_background",
+          "path": "tests/fixtures/rendering/dof/background.mt"
+        }
+      }
+    }
+  ]
+}

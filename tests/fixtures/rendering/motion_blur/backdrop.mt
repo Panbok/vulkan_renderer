@@ -1,0 +1,10 @@
+name=motion_blur_backdrop
+type=pbr
+base_color=0.001,0.005,0.04,1.0
+metallic=0.0
+roughness=1.0
+emissive_factor=0.01,0.04,0.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

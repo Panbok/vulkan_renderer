@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "environment": { "enabled": true, "intensity": 1, "diffuse_intensity": 1, "specular_intensity": 1, "equirect": "assets/textures/brdf_white_local.hdr" },
+  "subsurface": { "enabled": true, "profiles": [[0.02, 0.008, 0.004]] },
+  "entities": [
+    { "name": "ZeroStrength", "parent": null, "transform": { "pos": [-2.4, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "shape": { "type": "cube", "dimensions": [1.35, 1.35, 0.16], "material": { "name": "subsurface_furnace_zero", "path": "tests/fixtures/rendering/subsurface/subsurface_furnace_zero.mt" } } },
+    { "name": "LowStrength", "parent": null, "transform": { "pos": [-0.8, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "shape": { "type": "cube", "dimensions": [1.35, 1.35, 0.16], "material": { "name": "subsurface_furnace_low", "path": "tests/fixtures/rendering/subsurface/subsurface_furnace_low.mt" } } },
+    { "name": "HighStrength", "parent": null, "transform": { "pos": [0.8, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "shape": { "type": "cube", "dimensions": [1.35, 1.35, 0.16], "material": { "name": "subsurface_furnace_high", "path": "tests/fixtures/rendering/subsurface/subsurface_furnace_high.mt" } } },
+    { "name": "AdjacentHighStrength", "parent": null, "transform": { "pos": [2.4, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }, "shape": { "type": "cube", "dimensions": [1.35, 1.35, 0.16], "material": { "name": "subsurface_furnace_high", "path": "tests/fixtures/rendering/subsurface/subsurface_furnace_high.mt" } } }
+  ]
+}

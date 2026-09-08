@@ -1,0 +1,9 @@
+name=subsurface_specular
+type=pbr
+base_color=0.72,0.72,0.72,1.0
+metallic=1.0
+roughness=0.08
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

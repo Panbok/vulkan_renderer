@@ -1,0 +1,10 @@
+name=motion_blur_transparent_card
+type=pbr
+base_color=0.02,0.8,0.1,0.5
+metallic=0.0
+roughness=0.5
+emissive_factor=0.01,1.5,0.05
+alpha_mode=blend
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

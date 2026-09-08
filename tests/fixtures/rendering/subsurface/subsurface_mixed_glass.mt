@@ -1,0 +1,14 @@
+name=subsurface_mixed_glass
+type=pbr
+base_color=0.28,0.72,0.92,1.0
+metallic=0.0
+roughness=0.12
+transmission_factor=0.76
+ior=1.5
+thickness_factor=0.2
+attenuation_color=0.42,0.78,1.0
+attenuation_distance=1.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

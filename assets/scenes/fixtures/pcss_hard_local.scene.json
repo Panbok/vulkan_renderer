@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "PCSS Fixture",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/pcss-native/pcss.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Directional Sun",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          10,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 3.5,
+        "direction_local": [
+          0.3,
+          -1.0,
+          0.0
+        ],
+        "sun_angular_diameter_degrees": 0.0
+      }
+    }
+  ]
+}

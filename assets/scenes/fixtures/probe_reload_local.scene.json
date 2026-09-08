@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "FurnaceGrid",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/brdf-native/grid.vkb",
+        "pipeline_domain": "world"
+      }
+    }
+  ],
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [
+        0,
+        0,
+        0
+      ],
+      "extents": [
+        10,
+        10,
+        10
+      ],
+      "blend_distance": 1,
+      "cubemap": {
+        "path": "assets/textures/probe_room_local.vkt"
+      }
+    }
+  ]
+}

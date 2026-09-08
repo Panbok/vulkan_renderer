@@ -1,0 +1,10 @@
+name=dof_background
+type=pbr
+base_color=0.001,0.001,0.02,1.0
+metallic=0.0
+roughness=0.8
+emissive_factor=0.02,0.02,5.0
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

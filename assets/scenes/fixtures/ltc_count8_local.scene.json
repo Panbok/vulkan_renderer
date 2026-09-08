@@ -1,0 +1,306 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Receivers",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/ltc-native/receivers.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Rectangle0",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Rectangle1",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Rectangle2",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Rectangle3",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Rectangle4",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Rectangle5",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Rectangle6",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Rectangle7",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0.3,
+          1.5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          0.8,
+          0.6
+        ],
+        "radiance": 2,
+        "size": [
+          2,
+          1
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+name=subsurface_hdr_range
+type=pbr
+base_color=0.004,0.004,0.004,1.0
+dielectric_specular=0,0,0
+metallic=0.0
+roughness=1.0
+subsurface_strength=1.0
+subsurface_profile=0
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

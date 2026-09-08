@@ -161,8 +161,13 @@ vkr_internal void test_harness_case_parser(void) {
   assert(parsed.renderer.shadow_split_lambda == 0.80f);
   assert(parsed.renderer.shadow_map_size == 2048u);
   assert(strcmp(parsed.renderer.exposure_mode, "manual") == 0);
+  assert(strcmp(parsed.renderer.display_transform, "agx") == 0);
   assert(parsed.renderer.manual_exposure == VKR_DEFAULT_EXPOSURE);
   assert(parsed.renderer.exposure_compensation_ev == 0.0f);
+  assert(parsed.renderer.white_balance_temperature == 0.0f);
+  assert(parsed.renderer.white_balance_tint == 0.0f);
+  assert(parsed.renderer.color_contrast == 1.0f);
+  assert(parsed.renderer.color_saturation == 1.0f);
   assert(parsed.renderer.exposure_reset_frame == UINT32_MAX);
   assert(parsed.renderer.editor_stop_frame == UINT32_MAX);
   assert(parsed.renderer.editor_resume_frame == UINT32_MAX);
@@ -1178,8 +1183,14 @@ vkr_internal void test_harness_report_shape(void) {
   report.case_manifest.renderer.taa_enabled = false_v;
   snprintf(report.case_manifest.renderer.exposure_mode,
            sizeof(report.case_manifest.renderer.exposure_mode), "automatic");
+  snprintf(report.case_manifest.renderer.display_transform,
+           sizeof(report.case_manifest.renderer.display_transform), "agx");
   report.case_manifest.renderer.manual_exposure = 0.25f;
   report.case_manifest.renderer.exposure_compensation_ev = 1.0f;
+  report.case_manifest.renderer.white_balance_temperature = -0.25f;
+  report.case_manifest.renderer.white_balance_tint = 0.125f;
+  report.case_manifest.renderer.color_contrast = 1.1f;
+  report.case_manifest.renderer.color_saturation = 0.875f;
   report.case_manifest.renderer.exposure_reset_frame = 1u;
   report.case_manifest.renderer.bloom_enabled = true_v;
   report.case_manifest.renderer.bloom_threshold = 1.25f;
@@ -1254,6 +1265,11 @@ vkr_internal void test_harness_report_shape(void) {
   assert(strstr(json, "\"shadow_split_lambda\":0.25") != NULL);
   assert(strstr(json, "\"shadow_map_size\":4096") != NULL);
   assert(strstr(json, "\"taa_enabled\":false") != NULL);
+  assert(strstr(json, "\"display_transform\":\"agx\"") != NULL);
+  assert(strstr(json, "\"white_balance_temperature\":-0.25") != NULL);
+  assert(strstr(json, "\"white_balance_tint\":0.125") != NULL);
+  assert(strstr(json, "\"color_contrast\":1.1") != NULL);
+  assert(strstr(json, "\"color_saturation\":0.875") != NULL);
   assert(strstr(json, "\"exposure_mode\":\"automatic\"") != NULL);
   assert(strstr(json, "\"manual_exposure\":0.25") != NULL);
   assert(strstr(json, "\"exposure_compensation_ev\":1") != NULL);
@@ -1739,6 +1755,122 @@ typedef struct VkrHarnessCaptureSummaryHeaderV6Fixture {
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV6Fixture;
 
+/* Frozen version-9 layout. Version 10 appended `ssr_enabled`; this fixture
+ * proves that a version-9 capture keeps its grading controls while its missing
+ * SSR control is disabled by the migration path. */
+typedef struct VkrHarnessRendererConfigV9Fixture {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  bool8_t taa_enabled;
+  bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
+  char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  uint32_t exposure_reset_frame;
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
+  uint32_t shadow_debug_mode;
+  uint32_t ibl_probe_limit;
+  bool8_t tonemap_enabled;
+  bool8_t fxaa_enabled;
+  bool8_t transmission_depth_diagnostic_enabled;
+  float32_t render_scale;
+  uint32_t render_width;
+  uint32_t render_height;
+  char upscaler[24];
+  bool8_t dynamic_resolution;
+  float32_t dynamic_resolution_min_scale;
+  float32_t dynamic_resolution_max_scale;
+  float32_t dynamic_resolution_target_frame_ms;
+  uint32_t editor_stop_frame;
+  uint32_t editor_resume_frame;
+  float32_t image_sharpness;
+  char display_transform[16];
+  float32_t white_balance_temperature;
+  float32_t white_balance_tint;
+  float32_t color_contrast;
+  float32_t color_saturation;
+} VkrHarnessRendererConfigV9Fixture;
+
+typedef struct VkrHarnessCaseV9Fixture {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV9Fixture renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+  float32_t content_scale;
+} VkrHarnessCaseV9Fixture;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV9Fixture {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV9Fixture case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV9Fixture;
+
+_Static_assert(sizeof(VkrHarnessRendererConfigV9Fixture) ==
+                   offsetof(VkrHarnessRendererConfig, ssr_enabled),
+               "Version-9 harness renderer fixture drift");
+_Static_assert(offsetof(VkrHarnessCaseV9Fixture, renderer) ==
+                   offsetof(VkrHarnessCase, renderer),
+               "Version-9 harness case fixture prefix drift");
+
 vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   printf("  Running test_harness_capture_summary_legacy_compatibility...\n");
 #if !defined(_WIN32)
@@ -1748,6 +1880,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   char legacy_v2_path[VKR_HARNESS_PATH_MAX];
   char legacy_v4_path[VKR_HARNESS_PATH_MAX];
   char legacy_v6_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v9_path[VKR_HARNESS_PATH_MAX];
   char current_path[VKR_HARNESS_PATH_MAX];
   snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
   snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
@@ -1755,6 +1888,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   snprintf(legacy_v4_path, sizeof(legacy_v4_path), "%s/legacy-v4.bin",
            directory);
   snprintf(legacy_v6_path, sizeof(legacy_v6_path), "%s/legacy-v6.bin",
+           directory);
+  snprintf(legacy_v9_path, sizeof(legacy_v9_path), "%s/legacy-v9.bin",
            directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3Fixture *legacy = calloc(1u, sizeof(*legacy));
@@ -1851,6 +1986,24 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   string_copy(legacy_v6->profile.id, "local.legacy.v6");
   assert(vkr_harness_atomic_write(legacy_v6_path, legacy_v6, sizeof(*legacy_v6),
                                   &error));
+  VkrHarnessCaptureSummaryHeaderV9Fixture *legacy_v9 =
+      calloc(1u, sizeof(*legacy_v9));
+  assert(legacy_v9);
+  MemCopy(legacy_v9->magic, magic, sizeof(magic));
+  legacy_v9->version = 9u;
+  legacy_v9->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v9->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy_v9->profile_compatible = true_v;
+  string_copy(legacy_v9->case_manifest.id, "smoke.legacy.v9");
+  string_copy(legacy_v9->case_manifest.renderer.display_transform,
+              "aces_fitted");
+  legacy_v9->case_manifest.renderer.white_balance_temperature = 7350.0f;
+  legacy_v9->case_manifest.renderer.white_balance_tint = -0.125f;
+  legacy_v9->case_manifest.renderer.color_contrast = 1.125f;
+  legacy_v9->case_manifest.renderer.color_saturation = 0.875f;
+  string_copy(legacy_v9->profile.id, "local.legacy.v9");
+  assert(vkr_harness_atomic_write(legacy_v9_path, legacy_v9, sizeof(*legacy_v9),
+                                  &error));
   Arena *arena = arena_create(MB(2), MB(2));
   assert(arena);
   VkrHarnessCaptureSummary summary = {0};
@@ -1924,6 +2077,16 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.compare.max_pixel_delta == 0.375);
   assert(summary.case_manifest.content_scale == 1.5f);
   assert(strcmp(summary.profile.id, "local.legacy.v6") == 0);
+  assert(vkr_harness_capture_summary_read(legacy_v9_path, arena, &summary));
+  assert(strcmp(summary.case_manifest.id, "smoke.legacy.v9") == 0);
+  assert(!summary.case_manifest.renderer.ssr_enabled);
+  assert(strcmp(summary.case_manifest.renderer.display_transform,
+                "aces_fitted") == 0);
+  assert(summary.case_manifest.renderer.white_balance_temperature == 7350.0f);
+  assert(summary.case_manifest.renderer.white_balance_tint == -0.125f);
+  assert(summary.case_manifest.renderer.color_contrast == 1.125f);
+  assert(summary.case_manifest.renderer.color_saturation == 0.875f);
+  assert(strcmp(summary.profile.id, "local.legacy.v9") == 0);
   VkrHarnessReport report = {.tool = VKR_HARNESS_TOOL_SNAPSHOT};
   assert(vkr_harness_report_init_storage(&report, arena, 1u, 0u));
   report.capture_count = 1u;
@@ -1942,6 +2105,12 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.content_scale = 1.25f;
   report.case_manifest.renderer.editor_stop_frame = 1u;
   report.case_manifest.renderer.editor_resume_frame = 4u;
+  string_copy(report.case_manifest.renderer.display_transform, "agx");
+  report.case_manifest.renderer.white_balance_temperature = 6400.0f;
+  report.case_manifest.renderer.white_balance_tint = 0.0625f;
+  report.case_manifest.renderer.color_contrast = 1.05f;
+  report.case_manifest.renderer.color_saturation = 0.95f;
+  report.case_manifest.renderer.ssr_enabled = true_v;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -1951,7 +2120,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 8u);
+  assert(current_version == 10u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
   assert(summary.case_manifest.renderer.editor_stop_frame == 1u);
@@ -1967,16 +2136,24 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.dynamic_resolution);
   assert(summary.case_manifest.renderer.dynamic_resolution_min_scale == 0.5f);
   assert(summary.case_manifest.renderer.dynamic_resolution_max_scale == 0.8f);
+  assert(strcmp(summary.case_manifest.renderer.display_transform, "agx") == 0);
+  assert(summary.case_manifest.renderer.white_balance_temperature == 6400.0f);
+  assert(summary.case_manifest.renderer.white_balance_tint == 0.0625f);
+  assert(summary.case_manifest.renderer.color_contrast == 1.05f);
+  assert(summary.case_manifest.renderer.color_saturation == 0.95f);
+  assert(summary.case_manifest.renderer.ssr_enabled);
   assert(summary.case_manifest.content_scale == 1.25f);
 
   free(legacy);
   free(legacy_v2);
   free(legacy_v4);
   free(legacy_v6);
+  free(legacy_v9);
   assert(unlink(legacy_path) == 0);
   assert(unlink(legacy_v2_path) == 0);
   assert(unlink(legacy_v4_path) == 0);
   assert(unlink(legacy_v6_path) == 0);
+  assert(unlink(legacy_v9_path) == 0);
   assert(unlink(current_path) == 0);
   assert(rmdir(directory) == 0);
   arena_destroy(arena);
@@ -2000,7 +2177,16 @@ vkr_internal void harness_test_write_u16_le(uint8_t bytes[2], uint16_t value) {
 
 vkr_internal void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
-  assert(vkr_renderer_capture_channel_count() == 30u);
+  const uint32_t capture_channel_count = vkr_renderer_capture_channel_count();
+  assert(capture_channel_count > 0u && capture_channel_count <= 64u);
+  for (uint32_t channel = 0u; channel < capture_channel_count; ++channel) {
+    const VkrCaptureChannelDescription *description =
+        vkr_renderer_capture_channel_get(channel);
+    assert(description && description->id == channel);
+    assert(vkr_renderer_capture_channel_from_name(description->name) ==
+           channel);
+  }
+  assert(vkr_renderer_capture_channel_get(capture_channel_count) == NULL);
   assert(vkr_renderer_capture_channel_from_name("missing") ==
          VKR_CAPTURE_CHANNEL_INVALID);
   const VkrCaptureChannelId final_color =
@@ -2041,6 +2227,12 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("gtao_visibility");
   const VkrCaptureChannelId gtao_raw =
       vkr_renderer_capture_channel_from_name("gtao_raw");
+  const VkrCaptureChannelId ssr_depth =
+      vkr_renderer_capture_channel_from_name("ssr_depth");
+  const VkrCaptureChannelId ssr_raw =
+      vkr_renderer_capture_channel_from_name("ssr_raw");
+  const VkrCaptureChannelId ssr_reflection =
+      vkr_renderer_capture_channel_from_name("ssr_reflection");
   const VkrCaptureChannelId gbuffer_normal =
       vkr_renderer_capture_channel_from_name("gbuffer_normal");
   const VkrCaptureChannelId deferred_emissive =
@@ -2074,6 +2266,9 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   assert(gtao_view_depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_visibility != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_raw != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(ssr_depth != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(ssr_raw != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(ssr_reflection != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gbuffer_normal != VKR_CAPTURE_CHANNEL_INVALID);
   assert(deferred_emissive != VKR_CAPTURE_CHANNEL_INVALID);
   assert(resolve_barycentric_lod != VKR_CAPTURE_CHANNEL_INVALID);
@@ -2092,11 +2287,30 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
          VKR_CAPTURE_COLOR_SPACE_LINEAR);
   assert(hdr_post_transmission_description->color_space ==
          VKR_CAPTURE_COLOR_SPACE_LINEAR);
+  const VkrCaptureChannelId rgba8_channels[] = {gtao_raw, gtao_visibility};
+  for (uint32_t channel_index = 0u; channel_index < ArrayCount(rgba8_channels);
+       ++channel_index) {
+    const VkrCaptureChannelDescription *description =
+        vkr_renderer_capture_channel_get(rgba8_channels[channel_index]);
+    assert(description && description->version == 2u);
+    assert(strcmp(description->canonical_encoding, "RGBA8_UNORM_PNG") == 0);
+  }
+  const VkrCaptureChannelDescription *ssr_depth_description =
+      vkr_renderer_capture_channel_get(ssr_depth);
+  assert(ssr_depth_description && ssr_depth_description->version == 1u);
+  assert(strcmp(ssr_depth_description->canonical_encoding, "R32_FLOAT_LE") ==
+         0);
   const VkrCaptureChannelId rgba16f_channels[] = {
-      deferred_emissive,    resolve_barycentric_lod,
-      hdr_pre_bloom,        bloom_prefilter,
-      bloom_result,         hdr_combined,
-      hdr_pre_transmission, hdr_post_transmission,
+      deferred_emissive,
+      resolve_barycentric_lod,
+      hdr_pre_bloom,
+      bloom_prefilter,
+      bloom_result,
+      hdr_combined,
+      hdr_pre_transmission,
+      hdr_post_transmission,
+      ssr_raw,
+      ssr_reflection,
   };
   for (uint32_t channel_index = 0u;
        channel_index < ArrayCount(rgba16f_channels); ++channel_index) {
@@ -2354,13 +2568,22 @@ vkr_internal void test_harness_capture_replays(void) {
   VkrHarnessCase case_manifest = {.capture_count = 1u};
   VkrHarnessCapture *capture = &case_manifest.captures[0];
   capture->at_frame = 2u;
-  capture->channel_count = 12u;
-  const char *channels[] = {"final_color",      "depth",
-                            "gbuffer_normal",   "gtao_view_depth",
-                            "gtao_raw",         "gtao_visibility",
-                            "normals",          "unlit",
-                            "temporal_motion",  "temporal_history",
-                            "indirect_diffuse", "shadow_debug_factor"};
+  capture->channel_count = 15u;
+  const char *channels[] = {"final_color",
+                            "depth",
+                            "gbuffer_normal",
+                            "gtao_view_depth",
+                            "gtao_raw",
+                            "gtao_visibility",
+                            "ssr_depth",
+                            "ssr_raw",
+                            "ssr_reflection",
+                            "normals",
+                            "unlit",
+                            "temporal_motion",
+                            "temporal_history",
+                            "indirect_diffuse",
+                            "shadow_debug_factor"};
   for (uint32_t i = 0; i < ArrayCount(channels); ++i) {
     snprintf(capture->channels[i], sizeof(capture->channels[i]), "%s",
              channels[i]);
@@ -2372,11 +2595,14 @@ vkr_internal void test_harness_capture_replays(void) {
       &case_manifest, replays, ArrayCount(replays), &replay_count, &error));
   assert(replay_count == 7u);
   assert(strcmp(replays[0].mode, "direct") == 0 &&
-         replays[0].channel_count == 6u);
+         replays[0].channel_count == 9u);
   assert(strcmp(replays[0].direct_channels[2], "gbuffer_normal") == 0);
   assert(strcmp(replays[0].direct_channels[3], "gtao_view_depth") == 0);
   assert(strcmp(replays[0].direct_channels[4], "gtao_raw") == 0);
   assert(strcmp(replays[0].direct_channels[5], "gtao_visibility") == 0);
+  assert(strcmp(replays[0].direct_channels[6], "ssr_depth") == 0);
+  assert(strcmp(replays[0].direct_channels[7], "ssr_raw") == 0);
+  assert(strcmp(replays[0].direct_channels[8], "ssr_reflection") == 0);
   assert(strcmp(replays[1].mode, "normals") == 0 &&
          replays[1].render_mode == VKR_RENDER_MODE_NORMAL);
   assert(strcmp(replays[2].mode, "unlit") == 0 &&

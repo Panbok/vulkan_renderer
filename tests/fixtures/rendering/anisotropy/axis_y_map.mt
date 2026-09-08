@@ -1,0 +1,12 @@
+name=anisotropy_axis_y_map
+type=pbr
+base_color=1,1,1,1
+metallic=1
+roughness=.45
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world
+anisotropy_strength=0.8
+anisotropy_rotation=0
+anisotropy_texture=tests/fixtures/rendering/anisotropy/direction_y.png?tc=data_mask

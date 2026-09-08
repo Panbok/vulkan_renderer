@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Corner",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/dgtao-native/corner.vkb",
+        "pipeline_domain": "world"
+      }
+    }
+  ],
+  "diffuse_volume": {
+    "path": "assets/textures/dgtao_corner_volume_local.vkdv"
+  }
+}

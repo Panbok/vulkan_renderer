@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Receivers",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/ltc-native/layered.vkb",
+        "pipeline_domain": "world"
+      }
+    }
+  ],
+  "fog": {
+    "enabled": false,
+    "color": [
+      0.25,
+      0.5,
+      0.75
+    ],
+    "density": 0.2,
+    "base_height": 0,
+    "height_falloff": 0,
+    "max_distance": 100,
+    "sky_distance": 10
+  }
+}

@@ -1,0 +1,17 @@
+name=clearcoat_off
+type=pbr
+base_color=0.42,0.42,0.42,1.0
+metallic=0.15
+roughness=0.34
+normal_scale=1.0
+normal_texture=tests/fixtures/rendering/clearcoat/base_normal_plus_x.png?tc=normal_rg
+clearcoat_factor=0.0
+clearcoat_roughness=0.04
+clearcoat_normal_scale=1.0
+clearcoat_texture=tests/fixtures/rendering/clearcoat/coat_mask_one.png?tc=data_mask
+clearcoat_roughness_texture=tests/fixtures/rendering/clearcoat/coat_mask_one.png?tc=data_mask
+clearcoat_normal_texture=tests/fixtures/rendering/clearcoat/coat_normal_plus_x.png?tc=normal_rg
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

@@ -147,7 +147,9 @@ vkr_internal void test_temporal_scene_signature(void) {
       .input =
           {
               .globals = {.view = mat4_identity(),
-                          .projection = mat4_identity()},
+                          .projection = mat4_identity(),
+                          .color_contrast = 1.0f,
+                          .color_saturation = 1.0f},
               .world = &world,
               .lighting = &lighting,
               .shadow = &shadow,

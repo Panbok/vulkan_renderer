@@ -1,0 +1,9 @@
+name=subsurface_occluder
+type=pbr
+base_color=0.015,0.015,0.015,1.0
+metallic=0.0
+roughness=0.9
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

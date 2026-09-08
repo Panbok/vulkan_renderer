@@ -1,0 +1,11 @@
+name=subsurface_skin
+type=pbr
+base_color=0.82,0.82,0.82,1.0
+metallic=0.0
+roughness=0.48
+subsurface_strength=0.85
+subsurface_profile=0
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

@@ -1,0 +1,76 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Rectangle",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          2
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "radiance": 1,
+        "size": [
+          4,
+          2
+        ]
+      }
+    },
+    {
+      "name": "SheenQuadrature",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          4,
+          4,
+          0.12
+        ],
+        "material": {
+          "name": "sheen_rectangle_oracle",
+          "path": "tests/fixtures/rendering/sheen/sheen_rectangle_oracle.mt"
+        }
+      }
+    }
+  ]
+}

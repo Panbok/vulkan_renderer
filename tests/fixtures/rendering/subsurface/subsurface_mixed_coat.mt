@@ -1,0 +1,12 @@
+name=subsurface_mixed_coat
+type=pbr
+base_color=0.3,0.3,0.3,1.0
+metallic=0.15
+roughness=0.32
+clearcoat_factor=1.0
+clearcoat_roughness=0.08
+clearcoat_normal_scale=1.0
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

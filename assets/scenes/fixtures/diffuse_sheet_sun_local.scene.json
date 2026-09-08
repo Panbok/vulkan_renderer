@@ -1,0 +1,70 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Light",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          -2
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 1,
+        "direction_local": [
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Sheet",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": "tests/fixtures/rendering/diffuse_sheet/diffuse_sheet_on.vkb",
+        "pipeline_domain": "world"
+      }
+    }
+  ]
+}

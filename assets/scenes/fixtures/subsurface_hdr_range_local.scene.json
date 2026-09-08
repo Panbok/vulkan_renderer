@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 1,
+    "diffuse_intensity": 10000000,
+    "specular_intensity": 0,
+    "equirect": "assets/textures/brdf_white_local.hdr"
+  },
+  "subsurface": {
+    "enabled": true,
+    "profiles": [
+      [
+        0.02,
+        0.008,
+        0.004
+      ]
+    ]
+  },
+  "entities": [
+    {
+      "name": "DarkHighIrradianceSurface",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          7,
+          4,
+          0.14
+        ],
+        "material": {
+          "name": "subsurface_hdr_range",
+          "path": "tests/fixtures/rendering/subsurface/subsurface_hdr_range.mt"
+        }
+      }
+    }
+  ]
+}

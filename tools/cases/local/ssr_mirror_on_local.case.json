@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "id": "local.ssr.mirror.on",
+  "suite": "local",
+  "description": "Opaque mirror and visible emissive card: SSR ray intersection and fallback.",
+  "scene": "assets/scenes/fixtures/ssr_mirror_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    321,
+    241
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 8,
+    "measure": 2
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "aces_fitted",
+    "gtao_enabled": false,
+    "ssr_enabled": true,
+    "image_sharpness": 0
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.5,
+      3
+    ],
+    "yaw": -90,
+    "pitch": -20,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "hdr_pre_bloom",
+        "ssr_raw",
+        "ssr_reflection",
+        "ssr_depth"
+      ]
+    },
+    {
+      "at_frame": 1,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "hdr_pre_bloom",
+        "ssr_raw",
+        "ssr_reflection",
+        "ssr_depth"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

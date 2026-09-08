@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "local.motion_blur.zero",
+  "suite": "local",
+  "description": "A zero shutter bypasses motion blur under the moving workload.",
+  "scene": "assets/scenes/fixtures/motion_blur_local.scene.json",
+  "seed": 1,
+  "resolution": [512, 384],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {"warmup": 4, "measure": 6},
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "aces_fitted",
+    "gtao_enabled": false,
+    "ssr_enabled": false,
+    "ssgi_enabled": false,
+    "bloom_enabled": false,
+    "motion_blur_enabled": true,
+    "motion_blur_shutter_angle": 0,
+    "motion_blur_entity": "Motion card",
+    "motion_blur_entity_velocity": [2.4, 0, 0]
+  },
+  "camera": {
+    "mode": "keyframes",
+    "interpolation": "linear",
+    "speed": "medium",
+    "vertical_fov_degrees": 45,
+    "near_plane": 0.05,
+    "far_plane": 10,
+    "keys": [
+      {"position": [-0.18, 1.5, 1.2], "yaw": -90, "pitch": 0, "t": 0},
+      {"position": [0.18, 1.5, 1.2], "yaw": -90, "pitch": 0, "t": 0.2}
+    ]
+  },
+  "captures": [{"at_frame": 4, "channels": ["final_color", "hdr_pre_bloom"]}],
+  "assertions": [{"metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0}]
+}

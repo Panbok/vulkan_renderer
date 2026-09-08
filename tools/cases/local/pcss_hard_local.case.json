@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "id": "local.pcss_hard",
+  "suite": "local",
+  "description": "Zero-degree sun: conventional 16-tap PCF control for the analytic two-gap PCSS fixture.",
+  "scene": "assets/scenes/fixtures/pcss_hard_local.scene.json",
+  "seed": 53,
+  "resolution": [
+    768,
+    768
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 12,
+    "measure": 2
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "fxaa_enabled": false,
+    "render_scale": 1.0,
+    "upscaler": "spatial",
+    "dynamic_resolution": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1.0,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "shadow_map_size": 4096,
+    "shadow_pcf_samples": 16,
+    "shadow_pcf_early_out": true,
+    "shadow_sdsm": false,
+    "render_mode": "default",
+    "display_transform": "agx",
+    "bloom_enabled": false,
+    "gtao_enabled": false,
+    "ssr_enabled": false,
+    "image_sharpness": 0.0
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      7,
+      13
+    ],
+    "yaw": -90,
+    "pitch": -20,
+    "vertical_fov_degrees": 62,
+    "near_plane": 0.1,
+    "far_plane": 28
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": [
+        "hdr_pre_transmission",
+        "final_color",
+        "shadow_cascade_0"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "draw.world.opaque_draws",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "frame.render_width",
+      "stat": "min",
+      "equals": 768,
+      "tolerance": 0
+    },
+    {
+      "metric": "frame.render_height",
+      "stat": "min",
+      "equals": 768,
+      "tolerance": 0
+    }
+  ]
+}

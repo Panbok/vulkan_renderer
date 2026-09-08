@@ -1,0 +1,10 @@
+name=clearcoat_emitter
+type=pbr
+base_color=0.70,0.04,0.02,1.0
+metallic=0.0
+roughness=0.6
+emissive_factor=4.0,0.08,0.02
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

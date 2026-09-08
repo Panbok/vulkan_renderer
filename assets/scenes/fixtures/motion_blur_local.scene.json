@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "environment": {"enabled": false},
+  "entities": [
+    {
+      "name": "Motion backdrop",
+      "parent": null,
+      "transform": {
+        "pos": [0, 1.5, -0.7],
+        "rot": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.8, 1.1, 0.04],
+        "material": {
+          "name": "motion_blur_backdrop",
+          "path": "tests/fixtures/rendering/motion_blur/backdrop.mt"
+        }
+      }
+    },
+    {
+      "name": "Motion card",
+      "parent": null,
+      "transform": {
+        "pos": [-0.28, 1.5, 0.1],
+        "rot": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.32, 0.32, 0.03],
+        "material": {
+          "name": "motion_blur_moving_card",
+          "path": "tests/fixtures/rendering/motion_blur/moving_card.mt"
+        }
+      }
+    },
+    {
+      "name": "Transparent card",
+      "parent": null,
+      "transform": {
+        "pos": [0.34, 1.5, 0.35],
+        "rot": [0, 0, 0, 1],
+        "scale": [1, 1, 1]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.2, 0.34, 0.02],
+        "material": {
+          "name": "motion_blur_transparent_card",
+          "path": "tests/fixtures/rendering/motion_blur/transparent_card.mt"
+        }
+      }
+    }
+  ]
+}

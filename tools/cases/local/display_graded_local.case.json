@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "id": "local.display.graded",
+  "suite": "local",
+  "description": "Known emissive radiance swatches across six exposure levels.",
+  "scene": "assets/scenes/fixtures/display_transform_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    480,
+    480
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 4,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "agx",
+    "fxaa_enabled": false,
+    "white_balance_temperature": 0.3,
+    "white_balance_tint": -0.2,
+    "color_contrast": 1.1,
+    "color_saturation": 0.8
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      7
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 45,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

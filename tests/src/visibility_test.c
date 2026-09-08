@@ -18,7 +18,9 @@ vkr_internal void test_packet_pre_recording_rejection(void) {
   };
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .world = &world,
   };
   assert(vkr_frame_input_validate(&packet, &validation) ==
@@ -101,7 +103,9 @@ vkr_internal void test_packet_independent_transmission_stream(void) {
   };
   const VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .world = &world,
   };
   VkrValidationError validation = {0};
@@ -114,7 +118,9 @@ vkr_internal void test_packet_borrowed_array_validation(void) {
   VkrWorldPassPayload world = {.instance_count = 1u};
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .world = &world,
   };
   assert(vkr_frame_input_validate(&packet, &validation) ==
@@ -155,7 +161,9 @@ vkr_internal void test_packet_text_geometry_validation(void) {
   VkrWorldPassPayload world = {.text_draws = &text, .text_draw_count = 1u};
   const VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .world = &world,
   };
   assert(vkr_frame_input_validate(&packet, &validation) ==
@@ -201,7 +209,9 @@ vkr_internal void test_packet_ui_stream_validation(void) {
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
       .frame = {.window_width = 100u, .window_height = 50u},
-      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
       .ui = &ui,
   };
   VkrValidationError validation = {0};

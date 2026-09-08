@@ -1657,6 +1657,8 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_cascade_render_mask = 0xffu,
       .hzb_build_enabled = true_v,
       .local_shadow_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      .local_shadow_render_mask =
+          (UINT32_C(1) << VKR_LOCAL_SHADOW_FACE_COUNT_MAX) - 1u,
       .local_shadow_map_layer_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
       .hzb_reduce_pass_count = 14u,

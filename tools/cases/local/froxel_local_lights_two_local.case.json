@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "suite": "local",
+  "description": "Froxel local-light selection and one-tap local-shadow volume fixture.",
+  "seed": 1,
+  "resolution": [
+    384,
+    256
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 12,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "shadow_map_size": 1024,
+    "render_mode": "default",
+    "display_transform": "aces_fitted",
+    "gtao_enabled": false,
+    "ssr_enabled": false,
+    "image_sharpness": 0,
+    "bloom_enabled": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      3,
+      8
+    ],
+    "yaw": -90,
+    "pitch": -12,
+    "vertical_fov_degrees": 50,
+    "near_plane": 0.1,
+    "far_plane": 30
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "hdr_post_transmission",
+        "depth"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "lighting.point.selected",
+      "stat": "min",
+      "equals": 2
+    }
+  ],
+  "id": "local.froxel.local_lights.two",
+  "scene": "assets/scenes/fixtures/froxel_local_lights_two.scene.json"
+}

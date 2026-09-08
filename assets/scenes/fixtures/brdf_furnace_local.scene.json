@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 1,
+    "diffuse_intensity": 1,
+    "specular_intensity": 1,
+    "equirect": "assets/textures/brdf_white_local.hdr"
+  },
+  "entities": [
+    {
+      "name": "FurnaceGrid",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/brdf-native/grid.vkb",
+        "pipeline_domain": "world"
+      }
+    }
+  ]
+}

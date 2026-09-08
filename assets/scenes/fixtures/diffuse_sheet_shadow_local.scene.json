@@ -1,0 +1,101 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Light",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          -2
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 8,
+        "range": 10,
+        "casts_shadow": true
+      }
+    },
+    {
+      "name": "Sheet",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": "tests/fixtures/rendering/diffuse_sheet/diffuse_sheet_on.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Occluder",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          -1
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1,
+          1,
+          0.1
+        ],
+        "material": {
+          "name": "gltf_mat_a13c1d94216ac5a7_0",
+          "path": "tests/fixtures/rendering/diffuse_sheet/diffuse_sheet_off.mt"
+        }
+      }
+    }
+  ]
+}

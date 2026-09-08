@@ -1,0 +1,11 @@
+name=sheen_off
+type=pbr
+base_color=.3,.3,.3,1
+metallic=0
+roughness=.45
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world
+sheen_color=0,0,0
+sheen_roughness=.5

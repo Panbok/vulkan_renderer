@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Receivers",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": ".scratch/ltc-native/receivers.vkb",
+        "pipeline_domain": "world"
+      }
+    }
+  ],
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [
+      0,
+      0.6,
+      0.8
+    ],
+    "observer_altitude_m": 50000
+  }
+}

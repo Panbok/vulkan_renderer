@@ -1,0 +1,10 @@
+name=subsurface_emission
+type=pbr
+base_color=0.35,0.02,0.01,1.0
+metallic=0.0
+roughness=0.55
+emissive_factor=4.0,0.08,0.02
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

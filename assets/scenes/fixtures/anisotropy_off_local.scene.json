@@ -1,0 +1,75 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Point",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          2
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 12,
+        "range": 10,
+        "enabled": true,
+        "casts_shadow": false
+      }
+    },
+    {
+      "name": "Anisotropy",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          4,
+          4,
+          0.12
+        ],
+        "material": {
+          "name": "anisotropy_off",
+          "path": "tests/fixtures/rendering/anisotropy/off.mt"
+        }
+      }
+    }
+  ]
+}

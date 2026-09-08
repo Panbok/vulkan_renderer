@@ -1,0 +1,11 @@
+name=sheen_rectangle_oracle
+type=pbr
+base_color=0,0,0,1
+metallic=1
+roughness=.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world
+sheen_color=1,1,1
+sheen_roughness=.6

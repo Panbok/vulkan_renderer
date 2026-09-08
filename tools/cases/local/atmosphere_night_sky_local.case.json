@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "local.atmosphere.night.sky",
+  "suite": "local",
+  "description": "Revision-baked sky, indirect-light separation and unified directional sun.",
+  "scene": "assets/scenes/fixtures/atmosphere_night_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    384,
+    256
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 8,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "aces_fitted",
+    "gtao_enabled": false,
+    "ssr_enabled": false,
+    "image_sharpness": 0,
+    "gtao_radius": 0.8,
+    "gtao_power": 2.2,
+    "bloom_enabled": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      3
+    ],
+    "yaw": -90,
+    "pitch": 20,
+    "vertical_fov_degrees": 50,
+    "near_plane": 0.1,
+    "far_plane": 30
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "depth"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}
