@@ -201,6 +201,9 @@ gizmo drag becomes one entry before selection or transport actions can end it. E
 using source entity/node identities and fingerprints. Loading validates complete
 JSON, resolves every source identity and stages names before mutation. A conflict
 leaves the source scene unchanged and prevents overwriting the conflicting file.
+Rejection diagnostics distinguish malformed files, unavailable sources, duplicate
+identities, changed fingerprints, incompatible fields, and staging failures. A
+fingerprint conflict reports the record, source identity, and saved/current hashes.
 Original glTF and scene JSON files are not rewritten. Reload/unload refuses unsaved
 committed edits. These sidecars are applied by the shared interactive app/editor
 runtime; harness scene loads do not implicitly consume editor overrides.

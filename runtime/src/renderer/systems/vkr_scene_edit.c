@@ -444,6 +444,26 @@ typedef struct EditJson {
   const uint8_t *end;
 } EditJson;
 
+typedef enum EditSidecarFailure {
+  EDIT_SIDECAR_FAILURE_READ,
+  EDIT_SIDECAR_FAILURE_SCHEMA,
+  EDIT_SIDECAR_FAILURE_ALLOC,
+  EDIT_SIDECAR_FAILURE_SOURCE_MISSING,
+  EDIT_SIDECAR_FAILURE_SOURCE_AMBIGUOUS,
+  EDIT_SIDECAR_FAILURE_SOURCE_DUPLICATE,
+  EDIT_SIDECAR_FAILURE_FINGERPRINT,
+  EDIT_SIDECAR_FAILURE_FIELDS,
+} EditSidecarFailure;
+
+typedef struct EditSidecarDiagnostic {
+  EditSidecarFailure failure;
+  uint32_t record;
+  uint32_t wrapper;
+  uint32_t node;
+  uint64_t saved_fingerprint;
+  uint64_t current_fingerprint;
+} EditSidecarDiagnostic;
+
 static void edit_json_space(EditJson *j) {
   while (j->at < j->end &&
          (*j->at == ' ' || *j->at == '\t' || *j->at == '\r' || *j->at == '\n'))
@@ -865,6 +885,53 @@ static EditSourceIndex *edit_source_find(EditSourceIndex *index, uint32_t count,
   return &index[begin];
 }
 
+static void
+edit_sidecar_reject_status(VkrSceneEditState *s,
+                           const EditSidecarDiagnostic *diagnostic) {
+  switch (diagnostic->failure) {
+  case EDIT_SIDECAR_FAILURE_SCHEMA:
+    snprintf(s->status, sizeof(s->status),
+             "Override file is malformed or uses an unsupported schema.");
+    break;
+  case EDIT_SIDECAR_FAILURE_ALLOC:
+    snprintf(s->status, sizeof(s->status),
+             "Override file could not stage all changes.");
+    break;
+  case EDIT_SIDECAR_FAILURE_SOURCE_MISSING:
+    snprintf(s->status, sizeof(s->status),
+             "Override %u targets missing source %u/%d.", diagnostic->record,
+             diagnostic->wrapper, (int32_t)diagnostic->node);
+    break;
+  case EDIT_SIDECAR_FAILURE_SOURCE_AMBIGUOUS:
+    snprintf(s->status, sizeof(s->status),
+             "Override %u targets ambiguous source %u/%d.", diagnostic->record,
+             diagnostic->wrapper, (int32_t)diagnostic->node);
+    break;
+  case EDIT_SIDECAR_FAILURE_SOURCE_DUPLICATE:
+    snprintf(s->status, sizeof(s->status), "Override %u repeats source %u/%d.",
+             diagnostic->record, diagnostic->wrapper,
+             (int32_t)diagnostic->node);
+    break;
+  case EDIT_SIDECAR_FAILURE_FINGERPRINT:
+    snprintf(s->status, sizeof(s->status),
+             "Override %u source %u/%d fingerprint differs: saved %016llx, "
+             "current %016llx.",
+             diagnostic->record, diagnostic->wrapper, (int32_t)diagnostic->node,
+             (unsigned long long)diagnostic->saved_fingerprint,
+             (unsigned long long)diagnostic->current_fingerprint);
+    break;
+  case EDIT_SIDECAR_FAILURE_FIELDS:
+    snprintf(s->status, sizeof(s->status),
+             "Override %u fields no longer match source %u/%d.",
+             diagnostic->record, diagnostic->wrapper,
+             (int32_t)diagnostic->node);
+    break;
+  case EDIT_SIDECAR_FAILURE_READ:
+    snprintf(s->status, sizeof(s->status), "Override file could not be read.");
+    break;
+  }
+}
+
 /* All prepared strings belong to the scene; pending records/file bytes belong
    to the editor allocator and die at this input boundary. No scene mutation
    occurs until closing delimiters, EOF, identities and every allocation pass.
@@ -881,6 +948,9 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   uint32_t index_capacity = scene->world->dir.capacity;
   uint32_t touched_before = s->touched_count;
   bool8_t success = false_v;
+  EditSidecarDiagnostic diagnostic = {
+      .failure = EDIT_SIDECAR_FAILURE_READ,
+  };
   long length = 0;
   if (path.length >= sizeof(cpath))
     goto cleanup;
@@ -895,7 +965,11 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
       length > 16 * 1024 * 1024 || fseek(file, 0, SEEK_SET) != 0)
     goto cleanup;
   bytes = vkr_allocator_alloc(s->allocator, (uint64_t)length, EDIT_TAG);
-  if (!bytes || fread(bytes, 1, (size_t)length, file) != (size_t)length)
+  if (!bytes) {
+    diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
+    goto cleanup;
+  }
+  if (fread(bytes, 1, (size_t)length, file) != (size_t)length)
     goto cleanup;
   /* One directory walk and sort serve all records. Seen flags reject repeated
      overrides; touched flags merge an existing journal without quadratic scans.
@@ -903,8 +977,10 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   if (index_capacity) {
     index = vkr_allocator_alloc(s->allocator, index_capacity * sizeof(*index),
                                 EDIT_TAG);
-    if (!index)
+    if (!index) {
+      diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
       goto cleanup;
+    }
   }
   for (uint32_t i = 0; i < index_capacity; ++i) {
     VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
@@ -936,34 +1012,66 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   }
   EditJson json = {.at = bytes, .end = bytes + length};
   uint32_t root_seen = 0;
-  if (!edit_json_take(&json, '{'))
+  if (!edit_json_take(&json, '{')) {
+    diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
     goto cleanup;
+  }
   for (;;) {
     char key[32];
     if (!edit_json_string(&json, key, sizeof(key)) ||
-        !edit_json_take(&json, ':'))
+        !edit_json_take(&json, ':')) {
+      diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
       goto cleanup;
+    }
     if (strcmp(key, "version") == 0) {
       int64_t version;
-      if ((root_seen & 1u) || !edit_json_int(&json, 1, 1, &version))
+      if ((root_seen & 1u) || !edit_json_int(&json, 1, 1, &version)) {
+        diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
         goto cleanup;
+      }
       root_seen |= 1u;
     } else if (strcmp(key, "overrides") == 0) {
-      if ((root_seen & 2u) || !edit_json_take(&json, '['))
+      if ((root_seen & 2u) || !edit_json_take(&json, '[')) {
+        diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
         goto cleanup;
+      }
       root_seen |= 2u;
       if (!edit_json_take(&json, ']'))
         for (;;) {
           VkrSceneEditValues values;
           uint32_t wrapper, node;
           uint64_t fingerprint;
-          if (!edit_json_record(&json, &values, &wrapper, &node, &fingerprint))
+          if (!edit_json_record(&json, &values, &wrapper, &node,
+                                &fingerprint)) {
+            diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
+            diagnostic.record = count + 1u;
             goto cleanup;
+          }
           EditSourceIndex *source =
               edit_source_find(index, index_count, wrapper, node);
-          if (!source || source->ambiguous || source->seen ||
-              source->fingerprint != fingerprint)
+          diagnostic = (EditSidecarDiagnostic){
+              .record = count + 1u,
+              .wrapper = wrapper,
+              .node = node,
+              .saved_fingerprint = fingerprint,
+              .current_fingerprint = source ? source->fingerprint : 0u,
+          };
+          if (!source) {
+            diagnostic.failure = EDIT_SIDECAR_FAILURE_SOURCE_MISSING;
             goto cleanup;
+          }
+          if (source->ambiguous) {
+            diagnostic.failure = EDIT_SIDECAR_FAILURE_SOURCE_AMBIGUOUS;
+            goto cleanup;
+          }
+          if (source->seen) {
+            diagnostic.failure = EDIT_SIDECAR_FAILURE_SOURCE_DUPLICATE;
+            goto cleanup;
+          }
+          if (source->fingerprint != fingerprint) {
+            diagnostic.failure = EDIT_SIDECAR_FAILURE_FINGERPRINT;
+            goto cleanup;
+          }
           source->seen = true_v;
           VkrEntityId entity = source->entity;
           if (count == capacity) {
@@ -971,41 +1079,57 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
             EditPrepared *entries = vkr_allocator_realloc(
                 s->allocator, pending, capacity * sizeof(*entries),
                 next * sizeof(*entries), EDIT_TAG);
-            if (!entries)
+            if (!entries) {
+              diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
               goto cleanup;
+            }
             pending = entries;
             capacity = next;
           }
-          if (!edit_prepare(scene, entity, &values, &pending[count]))
+          if (!edit_prepare(scene, entity, &values, &pending[count])) {
+            diagnostic.failure = EDIT_SIDECAR_FAILURE_FIELDS;
             goto cleanup;
+          }
           pending[count].add_touched = !source->touched;
           additional_touched += !source->touched;
           count++;
           if (edit_json_take(&json, ']'))
             break;
-          if (!edit_json_take(&json, ','))
+          if (!edit_json_take(&json, ',')) {
+            diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
             goto cleanup;
+          }
         }
-    } else
+    } else {
+      diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
       goto cleanup;
+    }
     if (edit_json_take(&json, '}'))
       break;
-    if (!edit_json_take(&json, ','))
+    if (!edit_json_take(&json, ',')) {
+      diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
       goto cleanup;
+    }
   }
   edit_json_space(&json);
-  if (root_seen != 3u || json.at != json.end)
+  if (root_seen != 3u || json.at != json.end) {
+    diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
     goto cleanup;
-  if (additional_touched > UINT32_MAX - touched_before)
+  }
+  if (additional_touched > UINT32_MAX - touched_before) {
+    diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
     goto cleanup;
+  }
   const uint32_t touched_needed = touched_before + additional_touched;
   if (touched_needed > s->touched_capacity) {
     const uint32_t next_capacity = Max(32u, touched_needed);
     VkrEntityId *next = vkr_allocator_realloc(
         s->allocator, s->touched, s->touched_capacity * sizeof(*next),
         next_capacity * sizeof(*next), EDIT_TAG);
-    if (!next)
+    if (!next) {
+      diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
       goto cleanup;
+    }
     s->touched = next;
     s->touched_capacity = next_capacity;
   }
@@ -1033,9 +1157,9 @@ cleanup:
   if (!success) {
     s->touched_count = touched_before;
     s->sidecar_conflict = true_v;
-    snprintf(s->status, sizeof(s->status),
-             "Override conflict or invalid file. Source scene preserved.");
-    log_error("Editor overrides rejected: %.*s", (int)path.length, path.str);
+    edit_sidecar_reject_status(s, &diagnostic);
+    log_error("Editor overrides rejected: %.*s: %s", (int)path.length, path.str,
+              s->status);
   }
   return success;
 }
