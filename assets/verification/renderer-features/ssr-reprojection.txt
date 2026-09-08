@@ -1,0 +1,188 @@
+SSR jitter-corrected history, 2026-09-09
+Base commit 1bd051f5. Apple M1 Pro / Metal / Release.
+Approved filtering is implemented. The cafe under-bar flicker is NOT resolved.
+No performance or native Vulkan parity claim.
+
+Changes:
+- Reuse SSR parameter offsets 280/284 for selected-producer jitter UV; size 288.
+- Begin reprojection at the half-resolution history texel center, add receiver
+  motion and previous-minus-current raster jitter. Four separate depth/identity
+  checks; normalize accepted covered radiance/coverage before temporal weight.
+- At most 12 history reads instead of 3 (+9 approved), no new images or rays.
+- Trace/composite eligibility uses the same material roughness. Normal variance
+  still broadens BRDF weights, without independently disabling the composite.
+- Repair a failed hierarchy candidate against its already-loaded full-res depth
+  only when the refined intersection stays in that pixel. No additional reads,
+  steps or rays. This repair has negligible effect on the observed bar flicker.
+Shader sources changed on both backends; cooked assets unchanged. SSGI's shared
+trace adapter zeros the repurposed SSR fields; SSGI's own ABI remains unchanged.
+
+Commands:
+ ./build_release.sh
+ ./build_editor.sh Release
+ python3 tools/checks/check_ssr_stability.py
+ spirv-val --target-env vulkan1.4 --scalar-block-layout <module>
+ Ten production build_release/renderer/generated/vulkan/packet.ssr*.spv and
+ packet.ssgi*.spv modules pass. spirv-dis on packet.ssr_temporal.comp.spv pins
+ history_jitter_uv_x/y at 280/284. Metal startup ABI reflection passes.
+
+Normal snapshots use this command, with the listed case below:
+ env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS
+ ./build_release/tools/vkr_harness snapshot --case <case>
+ --profile tools/profiles/local-offscreen.json
+ Street cases: tools/cases/local/ssr_static_cycle.case.json and
+ ssr_static_cycle_off.case.json; moving cutoff-only uses screen_motion_ssr.case.json.
+ Bar cases: tools/cases/local/ssr_bar_static.case.json, ssr_bar_static_off.case.json,
+ ssr_bar_motion.case.json, ssr_bar_motion_off.case.json, according to run labels.
+ MetalFX, fixed scale 0.8, output 800x600, internal 641x481, SSR 320x240,
+ three target images, 32 warmup frames, fixed 1/60 s, manual exposure 0.853, SSGI off.
+ Street checkpoints 0..7 cover the 8-phase jitter cycle. Bar checkpoints 3/4/5.
+ Bar camera [-5.03,1.7,9.73],yaw -20.34, pitch -12; motion translates +x 0.4, yaw +3.
+ Old-shader bar runs use the HEAD native shader files with the new unused jitter
+ fields still populated on the host. Cutoff-only runs restore only HEAD temporal
+ bodies. Final sources were restored after each diagnostic baseline build.
+
+ env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1
+ ./build_release/tools/vkr_harness profile
+ --case tools/cases/local/ssr_temporal_resize.case.json
+ --profile tools/profiles/local-windowed.json
+ Two serial children: Metal API Validation Enabled, resize 514x386 ->642x482,
+ no API errors. Portable TAA; capture-free; shader validation unset.
+
+Run reports (all execution/assertion pass, local non-authoritative observations):
+street-old: build/_artifacts/snapshot/20260908T205037.496Z-001224
+ report sha256 804419264ded4655b940699168d17bafcdae4c7352926f99ed4d59023e8c397d; status pass; authoritative False
+street-off: build/_artifacts/snapshot/20260908T205318.011Z-001cb7
+ report sha256 825dffeb8b906868fe35727628037a6789a60bec675b9643ac1f6f907355a664; status pass; authoritative False
+street-rejected-first-filter: build/_artifacts/snapshot/20260908T210054.998Z-003aa6
+ report sha256 c971b004a80155fdac45538531470b34ab8a5efb4c203e72f2f141969ba48604; status pass; authoritative False
+street-four-tap: build/_artifacts/snapshot/20260908T211103.808Z-005ef7
+ report sha256 3e7bbc6f40f3b39437aa987acf9803fdab425a28bfc99a9fde4f1b3a22220976; status pass; authoritative False
+street-cutoff-only: build/_artifacts/snapshot/20260908T211434.954Z-0074e3
+ report sha256 c0377d744b16bc1db5e94c13949338c754319ea37a7acacd812f0c297c9b8fd4; status pass; authoritative False
+street-moving-cutoff-only: build/_artifacts/snapshot/20260908T211611.206Z-0080d4
+ report sha256 523e48a27badaac7d556d6850c191e3c7f498364ce58ff6aa025fa7089c2361c; status pass; authoritative False
+bar-four-tap: build/_artifacts/snapshot/20260908T211825.725Z-0093a2
+ report sha256 e232c6e21736c7b350a88d8ce5b569d949b5b8a81ec8c4369f1adffe6c9785dd; status pass; authoritative False
+bar-moving-four-tap: build/_artifacts/snapshot/20260908T211952.186Z-0098ba
+ report sha256 3d01fb923c6c44f04986b8ee979f411106d1ed221388f66fb395b221e90ca04b; status pass; authoritative False
+bar-off: build/_artifacts/snapshot/20260908T212033.338Z-009bec
+ report sha256 4cf769a7c02b6150b248125ac4b853219186ca748ffd4442d0062f20fc460bd5; status pass; authoritative False
+bar-moving-off-before-leaf-build: build/_artifacts/snapshot/20260908T212109.414Z-009a36
+ report sha256 44d2e218da861725e0726f523c6285dc9079fb789f19f3634f076d7d00e2a0f8; status pass; authoritative False
+bar-final: build/_artifacts/snapshot/20260908T212245.158Z-00a4cc
+ report sha256 debff62cdf6204f3fe6872a64c8d93369bf6d8e3002ce7f64d7151e3c550e021; status pass; authoritative False
+ retained ssr-reprojection-bar-final-final_color.png sha256 7d21efc73c791d1735816d75052c09aa8f65bc67d5a1ef711bc9bbf8f90a718b
+ retained ssr-reprojection-bar-final-ssr_reflection.png sha256 e3b2f714fc521a71a5dbbff59b2899261353af2f4b578f6969cb64543063ff97
+bar-moving-final: build/_artifacts/snapshot/20260908T212336.717Z-00a583
+ report sha256 a3def792e70c96a8c9a652a056c409a4f86de600b0fecc51e4e9b793d180a539; status pass; authoritative False
+ retained ssr-reprojection-bar-moving-final-final_color.png sha256 b8b712683c85457e653b9302fe3c571e837d00baee3bfc7aebb0e68760b1d7e5
+final-api-resize: build/_artifacts/profile/20260908T212533.465Z-00ac19
+ report sha256 8a926198934d64089578d69e7494f12b70bd917a003e4901bc76c22f218930eb; status pass; authoritative False
+bar-moving-off-final: build/_artifacts/snapshot/20260908T212624.104Z-00b093
+ report sha256 f64f684a11c0c2dd10ff85aa7eddfa0f8d0f74f355b309302b6cf95da782789c; status pass; authoritative False
+bar-old: build/_artifacts/snapshot/20260908T212751.712Z-00ba7e
+ report sha256 d8a9736170863d39264679e35b4858e79a74231ac03552700290297c97e87486; status pass; authoritative False
+ retained ssr-reprojection-bar-old-final_color.png sha256 09ed5497dc85dc8b366a95cbf6438efad2c2e9fa28c09996f020bde58acd7acb
+ retained ssr-reprojection-bar-old-ssr_reflection.png sha256 0cefdd8f219e24b7a1efd5c89687c1f9532fbd163b47170dc0a716ce6ecbb548
+bar-moving-old: build/_artifacts/snapshot/20260908T212836.085Z-00bcf4
+ report sha256 51f3e9154d99a360ddcc6194fcfb4b5e967f153d3bc4f2702775af7e0f6b11e5; status pass; authoritative False
+ retained ssr-reprojection-bar-moving-old-final_color.png sha256 fd5f918d25ce25eef81ab0e394d3f70457fce7cd73c76ce6ee09ee02e15f2f49
+
+Analytic production-shared check output:
+SSR production shared math: sparse, dense, empty and mixed-confidence radiance/coverage PASS
+sparse: [8.0, 4.0, 2.0, 0.111111112] dense: [8.0, 4.0, 2.0, 1.0] mixed: [5.0, 2.5, 5.0, 0.666666687]
+temporal stable: [4.80000019, 2.4000001, 1.20000005, 0.5] intermittent: [8.0, 4.0, 2.0, 0.400000006] unsupported: [0.0, 0.0, 0.0, 0.0] black: [0.0, 0.0, 0.0, 0.5] rejected: [8.0, 4.0, 2.0, 0.5]
+jitter UV: [0.502499998, 0.395000041] identity/depth acceptance: [1.0, 0.0, 0.0] bilinear affine radiance: [6.5, 6.5, 6.5, 0.5]
+identity grid: [100.0, 120.0] partial support: 3.19999981
+loaded-depth refinement hit/time: orthographic recover/reject: [1.0, 0.333333343, 0.0, 0.666666687] perspective recover/reject: [1.0, 0.454545528, 0.0, 0.769230843]
+
+Matched-binary moving motion check:
+ python3 tools/checks/check_screen_motion.py BAR_MOVING_OFF_FINAL BAR_MOVING_FINAL
+frame 3: 0 changed motion pixels / 308321
+frame 4: 0 changed motion pixels / 308321
+frame 5: 0 changed motion pixels / 308321
+PASS: 924963 numerically identical motion pixels
+The earlier cross-build pair had one FP16 ULP (2.38418579e-7 UV,
+0.000115 source pixels) difference at (280,44), frame 4. Both same-binary renders
+above agree exactly, so the cross-build result is not a motion regression.
+
+Stability measurement definition:
+For each raw/history pixel use mean(RGB)*coverage, then mean/p95 of absolute
+consecutive-frame changes at a static camera. Under-bar ROI is normalized
+u[0.1,0.75],v[0.5,0.9]. HDR/final contribution subtracts the matched SSR-off
+image per frame before the same difference reduction; HDR is scene-linear,
+final RGB is normalized8-bit sRGB. These are image diagnostics, not perceptual
+acceptance thresholds. Moving-camera differences cannot prove flicker reduction.
+
+Street eight-phase check (four-tap + cutoff, before loaded-depth refinement):
+raw trace MAE: 7.71321356e-08; motion unchanged
+covered radiance mean: 0.01455682 -> 0.013763333
+variation mean: 0.00713409746 -> 0.00591147369
+variation p95: 0.0209874126 -> 0.0180916886
+The existing check_ssr_history.py 25% threshold, designed for the earlier
+history-selection repair, FAILS: current improvement is 17.14%, not 25%. The
+threshold was not weakened. The first filter variant also failed and was removed.
+
+Street isolated filtering (same corrected cutoff):
+before HDR SSR delta mean 0.00029216563860919904 p95 0.0005696614583333339 p99 0.0030918121337890625 meanabscontrib 0.00035844665732053747
+after HDR SSR delta mean 0.00024392935248376585 p95 0.0005544026692708356 p99 0.0030110677083333703 meanabscontrib 0.0003324014871376457
+before final SSR delta mean 0.00043476540616246525 p95 0.001307189542483711 p99 0.002614379084967422 meanabscontrib 0.001172461533224401
+after final SSR delta mean 0.00043026027077497695 p95 0.001307189542483711 p99 0.0026143790849673665 meanabscontrib 0.0011639052287581698
+
+Bar old vs final (two static transitions):
+build/_artifacts/snapshot/20260908T212751.712Z-00ba7e
+ssr_raw all variation 0.0012807553336029397 p95 0.0036361031234264374 energy 0.0015503461884443645 coverage 0.22350289605325088
+ssr_raw under_bar variation 9.334618703647257e-05 p95 0.0005080186141033967 energy 0.00016490680031254254 coverage 0.07911734754203731
+ssr_reflection all variation 0.00033089201644448526 p95 0.0008714726815621052 energy 0.001264027400727258 coverage 0.2078685762709938
+ssr_reflection under_bar variation 2.3347187348538642e-05 p95 8.332217112183571e-05 energy 0.00013691904223454095 coverage 0.06472720760199377
+build/_artifacts/snapshot/20260908T212245.158Z-00a4cc
+ssr_raw all variation 0.0012807994430396987 p95 0.0036393478512763977 energy 0.0015503586829272895 coverage 0.22351179118552764
+ssr_raw under_bar variation 9.334618703647257e-05 p95 0.0005080186141033967 energy 0.00016490680031254254 coverage 0.07911734754203731
+ssr_reflection all variation 0.00029818635886121536 p95 0.0007745390757918358 energy 0.0012103950273797002 coverage 0.21122662800105496
+ssr_reflection under_bar variation 2.3006149474178114e-05 p95 9.958558560659481e-05 energy 0.0001529021993861514 coverage 0.0749603785160515
+before HDR SSR delta mean 0.00012377487412134022 p95 0.00022761027018229163 p99 0.002577463785807292 meanabscontrib 0.00028669179293067674
+after HDR SSR delta mean 0.00012009853946248267 p95 0.0002950032552083322 p99 0.0025177001953125 meanabscontrib 0.0003405111559885644
+before final SSR delta mean 0.0001673760893246188 p95 0.0013071895424836598 p99 0.0026143790849673205 meanabscontrib 0.0013993073710965866
+after final SSR delta mean 0.00016872412854030506 p95 0.00130718954248366 p99 0.0026143790849673196 meanabscontrib 0.0015833215323166304
+
+Interpretation: history variation falls 9.88% over the whole bar image, but only
+1.46% in the under-bar ROI. Whole-image final SSR variation increases 0.81%,
+while reflected contribution increases 13.15% through restored eligibility and
+coverage. These observations do not establish a visible under-bar improvement.
+All selected bar raw/reflection/HDR values are finite. Shader arithmetic, ABI,
+resize and motion checks pass; visible residual flicker remains an open issue.
+Native Windows/Vulkan execution and bilateral comparison are unavailable.
+
+Retained PNGs are diagnostic previews, not promoted baselines. The runs pin
+MetalFX/Metal or API validation and are not portable baseline candidates.
+
+Final Release app/harness and editor wrapper builds exited 0.
+
+Remaining sparse-clamp finding (policy unchanged):
+With current RGB 10, accepted history RGB 2, equal coverage and weight 0.85,
+a single supported current ray creates bounds [10,10]. Production filtering
+returns 10, while ordinary accumulation would return 3.2. Thus history cannot
+smooth RGB in a single-hit neighborhood even when metadata accepts it.
+The 19,968-pixel under-bar ROI contains 380/367/411 active single-hit neighborhoods
+at frames 3/4/5. Their output RGB matches the lone current ray within one FP16 ULP.
+Pixels with a single-hit neighborhood at either transition endpoint account for
+12.08%/12.65% of covered-RGB variation; one-or-two-hit endpoints account for
+22.24%/22.97%. Previously active pixels becoming empty account for 4.93%/5.11%.
+Captures do not establish whether those previous samples pass reprojected metadata.
+Relaxing this clamp needs a separate quality decision because receiver metadata
+cannot reject reflected-object motion; it trades shimmer against reflection lag.
+No such relaxation has been implemented in this change.
+
+Eligibility witness: material roughness0.59 remains trace-eligible. Normal
+variance0.008 ->0.009 changes filtered roughness0.599505883 ->0.600662801,
+which previously toggled composite eligibility. Street baseline quantized
+G-buffer captures conservatively identify31,666/32,179/31,995 wrongly excluded
+pixels at frames3/4/5; exclusion-mask changes28,911/27,584 pixels. Bistro's254
+unique referenced material files contain no clearcoat, so the base roughness
+witness applies. VKB sha256:
+e1b8e6196f934778afa60b1b58c97de86dc5c818a9c938425f71dabeb0f94685
+
+The final/old bar and matching off runs remain local working baselines for the
+next sparse-clamp investigation. Other listed task run trees were retired after
+recording their report digests, metrics and decisive bar previews above.

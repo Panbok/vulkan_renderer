@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-08
+updated: 2026-09-09
 authority: architecture
 ---
 
@@ -488,11 +488,15 @@ artifact layout, lifetime and evidence limits.
 Opaque SSR runs before transmission under
 [ADR-055](adr/055-screen-space-reflections.md). The accepted half-resolution
 path has a separate current-frame hierarchy and reflection history. Projection
-compatibility excludes raster jitter; trace still uses the jittered projection. Spatial and
-temporal filters accumulate covered radiance and coverage together, preserving
-hit brightness as support varies. Metal mirror, resize, API-validation and Bistro
-checks pass; native Vulkan execution remains
-unavailable.
+compatibility excludes raster jitter; trace still uses the jittered projection.
+History reprojection corrects the jitter delta and validates each of four bilinear
+taps independently. Failed coarse-depth candidates refine only against the
+full-resolution depth already loaded, requiring the crossing to remain in the
+same pixel. Spatial and temporal filters accumulate covered radiance and coverage
+together, preserving hit brightness as support varies. Trace and composite use
+the same material-roughness eligibility cutoff. Metal mirror, resize, API validation
+and motion checks pass. Visible cafe under-bar flicker remains unresolved; native
+Vulkan execution remains unavailable.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte
 record per frame slot; a zero record bypasses fog. The in-place opaque/sky pass

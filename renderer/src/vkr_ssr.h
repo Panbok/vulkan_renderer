@@ -74,8 +74,9 @@ typedef struct VkrSsrGpuParams {
 
   float32_t trace_texel_size_x;
   float32_t trace_texel_size_y;
-  float32_t trace_extent_x;
-  float32_t trace_extent_y;
+  /** Previous minus current raster jitter in canonical top-left UV. */
+  float32_t history_jitter_uv_x;
+  float32_t history_jitter_uv_y;
 } VkrSsrGpuParams;
 
 _Static_assert(sizeof(VkrSsrGpuParams) == 288u,
@@ -101,6 +102,8 @@ uint32_t vkr_ssr_depth_mip_count(uint32_t source_width, uint32_t source_height);
  * is the current jittered projection used by the opaque raster;
  * `previous_projection` belongs to the previous submitted raster and is used
  * only to linearize motion validity.y.
+ * History jitter defaults to zero; each backend supplies the selected producer's
+ * jitter difference when temporal raster jitter is enabled.
  * A zero source extent returns a zero record so the caller can reject it at
  * its frame boundary without dividing by zero in a shader.
  */

@@ -2248,6 +2248,19 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
             float hit_depth = vkr_vk_ssr_positive_depth(root.params, hit_pixel,
                                                         source_extent, hit_device_depth);
             float hit_trace_depth = vkr_ssr_trace_depth(hit_trace);
+            if (vkr_ssr_valid_depth(hit_depth) &&
+                abs(hit_depth - hit_trace_depth) > root.params.thickness)
+            {
+                VkrSsrTraceResolve refined = vkr_ssr_trace_refine_loaded_depth(
+                    trace, hit_depth, exit_t, hit_pixel, root.params);
+                if (refined.hit != 0u)
+                {
+                    resolve = refined;
+                    hit_trace.t = resolve.hit_t;
+                    hit_uv = vkr_ssr_trace_uv(hit_trace);
+                    hit_trace_depth = vkr_ssr_trace_depth(hit_trace);
+                }
+            }
             float3 hit_normal = vkr_vk_ssr_selected_normal(
                 root.normal_texture, root.clearcoat_texture, hit_pixel);
             hit_normal = normalize(mul(root.params.view, float4(hit_normal, 0.0f)).xyz);
@@ -2315,27 +2328,42 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
             if (weights > 0.0f) raw = vkr_ssr_spatial_resolve(filtered, weights);
         }
     }
-    float2 uv = all(receiver < source_extent)
-                    ? vkr_ssr_uv_from_pixel(receiver, source_extent)
-                    : vkr_ssr_uv_from_pixel(cell, trace_extent);
+    // History is stored on the trace grid; receiver selection supplies motion only.
+    float2 uv = vkr_ssr_uv_from_pixel(cell, trace_extent);
     float2 motion = all(receiver < source_extent) ? g_textures[root.motion_texture].Load(int3(receiver, 0)).xy : 0.0f;
-    float2 previous_uv = uv + motion;
-    int2 history_pixel = int2(previous_uv * float2(trace_extent));
-    uint2 history_identity = uint2(0u, 0u); float history_depth = 0.0f; float4 history = 0.0f;
-    float previous_device_depth = all(receiver < source_extent) ?
-        g_textures[root.validity_texture].Load(int3(receiver, 0)).y : 0.0f;
-    float motion_validity = all(receiver < source_extent) ?
-        g_textures[root.validity_texture].Load(int3(receiver, 0)).x : 0.0f;
-    if (root.params.history_valid != 0u && all(history_pixel >= 0) &&
-        all(history_pixel < int2(trace_extent))) {
-        // Nearest metadata and color share one accepted half-resolution
-        // receiver. Bilinear color would blend a different identity before its
-        // metadata can reject it.
-        history = g_textures[root.history_color_texture].Load(int3(history_pixel, 0));
-        history_depth = g_depth_textures[root.history_depth_texture].Load(
-            int3(history_pixel, 0));
-        history_identity = g_storage_uint2_2d[root.history_identity_texture][history_pixel];
+    float2 previous_uv = vkr_ssr_previous_uv(root.params, uv, motion);
+    float2 half_texel = float2(root.params.trace_texel_size_x,
+                               root.params.trace_texel_size_y) * 0.5f;
+    float2 coordinate = clamp(previous_uv, half_texel, 1.0f - half_texel) *
+                            float2(trace_extent) - 0.5f;
+    int2 first = int2(floor(coordinate));
+    float2 validity = all(receiver < source_extent) ?
+        g_textures[root.validity_texture].Load(int3(receiver, 0)).xy : 0.0f;
+    float4 history_sum = 0.0f;
+    float history_support = 0.0f;
+    if (root.params.history_valid != 0u) {
+        for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
+            int2 p = first + int2(x, y);
+            if (any(p < 0) || any(p >= int2(trace_extent))) continue;
+            float weight = vkr_ssr_history_tap_weight(coordinate, p);
+            if (weight <= 0.0f) continue;
+            // Each color tap proves its own metadata before interpolation.
+            VkrSsrHistoryDecision tap = vkr_ssr_temporal_accept(root.params,
+                identity, g_storage_uint2_2d[root.history_identity_texture][p],
+                g_depth_textures[root.history_depth_texture].Load(int3(p, 0)),
+                validity.y, previous_uv, validity.x);
+            if (tap.accepted == 0u) continue;
+            history_sum += vkr_ssr_spatial_sample(
+                g_textures[root.history_color_texture].Load(int3(p, 0)), weight);
+            history_support += weight;
+        }
     }
+    float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
+    VkrSsrHistoryDecision decision;
+    decision.accepted = history_support > 0.0f ? 1u : 0u;
+    decision.weight = decision.accepted != 0u ? root.params.temporal_weight : 0.0f;
+    decision.expected_previous_depth = 0.0f;
+    decision.reserved_float_0 = 0.0f;
     float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
     float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
     for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
@@ -2347,8 +2375,6 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
             neighborhood_max = max(neighborhood_max, sample.rgb);
         }
     }
-    VkrSsrHistoryDecision decision = vkr_ssr_temporal_accept(root.params, identity, history_identity,
-        history_depth, previous_device_depth, previous_uv, motion_validity);
     float4 result = vkr_ssr_temporal_filter(root.params, raw, history, neighborhood_min,
                                             neighborhood_max, decision);
     g_storage_2d[root.output_color_texture][cell] = result;
@@ -2392,10 +2418,13 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
     float3 normal = clearcoat_active ? vkr_vk_octahedral_decode(clearcoat_packed.zw)
                                      : vkr_vk_octahedral_decode(g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
+    float material_roughness = clearcoat_active ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
+                                               : clamp(specular.a, 0.04f, 1.0f);
+    // Match trace eligibility; raster-dependent normal variance only broadens
+    // BRDF weights.
+    if (!vkr_ssr_eligible(material_roughness, true, root.params)) return;
     float roughness = vkr_vk_ssr_composite_filter_roughness(
-        root, pixel, visible, normal, clearcoat_active ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
-                                                        : clamp(specular.a, 0.04f, 1.0f));
-    if (!vkr_ssr_eligible(roughness, true, root.params)) return;
+        root, pixel, visible, normal, material_roughness);
     float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float positive_depth = vkr_vk_ssr_positive_depth(root.params, pixel, extent, device_depth);
     if (!vkr_ssr_valid_depth(positive_depth)) return;

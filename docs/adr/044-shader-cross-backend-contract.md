@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-09
 authority: adr
 ---
 
@@ -374,8 +374,9 @@ validation pass. Native Vulkan execution and bilateral comparison remain
 unavailable, so the domain stays **UNALIGNED**. ADR-042 owns the lighting policy.
 
 Opaque SSR uses a shared 288-byte parameter record. Compiled Vulkan roots are
-304/32/320/368/416 bytes with 16-byte push constants; Metal roots are
-320/320/352/416/464 bytes at compute binding zero. Metal mirror, resize,
+304/32/336/368/424-byte strides with 16-byte push constants (the composite
+host record is aligned to 432 bytes); Metal roots are
+320/320/368/432/496 bytes at compute binding zero. Metal mirror, resize,
 API-validation and Bistro checks pass. Native Vulkan execution and bilateral
 image comparison remain unavailable. [ADR-055](055-screen-space-reflections.md) owns its
 accepted depth, history and probe-replacement semantics. Both native SSR filters
@@ -383,7 +384,16 @@ now normalize covered radiance and accumulate coverage through shared functions,
 with matching boundary taps and no root or storage change. SSR history selection
 uses existing GPU dependencies for the exact motion producer even before CPU-observed
 completion; resource reuse still waits for every reader. Metal projection
-compatibility excludes raster jitter, while trace retains its jittered projection. Native Vulkan execution
+compatibility excludes raster jitter, while trace retains its jittered projection.
+SSR offsets 280/284 now hold selected-producer jitter UV instead of unused floating
+extents; the 288-byte size is unchanged. Metal and Vulkan reproject with this delta
+and validate four history taps separately before covered-radiance interpolation.
+SSGI's shared trace adapter initializes these unused-for-SSGI offsets to zero.
+Composite eligibility now uses the same selected material roughness as trace;
+normal filtering still controls the BRDF weights. Both traces repair failed coarse
+leaf candidates against the already-loaded full-resolution depth only when the
+refined hit stays in that same pixel; the shared helper adds no fetches or steps.
+Native Vulkan execution
 of this repair is pending. A source review also found a pre-existing trace-source
 sampling difference: Metal uses linear samples, Vulkan uses rounded point loads;
 bilateral rough-reflection acceptance must resolve this difference.

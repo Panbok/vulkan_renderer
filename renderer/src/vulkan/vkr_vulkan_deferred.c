@@ -1506,11 +1506,30 @@ vkr_internal VkrSsrGpuParams vkr_vk_ssr_params(VkrVulkanRenderer *renderer,
                                                Mat4 previous_projection) {
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 projection = packet->temporal.jittered_projection;
-  return vkr_ssr_gpu_params(
+  VkrSsrGpuParams params = vkr_ssr_gpu_params(
       &renderer->ssr_config, projection, mat4_inverse(projection),
       packet->input.globals.view, previous_projection,
       renderer->prepared_frame.viewport_width,
       renderer->prepared_frame.viewport_height, history_valid);
+  if (history_valid && packet->temporal.enabled) {
+    const VkrVulkanFrameSlot *slot =
+        &renderer->frame_slots[renderer->active_frame_slot];
+    const uint32_t phase_count =
+        renderer->prepared_frame.fsr31_enabled
+            ? vkr_temporal_upscale_sequence_length(
+                  renderer->prepared_frame.viewport_width,
+                  renderer->prepared_frame.scene_output_width)
+            : VKR_TEMPORAL_SEQUENCE_LENGTH;
+    const Vec2 previous_jitter = vkr_temporal_jitter_for_frame_phases(
+        (uint32_t)slot->ssr_color_input->history_frame_index, phase_count);
+    params.history_jitter_uv_x =
+        (previous_jitter.x - packet->temporal.jitter_pixels.x) /
+        (float32_t)params.source_width;
+    params.history_jitter_uv_y =
+        (previous_jitter.y - packet->temporal.jitter_pixels.y) /
+        (float32_t)params.source_height;
+  }
+  return params;
 }
 
 bool8_t vkr_vk_prepare_ssr_depth_base(VkrVulkanRenderer *renderer,

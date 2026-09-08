@@ -97,8 +97,8 @@ VkrSsrParams vkr_ssgi_screen_trace_params(VkrSsgiParams params)
     result.previous_projection_m33 = params.previous_projection_m33;
     result.trace_texel_size_x = params.trace_texel_size_x;
     result.trace_texel_size_y = params.trace_texel_size_y;
-    result.trace_extent_x = params.trace_extent_x;
-    result.trace_extent_y = params.trace_extent_y;
+    result.history_jitter_uv_x = 0.0f;
+    result.history_jitter_uv_y = 0.0f;
     return result;
 }
 

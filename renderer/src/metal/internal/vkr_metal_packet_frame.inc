@@ -3873,17 +3873,35 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     const bool8_t ssr_history_valid =
         renderer->selected_ssr_history_instance != UINT32_MAX;
     Mat4 ssr_previous_projection = ssr_projection;
+    Vec2 ssr_history_jitter_uv = {0};
     if (ssr_history_valid) {
       VkrMetalPacketImage *ssr_colors =
           vkr_metal_packet_named_image_slot(renderer, "ssr_history_color");
-      ssr_previous_projection = ssr_colors->instances[
-          renderer->selected_ssr_history_instance].history_view_projection;
+      const VkrMetalPacketImageInstance *ssr_history = &ssr_colors->instances[
+          renderer->selected_ssr_history_instance];
+      ssr_previous_projection = ssr_history->history_view_projection;
+      if (packet->temporal.enabled) {
+        const Vec2 previous_jitter = vkr_temporal_jitter_for_frame(
+            (uint32_t)ssr_history->history_frame_index);
+        ssr_history_jitter_uv.x =
+            (previous_jitter.x - packet->temporal.jitter_pixels.x) /
+            (float32_t)renderer->prepared_frame.viewport_width;
+        // Match the canonical projection's Y conversion above.
+        const float32_t jitter_y_sign =
+            renderer->convert_vulkan_clip_y ? 1.0f : -1.0f;
+        ssr_history_jitter_uv.y =
+            jitter_y_sign *
+            (previous_jitter.y - packet->temporal.jitter_pixels.y) /
+            (float32_t)renderer->prepared_frame.viewport_height;
+      }
     }
     renderer->ssr_params = vkr_ssr_gpu_params(
         &renderer->ssr_config, ssr_projection, mat4_inverse(ssr_projection),
         packet->input.globals.view, ssr_previous_projection,
         renderer->prepared_frame.viewport_width,
         renderer->prepared_frame.viewport_height, ssr_history_valid);
+    renderer->ssr_params.history_jitter_uv_x = ssr_history_jitter_uv.x;
+    renderer->ssr_params.history_jitter_uv_y = ssr_history_jitter_uv.y;
     const Mat4 ssgi_projection = vkr_metal_packet_clip_matrix(
         !renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection);
     const bool8_t ssgi_history_valid =

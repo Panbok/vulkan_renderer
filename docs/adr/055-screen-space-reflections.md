@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-09
 authority: adr
 ---
 
@@ -44,7 +44,16 @@ by covered weight; all eligible taps contribute to the coverage denominator.
 The temporal filter blends covered radiance and confidence with the accepted
 history weight. It clamps history against supported current hits, excluding misses
 from the radiance bounds; an entirely unsupported neighborhood falls back to probes.
-Both native paths skip out-of-bounds filter taps.
+Both native paths skip out-of-bounds filter taps. Trace and composite eligibility
+use the same selected material roughness; normal-variance broadening changes BRDF
+weights without introducing a second, raster-dependent eligibility cutoff.
+A hierarchy leaf stores the minimum of several full-resolution depths. If its
+proposed hit fails the loaded full-resolution depth, trace resolves that loaded
+depth again within the same leaf interval. The refined point must remain in the
+same full-resolution pixel, so its existing normal and coverage still apply.
+Candidates whose full-resolution depth already matches keep the existing path.
+This recovers provable false misses with
+additional arithmetic only; the 48-step and five-source-tap limits remain unchanged.
 This is a compact approximation, not a sampled GGX transport estimator.
 
 Reflection history is a coherent color/depth/stable-identity tuple in the existing
@@ -60,6 +69,20 @@ This adds no images or waits and leaves SSGI's completed-only policy unchanged.
 Projection compatibility uses the unjittered projection. Consecutive raster-jitter
 phases must not invalidate accumulation. Trace retains the current jittered
 projection; previous-depth reconstruction needs only the unchanged Z/W coefficients.
+Motion vectors exclude raster jitter. SSR history retains the raster grid, so
+reprojection starts at the half-resolution history texel center and adds motion
+from the selected receiver plus the producer's previous-minus-current jitter in UV.
+Using the selected full-resolution receiver UV as the origin would resample
+neighboring history even under zero motion and jitter.
+The user approved four bilinear history taps, each checked against its own depth
+and identity before its radiance contributes. Accepted taps interpolate covered
+radiance and coverage, renormalizing over valid support before applying the
+configured temporal weight. Invalid taps contribute nothing; if every tap fails,
+current radiance replaces history.
+This costs at most nine additional history texture reads per half-resolution pixel,
+with no additional image, ray or traversal step. The two formerly unused trailing
+parameter floats now carry jitter UV at offsets 280/284; the record remains 288 bytes.
+
 Radiance controls, scene/resource changes, cuts, projection and extent changes
 invalidate reuse. Ordinary camera and object motion
 use motion, depth and identity rejection. History remains independent of final
@@ -110,9 +133,9 @@ invocation only reads and writes its own HDR pixel.
 The Release wrapper compiles both production shader paths. A Slang-to-C++
 execution probe checks perspective/orthographic depth, within-cell intersections,
 odd-tail ownership, binary slab acceptance and temporal rejection. Compiled
-Vulkan reflection pins the 16-byte push constants and root sizes 304/32/320/368/416
-bytes; each embedded SSR parameter record is 288 bytes. Metal runtime reflection
-pins roots 320/320/352/416/464 bytes and compute binding zero.
+Vulkan reflection pins the 16-byte push constants and root strides 304/32/336/368/424
+bytes (the aligned composite host record is 432 bytes); each embedded SSR parameter record is 288 bytes. Metal runtime reflection
+pins roots 320/320/368/432/496 bytes and compute binding zero.
 
 On Metal, the 321×241 planar-mirror fixture produces 722 half-resolution hits.
 Fifteen interior pixels differ from the analytic reflected emitter by at most
@@ -135,8 +158,8 @@ expected result. A repeated Metal mirror/API check retains 722 hits and a maximu
 0.000684 linear-HDR error. Moving Bistro captures retain finite output and unchanged
 motion vectors; these captures do not establish that all visible shimmer is gone.
 [The regression record](../../assets/verification/renderer-features/screen-effects-stability.txt)
-retains evidence. Nearest validated history sampling and current-frame fallback
-can still lose stability at subpixel motion or unavailable compatible history.
+retains evidence. Current-frame fallback can still lose stability when compatible
+history is unavailable; the subsequent four-tap policy addresses nearest-history jumps.
 
 A later stationary Bistro check exposed two history-selection failures: comparing
 jittered projections rejected consecutive frames, and requiring CPU-observed
@@ -148,6 +171,20 @@ by 45.81% (0.012930 to 0.007006 across two frame transitions). It preserves all
 passes focused Metal API validation. [The history repair record](../../assets/verification/renderer-features/ssr-temporal-history.txt)
 retains exact commands, report digests, diagnostic rejection reasons and captures.
 These checks establish restored accumulation, not elimination of all SSR noise.
+
+The later jitter-corrected four-tap filter passes its affine-interpolation,
+identity/depth rejection and grid-center checks. Static street history variation
+falls 17.14% over eight jitter phases, below the existing 25% history-selection
+regression threshold. In the user-identified cafe under-bar view, the complete
+change reduces history variation only 1.46% in the selected region; it does not
+establish a visible improvement. The sparse-neighborhood clamp still collapses
+valid history radiance to a lone current hit and clears empty neighborhoods.
+That policy remains unchanged pending a separate quality decision.
+[The reprojection record](../../assets/verification/renderer-features/ssr-reprojection.txt)
+retains the failed threshold, native measurements, exact commands and previews.
+Matched moving captures preserve all 924,963 motion values; serial Metal API
+resize and compiled shader contracts pass. Native Vulkan remains unavailable.
+
 
 ## Revisit when
 

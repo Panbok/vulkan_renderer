@@ -56,8 +56,8 @@ struct VkrSsrParams
 
     float trace_texel_size_x;
     float trace_texel_size_y;
-    float trace_extent_x;
-    float trace_extent_y;
+    float history_jitter_uv_x;
+    float history_jitter_uv_y;
 };
 
 struct VkrSsrTrace
@@ -548,6 +548,28 @@ VkrSsrTraceResolve vkr_ssr_trace_resolve(VkrSsrTrace trace,
     return result;
 }
 
+// A half-resolution minimum can propose the depth of another full-resolution
+// pixel. Reuse the candidate's loaded depth only when its refined crossing stays
+// in that same pixel; coverage and normal data then remain valid without reads.
+VkrSsrTraceResolve vkr_ssr_trace_refine_loaded_depth(
+    VkrSsrTrace trace, float loaded_depth, float leaf_exit_t,
+    uint2 loaded_pixel, VkrSsrParams params)
+{
+    VkrSsrTraceResolve result =
+        vkr_ssr_trace_resolve(trace, loaded_depth, leaf_exit_t, params);
+    if (result.hit == 0u)
+        return result;
+    float2 hit_uv = vkr_ssr_lerp(trace.start_uv, trace.end_uv, result.hit_t);
+    int2 hit_pixel = int2(floor(hit_uv *
+        float2(params.source_width, params.source_height)));
+    if (any(hit_pixel != int2(loaded_pixel)))
+    {
+        result.hit = 0u;
+        result.depth_confidence = 0.0f;
+    }
+    return result;
+}
+
 VkrSsrTrace vkr_ssr_trace_descend(VkrSsrTrace trace)
 {
     if (trace.mip > 0u)
@@ -649,6 +671,19 @@ float4 vkr_ssr_spatial_resolve(float4 weighted_reflection, float support_weight)
         return 0.0f;
     return float4(weighted_reflection.xyz / weighted_reflection.w,
                   vkr_ssr_saturate(weighted_reflection.w / support_weight));
+}
+
+// Motion excludes raster jitter, while SSR history remains on the raster grid.
+float2 vkr_ssr_previous_uv(VkrSsrParams params, float2 current_uv, float2 motion)
+{
+    return current_uv + motion +
+           float2(params.history_jitter_uv_x, params.history_jitter_uv_y);
+}
+
+float vkr_ssr_history_tap_weight(float2 coordinate, int2 pixel)
+{
+    float2 weight = max(1.0f - abs(float2(pixel) - coordinate), 0.0f);
+    return weight.x * weight.y;
 }
 
 VkrSsrHistoryDecision vkr_ssr_temporal_accept(

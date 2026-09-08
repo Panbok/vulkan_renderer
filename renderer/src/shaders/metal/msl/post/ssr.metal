@@ -257,6 +257,16 @@ kernel void vkr_metal_packet_ssr_trace(
     float hit_depth = vkr_metal_ssr_positive_depth(
         root.params, hit_pixel, root.depth.read(hit_pixel).x, source_extent);
     float ray_depth = vkr_ssr_trace_depth_at(trace, resolve.hit_t);
+    if (vkr_ssr_valid_depth(hit_depth) &&
+        abs(hit_depth - ray_depth) > root.params.thickness) {
+      VkrSsrTraceResolve refined = vkr_ssr_trace_refine_loaded_depth(
+          trace, hit_depth, cell_exit, hit_pixel, root.params);
+      if (refined.hit != 0u) {
+        resolve = refined;
+        hit_uv = mix(trace.start_uv, trace.end_uv, resolve.hit_t);
+        ray_depth = vkr_ssr_trace_depth_at(trace, resolve.hit_t);
+      }
+    }
     float3 hit_world_normal = vkr_metal_ssr_selected_normal(
         root.normal, root.clearcoat, hit_pixel);
     float3 hit_view_normal =
@@ -343,19 +353,43 @@ kernel void vkr_metal_packet_ssr_temporal(
     root.output_identity.write(uint4(identity, 0u, 0u), pixel);
     return;
   }
-  float2 current_uv = vkr_ssr_uv_from_pixel(receiver_pixel, source_extent);
-  float2 previous_uv = current_uv + root.motion.read(receiver_pixel).xy;
+  // History is stored on the trace grid; receiver selection supplies motion only.
+  float2 current_uv = vkr_ssr_uv_from_pixel(pixel, trace_extent);
+  float2 previous_uv = vkr_ssr_previous_uv(
+      root.params, current_uv, root.motion.read(receiver_pixel).xy);
   float2 half_texel = float2(root.params.trace_texel_size_x,
-                             root.params.trace_texel_size_y) *
-                      0.5f;
-  float2 history_uv = clamp(previous_uv, half_texel, 1.0f - half_texel);
-  uint2 previous_pixel =
-      min(uint2(floor(history_uv * float2(trace_extent))), trace_extent - 1u);
-  VkrSsrHistoryDecision decision = vkr_ssr_temporal_accept(
-      root.params, identity, root.history_identity.read(previous_pixel).xy,
-      root.history_depth.read(previous_pixel).x,
-      root.validity.read(receiver_pixel).y, previous_uv,
-      root.validity.read(receiver_pixel).x);
+                             root.params.trace_texel_size_y) * 0.5f;
+  float2 coordinate = clamp(previous_uv, half_texel, 1.0f - half_texel) *
+                          float2(trace_extent) - 0.5f;
+  int2 first = int2(floor(coordinate));
+  float2 validity = root.validity.read(receiver_pixel).xy;
+  float4 history_sum = 0.0f;
+  float history_support = 0.0f;
+  for (int y = 0; y < 2; ++y) {
+    for (int x = 0; x < 2; ++x) {
+      int2 p = first + int2(x, y);
+      if (any(p < 0) || any(uint2(p) >= trace_extent))
+        continue;
+      float weight = vkr_ssr_history_tap_weight(coordinate, p);
+      if (weight <= 0.0f)
+        continue;
+      // Each color tap proves its own metadata before interpolation.
+      VkrSsrHistoryDecision tap = vkr_ssr_temporal_accept(
+          root.params, identity, root.history_identity.read(uint2(p)).xy,
+          root.history_depth.read(uint2(p)).x, validity.y, previous_uv,
+          validity.x);
+      if (tap.accepted == 0u)
+        continue;
+      history_sum += vkr_ssr_spatial_sample(root.history_color.read(uint2(p)), weight);
+      history_support += weight;
+    }
+  }
+  float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
+  VkrSsrHistoryDecision decision;
+  decision.accepted = history_support > 0.0f ? 1u : 0u;
+  decision.weight = decision.accepted != 0u ? root.params.temporal_weight : 0.0f;
+  decision.expected_previous_depth = 0.0f;
+  decision.reserved_float_0 = 0.0f;
   float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
   float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
   for (int y = -1; y <= 1; ++y)
@@ -369,9 +403,6 @@ kernel void vkr_metal_packet_ssr_temporal(
         }
       }
     }
-  /* Identity/depth select one discrete source. Linear filtering here would
-   * blend radiance from a different object after the metadata proof. */
-  float4 history = root.history_color.read(previous_pixel);
   root.output_color.write(vkr_ssr_temporal_filter(
                               root.params, raw, history, neighborhood_min,
                               neighborhood_max, decision),
@@ -480,12 +511,15 @@ kernel void vkr_metal_packet_ssr_composite(
   float3 normal = clearcoat_active
                       ? vkr_metal_packet_octahedral_decode(clearcoat_packed.zw)
                       : base_normal;
-  float roughness = vkr_metal_ssr_filtered_roughness(
-      root, pixel, visible, normal,
-      clearcoat_active ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
-                       : clamp(specular.w, 0.04f, 1.0f));
-  if (!vkr_ssr_eligible(roughness, true, root.params))
+  float material_roughness = clearcoat_active
+                                 ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
+                                 : clamp(specular.w, 0.04f, 1.0f);
+  // Match trace eligibility; raster-dependent normal variance only broadens
+  // BRDF weights.
+  if (!vkr_ssr_eligible(material_roughness, true, root.params))
     return;
+  float roughness = vkr_metal_ssr_filtered_roughness(
+      root, pixel, visible, normal, material_roughness);
   float current_depth = vkr_metal_ssr_positive_depth(
       root.params, pixel, root.depth.read(pixel).x, root.extent);
   VkrMetalSsrReflectionSample reflection =
