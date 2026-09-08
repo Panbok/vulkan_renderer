@@ -62,9 +62,10 @@ image dependencies; Metal and Vulkan realize storage and retain independent
 completion-proven history tuples. Failed or canceled submissions do not publish
 new history.
 
-Portable TAA may use an immediate in-flight predecessor for its shared motion
-continuity. SSGI never borrows that tuple: it selects only a completed tuple. When
-that policy leaves no compatible tuple, SSGI sets history invalid and uses the
+Portable TAA and MetalFX may use an immediate in-flight predecessor for shared
+motion continuity. SSGI selects only a completed tuple from that same producer.
+An older completed SSGI tuple must not replace the reconstruction motion reference.
+When no compatible completed tuple exists, SSGI sets history invalid and uses the
 current one-ray estimate without waiting or recreating images.
 
 ## Consequences
@@ -127,3 +128,9 @@ both run identities and distributions.
 
 Native Vulkan execution and bilateral comparison remain unavailable, so SSGI
 stays **UNALIGNED** under [ADR-044](044-shader-cross-backend-contract.md).
+
+The MetalFX Bistro camera-sweep regression now preserves all 924,963 captured
+motion pixels relative to SSGI disabled. Before the fix, selecting older completed
+SSGI transforms approximately doubled motion vectors and distorted reconstruction.
+[The regression record](../../assets/verification/renderer-features/screen-effects-stability.txt)
+retains commands, report digests, and before/after captures.

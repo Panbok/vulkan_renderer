@@ -39,12 +39,19 @@ Trace reads the completed opaque HDR image before transmission. It writes
 incoming radiance and confidence into a half-resolution RGBA16F image. Roughness
 filtering is bounded: minimum-roughness mirrors retain one source sample; rougher
 receivers use up to five nearby source samples and a 3×3 depth/normal-aware filter.
+The spatial filter accumulates radiance multiplied by confidence and normalizes
+by covered weight; all eligible taps contribute to the coverage denominator.
+The temporal filter blends covered radiance and confidence with the accepted
+history weight. It clamps history against supported current hits, excluding misses
+from the radiance bounds; an entirely unsupported neighborhood falls back to probes.
+Both native paths skip out-of-bounds filter taps.
 This is a compact approximation, not a sampled GGX transport estimator.
 
 Reflection history is a coherent color/depth/stable-identity tuple in the existing
 completion-safe graph history pool. Its selected producer must match the transform
-history used by motion vectors. Radiance controls, scene/resource changes, cuts,
-projection and extent changes invalidate reuse. Ordinary camera and object motion
+history used by motion vectors, including MetalFX. If that producer is still in
+flight, SSR uses current radiance without replacing the motion reference. Radiance
+controls, scene/resource changes, cuts, projection and extent changes invalidate reuse. Ordinary camera and object motion
 use motion, depth and identity rejection. History remains independent of final
 TAA; disabling TAA must not introduce raster jitter or disable reflection history.
 
@@ -110,6 +117,16 @@ summed mean GPU time for the SSR passes, including 1.27 ms trace and 0.51 ms
 composite. This single-run observation is not an authoritative performance claim.
 Native Vulkan execution and bilateral image comparison remain unavailable on the
 current Metal host; ADR-044 therefore retains UNALIGNED status.
+
+The coverage-filter regression executes production shared functions with analytic
+inputs: sparse and dense constant hits retain identical radiance, while temporal
+coverage handles intermittent misses. The old temporal formula fails the same
+expected result. A repeated Metal mirror/API check retains 722 hits and a maximum
+0.000684 linear-HDR error. Moving Bistro captures retain finite output and unchanged
+motion vectors; these captures do not establish that all visible shimmer is gone.
+[The regression record](../../assets/verification/renderer-features/screen-effects-stability.txt)
+retains evidence. Nearest validated history sampling and current-frame fallback
+can still lose stability at subpixel motion or unavailable completed history.
 
 ## Revisit when
 

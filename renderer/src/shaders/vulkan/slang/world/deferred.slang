@@ -2298,7 +2298,8 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
             float4 filtered = 0.0f; float weights = 0.0f;
             for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x)
             {
-                int2 q = clamp(int2(cell) + int2(x, y), int2(0), int2(trace_extent) - 1);
+                int2 q = int2(cell) + int2(x, y);
+                if (any(q < 0) || any(q >= int2(trace_extent))) continue;
                 uint2 other_receiver = g_uint2_textures[root.receiver_texture].Load(int3(q, 0));
                 if (any(other_receiver >= source_extent)) continue;
                 float other_depth = vkr_vk_ssr_positive_depth(root.params, other_receiver, source_extent,
@@ -2307,9 +2308,11 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
                     root.normal_texture, root.clearcoat_texture, other_receiver);
                 float w = vkr_ssr_receiver_bilateral_weight(float2(x, y), positive_depth, other_depth,
                                                             normal, other_normal, root.params);
-                filtered += g_textures[root.raw_texture].Load(int3(q, 0)) * w; weights += w;
+                filtered += vkr_ssr_spatial_sample(
+                    g_textures[root.raw_texture].Load(int3(q, 0)), w);
+                weights += w;
             }
-            if (weights > 0.0f) raw = filtered / weights;
+            if (weights > 0.0f) raw = vkr_ssr_spatial_resolve(filtered, weights);
         }
     }
     float2 uv = all(receiver < source_extent)
@@ -2333,11 +2336,16 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
             int3(history_pixel, 0));
         history_identity = g_storage_uint2_2d[root.history_identity_texture][history_pixel];
     }
-    float3 neighborhood_min = raw.rgb, neighborhood_max = raw.rgb;
+    float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
+    float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
     for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
-        int2 q = clamp(int2(cell) + int2(x, y), int2(0), int2(trace_extent) - 1);
-        float3 color = g_textures[root.raw_texture].Load(int3(q, 0)).rgb;
-        neighborhood_min = min(neighborhood_min, color); neighborhood_max = max(neighborhood_max, color);
+        int2 q = int2(cell) + int2(x, y);
+        if (any(q < 0) || any(q >= int2(trace_extent))) continue;
+        float4 sample = g_textures[root.raw_texture].Load(int3(q, 0));
+        if (sample.w > 0.0f) {
+            neighborhood_min = min(neighborhood_min, sample.rgb);
+            neighborhood_max = max(neighborhood_max, sample.rgb);
+        }
     }
     VkrSsrHistoryDecision decision = vkr_ssr_temporal_accept(root.params, identity, history_identity,
         history_depth, previous_device_depth, previous_uv, motion_validity);

@@ -378,7 +378,12 @@ Opaque SSR uses a shared 288-byte parameter record. Compiled Vulkan roots are
 320/320/352/416/464 bytes at compute binding zero. Metal mirror, resize,
 API-validation and Bistro checks pass. Native Vulkan execution and bilateral
 image comparison remain unavailable. [ADR-055](055-screen-space-reflections.md) owns its
-accepted depth, history and probe-replacement semantics.
+accepted depth, history and probe-replacement semantics. Both native SSR filters
+now normalize covered radiance and accumulate coverage through shared functions,
+with matching boundary taps and no root or storage change. Native Vulkan execution
+of this repair is pending. A source review also found a pre-existing trace-source
+sampling difference: Metal uses linear samples, Vulkan uses rounded point loads;
+bilateral rough-reflection acceptance must resolve this difference.
 
 Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
 native passes. Packet version 38 appends its prepared fog pointer without
@@ -420,7 +425,7 @@ matches its 320/320/352/400/448-byte native roots; see
 Both native paths use the same 256-phase Hammersley trace sequence and 3×3 raw
 bilateral filter over nearest covered receivers. Valid misses remain zero samples
 in that normalized average. SSGI accepts only completed history tuples;
-when portable TAA's shared motion predecessor is still in flight, SSGI falls
+when portable TAA or MetalFX's shared motion predecessor is still in flight, SSGI falls
 back to current radiance without waiting. Metal API validation proves completion,
 TAA-jitter reuse, disable/re-enable, and resize behavior in
 [the lifecycle record](../../assets/verification/renderer-features/ssgi-lifecycle-api-completed.txt). Native source-isolation,

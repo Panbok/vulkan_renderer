@@ -57,7 +57,7 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] Energy-compensated GGX and shared DFG: [ADR-053](../adr/053-energy-compensated-ggx.md).
 - [ ] Baked diffuse volumes, room boundaries, thick glass, multi-bounce diffuse
   transport, and photon caustics: [ADR-054](../adr/054-baked-diffuse-volumes.md).
-- [ ] Opaque SSR, independent history, and probe fallback: [ADR-055](../adr/055-screen-space-reflections.md).
+- [ ] Opaque SSR, coverage filtering, independent history, and probe fallback: [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
 - [ ] Analytic height fog and ordered transmission composition:
@@ -66,8 +66,8 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   [ADR-058](../adr/058-revision-baked-sky-atmosphere.md).
 - [ ] Froxel volumetric fog, scattering history, and invalid-input fallback:
   [ADR-059](../adr/059-froxel-volumetric-fog.md).
-- [ ] Independent SSGI, source classification, history, and baked-volume
-  suppression: [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md).
+- [ ] Independent SSGI, source classification, shared motion predecessor consistency,
+  history, and baked-volume suppression: [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md).
 - [ ] Extended-linear scRGB/EDR output, headroom mapping, and SDR fallback:
   [ADR-061](../adr/061-extended-linear-display-output.md).
 - [ ] Layered clearcoat maps, coat energy, and coat-priority SSR:

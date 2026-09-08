@@ -1359,7 +1359,7 @@ vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
         transform->history_scene_generation != color->history_scene_generation ||
         transform->history_width != renderer->prepared_frame.viewport_width ||
         transform->history_height != renderer->prepared_frame.viewport_height ||
-        (packet->temporal.enabled && !renderer->metalfx_enabled &&
+        (packet->temporal.enabled &&
          renderer->selected_temporal_history_instance != i))
       continue;
     if (renderer->selected_ssr_history_instance == UINT32_MAX ||
@@ -1496,7 +1496,7 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
         transform->history_scene_generation != color->history_scene_generation ||
         transform->history_width != renderer->prepared_frame.viewport_width ||
         transform->history_height != renderer->prepared_frame.viewport_height ||
-        (packet->temporal.enabled && !renderer->metalfx_enabled &&
+        (packet->temporal.enabled &&
          renderer->selected_temporal_history_instance != i))
       continue;
     if (renderer->selected_ssgi_history_instance == UINT32_MAX ||

@@ -308,7 +308,7 @@ kernel void vkr_metal_packet_ssr_temporal(
   if (roughness > VKR_SSR_MIRROR_ROUGHNESS) {
     float3 center_normal = vkr_metal_ssr_selected_normal(
         root.normal, root.clearcoat, receiver_pixel);
-    float3 filtered = 0.0f;
+    float4 filtered = 0.0f;
     float weight_sum = 0.0f;
     for (int y = -1; y <= 1; ++y) {
       for (int x = -1; x <= 1; ++x) {
@@ -329,12 +329,13 @@ kernel void vkr_metal_packet_ssr_temporal(
         float weight = vkr_ssr_receiver_bilateral_weight(
             float2(x, y), center_depth, neighbor_depth, center_normal,
             neighbor_normal, root.params);
-        filtered += root.raw.read(neighbor_pixel).rgb * weight;
+        filtered += vkr_ssr_spatial_sample(root.raw.read(neighbor_pixel),
+                                            weight);
         weight_sum += weight;
       }
     }
     if (weight_sum > 0.0f)
-      raw.rgb = filtered / weight_sum;
+      raw = vkr_ssr_spatial_resolve(filtered, weight_sum);
   }
   if (root.params.history_valid == 0u) {
     root.output_color.write(float4(raw.rgb, saturate(raw.w)), pixel);
@@ -355,15 +356,17 @@ kernel void vkr_metal_packet_ssr_temporal(
       root.history_depth.read(previous_pixel).x,
       root.validity.read(receiver_pixel).y, previous_uv,
       root.validity.read(receiver_pixel).x);
-  float3 neighborhood_min = raw.rgb;
-  float3 neighborhood_max = raw.rgb;
+  float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
+  float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
   for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
       int2 p = int2(pixel) + int2(x, y);
       if (all(p >= 0) && all(uint2(p) < trace_extent)) {
-        float3 sample = root.raw.read(uint2(p)).rgb;
-        neighborhood_min = min(neighborhood_min, sample);
-        neighborhood_max = max(neighborhood_max, sample);
+        float4 sample = root.raw.read(uint2(p));
+        if (sample.w > 0.0f) {
+          neighborhood_min = min(neighborhood_min, sample.rgb);
+          neighborhood_max = max(neighborhood_max, sample.rgb);
+        }
       }
     }
   /* Identity/depth select one discrete source. Linear filtering here would

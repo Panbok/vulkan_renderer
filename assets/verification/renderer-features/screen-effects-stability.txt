@@ -1,0 +1,94 @@
+Screen-effect stability repair, 2026-09-08
+Base commit: 3fd24368; repaired working tree. Apple M1 Pro, Metal, Release.
+No performance claim or native Vulkan execution. No baseline promotion.
+
+Owner/lifetime: existing graph image/history pools; completion gates unchanged.
+SSR/SSGI must share the TAA/MetalFX transform producer. No new waits, images,
+samples, rays, root fields or resource lifetime changes.
+
+Build commands (exit 0): ./build_release.sh; ./build_editor.sh Release
+Snapshots: env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS
+ ./build_release/tools/vkr_harness snapshot
+ --case tools/cases/local/screen_motion_{off,ssgi,ssr}.case.json
+ --profile tools/profiles/local-offscreen.json
+Each before run used the base build; after runs used the repaired Release build.
+800x600 output, 641x481 internal, MetalFX, three target images,
+32 warmup / 8 measured frames, fixed 1/60 s, linear Bistro camera sweep.
+Editor overrides are not consumed by harness cases.
+
+off-before: build/_artifacts/snapshot/20260908T191458.999Z-004458
+  report sha256 f1ba0f04066ef3d18338d1f78697b2da58bf0d03bf1e55289eaa21aa78aa1897
+  status pass; exit 0; authoritative False
+  reviewed frame 4: screen-effects-off-before.png, sha256 e7c88c634c8573590462b7b4ac39da9f7da0a951e7080be716be228df084e500
+ssgi-before: build/_artifacts/snapshot/20260908T191553.593Z-004f2c
+  report sha256 4b93bc51b6826f2204b0c316d9410d7628ded1c8fd5ee990f114a9e1a3d379fb
+  status pass; exit 0; authoritative False
+  reviewed frame 4: screen-effects-ssgi-before.png, sha256 a9743ae85445267f940bc9caa7000f751aa376c89e4df0e6f447a605424f646b
+ssr-before: build/_artifacts/snapshot/20260908T191641.346Z-005501
+  report sha256 46d6a0a33727dfede05018b04213b47cc364f94403c467d178c2028450aa785b
+  status pass; exit 0; authoritative False
+  reviewed frame 4: screen-effects-ssr-before.png, sha256 4e89a59c732c52779c81cbc6ac35c308e6c759673623444199a9ace893de2153
+ssgi-after: build/_artifacts/snapshot/20260908T191919.097Z-005dce
+  report sha256 a6f528849440c02e497b98680e376205108db2ec1fdb696e10e10720c40fa2cb
+  status pass; exit 0; authoritative False
+  reviewed frame 4: screen-effects-ssgi-after.png, sha256 c8f30233f032eea591591c2691ea74a9b2ab259fe6b06323487c27a3e3a9a855
+ssr-after: build/_artifacts/snapshot/20260908T192037.090Z-00631e
+  report sha256 0a451749a396be83f82c9daf5cb4fec37af88dcdb8a24f508abf1eaaee278c07
+  status pass; exit 0; authoritative False
+  reviewed frame 4: screen-effects-ssr-after.png, sha256 d28182c2cb010b04c13252e1b76d3e81bc9b6dcdc568033c37e1d3d645209f9a
+mirror-api: build/_artifacts/snapshot/20260908T192149.524Z-006ad8
+  report sha256 0baf7b968205aa5cbba667460690298a2e49997f59bf76415ce1199d59327bd5
+  status pass; exit 0; authoritative False
+
+Regression commands (AFTER_RUN is ssgi-after or ssr-after above):
+ python3 tools/checks/check_screen_motion.py OFF_RUN AFTER_RUN
+ PASS: each effect preserves all 924,963 motion pixels (three 641x481 frames).
+ The same check on ssgi-before fails: frame 3 changes 295,048 motion pixels.
+ Before: median motion magnitude about 0.00250 vs reference 0.00130.
+ After: maximum motion difference zero at every checkpoint.
+ Reviewed SSGI final-color frame 4: building/awning distortion removed.
+
+ python3 tools/checks/check_ssr_stability.py
+SSR production shared math: sparse, dense, empty and mixed-confidence radiance/coverage PASS
+sparse: [8.0, 4.0, 2.0, 0.111111112] dense: [8.0, 4.0, 2.0, 1.0] mixed: [5.0, 2.5, 5.0, 0.666666687]
+temporal stable: [4.80000019, 2.4000001, 1.20000005, 0.5] intermittent: [8.0, 4.0, 2.0, 0.400000006] unsupported: [0.0, 0.0, 0.0, 0.0] black: [0.0, 0.0, 0.0, 0.5] rejected: [8.0, 4.0, 2.0, 0.5]
+ Analytic stable-history expected red=4.8; old production temporal formula
+ returned 7.19999981. Sparse/dense input shares radiance [8,4,2], with
+ coverage respectively 1/9 and 1. Existing filter taps and image budgets retained.
+ Moving SSR raw support is unchanged at frame 4: 21,130 hits.
+ Filtered confidence-weighted RGB sum before=3294.998, after=3998.190,
+ raw=4021.105 after. This checks removal of miss darkening, not temporal quality.
+ Nearest validated history and completed-tuple fallback can still cause shimmer;
+ the captures do not prove every shimmer case resolved.
+
+Focused API command (exit 0):
+ env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1
+ ./build_release/tools/vkr_harness snapshot
+ --case tools/cases/local/ssr_mirror_on_local.case.json
+ --profile tools/profiles/local-offscreen.json
+ Both serial children log Metal API Validation Enabled, without API errors.
+ Mirror raw: 722 hits; 15 analytic interior RGB samples expected [0.8,0.1,0.02].
+ Maximum absolute HDR error: 0.00068359375. No Metal shader validation used.
+
+Editor command (exit 0):
+ env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS
+ VKR_AUTOCLOSE_SECONDS=20 ./build_release/editor/vkr_editor
+ --scene assets/scenes/bistro.scene.json
+ Scene loaded: 5985 entities, 2909 meshes, 72 point lights, 2 directional lights.
+ No ERROR or editor-override rejection in the log. Auto-close shut down cleanly.
+ User approved archiving the stale 907-byte sidecar and current scene lighting.
+ Preserved file: assets/scenes/bistro.scene.json.editor.json.archived-0987b8f80fac
+ SHA256 0987b8f80fac23bb1cfa37440c6b927982716efbf5bb2529a91480d981a24835
+ Local user overrides and their archive are not committed.
+
+Limits: MetalFX snapshots are local regression evidence, not cross-backend
+ baselines. Native Vulkan image/API checks remain unavailable. Source review
+ found pre-existing Metal linear / Vulkan point SSR trace-source sampling;
+ resolve that difference before bilateral rough-reflection acceptance.
+screen-effects-release-build.log sha256 d4c77bd6e5694fdba41a59e8ea902bba2a97eaf60803edaeaaaf0b489b078b73
+screen-effects-editor-build.log sha256 cc0a0e7a64ab8528afdb3f5f5398cd69412b26652f560a45900660f94c3c40f0
+screen-effects-editor-load.log sha256 c9af50b57931dd974a27fd5dc77219bd543416be383a388e7a963c73d76fbbe8
+Final wrapper reruns after removing a redundant diagnostic counter: exit 0.
+screen-effects-final-release-build.log sha256 2666977130dfd60c6dea6ec13fd23a67266b19f9cd186d457f90b53cc895a07a
+screen-effects-final-editor-build.log sha256 d1c0fb37d41436d64857c73941d062584082e3d7f5425342659ccdc718f09cc6
+Finite FP16 check: 924,963 SSGI HDR pixels and 1,385,763 SSR HDR/raw/filtered pixels.

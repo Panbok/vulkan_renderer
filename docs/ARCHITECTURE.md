@@ -400,8 +400,9 @@ receiver from a deterministic 256-phase Hammersley sequence. Its direct source
 contains punctual/rectangle radiance and emission, excluding environment, probes,
 baked diffuse, SSR, fog, and post effects. A 3×3 depth/normal bilateral raw
 filter includes valid misses as zero samples before completion-gated temporal
-filtering. SSGI uses a completed color/depth/identity tuple only; a shared TAA
-motion predecessor that is still in flight causes a current-frame fallback.
+filtering. SSR and SSGI use completed color/depth/identity tuples whose producer
+matches the shared TAA or MetalFX motion predecessor. If that predecessor is
+still in flight, the effect uses current radiance without changing motion vectors.
 Composite applies the diffuse residual before SSR and excludes valid baked-volume
 cells. It remains optional and disabled by default; [ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md)
 owns its storage and evidence limits.
@@ -485,8 +486,10 @@ artifact layout, lifetime and evidence limits.
 
 Opaque SSR runs before transmission under
 [ADR-055](adr/055-screen-space-reflections.md). The accepted half-resolution
-path has a separate current-frame hierarchy and reflection history. Metal mirror,
-resize, API-validation and Bistro checks pass; native Vulkan execution remains
+path has a separate current-frame hierarchy and reflection history. Spatial and
+temporal filters accumulate covered radiance and coverage together, preserving
+hit brightness as support varies. Metal mirror, resize, API-validation and Bistro
+checks pass; native Vulkan execution remains
 unavailable.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte
