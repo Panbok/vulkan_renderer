@@ -6,6 +6,7 @@
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_ui_system.h"
+#include "vkr_graphics_settings.h"
 #include "vkr_renderer.h"
 
 typedef struct VkrSampleUiText {
@@ -34,6 +35,8 @@ typedef struct VkrSampleUiFrame {
   Mat4 view_projection; /* Unjittered camera, same Y-down convention as picking.
                          */
   VkrSampleUiText text;
+  const VkrGraphicsSettingsState *graphics;
+  VkrGraphicsSettingsRequest *graphics_request;
   const VkrScene *scene; /* Borrowed until build returns; edits are requests. */
   VkrEntityId selected_entity;
   uint64_t scene_generation;

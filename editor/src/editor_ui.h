@@ -7,16 +7,27 @@
 
 typedef enum VkrEditorMenu {
   VKR_EDITOR_MENU_NONE = 0,
+  VKR_EDITOR_MENU_SETTINGS,
   VKR_EDITOR_MENU_METRICS,
   VKR_EDITOR_MENU_DEBUG,
 } VkrEditorMenu;
 
 typedef enum VkrEditorWindowKind {
-  VKR_EDITOR_WINDOW_DRAWS = 0,
+  VKR_EDITOR_WINDOW_GRAPHICS = 0,
+  VKR_EDITOR_WINDOW_DRAWS,
   VKR_EDITOR_WINDOW_MEMORY,
   VKR_EDITOR_WINDOW_HELP,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
+
+typedef enum VkrEditorGraphicsTab {
+  VKR_EDITOR_GRAPHICS_TAB_DISPLAY = 0,
+  VKR_EDITOR_GRAPHICS_TAB_QUALITY,
+  VKR_EDITOR_GRAPHICS_TAB_LIGHTING,
+  VKR_EDITOR_GRAPHICS_TAB_EFFECTS,
+  VKR_EDITOR_GRAPHICS_TAB_COLOR,
+  VKR_EDITOR_GRAPHICS_TAB_COUNT,
+} VkrEditorGraphicsTab;
 
 typedef struct VkrEditorWindowState {
   Vec2 position_pt;
@@ -64,6 +75,7 @@ typedef struct VkrEditorUi {
   int8_t toolbar_anchor_y;
   bool8_t toolbar_initialized;
   bool8_t toolbar_dragging;
+  VkrEditorGraphicsTab graphics_tab;
 
   VkrEditorWindowState windows[VKR_EDITOR_WINDOW_COUNT];
 } VkrEditorUi;

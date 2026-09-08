@@ -184,6 +184,13 @@ typedef struct VkrStandardSceneRuntime {
   uint32_t shadow_debug_mode;
   bool8_t transmission_depth_diagnostic_enabled;
   uint32_t ibl_probe_limit;
+  /* Optional user quality gates; zero preserves scene-authored rendering. */
+  bool8_t disable_directional_shadows;
+  bool8_t disable_local_shadows;
+  bool8_t disable_soft_shadows;
+  bool8_t disable_fog;
+  bool8_t disable_volumetric_fog;
+  bool8_t disable_subsurface_scattering;
 
   /** Last frame's frustum-culling counters, produced by payload construction.
    */

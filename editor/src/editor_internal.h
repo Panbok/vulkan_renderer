@@ -4,6 +4,7 @@
 
 #define VKR_EDITOR_SCENE_TOOLBAR_LAYER 1u
 #define VKR_EDITOR_METRICS_MENU_X_PT 110.0f
+#define VKR_EDITOR_SETTINGS_MENU_X_PT 232.0f
 #define VKR_EDITOR_NAVIGATION_HEIGHT_PT VKR_UI_DOCK_TOOLBAR_PT
 
 VkrUiStyle vkr_editor_glass_style(void);
@@ -26,7 +27,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame);
 void vkr_editor_windows_build_floating(VkrEditorUi *editor, VkrUiSystem *ui,
                                        InputState *input,
-                                       const VkrSampleUiText *text);
+                                       const VkrSampleUiFrame *frame);
 void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui);
 
 void vkr_editor_commands_update(VkrEditorUi *editor,

@@ -115,6 +115,12 @@ typedef struct State {
   ApplicationUiText memory_text;
   ApplicationUiText metrics_text;
   VkrSampleUiClient ui;
+  VkrGraphicsSettingsState graphics;
+  VkrGraphicsSettings graphics_started;
+  char graphics_path[1024];
+  char graphics_message[160];
+  bool8_t graphics_dirty;
+  float64_t graphics_changed_at;
   VkrSceneEditState edits;
   String8 scene_path;
   char sidecar_path[1024];
@@ -195,6 +201,96 @@ typedef struct State {
 } State;
 
 vkr_global State *state = NULL;
+
+static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
+                                       const VkrGraphicsSettings *settings) {
+  VkrFrameGlobals *globals = &application->globals;
+  globals->exposure_compensation_ev = settings->brightness;
+  globals->white_balance_temperature = settings->temperature;
+  globals->white_balance_tint = settings->tint;
+  globals->color_contrast = settings->contrast;
+  globals->color_saturation = settings->saturation;
+  globals->image_sharpness = settings->sharpness;
+  globals->bloom_enabled = settings->bloom;
+  globals->bloom_intensity = settings->bloom_intensity;
+  globals->gtao_enabled = settings->ambient_occlusion;
+  globals->ssr_enabled = settings->screen_space_reflections;
+  globals->ssgi_enabled = settings->screen_space_gi;
+  globals->dof_enabled = settings->depth_of_field;
+  globals->motion_blur_enabled = settings->motion_blur;
+  globals->motion_blur_shutter_angle = settings->motion_blur_amount * 360.0f;
+  application->disable_directional_shadows = settings->shadow_quality == 0;
+  application->disable_local_shadows =
+      settings->shadow_quality == 0 || !settings->local_shadows;
+  application->disable_soft_shadows = !settings->soft_shadows;
+  application->disable_fog = !settings->fog;
+  application->disable_volumetric_fog = !settings->fog || !settings->volumetric_fog;
+  application->disable_subsurface_scattering = !settings->subsurface_scattering;
+  application->ibl_probe_limit = settings->reflection_probes ? UINT32_MAX : 0;
+  application->shadow_system.config = settings->shadow_quality == 1
+                                          ? VKR_SHADOW_CONFIG_BALANCED
+                                          : VKR_SHADOW_CONFIG_HIGH;
+  application->renderer.temporal_enabled =
+      application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
+      settings->anti_aliasing;
+  application->host.config.target_frame_rate = settings->frame_limit;
+}
+
+static void sample_graphics_request(VkrStandardSceneRuntime *application,
+                                    const VkrGraphicsSettingsRequest *request) {
+  if (!request->apply && !request->reset_defaults)
+    return;
+  VkrGraphicsSettings settings =
+      request->reset_defaults
+          ? vkr_graphics_settings_defaults(application->renderer.backend_type)
+          : request->settings;
+  if (!state->graphics.temporal_upscaling_available) {
+    settings.temporal_upscaling = false_v;
+    settings.dynamic_resolution = false_v;
+  }
+  if (!state->graphics.dynamic_resolution_available)
+    settings.dynamic_resolution = false_v;
+  if (!vkr_graphics_settings_valid(&settings)) {
+    snprintf(state->graphics_message, sizeof(state->graphics_message),
+             "These settings could not be applied.");
+    return;
+  }
+  const VkrGraphicsSettings old = state->graphics.settings;
+  const bool8_t lighting_changed =
+      old.anti_aliasing != settings.anti_aliasing ||
+      old.shadow_quality != settings.shadow_quality ||
+      old.soft_shadows != settings.soft_shadows ||
+      old.local_shadows != settings.local_shadows ||
+      old.ambient_occlusion != settings.ambient_occlusion ||
+      old.screen_space_reflections != settings.screen_space_reflections ||
+      old.screen_space_gi != settings.screen_space_gi ||
+      old.reflection_probes != settings.reflection_probes ||
+      old.subsurface_scattering != settings.subsurface_scattering ||
+      old.fog != settings.fog || old.volumetric_fog != settings.volumetric_fog;
+  state->graphics.settings = settings;
+  state->graphics.restart_required = vkr_graphics_settings_restart_required(
+      &settings, &state->graphics_started);
+  state->graphics_message[0] = '\0';
+  state->graphics_dirty = true_v;
+  state->graphics_changed_at = vkr_platform_get_absolute_time();
+  sample_graphics_apply_live(application, &settings);
+  if (lighting_changed) {
+    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+    vkr_renderer_invalidate_temporal_history(&application->renderer);
+  }
+}
+
+static void sample_graphics_save(void) {
+  if (!state->graphics_dirty)
+    return;
+  if (!vkr_graphics_settings_save(state->graphics_path,
+                                  &state->graphics.settings)) {
+    snprintf(state->graphics_message, sizeof(state->graphics_message),
+             "Settings are applied, but could not be saved.");
+    log_warn("Unable to save Graphics settings to %s", state->graphics_path);
+  }
+  state->graphics_dirty = false_v;
+}
 
 vkr_internal bool8_t vkr_standard_scene_runtime_metric_duration_seconds(
     const VkrMetricsFrame *frame, VkrMetricId id, float64_t *out_value) {
@@ -2951,6 +3047,12 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     return;
   }
 
+  if (state->graphics_dirty &&
+      vkr_platform_get_absolute_time() - state->graphics_changed_at >= .25)
+    sample_graphics_save();
+  state->graphics.message = string8_create((uint8_t *)state->graphics_message,
+                                           strlen(state->graphics_message));
+  VkrGraphicsSettingsRequest graphics_request = {0};
   VkrSampleTransportAction transport_action = VKR_SAMPLE_TRANSPORT_NONE;
   VkrSceneEditRequest scene_edit = {0};
   const VkrMaterialTextureStreamStats texture_streams =
@@ -2994,6 +3096,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       .scene_output_height = application->editor_viewport.enabled
                                  ? application->editor_viewport.output_height
                                  : application->renderer.last_window_height,
+      .graphics = &state->graphics,
+      .graphics_request = &graphics_request,
       .transport_action = &transport_action,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
       .scene = application->active_scene,
@@ -3012,6 +3116,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   application->editor_viewport.dock_capture =
       state->ui.build(state->ui.state, &frame);
   application->ui_capture = vkr_ui_end(&application->ui_system);
+  sample_graphics_request(application, &graphics_request);
   application->ui_capture.mouse |=
       application->editor_viewport.dock_capture.mouse;
   if (application->editor_viewport.enabled && !application->ui_capture.text) {
@@ -3317,26 +3422,51 @@ int vkr_sample_runtime_run(int argc, char **argv,
   vkr_standard_scene_runtime_config.app_arena_size = MB(1);
   vkr_standard_scene_runtime_config.target_frame_rate = 0;
   vkr_standard_scene_runtime_config.renderer_backend = renderer_backend;
-  vkr_standard_scene_runtime_config.render_scale = 1.0f;
-  vkr_standard_scene_runtime_config.upscale_mode = VKR_UPSCALE_MODE_SPATIAL;
-  if (renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
-    vkr_standard_scene_runtime_config.render_scale = 0.8f;
-    if (!metal_validation_enabled) {
-      vkr_standard_scene_runtime_config.upscale_mode =
-          VKR_UPSCALE_MODE_METALFX_TEMPORAL;
-      vkr_standard_scene_runtime_config.dynamic_resolution =
-          (VkrDynamicResolutionConfig){
-              .min_scale = 0.334f,
-              .max_scale = 1.0f,
-              .target_frame_ms = 1000.0f / 75.0f,
-              .enabled = true_v,
-          };
-    }
+  const char *graphics_path = getenv("VKR_GRAPHICS_SETTINGS_PATH");
+  if (!graphics_path)
+    graphics_path = PROJECT_SOURCE_DIR ".vkr-graphics-settings.json";
+  if (strlen(graphics_path) >= 1024) {
+    fprintf(stderr, "Graphics settings path is too long\n");
+    return 2;
   }
-  if (renderer_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN) {
-    vkr_standard_scene_runtime_config.render_scale = 2.0f / 3.0f;
-    vkr_standard_scene_runtime_config.upscale_mode = VKR_UPSCALE_MODE_FSR31;
-  }
+  VkrGraphicsSettings graphics_settings =
+      vkr_graphics_settings_defaults(renderer_backend);
+  const bool8_t graphics_loaded =
+      vkr_graphics_settings_load(graphics_path, &graphics_settings);
+  if (!graphics_loaded)
+    fprintf(stderr, "Ignoring invalid Graphics settings: %s\n", graphics_path);
+  const bool8_t temporal_available =
+      renderer_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN ||
+      (renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL &&
+       !metal_validation_enabled);
+  const bool8_t dynamic_available =
+      renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL &&
+      !metal_validation_enabled;
+  if (!temporal_available)
+    graphics_settings.temporal_upscaling = false_v;
+  if (!dynamic_available || !graphics_settings.temporal_upscaling)
+    graphics_settings.dynamic_resolution = false_v;
+  vkr_standard_scene_runtime_config.target_frame_rate =
+      graphics_settings.frame_limit;
+  vkr_standard_scene_runtime_config.render_scale =
+      graphics_settings.render_scale;
+  vkr_standard_scene_runtime_config.requested_present_mode =
+      graphics_settings.vsync ? VKR_PRESENT_MODE_FIFO
+                              : VKR_PRESENT_MODE_IMMEDIATE;
+  vkr_standard_scene_runtime_config.display_output_mode =
+      graphics_settings.hdr ? VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR
+                            : VKR_DISPLAY_OUTPUT_SDR;
+  vkr_standard_scene_runtime_config.upscale_mode =
+      !graphics_settings.temporal_upscaling ? VKR_UPSCALE_MODE_SPATIAL
+      : renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL
+          ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
+          : VKR_UPSCALE_MODE_FSR31;
+  vkr_standard_scene_runtime_config.dynamic_resolution =
+      (VkrDynamicResolutionConfig){.min_scale = .334f,
+                                   .max_scale = 1.0f,
+                                   .target_frame_ms = 1000.0f / 75.0f,
+                                   .enabled =
+                                       graphics_settings.dynamic_resolution};
   vkr_standard_scene_runtime_config.metrics_config = (VkrMetricsConfig){
       .pass_gpu_timings = rg_gpu_timing_enabled,
       .submission_gpu_timings = submission_gpu_timing_enabled,
@@ -3385,6 +3515,24 @@ int vkr_sample_runtime_run(int argc, char **argv,
 
   state = arena_alloc(application.app_arena, sizeof(State),
                       ARENA_MEMORY_TAG_STRUCT);
+  state->graphics = (VkrGraphicsSettingsState){
+      .settings = graphics_settings,
+      .temporal_upscaling_available = temporal_available,
+      .dynamic_resolution_available = dynamic_available,
+      .temporal_upscaling_name =
+          renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL
+              ? string8_lit("MetalFX")
+              : string8_lit("FSR 3.1")};
+  state->graphics_started = graphics_settings;
+  state->graphics_dirty = false_v;
+  state->graphics_changed_at = 0.0;
+  state->graphics_message[0] = '\0';
+  snprintf(state->graphics_path, sizeof(state->graphics_path), "%s",
+           graphics_path);
+  if (!graphics_loaded)
+    snprintf(state->graphics_message, sizeof(state->graphics_message),
+             "Saved settings were invalid. Defaults are in use.");
+  sample_graphics_apply_live(&application, &graphics_settings);
   state->stats_arena = arena_create(KB(1), KB(1));
   VkrAllocator app_alloc = {.ctx = application.app_arena};
   vkr_allocator_arena(&app_alloc);
@@ -3590,6 +3738,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
                         .update = vkr_sample_runtime_update,
                     });
   vkr_standard_scene_runtime_run(&application);
+  sample_graphics_save();
   vkr_standard_scene_runtime_close(&application);
 
   if (state->upload_wait_fence_total > 0 ||

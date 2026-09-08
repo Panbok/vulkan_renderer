@@ -1,5 +1,7 @@
 #include "editor_internal.h"
 
+#include "editor_graphics.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -409,6 +411,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
       {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.unit = VKR_UI_TRACK_AUTO},
   };
@@ -469,7 +472,16 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                        ? VKR_EDITOR_MENU_NONE
                        : VKR_EDITOR_MENU_DEBUG;
   }
-  if (editor_menu_button(ui, string8_lit("menu.help"), string8_lit("Help"), 3u,
+  if (editor_menu_button(ui, string8_lit("menu.settings"),
+                         string8_lit("Settings"), 3u,
+                         editor->menu == VKR_EDITOR_MENU_SETTINGS,
+                         editor->heading_font)) {
+    editor->commands_open = false_v;
+    editor->menu = editor->menu == VKR_EDITOR_MENU_SETTINGS
+                       ? VKR_EDITOR_MENU_NONE
+                       : VKR_EDITOR_MENU_SETTINGS;
+  }
+  if (editor_menu_button(ui, string8_lit("menu.help"), string8_lit("Help"), 4u,
                          editor->windows[VKR_EDITOR_WINDOW_HELP].visible,
                          editor->heading_font)) {
     editor->commands_open = false_v;
@@ -482,13 +494,13 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   const bool8_t bakery_visible =
       vkr_ui_dock_find_panel(frame->dock, VKR_UI_DOCK_PANEL_BAKERY, NULL, NULL);
   if (editor_menu_button(ui, string8_lit("menu.bakery"), string8_lit("Bakery"),
-                         4u, bakery_visible, editor->heading_font)) {
+                         5u, bakery_visible, editor->heading_font)) {
     editor->commands_open = false_v;
     editor->menu = VKR_EDITOR_MENU_NONE;
     vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_BAKERY);
   }
   if (editor_menu_button(ui, string8_lit("menu.commands"),
-                         string8_lit("Commands"), 5u, editor->commands_open,
+                         string8_lit("Commands"), 6u, editor->commands_open,
                          editor->heading_font)) {
     editor->commands_open = !editor->commands_open;
     editor->commands_focus_search = editor->commands_open;
@@ -505,7 +517,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   VkrUiWidgetConfig status =
       vkr_editor_text_config(11.0f, (Vec4){0.68f, 0.72f, 0.74f, 1.0f});
   status.placement = (VkrUiPlacement){
-      .column = 7u,
+      .column = 8u,
       .row = 0u,
       .column_span = 1u,
       .row_span = 1u,
@@ -529,13 +541,18 @@ static VkrUiRect editor_menu_popup_rect(const VkrEditorUi *editor,
   const float32_t scale = ui->content_scale;
   const float32_t target_width = (float32_t)ui->target_width / scale;
   const float32_t target_height = (float32_t)ui->target_height / scale;
+  const bool8_t settings = editor->menu == VKR_EDITOR_MENU_SETTINGS;
   const bool8_t debug = editor->menu == VKR_EDITOR_MENU_DEBUG;
-  const float32_t width = Min(debug ? 230.0f : 210.0f, target_width);
-  const float32_t height =
-      Min(debug ? (editor->labels_expanded ? 184.0f : 50.0f) : 94.0f,
-          Max(0.0f, target_height - VKR_EDITOR_NAVIGATION_HEIGHT_PT));
-  const float32_t x = Min(VKR_EDITOR_METRICS_MENU_X_PT + (debug ? 72.0f : 0),
-                          Max(0.0f, target_width - width));
+  const float32_t width = Min(settings ? 180.0f : (debug ? 230.0f : 210.0f),
+                              target_width);
+  const float32_t height = Min(
+      settings ? 36.0f : (debug ? (editor->labels_expanded ? 184.0f : 50.0f)
+                                : 94.0f),
+      Max(0.0f, target_height - VKR_EDITOR_NAVIGATION_HEIGHT_PT));
+  const float32_t x =
+      Min(settings ? VKR_EDITOR_SETTINGS_MENU_X_PT
+                   : VKR_EDITOR_METRICS_MENU_X_PT + (debug ? 72.0f : 0),
+          Max(0.0f, target_width - width));
   return (VkrUiRect){x * scale, VKR_EDITOR_NAVIGATION_HEIGHT_PT * scale,
                      width * scale, height * scale};
 }
@@ -553,6 +570,7 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
       {.unit = VKR_UI_TRACK_AUTO},
   };
   const VkrUiRect rect = editor_menu_popup_rect(editor, ui);
+  const bool8_t settings = editor->menu == VKR_EDITOR_MENU_SETTINGS;
   const bool8_t debug = editor->menu == VKR_EDITOR_MENU_DEBUG;
   VkrUiPanelConfig popup = vkr_ui_panel_config_default();
   popup.placement = (VkrUiPlacement){
@@ -568,7 +586,8 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
   popup.columns = &one_track;
   popup.column_count = 1u;
   popup.rows = rows;
-  popup.row_count = debug ? (editor->labels_expanded ? 5u : 1u) : 3u;
+  popup.row_count = settings ? 1u : (debug ? (editor->labels_expanded ? 5u : 1u)
+                                             : 3u);
   popup.style = vkr_editor_glass_style();
   popup.style.background_color.w = 0.98f;
   popup.style.min_size_pt =
@@ -576,6 +595,23 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
   popup.style.max_size_pt = popup.style.min_size_pt;
   popup.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.menu.popup"), &popup)) {
+    (void)vkr_ui_input_layer_set(ui, 0u);
+    return;
+  }
+
+  if (settings) {
+    VkrUiWidgetConfig item =
+        vkr_editor_text_config(12.0f, (Vec4){0.80f, 0.84f, 0.90f, 1.0f});
+    item.placement.column = item.placement.row = 0u;
+    item.placement.justify = VKR_UI_ALIGN_STRETCH;
+    item.style.padding_pt = (VkrUiEdges){4.0f, 5.0f, 4.0f, 5.0f};
+    item.text.font = editor->heading_font;
+    if (vkr_ui_button(ui, string8_lit("graphics"), string8_lit("Graphics"),
+                      &item)) {
+      editor_window_raise(editor, VKR_EDITOR_WINDOW_GRAPHICS);
+      editor->menu = VKR_EDITOR_MENU_NONE;
+    }
+    (void)vkr_ui_panel_end(ui);
     (void)vkr_ui_input_layer_set(ui, 0u);
     return;
   }
@@ -734,19 +770,22 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
 
 static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
                                 InputState *input, VkrEditorWindowKind kind,
-                                const VkrSampleUiText *text) {
+                                const VkrSampleUiFrame *frame) {
   VkrEditorWindowState *window = &editor->windows[kind];
   String8 title_text = {0};
   String8 body_text = {0};
   float32_t font_size_pt = 10.0f;
   switch (kind) {
+  case VKR_EDITOR_WINDOW_GRAPHICS:
+    title_text = string8_lit("GRAPHICS");
+    break;
   case VKR_EDITOR_WINDOW_DRAWS:
     title_text = string8_lit("DRAWS / RENDER GRAPH");
-    body_text = text->metrics;
+    body_text = frame->text.metrics;
     break;
   case VKR_EDITOR_WINDOW_MEMORY:
     title_text = string8_lit("MEMORY / LIVE");
-    body_text = text->memory;
+    body_text = frame->text.memory;
     break;
   case VKR_EDITOR_WINDOW_HELP:
     title_text = string8_lit("EDITOR CONTROLS");
@@ -790,6 +829,8 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   panel.rows = rows;
   panel.row_count = ArrayCount(rows);
   panel.style = vkr_editor_glass_style();
+  if (kind == VKR_EDITOR_WINDOW_GRAPHICS)
+    panel.style.background_color.w = 0.97f;
   panel.style.padding_pt = (VkrUiEdges){0};
   panel.style.min_size_pt = window->size_pt;
   panel.style.max_size_pt = window->size_pt;
@@ -867,29 +908,33 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     (void)vkr_ui_panel_end(ui);
   }
 
-  VkrUiWidgetConfig body =
-      vkr_editor_text_config(font_size_pt, (Vec4){0.84f, 0.87f, 0.92f, 1.0f});
-  body.placement = (VkrUiPlacement){
-      .column = 0u,
-      .row = 1u,
-      .column_span = 1u,
-      .row_span = 1u,
-      .justify = VKR_UI_ALIGN_START,
-      .align = VKR_UI_ALIGN_START,
-      .margin_pt = {10.0f, 12.0f, 10.0f, 12.0f},
-  };
-  vkr_ui_label(ui, string8_lit("body"), body_text, &body);
+  if (kind == VKR_EDITOR_WINDOW_GRAPHICS)
+    vkr_editor_graphics_build(editor, frame);
+  else {
+    VkrUiWidgetConfig body = vkr_editor_text_config(
+        font_size_pt, (Vec4){0.84f, 0.87f, 0.92f, 1.0f});
+    body.placement = (VkrUiPlacement){
+        .column = 0u,
+        .row = 1u,
+        .column_span = 1u,
+        .row_span = 1u,
+        .justify = VKR_UI_ALIGN_START,
+        .align = VKR_UI_ALIGN_START,
+        .margin_pt = {10.0f, 12.0f, 10.0f, 12.0f},
+    };
+    vkr_ui_label(ui, string8_lit("body"), body_text, &body);
+  }
   (void)vkr_ui_panel_end(ui);
   (void)vkr_ui_pop_id(ui);
 }
 
 void vkr_editor_windows_build_floating(VkrEditorUi *editor, VkrUiSystem *ui,
                                        InputState *input,
-                                       const VkrSampleUiText *text) {
+                                       const VkrSampleUiFrame *frame) {
   for (uint32_t z = 1u; z <= VKR_EDITOR_WINDOW_COUNT; ++z) {
     for (uint32_t i = 0u; i < VKR_EDITOR_WINDOW_COUNT; ++i) {
       if (editor->windows[i].visible && editor->windows[i].z_order == z) {
-        editor_build_window(editor, ui, input, (VkrEditorWindowKind)i, text);
+        editor_build_window(editor, ui, input, (VkrEditorWindowKind)i, frame);
         break;
       }
     }

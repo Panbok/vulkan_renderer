@@ -743,7 +743,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       &application->assets.material_system);
   application->visibility_stats = visibility_stats;
 
-  if (world_payload.gpu_shadow_candidate_count > 0u &&
+  if (!application->disable_directional_shadows &&
+      world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
     vkr_shadow_system_resolve_frame(
         &application->shadow_system, setup.image_index, setup.retained_shadow,
@@ -757,7 +758,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   }
 
   VkrLocalShadowPassPayload local_shadow_payload = {0};
-  if (!scene_stopped && world_payload.gpu_shadow_candidate_count > 0u &&
+  if (!scene_stopped && !application->disable_local_shadows &&
+      world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
     vkr_shadow_system_resolve_local_shadows(
         &application->shadow_system, setup.image_index,
@@ -778,9 +780,12 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     const VkrShadowConfig *shadow_config = &application->shadow_system.config;
     const float32_t inverse_map_size =
         1.0f / (float32_t)shadow_config->shadow_map_size;
-    const float32_t sun_tan_half_angle = tanf(
-        application->lighting_system.directional.sun_angular_diameter_degrees *
-        0.008726646259971648f);
+    const float32_t sun_tan_half_angle =
+        tanf((application->disable_soft_shadows
+                  ? 0.0f
+                  : application->lighting_system.directional
+                        .sun_angular_diameter_degrees) *
+             0.008726646259971648f);
     shadow_payload.cascade_count = shadow_cascade_count;
     shadow_payload.sdsm_enabled = shadow_config->sdsm_enabled;
     shadow_payload.cascade_render_mask = shadow_frame.cascade_render_mask;
@@ -1063,14 +1068,16 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .ibl_diffuse_intensity = frame_ibl_diffuse_intensity,
       .ibl_specular_intensity = frame_ibl_specular_intensity,
       .rectangle_lights = application->lighting_system.rectangle_lights,
-      .rectangle_light_count = application->lighting_system.rectangle_light_count,
+      .rectangle_light_count =
+          application->lighting_system.rectangle_light_count,
       .point_lights = application->lighting_system.point_lights,
       .point_light_count = application->lighting_system.point_light_count,
       .point_light_grid = &application->lighting_system.point_light_grid,
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
-      .subsurface = active_scene ? active_scene->subsurface
-                                 : (VkrSubsurfaceBinding){0},
+      .subsurface = active_scene && !application->disable_subsurface_scattering
+                        ? active_scene->subsurface
+                        : (VkrSubsurfaceBinding){0},
       .diffuse_volume = active_scene ? active_scene->diffuse_volume
                                      : (VkrDiffuseVolumeBinding){0},
   };
@@ -1121,7 +1128,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
               .dof_focus_distance = application->globals.dof_focus_distance,
               .dof_f_stop = application->globals.dof_f_stop,
               .motion_blur_enabled = application->globals.motion_blur_enabled,
-              .motion_blur_shutter_angle = application->globals.motion_blur_shutter_angle,
+              .motion_blur_shutter_angle =
+                  application->globals.motion_blur_shutter_angle,
               .ssr_enabled = application->globals.ssr_enabled,
               .ssgi_enabled = application->globals.ssgi_enabled,
               .gtao_enabled = application->globals.gtao_enabled,
@@ -1132,7 +1140,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
               .fog = active_scene ? active_scene->fog
                                   : vkr_fog_settings_defaults(),
               .froxel_fog = active_scene ? active_scene->froxel_fog
-                                  : vkr_froxel_fog_settings_defaults(),
+                                         : vkr_froxel_fog_settings_defaults(),
           },
       .lighting = scene_stopped ? NULL : &frame_lighting,
       .world = scene_stopped ? NULL : &world_payload,
@@ -1149,6 +1157,11 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .picking = has_picking ? &picking_payload : NULL,
       .debug = debug_ptr,
   };
+
+  if (application->disable_fog)
+    packet.globals.fog.enabled = false_v;
+  if (application->disable_volumetric_fog)
+    packet.globals.froxel_fog.enabled = false_v;
 
   VkrRendererFrameMetrics metrics = {0};
   VkrValidationError validation = {0};
@@ -1378,7 +1391,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           application->renderer.frame_number, application->scene_generation);
       vkr_shadow_system_update(
           &application->shadow_system, camera,
-          application->lighting_system.directional.enabled,
+          application->lighting_system.directional.enabled &&
+              !application->disable_directional_shadows,
           application->lighting_system.directional.direction, &caster_bounds);
     }
   }

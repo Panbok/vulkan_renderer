@@ -52,6 +52,13 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_point = true_v,
       .windows =
           {
+              [VKR_EDITOR_WINDOW_GRAPHICS] =
+                  {
+                      .position_pt = {250.0f, 76.0f},
+                      .size_pt = {560.0f, 540.0f},
+                      .z_order = 4u,
+                      .visible = false_v,
+                  },
               [VKR_EDITOR_WINDOW_DRAWS] =
                   {
                       .position_pt = {235.0f, 340.0f},
@@ -174,8 +181,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     vkr_editor_ui_build_camera(frame->ui, frame->scene_only,
                                frame->scene_rendering_stopped, &frame->mapping,
                                &frame->text);
-  vkr_editor_windows_build_floating(editor, frame->ui, frame->input,
-                                    &frame->text);
+  vkr_editor_windows_build_floating(editor, frame->ui, frame->input, frame);
   vkr_editor_windows_build_menu(editor, frame->ui);
   vkr_editor_commands_build(editor, frame);
   if (frame->scene_keyboard_focus) {

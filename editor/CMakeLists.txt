@@ -14,6 +14,7 @@ add_executable(vkr_editor
     src/editor_bakery.c
     src/editor_scene_panels.c
     src/editor_labels.c
+    src/editor_graphics.c
 )
 target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 vkr_configure_application_target(vkr_editor)

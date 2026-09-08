@@ -70,3 +70,9 @@ assets/*.spv
 
 # Per-project editor workspace layout.
 .vkr-editor-layout.json
+
+# Local player graphics preferences and Python bytecode.
+.vkr-graphics-settings.json
+.vkr-graphics-settings.json.*.tmp
+__pycache__/
+*.pyc
