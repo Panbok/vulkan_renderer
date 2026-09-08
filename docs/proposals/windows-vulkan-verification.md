@@ -57,7 +57,7 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] Energy-compensated GGX and shared DFG: [ADR-053](../adr/053-energy-compensated-ggx.md).
 - [ ] Baked diffuse volumes, room boundaries, thick glass, multi-bounce diffuse
   transport, and photon caustics: [ADR-054](../adr/054-baked-diffuse-volumes.md).
-- [ ] Opaque SSR, coverage filtering, independent history, and probe fallback: [ADR-055](../adr/055-screen-space-reflections.md).
+- [ ] Opaque SSR, coverage filtering, GPU-ordered history, stationary jitter, and probe fallback: [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
 - [ ] Analytic height fog and ordered transmission composition:

@@ -380,7 +380,10 @@ API-validation and Bistro checks pass. Native Vulkan execution and bilateral
 image comparison remain unavailable. [ADR-055](055-screen-space-reflections.md) owns its
 accepted depth, history and probe-replacement semantics. Both native SSR filters
 now normalize covered radiance and accumulate coverage through shared functions,
-with matching boundary taps and no root or storage change. Native Vulkan execution
+with matching boundary taps and no root or storage change. SSR history selection
+uses existing GPU dependencies for the exact motion producer even before CPU-observed
+completion; resource reuse still waits for every reader. Metal projection
+compatibility excludes raster jitter, while trace retains its jittered projection. Native Vulkan execution
 of this repair is pending. A source review also found a pre-existing trace-source
 sampling difference: Metal uses linear samples, Vulkan uses rounded point loads;
 bilateral rough-reflection acceptance must resolve this difference.

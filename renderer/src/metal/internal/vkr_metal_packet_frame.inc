@@ -1118,8 +1118,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
         previous_transform->history_valid &&
         previous_transform->history_producer_submit_value ==
             ssr_colors->instances[selected].history_producer_submit_value &&
-        previous_transform->history_producer_submit_value <=
-            renderer->completion.signaledValue &&
+        (previous_transform->history_producer_submit_value <=
+             renderer->completion.signaledValue ||
+         selected == renderer->selected_temporal_history_instance) &&
         previous_transform->history_frame_index ==
             ssr_colors->instances[selected].history_frame_index &&
         previous_transform->history_scene_generation ==

@@ -1,0 +1,177 @@
+SSR temporal history repair, 2026-09-08
+Base commit 9608e68a. Apple M1 Pro, Metal, Release. No performance claim.
+
+User approved reading SSR history from the matching temporal producer through
+existing GPU synchronization. No added images, waits, rays, or shader ABI fields.
+Metal retains the event wait on the exact transform/SSR producer; Vulkan retains
+same-queue write/read barriers and now pins matching transform submission identity.
+Output reuse and retirement still wait for producer and reader last use.
+SSGI keeps its completed-only policy. Shader sources and assets are unchanged.
+
+Failure 1: Metal compared consecutive jittered projection matrices byte-for-byte.
+The selector and publisher now use the stable projection. The tracing projection
+remains jittered; previous-depth coefficients use only unchanged Z/W rows.
+Failure 2: CPU completion gating rejected the immediately preceding frame while
+it was in flight, despite existing GPU ordering. Stable projection alone did not
+reduce the captured flicker. Diagnostic frames 600..615 have valid/age/projection/
+signature/radiance/publication/graph/transform checks all 1, completed=0, and no
+selected SSR history. Temporary stderr instrumentation was removed before final
+Release captures. Selected output and motion now demonstrate native accumulation.
+
+Commands:
+ ./build_release.sh
+ ./build_editor.sh Release
+ env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS
+ ./build_release/tools/vkr_harness snapshot
+ --case tools/cases/local/ssr_static_jitter.case.json
+ --profile tools/profiles/local-offscreen.json
+ Static case: Bistro, MetalFX, 800x600 output, 641x481 actual internal capture,
+ 320x240 reflection, three target images, 32 warmup / 8 measured frames,
+ checkpoints 3/4/5, fixed 1/60 s, manual exposure 0.853, fixed scale 0.8.
+ The projection-only variant changes only the two stored/compared matrices.
+ The diagnostic variant adds temporary selector stderr records and uses profile
+ with the same static case; its pixels/timings are not acceptance evidence.
+
+ env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1
+ ./build_release/tools/vkr_harness profile
+ --case tools/cases/local/ssr_temporal_resize.case.json
+ --profile tools/profiles/local-windowed.json
+ Two serialized children each report Metal API Validation Enabled; no API errors.
+ Portable TAA, jitter, odd-extent resize, and teardown; no shader validation.
+
+ Moving snapshots use the normal Release snapshot command above with cases
+ tools/cases/local/screen_motion_off.case.json and
+ tools/cases/local/screen_motion_ssr_ssgi.case.json (both effects enabled).
+ Same scripted camera, resolution, scale and MetalFX as the paired manifests.
+
+static-before: build/_artifacts/snapshot/20260908T201822.482Z-011d23
+ report sha256 da7d019e138294391d4cab347c2efb12f5311490e4726d8f98ab798c836bef61
+ status pass; exit 0; authoritative False
+ retained ssr-history-static-before-final_color.png sha256 75d86521baf45aa5ad1e4015c254940ebfb5aa739c8af185adeed2d9d33fe05f
+ retained ssr-history-static-before-ssr_reflection.png sha256 3b0c037299038cd7b44038871536bf04d517aad6fdbb1a816d18d5b43ed4baf0
+projection-only: build/_artifacts/snapshot/20260908T202021.207Z-012373
+ report sha256 bfa8e5a191fd47a492b63bb1fc6b2c2b61bb6d4fea75877d5e246d5c3fdb8acd
+ status pass; exit 0; authoritative False
+history-diagnostic: build/_artifacts/profile/20260908T202244.203Z-012bb1
+ report sha256 bf457bf46570a3207225f3ccb8bb92f28b46650c59c1353dc4d84fd5cbd3e54c
+ status pass; exit 0; authoritative False
+projection-only-api: build/_artifacts/profile/20260908T202114.080Z-012570
+ report sha256 69a8e2021c56e67b13a7a0bee816622052e1ae706177a1d3a1ddbf2e6a537a7c
+ status pass; exit 0; authoritative False
+static-after: build/_artifacts/snapshot/20260908T203324.115Z-015890
+ report sha256 c40e087893bab91ed9c064377b48836b17d40d383476bba40a2e1639e3358167
+ status pass; exit 0; authoritative False
+ retained ssr-history-static-after-final_color.png sha256 89dfa107b7aa86a91be15829788c1278f4b7a285ed300b6407fd3329f24fdd0e
+ retained ssr-history-static-after-ssr_reflection.png sha256 4ec1991554d3a126bd94fe71419e24b353e70ed47d58c314c0cc0752113a53c6
+ordered-api: build/_artifacts/profile/20260908T203434.920Z-015ea1
+ report sha256 46b91159123d9496cc7413911409b1d1b2a661975be903e9924e632832b6166a
+ status pass; exit 0; authoritative False
+moving-off: build/_artifacts/snapshot/20260908T203541.778Z-016251
+ report sha256 33c3ab12edcd38a35467a9d5227a3a5e116823911c58c9b987f76a157d18119f
+ status pass; exit 0; authoritative False
+moving-both: build/_artifacts/snapshot/20260908T203725.847Z-016532
+ report sha256 a96f8bff3d0c7cb978f7293d206ee1a048ddacba01031afd32628437e3ffe745
+ status pass; exit 0; authoritative False
+
+Regression command (run labels above):
+ python3 tools/checks/check_ssr_history.py STATIC_BEFORE STATIC_AFTER
+raw trace MAE: 6.46875964e-08; motion unchanged
+covered radiance mean: 0.0167761165 -> 0.0147461174
+variation mean: 0.0129299939 -> 0.00700611735
+variation p95: 0.0392591208 -> 0.0202065681
+PASS: mean static reflection variation reduced by 45.81%
+ Running the same check with STATIC_BEFORE and PROJECTION_ONLY fails as expected:
+ variation mean 0.0129299939 -> 0.0129299947; no improvement.
+
+ python3 tools/checks/check_screen_motion.py STATIC_BEFORE STATIC_AFTER
+frame 3: 0 changed motion pixels / 308321
+frame 4: 0 changed motion pixels / 308321
+frame 5: 0 changed motion pixels / 308321
+PASS: 924963 numerically identical motion pixels
+ Four FP16 pixels differed only by signed zero; the checker now compares motion
+ values, treating +0 and -0 equivalently. No numerical tolerance was introduced.
+
+ python3 tools/checks/check_screen_motion.py MOVING_OFF MOVING_BOTH
+frame 3: 0 changed motion pixels / 308321
+frame 4: 0 changed motion pixels / 308321
+frame 5: 0 changed motion pixels / 308321
+PASS: 924963 numerically identical motion pixels
+
+Limits: these are local MetalFX snapshots, not cross-backend baselines. The
+stationary variation measurement covers two frame transitions and does not prove
+all screen-space hit/miss noise eliminated. Nearest history, scene boundaries,
+disocclusion, and DRS changes retain the documented limitations. Native Vulkan
+API/visual execution is unavailable; its implementation remains UNALIGNED.
+
+Retained selector diagnostic excerpt:
+build/_artifacts/profile/20260908T202244.203Z-012bb1/runs/0/stderr.log
+SSR_DIAG frame=600 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=600 selected=4294967295 temporal=2
+SSR_DIAG frame=601 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=601 selected=4294967295 temporal=3
+SSR_DIAG frame=602 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=602 selected=4294967295 temporal=0
+SSR_DIAG frame=603 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=603 selected=4294967295 temporal=1
+SSR_DIAG frame=604 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=604 selected=4294967295 temporal=2
+SSR_DIAG frame=605 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=605 selected=4294967295 temporal=3
+SSR_DIAG frame=606 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=606 selected=4294967295 temporal=0
+SSR_DIAG frame=607 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=607 selected=4294967295 temporal=1
+SSR_DIAG frame=608 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=608 selected=4294967295 temporal=2
+SSR_DIAG frame=609 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=609 selected=4294967295 temporal=3
+SSR_DIAG frame=610 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=610 selected=4294967295 temporal=0
+SSR_DIAG frame=611 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=611 selected=4294967295 temporal=1
+SSR_DIAG frame=612 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=612 selected=4294967295 temporal=2
+SSR_DIAG frame=613 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=613 selected=4294967295 temporal=3
+SSR_DIAG frame=614 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=614 selected=4294967295 temporal=0
+SSR_DIAG frame=615 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=615 selected=4294967295 temporal=1
+build/_artifacts/profile/20260908T202244.203Z-012bb1/runs/1/stderr.log
+SSR_DIAG frame=600 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=600 selected=4294967295 temporal=2
+SSR_DIAG frame=601 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=601 selected=4294967295 temporal=3
+SSR_DIAG frame=602 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=602 selected=4294967295 temporal=0
+SSR_DIAG frame=603 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=603 selected=4294967295 temporal=1
+SSR_DIAG frame=604 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=604 selected=4294967295 temporal=2
+SSR_DIAG frame=605 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=605 selected=4294967295 temporal=3
+SSR_DIAG frame=606 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=606 selected=4294967295 temporal=0
+SSR_DIAG frame=607 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=607 selected=4294967295 temporal=1
+SSR_DIAG frame=608 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=608 selected=4294967295 temporal=2
+SSR_DIAG frame=609 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=609 selected=4294967295 temporal=3
+SSR_DIAG frame=610 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=610 selected=4294967295 temporal=0
+SSR_DIAG frame=611 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=611 selected=4294967295 temporal=1
+SSR_DIAG frame=612 i=2 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=612 selected=4294967295 temporal=2
+SSR_DIAG frame=613 i=3 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=613 selected=4294967295 temporal=3
+SSR_DIAG frame=614 i=0 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=614 selected=4294967295 temporal=0
+SSR_DIAG frame=615 i=1 valid=1 age=1 done=0 proj=1 sig=1 rad=1 pub=1 graph=1 transform=1
+SSR_SELECTED frame=615 selected=4294967295 temporal=1
+
+Final Release wrappers both exited 0; app and editor are rebuilt.
+ssr-ordered-release-build.log sha256 5f0a0c4ab3a6e191cac148ad7614cc77e48bfb8d9e2fb33cf14c016f98a5c6ca
+ssr-ordered-editor-build.log sha256 9ae43bb1dc4d09d8c2039162ff722ec091dbde346dfafd7669c77b6f899b7d66
+The frame-4 final-color and SSR previews were visually inspected before retention.

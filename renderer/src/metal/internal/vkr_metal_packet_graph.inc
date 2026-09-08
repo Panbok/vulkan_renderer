@@ -1253,7 +1253,9 @@ vkr_metal_packet_select_froxel_history(VkrMetalPacketRenderer *renderer) {
 
 /* SSR history is deliberately independent of TAA. Motion/depth/identity
  * reject changing receivers in the shader, while these cold checks prove a
- * completed, same-content tuple before any prior texture is bound. */
+ * same-content tuple before any prior texture is bound. A shared temporal
+ * producer is ordered by the existing submission event wait; other producers
+ * must already be complete. Output reuse still requires completed last use. */
 vkr_internal bool8_t
 vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
   renderer->selected_ssr_history_instance = UINT32_MAX;
@@ -1279,11 +1281,12 @@ vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
                                    1u);
   const uint32_t trace_height =
       Max(renderer->prepared_frame.viewport_height / 2u, 1u);
-  /* The shared kernel maps NDC Y with `uv * 2 - 1`; the opaque Metal roots
-   * map top-left pixels with `0.5 - ndc.y * 0.5`. Flip the projection here so
-   * shared canonical UV remains aligned with Metal's depth attachment. */
+  /* Projection compatibility excludes raster jitter: consecutive jitter phases
+   * must retain history. Trace uses its own jittered projection; the stored
+   * matrix supplies only unchanged Z/W coefficients for previous depth. Keep
+   * the shared kernel's top-left UV clip conversion on both matrices. */
   const Mat4 projection = vkr_metal_packet_clip_matrix(
-      !renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection);
+      !renderer->convert_vulkan_clip_y, packet->input.globals.projection);
   const VkrTemporalSceneSignature content = vkr_ssr_content_signature(packet);
   if (!content.eligible)
     return true_v;
@@ -1303,13 +1306,12 @@ vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
     if (i == current || !color->live || !depth->live || !identity->live ||
         !color->history_valid || !depth->history_valid ||
         !identity->history_valid || !source_age_in_ring ||
-        color->history_producer_submit_value > completed ||
+        (color->history_producer_submit_value > completed &&
+         renderer->selected_temporal_history_instance != i) ||
         depth->history_producer_submit_value !=
             color->history_producer_submit_value ||
         identity->history_producer_submit_value !=
             color->history_producer_submit_value ||
-        depth->history_producer_submit_value > completed ||
-        identity->history_producer_submit_value > completed ||
         depth->history_frame_index != color->history_frame_index ||
         identity->history_frame_index != color->history_frame_index ||
         depth->history_scene_generation != color->history_scene_generation ||
@@ -1354,7 +1356,6 @@ vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
         !transform || !transform->history_valid ||
         transform->history_producer_submit_value !=
             color->history_producer_submit_value ||
-        transform->history_producer_submit_value > completed ||
         transform->history_frame_index != color->history_frame_index ||
         transform->history_scene_generation != color->history_scene_generation ||
         transform->history_width != renderer->prepared_frame.viewport_width ||
@@ -2061,7 +2062,7 @@ vkr_metal_packet_mark_ssr_history_submitted(VkrMetalPacketRenderer *renderer,
   const uint32_t trace_height =
       Max(renderer->prepared_frame.viewport_height / 2u, 1u);
   const Mat4 projection = vkr_metal_packet_clip_matrix(
-      !renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection);
+      !renderer->convert_vulkan_clip_y, packet->input.globals.projection);
   if (packet->temporal.reset_reasons != 0u) {
     for (uint32_t slot = 0u; slot < ArrayCount(slots); ++slot)
       for (uint32_t i = 0u; i < slots[slot]->instance_count; ++i)

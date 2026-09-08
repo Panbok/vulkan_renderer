@@ -1676,7 +1676,8 @@ vkr_internal bool8_t vkr_vk_prepare_ssr_history(
       .graph_revision = renderer->graph_revision,
   };
   if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE ||
-      !scene.signature.eligible)
+      !scene.signature.eligible || !slot->temporal_history_valid ||
+      !slot->temporal_transform_input)
     goto selected;
 
   VkrVulkanGraphImageInstance *selected = NULL;
@@ -1684,8 +1685,8 @@ vkr_internal bool8_t vkr_vk_prepare_ssr_history(
   for (uint32_t i = 0u; i < colors->instance_count; ++i) {
     VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
     if (i == current || !candidate->history_valid ||
-        candidate->history_producer_submit_value > renderer->completed_value ||
-        !slot->temporal_history_valid ||
+        candidate->history_producer_submit_value !=
+            slot->temporal_transform_input->history_producer_submit_value ||
         candidate->history_frame_index != slot->temporal_previous_frame_index ||
         candidate->history_scene_generation !=
             packet->input.frame.scene_generation ||
@@ -1716,6 +1717,9 @@ vkr_internal bool8_t vkr_vk_prepare_ssr_history(
     }
   }
   if (selected) {
+    /* The matching temporal producer may still be in flight. Its transform
+       dependency and these same-queue image barriers order every history read;
+       output reuse continues to require completed producer and reader uses. */
     VkrVulkanGraphImageInstance *depth = &depths->instances[selected_index];
     VkrVulkanGraphImageInstance *identity =
         &identities->instances[selected_index];

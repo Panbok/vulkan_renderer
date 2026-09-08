@@ -49,9 +49,19 @@ This is a compact approximation, not a sampled GGX transport estimator.
 
 Reflection history is a coherent color/depth/stable-identity tuple in the existing
 completion-safe graph history pool. Its selected producer must match the transform
-history used by motion vectors, including MetalFX. If that producer is still in
-flight, SSR uses current radiance without replacing the motion reference. Radiance
-controls, scene/resource changes, cuts, projection and extent changes invalidate reuse. Ordinary camera and object motion
+history used by motion vectors, including MetalFX. The user approved reading that
+matching producer while it is in flight through existing GPU synchronization:
+Metal's submission event wait and Vulkan's same-queue write/read barriers. An
+unrelated producer must already be complete. Tuple members and the motion
+transform must have the same producer submission. Every reader extends last use;
+output reuse and retirement still require completion of producers and readers.
+This adds no images or waits and leaves SSGI's completed-only policy unchanged.
+
+Projection compatibility uses the unjittered projection. Consecutive raster-jitter
+phases must not invalidate accumulation. Trace retains the current jittered
+projection; previous-depth reconstruction needs only the unchanged Z/W coefficients.
+Radiance controls, scene/resource changes, cuts, projection and extent changes
+invalidate reuse. Ordinary camera and object motion
 use motion, depth and identity rejection. History remains independent of final
 TAA; disabling TAA must not introduce raster jitter or disable reflection history.
 
@@ -72,7 +82,7 @@ environment specular. The base retains probe/global reflections. Uncoated pixels
 retain base SSR. [ADR-063](063-charlie-sheen.md) attenuates that base specular
 weight by sheen allocation without another ray or history. Material/texture
 radiance revisions invalidate incompatible
-completed history without increasing history storage.
+retained history without increasing history storage.
 
 ## Consequences
 
@@ -126,7 +136,18 @@ expected result. A repeated Metal mirror/API check retains 722 hits and a maximu
 motion vectors; these captures do not establish that all visible shimmer is gone.
 [The regression record](../../assets/verification/renderer-features/screen-effects-stability.txt)
 retains evidence. Nearest validated history sampling and current-frame fallback
-can still lose stability at subpixel motion or unavailable completed history.
+can still lose stability at subpixel motion or unavailable compatible history.
+
+A later stationary Bistro check exposed two history-selection failures: comparing
+jittered projections rejected consecutive frames, and requiring CPU-observed
+completion rejected the shared predecessor while it was in flight. The approved
+GPU-ordering policy above fixes both. The native static regression retains the
+same raw trace within FP16 noise and reduces mean covered-reflection variation
+by 45.81% (0.012930 to 0.007006 across two frame transitions). It preserves all
+924,963 motion values; the moving SSR+SSGI pair does too. Portable-TAA resize
+passes focused Metal API validation. [The history repair record](../../assets/verification/renderer-features/ssr-temporal-history.txt)
+retains exact commands, report digests, diagnostic rejection reasons and captures.
+These checks establish restored accumulation, not elimination of all SSR noise.
 
 ## Revisit when
 
