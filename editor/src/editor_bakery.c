@@ -263,7 +263,7 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
       "renderer/src/vkr_dfg_lut_data.inc",
       "renderer/src/vkr_sheen_lut_data.inc",
       "renderer/src/vkr_anisotropy_lut_data.inc",
-      "assets/scenes/fixtures/diffuse_volume_local.scene.json",
+      "assets/scenes/fixtures/bakery_diffuse_room.scene.json",
       "assets/scenes/bistro.scene.json"};
   static const char *const outputs[] = {
       "",
@@ -273,7 +273,7 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
       "",
       "",
       "",
-      "assets/textures/diffuse_volume_local.vkdv",
+      "assets/textures/bakery_diffuse_room.vkdv",
       "assets/textures/bistro_bakery_probe.vkt"};
   for (uint32_t i = 0u; i < ArrayCount(sources); ++i)
     bakery->source_lengths[i] =

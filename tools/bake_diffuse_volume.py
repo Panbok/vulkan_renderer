@@ -20,6 +20,7 @@ DVOL_ENDIAN = 0x01020304
 DVOL_HEADER_BYTES = 112
 DVOL_PROBE_BYTES = 116
 DVOL_CELL_BYTES = 4
+BAKER_DIAGNOSTIC_BYTES = 4096
 
 
 def digest(path):
@@ -247,11 +248,16 @@ def verify_dvol(path):
 
 
 def run_baker(command, log):
-    result = subprocess.run(command, cwd=REPO, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
-    log.write_text(result.stdout, encoding='utf-8')
+    result = subprocess.run(command, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    log.write_bytes(result.stdout)
     if result.returncode:
-        raise RuntimeError(f'vkr_diffuse_baker failed ({result.returncode}); see {log.parent}')
+        diagnostic = result.stdout[-BAKER_DIAGNOSTIC_BYTES:].decode('utf-8', errors='replace').strip()
+        if len(result.stdout) > BAKER_DIAGNOSTIC_BYTES:
+            diagnostic = '…' + diagnostic
+        if diagnostic:
+            raise RuntimeError(f'vkr_diffuse_baker failed ({result.returncode}); log: {log}; '
+                               f'diagnostic: {diagnostic}')
+        raise RuntimeError(f'vkr_diffuse_baker failed ({result.returncode}); log: {log}')
 
 
 def run_inspect(baker, args, job, name):

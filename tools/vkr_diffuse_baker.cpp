@@ -373,8 +373,21 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
   VkrBakeVoxelGridDesc grid = options.grid;
   if (!options.explicit_bounds)
     grid.bounds = bvh.nodes[0].bounds;
+  const Vec3 extent = vec3_sub(grid.bounds.max, grid.bounds.min);
+  if (!std::isfinite(extent.x) || !std::isfinite(extent.y) ||
+      !std::isfinite(extent.z) || extent.x <= 0.0f || extent.y <= 0.0f ||
+      extent.z <= 0.0f) {
+    std::fprintf(stderr,
+                 "Diffuse-volume bounds need positive extent on all three "
+                 "axes (extent: %g, %g, %g). %s\n",
+                 extent.x, extent.y, extent.z,
+                 options.explicit_bounds
+                     ? "Correct --bounds so every minimum is below its maximum."
+                     : "The scene geometry does not enclose a 3D volume; "
+                       "choose an enclosed room scene for baking.");
+    return 1;
+  }
   if (grid.voxel_size == 0.0f) {
-    const Vec3 extent = vec3_sub(grid.bounds.max, grid.bounds.min);
     grid.voxel_size =
         std::fmin(extent.x / grid.probe_dimensions[0],
                   std::fmin(extent.y / grid.probe_dimensions[1],

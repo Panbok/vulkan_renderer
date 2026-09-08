@@ -241,6 +241,21 @@ cooker tools without running them; Bakery invokes the cookers. Pinned bootstrap
 fonts keep the first editor launch independent of Bakery; see
 [ADR-034](034-offline-cooked-font-artifacts.md).
 
+The diffuse recipe starts from the tracked
+[enclosed-room example](../../assets/scenes/fixtures/bakery_diffuse_room.scene.json)
+and writes `assets/textures/bakery_diffuse_room.vkdv`. Its mesh, glTF source,
+buffer and material are checked in. The planar `diffuse_volume_local` scene is
+only a runtime lookup witness and cannot supply automatic three-dimensional
+bake bounds. Invalid bounds report their extents before room detection; wrapper
+failures forward the final 4 KiB of child output and the exact full-log path to
+Bakery. The room proof and existing bake budget remain unchanged.
+
+The repaired default passed the full 4×4×4, face-size 16, 64-sample, depth-12,
+one-million-photon CPU recipe: 27 valid probes, one valid cell, 7,644-byte DVOL,
+finite nonzero SH, valid CRCs, and a `current` freshness result. The Release
+editor wrapper passed without cooking. This is CPU-baker evidence; it does not
+establish native Vulkan execution.
+
 The sample runtime owns player Graphics settings in `VkrGraphicsSettings`.
 Settings > Graphics uses a left tab rail and a clipped, scrollable right pane
 with Display, Quality, Lighting, Effects, and Color tabs. The editor borrows

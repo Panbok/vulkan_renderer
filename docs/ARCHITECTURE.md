@@ -88,6 +88,8 @@ nine recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
 anisotropy, diffuse volume, and reflection probe—in one cancellable child
 process at a time. Its setup, jobs and output views use labeled controls and
 adapt to dock width; cancellation terminates the complete child process tree.
+The diffuse recipe defaults to a tracked enclosed-room example; invalid-volume
+bounds and child-baker diagnostics are reported in Bakery output.
 Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
 and Color and a clipped, scrollable right content area. The editor emits typed
 `VkrGraphicsSettingsRequest` values; the sample runtime validates and owns their
