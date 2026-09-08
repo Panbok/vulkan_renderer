@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-08
 authority: adr
 ---
 
@@ -21,7 +21,8 @@ Lower specular-glossiness factors and textures during CPU preparation into the
 runtime PBR representation, retaining dielectric specular response instead of
 replacing it with a universal 0.04 value. Generated derivatives are cacheable.
 The runtime carries metallic/roughness, base color, normal, occlusion, emissive,
-alpha and transmission/volume data through immutable GPU material publications.
+alpha, transmission/volume, independent clearcoat and sheen data through immutable
+GPU material publications.
 
 Color textures request sRGB interpretation; numerical maps request linear data.
 Texture identity includes semantic/format intent. Tangent-space normal decoding
@@ -42,8 +43,10 @@ in [ADR-030](030-offline-mesh-optimization-and-cooking.md).
 ## Consequences
 
 Runtime shading consumes one prepared contract. Preparation owns source-workflow
-conversion and derivative provenance. Clearcoat and sheen are absent; imported
-material support is bounded by implemented loader and shader fields.
+conversion and derivative provenance. [ADR-062](062-layered-clearcoat.md) owns
+the clearcoat subset and layer allocation. [ADR-063](063-charlie-sheen.md) owns
+the sheen subset and its remaining integration checks. Imported material support
+is bounded by implemented loader and shader fields.
 
 ## Alternatives considered
 

@@ -1,0 +1,5 @@
+2026-09-08 09:33:26.023 ssgi-lifecycle[4640:5723784] Metal API Validation Enabled
+jitter reuse: ssgi=0 taa=0 current=1 completed=104 frame=38
+SSGI TAA-off completed color/depth/identity tuple: PASS
+SSGI reuses a completed tuple across TAA jitter without image recreation: PASS
+SSGI disable/re-enable and resize lifecycle: PASS

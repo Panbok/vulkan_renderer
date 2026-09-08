@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-08
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -154,6 +154,28 @@ The computer-use interface cannot hold right mouse across movement; sustained
 RMB gestures and focus-loss release remain unverified natively. Windows/Vulkan
 execution is unavailable on this host. No performance comparison is claimed.
 
+Graphics Settings CPU oracles pass two round trips, twenty invalid/default and
+dependency cases, restart/live classification, and missing-file handling. The
+process-group cancellation oracle passes. The Release and Debug wrappers pass
+without cooking log entries; a third `./build_editor.sh Release` pass also
+passes. SHA-256 values for all four shared tables remain unchanged. A native
+macOS Graphics check on `editor_lights.scene.json` exits 0 and covers the
+Graphics menu as the sole item, all five left tabs, the right pane, live
+Bloom-off, shadows-off, SSR-off, SSGI-on, fog-off, depth-of-field and motion-blur
+enablement, brightness change, persisted values, Restore defaults, and the
+display Vsync restart notice. Bakery UI coverage also exits 0: the GGX recipe
+reports `Done`, exit 0, and `DFG unchanged`; cancelling a running anisotropy job
+reports `Cancelled`, exit 143, and leaves no cooker descendants in `pgrep`.
+Final UI opacity coverage passes. Windows UI/process-tree behavior and native
+Vulkan execution remain unverified.
+
+The direct table-publication CPU check passes atomic full replacement, preserves
+the destination marker after a failed replacement, rejects a missing parent, and
+leaves no temporary files after handled failures. The latest `./build_release.sh`
+run passes against the current source; its evidence log is
+`.scratch/renderer-delivery-release-final-build.log`. The four shared-table
+hashes remain unchanged after these checks.
+
 Commands (Cmd/Ctrl+P) searches scene, layout, panel and transport actions.
 Pointer hover selects a visibly highlighted result; click or Enter runs it.
 Held Up/Down repeats after 350 ms at 55 ms intervals, keeping the selected
@@ -198,20 +220,42 @@ Editor builds compile all log levels; capture defaults to INFO, and Verbose capt
 enables DEBUG/TRACE before formatting. App builds retain their existing compile
 policy and do not allocate the editor logger ring.
 
-Bakery queues mesh, font and texture cooker jobs on one worker. The worker launches a
-cancellable child with explicit arguments, writes no renderer state, and publishes
-completion before the UI reads results. Shutdown cancels and joins the worker.
-New bake separates mesh, font, single texture and texture-directory sources,
-retaining each source draft when the type changes. Jobs shows textual status,
-selection, cancellation and retry; Output shows a wrapped 4 KiB display tail and
-copies up to 16 KiB of captured status/output. Controls stack in narrow docks.
-Mesh jobs accept `.obj`, `.gltf` and `.glb`, always rebuild, and replace the
-source extension with `.vkb`. Font and texture cookers own incremental checks;
-their Rebuild option bypasses unchanged-output skipping. All cookers own atomic
-artifact publication. Reload the scene after mesh or texture baking; restart
-the editor after baking a font it already loaded. Normal wrappers compile the
-cookers without running asset baking. Pinned bootstrap fonts keep the first editor
-launch independent of Bakery; see [ADR-034](034-offline-cooked-font-artifacts.md).
+Bakery queues nine recipes—mesh, font, single texture, texture directory, GGX
+DFG, Charlie, anisotropy, diffuse volume, and reflection probe—on one worker.
+The worker launches one cancellable child with explicit arguments, writes no
+renderer state, terminates the complete child process tree on cancellation, and
+publishes completion before the UI reads results. Shutdown cancels and joins the
+worker. New bake separates mesh, font, single texture and texture-directory
+sources, retaining each source draft when the type changes. Jobs shows textual
+status, selection, cancellation and retry; Output shows a wrapped 4 KiB display
+tail and copies up to 16 KiB of captured status/output. Controls stack in narrow
+docks. Mesh jobs accept `.obj`, `.gltf` and `.glb`, always rebuild, and replace
+the source extension with `.vkb`. Font and texture cookers own incremental
+checks; their Rebuild option bypasses unchanged-output skipping. All cookers own
+atomic artifact publication. The GGX DFG, Charlie, and anisotropy table cookers
+write sibling temporary files and atomically rename only complete output, so a
+cancelled or failed table job leaves the previous shared table intact. Reload the
+scene after mesh or texture baking;
+restart the editor after baking a font it already loaded. Build wrappers compile
+cooker tools without running them; Bakery invokes the cookers. Pinned bootstrap
+fonts keep the first editor launch independent of Bakery; see
+[ADR-034](034-offline-cooked-font-artifacts.md).
+
+The sample runtime owns player Graphics settings in `VkrGraphicsSettings`.
+Settings > Graphics uses a left tab rail and a clipped, scrollable right pane
+with Display, Quality, Lighting, Effects, and Color tabs. The editor borrows
+current state during UI build and sends a typed `VkrGraphicsSettingsRequest`;
+the runtime validates and applies the request. Vsync, HDR, temporal upscaling,
+dynamic resolution, and render scale are startup-owned values and set a
+restart-required notice when changed. Other controls apply to live frame state;
+lighting changes invalidate the relevant shadow and temporal histories.
+
+Settings load from `VKR_GRAPHICS_SETTINGS_PATH`, or the project
+`.vkr-graphics-settings.json` default when the variable is absent. Missing files
+keep backend defaults; invalid files leave defaults intact and report a message.
+Changes save after 0.25 seconds without another edit and flush during shutdown.
+Saving uses a temporary file and atomic rename. The persisted record is versioned
+JSON and validates every field and cross-field constraint before publication.
 
 ## Consequences
 
@@ -237,6 +281,10 @@ layout behavior grids cannot express.
 
 ![Windows UI at 100% scale with icon edge coverage](../../assets/editor/ui-antialiasing-windows.png)
 
+![Graphics Settings](../../assets/editor/graphics-settings.png)
+
+![Bakery cooking](../../assets/editor/bakery-cooking.png)
+
 - [UI state and lowering](../../runtime/src/renderer/systems/vkr_ui_system.c)
 - [grid solver](../../runtime/src/core/ui/vkr_ui_grid.c)
 - [dock tree](../../runtime/src/core/ui/vkr_ui_dock.c)
@@ -246,3 +294,11 @@ layout behavior grids cannot express.
 - [edit journal and sidecars](../../runtime/src/renderer/systems/vkr_scene_edit.c)
 - [Console](../../editor/src/editor_console.c)
 - [Bakery](../../editor/src/editor_bakery.c)
+- [Graphics settings](../../runtime/src/vkr_graphics_settings.c)
+- [Graphics Settings UI](../../editor/src/editor_graphics.c)
+- [Sample runtime settings owner](../../runtime/src/vkr_sample_runtime.c)
+
+The Graphics Settings and nine-recipe Bakery additions are source-integrated.
+CPU oracles, macOS UI/Bakery checks, and Release/Debug/editor wrapper evidence
+pass. Windows UI/process-tree behavior and native Vulkan execution remain
+unverified; this ADR does not claim those gates have passed.

@@ -1,0 +1,13 @@
+off 20260908T053723.335Z-004e17 pass authoritative False ['profile.local_only', 'provenance.dirty']
+frame.wall {'unit': 'ns', 'sample_count': 16, 'invalid_count': 0, 'mean': 16965150.5625, 'p50': 16956708, 'p95': 17164458, 'min': 16687875, 'max': 17164458, 'stddev': 118752.7416262298, 'total': 271442409}
+rendergraph.images.live {'unit': 'count', 'sample_count': 16, 'invalid_count': 0, 'mean': 78, 'p50': 78, 'p95': 78, 'min': 78, 'max': 78, 'stddev': 0, 'total': 1248}
+rendergraph.image_bytes.live {'unit': 'bytes', 'sample_count': 16, 'invalid_count': 0, 'mean': 645056500, 'p50': 645056500, 'p95': 645056500, 'min': 645056500, 'max': 645056500, 'stddev': 0, 'total': 10320904000}
+on 20260908T053745.295Z-005007 pass authoritative False ['profile.local_only', 'provenance.dirty']
+frame.wall {'unit': 'ns', 'sample_count': 16, 'invalid_count': 0, 'mean': 18107244.1875, 'p50': 17937416, 'p95': 19985249, 'min': 16438833, 'max': 19985249, 'stddev': 923279.3852995703, 'total': 289715907}
+rendergraph.images.live {'unit': 'count', 'sample_count': 16, 'invalid_count': 0, 'mean': 84, 'p50': 84, 'p95': 84, 'min': 84, 'max': 84, 'stddev': 0, 'total': 1344}
+rendergraph.image_bytes.live {'unit': 'bytes', 'sample_count': 16, 'invalid_count': 0, 'mean': 645229300, 'p50': 645229300, 'p95': 645229300, 'min': 645229300, 'max': 645229300, 'stddev': 0, 'total': 10323668800}
+Froxel.Inject {'unit': 'ms', 'sample_count': 16, 'invalid_count': 0, 'mean': 0.9751510416666667, 'p50': 0.9739583333333333, 'p95': 0.992625, 'min': 0.958, 'max': 0.992625, 'stddev': 0.00828872009778199, 'total': 15.602416666666667}
+Froxel.Integrate {'unit': 'ms', 'sample_count': 16, 'invalid_count': 0, 'mean': 0.04329166666666667, 'p50': 0.043416666666666666, 'p95': 0.04479166666666667, 'min': 0.04066666666666666, 'max': 0.04479166666666667, 'stddev': 0.001141564016066457, 'total': 0.6926666666666668}
+Froxel.Apply.Fullscreen {'unit': 'ms', 'sample_count': 16, 'invalid_count': 0, 'mean': 0.08480989583333333, 'p50': 0.08462499999999999, 'p95': 0.087875, 'min': 0.08324999999999999, 'max': 0.087875, 'stddev': 0.0011021964290978156, 'total': 1.3569583333333333}
+delta rendergraph.images.live 6
+delta rendergraph.image_bytes.live 172800

@@ -45,16 +45,19 @@ registration constant does not.
 ./build_test_batch.sh
 ```
 
-`build_test.sh` freshly configures `build_test`, builds the CPU test runner and
-font cooker, checks deterministic font output and unchanged-output skipping,
-cooks required assets, packs textures, and runs the suite. The runner is
+`build_test.sh` freshly configures `build_test`, builds the
+`vulkan_renderer_tester` target, and runs the suite. It does not explicitly
+build cooker tools, cook, pack, or bake assets; run Bakery or an explicit
+cooker wrapper when fixture regeneration is required. The runner is
 `build_test/tests/vulkan_renderer_tester`; it currently ignores arguments and
 has no suite filter. Do not invent a focused-test CLI.
 
 `build_test_batch.sh` requires the configured `build_test` tree, rebuilds the
-test target, packs once, then aggregates 50 runs. Use it only to investigate a
-specific intermittent failure, not as routine confidence padding. A failure
-followed by a pass needs diagnosis; 50 passes cannot prove the defect absent.
+test target, then aggregates 50 runs. It does not pack or cook assets; prepare
+those inputs explicitly before the batch when a fixture requires them. Use it
+only to investigate a specific intermittent failure, not as routine confidence
+padding. A failure followed by a pass needs diagnosis; 50 passes cannot prove
+the defect absent.
 The `.bat` wrappers provide Windows equivalents.
 
 If a new test is justified, follow the neighboring `tests/src/` file layout and

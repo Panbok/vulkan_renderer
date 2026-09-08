@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-08
 authority: adr
 ---
 
@@ -18,16 +18,45 @@ twice; blending encoded UI colors gives a different result from linear blending.
 
 ## Decision
 
+This decision owns SDR transfer and spatial output filtering. Optional
+extended-linear display output is being integrated under
+[ADR-061](061-extended-linear-display-output.md), including its headroom, native
+unit conversion and output-format lifetime contract.
+
 Window targets expose physical client pixels. Windows establishes Per-Monitor
 V2 before window creation, handles monitor DPI changes and updates content scale.
 The editor/UI convert logical sizing before layout under ADR-036. Scene output
 and internal rendering use ADR-039's explicit mapping.
 
-Keep HDR lighting and post effects linear through ACES-fitted tonemap. Metal and
+Keep HDR lighting and post effects linear through the selected display transform. Metal and
 Vulkan final shaders emit linear RGB into sRGB window/offscreen attachments;
 attachment conversion performs the output encode. Authored UI/text colors decode
 from sRGB once on the CPU before blending. Texture color/data intent is resolved
 at loading/publication, not repaired by extra material shader gamma powers.
+
+
+AgX is the default display transform; ACES fitted remains selectable for comparison.
+The compact shared AgX kernel uses Rec.2020 inset/outset matrices, a 16.5-stop
+log range and a polynomial contrast curve. It follows Filament's compact transform,
+not the complete Blender OCIO configuration. It returns linear display RGB so the
+attachment still owns the single sRGB encoding step.
+
+Frame-input version 33 exposes normalized temperature/tint in [-1,1], contrast in
+[0.5,1.5], and saturation in [0,1.5]. Neutral values are 0,0,1,1. Runtime and harness
+controls share these validated ranges. A frame-owned 64-byte block holds the CAT02
+white-balance matrix and grading controls; CPU preparation occurs once per frame.
+After exposure, apply white balance, luminance contrast about 0.18 and saturation,
+then the display transform. Metering, bloom and scene-linear temporal histories
+precede grading. Neutral grading bypasses the shader work. Each FXAA/sharpening tap
+uses the same transform. Editor composition and diagnostic modes bypass grading.
+Capture summary version 9 preserves the controls; versions 2–8 migrate to neutral
+grading and ACES fitted to reproduce their historical presentation.
+
+A native Metal Release emissive grid spans six colors at radiance 0.01–64.
+AgX, ACES fitted and non-neutral grading match independent CPU references within
+one 8-bit code value. Their captured pre-display HDR bytes are identical.
+Metal API validation passes; GPU shader validation remains unresolved after a
+MetalTools report-decoding crash. Native Vulkan execution is unavailable.
 
 Direct mode tonemaps to the target. Editor mode tonemaps/composites the Scene
 rectangle and draws native-resolution UI afterward. Output-space FXAA stays in

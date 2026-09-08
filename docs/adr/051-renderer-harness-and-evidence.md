@@ -48,7 +48,9 @@ zero retains existing workload identities. The effective value is reported and
 replayed. Readers migrate versions 2–6 with editor controls unset, and versions
 2–7 with sharpness zero. Version 7 retains its explicit native case/config
 layout; the new field occupies former alignment padding before the camera, so
-case size alone cannot distinguish the formats.
+case size alone cannot distinguish the formats. Version 11 records the requested
+`renderer.display_output`; readers migrate versions 2–10 to SDR. AUTO output
+enters the workload fingerprint; SDR preserves existing identities.
 
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible
@@ -60,8 +62,14 @@ Color channels declared `RGBA16_FLOAT_LE` publish tight, top-left, little-endian
 binary16 RGBA payloads separately from their PNG previews. Their capture version
 is 2: earlier output mislabeled PNG-only files as float16, so those baselines are
 incompatible. Numeric comparison decodes finite half values and never substitutes
-a preview for radiance data. Final-color PNG and scalar/vector channels keep
-their existing contracts. Windows CLI summaries normalize report paths to forward
+a preview for radiance data. SDR final-color PNG and scalar/vector channels keep
+their existing contracts. Extended-linear final color under ADR-061 uses
+`RGBA16_FLOAT_LE` version 2 with `extended_srgb_linear` color space. Its
+sidecar records producer `display_headroom` and `display_output_scale`; its
+PNG preview divides native white, clamps to SDR, and applies the sRGB transfer
+without a second display transform. Extended-linear comparison verifies both
+metadata sidecar digests and requires equal valid headroom/output scale;
+different display mappings are incompatible, not pixel regressions. Windows CLI summaries normalize report paths to forward
 slashes so the publication line remains valid JSON.
 
 The child owns its large application record in the repetition arena, releases

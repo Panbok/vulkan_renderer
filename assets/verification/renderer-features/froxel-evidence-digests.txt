@@ -1,0 +1,57 @@
+# Froxel evidence digests
+
+Initial cutoff: `2026-09-08T05:34:38Z`. Final append cutoff: `2026-09-08T05:48:30Z`. Originals remain in place.
+
+## Completed local runs
+
+| Case | Tool | Status | Report SHA-256 | Classification |
+|---|---|---:|---|---|
+| `local.froxel.absorption` | `snapshot` | `pass` / 0 | `sha256:fe3715b625c48540dbfcd8667e8abf3dae026e7cf93dcb8af57b7e57bd98ee41` | accepted_local_runtime_evidence |
+| `local.froxel.bistro` | `snapshot` | `pass` / 0 | `sha256:c552cdae72e166f8b26c8cbf8b4d3df2642e90d63e98c0d57a62480b3fe0d53c` | accepted_local_runtime_evidence |
+| `local.froxel.bistro.off` | `profile` | `pass` / 0 | `sha256:8712bcf70fe54ef32d9ab684d6178eeb3fdd3ae0f74a1064848b518fdcf97e86` | accepted_local_runtime_evidence |
+| `local.froxel.bistro.on` | `profile` | `pass` / 0 | `sha256:3f32d76cb5e5fad2dfd587e17a130005264be4b932d666420f5936c90ffa27ed` | accepted_local_runtime_evidence |
+| `local.froxel.bistro.on` | `profile` | `pass` / 0 | `sha256:007428a02d2307ec5f8f3593391c3d1ceb9c8b8b6f739ab7bd4add2dacc4f277` | accepted_local_runtime_evidence |
+| `local.froxel.box` | `snapshot` | `pass` / 0 | `sha256:572f8c399dbff63a5eb1fc1858acdfd068745c40b076327067452c87bcf0d52a` | accepted_local_runtime_evidence |
+| `local.froxel.box.off` | `snapshot` | `pass` / 0 | `sha256:f798c614dd0d37ba8f603c6d6a66dc0bef1696a8bbb00e35865df54cc34570bc` | accepted_local_runtime_evidence |
+| `local.froxel.constant` | `snapshot` | `pass` / 0 | `sha256:b9b3e7d762dd6093cbfb6ac1bacfebe283b26a794cf02bb10b8ad64d97fff6a4` | accepted_local_runtime_evidence |
+| `local.froxel.editor` | `profile` | `pass` / 0 | `sha256:a020fd6ce469596d1a90e3476d346079372a61b3a15f6ac3b551d95407f308ec` | accepted_local_runtime_evidence |
+| `local.froxel.empty` | `snapshot` | `pass` / 0 | `sha256:96b05432fefeda9b5ed57835f9ffeb59985247ac4115ce71323a6b19d76b0a47` | accepted_local_runtime_evidence |
+| `local.froxel.farcap` | `snapshot` | `pass` / 0 | `sha256:d8eb972c97f946eac2cb91d905e1074c80d7fc3c72944741e2648f207acf49e2` | accepted_local_runtime_evidence |
+| `local.froxel.feedback.off` | `snapshot` | `pass` / 0 | `sha256:16d0a451207fbcc2dcfc72eaa4942f15072180e178f998b3c1b34bcd6e54fb13` | accepted_local_runtime_evidence |
+| `local.froxel.feedback.on` | `snapshot` | `pass` / 0 | `sha256:f774374c9564f88b478dbf5f4e14b82cae44f6ca12fe0b2f41afba2401d4e541` | accepted_local_runtime_evidence |
+| `local.froxel.local_lights.three` | `snapshot` | `pass` / 0 | `sha256:d83e0362b43b20b18493ffcfb2b601261d7c98ce8be0ab9915e1f2be6b992316` | accepted_local_runtime_evidence |
+| `local.froxel.local_lights.two` | `snapshot` | `pass` / 0 | `sha256:83124e7efae2ad44ae97f547bcdeae0eec21cc38611ec863208a71177dae4520` | accepted_local_runtime_evidence |
+| `local.froxel.local_lights.unshadowed` | `snapshot` | `pass` / 0 | `sha256:b2a5b92624e92b288aa9166031c834522e0bafdf45f9cccc5fe89c9dc11df866` | accepted_local_runtime_evidence |
+| `local.froxel.off` | `snapshot` | `pass` / 0 | `sha256:94d03b8ff810145f184bb7b6581a97ceca634930fcd8e8122666ca7564b7f830` | accepted_local_runtime_evidence |
+
+These are completed local, nonauthoritative runtime observations. They do not establish bilateral backend parity. The profile cost and memory observations are retained without a speed claim.
+
+## Expected authoring rejections
+
+| Case | Tool | Status | Report SHA-256 | Classification |
+|---|---|---:|---|---|
+| `local.froxel.count17` | `profile` | `incomplete` / 5 | `sha256:432726c648f5bf4db951df27061e113c05f66939770d55ba70a1503711f33b19` | expected_authoring_rejection: 17th local-volume authoring rejection |
+| `local.froxel.invalid` | `profile` | `incomplete` / 5 | `sha256:9b1a237f008079aa28a7b3574ea4bcfcfe4d68edcfc1510d98bc82b8fa2b166d` | expected_authoring_rejection: malformed fog authoring rejection |
+
+The invalid settings and 17th local-volume cases intentionally report incomplete harness status because the authoring boundary rejects them. They are acceptance evidence, not renderer failures.
+
+## Failed diagnostics
+
+| Case | Tool | Status | Report SHA-256 | Classification |
+|---|---|---:|---|---|
+| `local.froxel.bistro` | `snapshot` | `incomplete` / 5 | `sha256:b81f1c0c4a2ebf46190f3559c90e5965d89e288e94193fee45bf1561dca7427d` | failed_diagnostic |
+| `local.froxel.empty` | `snapshot` | `incomplete` / 5 | `sha256:e8c2b8d16f8690177276177c79fa3e20e09d9eedcb529b14f064026a22b41f8f` | failed_diagnostic |
+| `local.froxel.empty` | `snapshot` | `incomplete` / 5 | `sha256:0310a3b6547ad5cfc6e0240397f9b48f6007fbefa31cb67ab6a77e5d454b83e1` | failed_diagnostic |
+
+## Supplemental accepted checks
+
+- `.scratch/froxel-shadow-lifecycle-api-sync.log` — 13 local-shadow faces and two selected froxel sources: PASS; selected-light and caster revisions reject froxel history: PASS
+- `.scratch/froxel-lifecycle-api-final.log` — history selection, camera motion, density, projection and disabled-no-images checks: PASS
+- `.scratch/froxel-final-spirv.log` — release SPIR-V froxel ABI validation: PASS
+- `.scratch/froxel-host-abi.log` — host ABI PASS
+
+## Retained payload
+
+- `57` froxel-specific logs, `20` lifecycle/oracle payloads, and `37` case, scene and profile inputs are retained.
+- `SHA256SUMS` lists every retained file except itself and is verified after this append.
+- Report command facts retain the exact tool, case/profile IDs and source-manifest digests. Reports did not record literal shell command strings.

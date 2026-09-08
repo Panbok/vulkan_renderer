@@ -1,0 +1,1 @@
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T063428.854Z-001569/report.json","sha256":"sha256:02dd5916fa9b0b77fc7005fab7a25f06f1ecb5a2e86a111961aceb7ad73d23f0"}

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-08
 authority: adr
 ---
 
@@ -47,6 +47,30 @@ and distance fade. Constant/slope/normal-offset bias is authored in shadow texel
 and converted using each cascade's texel size and fitted depth span. Backend
 raster-bias lowering preserves those units. Cutout casters use alpha testing.
 
+The nearest two cascades use contact-hardening PCSS when the authored sun angular
+diameter is positive. Eight progressive nearest-depth samples, starting at the
+center, estimate the average blocker depth. Their search radius is the larger of
+the existing PCF radius and the receiver's distance from the fitted light near
+plane multiplied by `tan(diameter / 2)`. The filter radius uses the average
+blocker-to-receiver distance with the same tangent. Both distances convert from
+normalized depth through the fitted depth span, then into shadow texels.
+
+PCSS filtering uses the configured tap count capped at sixteen, including the
+no-blocker fallback. An empty sparse search retains the existing PCF radius;
+it does not prove the receiver is lit. Farther cascades and zero angular diameter
+retain the existing PCF path and tap count. Existing bias, kernel rotation,
+uniform-region early-out, cascade cross-fade and distance fade remain active.
+
+Scene directional lights author `sun_angular_diameter_degrees`, defaulting to
+0.53 degrees, with finite values in `[0, 180)`. Scene loading, editor changes and
+undo persistence retain this value. It controls the shadow-filter approximation;
+it does not turn directional BRDF evaluation or offline baking into disk-light
+transport. Frame input version 36 stores its half-angle tangent in the fourth
+component of `origin_inv_size_sun`; the cascade record remains 96 bytes. The
+runtime converts degrees once per frame. Changing this value changes receiver
+sampling and temporal radiance validity without invalidating retained depth maps.
+
+
 ## Consequences
 
 Fit and content retention reduce repeated work only when every reuse condition
@@ -63,6 +87,18 @@ measured. Point/spot shadows use ADR-019's independent bounded pool; arbitrary i
 Rendering every cascade is the safe forced-update control. Retaining allocation
 without content validity is insufficient. Two-phase visibility was declined in
 ADR-032; SDSM is not the default quality policy.
+
+## Contact-hardening evidence
+
+Production Release and editor wrappers pass. A compiled shared Slang helper
+checks the nearest-two-cascade gate and world/depth/texel conversion. Metal
+captures use equal plates at 0.1 m and 8 m above a receiver, with 0, 0.53 and
+2-degree sun sizes. With a 4096-square shadow map and 768-square output, the
+far shadow's 10–90% transition covers 400, 479 and 818 pixels respectively. The
+near-contact region and every pixel outside the far-shadow region remain
+byte-identical; all three raw depth maps are identical. A focused Metal API
+validation run passes. These are output checks, not a performance comparison.
+Native Vulkan execution and bilateral image comparison remain unavailable.
 
 ## Revisit when
 

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-07
+updated: 2026-09-08
 authority: architecture
 ---
 
@@ -84,8 +84,18 @@ Scene mapping. Inspector exposes light enable, color/intensity, local direction
 angles, punctual range and spotlight cone controls through the edit journal.
 RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
 Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
-mesh, font and texture cookers in a cancellable child process. Its setup, jobs
-and output views use labeled controls and adapt to dock width. Render Stop retains the last Scene image while UI continues;
+nine recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
+anisotropy, diffuse volume, and reflection probe—in one cancellable child
+process at a time. Its setup, jobs and output views use labeled controls and
+adapt to dock width; cancellation terminates the complete child process tree.
+Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
+and Color and a clipped, scrollable right content area. The editor emits typed
+`VkrGraphicsSettingsRequest` values; the sample runtime validates and owns their
+application. Vsync, HDR, temporal upscaling, dynamic resolution, and render
+scale changes show a restart-required notice. Other controls apply live and
+invalidate the affected histories. Settings load from `VKR_GRAPHICS_SETTINGS_PATH`
+or `.vkr-graphics-settings.json`, save after 0.25 seconds without another edit,
+and flush on exit. Render Stop retains the last Scene image while UI continues;
 Vulkan UI-only frames reset Scene readback copies before skipping absent producers.
 Scene allocation failures trigger bounded output-resolution reductions while UI
 resolution stays unchanged; an error at the minimum stops Scene retries.
@@ -132,12 +142,13 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 32 contains frame metadata, camera/lighting/settings and typed
-world, shadow, skybox, UI, editor, picking and debug payloads. Supplied world-text
-and UI streams are authoritative. `vkr_frame_input_validate()` checks structural
-input. Private `VkrPreparedFrame` holds derived temporal, exposure, bloom and GTAO
-values alongside the borrowed input; those derived fields and text mutations are
-absent from the public frame input.
+Frame-input version 40 contains frame metadata, camera/lighting/settings and typed
+world, shadow, skybox, baked diffuse-volume, rectangle-light, analytic-fog and
+froxel-fog, UI, editor, picking and debug payloads. Supplied world-text and UI
+streams are authoritative. `vkr_frame_input_validate()` checks structural input.
+Private `VkrPreparedFrame` holds derived temporal, exposure, bloom, GTAO, SSR,
+analytic-fog and froxel-fog values alongside the borrowed input; those derived
+fields and text mutations are absent from the public frame input.
 
 Arrays remain caller-owned until rendering returns. Retained assets use generation
 identities and completion-protected storage. Acquisition precedes input validation;
@@ -173,7 +184,8 @@ persistent lifetime. The renderer owns neither resource-loader registration nor 
 
 
 `VkrWorld` owns archetype ECS state and queries. `VkrScene` adds hierarchy,
-transforms, resource references, lights, environment/probes, text and render IDs.
+transforms, resource references, punctual and rectangle lights, environment/probes,
+one scene-owned baked diffuse-volume binding, analytic fog, text and render IDs.
 glTF nodes retain local matrices, names and source identities; source geometry is
 shared across node instances, with decal variants where world-offset corrections
 differ. Cooked mesh v17 retains the same source hierarchy. Source fingerprints
@@ -271,7 +283,11 @@ transient aliasing is absent.
 History owners select completed compatible instances. `RETAINED` image contents
 have per-instance, per-subresource validity, seeded from submitted terminal state
 and committed only after successful submit. Invalid retained reads fail graph
-compilation. Cached allocation and `PERSISTENT` are not content proofs.
+compilation. Cached allocation and `PERSISTENT` are not content proofs. Image
+descriptors carry a separate depth dimension for 3D resources; 3D images require
+one layer, one sample and no attachment use. Their history instances retain local
+values that a later camera can reproject, while current-camera integrations remain
+transient.
 
 `IBL.Bake` is an authored uncullable compute pass, but its nested resource
 accesses and barriers remain backend-owned. Uploads and portions of
@@ -288,11 +304,33 @@ post controls and the temporal consumer. The main dataflow is:
    visible rows, and encode Metal ICB or Vulkan indirect-count commands.
 2. Raster opaque/cutout visibility and depth, build HZB, and peel four ordered
    transmission visibility layers.
-3. Resolve the G-buffer, evaluate GTAO, compute HDR lighting, and shade transmission
-   from deepest to nearest. Resolve requested picking, then draw ordinary blend.
+3. Resolve the G-buffer, evaluate GTAO, and compute HDR lighting. When enabled,
+   SSGI writes an isolated direct/emissive source, traces and filters its
+   half-resolution diffuse residual, and composites it outside valid baked-volume
+   cells. Optional profiled surface diffusion gathers the diffuse source before
+   opaque SSR. The graph then traces and composites opaque SSR,
+   injects/reprojects local froxel scattering, integrates the current-camera
+   froxel volume and applies it, then applies analytic fog before the opaque
+   transmission pyramid. Transmission and ordinary blend sample the current
+   integrated volume when froxel fog is enabled. Shade transmission from deepest
+   to nearest, resolve requested picking, then draw ordinary blend.
 4. Reconstruct temporal Scene HDR through portable TAA, selected MetalFX or
    Vulkan FSR 3.1.
 5. Meter exposure, produce/combine bloom, tonemap/FXAA and compose native UI.
+
+Optional profiled surface diffusion uses eight scene-authored RGB distance
+profiles, 32 samples and a 32 internal-pixel radius cap. Two graph-owned RGBA16F
+images hold the diffuse source and composite; the existing texture system owns
+the immutable 8,320-byte profile bank. The offline baker samples the matching
+full-tail surface BSSRDF, including direct and photon irradiance. Native Metal
+integration checks pass; [ADR-068](adr/068-profiled-surface-diffusion.md) owns the
+energy allocation, geometry approximation and evidence limits.
+
+Optional motion blur runs after reconstruction and exposure metering, before
+depth of field and bloom. The separate composites preserve temporal history.
+Motion blur compilation and selected native Metal output/API checks pass under [ADR-067](adr/067-post-reconstruction-motion-blur.md).
+[ADR-066](adr/066-post-reconstruction-depth-of-field.md) records the accepted
+budget, passing Metal checks and native Vulkan evidence limit.
 
 Shadow passes produce directional cascades when their retained reuse proof fails.
 Source topology and submission policy are in
@@ -330,12 +368,63 @@ background or an immutable opaque roughness pyramid. Four layers are the bounded
 production policy; a fifth layer is diagnostic. See
 [ADR-018](adr/018-graph-declared-transmission-feedback.md).
 
+Clearcoat adds independent linear factor/roughness/normal maps,
+a layered GGX response and one graph-owned RGBA8 G-buffer image per target
+image. Coated opaque pixels select the coat for the existing SSR ray/history;
+base reflections retain probes. [ADR-062](adr/062-layered-clearcoat.md) records
+the accepted scope and native evidence limits. Coated diffuse, metal and glass
+share the directional energy allocation in runtime and the offline baker.
+
+Charlie sheen uses a bounded layered response and two rectangle LTC integrals;
+[ADR-063](adr/063-charlie-sheen.md) owns its 256 KiB shared table budget.
+Anisotropic base GGX reflection retains authored tangent direction and adds
+linear direction/strength maps, 6 MiB shared array tables and one RGBA8 axis/
+strength G-buffer per target image. Runtime punctual/rectangle and offline
+reflection share the material convention. Probe IBL and one-ray SSR retain
+scalar-filter approximations; active anisotropy with refraction is rejected.
+[ADR-064](adr/064-anisotropic-ggx-reflection.md) owns the encoding, input subset,
+resource lifetime and measured fit limits.
+
+Thin-sheet diffuse transmission partitions residual base diffuse into front
+reflection and tinted direct backlighting. Material-wide strength/color use
+existing visible-draw/material tables in deferred lighting and SSGI composite;
+there are no new graph images. Opaque/cutout sheets exclude refraction and volume
+thickness. The offline baker samples the opposite Lambert hemisphere without
+changing media. [ADR-065](adr/065-thin-sheet-diffuse-transmission.md) owns the
+runtime indirect-light approximation, shadow policy and evidence limits.
+
+Optional SSGI traces one cosine-weighted ray per nearest covered half-resolution
+receiver from a deterministic 256-phase Hammersley sequence. Its direct source
+contains punctual/rectangle radiance and emission, excluding environment, probes,
+baked diffuse, SSR, fog, and post effects. A 3×3 depth/normal bilateral raw
+filter includes valid misses as zero samples before completion-gated temporal
+filtering. SSGI uses a completed color/depth/identity tuple only; a shared TAA
+motion predecessor that is still in flight causes a current-frame fallback.
+Composite applies the diffuse residual before SSR and excludes valid baked-volume
+cells. It remains optional and disabled by default; [ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md)
+owns its storage and evidence limits.
+
+Offline texture mips use linear-light sRGB color filtering and area-weighted
+footprints that retain odd source edges. Alpha and non-sRGB channels remain
+linear. Repacking invalidates the former byte-box cooker identity. Explicit
+cutout color jobs additionally use alpha-weighted RGB and per-mip alpha scaling
+against the supplied material cutoff/factor. glTF MASK import generates and
+references variants keyed by source content and material policy; equal recipes
+share outputs. Materials with non-unit vertex alpha retain ordinary filtering.
+Compatible glTF normal/MR inputs now receive paired recipe variants that retain
+full normal moments and bake lost directional spread into GGX roughness. The
+cooker folds normal strength/roughness factor into the images and publishes
+both references together; factor-only materials gain an MR texture. Matching
+extents, UV0 and sampler constraints, approximation limits and cache ownership
+are recorded in [ADR-012](adr/012-texture-compression-pipeline.md).
+See [ADR-012](adr/012-texture-compression-pipeline.md).
+
 Punctual lighting uses a stable 128-light table and 384-cell fragment-local
 bitmask grid with exact range/cone rejection. Up to 16 ready probes contribute
 fragment-space AABB weights. Directional lighting samples CSM. Point/spot shadows use a separate
 16-face, 1024-squared depth pool per physical target image, with one face per
-spot and six per point. Stable light order allocates complete groups; excess
-lights remain unshadowed. Every selected local view redraws each frame, with
+spot and six per point. Importance selection retains complete groups; excess
+lights remain unshadowed. Static maps retain valid contents across frames, with
 nine-tap PCF and point taps remapped across faces. Scene `casts_shadow` and the
 editor's Cast shadows checkbox require a finite range. Imported glTF point/spot
 lights default to casting shadows when their range is finite and positive and
@@ -345,14 +434,86 @@ JSON lights remain opt-in. Light ranges,
 probe bounds and GTAO do not establish arbitrary wall/furniture occlusion.
 See [ADR-019](adr/019-bounded-forward-spatial-lighting.md).
 
+Direct and environment lighting share height-correlated Smith GGX and an immutable
+256×256 RG16F DFG. A per-surface energy record scales specular and reserves residual
+energy for diffuse and transmission. [ADR-053](adr/053-energy-compensated-ggx.md)
+owns the approximation and native evidence limits.
+
+Scenes also support at most eight authored one-sided rectangular lights, including
+disabled entries. The lighting system publishes a render-ID-sorted table; a frame
+borrows it, and each backend packs 64-byte center/basis/radiance/color rows. Two
+immutable 64×64 RGBA16F LTC tables occupy 64 KiB per renderer. Runtime LTC has no
+area-shadow pass, while the offline baker traces rectangle visibility and transport.
+[ADR-056](adr/056-rectangular-ltc-lights.md) owns authoring, lookup lifetime,
+baker transport and native-evidence limits.
+
+Scene-captured reflection probes persist as portable one-mip RGBA16F KTX2 assets.
+The offline baker captures six scene-linear views and records source provenance;
+normal scene loading uploads the cube and prepares SH/prefilter once. Ready local
+probes work without a global environment. Local-shadow selection maximizes bounded
+brightness/coverage scores with 15% incumbent preference under the 16-face budget.
+Per-target maps reuse submitted static contents only while revisions and complete
+light groups match; overlapping dynamic casters force their groups to redraw.
+[ADR-019](adr/019-bounded-forward-spatial-lighting.md) owns these policies.
+
 HDR source conversion, skybox and GGX prefilter use cubemaps. Diffuse lighting
 uses nine GPU-resident L2 coefficients for `E/pi`, with a black sentinel and
 completion-safe replacement slots. IBL bake work is not fully graph-declared.
 See [ADR-016](adr/016-hdr-environment-format.md) and
 [ADR-038](adr/038-sh-l2-diffuse-irradiance.md).
 
+An enabled scene atmosphere replaces the global HDR source with a sky baked at
+an authored observer altitude. Two renderer-owned RGBA16F LUTs occupy 136 KiB;
+source, GGX prefilter, SH and attenuated sunlight publish together after GPU
+completion. A settings revision prepares a distinct candidate while the prior
+generation remains active. Camera motion does not rebake. Source RGB excludes
+the direct sun disc; sky evaluation adds its alpha coverage times the same
+published solar radiance that drives the direct-light and shadow policy.
+[ADR-058](adr/058-revision-baked-sky-atmosphere.md) owns the model, numerical domain,
+publication and offline-baker integration status.
+
+A scene may load one immutable baked diffuse-volume texture. The 8-by-probe-count
+RGBA32F texture stores seven packed `E/pi` SH vectors and room/cell metadata; the
+scene owns it and completion-retires replacement or reset. A validated cell proves
+all eight trilinear probes share a room before their response replaces global/probe
+diffuse indirect light. It never replaces specular IBL, and existing ambient
+occlusion remains active. Invalid or uncovered cells keep the global/probe diffuse
+fallback. [ADR-054](adr/054-baked-diffuse-volumes.md) owns offline room detection,
+artifact layout, lifetime and evidence limits.
+
+Opaque SSR runs before transmission under
+[ADR-055](adr/055-screen-space-reflections.md). The accepted half-resolution
+path has a separate current-frame hierarchy and reflection history. Metal mirror,
+resize, API-validation and Bistro checks pass; native Vulkan execution remains
+unavailable.
+
+Scenes may author analytic height fog. Frame preparation uploads one 32-byte
+record per frame slot; a zero record bypasses fog. The in-place opaque/sky pass
+runs after SSR and before the opaque transmission pyramid. Transmission fogs only
+new local lobes over already-fogged ordered feedback, and blend retains alpha.
+Fog changes invalidate normal temporal and SSR content. [ADR-057](adr/057-analytic-height-fog.md)
+owns the constants, composition and Metal evidence; native Vulkan execution is
+unavailable.
+
+Froxel volumetric fog is implemented under
+[ADR-059](adr/059-froxel-volumetric-fog.md). The graph reserves frame-slot-count plus two
+completion-gated RGBA16F 3D local-scattering histories and one transient
+RGBA16F integrated volume per frame slot. The current two-slot renderer uses
+six images (10.547 MiB at 1280×720), within the approved three-slot 14.063 MiB budget. Each enabled frame uploads a 928-byte parameter
+record. Metal retains its 512-byte frame root by using froxel fields at bytes 136
+and 216; Vulkan's 592-byte root uses bytes 576, 584 and 588 for the parameter
+address, integrated descriptor and sampler. The contract retains fields through
+byte 799 and appends unjittered current view-projection and jittered inverse
+raster view-projection at bytes 800 and 864. Metal native reflection, API
+validation, lifecycle and numeric captures pass, as do production Vulkan SPIR-V
+and host compilation checks. Native Vulkan execution and bilateral comparison
+remain unavailable, so froxel fog is **UNALIGNED**.
+
 Directional shadows default to four cascades with snapping, fit hysteresis,
-per-target-image reuse and shared PCF/bias units. Static reuse requires guard
+per-target-image reuse and shared PCF/bias units. The nearest two cascades add
+eight-sample PCSS blocker search and at most sixteen filter samples, with an
+authored 0.53-degree sun diameter by default. Farther cascades retain PCF.
+Static reuse requires guard
 containment, matching generations, valid retained layers and a match with the
 common submitted fit; stale physical copies redraw that fit once. Dynamic overlap or
 incomplete publication forces rendering. SDSM and proactive refresh are opt-in;
@@ -384,15 +545,29 @@ Automatic exposure adapts over elapsed time since its selected completed state,
 using a renderer-owned committed exposure clock and a bounded hitch policy.
 Defaults lower exposure at 8 EV/s and raise it at 1 EV/s with a +4 EV upper target
 limit. Exposure, bloom and GTAO have independent frame controls. GTAO's slice
-basis and horizon signs follow view reconstruction and affect indirect diffuse
-only. Direct lighting and the IBL PDF share the unclipped supported GGX lobe.
+basis and horizon signs follow view reconstruction. RGBA8 outputs carry world
+bent normals and visibility: global/probe diffuse uses bent sampling and
+albedo-aware multi-bounce compensation, while baked volumes retain scalar AO.
+A derived visibility cone occludes indirect specular, including SSR replacement.
+Direct-light visibility remains shadow-owned. Direct lighting and the IBL PDF share the unclipped supported GGX lobe.
 See [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)
 and [ADR-042](adr/042-scene-linear-post-processing.md).
 
+AgX is the default display transform; ACES fitted remains selectable. Temperature,
+tint, contrast and saturation apply after exposure and before the transform, leaving
+metering and scene-linear history unchanged. Neutral grading bypasses its arithmetic.
+[ADR-043](adr/043-presentation-dpi-and-color-transfer.md) owns the display contract.
+
 ## Presentation and platform boundaries
 
-Windows uses Per-Monitor V2 physical client pixels. Final shaders emit linear RGB
-into sRGB attachments; UI/text authored colors decode once before linear blending.
+Optional EDR/scRGB presentation is implemented under
+[ADR-061](adr/061-extended-linear-display-output.md). A window-owned display
+snapshot feeds backend output selection and a 16-byte final/UI parameter
+record. Metal output and transition checks pass; native Windows/Vulkan evidence
+remains unavailable. Offscreen output stays SDR.
+
+Windows uses Per-Monitor V2 physical client pixels. SDR final shaders emit linear
+RGB into sRGB attachments; UI/text authored colors decode once before linear blending.
 The frame's `image_sharpness` control is finite in `[0,1]`, with zero as an exact
 bypass. The sample initializes it to 0.25; zero-initialized packet callers and
 harness cases default to zero. A shared, neighborhood-limited sharpening filter
@@ -589,11 +764,37 @@ These are limits of current code or retained acceptance, not scheduled promises:
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, terrain, a general effects system, asynchronous graph
   queues and fully graph-declared IBL baking are not production features.
-- Clearcoat, sheen, arbitrary indirect-light occlusion, meshlets,
-  automatic mesh LOD and shader hot reload are absent.
+- Baked diffuse volumes have CPU room classification, multi-bounce and glass
+  transport, portable assets, scene loading and Metal execution. Native Vulkan
+  execution remains unavailable; see [ADR-054](adr/054-baked-diffuse-volumes.md).
+- Charlie sheen is implemented below clearcoat in runtime and offline lighting.
+  Its two-component rectangle fit retains measured errors for dim tilted lights;
+  [ADR-063](adr/063-charlie-sheen.md) records those approximation limits and the
+  unavailable native Vulkan comparison.
+- Profiled surface diffusion is a planar surface approximation. Nearby folded or
+  stacked sheets of one object/profile can exceed its normalized area budget; it
+  does not model finite-solid transmission. Runtime support is screen-space and
+  bounded, and extreme source irradiance truncates at the half-float limit. Native
+  Vulkan execution remains unavailable; see
+  [ADR-068](adr/068-profiled-surface-diffusion.md).
+- Arbitrary indirect-light occlusion outside valid baked-volume
+  coverage, meshlets, automatic mesh LOD and shader hot reload are absent.
 - Native source exists for both backends, but same-revision crossed transmission,
   visibility/packed geometry, punctual lighting, shadow-transition, tonemap,
   UI/text color/coverage/picking and mixed-DPI evidence remains incomplete.
+- The Graphics Settings and nine-recipe Bakery integration is source-integrated.
+  Settings CPU oracles pass two round trips, twenty invalid/default and
+  dependency cases, restart/live classification, and missing-file handling;
+  the process-group cancellation oracle also passes. Release and Debug wrappers
+  pass without cooking log entries; a third Release editor-wrapper pass also
+  passes, and all four shared-table SHA-256 values remain unchanged. A native
+  macOS Graphics check passes with exit code 0, covering the sole Graphics menu
+  item, all five left tabs, right pane, live controls, persisted values, Restore
+  defaults, and the display Vsync restart notice. Bakery UI coverage passes the
+  GGX Done/exit-0 `DFG unchanged` result and cancelled anisotropy job with no
+  cooker descendants; final UI opacity coverage also passes. Windows
+  UI/process-tree behavior and native Vulkan acceptance remain unavailable; see [ADR-027](adr/027-immediate-mode-grid-ui.md)
+  and the [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md).
 - Near-degenerate barycentric rejection and zero interpolated tangent handedness
   still have different native edge policies, recorded in ADR-044.
 - SH needs deterministic GPU projection fixtures, local-probe quality review,

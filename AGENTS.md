@@ -107,12 +107,15 @@ harness case or existing check is insufficient or more expensive. Tests that
 mirror implementation, mock the renderer into success or assert source wording
 provide no acceptance evidence. `vkr-validation` owns the selection rules.
 
-Use the repository build wrappers; they own shader compilation and asset cooking.
+Use the repository build wrappers; they compile shaders and cooker tools but do
+not run asset cooking. Bakery or an explicit cooker wrapper owns artifact
+generation and publication.
 `./build_release.sh` builds the Release app and `vkr_harness`.
 `./build.sh Debug` and `./build_editor.sh Release` select app/editor builds.
 `./build_test.sh` builds and runs the CPU suite only when justified;
 `./build_test_batch.sh` repeats it for a concrete intermittent failure.
-Core wrappers have `.bat` counterparts; POSIX execution does not validate them.
+Build wrappers have `.bat` counterparts; POSIX execution does not validate them.
+Do not add cooking, packing, or baking side effects to a build wrapper.
 
 Use normal Release with graphics validation variables unset for snapshots,
 baselines and performance. Debug, sanitizers and API/GPU validation diagnose a

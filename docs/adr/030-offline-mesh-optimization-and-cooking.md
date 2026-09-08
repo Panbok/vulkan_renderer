@@ -34,6 +34,19 @@ paths produce a sibling `.vkb`. Mesh jobs always rebuild; they do not claim the
 incremental checks used by the font and texture cookers. Loading the result still
 passes through the existing cooked-artifact validation and scene reload boundary.
 
+glTF MASK materials with unit vertex alpha receive material-specific base-color
+`.vkt` variants during cooking. The importer supplies cutoff and base-color
+alpha factor to the shared texture-cooking library, then publishes the material
+reference after texture success. Equal source/policy recipes share outputs;
+generated texture contents participate in mesh dependency hashing. The
+[texture decision](012-texture-compression-pipeline.md) owns filtering, cache
+identity and unsupported-input limits. This work runs within the mesh-cooker
+process, preserving Bakery cancellation ownership. Compatible glTF normal/MR
+inputs use the same library to publish paired material recipes, including
+factor-only roughness and compatible prepared specular-glossiness inputs. Both
+texture files join mesh dependency hashing before the new material paths and
+folded factors are emitted.
+
 Cooked version 17 stores original glTF node indices, names, parent links, exact
 local matrices, selected-scene membership, source mesh spans, punctual lights,
 camera/skin references, animation count and a source-content fingerprint.

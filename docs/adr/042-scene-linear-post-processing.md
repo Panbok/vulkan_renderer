@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-08
 authority: adr
 ---
 
@@ -45,13 +45,31 @@ chain; firefly saturation and boundaries remain nonlinear limits of the DC rule.
 
 GTAO uses current-frame depth and normals before deferred lighting. A dedicated
 positive-view-depth R16 pyramid feeds full-resolution three-slice/three-step
-horizon evaluation, separate raw R8 visibility and edge data, and an edge-aware
-3x3 denoise. A white fallback disables the effect without per-light branching.
+horizon evaluation and an edge-aware 3x3 denoise. Raw and denoised outputs are
+RGBA8: RGB encodes a world-space bent normal, and alpha holds scalar visibility.
+The existing R8 edge image remains separate. The graph owns these transient
+images per in-flight image; replacing two R8 outputs adds 5.27 MiB at 1280x720,
+or 15.82 MiB across three image sets. Pass scheduling and sample counts stay fixed.
 Depth-pyramid horizon samples use nearest texel and nearest mip filtering.
 Slice directions use the signed view-space pixel scale, including projection Y,
 and the positive/negative horizon bounds share the integration sign convention.
-It multiplies indirect diffuse after material AO; direct and specular terms keep
-their separate policies. It is not reused HZB history or general wall visibility.
+The denoiser averages decoded directions and visibility before normalizing and
+repacking. Lighting blends the bent direction toward the shading normal as
+visibility approaches one. Full visibility preserves the original lighting,
+including the disabled fallback, for every reflection direction.
+
+Global/probe diffuse uses the bent normal and albedo-aware multi-bounce AO fit,
+multiplied by independent material AO. This fit compensates local missing energy;
+it does not compute scene-wide light transport or color bleeding. Baked diffuse
+volumes retain their shading-normal SH lookup and scalar AO because their bake
+already includes multiple bounces. Indirect specular, including SSR replacement,
+uses a visibility cone derived from alpha and an approximate spherical-cap
+intersection with the rough reflection lobe. The practical near-mirror fade
+limits this approximation. Environment and SSR receiver weights apply the same
+cone factor once; authored IBL gain remains specific to environment lighting.
+Direct lighting keeps its shadow visibility. GTAO is not reused HZB history or
+general wall visibility. Raw/denoised capture schema version 2 records the RGBA
+directional tuple as data, without a color-transfer interpretation.
 
 Automatic exposure, bloom and GTAO are enabled by production initialization.
 Authored graph conditions and packet globals retain isolated bypasses and direct
@@ -63,10 +81,21 @@ Effects have observable inputs and independent controls. Pixel equivalence,
 quality acceptance and GPU cost still require matched cases on each backend;
 enabling effects is a workload change.
 
+The Release Metal corner fixture verifies that bent normals point away from a
+nearby wall and that diffuse/specular lighting follows the captured tuple
+(maximum HDR error 0.000960297 across 34 samples). Disabling GTAO preserves the
+previous fixture's HDR bytes. A mirror fixture exercises non-neutral SSR cone
+attenuation, with maximum HDR error 0.002351667 across 15 interior samples.
+A directional-SH volume fixture verifies scalar AO across 201,629 covered
+pixels (maximum HDR error 0.0002432). Bistro at 1280x720 completes with finite HDR output. Focused Metal API validation
+and production Vulkan SPIR-V validation pass; native Vulkan execution and
+bilateral output comparison remain unavailable. These checks establish local
+behavior, not a frame-time claim.
+
 ## Alternatives considered
 
-Pre-exposing temporal history couples adaptation to reconstruction. AO on all
-lighting darkens direct/specular terms incorrectly. Reusing stale HZB as current
+Pre-exposing temporal history couples adaptation to reconstruction. Scalar AO on all
+lighting darkens direct lighting and cannot model directional specular occlusion. Reusing stale HZB as current
 GTAO depth changes the input contract.
 
 ## Revisit when

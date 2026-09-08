@@ -1,0 +1,7 @@
+packet.fog_apply.comp.spv sha256=93eca1f87242808a02d00707ab1a776a10244ffdcd428b7bb893627cde252554 root=128 params=32 offsets=0,32,96,112,116,120 push=16
+packet.world.frag.spv sha256=5631ab35397df778c37c0bee336219bc54d9204ee91a31b3691c07a54d5af1d0 frame=576 ltc=560 fog=568 params=32 draw=48@frame24
+packet.world.temporal.frag.spv sha256=9d94addc0f6649ab832d00c0bb27c5d458ba82b64c8c41f4db40cef94a8c3e2b frame=576 ltc=560 fog=568 params=32 draw=48@frame24
+packet.transmission_shade.comp.spv sha256=6c308923fd539a99d666a1fc269ea9c04084effd3155786efb32cb741d28a742 frame=576 ltc=560 fog=568 params=32 draw=none
+packet.world.vert.spv sha256=25f5518d0957083227cc6e696d56439b060a42265de90d854221e45b0e7bdfdc frame=576 ltc=560 fog=568 params=32 draw=48@frame24
+packet.world.temporal.vert.spv sha256=c11068380d0c7d5ddeb93f1ecfb7715d71b7f59492f01021c518efc066b2ce77 frame=576 ltc=560 fog=568 params=32 draw=48@frame24
+Fog emitted SPIR-V layouts and validation: PASS

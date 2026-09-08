@@ -32,17 +32,17 @@ Vulkan execution for this split has not been run.
 
 The app and editor are separate executables using `vkr_runtime` and
 `vkr_sample_runtime`.
-Build through the repository wrappers, which compile shaders and asset cookers.
-Bakery runs mesh, font and texture cooker jobs:
+Build through the repository wrappers, which compile shaders and cooker tools
+without running cooking. Bakery owns mesh, font, texture, BRDF/table,
+reflection/probe, and diffuse-volume jobs:
 
 ```sh
 ./build_release.sh
 ./build_editor.sh Release
 ```
 
-After building the mesh cooker, regenerate mesh artifacts with
-`VKR_MESH_COOKER_BIN=./build_release/tools/vkr_mesh_cooker ./tools/cook_vkr_meshes.sh`.
-This also produces the main Bistro artifact with its scene-specific light
+When artifact regeneration is required, run Bakery or invoke the explicit
+cooker wrapper. The main Bistro artifact includes its scene-specific light
 ranges; runtime mesh loading accepts `.vkb`, not source OBJ/glTF/GLB. Small
 tracked harness scenes use cooked fixtures under `tests/fixtures/rendering`.
 
@@ -104,7 +104,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [039](adr/039-metal-internal-render-scale.md) | Separate internal Scene and physical output extents | implemented |
 | [040](adr/040-metalfx-temporal-dynamic-resolution.md) | MetalFX temporal reconstruction and completed-GPU scale control | implemented |
 | [041](adr/041-retained-cascaded-shadows.md) | Stable fits and retained directional shadow cascades | implemented |
-| [042](adr/042-scene-linear-post-processing.md) | Scene-linear exposure with completed-history time, bloom and ambient visibility | implemented |
+| [042](adr/042-scene-linear-post-processing.md) | Scene-linear exposure with completed-history time, bloom and directional ambient visibility | implemented |
 | [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation, color transfer and image sharpness | implemented |
 | [044](adr/044-shader-cross-backend-contract.md) | Portable shader semantics with native ABI validation | implemented |
 | [045](adr/045-resource-prepare-and-render-thread-finalize.md) | Worker preparation and render-thread resource finalization | implemented |
@@ -112,6 +112,23 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [047](adr/047-event-payload-and-resize-mailbox-lifetimes.md) | Event callback payload lifetime and coalesced resize handoff | implemented |
 | [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs, crash diagnostics and reviewed capture baselines | implemented |
 | [052](adr/052-vulkan-fsr31-upscaling.md) | Vulkan FSR 3.1 temporal upscaling | implemented |
+| [053](adr/053-energy-compensated-ggx.md) | Correlated Smith GGX and shared energy integration | implemented |
+| [054](adr/054-baked-diffuse-volumes.md) | Offline multi-bounce diffuse volumes and runtime spatial diffuse lookup | implemented |
+| [055](adr/055-screen-space-reflections.md) | Bounded opaque SSR with independent history and probe fallback | implemented |
+| [056](adr/056-rectangular-ltc-lights.md) | One-sided rectangular LTC emitters, runtime lookup and baker transport | implemented |
+| [057](adr/057-analytic-height-fog.md) | Analytic scene-linear height fog with ordered transmission composition | implemented |
+| [058](adr/058-revision-baked-sky-atmosphere.md) | Revision-baked sky and global IBL with unified sun | implemented |
+| [059](adr/059-froxel-volumetric-fog.md) | Bounded volumetric fog with independent scattering history | implemented |
+| [060](adr/060-screen-space-diffuse-indirect-lighting.md) | Independent optional SSGI with direct/emissive source and bounded history | implemented |
+| [061](adr/061-extended-linear-display-output.md) | Optional EDR/scRGB output with OS headroom and SDR fallback | implemented |
+
+| [062](adr/062-layered-clearcoat.md) | Independent clearcoat maps, layered GGX and coat-priority SSR | implemented |
+| [063](adr/063-charlie-sheen.md) | Charlie sheen, bounded energy and shared rectangle tables | implemented |
+| [064](adr/064-anisotropic-ggx-reflection.md) | Anisotropic GGX reflection, directional tables and material transport | implemented |
+| [065](adr/065-thin-sheet-diffuse-transmission.md) | Thin-sheet diffuse backlighting and offline transport | implemented |
+| [066](adr/066-post-reconstruction-depth-of-field.md) | Optional post-reconstruction lens blur | implemented |
+| [067](adr/067-post-reconstruction-motion-blur.md) | Optional camera and rigid-object shutter blur | implemented |
+| [068](adr/068-profiled-surface-diffusion.md) | Optional RGB surface diffusion and offline transport | implemented |
 
 ## Proposals
 
@@ -126,6 +143,7 @@ decisions before dependent implementation.
 | [Deformable scene effects](proposals/deformable-scene-effects.md) | A bounded deformation pilot with shared pass and history inputs. |
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
 | [Graph-owned IBL baking](proposals/graph-owned-ibl-baking.md) | Declare queued bake resources and dependencies in the graph. |
+| [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md) | Pending Windows/Vulkan native, cooker, presentation, temporal, and editor acceptance checks. |
 | [Static-scene batching](proposals/static-scene-batching.md) | Evaluate static geometry merging against current GPU draw preparation. |
 | [Terrain rendering](proposals/terrain-rendering.md) | Terrain data, tile ownership, LOD, and existing draw-path integration. |
 | [Visibility-buffer MSAA](proposals/visibility-buffer-msaa.md) | Multisample visibility and resolve after a demonstrated quality need. |

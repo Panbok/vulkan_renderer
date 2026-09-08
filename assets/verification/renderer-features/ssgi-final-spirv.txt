@@ -1,0 +1,72 @@
+# SSGI Release SPIR-V and Metal source review
+
+Scope: generated Release artifacts only. No shader build or GPU execution was run.
+
+## Commands
+
+```sh
+spirv-dis --raw-id build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv -o /tmp/packet.ssgi_depth_base.comp.spvasm
+spirv-dis --raw-id build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv -o /tmp/packet.ssgi_depth_mip.comp.spvasm
+spirv-dis --raw-id build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv -o /tmp/packet.ssgi_trace.comp.spvasm
+spirv-dis --raw-id build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv -o /tmp/packet.ssgi_temporal.comp.spvasm
+spirv-dis --raw-id build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv -o /tmp/packet.ssgi_composite.comp.spvasm
+spirv-dis --raw-id build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv -o /tmp/packet.deferred_lighting.comp.spvasm
+for f in build_release/renderer/generated/vulkan/packet.ssgi_*.comp.spv \\
+         build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv; do
+  spirv-val --relax-block-layout "$f"
+done
+shasum -a 256 <each module> build_release/renderer/metal/library.metal \
+  build_release/renderer/metal/library.slang.metal \
+  .scratch/renderer-improvements-ssgi-spatial-release.log
+```
+
+All six `spirv-val --relax-block-layout` commands passed. Every module declares
+`PhysicalStorageBufferAddresses` and `SPV_KHR_physical_storage_buffer`; the
+composite natural root has its final reserved member at byte 404, so default
+`spirv-val` rejects it for standard storage-buffer alignment. The relaxed-layout
+mode is required for this generated physical-storage representation.
+
+## SPIR-V entries and roots
+
+| Module | Entry point | Root stride | Member layout proved by `OpMemberDecorate` |
+| --- | --- | ---: | --- |
+| `ssgi_depth_base` | `ssgi_depth_base_compute` | 304 | params 0; depth/vbuffer/pyramid 288/292/296; reserved 300 |
+| `ssgi_depth_mip` | `ssgi_depth_mip_compute` | 32 | source/destination 0/4; source extent 8; destination extent 16; reserved 24 |
+| `ssgi_trace` | `ssgi_trace_compute` | 320 | params 0; depth/vbuffer/normal/albedo/pyramid/direct source/raw 288/292/296/300/304/308/312; reserved 316 |
+| `ssgi_temporal` | `ssgi_temporal_compute` | 368 | params 0; visible rows/instances 288/296; raw through output identity 304..348; sampler 352; reserved 356 |
+| `ssgi_composite` | `ssgi_composite_compute` | 416 | params 0; frame/pad 288/296; inverse VP 304; HDR/history/vbuffer/depth/albedo/normal/history-depth/specular/sampler 368..400; reserved 404 |
+| `deferred_lighting` | `vk_deferred_lighting` | 160 | appended direct-source texture 144; `ssgi_enabled` 148; `ssgi_reserved` 152 |
+
+`VkrSsgiParams_natural` is 288 bytes in all parameterized modules. Its members
+are projection/inverse/view at 0/64/128; dimensions at 192..204; depth-mip,
+steps, history-valid, phase at 208/212/216/220; thickness/max-distance/
+normal-bias/edge-fade at 224/228/232/236; temporal values 240..252;
+previous-projection scalars 256..268; trace texel/extent scalars 272..284.
+This proves the SSGI-only `sample_phase@220` and `normal_bias@232` fields.
+
+## Metal generated source review
+
+`build_release/renderer/metal/library.metal` contains all five Metal entries:
+`vkr_metal_packet_ssgi_depth_base`, `_depth_mip`, `_trace`, `_temporal`, and
+`_composite`, each with `[[buffer(0)]]`. Its generated `VkrSsgiParams` has the
+same 288-byte field sequence above. The emitted deferred root preserves
+`solar_disk_radiance`, then appends `direct_source`, `ssgi_enabled`, and
+`ssgi_reserved`; it asserts a 192-byte Metal root. The five emitted native
+root declarations match the host reflection records: 320, 320, 352, 400, and
+448 bytes. The Release wrapper reported PASS in
+`.scratch/renderer-improvements-ssgi-spatial-release.log`; this review did not
+re-run native execution.
+
+## SHA-256
+
+```text
+98123dc3a72d53f28de71ea244a9135f91ba52d0dacd3ef4b78cc28f2aa737f1  packet.ssgi_composite.comp.spv
+6bb0e0a253dac5d3cd10da649821174c8c8b0f7b5fe21fe088de6c0dbaa7a41f  packet.ssgi_depth_base.comp.spv
+0cb4f8df1075b9126af8b04536ea2555ca7886d1cdac84181e14e697d9f6394c  packet.ssgi_depth_mip.comp.spv
+3843e7117192363d183cc30fbaec63398f7f3cfd00fb2c82b9bb4894ad37400b  packet.ssgi_temporal.comp.spv
+98ea8e9a22b5ee39ea08968dbe529c2764769fa9b1f4a351da9a45cb5d573df9  packet.ssgi_trace.comp.spv
+0c1147f33b5b9c8675d52b58b81986599d6a45546d65af7e5a71a7b558c1d827  packet.deferred_lighting.comp.spv
+79b8b0995ce4e7a6ed5c5005683b3da2c9d6a318a774bd6c660a40d8b7b5b043  renderer/metal/library.metal
+8895c4701edf81918566fb83a110c276b422a8325b6d7e5d2d96ff75288e5355  renderer/metal/library.slang.metal
+6be1d9c9e28f33dcc8450768c097bbe4fb6d2326aafcacdf9d5dd366eed0cb63  renderer-improvements-ssgi-spatial-release.log
+```

@@ -1,0 +1,6 @@
+packet.atmosphere_transmittance.comp.spv sha256=c727dfbcfa13d3cf4f1ca512023038ef37ae255be35a82656068a76d98cd4eba params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
+packet.atmosphere_multiple_scattering.comp.spv sha256=24c3310fd84b2de549fb2b3e80a706cb6fc751f971a9b09e2f775943fdb1ea10 params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
+packet.atmosphere_source.comp.spv sha256=1a6bd870c2295c9413c034177420e64bf8d7aca823a181a65131d16006d23fa3 params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
+packet.atmosphere_sun.comp.spv sha256=70c49590a38d92369a380cbf9ffada8f365d39c1469538246f43c9e929e07c2a params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
+packet.deferred_lighting.comp.spv sha256=d7e8c5ccf4aabbefab96a3ede4d9958b0f4ad3b2cddd6b00521a61acd6536a25 root=144 solar_disk_radiance=128 push=16
+Atmosphere/deferred emitted SPIR-V layout and validation: PASS
