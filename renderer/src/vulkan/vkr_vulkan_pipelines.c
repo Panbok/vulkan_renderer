@@ -1363,6 +1363,7 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, source_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, destination_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, clearcoat_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, source_sampler),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, reserved),
   };
   static const VkrVulkanReflectedField ssr_temporal_fields[] = {

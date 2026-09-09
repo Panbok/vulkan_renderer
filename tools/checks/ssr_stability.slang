@@ -278,4 +278,17 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         0.5f, 0.5f, float2(.025f), 1.0f, uint2(10u)).accepted);
     g_results[126] = vkr_ssr_reconstruction_grid_weight(float2(1.5f, 0), .3f);
     g_results[127] = vkr_ssr_reconstruction_grid_weight(float2(.5f), .04f);
+    params.source_width = 100u;
+    params.source_height = 50u;
+    params.roughness_cutoff = .6f;
+    float2 fractional_hit = float2(.40625f, .3125f);
+    float2 cone_right = vkr_ssr_hit_filter_uv(fractional_hit, .6f, 1u, params);
+    float2 cone_up = vkr_ssr_hit_filter_uv(fractional_hit, .6f, 4u, params);
+    g_results[128] = cone_right.x;
+    g_results[129] = cone_up.y;
+    float2 mirror_hit = vkr_ssr_hit_filter_uv(fractional_hit, .04f, 0u, params);
+    g_results[130] = mirror_hit.x * 100.0f - .5f;
+    float2 moved_hit = vkr_ssr_hit_filter_uv(fractional_hit + float2(.001953125f, 0),
+                                           .04f, 0u, params);
+    g_results[131] = (moved_hit.x - mirror_hit.x) * 100.0f;
 }

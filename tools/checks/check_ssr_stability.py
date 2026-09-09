@@ -54,7 +54,7 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             .95, .85, .90, .85, 0, .5,
             0, (1-.01/.041)/2, .1, .5,
             5, 5, 5, .6, 21.2, 20, 22, .6,
-            1, 0, 0, .25]
+            1, 0, 0, .25, .44625, .2325, 40.125, .1953125]
 assert len(actual) == len(expected), actual
 for i, (got, want) in enumerate(zip(actual, expected)):
     assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
@@ -89,3 +89,5 @@ print('SSR separated/near receivers, preserved SSGI, 2cm floor:', actual[112:116
 print("Shaded history, exact probe removal, miss/full coverage:", actual[116:124])
 
 print("Full/half history bounds and entering reconstruction taps:", actual[124:128])
+
+print("Fractional cone offsets and subpixel mirror movement:", actual[128:132])

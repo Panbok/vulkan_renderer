@@ -823,7 +823,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTraceRoot {
   uint32_t source_texture;
   uint32_t destination_texture;
   uint32_t clearcoat_texture;
-  uint32_t reserved[3];
+  uint32_t source_sampler;
+  uint32_t reserved[2];
 } VkrVulkanSsrTraceRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTemporalRoot {
@@ -1629,7 +1630,9 @@ _Static_assert(sizeof(VkrVulkanSsrDepthBaseRoot) == 304u,
 _Static_assert(sizeof(VkrVulkanSsrDepthMipRoot) == 32u,
                "SSR depth-mip root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrTraceRoot) == 336u &&
-                   offsetof(VkrVulkanSsrTraceRoot, clearcoat_texture) == 320u,
+                   offsetof(VkrVulkanSsrTraceRoot, clearcoat_texture) == 320u &&
+                   offsetof(VkrVulkanSsrTraceRoot, source_sampler) == 324u &&
+                   offsetof(VkrVulkanSsrTraceRoot, reserved) == 328u,
                "SSR trace root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrTemporalRoot) == 400u &&
                    offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 364u &&

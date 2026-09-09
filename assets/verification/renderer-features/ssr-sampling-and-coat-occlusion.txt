@@ -1,0 +1,168 @@
+SSR source sampling, coat occlusion and HDR diagnostics — 2026-09-09
+
+Scope
+Starts from 94245722 on main. These are bounded corrections to the approved
+reflection and indirect-specular policy, not proof of flicker-free Bistro.
+No additional rays, images, history instances or GPU allocation. Native Vulkan
+execution is unavailable on this macOS host; no bilateral parity claim or baseline
+promotion. Existing vendor/ktx-software modifications are unrelated and preserved.
+
+Implementation
+Vulkan trace now linearly samples fractional HDR hit coordinates and cone offsets
+instead of flooring the hit and rounding offsets for point loads. Both backends
+use vkr_ssr_hit_filter_uv. Mirror 1 / rough 5 logical taps, maximum 4 source-pixel cone
+radius, half-resolution rays and 48 traversal decisions remain. The renderer-owned
+linear-clamp transmission sampler stays alive until renderer teardown. Its
+existing descriptor index occupies trace-root offset 324; reserved starts 328 and
+total Vulkan trace root remains336 bytes. Shared parameters 288 unchanged.
+
+Deferred opaque coat IBL and exact SSR probe subtraction use the same coat-directed
+GTAO cone and packed coat roughness. Bent direction is decoded against the prepared
+view-facing coat normal. Metal formerly reused the base cone; Vulkan omitted
+coat occlusion. Temporal uses its filtered coat roughness and now evaluates the
+cone after the same view-facing normal orientation. No new helper or allocation.
+Coated composite skips unused base variance filtering: Metal removes 4 texture
+reads; Vulkan removes 6 base/specular/variance reads and adds 1 GTAO sample (net -5).
+These are logical shader accesses, not measured GPU speed or physical fetches.
+
+The existing hdr_pre_bloom channel now selects metalfx_output_color when MetalFX
+is enabled. It remains raw scene-linear RGBA16_FLOAT_LE version 2. scene_color
+is separately display-converted PNG, not numeric HDR. Portable temporal modes
+continue selecting temporal_history_color. No new channel or production image.
+
+Verification
+./build_release.sh
+python3 tools/checks/check_ssr_stability.py
+Pass: production Metal/Slang compilation and 132 shared math values, including
+fractional coordinates/offsets and 0.1953125 source-pixel motion. The four added
+cases detect subpixel quantization independently of a screenshot; a build alone
+cannot establish the fractional math. Inputs use binary-exact fractions to keep
+the existing 1e-6 tolerance meaningful (an initial 39.6 result differed by float
+rounding 1.5e-6; no production defect or tolerance relaxation).
+
+spirv-val --target-env vulkan1.4 --scalar-block-layout <each production packet.ssr*.spv, packet.ssgi*.spv and packet.deferred_lighting.comp.spv>
+All 11 pass. spirv-dis packet.ssr_trace.comp.spv shows source_sampler 324 / reserved 328
+and OpImageSampleExplicitLod. Current Release compile_commands.json invocations
+for vkr_vulkan_deferred.c and vkr_vulkan_pipelines.c pass after replacing -c/-o
+with -fsyntax-only. Compiled Metal native root assertions pass. These checks do
+not execute Vulkan descriptors or prove native sampling output.
+
+All captures use:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/CASE --profile tools/profiles/local-offscreen.json
+Normal Release; one renderer at a time. No performance authority is claimed.
+
+Runs
+ssr_bar_stage_diagnostic.case.json
+  build/_artifacts/snapshot/20260909T061347.257Z-000f12/report.json
+  pass; sha256:2a3d2f7d4251d1b8f81edd1ac5a1ebe8754042f1a42ef3dc660b31f53352efda
+ssr_bar_reconstruction_diagnostic.case.json (initial PNG-only diagnostic)
+  build/_artifacts/snapshot/20260909T061757.870Z-006b1b/report.json
+  pass; sha256:9c42966471c5a72205fde80eccb82b4e0a124c5b3dab7eeb63b9967871e4fb61
+ssr_bar_reconstruction_diagnostic.case.json (raw HDR repair)
+  build/_artifacts/snapshot/20260909T062436.216Z-00a4e9/report.json
+  pass; sha256:6dd4133eccfa2747d87bd23b1c873fc1f211e2b6138add3e15af613561b04da4
+ssr_mirror_on_local.case.json (fractional-only)
+  build/_artifacts/snapshot/20260909T063150.124Z-00bed5/report.json
+  pass; sha256:2112bae2068f246daa7d355b26def3f01fb89a949b2f9f54e003303445305c0d
+ssr_bar_settled.case.json (fractional-only)
+  build/_artifacts/snapshot/20260909T063222.485Z-00c179/report.json
+  pass; sha256:87cab30cab310af2444c4bc63bac923cc714e7ebebe6fcccec32714e2bd2c412
+ssr_shaded_layers.case.json (initial coat correction)
+  build/_artifacts/snapshot/20260909T063730.462Z-00e811/report.json
+  pass; sha256:59ddc79539a93fc9c1ac30c07ad208e41c2470831dee74319cd0b71338315048
+ssr_shaded_layers.case.json (final view-facing cone)
+  build/_artifacts/snapshot/20260909T064001.211Z-01173b/report.json
+  pass; sha256:2b3304231c4b63bd20fe48c0b170d17ffa480853777638c6d77aa0ee4e5d8109
+
+Mirror fractional-only check: 696 raw hits, 15 analytic interior samples against
+RGB(.8,.1,.02), maximum error 0.000195313 (same as94245722).
+
+Final layered check:
+python3 tools/checks/check_clearcoat_fixture.py build/_artifacts/snapshot/20260909T064001.211Z-01173b
+Pass: distinct off/aligned/opposed/rough panels, base normal witnesses, green
+transmission, 1521 SSR hits / 209 red; coated-floor 721 hits / 73 red. All 638976 half-float
+tuples finite; history v4 is source resolution with 6595 covered pixels and valid
+confidence. Its preview is ssr-coat-occlusion.png. Sampled aligned/opposed panel
+regions each include 6004 partially occluded pixels; rough region 6003 of 6004. Thus
+GTAO is active rather than an all-visible degenerate input. Existing checker
+needs hdr_post_transmission, now added to the layered case. Applying it to the
+older capture stopped at the missing channel; no failure of material output was
+inferred. The final check includes that channel and passes.
+
+Fractional-only Metal comparison against 94245722
+All eight Bistro jitter/GTAO phases match modulo 64. Outputs are NOT bit-identical:
+71 raw scalar differences, max 0.000934601 / MAE 3.0e-9; 481 pre-transmission scalar
+differences, max 0.00498962 / MAE 1.094e-8. Final RGBA code MAE 0.00974091, max 10.
+Broad counter volatileON pixels 719 -> 727; underbar 196 -> 192. Several hotspot ranges
+are unchanged. Tiny input differences can propagate through temporal history;
+this does not establish a Metal stability improvement or a native Vulkan result.
+
+Residual Bistro diagnosis
+Eight static phases at 1280x720 output, 1025x577 source, MetalFX temporal 0.8, 96 warmup,
+manual exposure 8, GTAO on, SSR on, SSGI/bloom off. Each hdr_pre_bloom capture names
+metalfx_output_color, is 1280x720 RGBA16F with exact byte count, and is finite.
+The matched source HDR/depth diagnostic has zero motion and equal pre/post
+transmission values at all inspected taps. Bilinear input footprints move with
+raster jitter across foreground/background depth near several hotspots. This
+footprint calculation is not a replay of MetalFX's private reconstruction.
+Post-MetalFX HDR already varies before display transform; no incorrect jitter,
+motion sign, reset, pre-exposure or private filter integration was established.
+Do not set preExposure 8: input is unexposed and application exposure comes later.
+Do not disable internal auto exposure on this evidence alone.
+{"pixel": [969, 352], "input_bilinear_red_range": [0.01086046399238159, 0.028523723129182], "input_depth_range_m": [0.7338434760228969, 2.3994899996793015], "metalfx_red_range": [0.0177459716796875, 0.0196380615234375], "final_max_rgb_range": 6}
+{"pixel": [972, 352], "input_bilinear_red_range": [0.007427546506126712, 0.02385834524304473], "input_depth_range_m": [0.7363119430695583, 2.4314873202158664], "metalfx_red_range": [0.01004791259765625, 0.011322021484375], "final_max_rgb_range": 7}
+{"pixel": [825, 247], "input_bilinear_red_range": [0.007145245392974889, 0.03258564447363221], "input_depth_range_m": [1.3696926660415136, 1.5604041224664973], "metalfx_red_range": [0.015716552734375, 0.0186004638671875], "final_max_rgb_range": 8}
+{"pixel": [904, 562], "input_bilinear_red_range": [0.00030764377152084165, 0.010746434403699705], "input_depth_range_m": [1.8239155274769452, 1.9952925336443443], "metalfx_red_range": [0.0006508827209472656, 0.0009822845458984375], "final_max_rgb_range": 5}
+{"pixel": [886, 579], "input_bilinear_red_range": [0.0013578712274061734, 0.005398569252186829], "input_depth_range_m": [1.7325330498885048, 1.890883496102237], "metalfx_red_range": [0.0020923614501953125, 0.002658843994140625], "final_max_rgb_range": 7}
+{"pixel": [548, 244], "input_bilinear_red_range": [0.0047834242901040646, 0.005681042150697776], "input_depth_range_m": [0.8480749729378806, 1.0183862191880986], "metalfx_red_range": [0.00528717041015625, 0.005321502685546875], "final_max_rgb_range": 0}
+{"pixel": [820, 249], "input_bilinear_red_range": [0.0367823809592258, 0.05418901646302804], "input_depth_range_m": [1.3223188966488841, 1.3599288904843088], "metalfx_red_range": [0.041534423828125, 0.04290771484375], "final_max_rgb_range": 2}
+{"pixel": [300, 310], "input_bilinear_red_range": [0.007222821361695731, 0.007862028976281433], "input_depth_range_m": [0.6918827485343632, 0.6937916165938104], "metalfx_red_range": [0.00777435302734375, 0.00791168212890625], "final_max_rgb_range": 1}
+
+The broader reflective-bar goal remains unresolved. These diagnostics localize
+remaining source/reconstruction variation without claiming SSR is uninvolved or
+that the upscaler is defective. Previous full-resolution history visual/cost
+limits remain in ssr-full-resolution-history.txt. Metal shader validation remains
+unavailable after prior MetalTools crashes with SSR both enabled and disabled;
+no new broad validation was attempted.
+
+Final gates
+./build_editor.sh Release
+Pass. Final Release app and editor builds both compile the production changes.
+
+ssr_bar_settled.case.json (final correction)
+  build/_artifacts/snapshot/20260909T064030.196Z-012204/report.json
+  pass; sha256:916ab7b36d98aa29d775c90a8143dde404fde34cd308c77496eb99f2b5bd46b9
+10,642,448 finite half-float tuples; source-resolution version-4 history has valid
+confidence and 435825–436708 covered pixels across eight phases. The final bar
+preview, ssr-current-bar.png, is checkpoint 7. Hotspot ranges remain 6/7/8/5 at
+(969,352)/(972,352)/(825,247)/(904,562). Counter volatileON count 719 -> 723 and
+underbar 196 -> 194. The fixed 86,265-pixel polygon [(0,253),(1107,249),(1080,283),(0,378)]
+has 470 -> 472 pixels varying by more than 3 display codes, direct mean range
+0.571750->0.571657, and mean absolute SSR contribution 0.655572 -> 0.655528.
+These differences do not establish a stability gain; reflection strength remains
+essentially unchanged. The remaining Bistro flicker is unresolved.
+
+clearcoat_local.case.json (GTAO-disabled sentinel)
+  build/_artifacts/snapshot/20260909T064312.711Z-013c7f/report.json
+  pass; sha256:f783d799247425170212b2ee7fc2e4b09c793c4a7cd2c7e47852d7e20d365a50
+python3 tools/checks/check_clearcoat_fixture.py build/_artifacts/snapshot/20260909T064312.711Z-013c7f
+Pass: distinct material witnesses, green transmission, 1397 SSR hits / 86 red;
+coated floor 681 hits / 33 red. Existing 1x1 GTAO fallback remains neutral.
+
+python3 .codex/skills/vkr-docs/scripts/check_links.py docs AGENTS.md .codex/skills
+diff -rq .codex/skills .claude/skills
+git diff --check
+Pass. Code received independent read-only reviews for sampler ownership/ABI,
+capture producer, coat subtraction and temporal view-facing normal orientation.
+
+Retention
+Keep final bar 064030 and portable layered 064001 payloads for further diagnosis
+and future native Vulkan comparison. Keep stage 061347 and raw reconstructed
+HDR 062436 for residual-input diagnosis. Earlier pending cross-machine witnesses
+remain local; no baseline is promoted or deleted. This task's completed initial
+PNG-only diagnostic, fractional mirror/bar, initial coat fixture and disabled-
+GTAO runs can be retired after this record and the previews are retained.
+
+Preview SHA-256
+ssr-coat-occlusion.png 39f6e65e58508e9b945d50139ee2e364754b4cd85057cf5b82521abf549ab528
+ssr-current-bar.png a0d0dc862da9541e34254a376c1e4c6d0c34fe3dcf61d2b2d4dee5a20644d1d9

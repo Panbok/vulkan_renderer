@@ -248,7 +248,8 @@ struct VkrVkSsrTraceRoot
     uint source_texture;
     uint destination_texture;
     uint clearcoat_texture;
-    uint3 reserved;
+    uint source_sampler;
+    uint2 reserved;
 };
 
 struct VkrVkSsrTemporalRoot
@@ -1628,9 +1629,16 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
         indirect_diffuse = environment.diffuse;
         indirect_specular = environment.specular * gtao_cone;
         if (clearcoat_active)
+        {
+            float clearcoat_gtao_cone = vkr_gtao_cone_specular(
+                gtao_visibility,
+                vkr_gtao_decode_bent_normal(gtao, clearcoat.normal),
+                reflect(-view, clearcoat.normal), clearcoat.roughness);
             clearcoat_indirect = clearcoat.factor * packet_environment_specular(
                 frame, world, clearcoat.normal, clearcoat.normal, view,
-                clearcoat.roughness, ao, clearcoat.energy);
+                clearcoat.roughness, ao, clearcoat.energy) *
+                clearcoat_gtao_cone;
+        }
         if (sheen_active)
         {
             float sheen_cone = vkr_gtao_cone_specular(
@@ -2254,9 +2262,6 @@ float3 vkr_vk_ssr_receiver_weight(VkrVulkanPacketFrameRoot *frame,
         g_samplers[0], (float2(receiver) + 0.5f) /
         float2(params.source_width, params.source_height), 0.0f);
     float gtao_visibility = vkr_gtao_decode_visibility(gtao);
-    float3 bent_normal = vkr_gtao_decode_bent_normal(gtao, world_normal);
-    float gtao_cone = vkr_gtao_cone_specular(
-        gtao_visibility, bent_normal, reflect(-view, normal), roughness);
     VkrGgxMaterialEnergy energy;
     if (clearcoat_active)
     {
@@ -2271,6 +2276,9 @@ float3 vkr_vk_ssr_receiver_weight(VkrVulkanPacketFrameRoot *frame,
         energy = packet_prepare_gbuffer_brdf(
             frame, normal, view, roughness, saturate(specular.rgb), anisotropy);
     }
+    float3 bent_normal = vkr_gtao_decode_bent_normal(gtao, normal);
+    float gtao_cone = vkr_gtao_cone_specular(
+        gtao_visibility, bent_normal, reflect(-view, normal), roughness);
     float4 albedo_ao = g_textures[albedo_texture].Load(int3(receiver, 0));
     float sheen_base_transmission = 1.0f;
     if (!clearcoat_active)
@@ -2294,17 +2302,12 @@ float3 vkr_vk_ssr_receiver_weight(VkrVulkanPacketFrameRoot *frame,
 float3 vkr_vk_ssr_trace_color(VkrVkSsrTraceRoot *root, float2 hit_uv,
                                float roughness)
 {
-    uint2 extent = uint2(root.params.source_width, root.params.source_height);
-    int2 center = clamp(int2(hit_uv * float2(extent)), int2(0), int2(extent) - 1);
     uint count = vkr_ssr_hit_filter_tap_count(roughness);
-    float radius = vkr_ssr_hit_filter_radius_pixels(roughness, root.params);
     float3 result = 0.0f;
     for (uint i = 0u; i < count; ++i)
-    {
-        int2 sample_pixel = clamp(center + int2(round(vkr_ssr_hit_filter_offset(i) * radius)),
-                                  int2(0), int2(extent) - 1);
-        result += g_textures[root.source_texture].Load(int3(sample_pixel, 0)).rgb;
-    }
+        result += g_textures[root.source_texture].SampleLevel(
+            g_samplers[root.source_sampler],
+            vkr_ssr_hit_filter_uv(hit_uv, roughness, i, root.params), 0.0f).rgb;
     return result / float(count);
 }
 
@@ -2537,21 +2540,27 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     if (any(pixel >= extent)) return;
     uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel, 0)).x;
     if (visible == 0u) return;
-    float4 specular = g_textures[root.specular_texture].Load(int3(pixel, 0));
     float4 clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
     bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
-    float3 base_normal = vkr_vk_octahedral_decode(
-        g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
-    float3 normal = clearcoat_active ? vkr_vk_octahedral_decode(clearcoat_packed.zw)
-                                     : base_normal;
-    float material_roughness = clearcoat_active ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
-                                               : clamp(specular.a, 0.04f, 1.0f);
+    float4 specular = 0.0f;
+    float3 normal;
+    float material_roughness;
+    if (clearcoat_active)
+    {
+        normal = vkr_vk_octahedral_decode(clearcoat_packed.zw);
+        material_roughness = clamp(clearcoat_packed.y, 0.04f, 1.0f);
+    }
+    else
+    {
+        specular = g_textures[root.specular_texture].Load(int3(pixel, 0));
+        float3 base_normal = vkr_vk_octahedral_decode(
+            g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
+        material_roughness = clamp(specular.a, 0.04f, 1.0f);
+        normal = base_normal;
+    }
     // Match trace eligibility; raster-dependent normal variance only broadens
     // BRDF weights.
     if (!vkr_ssr_eligible(material_roughness, true, root.params)) return;
-    float roughness = vkr_vk_ssr_base_filter_roughness(
-        root.normal_texture, root.vbuffer_texture, extent, pixel, visible,
-        base_normal, clamp(specular.a, 0.04f, 1.0f));
     float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float positive_depth = vkr_vk_ssr_positive_depth(root.params, pixel, extent, device_depth);
     if (!vkr_ssr_valid_depth(positive_depth)) return;
@@ -2570,17 +2579,24 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     {
         if (clearcoat_active)
         {
-            // Deferred evaluates the old coat probe with the packed roughness
-            // and no GTAO multiplier. Keep that subtraction separate from the
-            // filtered, GTAO-modulated receiver used by temporal SSR history.
             VkrClearcoatLayer clearcoat = packet_prepare_clearcoat(
                 root.frame, clearcoat_packed.x, clearcoat_packed.y, normal, view);
+            float4 gtao = g_textures[root.gtao_visibility_texture].SampleLevel(
+                g_samplers[0], (float2(pixel) + 0.5f) / float2(extent), 0.0f);
+            float clearcoat_gtao_cone = vkr_gtao_cone_specular(
+                vkr_gtao_decode_visibility(gtao),
+                vkr_gtao_decode_bent_normal(gtao, clearcoat.normal),
+                reflect(-view, clearcoat.normal), clearcoat.roughness);
             old_specular = clearcoat.factor * packet_environment_specular(
                 root.frame, world, clearcoat.normal, clearcoat.normal, view,
-                clearcoat.roughness, saturate(albedo_ao.a), clearcoat.energy);
+                clearcoat.roughness, saturate(albedo_ao.a), clearcoat.energy) *
+                clearcoat_gtao_cone;
         }
         else
         {
+            float roughness = vkr_vk_ssr_base_filter_roughness(
+                root.normal_texture, root.vbuffer_texture, extent, pixel, visible,
+                normal, material_roughness);
             VkrGgxMaterialEnergy energy = packet_prepare_gbuffer_brdf(
                 root.frame, normal, view, roughness, saturate(specular.rgb),
                 g_textures[root.anisotropy_texture].Load(int3(pixel, 0)));

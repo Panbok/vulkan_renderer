@@ -516,10 +516,13 @@ checks pass. Local matched profiles increase total SSR GPU time from 1.99 to
 2.63 ms at source 1025×577. Visual results remain mixed: some hotspots improve,
 but the fixed reflective bar-face region shows no decisive stability gain.
 [ADR-055](adr/055-screen-space-reflections.md) records the evidence and limits.
-Native Vulkan execution remains unavailable.
-ADR-044 records unresolved coat-GTAO and trace-source sampling parity gaps. GPU
-shader validation previously crashed in MetalTools with SSR on or off and supplied
-no shader-validation result.
+Native Vulkan execution remains unavailable. Both trace implementations now use
+fractional linear-clamp HDR sampling within the existing one/five-tap budget.
+Deferred coat lighting and SSR probe subtraction use the coat-directed GTAO cone
+on both backends; these source corrections still need native Vulkan comparison.
+MetalFX `hdr_pre_bloom` captures now read its actual reconstructed HDR output.
+GPU shader validation previously crashed in MetalTools with SSR on or off and
+supplied no shader-validation result.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte
 record per frame slot; a zero record bypasses fog. The in-place opaque/sky pass

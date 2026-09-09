@@ -110,11 +110,11 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [045](adr/045-resource-prepare-and-render-thread-finalize.md) | Worker preparation and render-thread resource finalization | implemented |
 | [046](adr/046-editor-viewport-mapping-and-picking.md) | Editor viewport mapping, transform gizmos, picking and retained Scene presentation | implemented |
 | [047](adr/047-event-payload-and-resize-mailbox-lifetimes.md) | Event callback payload lifetime and coalesced resize handoff | implemented |
-| [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs, crash diagnostics and reviewed capture baselines | implemented |
+| [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs, reconstructed HDR diagnostics and reviewed capture baselines | implemented |
 | [052](adr/052-vulkan-fsr31-upscaling.md) | Vulkan FSR 3.1 temporal upscaling | implemented |
 | [053](adr/053-energy-compensated-ggx.md) | Correlated Smith GGX and shared energy integration | implemented |
 | [054](adr/054-baked-diffuse-volumes.md) | Offline multi-bounce diffuse volumes and runtime spatial diffuse lookup | implemented |
-| [055](adr/055-screen-space-reflections.md) | Opaque SSR with half-resolution rays and full-resolution shaded history | implemented |
+| [055](adr/055-screen-space-reflections.md) | Opaque SSR with fractional hit filtering and full-resolution shaded history | implemented |
 | [056](adr/056-rectangular-ltc-lights.md) | One-sided rectangular LTC emitters, runtime lookup and baker transport | implemented |
 | [057](adr/057-analytic-height-fog.md) | Analytic scene-linear height fog with ordered transmission composition | implemented |
 | [058](adr/058-revision-baked-sky-atmosphere.md) | Revision-baked sky and global IBL with unified sun | implemented |

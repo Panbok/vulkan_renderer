@@ -1206,6 +1206,13 @@ kernel void vkr_metal_packet_deferred_lighting(
       frame->render_mode == 9u ? normal : gtao_bent_normal;
   float gtao_specular_cone = vkr_gtao_cone_specular(
       gtao_visibility, gtao_bent_normal, reflect(-view, normal), roughness);
+  float clearcoat_gtao_specular_cone =
+      clearcoat_active
+          ? vkr_gtao_cone_specular(
+                gtao_visibility,
+                vkr_gtao_decode_bent_normal(gtao, clearcoat.normal),
+                reflect(-view, clearcoat.normal), clearcoat.roughness)
+          : 1.0f;
   float sheen_gtao_specular_cone =
       sheen_active
           ? vkr_gtao_cone_specular(gtao_visibility, gtao_bent_normal,
@@ -1236,7 +1243,7 @@ kernel void vkr_metal_packet_deferred_lighting(
              environment.specular_receiver_weight * base_transmission +
              (clearcoat_active
                   ? vkr_metal_packet_clearcoat_environment(
-                        frame, world_position, view, ao, gtao_specular_cone,
+                        frame, world_position, view, ao, clearcoat_gtao_specular_cone,
                         clearcoat)
                   : float3(0.0)) +
              (sheen_active

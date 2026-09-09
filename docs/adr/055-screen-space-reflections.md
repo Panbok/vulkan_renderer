@@ -178,13 +178,20 @@ Removing composite's two unused resource bindings shrinks its root from 496 to
 480 bytes on Metal and from 432 to 416 bytes on Vulkan. The shared parameter
 record stays 288 bytes. Assertions and compiled reflection pin native layouts.
 
-Old coat probe removal uses packed coat roughness to match deferred lighting.
-Metal removes the coat term with deferred's base GTAO cone; Vulkan removes its
-existing deferred coat term without a GTAO multiplier. New shaded coat history
-uses coat-directed GTAO. This preserves the exact old term on each backend while
-leaving the pre-existing deferred coat GTAO policy difference unresolved under
-ADR-044. Vulkan's disabled-GTAO sentinel is sampled at normalized coordinates;
-a full-resolution integer load could address outside that 1×1 fallback.
+Old coat probe removal uses packed coat roughness and the coat-directed GTAO cone
+to match deferred lighting on both backends. Bent direction is decoded against
+the coat normal, including its visibility-dependent fallback blend. Shaded coat
+history retains filtered roughness and evaluates its cone after orienting the coat
+normal toward the view. Composite skips base normal-variance samples
+on coated pixels; Vulkan's coat branch adds its previously omitted GTAO sample
+while removing six unused base specular/normal/variance reads. Metal removes four
+variance reads. Normalized GTAO coordinates preserve the disabled 1×1 sentinel.
+
+Trace source sampling is linear-clamp on both backends, retaining fractional hit
+positions and cone offsets. Mirrors use one sample and rough receivers at most
+five. Vulkan reuses its existing renderer-owned linear-clamp sampler; its trace
+root stays 336 bytes by consuming reserved padding. These corrections implement
+the accepted sampling and directional-occlusion policy without new resources.
 
 ## Consequences
 
@@ -217,6 +224,16 @@ accepted design spends history memory and temporal work to shade each source
 receiver while retaining the bounded half-resolution ray workload.
 
 ## Evidence and remaining checks
+
+The fractional-source and coat-occlusion corrections pass Release shader builds,
+132 shared-math outputs, eleven SSR/SSGI/deferred SPIR-V modules and the Metal
+layered-material witness with partial GTAO coverage. Native Vulkan comparison
+remains unavailable. The corrected MetalFX HDR capture shows residual variation
+before tonemapping at the reported Bistro edge hotspots; it does not establish an
+upscaler integration defect or flicker-free reflections. [The correction record](../../assets/verification/renderer-features/ssr-sampling-and-coat-occlusion.txt)
+contains exact commands, digests, numeric checks and the material preview.
+
+The following measurements describe the preceding full-resolution-history change:
 
 Release app and editor builds, 128 shared-math outputs, all ten production
 SSR/SSGI SPIR-V modules and Vulkan host syntax checks pass. Compiled Vulkan

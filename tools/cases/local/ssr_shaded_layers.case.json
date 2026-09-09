@@ -59,6 +59,7 @@
       "channels": [
         "final_color",
         "hdr_pre_transmission",
+        "hdr_post_transmission",
         "depth",
         "gbuffer_normal",
         "gbuffer_specular",

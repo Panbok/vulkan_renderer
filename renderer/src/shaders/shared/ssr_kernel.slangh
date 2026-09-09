@@ -650,6 +650,17 @@ float vkr_ssr_hit_filter_radius_pixels(float roughness, VkrSsrParams params)
     return VKR_SSR_HIT_FILTER_RADIUS_PIXELS * normalized * normalized;
 }
 
+// Preserve fractional intersections and cone offsets on both backends. Native
+// samplers supply linear clamp-to-edge filtering, including mirror hit samples.
+float2 vkr_ssr_hit_filter_uv(float2 hit_uv, float roughness, uint tap,
+                            VkrSsrParams params)
+{
+    float2 texel = float2(1.0f / float(params.source_width),
+                         1.0f / float(params.source_height));
+    return hit_uv + vkr_ssr_hit_filter_offset(tap) *
+                        vkr_ssr_hit_filter_radius_pixels(roughness, params) * texel;
+}
+
 // A continuous footprint on the trace grid reaches zero at entering/leaving
 // taps. Mirrors retain the former four-tap reconstruction; rough receivers use
 // nine taps, sharing those loads with the temporal clamp bounds.

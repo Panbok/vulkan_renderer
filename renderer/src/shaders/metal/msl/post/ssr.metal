@@ -118,14 +118,10 @@ static float3 vkr_metal_ssr_hdr_cone(
     texture2d<float, access::sample> hdr, float2 hit_uv, float roughness,
     VkrSsrParams params) {
   uint tap_count = vkr_ssr_hit_filter_tap_count(roughness);
-  float radius = vkr_ssr_hit_filter_radius_pixels(roughness, params);
-  float2 texel = float2(1.0f / float(params.source_width),
-                        1.0f / float(params.source_height));
   float3 result = 0.0f;
   for (uint tap = 0u; tap < tap_count; ++tap)
     result += hdr.sample(vkr_metal_ssr_linear_sampler,
-                         hit_uv + vkr_ssr_hit_filter_offset(tap) * radius *
-                                      texel)
+                         vkr_ssr_hit_filter_uv(hit_uv, roughness, tap, params))
                   .rgb;
   return result / float(tap_count);
 }
@@ -327,16 +323,20 @@ static float3 vkr_metal_ssr_shading_weight(
                                  filter::nearest);
   float4 gtao = root.gtao_visibility.sample(
       gtao_sampler, (float2(receiver) + 0.5f) / float2(extent));
-  float cone = vkr_gtao_cone_specular(
-      vkr_gtao_decode_visibility(gtao), vkr_gtao_decode_bent_normal(gtao, normal),
-      reflect(-view, normal), roughness);
   if (vkr_clearcoat_active(coat.x)) {
     VkrClearcoatLayer layer = vkr_metal_packet_prepare_clearcoat(
         root.frame, coat.x, roughness, normal, view);
+    float cone = vkr_gtao_cone_specular(
+        vkr_gtao_decode_visibility(gtao),
+        vkr_gtao_decode_bent_normal(gtao, layer.normal),
+        reflect(-view, layer.normal), layer.roughness);
     return layer.factor * vkr_metal_environment_receiver_weight(
         reflect(-view, layer.normal), layer.normal, layer.roughness,
         occlusion, cone, layer.energy);
   }
+  float cone = vkr_gtao_cone_specular(
+      vkr_gtao_decode_visibility(gtao), vkr_gtao_decode_bent_normal(gtao, normal),
+      reflect(-view, normal), roughness);
   VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
       root.frame, normal, view, roughness, saturate(specular.rgb),
       root.anisotropy.read(receiver));
@@ -513,16 +513,6 @@ kernel void vkr_metal_packet_ssr_composite(
   // BRDF weights.
   if (!vkr_ssr_eligible(material_roughness, true, root.params))
     return;
-  // Deferred shades both base and coat using this base-normal GTAO footprint.
-  uint2 limit = root.extent - 1u;
-  uint2 px = min(pixel + uint2(1u, 0u), limit);
-  uint2 py = min(pixel + uint2(0u, 1u), limit);
-  float3 dx = (vkr_metal_packet_octahedral_decode(root.normal.read(px).xy) - base_normal) *
-      (root.vbuffer.read(px).x == visible ? 1.0f : 0.0f);
-  float3 dy = (vkr_metal_packet_octahedral_decode(root.normal.read(py).xy) - base_normal) *
-      (root.vbuffer.read(py).x == visible ? 1.0f : 0.0f);
-  float roughness = vkr_ggx_filter_roughness(clamp(specular.w, 0.04f, 1.0f),
-      0.25f * (dot(dx, dx) + dot(dy, dy)));
   float4 reflection = root.history_color.read(pixel);
   /* Preserve an untouched HDR texel on a trace/upscale miss. */
   if (reflection.w <= 0.0f)
@@ -536,11 +526,20 @@ kernel void vkr_metal_packet_ssr_composite(
   float4 gtao = root.gtao_visibility.sample(
       gtao_sampler, (float2(pixel) + 0.5f) / float2(root.extent));
   float gtao_visibility = vkr_gtao_decode_visibility(gtao);
-  float3 gtao_bent_normal = vkr_gtao_decode_bent_normal(gtao, base_normal);
-  float gtao_specular_cone = vkr_gtao_cone_specular(
-      gtao_visibility, gtao_bent_normal, reflect(-view, base_normal), roughness);
   float3 opaque = root.hdr.read(pixel).rgb;
   if (!clearcoat_active) {
+    uint2 limit = root.extent - 1u;
+    uint2 px = min(pixel + uint2(1u, 0u), limit);
+    uint2 py = min(pixel + uint2(0u, 1u), limit);
+    float3 dx = (vkr_metal_packet_octahedral_decode(root.normal.read(px).xy) - base_normal) *
+        (root.vbuffer.read(px).x == visible ? 1.0f : 0.0f);
+    float3 dy = (vkr_metal_packet_octahedral_decode(root.normal.read(py).xy) - base_normal) *
+        (root.vbuffer.read(py).x == visible ? 1.0f : 0.0f);
+    float roughness = vkr_ggx_filter_roughness(clamp(specular.w, 0.04f, 1.0f),
+        0.25f * (dot(dx, dx) + dot(dy, dy)));
+    float3 gtao_bent_normal = vkr_gtao_decode_bent_normal(gtao, base_normal);
+    float gtao_specular_cone = vkr_gtao_cone_specular(
+        gtao_visibility, gtao_bent_normal, reflect(-view, base_normal), roughness);
     VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
         root.frame, normal, view, roughness,
         saturate(specular.rgb), root.anisotropy.read(pixel));
@@ -566,6 +565,9 @@ kernel void vkr_metal_packet_ssr_composite(
   }
   VkrClearcoatLayer clearcoat = vkr_metal_packet_prepare_clearcoat(
       root.frame, clearcoat_packed.x, clearcoat_packed.y, normal, view);
+  float gtao_specular_cone = vkr_gtao_cone_specular(
+      gtao_visibility, vkr_gtao_decode_bent_normal(gtao, clearcoat.normal),
+      reflect(-view, clearcoat.normal), clearcoat.roughness);
   VkrMetalPacketEnvironmentLighting coat_environment =
       vkr_metal_packet_environment_lighting(
           root.frame, world_position, clearcoat.normal, clearcoat.normal, view,

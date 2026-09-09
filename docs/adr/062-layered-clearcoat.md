@@ -40,6 +40,10 @@ compensated correlated Smith GGX. Prepare its directional DFG reflectance once.
 Base transmission is `1 - factor * coat_reflectance`. Multiply base diffuse,
 specular, emission and transmitted radiance by that value, then add the factor
 weighted coat specular. Each direct lobe uses its own normal and light cosine.
+Opaque indirect coat lighting and SSR probe removal also use the coat normal for
+GTAO cone occlusion, decoding bent direction against that normal and using the
+packed coat roughness. SSR's incoming history uses filtered coat roughness.
+This keeps probe removal equal to the term deferred lighting actually added.
 Runtime lights, LTC and probe/global IBL share this allocation. The offline
 path/photon BSDF uses the same layer and a corresponding mixture PDF. It tracks
 the geometric normal separately from both mapped normals so reflection and

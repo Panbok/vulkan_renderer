@@ -1636,6 +1636,7 @@ bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
       .source_texture = textures[6],
       .destination_texture = textures[7],
       .clearcoat_texture = textures[8],
+      .source_sampler = renderer->transmission_sampler_slot,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrTraceRoot),

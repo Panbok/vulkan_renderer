@@ -367,10 +367,11 @@ Metal depth/evaluate/denoise are 224/256/240 bytes; Vulkan uses its existing
 with world bent direction in RGB and visibility in alpha. Both backends share
 horizon moments, packing, multi-bounce diffuse and cone specular arithmetic.
 Base deferred environment and SSR receiver weights use the shared cone factor.
-The pre-existing deferred coat policy differs: Metal uses its base cone and Vulkan
-omits coat GTAO. Shaded SSR history evaluates the selected coat cone on both
-backends; exact old-probe removal retains each backend's deferred policy. This
-coat policy gap remains **UNALIGNED**. Baked volumes retain scalar AO. Metal's disabled output is byte-identical to
+Deferred coat lighting and matching SSR probe removal use the coat-directed cone
+on both backends, with bent direction decoded against the coat normal and packed
+coat roughness. Shaded SSR history uses its filtered coat roughness. This corrects
+Metal's former base-cone approximation and Vulkan's omitted coat occlusion;
+native Vulkan comparison is still missing. Baked volumes retain scalar AO. Metal's disabled output is byte-identical to
 its prior HDR fixture, and the corner lighting oracle has maximum HDR error
 0.000960297 across 34 samples. Native API validation and production SPIR-V
 validation pass. Native Vulkan execution and bilateral comparison remain
@@ -423,12 +424,16 @@ intersections and same-pixel validation keep the existing depth allocation.
 SSGI retains its previous leaf, slab and receiver-minimum policies through shared
 adapters and initializes its unused jitter offsets to zero.
 
-Old coat subtraction uses packed roughness and each backend's deferred term:
-Metal's base GTAO cone versus no Vulkan coat GTAO. That pre-existing lighting-policy
-gap remains unresolved. Normalized temporal/composite GTAO sampling keeps the
-1×1 disabled sentinel valid at every source pixel. Metal linear trace-source
-sampling versus Vulkan rounded point loads is another unresolved source parity
-gap. Neither difference permits a bilateral acceptance claim.
+Old coat subtraction matches deferred's coat-directed GTAO and packed roughness.
+Both decode bent direction against the coat normal. Coated composite pixels skip
+base normal-variance filtering; normalized GTAO sampling keeps the disabled 1×1
+sentinel valid. Both trace implementations preserve fractional hit and cone-offset
+coordinates with linear-clamp source sampling, replacing Vulkan's rounded point
+loads. Vulkan reuses its renderer-owned linear-clamp sampler at trace-root offset
+324; reserved padding begins at 328 and total root size remains 336 bytes. Mirrors
+still sample once and rough receivers at most five times. Source corrections do
+not establish native Vulkan or bilateral acceptance. The current fractional-filter
+and coat-cone checks are recorded with [ADR-055](055-screen-space-reflections.md).
 
 `ssr_reflection` version 4 identifies full-source-resolution shaded RGB; version 3
 captures were half-resolution shaded RGB. Raw capture stays version 2. Earlier

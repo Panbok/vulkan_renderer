@@ -72,8 +72,11 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   leaves, absolute crossings and earliest surface intersections. Compare Bistro
   material/coat/mirror boundaries, static/moving flicker, reflection strength,
   trails and measured temporal cost. Prior half-resolution history captures do
-  not establish this output or cost. Resolve the known Metal/Vulkan deferred
-  coat-GTAO and trace-source sampling differences before claiming parity:
+  not establish this output or cost. Validate fractional linear-clamp trace source
+  sampling (sampler at trace-root offset 324, root size 336) and the corrected
+  coat-directed GTAO in deferred lighting and exact SSR probe removal. Include
+  subpixel hit motion, rough cone offsets and the disabled GTAO sentinel before
+  claiming parity:
   [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
