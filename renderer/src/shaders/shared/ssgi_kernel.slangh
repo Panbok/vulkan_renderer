@@ -102,6 +102,38 @@ VkrSsrParams vkr_ssgi_screen_trace_params(VkrSsgiParams params)
     return result;
 }
 
+// SSGI retains its half-resolution leaf and existing relative crossing math.
+float vkr_ssgi_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
+                                 VkrSsrParams screen)
+{
+    if (trace.active == 0u || any(mip_extent == 0u) ||
+        !vkr_ssr_trace_in_bounds(trace))
+        return trace.t;
+    float2 uv = vkr_ssr_trace_uv(trace);
+    float2 direction = trace.end_uv - trace.start_uv;
+    float2 boundary = vkr_ssr_trace_cell_boundary(trace, mip_extent, trace.mip + 1u, screen);
+    float tx = abs(direction.x) > VKR_SSR_EPSILON
+                   ? (boundary.x - uv.x) / direction.x
+                   : 3.402823466e+38f;
+    float ty = abs(direction.y) > VKR_SSR_EPSILON
+                   ? (boundary.y - uv.y) / direction.y
+                   : 3.402823466e+38f;
+    return min(trace.t + max(min(tx, ty), 0.0f), 1.0f);
+}
+
+VkrSsrTraceResolve vkr_ssgi_trace_resolve(VkrSsrTrace trace,
+                                          float hierarchy_depth,
+                                          float cell_exit_t,
+                                          VkrSsrParams screen)
+{
+    // Preserve SSGI's existing symmetric sample slab independently of SSR's
+    // surface-intersection policy. Both reuse the same interval traversal.
+    return vkr_ssr_trace_resolve_interval(trace, hierarchy_depth,
+                                          hierarchy_depth - screen.thickness,
+                                          hierarchy_depth + screen.thickness,
+                                          hierarchy_depth, cell_exit_t);
+}
+
 VkrSsgiReceiver vkr_ssgi_empty_receiver()
 {
     VkrSsgiReceiver result;

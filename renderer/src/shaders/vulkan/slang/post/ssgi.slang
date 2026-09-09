@@ -232,11 +232,11 @@ void ssgi_trace_compute(uint3 thread_id : SV_DispatchThreadID)
     for (uint step = 0u; step < root.params.max_steps && trace.active != 0u; ++step)
     {
         uint2 mip_extent = max(trace_extent >> trace.mip, uint2(1u));
-        float cell_exit = vkr_ssr_trace_cell_exit(trace, mip_extent, screen);
+        float cell_exit = vkr_ssgi_trace_cell_exit(trace, mip_extent, screen);
         float2 trace_uv = vkr_ssr_trace_uv(trace);
         uint2 source_pixel = min(uint2(floor(trace_uv * float2(source_extent))), source_extent - 1u);
         uint2 cell = min(source_pixel >> (trace.mip + 1u), mip_extent - 1u);
-        VkrSsrTraceResolve resolve = vkr_ssr_trace_resolve(
+        VkrSsrTraceResolve resolve = vkr_ssgi_trace_resolve(
             trace, g_textures[root.depth_pyramid_texture].Load(int3(cell, trace.mip)).x,
             cell_exit, screen);
         if (resolve.hit == 0u)

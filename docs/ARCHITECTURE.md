@@ -490,12 +490,20 @@ Opaque SSR runs before transmission under
 path has a separate current-frame hierarchy and reflection history. Projection
 compatibility excludes raster jitter; trace still uses the jittered projection.
 History reprojection corrects the jitter delta and validates each of four bilinear
-taps independently. Failed coarse-depth candidates refine only against the
-full-resolution depth already loaded, requiring the crossing to remain in the
-same pixel. Spatial and temporal filters accumulate covered radiance and coverage
-together, preserving hit brightness as support varies. Trace and composite use
-the same material-roughness eligibility cutoff. Metal mirror, resize, API validation
-and motion checks pass. Visible cafe under-bar flicker remains unresolved; native
+taps independently. Trace intersects full-resolution depth beneath the existing
+half-resolution hierarchy. Absolute cell crossings and the earliest one-sided
+surface-slab hit select the first supported source pixel without increasing the
+48-step limit or allocating another image. Spatial and temporal filters accumulate covered radiance and coverage
+together, preserving hit brightness as support varies. One or two current hits
+retain otherwise-clipped history radiance with a coefficient capped at 0.5,
+preserving the existing coverage accumulation. Dense neighborhoods keep their
+clamp. Empty neighborhoods retain depth/identity-validated history and fade its
+coverage with the configured temporal weight (default 0.85); rejected history
+clears immediately.
+Trace and composite use
+the same material-roughness eligibility cutoff. Metal static/moving captures and
+API-only resize checks pass. GPU shader validation crashes in MetalTools with SSR
+on or off. Visible cafe under-bar flicker remains unresolved; native
 Vulkan execution remains unavailable.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte

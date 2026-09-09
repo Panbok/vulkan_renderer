@@ -2226,59 +2226,58 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
     if (dot(normal, -position) < 0.0f)
         normal = -normal;
     float3 view = normalize(-position);
-    VkrSsrTrace trace = vkr_ssr_trace_begin(root.params, position + normal * VKR_SSR_RAY_ORIGIN_BIAS,
-                                             reflect(-view, normal), root.params.depth_mip_count - 1u);
+    float3 ray = reflect(-view, normal);
+    VkrSsrTrace trace = vkr_ssr_trace_begin(root.params,
+        position + normal * VKR_SSR_RAY_ORIGIN_BIAS, ray, root.params.depth_mip_count);
+    // Logical level zero reuses full-resolution depth. Level one is the
+    // existing pyramid base; starting at the receiver avoids an initial descent.
+    trace.mip = 0u;
     for (uint step = 0u; step < root.params.max_steps && trace.active != 0u; ++step)
     {
-        uint2 mip_extent = max(trace_extent >> trace.mip, uint2(1u, 1u));
+        uint2 mip_extent = max(source_extent >> trace.mip, uint2(1u, 1u));
         float2 uv = vkr_ssr_trace_uv(trace);
-        uint2 source_pixel = min(uint2(uv * float2(source_extent)), source_extent - 1u);
-        uint2 mip_cell = min(source_pixel >> (trace.mip + 1u), mip_extent - 1u);
+        uint2 source_pixel = min(uint2(floor(uv * float2(source_extent))), source_extent - 1u);
         float exit_t = vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
-        float hierarchy_depth = g_depth_textures[root.depth_pyramid_texture].Load(int3(mip_cell, trace.mip));
-        VkrSsrTraceResolve resolve = vkr_ssr_trace_resolve(trace, hierarchy_depth, exit_t, root.params);
-        if (resolve.hit != 0u)
+        float surface_depth;
+        if (trace.mip == 0u)
         {
-            VkrSsrTrace hit_trace = trace;
-            hit_trace.t = resolve.hit_t;
-            float2 hit_uv = vkr_ssr_trace_uv(hit_trace);
-            uint2 hit_pixel = min(uint2(hit_uv * float2(source_extent)), source_extent - 1u);
-            uint hit_visible = g_uint2_textures[root.vbuffer_texture].Load(int3(hit_pixel, 0)).x;
-            float hit_device_depth = g_depth_textures[root.depth_texture].Load(int3(hit_pixel, 0));
-            float hit_depth = vkr_vk_ssr_positive_depth(root.params, hit_pixel,
-                                                        source_extent, hit_device_depth);
-            float hit_trace_depth = vkr_ssr_trace_depth(hit_trace);
-            if (vkr_ssr_valid_depth(hit_depth) &&
-                abs(hit_depth - hit_trace_depth) > root.params.thickness)
-            {
-                VkrSsrTraceResolve refined = vkr_ssr_trace_refine_loaded_depth(
-                    trace, hit_depth, exit_t, hit_pixel, root.params);
-                if (refined.hit != 0u)
-                {
-                    resolve = refined;
-                    hit_trace.t = resolve.hit_t;
-                    hit_uv = vkr_ssr_trace_uv(hit_trace);
-                    hit_trace_depth = vkr_ssr_trace_depth(hit_trace);
-                }
-            }
-            float3 hit_normal = vkr_vk_ssr_selected_normal(
-                root.normal_texture, root.clearcoat_texture, hit_pixel);
-            hit_normal = normalize(mul(root.params.view, float4(hit_normal, 0.0f)).xyz);
-            float3 ray = normalize(reflect(-view, normal));
-            if (hit_visible != 0u && vkr_ssr_valid_depth(hit_depth) &&
-                abs(hit_depth - hit_trace_depth) <= root.params.thickness &&
-                dot(hit_normal, -ray) > 0.0f)
-            {
-                raw = float4(vkr_vk_ssr_trace_color(root, hit_uv, roughness),
-                             vkr_ssr_trace_confidence(roughness, hit_uv,
-                                                      resolve.depth_confidence, root.params));
-                break;
-            }
-            trace = vkr_ssr_trace_advance(trace, exit_t);
+            surface_depth = vkr_vk_ssr_positive_depth(root.params, source_pixel, source_extent,
+                g_depth_textures[root.depth_texture].Load(int3(source_pixel, 0)));
         }
-        else if (resolve.descend != 0u) trace = vkr_ssr_trace_descend(trace);
-        else if (resolve.advance != 0u) trace = vkr_ssr_trace_advance(trace, exit_t);
-        else break;
+        else
+        {
+            uint2 mip_cell = min(source_pixel >> trace.mip, mip_extent - 1u);
+            surface_depth = g_depth_textures[root.depth_pyramid_texture].Load(
+                int3(mip_cell, trace.mip - 1u));
+        }
+        VkrSsrTraceResolve resolve = vkr_ssr_trace_resolve(
+            trace, surface_depth, exit_t, root.params);
+        if (resolve.hit == 0u)
+        {
+            trace = resolve.descend != 0u ? vkr_ssr_trace_descend(trace)
+                                          : vkr_ssr_trace_advance(trace, exit_t);
+            continue;
+        }
+        float ray_depth = vkr_ssr_trace_depth_at(trace, resolve.hit_t);
+        if (!vkr_ssr_trace_hit_matches_pixel(trace, resolve.hit_t, source_pixel, root.params) ||
+            !vkr_ssr_depth_hit_matches(ray_depth, surface_depth, root.params) ||
+            g_uint2_textures[root.vbuffer_texture].Load(int3(source_pixel, 0)).x == 0u)
+        {
+            trace = vkr_ssr_trace_advance(trace, exit_t);
+            continue;
+        }
+        float3 hit_normal = vkr_vk_ssr_selected_normal(
+            root.normal_texture, root.clearcoat_texture, source_pixel);
+        hit_normal = normalize(mul(root.params.view, float4(hit_normal, 0.0f)).xyz);
+        if (dot(hit_normal, -ray) > 1e-4f)
+        {
+            float2 hit_uv = vkr_ssr_lerp(trace.start_uv, trace.end_uv, resolve.hit_t);
+            raw = float4(vkr_vk_ssr_trace_color(root, hit_uv, roughness),
+                         vkr_ssr_trace_confidence(roughness, hit_uv,
+                                                  resolve.depth_confidence, root.params));
+            break;
+        }
+        trace = vkr_ssr_trace_advance(trace, exit_t);
     }
     g_storage_2d[root.destination_texture][cell] = raw;
 }
@@ -2366,16 +2365,18 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     decision.reserved_float_0 = 0.0f;
     float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
     float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
+    uint neighborhood_hits = 0u;
     for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
         int2 q = int2(cell) + int2(x, y);
         if (any(q < 0) || any(q >= int2(trace_extent))) continue;
         float4 sample = g_textures[root.raw_texture].Load(int3(q, 0));
         if (sample.w > 0.0f) {
+            ++neighborhood_hits;
             neighborhood_min = min(neighborhood_min, sample.rgb);
             neighborhood_max = max(neighborhood_max, sample.rgb);
         }
     }
-    float4 result = vkr_ssr_temporal_filter(root.params, raw, history, neighborhood_min,
+    float4 result = vkr_ssr_temporal_filter(neighborhood_hits, raw, history, neighborhood_min,
                                             neighborhood_max, decision);
     g_storage_2d[root.output_color_texture][cell] = result;
     g_storage_2d[root.output_depth_texture][cell] = float4(positive_depth, 0, 0, 0);

@@ -185,6 +185,16 @@ bool vkr_ssr_valid_depth(float positive_view_depth)
     return vkr_ssr_finite(positive_view_depth) && positive_view_depth > 0.0f;
 }
 
+bool vkr_ssr_depth_hit_matches(float ray_depth, float surface_depth,
+                                 VkrSsrParams params)
+{
+    // Permit only floating-point reconstruction error ahead of the surface.
+    float roundoff = VKR_SSR_EPSILON * max(surface_depth, 1.0f);
+    return vkr_ssr_valid_depth(ray_depth) && vkr_ssr_valid_depth(surface_depth) &&
+           ray_depth >= surface_depth - roundoff &&
+           ray_depth <= surface_depth + params.thickness;
+}
+
 uint vkr_ssr_reduced_extent(uint extent)
 {
     return extent > 1u ? extent / 2u : extent;
@@ -272,14 +282,11 @@ uint vkr_ssr_reduction_child_end(uint destination_cell,
                : min(begin + 2u, source_extent);
 }
 
-// `cell` is at `mip_extent`; these are source-UV bounds. A native pass derives
-// the cell by `min(source_pixel >> (mip + 1), mip_extent - 1)`: mip zero is
-// already the floor-half base reduction. The final cell takes the remaining
-// source pixels, so its bounds are nonuniform at every odd ancestor.
-float4 vkr_ssr_mip_cell_bounds(uint2 cell, uint mip, uint2 source_extent,
-                               uint2 mip_extent)
+// Bounds are expressed in full-resolution pixels. Source shift zero is a
+// single pixel; the final cell at every reduced level owns the odd tail.
+float4 vkr_ssr_cell_bounds(uint2 cell, uint source_shift, uint2 source_extent,
+                            uint2 mip_extent)
 {
-    uint source_shift = mip + 1u;
     uint2 begin = cell << source_shift;
     uint2 end = (cell + 1u) << source_shift;
     end.x = cell.x + 1u == mip_extent.x ? source_extent.x
@@ -409,7 +416,8 @@ VkrSsrTrace vkr_ssr_trace_begin(VkrSsrParams params, float3 origin_view,
     trace.start_clip_w = start.clip_w;
     trace.end_clip_w = end.clip_w;
     trace.t = 0.0f;
-    trace.mip = min(max_mip, max(params.depth_mip_count, 1u) - 1u);
+    // Native callers supply the highest logical level of their depth source.
+    trace.mip = max_mip;
     trace.max_mip = trace.mip;
     trace.active = 1u;
     VkrSsrClipRange clip_range = vkr_ssr_clip_uv_segment(start.uv, end.uv);
@@ -434,35 +442,47 @@ bool vkr_ssr_trace_in_bounds(VkrSsrTrace trace)
     return all(uv >= 0.0f) && all(uv < 1.0f);
 }
 
-// The bounds are derived from full source pixels, not `uv * mip_extent`: a
-// floor-half hierarchy has a nonuniform final cell at every odd source extent.
+float2 vkr_ssr_trace_cell_boundary(VkrSsrTrace trace, uint2 mip_extent,
+                                     uint source_shift, VkrSsrParams params)
+{
+    float2 uv = vkr_ssr_trace_uv(trace);
+    float2 direction = trace.end_uv - trace.start_uv;
+    uint2 source_extent = uint2(params.source_width, params.source_height);
+    uint2 source_pixel = min(uint2(floor(uv * float2(source_extent))),
+                             source_extent - 1u);
+    uint2 cell = min(source_pixel >> source_shift, mip_extent - 1u);
+    float4 bounds = vkr_ssr_cell_bounds(cell, source_shift, source_extent, mip_extent);
+    return float2(direction.x > 0.0f ? bounds.z : bounds.x,
+                  direction.y > 0.0f ? bounds.w : bounds.y);
+}
+
+// SSR's logical level zero reads full-resolution depth; level one reads the
+// existing half-resolution pyramid base. Crossing times are absolute along
+// the projected segment, so the same boundary has the same time regardless
+// of the hierarchy path used to reach it.
 float vkr_ssr_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
-                              VkrSsrParams params)
+                                VkrSsrParams params)
 {
     if (trace.active == 0u || any(mip_extent == 0u) ||
         !vkr_ssr_trace_in_bounds(trace))
         return trace.t;
-    float2 uv = vkr_ssr_trace_uv(trace);
-    float2 uv_direction = trace.end_uv - trace.start_uv;
-    uint2 source_pixel = min(uint2(floor(uv * float2(params.source_width,
-                                                      params.source_height))),
-                             uint2(params.source_width - 1u,
-                                   params.source_height - 1u));
-    uint2 cell = min(source_pixel >> (trace.mip + 1u), mip_extent - 1u);
-    float4 bounds = vkr_ssr_mip_cell_bounds(
-        cell, trace.mip, uint2(params.source_width, params.source_height), mip_extent);
-    float tx = abs(uv_direction.x) > VKR_SSR_EPSILON
-                   ? ((uv_direction.x > 0.0f ? bounds.z : bounds.x) -
-                      uv.x) /
-                         uv_direction.x
+    float2 boundary = vkr_ssr_trace_cell_boundary(trace, mip_extent, trace.mip, params);
+    float2 direction = trace.end_uv - trace.start_uv;
+    float tx = abs(direction.x) > VKR_SSR_EPSILON
+                   ? (boundary.x - trace.start_uv.x) / direction.x
                    : 3.402823466e+38f;
-    float ty = abs(uv_direction.y) > VKR_SSR_EPSILON
-                   ? ((uv_direction.y > 0.0f ? bounds.w : bounds.y) -
-                      uv.y) /
-                         uv_direction.y
+    float ty = abs(direction.y) > VKR_SSR_EPSILON
+                   ? (boundary.y - trace.start_uv.y) / direction.y
                    : 3.402823466e+38f;
-    float delta = max(min(tx, ty), 0.0f);
-    return min(trace.t + delta, 1.0f);
+    return min(max(min(tx, ty), trace.t), 1.0f);
+}
+
+bool vkr_ssr_trace_hit_matches_pixel(VkrSsrTrace trace, float hit_t,
+                                      uint2 source_pixel, VkrSsrParams params)
+{
+    float2 hit_uv = vkr_ssr_lerp(trace.start_uv, trace.end_uv, hit_t);
+    return all(int2(floor(hit_uv * float2(params.source_width, params.source_height))) ==
+               int2(source_pixel));
 }
 
 // Re-ascending one level retains the projected DDA's bounded 48-step work.
@@ -477,10 +497,12 @@ VkrSsrTrace vkr_ssr_trace_advance(VkrSsrTrace trace, float cell_exit_t)
     return trace;
 }
 
-VkrSsrTraceResolve vkr_ssr_trace_resolve(VkrSsrTrace trace,
-                                         float hierarchy_depth,
-                                         float cell_exit_t,
-                                         VkrSsrParams params)
+VkrSsrTraceResolve vkr_ssr_trace_resolve_interval(VkrSsrTrace trace,
+                                                  float hierarchy_depth,
+                                                  float front_depth,
+                                                  float back_depth,
+                                                  float target_depth,
+                                                  float cell_exit_t)
 {
     VkrSsrTraceResolve result;
     result.hit = 0u;
@@ -505,7 +527,7 @@ VkrSsrTraceResolve vkr_ssr_trace_resolve(VkrSsrTrace trace,
     float exit_depth = vkr_ssr_trace_depth(exit_trace);
     float depth_min = min(entry_depth, exit_depth);
     float depth_max = max(entry_depth, exit_depth);
-    if (depth_max < hierarchy_depth - params.thickness)
+    if (depth_max < front_depth)
     {
         result.advance = 1u;
         return result;
@@ -515,10 +537,10 @@ VkrSsrTraceResolve vkr_ssr_trace_resolve(VkrSsrTrace trace,
         result.descend = 1u;
         return result;
     }
-    if (depth_min <= hierarchy_depth + params.thickness)
+    if (depth_min <= back_depth)
     {
         result.hit = 1u;
-        float target_depth = clamp(hierarchy_depth, depth_min, depth_max);
+        target_depth = clamp(target_depth, depth_min, depth_max);
         float low_t = trace.t;
         float high_t = cell_exit_t;
         // Positive depth is Q(t) / K(t), where both terms are affine over the
@@ -548,26 +570,19 @@ VkrSsrTraceResolve vkr_ssr_trace_resolve(VkrSsrTrace trace,
     return result;
 }
 
-// A half-resolution minimum can propose the depth of another full-resolution
-// pixel. Reuse the candidate's loaded depth only when its refined crossing stays
-// in that same pixel; coverage and normal data then remain valid without reads.
-VkrSsrTraceResolve vkr_ssr_trace_refine_loaded_depth(
-    VkrSsrTrace trace, float loaded_depth, float leaf_exit_t,
-    uint2 loaded_pixel, VkrSsrParams params)
+VkrSsrTraceResolve vkr_ssr_trace_resolve(VkrSsrTrace trace,
+                                         float hierarchy_depth,
+                                         float cell_exit_t,
+                                         VkrSsrParams params)
 {
-    VkrSsrTraceResolve result =
-        vkr_ssr_trace_resolve(trace, loaded_depth, leaf_exit_t, params);
-    if (result.hit == 0u)
-        return result;
-    float2 hit_uv = vkr_ssr_lerp(trace.start_uv, trace.end_uv, result.hit_t);
-    int2 hit_pixel = int2(floor(hit_uv *
-        float2(params.source_width, params.source_height)));
-    if (any(hit_pixel != int2(loaded_pixel)))
-    {
-        result.hit = 0u;
-        result.depth_confidence = 0.0f;
-    }
-    return result;
+    // Thickness extends behind the surface. Expanding toward the camera
+    // invents hits in empty space and repeatedly descends onto the receiver.
+    float back_depth = hierarchy_depth + params.thickness;
+    // Select the earliest point in the slab, including rays already inside
+    // it and rays entering its rear boundary while traveling toward the eye.
+    float target_depth = clamp(vkr_ssr_trace_depth(trace), hierarchy_depth, back_depth);
+    return vkr_ssr_trace_resolve_interval(trace, hierarchy_depth, hierarchy_depth,
+                                          back_depth, target_depth, cell_exit_t);
 }
 
 VkrSsrTrace vkr_ssr_trace_descend(VkrSsrTrace trace)
@@ -724,15 +739,22 @@ float3 vkr_ssr_history_clamp(float3 history_color, float3 neighborhood_min,
     return clamp(history_color, neighborhood_min, neighborhood_max);
 }
 
-float4 vkr_ssr_temporal_filter(VkrSsrParams params, float4 raw,
+float4 vkr_ssr_temporal_filter(uint neighborhood_hits, float4 raw,
                                float4 history, float3 neighborhood_min,
                                float3 neighborhood_max,
                                VkrSsrHistoryDecision decision)
 {
-    // An inverted interval means the current neighborhood contains no hits.
-    // Do not preserve stale coverage when current rays cannot support it.
-    if (any(neighborhood_min > neighborhood_max))
-        return 0.0f;
+    // A missed jitter phase must not erase validated receiver history. Fade
+    // covered radiance and coverage together; rejected history has zero weight.
+    // Empty neighborhoods provide no bounds with which to clamp its radiance.
+    if (neighborhood_hits == 0u)
+        return vkr_ssr_spatial_resolve(
+            vkr_ssr_spatial_sample(history, decision.weight), 1.0f);
+    // Sparse bounds can collapse to a single current sample. Limit newly
+    // retained unclamped radiance, without weakening coverage accumulation or
+    // history already inside the current bounds.
+    float unclamped_weight = neighborhood_hits <= 2u
+                                 ? min(decision.weight, 0.5f) : 0.0f;
     float3 clamped_history =
         vkr_ssr_history_clamp(history.xyz, neighborhood_min, neighborhood_max);
     // Coverage and covered radiance accumulate together. Multiplying the
@@ -740,7 +762,8 @@ float4 vkr_ssr_temporal_filter(VkrSsrParams params, float4 raw,
     // history twice and leaves their hit/miss flicker entirely unfiltered.
     float4 current = vkr_ssr_spatial_sample(raw, 1.0f - decision.weight);
     float4 previous = vkr_ssr_spatial_sample(
-        float4(clamped_history, history.w), decision.weight);
+        float4(clamped_history, history.w), decision.weight - unclamped_weight) +
+        vkr_ssr_spatial_sample(history, unclamped_weight);
     return vkr_ssr_spatial_resolve(current + previous, 1.0f);
 }
 

@@ -388,13 +388,22 @@ compatibility excludes raster jitter, while trace retains its jittered projectio
 SSR offsets 280/284 now hold selected-producer jitter UV instead of unused floating
 extents; the 288-byte size is unchanged. Metal and Vulkan reproject with this delta
 and validate four history taps separately before covered-radiance interpolation.
-SSGI's shared trace adapter initializes these unused-for-SSGI offsets to zero.
+The existing raw neighborhood loop also counts supported hits. The shared temporal
+filter assigns up to 0.5 of the configured history weight to otherwise-clipped
+radiance for one or two hits, retaining the rest on clamped radiance. Their sum
+preserves coverage accumulation; dense neighborhoods retain their clamp, and
+empty ones fade depth/identity-validated history coverage at the configured
+weight (default 0.85), preserving conditional radiance; rejected history clears. This changes no resource layout or fetch count. SSGI's shared trace adapter
+initializes the unused-for-SSGI jitter offsets to zero.
 Composite eligibility now uses the same selected material roughness as trace;
-normal filtering still controls the BRDF weights. Both traces repair failed coarse
-leaf candidates against the already-loaded full-resolution depth only when the
-refined hit stays in that same pixel; the shared helper adds no fetches or steps.
-Native Vulkan execution
-of this repair is pending. A source review also found a pre-existing trace-source
+normal filtering still controls the BRDF weights. Both traces now use logical
+level zero for the existing full-resolution depth image and higher levels for the
+existing half-resolution pyramid. Absolute cell crossings, earliest rear-slab
+intersection and same-pixel validation remove unsupported source hits. The
+48-decision limit, images and root layouts are unchanged. SSGI keeps its previous
+leaf and slab policies through shared-math adapters. Metal static/moving captures
+and API resize pass; GPU shader validation crashes in MetalTools even with SSR off.
+Native Vulkan execution of this repair is pending. A source review also found a pre-existing trace-source
 sampling difference: Metal uses linear samples, Vulkan uses rounded point loads;
 bilateral rough-reflection acceptance must resolve this difference.
 

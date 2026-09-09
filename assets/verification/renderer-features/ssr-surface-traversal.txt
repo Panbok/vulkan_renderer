@@ -1,0 +1,280 @@
+SSR surface traversal — 2026-09-09, work in progress
+
+Scope: user reports static and moving SSR flicker in the Bistro cafe, especially
+under the bar. Metal/M1 Pro, Darwin25.6, Release, MetalFX temporal, validation
+unset except the explicitly marked diagnostics. Native Vulkan is unavailable.
+This record does NOT establish that the remaining visible flicker is solved.
+
+Approved sparse-history policy: one/two current hits may retain otherwise-clipped
+validated history with coefficient min(w,0.5). Clamped history gets the remaining
+coefficient; total coverage still uses w. No extra reads/images. A first version
+capped total history at0.5 and worsened variation; it was rejected.
+
+Traversal repair: ray thickness extends behind visible depth; empty space in
+front must not descend. Full-resolution device depth is logical leaf0, existing
+half-resolution R32 pyramid is logicallevel1. Each leaf reuses its loaded depth
+and validates its own half-open source pixel before sampling HDR. Start at leaf0;
+compute absolute cell crossings and earliest supported slab intersection. Existing
+48 decisions, one ray, five source samples, root layouts and graph images remain.
+SSGI keeps its previous half leaf, relative crossings and symmetric slab/target
+through explicit shared-math adapters. No new SSGI quality policy is implemented.
+
+CPU diagnosis uses the retained depth/normal/specular/visibility capture listed
+below. The initial replay matches99.81–99.84% of native under-bar hit masks.
+86.6% of rays exhaust48 decisions, explaining85.6–86.2% of native hit/miss flips.
+Most accepted original hits lie ahead of the surface (median +0.0682m in the
+under-bar sample). A full-resolution DDA oracle exposed wrong source selection by
+the half-resolution leaf. The final virtual-leaf/absolute-crossing/earliest-slab
+variant matches every accepted bounded first-hit UV against full DDA across all
+three phases; its high-budget diagnostic also matches every oracle hit and UV.
+Final48-step CPU under-bar hits:3927/3908/3935. Native:3923/3902/3928 (CPU/GPU
+reconstruction differences remain). Original native counts:2023/2055/2017.
+Scratch diagnostic method/commands: .scratch/ssr-trace-replay-notes.md. This is a
+CPU geometry oracle, not native Vulkan or a performance measurement.
+
+Commands
+./build_release.sh
+python3 tools/checks/check_ssr_stability.py
+spirv-val --target-env vulkan1.4 --scalar-block-layout <production packet.ssr*.spv and packet.ssgi*.spv>
+Normal snapshots use:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case <case> --profile tools/profiles/local-offscreen.json
+API resize uses:
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_temporal_resize.case.json --profile tools/profiles/local-windowed.json
+
+Current shared-math check:98 outputs pass. Restoring the old relative crossing
+formula fails both exact path-independence pairs. Ten production SSR/SSGI SPIR-V
+modules validate. Native static and moving captures each contain1,385,763 finite
+HDR/SSR tuples; every SSR confidence remains in[0,1].
+
+Camera and measurement
+Static800x600 output, actual source641x481, trace320x240, render_scale0.8,
+position[-5.03,1.7,9.73], yaw−20.34,pitch−12,FOV70. Manual exposure0.853, GTAOon,
+SSGIoff, three frame slots,32warmup, captures3/4/5. Under-bar ROI is x32..239,
+y120..215 in the trace. Motion case translates+x0.4 and yaw+3 degrees.
+A further1280x720 full-jitter-cycle diagnostic raises exposure to8 to reveal
+reflection artifacts; it must not be compared numerically to the800x600 baseline.
+
+Limitations
+Sparse-only history variation improves1.48% in the under-bar ROI; insufficient.
+The full traversal increases supported reflection coverage/energy, so absolute
+variation alone is not an equal-output quality comparison. Final visual acceptance
+and matched Release frame-cost comparison are still pending.
+Strict motion comparison differs in two FP16 pixels; an identical SSR-off repeat
+also differs in one. This is not evidence that SSR modifies motion, and the strict
+checker is not weakened or reported as passing.
+Metal shader validation crashes in MetalTools report decoding with SSR on and off,
+EXC_BAD_ACCESS at0x18. No shader report is produced; the underlying diagnostic
+remains unavailable, not passed. API-only validation is tracked separately.
+The saved cafe probe diagnostic changes diffuse lighting and is not selected for
+the production scene. Actual Bistro scene lighting remains unchanged.
+
+Run publications (exact log output; labels identify intermediate variants)
+
+ssr-sparse-bar-static
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T214312.836Z-0102db/report.json","sha256":"sha256:c6cc92d1c356304b876ae4214acc730989be663cb036133d4cd12f44cf23c930"}
+
+ssr-sparse-bar-motion
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T214357.686Z-0106eb/report.json","sha256":"sha256:b0ff79963c04538404459c76c2112c33ecae54f613b847548c03a76617bffbd0"}
+
+ssr-sparse-coverage-static
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T214809.616Z-011124/report.json","sha256":"sha256:6e82364dfc5a060c72df7beddfa175ab6c679c6efa7d598ea67b0789c6504fce"}
+
+ssr-sparse-coverage-motion
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T214925.084Z-0117e3/report.json","sha256":"sha256:7fb95a1bfdd7cc5df9923ae7bf683e5857da93241589ed9d9968190d5b95f4c4"}
+
+ssr-sparse-api
+{"status":"pass","exit_code":0,"report":"build/_artifacts/profile/20260908T215107.289Z-012153/report.json","sha256":"sha256:fa84bad22f4f5909adc302c1f5638a18c0688fea8928d7b4e4390ab87e72489c"}
+
+ssr-sparse-motion-off
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T215213.366Z-0124c2/report.json","sha256":"sha256:e9558776fe67159298c33c754951e835b6016df0be429538711317f1576761f8"}
+
+ssr-sparse-motion-off-repeat
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T215702.902Z-014a23/report.json","sha256":"sha256:a37c977de77446285c0d9fd380bed67b2cafa5e0c79ba67a84b85933db50d49e"}
+
+ssr-bar-trace-diagnostic
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T220256.694Z-01693d/report.json","sha256":"sha256:1f155deec9c43dba204af94126e3f0e32ac8d493e705d7a4b83b8aabd5bde11a"}
+
+ssr-front-slab-static
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T221609.550Z-001511/report.json","sha256":"sha256:67479def24774d8bf5ba6b614df395b0c7ebab706e3e353a273adeaa1cd75b64"}
+
+ssr-front-slab-motion
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T221650.332Z-00186c/report.json","sha256":"sha256:6909286f4c514cd38e9e568f48d30709785718f1c1bb153a79d8fc543ba6bfb5"}
+
+ssr-front-slab-mirror
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T221804.096Z-001f47/report.json","sha256":"sha256:3a23bc424810c96a101be6a4d0debb6d73bcced891bf1427eee06d9191f3b8c7"}
+
+ssr-cafe-probe-static
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T222150.339Z-002a00/report.json","sha256":"sha256:2a542ae9573b25330ff712cf874c261aa5f111447486744b6a4a89be98118da7"}
+
+ssr-fullres-leaf-static
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T223543.108Z-005887/report.json","sha256":"sha256:8208f3c1ed02a6bf2d112bc8f43b085f8fce4834d2c1019823a0517075ed074d"}
+
+ssr-fullres-leaf-motion
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T223713.761Z-005e1f/report.json","sha256":"sha256:fc27436dc4cec75ba6d6a027e3814425988d5fb21aae2b1805ab42a8c0dcbb71"}
+
+ssr-bar-rear
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T223837.717Z-0060ca/report.json","sha256":"sha256:1171ae88a477d61bb5fcd88a202b545612a4c4545b8de1dcafcdd3ccea61e209"}
+
+ssr-fullres-leaf-cycle
+{"status":"pass","exit_code":0,"report":"build/_artifacts/snapshot/20260908T224012.574Z-00641c/report.json","sha256":"sha256:f2691296695daee43f506c5ac9cd7c46f1946dc2f3ab138c98429eafb4be9f9f"}
+
+ssr-fullres-leaf-validation
+{"status":"unavailable","exit_code":3,"report":"build/_artifacts/profile/20260908T224146.853Z-006f2b/report.json","sha256":"sha256:97d35a9bccc3e7a469fe556252f7177554f6f5bbf1dc1045ed3b32002e95071a"}
+
+ssr-validation-off-diagnostic
+{"status":"unavailable","exit_code":3,"report":"build/_artifacts/profile/20260908T224346.337Z-007308/report.json","sha256":"sha256:893a71586212dde8ef92d3f215baf014cfe2b0e39922da7484713e136d465f69"}
+
+ssr-fullres-leaf-api
+{"status":"pass","exit_code":0,"report":"build/_artifacts/profile/20260908T224412.664Z-007052/report.json","sha256":"sha256:fa9d20cbdae1f2744ec9e5c6c4b3bd9b8e70ce3d527f217fb1513a69f7f73515"}
+
+Sparse-only and full-traversal measurements
+
+ssr-sparse-coverage-metrics
+build/_artifacts/snapshot/20260908T212245.158Z-00a4cc
+ssr_raw all variation 0.0012807994430396987 p95 0.0036393478512763977 energy 0.0015503586829272895 coverage 0.22351179118552764
+ssr_raw under_bar variation 9.334618703647257e-05 p95 0.0005080186141033967 energy 0.00016490680031254254 coverage 0.07911734754203731
+ssr_reflection all variation 0.00029818635886121536 p95 0.0007745390757918358 energy 0.0012103950273797002 coverage 0.21122662800105496
+ssr_reflection under_bar variation 2.3006149474178114e-05 p95 9.958558560659481e-05 energy 0.0001529021993861514 coverage 0.0749603785160515
+build/_artifacts/snapshot/20260908T214809.616Z-011124
+ssr_raw all variation 0.0012807993632406335 p95 0.0036393478512763977 energy 0.0015503588567377905 coverage 0.22351179118552764
+ssr_raw under_bar variation 9.334618703647257e-05 p95 0.0005080186141033967 energy 0.00016490680031254254 coverage 0.07911734754203731
+ssr_reflection all variation 0.00027859449114297255 p95 0.0007486753165721893 energy 0.0012189604805802933 coverage 0.21122424182844246
+ssr_reflection under_bar variation 2.266545303130149e-05 p95 9.729053999762982e-05 energy 0.0001530581910705972 coverage 0.07496038055381714
+
+ssr-fullres-leaf-metrics
+build/_artifacts/snapshot/20260908T214809.616Z-011124
+ssr_raw all variation 0.0012807993632406335 p95 0.0036393478512763977 energy 0.0015503588567377905 coverage 0.22351179118552764
+ssr_raw under_bar variation 9.334618703647257e-05 p95 0.0005080186141033967 energy 0.00016490680031254254 coverage 0.07911734754203731
+ssr_reflection all variation 0.00027859449114297255 p95 0.0007486753165721893 energy 0.0012189604805802933 coverage 0.21122424182844246
+ssr_reflection under_bar variation 2.266545303130149e-05 p95 9.729053999762982e-05 energy 0.0001530581910705972 coverage 0.07496038055381714
+build/_artifacts/snapshot/20260908T223543.108Z-005887
+ssr_raw all variation 0.0012420539273515917 p95 0.0030489861965179443 energy 0.0014426130892608597 coverage 0.18189566217362882
+ssr_raw under_bar variation 0.00013980150458858999 p95 0.0007564196130260825 energy 0.0003085460796477992 coverage 0.15819032706766048
+ssr_reflection all variation 0.00030644921683215784 p95 0.0007245817008273056 energy 0.0011226105267258379 coverage 0.16823707116871245
+ssr_reflection under_bar variation 3.155924230887967e-05 p95 0.0001310758525505661 energy 0.000287894660999925 coverage 0.15202625033258596
+
+ssr-fullres-native-check
+20260908T223543.108Z-005887 frame3 allhits=18328 barhits=3923
+20260908T223543.108Z-005887 frame4 allhits=18337 barhits=3902
+20260908T223543.108Z-005887 frame5 allhits=18307 barhits=3928
+20260908T223543.108Z-005887 1385763 finite tuples; valid confidence
+20260908T223713.761Z-005e1f frame3 allhits=18359 barhits=3772
+20260908T223713.761Z-005e1f frame4 allhits=18286 barhits=3712
+20260908T223713.761Z-005e1f frame5 allhits=18020 barhits=3680
+20260908T223713.761Z-005e1f 1385763 finite tuples; valid confidence
+
+ssr-metal-shader-validation-crash
+vkr_harness-2026-09-09-014232.ips {'codes': '0x0000000000000001, 0x0000000000000018', 'rawCodes': [1, 24], 'type': 'EXC_BAD_ACCESS', 'signal': 'SIGSEGV', 'subtype': 'KERN_INVALID_ADDRESS at 0x0000000000000018'}
+resolvedSharedPacketData::resolvedSharedPacketData(ErrorLogPacket*, MTLGPUDebugDevice*, MTLGPUDebugGPULog*, std::__1::unordered_map<unsigned int, NSString*, std::__1::hash<unsigned int>, std::__1::equal_to<unsigned int>, std::__1::allocator<std::__1::pair<unsigned int const, NSString*>>> const&)
+MTLGPUDebugReadReportBuffer
+-[MTL4GPUDebugCommandQueue _decodeReportLogState:outputArray:encoderLabels:]
+__50-[MTL4GPUDebugCommandQueue _commit:count:options:]_block_invoke
+__64-[MTL4ToolsCommandQueue commit:count:options:preprocessHandler:]_block_invoke
+-[_MTL4CommitFeedbackDispatch executeBlocksWithCommitFeedback:]
+__77-[IOGPUMetal4CommandQueue commitFillArgs:count:args:argsSize:commitFeedback:]_block_invoke.10
+IOGPUNotificationQueueDispatchAvailableCompletionNotifications
+
+vkr_harness-2026-09-09-014347.ips {'codes': '0x0000000000000001, 0x0000000000000018', 'rawCodes': [1, 24], 'type': 'EXC_BAD_ACCESS', 'signal': 'SIGSEGV', 'subtype': 'KERN_INVALID_ADDRESS at 0x0000000000000018'}
+resolvedSharedPacketData::resolvedSharedPacketData(ErrorLogPacket*, MTLGPUDebugDevice*, MTLGPUDebugGPULog*, std::__1::unordered_map<unsigned int, NSString*, std::__1::hash<unsigned int>, std::__1::equal_to<unsigned int>, std::__1::allocator<std::__1::pair<unsigned int const, NSString*>>> const&)
+MTLGPUDebugReadReportBuffer
+-[MTL4GPUDebugCommandQueue _decodeReportLogState:outputArray:encoderLabels:]
+__50-[MTL4GPUDebugCommandQueue _commit:count:options:]_block_invoke
+__64-[MTL4ToolsCommandQueue commit:count:options:preprocessHandler:]_block_invoke
+-[_MTL4CommitFeedbackDispatch executeBlocksWithCommitFeedback:]
+__77-[IOGPUMetal4CommandQueue commitFillArgs:count:args:argsSize:commitFeedback:]_block_invoke.10
+IOGPUNotificationQueueDispatchAvailableCompletionNotifications
+
+
+Residual hotspot investigation — 2026-09-09, visual acceptance FAILED
+The quiet lower wooden panel is not representative of the counter/glassware.
+Diagnostic command: env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_bar_hotspot_diagnostic.case.json --profile tools/profiles/local-offscreen.json
+Report: build/_artifacts/snapshot/20260908T230449.464Z-00b8eb/report.json
+SHA256: eff508ae1221b1bde8ce110245a920c980ad90721231e64e7c38be5607359a1c
+Opaque source (656,199), trace (328,99): spatial coverage .25450 / 0 / .53655; stored coverage .07562 / 0 / .08044 at frames 7/8/9.
+The empty 3x3 current neighborhood clears history immediately. Roughness remains .360784, primitive 5191; normal rotates 9.99 then 7.47 degrees across static jitter phases.
+Frame 9 alpha is consistent with accepting zero-coverage history. No further history rejection defect demonstrated; actual four-tap acceptance cannot be proved from these captured channels.
+Preserving history through empty neighborhoods is not implemented and requires a quality-policy decision.
+before whole image meaningful>1LSB 143239 meaningful range>3LSB 2257
+underbar volatile 10 top [(6, 1.375, 226, 585, [[-3, 0, 0, 2, 2, 0, -4, 0], [-2, 0, 0, 1, 1, 0, -4, 0], [-1, 0, 0, 1, 1, 0, -3, 0]]), (4, 14.25, 839, 615, [[15, 16, 16, 12, 13, 14, 14, 14], [3, 3, 3, 2, 2, 3, 3, 3], [0, 0, 0, 0, 0, 0, 0, 0]]), (4, 11.625, 840, 614, [[13, 13, 14, 10, 10, 10, 11, 12], [3, 3, 3, 2, 2, 2, 2, 3], [0, 0, 0, 0, 0, 0, 0, 0]]), (4, 1.875, 957, 595, [[0, 0, 0, -1, -2, -1, -2, -2], [0, 0, 0, -2, -3, -3, -2, -2], [0, 0, 0, -2, -4, -3, -3, -3]]), (4, 1.625, 462, 390, [[-2, -2, -2, -2, 0, 1, 1, 0], [-2, -3, -2, -3, -1, 1, 1, 0], [-2, -3, -2, -3, 0, 1, 1, 0]]), (4, 1.375, 672, 549, [[0, -1, 0, 2, 2, 1, 1, 1], [0, -1, 0, 2, 2, 2, 2, 2], [0, 0, -1, 3, 2, 2, 1, 1]]), (4, 1.375, 652, 409, [[0, 0, -1, -2, -1, 0, -1, -1], [1, -1, -2, -3, -1, -1, -1, -1], [0, -1, -2, -3, -1, -1, -1, 0]]), (4, 1.375, 218, 599, [[-1, -1, 1, 2, 2, 0, -2, 1], [-2, -1, 1, 1, 2, -1, -2, 1], [-1, -1, 0, 1, 0, 0, -1, 1]]), (4, 1.25, 955, 554, [[1, 2, 2, 0, 1, 1, 0, 0], [2, 2, 3, 0, 0, 1, 0, 0], [3, 3, 4, 0, 0, 0, 0, 0]]), (4, 1.25, 631, 593, [[0, 0, -1, 0, 2, 2, 1, 1], [-1, 0, -1, 0, 2, 2, 2, 2], [0, 0, -1, 0, 3, 2, 2, 2]])]
+counter_trim volatile 504 top [(23, 22.625, 815, 248, [[18, 16, 15, 38, 27, 25, 22, 20], [16, 15, 13, 34, 25, 23, 20, 18], [14, 12, 11, 6, 22, 21, 18, 16]]), (21, 21.0, 814, 248, [[17, 15, 14, 35, 25, 23, 21, 18], [15, 14, 12, 32, 24, 21, 19, 18], [12, 10, 9, 6, 20, 18, 16, 15]]), (21, 14.875, 815, 249, [[11, 10, 9, 30, 17, 16, 14, 12], [10, 10, 9, 25, 16, 15, 13, 12], [7, 6, 6, -4, 13, 12, 10, 9]]), (20, 18.5, 816, 248, [[15, 14, 12, 32, 22, 20, 17, 16], [13, 12, 11, 28, 20, 19, 16, 15], [10, 10, 8, 1, 17, 16, 13, 12]]), (20, 13.625, 814, 249, [[10, 9, 8, 28, 16, 14, 13, 11], [10, 9, 8, 24, 16, 14, 12, 11], [6, 6, 5, -4, 12, 10, 9, 7]]), (19, 17.625, 815, 250, [[13, 12, 11, 30, 22, 20, 18, 15], [12, 12, 10, 28, 21, 19, 17, 15], [10, 10, 8, 8, 19, 17, 15, 13]]), (19, 11.75, 816, 249, [[8, 8, 7, 26, 13, 11, 11, 10], [9, 8, 8, 22, 13, 12, 11, 10], [6, 6, 5, -4, 10, 9, 8, 6]]), (18, 28.625, 815, 247, [[24, 23, 21, 38, 35, 32, 29, 27], [23, 22, 20, 38, 33, 30, 28, 26], [18, 17, 15, 27, 27, 26, 23, 20]]), (18, 27.25, 814, 247, [[23, 20, 19, 37, 35, 30, 28, 26], [21, 19, 18, 35, 33, 29, 27, 24], [16, 14, 12, 25, 25, 23, 21, 18]]), (18, 17.25, 818, 248, [[14, 12, 11, 29, 21, 19, 17, 15], [13, 10, 9, 25, 19, 17, 15, 13], [11, 8, 7, 2, 16, 14, 12, 11]]), (17, 18.125, 819, 248, [[15, 13, 12, 29, 22, 20, 18, 16], [13, 12, 10, 27, 20, 18, 17, 15], [11, 9, 8, 6, 17, 15, 14, 11]]), (17, 8.25, 817, 249, [[6, 5, 4, 21, 9, 8, 7, 6], [6, 6, 5, 16, 10, 8, 8, 7], [3, 3, 2, -4, 6, 5, 5, 4]])]
+whole image top [(32, 43.0, 889, 141, [[38, 34, 31, 63, 53, 45, 40, 40], [24, 21, 18, 40, 35, 29, 25, 26], [13, 10, 8, 15, 18, 17, 14, 14]]), (28, 32.25, 888, 141, [[28, 23, 22, 50, 43, 34, 29, 29], [21, 16, 13, 34, 29, 23, 20, 23], [13, 10, 9, 13, 20, 19, 15, 14]]), (26, 53.25, 889, 140, [[51, 48, 43, 69, 62, 51, 48, 54], [36, 33, 30, 47, 43, 36, 33, 39], [20, 18, 15, 20, 22, 20, 18, 22]]), (25, 70.25, 804, 91, [[-81, -70, -66, -56, -72, -66, -74, -77], [-53, -46, -45, -40, -46, -44, -45, -48], [-24, -25, -24, -24, -19, -19, -15, -18]]), (24, 70.0, 780, 127, [[-66, -61, -61, -70, -85, -75, -74, -68], [-46, -41, -40, -47, -55, -54, -52, -46], [-23, -19, -18, -21, -22, -30, -27, -23]]), (24, 40.625, 888, 140, [[39, 36, 32, 56, 49, 38, 34, 41], [30, 27, 21, 38, 34, 27, 24, 31], [20, 18, 15, 19, 22, 21, 18, 21]]), (24, 9.25, 924, 45, [[-18, -11, 2, -1, -11, -5, -8, -4], [-22, -14, 2, -2, -13, -6, -10, -5], [-21, -13, 2, -2, -12, -6, -9, -5]]), (23, 42.625, 783, 93, [[-52, -48, -42, -41, -37, -34, -32, -55], [-50, -45, -41, -39, -36, -32, -30, -53], [-49, -44, -40, -39, -35, -31, -30, -52]]), (23, 22.625, 815, 248, [[18, 16, 15, 38, 27, 25, 22, 20], [16, 15, 13, 34, 25, 23, 20, 18], [14, 12, 11, 6, 22, 21, 18, 16]]), (22, 99.25, 887, 123, [[105, 112, 93, 93, 103, 90, 100, 98], [80, 86, 72, 72, 77, 68, 74, 72], [40, 44, 40, 40, 39, 34, 35, 34]]), (22, 67.375, 889, 138, [[74, 74, 66, 69, 65, 59, 55, 77], [53, 53, 46, 50, 46, 41, 38, 55], [27, 28, 27, 30, 27, 23, 20, 29]]), (22, 39.125, 888, 138, [[45, 45, 37, 39, 37, 32, 28, 50], [28, 29, 23, 25, 23, 19, 16, 32], [10, 11, 12, 13, 12, 10, 7, 13]]), (21, 90.875, 886, 121, [[98, 102, 93, 84, 95, 86, 88, 81], [73, 78, 69, 61, 71, 64, 65, 60], [36, 40, 37, 30, 36, 31, 31, 28]]), (21, 80.375, 886, 120, [[92, 92, 88, 79, 75, 71, 75, 71], [65, 64, 58, 51, 48, 44, 49, 46], [29, 29, 27, 22, 19, 16, 18, 16]]), (21, 68.125, 885, 121, [[68, 79, 73, 65, 72, 65, 65, 58], [49, 59, 53, 45, 51, 46, 46, 41], [20, 26, 24, 18, 22, 19, 18, 16]])]
+after whole image meaningful>1LSB 124708 meaningful range>3LSB 2436
+underbar volatile 20 top [(5, 7.75, 313, 504, [[5, 7, 7, 8, 8, 7, 7, 6], [5, 8, 8, 10, 9, 8, 7, 7], [1, 1, 1, 1, 1, 1, 1, 1]]), (5, 1.375, 226, 585, [[-3, 0, 0, 2, 2, 2, 0, 2], [-2, 0, 0, 1, 1, 2, 0, 2], [-1, 0, 0, 1, 1, 1, 0, 1]]), (4, 7.5, 314, 504, [[6, 7, 8, 8, 9, 8, 7, 7], [4, 7, 8, 8, 8, 8, 6, 5], [1, 1, 1, 1, 1, 1, 1, 1]]), (4, 7.5, 313, 503, [[4, 4, 4, 6, 6, 5, 4, 4], [5, 8, 8, 9, 9, 8, 7, 6], [0, 1, 1, 1, 1, 1, 1, 1]]), (4, 7.25, 314, 503, [[2, 3, 3, 5, 6, 5, 4, 4], [5, 7, 7, 9, 9, 7, 7, 7], [1, 1, 1, 2, 2, 1, 1, 1]]), (4, 7.25, 312, 503, [[4, 6, 6, 7, 7, 6, 6, 4], [5, 7, 7, 9, 9, 8, 7, 6], [0, 1, 1, 1, 1, 1, 1, 1]]), (4, 5.875, 315, 504, [[4, 6, 6, 7, 6, 7, 6, 5], [4, 7, 6, 8, 7, 6, 5, 4], [0, 1, 1, 1, 1, 1, 1, 1]]), (4, 2.0, 667, 398, [[0, 0, 0, -1, -1, -1, 0, 1], [-2, -2, -1, -2, -2, -2, -1, 1], [-2, -2, -2, -3, -3, -2, -1, 1]]), (4, 1.875, 957, 595, [[0, 0, 0, -1, -2, -1, -2, -2], [0, 0, 0, -2, -3, -3, -2, -2], [0, 0, 0, -2, -4, -3, -3, -3]]), (4, 1.75, 631, 599, [[0, 0, -2, -1, -1, -1, -1, -1], [0, 0, -2, -2, -2, -1, -1, -1], [0, 1, -3, -2, -2, -2, -2, -2]]), (4, 1.75, 631, 578, [[2, 2, 2, 1, 1, 0, 0, 0], [1, 1, 1, 1, 2, -1, -1, -1], [2, 2, 2, 2, 2, -1, -2, -1]]), (4, 1.75, 373, 494, [[-1, 0, 0, 2, 2, 2, 2, 2], [-1, 0, 0, 2, 2, 2, 2, 2], [-1, -1, -1, 3, 2, 2, 2, 2]])]
+counter_trim volatile 1125 top [(31, 40.125, 820, 249, [[36, 32, 28, 39, 46, 38, 59, 43], [36, 32, 28, 37, 44, 38, 54, 43], [33, 29, 25, 16, 23, 32, 19, 33]]), (29, 46.375, 820, 248, [[43, 39, 35, 45, 51, 44, 64, 50], [43, 38, 34, 45, 51, 45, 62, 51], [41, 36, 32, 30, 35, 41, 35, 45]]), (29, 40.75, 821, 249, [[38, 35, 30, 38, 44, 37, 59, 45], [37, 34, 29, 36, 45, 38, 54, 46], [34, 31, 26, 20, 25, 32, 21, 35]]), (29, 33.0, 818, 249, [[29, 25, 21, 37, 39, 29, 50, 34], [29, 25, 21, 33, 36, 29, 45, 33], [26, 22, 19, 4, 10, 23, 9, 27]]), (28, 34.75, 819, 249, [[30, 26, 23, 37, 43, 33, 51, 35], [30, 25, 22, 34, 40, 33, 46, 35], [27, 23, 20, 9, 15, 27, 11, 26]]), (27, 47.5, 821, 248, [[44, 41, 36, 41, 49, 43, 63, 52], [45, 42, 37, 43, 51, 45, 63, 54], [42, 39, 35, 34, 37, 40, 38, 47]]), (27, 40.75, 819, 248, [[37, 32, 29, 42, 48, 40, 56, 42], [36, 31, 28, 40, 46, 39, 52, 42], [34, 29, 25, 22, 27, 35, 25, 36]]), (27, 40.5, 818, 248, [[38, 32, 29, 43, 46, 37, 56, 43], [38, 31, 28, 40, 43, 36, 53, 42], [36, 29, 25, 19, 23, 32, 26, 39]]), (26, 30.25, 817, 249, [[27, 24, 20, 36, 32, 25, 46, 32], [28, 24, 21, 32, 32, 25, 43, 32], [24, 21, 17, 1, 9, 19, 7, 27]]), (25, 37.25, 817, 248, [[35, 31, 27, 40, 40, 32, 52, 41], [35, 30, 27, 38, 38, 31, 49, 39], [33, 28, 25, 16, 17, 28, 23, 36]]), (24, 31.625, 818, 250, [[28, 24, 21, 35, 36, 30, 45, 34], [28, 25, 21, 34, 35, 30, 43, 33], [26, 22, 19, 14, 15, 23, 19, 26]]), (23, 41.875, 820, 250, [[40, 36, 31, 42, 45, 39, 54, 48], [39, 35, 31, 40, 43, 39, 52, 48], [36, 32, 28, 25, 28, 32, 29, 34]])]
+whole image top [(31, 40.125, 820, 249, [[36, 32, 28, 39, 46, 38, 59, 43], [36, 32, 28, 37, 44, 38, 54, 43], [33, 29, 25, 16, 23, 32, 19, 33]]), (29, 46.375, 820, 248, [[43, 39, 35, 45, 51, 44, 64, 50], [43, 38, 34, 45, 51, 45, 62, 51], [41, 36, 32, 30, 35, 41, 35, 45]]), (29, 40.75, 821, 249, [[38, 35, 30, 38, 44, 37, 59, 45], [37, 34, 29, 36, 45, 38, 54, 46], [34, 31, 26, 20, 25, 32, 21, 35]]), (29, 33.0, 818, 249, [[29, 25, 21, 37, 39, 29, 50, 34], [29, 25, 21, 33, 36, 29, 45, 33], [26, 22, 19, 4, 10, 23, 9, 27]]), (28, 92.875, 635, 90, [[-109, -102, -93, -90, -84, -81, -93, -91], [-81, -80, -77, -74, -70, -67, -72, -69], [-47, -52, -57, -54, -51, -50, -47, -46]]), (28, 34.75, 819, 249, [[30, 26, 23, 37, 43, 33, 51, 35], [30, 25, 22, 34, 40, 33, 46, 35], [27, 23, 20, 9, 15, 27, 11, 26]]), (27, 47.5, 821, 248, [[44, 41, 36, 41, 49, 43, 63, 52], [45, 42, 37, 43, 51, 45, 63, 54], [42, 39, 35, 34, 37, 40, 38, 47]]), (27, 40.75, 819, 248, [[37, 32, 29, 42, 48, 40, 56, 42], [36, 31, 28, 40, 46, 39, 52, 42], [34, 29, 25, 22, 27, 35, 25, 36]]), (27, 40.5, 818, 248, [[38, 32, 29, 43, 46, 37, 56, 43], [38, 31, 28, 40, 43, 36, 53, 42], [36, 29, 25, 19, 23, 32, 26, 39]]), (26, 30.25, 817, 249, [[27, 24, 20, 36, 32, 25, 46, 32], [28, 24, 21, 32, 32, 25, 43, 32], [24, 21, 17, 1, 9, 19, 7, 27]]), (25, 37.25, 817, 248, [[35, 31, 27, 40, 40, 32, 52, 41], [35, 30, 27, 38, 38, 31, 49, 39], [33, 28, 25, 16, 17, 28, 23, 36]]), (24, 53.25, 886, 124, [[60, 62, 56, 38, 54, 48, 53, 55], [40, 43, 37, 30, 34, 29, 34, 36], [10, 11, 7, 16, 8, 6, 7, 8]]), (24, 50.625, 886, 125, [[57, 61, 56, 37, 49, 43, 50, 52], [39, 43, 38, 30, 33, 28, 34, 35], [11, 13, 10, 17, 10, 7, 9, 9]]), (24, 31.625, 818, 250, [[28, 24, 21, 35, 36, 30, 45, 34], [28, 25, 21, 34, 35, 30, 43, 33], [26, 22, 19, 14, 15, 23, 19, 26]]), (23, 41.875, 820, 250, [[40, 36, 31, 42, 45, 39, 54, 48], [39, 35, 31, 40, 43, 39, 52, 48], [36, 32, 28, 25, 28, 32, 29, 34]])]
+
+Matched cost observation (changed output; no equivalent-output speed claim)
+20260908T225635.819Z-009cd7 pass non-authoritative,3children x120samples after60warmup
+SSR.DepthBase {'sample_count': 360, 'invalid_count': 0, 'mean': 0.06681041666666665, 'p50': 0.06641666666666667, 'p95': 0.07175, 'stddev': 0.002447406960330731}
+SSR.DepthMip.0 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.01094953703703703, 'p50': 0.010875, 'p95': 0.011375, 'stddev': 0.0003676619721819916}
+SSR.DepthMip.1 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.0063136574074074085, 'p50': 0.0062499999999999995, 'p95': 0.006541666666666666, 'stddev': 0.0003505790667068298}
+SSR.DepthMip.2 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.005985995370370368, 'p50': 0.005916666666666666, 'p95': 0.006208333333333333, 'stddev': 0.0003764909311986981}
+SSR.DepthMip.3 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.006197916666666663, 'p50': 0.006124999999999999, 'p95': 0.006458333333333333, 'stddev': 0.0005091916516570986}
+SSR.DepthMip.4 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.006649421296296304, 'p50': 0.006541666666666666, 'p95': 0.007083333333333333, 'stddev': 0.0005687636960582796}
+SSR.DepthMip.5 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.006609027777777784, 'p50': 0.006583333333333333, 'p95': 0.007, 'stddev': 0.00038192613592482645}
+SSR.DepthMip.6 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.007131828703703693, 'p50': 0.0070416666666666666, 'p95': 0.007583333333333333, 'stddev': 0.0005868829278196977}
+SSR.DepthMip.7 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.006119212962962964, 'p50': 0.0060416666666666665, 'p95': 0.006333333333333333, 'stddev': 0.0004583599295500717}
+SSR.DepthMip.8 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.005684953703703704, 'p50': 0.005541666666666666, 'p95': 0.006208333333333333, 'stddev': 0.0006540422724510619}
+SSR.Trace.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.9926531249999998, 'p50': 0.9919583333333333, 'p95': 1.0044583333333332, 'stddev': 0.007122809041182613}
+SSR.Temporal {'sample_count': 360, 'invalid_count': 0, 'mean': 0.29720370370370386, 'p50': 0.2959583333333333, 'p95': 0.3095833333333333, 'stddev': 0.005913618132353062}
+SSR.Composite.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.6538179398148146, 'p50': 0.6520833333333333, 'p95': 0.6666666666666666, 'stddev': 0.007200174635083425}
+Sum SSR GPU means 2.0721267361111106
+frame.wall {'unit': 'ns', 'sample_count': 360, 'invalid_count': 0, 'mean': 15530621.836111112, 'p50': 15337125, 'p95': 17950833, 'min': 1753416, 'max': 35693625, 'stddev': 2381620.9126770305, 'total': 5591023861}
+draw.world.calls_issued {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 14, 'p50': 14, 'p95': 14, 'min': 14, 'max': 14, 'stddev': 0, 'total': 5040}
+memory.gpu.live_totals_exact {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 1, 'p50': 1, 'p95': 1, 'min': 1, 'max': 1, 'stddev': 0, 'total': 360}
+20260908T225719.926Z-00a257 pass non-authoritative,3children x120samples after60warmup
+SSR.DepthBase {'sample_count': 360, 'invalid_count': 0, 'mean': 0.06677384259259264, 'p50': 0.066625, 'p95': 0.071375, 'stddev': 0.002640118611703816}
+SSR.DepthMip.0 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.010872569444444443, 'p50': 0.010833333333333334, 'p95': 0.01125, 'stddev': 0.0003733100746619838}
+SSR.DepthMip.1 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.00625601851851852, 'p50': 0.006166666666666667, 'p95': 0.006625, 'stddev': 0.00035262798170908793}
+SSR.DepthMip.2 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.0060136574074074085, 'p50': 0.005916666666666666, 'p95': 0.006333333333333333, 'stddev': 0.0005117227348102423}
+SSR.DepthMip.3 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.006170254629629626, 'p50': 0.0060416666666666665, 'p95': 0.006666666666666666, 'stddev': 0.00048777656445386807}
+SSR.DepthMip.4 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.006571064814814815, 'p50': 0.0065, 'p95': 0.0070416666666666666, 'stddev': 0.00047194021853738406}
+SSR.DepthMip.5 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.0067974537037037075, 'p50': 0.006625, 'p95': 0.007625, 'stddev': 0.0006450976079498193}
+SSR.DepthMip.6 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.00726770833333333, 'p50': 0.007083333333333333, 'p95': 0.00975, 'stddev': 0.0007800499270533821}
+SSR.DepthMip.7 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.006253472222222217, 'p50': 0.006083333333333333, 'p95': 0.008583333333333333, 'stddev': 0.0006630599049105586}
+SSR.DepthMip.8 {'sample_count': 360, 'invalid_count': 0, 'mean': 0.005718981481481484, 'p50': 0.005625, 'p95': 0.006124999999999999, 'stddev': 0.00050026270533433}
+SSR.Trace.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.789655092592593, 'p50': 0.7885, 'p95': 0.8031666666666666, 'stddev': 0.0073094453305848975}
+SSR.Temporal {'sample_count': 360, 'invalid_count': 0, 'mean': 0.30467256944444426, 'p50': 0.3045, 'p95': 0.3102083333333333, 'stddev': 0.0031098830157613145}
+SSR.Composite.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.6511533564814814, 'p50': 0.6497916666666667, 'p95': 0.6602916666666666, 'stddev': 0.004920908139841717}
+Sum SSR GPU means 1.8741760416666668
+frame.wall {'unit': 'ns', 'sample_count': 360, 'invalid_count': 0, 'mean': 15282519.419444444, 'p50': 15212958, 'p95': 17389999, 'min': 11180000, 'max': 23018708, 'stddev': 1439646.5472041024, 'total': 5501706991}
+draw.world.calls_issued {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 14, 'p50': 14, 'p95': 14, 'min': 14, 'max': 14, 'stddev': 0, 'total': 5040}
+memory.gpu.live_totals_exact {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 1, 'p50': 1, 'p95': 1, 'min': 1, 'max': 1, 'stddev': 0, 'total': 360}
+All three comparison fingerprints match: {'environment_fingerprint': 'sha256:570f75124b9d8250b877c2052fa49465d2e4f7f5da0257d8afeebff5acd70c26', 'workload_fingerprint': 'sha256:c6d763450c9600f0f149ea34f0befeb48293b74fee4ecf73f26a21dd899e2f69', 'policy_fingerprint': 'sha256:52771ef04aa4978f6d858e132e46d0105055ce1aef5af805be1b4013dfdd74b7'}
+
+
+Approved empty-neighborhood fade — 2026-09-09
+User: "You can retain depth/identity". Shared filter now retains validated
+history through empty neighborhoods, fading covered radiance and coverage at
+existing temporal weight (.85 default). Invalid history immediately clears.
+No new texture reads, images, rays or ABI fields.
+Commands:
+python3 tools/checks/check_ssr_stability.py
+./build_release.sh
+./build_editor.sh Release
+spirv-val --target-env vulkan1.4 --scalar-block-layout <each production packet.ssr*.spv>
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_bar_cycle.case.json --profile tools/profiles/local-offscreen.json
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_bar_motion.case.json --profile tools/profiles/local-offscreen.json
+All106 arithmetic outputs pass; fail-before output24 erased expected radiance8.
+The new16-miss oracle retains .85^16 coverage and constant radiance; invalid
+receiver history clears all channels. Both Release wrappers pass, five SSR SPIRVs pass.
+Static report: snapshot/20260909T030926.051Z-00702d
+SHA256:17706573ad13b1a187236f44367c4a92ffd91e87b1351a0a3fe50429ede02682
+Moving report: snapshot/20260909T031057.536Z-007436
+SHA256:86cc9da11f56a22bd81ba443f89e4e26e9141e9ad9cd09b6e3547907603e8564
+Static7,090,696 and moving1,385,763 tuples finite; SSR confidence in[0,1].
+No-hit phases now preserve the reflection, but overall visual acceptance FAILED.
+Meaningful whole-image pixels140772, volatile2628 (before124708/2436);
+counter volatile1260 (before1125), largest range30LSB (before31).
+These are changed-output observations, not an established stability improvement.
+Moving finite-output checks do not establish absence of ghost trails.
+Preview:ssr-empty-history-fade.png. Clip:ssr-empty-history-fade-slow.mp4
+(eight isolated static jitter-phase captures at8fps, deliberately slowed).
+The source normal audit found no concrete normal-path defect: source triangle
+intersection and approximate filtered normal-map sampling predict10.026/7.488
+degrees of variation versus9.991/7.474 captured. Absolute normals remain
+approximate because cooked quantization/compression were not replayed.
+Material248 LMBR_00001b1_Paris_Bartrim_01, mesh545, source triangle5734;
+source depths differ from capture by at most0.000051m.
+GPU shader-validation remains unavailable after prior MetalTools report-decoder
+crashes with SSR on and off. Native Vulkan unavailable on macOS; UNALIGNED.

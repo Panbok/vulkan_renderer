@@ -42,18 +42,42 @@ receivers use up to five nearby source samples and a 3×3 depth/normal-aware fil
 The spatial filter accumulates radiance multiplied by confidence and normalizes
 by covered weight; all eligible taps contribute to the coverage denominator.
 The temporal filter blends covered radiance and confidence with the accepted
-history weight. It clamps history against supported current hits, excluding misses
-from the radiance bounds; an entirely unsupported neighborhood falls back to probes.
+history weight. The existing 3×3 raw neighborhood supplies a count of positive-
+coverage hits. With at least three hits, history is clamped against supported
+current radiance bounds, excluding misses. With one or two hits, the user approved
+retaining some otherwise-clipped history radiance. For configured history weight
+`w`, the unclamped component receives `u = min(w, 0.5)` and the clamped component
+receives `w - u`. Both components use the same validated history coverage, so
+coverage accumulation retains `w`. History already within bounds is unchanged.
+The 0.5 cap applies to the newly retained unclamped component, not the history
+fraction of RGB after coverage normalization. Lower configured weights remain
+lower. For an empty neighborhood, the user subsequently approved retaining
+depth/identity-validated history without a current-radiance clamp: coverage and
+covered radiance decay by the configured weight (default 0.85) each frame.
+Conditional radiance remains unchanged; rejected history clears immediately.
+After 16 consecutive misses, a stationary fully supported sample retains about
+7.4% coverage. This adds no reads, images or ABI fields.
+The sparse policy adds no texture reads, images or ABI fields. It trades abrupt
+brightness changes for possible brief trails from moving reflected objects, which
+receiver depth and identity cannot detect.
 Both native paths skip out-of-bounds filter taps. Trace and composite eligibility
 use the same selected material roughness; normal-variance broadening changes BRDF
 weights without introducing a second, raster-dependent eligibility cutoff.
-A hierarchy leaf stores the minimum of several full-resolution depths. If its
-proposed hit fails the loaded full-resolution depth, trace resolves that loaded
-depth again within the same leaf interval. The refined point must remain in the
-same full-resolution pixel, so its existing normal and coverage still apply.
-Candidates whose full-resolution depth already matches keep the existing path.
-This recovers provable false misses with
-additional arithmetic only; the 48-step and five-source-tap limits remain unchanged.
+SSR intersects full-resolution depth while retaining the existing half-resolution
+pyramid allocation. Logical level zero reads the already-bound full-resolution
+depth image; level one reads the pyramid base. Each leaf reuses its loaded depth
+and accepts a hit only within that same half-open source pixel. The ray starts at
+the receiver's leaf and ascends as cells exit, within the existing 48 decisions.
+Thickness extends behind the recorded surface. Empty space in front must not
+force descent or supply a hit; final validation allows only numerical reconstruction
+roundoff ahead of the surface. The representative is the earliest point in the
+accepted slab, including entry when the ray already lies inside it.
+Cell crossing times are solved directly from the projected ray origin. Computing
+them relative to the current traversal point introduced rounding differences that
+changed the first source pixel with hierarchy traversal order.
+These changes use the existing images and bindings. SSGI retains its previous
+half-resolution leaf, relative crossing calculation and symmetric slab through
+explicit adapters to the shared interval and cell-boundary math.
 This is a compact approximation, not a sampled GGX transport estimator.
 
 Reflection history is a coherent color/depth/stable-identity tuple in the existing
@@ -177,13 +201,38 @@ identity/depth rejection and grid-center checks. Static street history variation
 falls 17.14% over eight jitter phases, below the existing 25% history-selection
 regression threshold. In the user-identified cafe under-bar view, the complete
 change reduces history variation only 1.46% in the selected region; it does not
-establish a visible improvement. The sparse-neighborhood clamp still collapses
-valid history radiance to a lone current hit and clears empty neighborhoods.
-That policy remains unchanged pending a separate quality decision.
+establish a visible improvement. That check preceded the separately approved sparse-history policy above: a lone
+current hit collapsed the radiance clamp and defeated accumulation even with valid
+history. At that stage, empty neighborhoods still cleared history.
 [The reprojection record](../../assets/verification/renderer-features/ssr-reprojection.txt)
 retains the failed threshold, native measurements, exact commands and previews.
 Matched moving captures preserve all 924,963 motion values; serial Metal API
 resize and compiled shader contracts pass. Native Vulkan remains unavailable.
+
+
+The subsequent surface-traversal repair passes 98 shared-math outputs, including
+independent slab and path-independent crossing checks. CPU replays of the cafe
+capture match a full-resolution DDA oracle's first-hit coordinates across three
+jitter phases. Native Metal under-bar hits increase from about 2,000 to about
+3,900 per phase, with finite static/moving output. These counts establish recovered
+surface intersections, not elimination of visible shimmer. A broader cafe check
+found visible counter/glassware pops: empty current neighborhoods erased
+validated history between intermittent hits on a normal-varying surface. The
+subsequently approved fade prevents abrupt erasure, but the eight-phase native
+check still fails visual acceptance: the largest counter-region channel range
+is 30 display codes, compared with 31 before the fade, and the number of
+varying pixels increases as more reflection coverage survives. Independent
+source geometry and approximate normal-map sampling reproduce the measured
+normal variation; no normal-path correctness defect was found. The updated
+shared-math check passes 106 outputs, including a 16-frame decay and immediate
+rejection of invalid history. The sparse-history
+relaxation alone improves under-bar history variation only 1.48%.
+[The surface-traversal record](../../assets/verification/renderer-features/ssr-surface-traversal.txt)
+retains the measurements, intermediate variants, commands, digests and previews.
+A focused API-only resize check passes. GPU shader validation crashes in MetalTools'
+report decoder with SSR both enabled and disabled; no shader result is available.
+Native Vulkan remains unrun. An SSR-off repeat also reproduces the tiny FP16 motion
+mismatch observed in this later batch, so strict motion equality is not claimed.
 
 
 ## Revisit when

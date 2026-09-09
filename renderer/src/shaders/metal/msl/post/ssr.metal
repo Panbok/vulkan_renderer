@@ -229,21 +229,32 @@ kernel void vkr_metal_packet_ssr_trace(
   float3 direction = reflect(normalize(origin), view_normal);
   VkrSsrTrace trace = vkr_ssr_trace_begin(
       root.params, origin + view_normal * VKR_SSR_RAY_ORIGIN_BIAS, direction,
-      max(root.params.depth_mip_count, 1u) - 1u);
+      max(root.params.depth_mip_count, 1u));
+  // Start at the receiver's full-resolution cell; ascend only as cells exit.
+  // Logical level one is the existing half-resolution pyramid base.
+  trace.mip = 0u;
   float3 hit_radiance = 0.0f;
   float confidence = 0.0f;
   for (uint step = 0u; step < root.params.max_steps && trace.active != 0u;
        ++step) {
-    uint2 mip_extent = uint2(root.pyramid.get_width(trace.mip),
-                             root.pyramid.get_height(trace.mip));
-    float cell_exit =
-        vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
+    uint2 mip_extent = trace.mip == 0u
+        ? source_extent
+        : uint2(root.pyramid.get_width(trace.mip - 1u),
+                 root.pyramid.get_height(trace.mip - 1u));
+    float cell_exit = vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
     float2 trace_uv = vkr_ssr_trace_uv(trace);
     uint2 source_pixel = min(uint2(floor(trace_uv * float2(source_extent))),
                              source_extent - 1u);
-    uint2 cell = min(source_pixel >> (trace.mip + 1u), mip_extent - 1u);
+    float surface_depth;
+    if (trace.mip == 0u) {
+      surface_depth = vkr_metal_ssr_positive_depth(
+          root.params, source_pixel, root.depth.read(source_pixel).x, source_extent);
+    } else {
+      uint2 cell = min(source_pixel >> trace.mip, mip_extent - 1u);
+      surface_depth = root.pyramid.read(cell, trace.mip - 1u).x;
+    }
     VkrSsrTraceResolve resolve = vkr_ssr_trace_resolve(
-        trace, root.pyramid.read(cell, trace.mip).x, cell_exit, root.params);
+        trace, surface_depth, cell_exit, root.params);
     if (resolve.hit == 0u) {
       trace = resolve.descend != 0u
                   ? vkr_ssr_trace_descend(trace)
@@ -251,33 +262,21 @@ kernel void vkr_metal_packet_ssr_trace(
       continue;
     }
 
-    float2 hit_uv = mix(trace.start_uv, trace.end_uv, resolve.hit_t);
-    uint2 hit_pixel = min(uint2(floor(hit_uv * float2(source_extent))),
-                          source_extent - 1u);
-    float hit_depth = vkr_metal_ssr_positive_depth(
-        root.params, hit_pixel, root.depth.read(hit_pixel).x, source_extent);
+    // A leaf represents exactly the pixel whose depth was loaded. A crossing
+    // on its excluded exit boundary belongs to the next cell.
     float ray_depth = vkr_ssr_trace_depth_at(trace, resolve.hit_t);
-    if (vkr_ssr_valid_depth(hit_depth) &&
-        abs(hit_depth - ray_depth) > root.params.thickness) {
-      VkrSsrTraceResolve refined = vkr_ssr_trace_refine_loaded_depth(
-          trace, hit_depth, cell_exit, hit_pixel, root.params);
-      if (refined.hit != 0u) {
-        resolve = refined;
-        hit_uv = mix(trace.start_uv, trace.end_uv, resolve.hit_t);
-        ray_depth = vkr_ssr_trace_depth_at(trace, resolve.hit_t);
-      }
+    if (!vkr_ssr_trace_hit_matches_pixel(trace, resolve.hit_t, source_pixel, root.params) ||
+        !vkr_ssr_depth_hit_matches(ray_depth, surface_depth, root.params) ||
+        root.vbuffer.read(source_pixel).x == 0u) {
+      trace = vkr_ssr_trace_advance(trace, cell_exit);
+      continue;
     }
     float3 hit_world_normal = vkr_metal_ssr_selected_normal(
-        root.normal, root.clearcoat, hit_pixel);
+        root.normal, root.clearcoat, source_pixel);
     float3 hit_view_normal =
         normalize((root.params.view * float4(hit_world_normal, 0.0f)).xyz);
-    const bool covered = root.vbuffer.read(hit_pixel).x != 0u;
-    const bool depth_matches = vkr_ssr_valid_depth(hit_depth) &&
-                               vkr_ssr_valid_depth(ray_depth) &&
-                               abs(hit_depth - ray_depth) <=
-                                   root.params.thickness;
-    const bool front_facing = dot(hit_view_normal, -direction) > 1e-4f;
-    if (covered && depth_matches && front_facing) {
+    if (dot(hit_view_normal, -direction) > 1e-4f) {
+      float2 hit_uv = mix(trace.start_uv, trace.end_uv, resolve.hit_t);
       hit_radiance =
           vkr_metal_ssr_hdr_cone(root.hdr, hit_uv, roughness, root.params);
       confidence = vkr_ssr_trace_confidence(roughness, hit_uv,
@@ -285,8 +284,6 @@ kernel void vkr_metal_packet_ssr_trace(
                                              root.params);
       break;
     }
-    /* A hierarchy candidate only proposes a hit. Advancing after an invalid
-     * leaf prevents an uncovered/back-facing/self surface from sampling HDR. */
     trace = vkr_ssr_trace_advance(trace, cell_exit);
   }
   root.raw.write(float4(hit_radiance, confidence), pixel);
@@ -392,19 +389,21 @@ kernel void vkr_metal_packet_ssr_temporal(
   decision.reserved_float_0 = 0.0f;
   float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
   float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
+  uint neighborhood_hits = 0u;
   for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
       int2 p = int2(pixel) + int2(x, y);
       if (all(p >= 0) && all(uint2(p) < trace_extent)) {
         float4 sample = root.raw.read(uint2(p));
         if (sample.w > 0.0f) {
+          ++neighborhood_hits;
           neighborhood_min = min(neighborhood_min, sample.rgb);
           neighborhood_max = max(neighborhood_max, sample.rgb);
         }
       }
     }
   root.output_color.write(vkr_ssr_temporal_filter(
-                              root.params, raw, history, neighborhood_min,
+                              neighborhood_hits, raw, history, neighborhood_min,
                               neighborhood_max, decision),
                           pixel);
   root.output_depth.write(float4(center_depth, 0.0f, 0.0f, 1.0f), pixel);
