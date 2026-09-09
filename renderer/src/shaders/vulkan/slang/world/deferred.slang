@@ -2294,13 +2294,14 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     float4 raw = g_textures[root.raw_texture].Load(int3(cell, 0));
     uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(cell, 0));
     uint2 identity = uint2(0u, 0u); float positive_depth = 0.0f;
+    float roughness = VKR_SSR_MIRROR_ROUGHNESS;
     if (all(receiver < source_extent))
     {
         uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
         identity = vkr_vk_ssr_identity(root, visible);
         positive_depth = vkr_vk_ssr_positive_depth(root.params, receiver, source_extent,
             g_depth_textures[root.depth_texture].Load(int3(receiver, 0)));
-        float roughness = vkr_vk_ssr_selected_roughness(
+        roughness = vkr_vk_ssr_selected_roughness(
             root.specular_texture, root.clearcoat_texture, receiver);
         if (vkr_ssr_hit_filter_tap_count(roughness) > 1u &&
             vkr_ssr_valid_depth(positive_depth))
@@ -2319,7 +2320,7 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
                 float3 other_normal = vkr_vk_ssr_selected_normal(
                     root.normal_texture, root.clearcoat_texture, other_receiver);
                 float w = vkr_ssr_receiver_bilateral_weight(float2(x, y), positive_depth, other_depth,
-                                                            normal, other_normal, root.params);
+                                                            normal, other_normal, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
                 filtered += vkr_ssr_spatial_sample(
                     g_textures[root.raw_texture].Load(int3(q, 0)), w);
                 weights += w;
@@ -2360,7 +2361,9 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
     VkrSsrHistoryDecision decision;
     decision.accepted = history_support > 0.0f ? 1u : 0u;
-    decision.weight = decision.accepted != 0u ? root.params.temporal_weight : 0.0f;
+    decision.weight = decision.accepted != 0u
+        ? vkr_ssr_temporal_weight(root.params.temporal_weight, roughness,
+                                   motion * float2(source_extent)) : 0.0f;
     decision.expected_previous_depth = 0.0f;
     decision.reserved_float_0 = 0.0f;
     float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
@@ -2376,7 +2379,7 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
             neighborhood_max = max(neighborhood_max, sample.rgb);
         }
     }
-    float4 result = vkr_ssr_temporal_filter(neighborhood_hits, raw, history, neighborhood_min,
+    float4 result = vkr_ssr_temporal_filter(roughness, neighborhood_hits, raw, history, neighborhood_min,
                                             neighborhood_max, decision);
     g_storage_2d[root.output_color_texture][cell] = result;
     g_storage_2d[root.output_depth_texture][cell] = float4(positive_depth, 0, 0, 0);
@@ -2449,7 +2452,7 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
             root.normal_texture, root.clearcoat_texture, receiver);
         float support = spatial * vkr_ssr_receiver_bilateral_weight(
             offset, positive_depth, receiver_depth, normal, receiver_normal,
-            root.params);
+            VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
         support_weight += support;
         float4 sample = g_textures[root.reflection_texture].Load(int3(cell, 0));
         float accepted = support * vkr_ssr_saturate(sample.a);

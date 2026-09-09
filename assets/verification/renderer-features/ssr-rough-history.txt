@@ -1,0 +1,156 @@
+SSR rough-history filtering — 2026-09-09
+
+Scope and decision
+The user identified the reflective Bistro bar as the primary flicker repro and
+approved temporal-clamp and roughness-filter tuning within the existing ray,
+texture-read and image budgets, accepting softness and short trails.
+
+Selected implementation
+History clamping varies continuously with roughness, from full current bounds at
+the mirror threshold to unclamped accumulation at roughness 0.25. This removes the
+former two-to-three-hit discontinuity: identical current/history colors 10/2 and
+coverage 1 changed output 6 to 10 solely because the supported-neighbor count changed.
+The new rough branch produces 3.2 in both cases at configured weight 0.85.
+
+Selected roughness and existing unjittered motion determine history weight.
+Stationary rough receivers use 0.95 at defaults; one full-resolution source pixel
+of motion per frame returns to 0.85. Mirrors retain their configured weight and
+one source tap; their sparse temporal clamp is stricter than the former allowance.
+Empty neighborhoods fade valid covered radiance and coverage together. Invalid
+receiver depth/identity still rejects history immediately. At 0.95 the history
+half-life is 13.5 rendered frames; moving reflected objects on a static receiver
+can trail because receiver motion does not identify reflected-object motion.
+
+SSR spatial/composite depth tolerance is max(0.02 m, center_depth*0.05), independent
+of ray thickness. The previous 0.1 m minimum admitted chrome/trim separated by 8 cm.
+The scalar helper parameter preserves SSGI's previous minimum without changing its
+filtering policy. No new images, rays, root fields or texture reads were added.
+
+An optional skip of nine unused clamp reads was not selected. Its raw captures
+were identical, but a few history values elsewhere differed and equivalence was
+not established. The selected code retains the original loops. Timing from that
+reverted version is excluded; its profile overlapped CPU artifact verification.
+
+Native Metal quality
+M1 Pro, Darwin 25.6, Release, MetalFX temporal, validation variables unset.
+Output 1280x720; scene 1025x577; SSR 512x288; render_scale 0.8; manual exposure 8.
+Camera [-5.03,1.7,9.73], yaw−20.34, pitch−12. Captures cover eight raster-jitter
+phases. Display measurements use per-channel SSR-on minus matched SSR-off PNG
+values. A meaningful pixel has mean absolute effect above 1 display code; a
+volatile pixel has a channel range above 3 codes. Counter ROI is u[.05,.88],
+v[.32,.52], including glassware boundaries above the bar.
+
+Matched 32-frame warmup comparison:
+  fade-only baseline 030926.051Z-00702d: 1260 volatile counter pixels;
+  continuous filter 040401.564Z-013a09: 383 volatile counter pixels.
+  The original hotspots (813,249) and(804,249) fall from 30-code ranges to 3.
+  Counter mean absolute display effect 0.75069→0.78669 codes; reflections were not
+  simply suppressed to obtain quieter output.
+
+After 96 warmup frames:
+  continuous filter 040646.865Z-01564e: 151 volatile counter pixels;
+  selected 2 cm surface filter 042419.245Z-001ecb: 108 volatile counter pixels.
+  Counter mean absolute effect 0.83899→0.83765 codes.
+  Original hotspots (820,249), (813,249), (804,249) stay within 1–2 codes.
+  Remaining maximum is 8 codes at (548,244), near curved geometry/silhouette edges.
+  The broader image is not perfectly invariant; these results establish a large
+  reduction of the reported bar flicker, not perfect reflections everywhere.
+
+Moving-camera comparison of the fade-only and continuous-filter versions:
+  mean adjacent HDR SSR difference 9.7663e-5→9.0794e-5;
+  mean absolute HDR SSR contribution 0.00026369→0.00027385.
+  Motion legitimately changes reflections; this statistic does not prove absence
+  of ghost trails. The selected surface-filter moving run also passes finite output.
+
+The normal-source audit reproduces the bar trim's approximately 10°/7.5° jitter
+variation from authored geometry and filtered normal detail. No normal sampling
+correctness defect was found. At the remaining (548,244) edge, incoming reflection
+history is already stable but receiver-side BRDF/GTAO/composite weighting varies;
+additional history smoothing alone cannot remove that variation.
+
+Verification
+python3 tools/checks/check_ssr_stability.py
+./build_release.sh
+./build_editor.sh Release
+spirv-val --target-env vulkan1.4 --scalar-block-layout <each production packet.ssr*.spv and packet.ssgi*.spv>
+
+116 shared-math outputs pass, including continuous hit-count response, motion
+weights, empty-frame fade, invalid-history rejection, 2 cm receiver rejection and
+unchanged SSGI weight. Release app/harness/editor builds pass. Ten production
+SSR/SSGI SPIR-V modules validate. Native selected static/moving captures contain
+7,090,696 / 1,385,763 finite RGBA16F tuples; SSR confidence stays within [0,1].
+
+Exact snapshot command prefix:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case <case> --profile tools/profiles/local-offscreen.json
+
+Case tools/cases/local/ssr_bar_cycle.case.json:
+  20260909T040401.564Z-013a09
+  sha256:913b3c7981e417b402f4e3f820a10d5f25779e962a895bae733bb89e3f309d8b
+Case tools/cases/local/ssr_bar_settled.case.json:
+  20260909T040646.865Z-01564e
+  sha256:84d17824a2e14c8c51ea51bb51836549f8e92df3df01eae6c6e57bd3baa2dd77
+  selected 20260909T042419.245Z-001ecb
+  sha256:476b1f2e08037782037285c02236df649bbae0dc2474e9e2c1db989fd596e4cf
+Case tools/cases/local/ssr_bar_settled_off.case.json:
+  20260909T040825.944Z-0167e4
+  sha256:38031701f1a38462f03ed8b4547f7ccb9dabeb8e9a0e4db6ccb9f9b7802d1ff3
+Case tools/cases/local/ssr_bar_motion.case.json:
+  20260909T040527.353Z-014753
+  sha256:d79cb6694d4e45c5df4bc47c29372046c60ea10a0f3d0a92c294834b2ffb9738
+  selected 20260909T042554.219Z-002314
+  sha256:5b11888215925ba961882f5a9042c3af15e813036684c9707c0386874f4fe995
+
+Preview: ssr-rough-history.png. Clip: ssr-rough-history-slow.mp4 is eight isolated
+static jitter-phase captures encoded at 8 fps, deliberately slowed for inspection.
+They are diagnostic evidence, not promoted cross-backend baselines.
+
+Limits
+Native Vulkan is unavailable on this macOS host; shader parity remains UNALIGNED.
+The prior bounded Metal GPU-validation attempts crashed inside the MetalTools
+report decoder with SSR both on and off. API-only resize passed. No shader-
+validation pass is claimed. See ssr-surface-traversal.txt for those reports and
+prior traversal/history evidence. No further GPU-validation retry was attempted.
+
+Final mirror check
+Case tools/cases/local/ssr_mirror_on_local.case.json, same snapshot command prefix:
+20260909T043903.200Z-004a14
+sha256:88092128650fd7502825ddb91e0208b47c90a4ae11de7b95c5d429c3869596a8
+696 raw hits; 15 independent interior emitter comparisons, max HDR error 0.000684.
+
+Final Release cost observation
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_bar_cost.case.json --profile tools/profiles/local-offscreen-perf-audit-gpu.json
+20260909T043520.768Z-0042d4
+sha256:3e0d4480c689b0c4ff9542c334c09d0a746a199b7eae68960b3086c6340c61d7
+Three repetitions, 120 measured frames each after 60 warmup. Root serialized the
+GPU lane and completed build/numeric verification before this selected run.
+Compared with full-resolution traversal before filter tuning, 20260908T225719.926Z-00a257.
+Workload/policy/environment fingerprints and effective configurations match.
+Changed output; no equivalent-output speedup or authoritative timing claim.
+20260908T225719.926Z-00a257 pass authoritative False
+SSR total mean 1.8741760416666668 ms
+SSR.Trace.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.789655092592593, 'p95': 0.8031666666666666, 'stddev': 0.0073094453305848975}
+SSR.Temporal {'sample_count': 360, 'invalid_count': 0, 'mean': 0.30467256944444426, 'p95': 0.3102083333333333, 'stddev': 0.0031098830157613145}
+SSR.Composite.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.6511533564814814, 'p95': 0.6602916666666666, 'stddev': 0.004920908139841717}
+frame.wall {'unit': 'ns', 'sample_count': 360, 'invalid_count': 0, 'mean': 15282519.419444444, 'p50': 15212958, 'p95': 17389999, 'min': 11180000, 'max': 23018708, 'stddev': 1439646.5472041024, 'total': 5501706991}
+draw.world.calls_issued {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 14, 'p50': 14, 'p95': 14, 'min': 14, 'max': 14, 'stddev': 0, 'total': 5040}
+memory.gpu.live_totals_exact {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 1, 'p50': 1, 'p95': 1, 'min': 1, 'max': 1, 'stddev': 0, 'total': 360}
+20260909T043520.768Z-0042d4 pass authoritative False
+SSR total mean 1.8944283564814808 ms
+SSR.Trace.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.7894655092592594, 'p95': 0.8036666666666666, 'stddev': 0.007982912198157669}
+SSR.Temporal {'sample_count': 360, 'invalid_count': 0, 'mean': 0.3049640046296294, 'p95': 0.31033333333333335, 'stddev': 0.003021524769651996}
+SSR.Composite.Fullscreen {'sample_count': 360, 'invalid_count': 0, 'mean': 0.671729166666666, 'p95': 0.6791666666666667, 'stddev': 0.004246626293487953}
+frame.wall {'unit': 'ns', 'sample_count': 360, 'invalid_count': 0, 'mean': 15258546.147222223, 'p50': 15204666, 'p95': 17343833, 'min': 11658958, 'max': 24634625, 'stddev': 1433337.4903728163, 'total': 5493076613}
+draw.world.calls_issued {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 14, 'p50': 14, 'p95': 14, 'min': 14, 'max': 14, 'stddev': 0, 'total': 5040}
+memory.gpu.live_totals_exact {'unit': 'count', 'sample_count': 360, 'invalid_count': 0, 'mean': 1, 'p50': 1, 'p95': 1, 'min': 1, 'max': 1, 'stddev': 0, 'total': 360}
+comparison fingerprints match True
+effective configuration matches True
+
+Final SSR + SSGI moving-camera regression
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/screen_motion_ssr_ssgi.case.json --profile tools/profiles/local-offscreen.json
+20260909T044006.293Z-004e62
+sha256:5bf95aa9b4808dca5455dbf7b7611deabd86cd7295d17fd901e37ee320e727a1
+Three checkpoints: 2,310,726 finite tuples across motion (RG16F), opaque HDR,
+raw SSR and reflection history (RGBA16F). Reflection confidence stays in [0,1].
+Reported SSR and SSGI controls are both enabled. Capture payload hashes match.
+Execution passes; this local capture has no image baseline and does not prove
+SSGI visual equivalence. The unchanged SSGI bilateral-weight oracle passes above.

@@ -449,7 +449,7 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
             float weight = bilinear * vkr_ssr_receiver_bilateral_weight(
                 offset, current_depth,
                 g_textures[root.history_depth_texture].Load(int3(trace_pixel, 0)).x,
-                normal, receiver_normal, screen);
+                normal, receiver_normal, screen.thickness);
             if (weight <= 0.0f)
                 continue;
             support_weight += weight;

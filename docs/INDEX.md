@@ -114,7 +114,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [052](adr/052-vulkan-fsr31-upscaling.md) | Vulkan FSR 3.1 temporal upscaling | implemented |
 | [053](adr/053-energy-compensated-ggx.md) | Correlated Smith GGX and shared energy integration | implemented |
 | [054](adr/054-baked-diffuse-volumes.md) | Offline multi-bounce diffuse volumes and runtime spatial diffuse lookup | implemented |
-| [055](adr/055-screen-space-reflections.md) | Opaque SSR with full-resolution intersections and jitter-corrected history | implemented |
+| [055](adr/055-screen-space-reflections.md) | Opaque SSR with full-resolution intersections and continuous rough-history filtering | implemented |
 | [056](adr/056-rectangular-ltc-lights.md) | One-sided rectangular LTC emitters, runtime lookup and baker transport | implemented |
 | [057](adr/057-analytic-height-fog.md) | Analytic scene-linear height fog with ordered transmission composition | implemented |
 | [058](adr/058-revision-baked-sky-atmosphere.md) | Revision-baked sky and global IBL with unified sun | implemented |

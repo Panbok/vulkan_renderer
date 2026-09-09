@@ -17,17 +17,17 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     VkrSsrHistoryDecision decision = (VkrSsrHistoryDecision)0;
     decision.weight = 0.8f;
     decision.accepted = 1u;
-    float4 stable = vkr_ssr_temporal_filter(3u,
+    float4 stable = vkr_ssr_temporal_filter(0.25f, 3u,
         float4(8, 4, 2, 0.5), float4(4, 2, 1, 0.5), 0, 16, decision);
-    float4 intermittent = vkr_ssr_temporal_filter(3u,
+    float4 intermittent = vkr_ssr_temporal_filter(0.25f, 3u,
         0, float4(8, 4, 2, 0.5), 0, 16, decision);
-    float4 unsupported = vkr_ssr_temporal_filter(0u,
+    float4 unsupported = vkr_ssr_temporal_filter(0.25f, 0u,
         0, float4(8, 4, 2, 0.5), 1, -1, decision);
-    float4 black = vkr_ssr_temporal_filter(3u,
+    float4 black = vkr_ssr_temporal_filter(VKR_SSR_MIRROR_ROUGHNESS, 3u,
         float4(0, 0, 0, 0.5), float4(8, 4, 2, 0.5), 0, 0, decision);
     decision.weight = 0.0f;
     decision.accepted = 0u;
-    float4 rejected = vkr_ssr_temporal_filter(3u,
+    float4 rejected = vkr_ssr_temporal_filter(0.25f, 3u,
         float4(8, 4, 2, 0.5), float4(4, 2, 1, 0.5), 0, 16, decision);
     params.history_jitter_uv_x = 0.0025f;
     params.history_jitter_uv_y = -0.005f;
@@ -76,34 +76,34 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         vkr_ssr_spatial_sample(float4(2, 2, 2, 1), 0.25f), 0.25f);
     decision.weight = 0.85f;
     decision.accepted = 1u;
-    float4 partial_filtered = vkr_ssr_temporal_filter(3u,
+    float4 partial_filtered = vkr_ssr_temporal_filter(0.25f, 3u,
         float4(10, 10, 10, 1), partial, 0, 10, decision);
     g_results[48] = partial_filtered.x;
     // Sparse neighborhoods must accumulate despite collapsed current bounds.
     decision.weight = 0.85f;
     decision.accepted = 1u;
-    float4 one_hit = vkr_ssr_temporal_filter(1u,
+    float4 one_hit = vkr_ssr_temporal_filter(0.25f, 1u,
         float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
-    float4 two_hits = vkr_ssr_temporal_filter(2u,
+    float4 two_hits = vkr_ssr_temporal_filter(0.25f, 2u,
         float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
-    float4 dense_clamp = vkr_ssr_temporal_filter(3u,
+    float4 three_hits = vkr_ssr_temporal_filter(0.25f, 3u,
         float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
-    float4 sparse_coverage = vkr_ssr_temporal_filter(1u,
+    float4 sparse_coverage = vkr_ssr_temporal_filter(0.25f, 1u,
         float4(10, 10, 10, 0.25), float4(2, 2, 2, 1), 10, 10, decision);
-    float4 empty_support = vkr_ssr_temporal_filter(0u,
+    float4 empty_support = vkr_ssr_temporal_filter(0.25f, 0u,
         0, float4(2, 2, 2, 1), 1, -1, decision);
-    float4 in_bounds_history = vkr_ssr_temporal_filter(1u,
+    float4 in_bounds_history = vkr_ssr_temporal_filter(0.25f, 1u,
         float4(6, 6, 6, 1), float4(4, 4, 4, 1), 2, 10, decision);
     decision.weight = 0.25f;
-    float4 lower_weight = vkr_ssr_temporal_filter(1u,
+    float4 lower_weight = vkr_ssr_temporal_filter(0.25f, 1u,
         float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
     decision.weight = 0.0f;
     decision.accepted = 0u;
-    float4 sparse_rejected = vkr_ssr_temporal_filter(1u,
+    float4 sparse_rejected = vkr_ssr_temporal_filter(0.25f, 1u,
         float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
     g_results[49] = one_hit.x;
     g_results[50] = two_hits.x;
-    g_results[51] = dense_clamp.x;
+    g_results[51] = three_hits.x;
     g_results[52] = sparse_coverage.x;
     g_results[53] = sparse_coverage.w;
     g_results[54] = empty_support.w;
@@ -112,18 +112,35 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     g_results[57] = in_bounds_history.x;
     // Empty support must decay coverage while preserving radiance; invalid
     // receiver history must disappear immediately, independent of raw bounds.
-    float4 invalid_empty = vkr_ssr_temporal_filter(0u,
+    float4 invalid_empty = vkr_ssr_temporal_filter(0.25f, 0u,
         0, float4(8, 4, 2, 1), 1, -1, decision);
     decision.weight = 0.85f;
     decision.accepted = 1u;
     float4 faded = float4(8, 4, 2, 1);
     for (uint frame = 0u; frame < 16u; ++frame)
-        faded = vkr_ssr_temporal_filter(0u, 0, faded, 1, -1, decision);
+        faded = vkr_ssr_temporal_filter(0.25f, 0u, 0, faded, 1, -1, decision);
     for (uint component = 0u; component < 4u; ++component) {
         g_results[98u + component] = faded[component];
         g_results[102u + component] = invalid_empty[component];
     }
 
+    g_results[106] = vkr_ssr_temporal_weight(.85f, .36f, float2(0));
+    g_results[107] = vkr_ssr_temporal_weight(.85f, .36f, float2(1, 0));
+    g_results[108] = vkr_ssr_temporal_weight(.85f, .36f, float2(.5f, 0));
+    g_results[109] = vkr_ssr_temporal_weight(.85f, VKR_SSR_MIRROR_ROUGHNESS, float2(0));
+    g_results[110] = vkr_ssr_temporal_weight(0, .36f, float2(0));
+    g_results[111] = vkr_ssr_temporal_stability((.25f + VKR_SSR_MIRROR_ROUGHNESS) * .5f);
+    // Chrome and trim separated by 8cm must not cross the SSR surface filter.
+    // SSGI retains its previous 10 cm minimum, independently of SSR ray thickness.
+    float3 up = float3(0, 1, 0);
+    g_results[112] = vkr_ssr_receiver_bilateral_weight(float2(1, 0), .82f, .74f,
+        up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
+    g_results[113] = vkr_ssr_receiver_bilateral_weight(float2(1, 0), .82f, .83f,
+        up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
+    params.thickness = .1f;
+    g_results[114] = vkr_ssgi_spatial_weight(float2(1, 0), .82f, .74f, up, up, params);
+    g_results[115] = vkr_ssr_receiver_bilateral_weight(float2(0), .01f, .02f,
+        up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
     params.source_width = 2u;
     params.source_height = 1u;
     params.thickness = 0.1f;

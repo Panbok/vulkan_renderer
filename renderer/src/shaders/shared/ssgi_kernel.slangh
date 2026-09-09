@@ -250,7 +250,7 @@ float vkr_ssgi_spatial_weight(float2 offset, float center_depth,
 {
     return vkr_ssr_receiver_bilateral_weight(
         offset, center_depth, neighbor_depth, center_normal, neighbor_normal,
-        screen);
+        screen.thickness);
 }
 
 float4 vkr_ssgi_temporal_filter(float4 raw, float4 history,

@@ -494,16 +494,17 @@ taps independently. Trace intersects full-resolution depth beneath the existing
 half-resolution hierarchy. Absolute cell crossings and the earliest one-sided
 surface-slab hit select the first supported source pixel without increasing the
 48-step limit or allocating another image. Spatial and temporal filters accumulate covered radiance and coverage
-together, preserving hit brightness as support varies. One or two current hits
-retain otherwise-clipped history radiance with a coefficient capped at 0.5,
-preserving the existing coverage accumulation. Dense neighborhoods keep their
-clamp. Empty neighborhoods retain depth/identity-validated history and fade its
-coverage with the configured temporal weight (default 0.85); rejected history
-clears immediately.
+together, preserving hit brightness as support varies. History clamping relaxes
+continuously with roughness, reaching unclamped accumulation at 0.25. Default
+history weight rises from 0.85 to 0.95 for stationary rough receivers, returning
+to 0.85 at one source pixel of motion per frame. Empty neighborhoods fade valid
+history; rejected depth/identity history clears immediately. Receiver filtering
+uses a 2 cm minimum depth tolerance, independently of ray thickness.
 Trace and composite use
 the same material-roughness eligibility cutoff. Metal static/moving captures and
 API-only resize checks pass. GPU shader validation crashes in MetalTools with SSR
-on or off. Visible cafe under-bar flicker remains unresolved; native
+on or off. The dominant cafe bar hotspots are stabilized in the retained Metal
+captures; smaller curved-surface and silhouette variation remains under investigation. Native
 Vulkan execution remains unavailable.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte

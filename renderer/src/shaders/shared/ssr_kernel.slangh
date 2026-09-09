@@ -20,6 +20,7 @@
 // RGBA16F stores authored 0.04 as this value; keep that minimum roughness a
 // single exact mirror tap instead of entering the rough bilateral filter.
 #define VKR_SSR_MIRROR_ROUGHNESS 0.040008544921875f
+#define VKR_SSR_RECEIVER_DEPTH_ABSOLUTE 0.02f
 #define VKR_SSR_HIT_FILTER_TAP_COUNT 5u
 #define VKR_SSR_HIT_FILTER_RADIUS_PIXELS 4.0f
 
@@ -657,12 +658,12 @@ float vkr_ssr_receiver_bilateral_weight(float2 offset, float center_depth,
                                         float neighbor_depth,
                                         float3 center_normal,
                                         float3 neighbor_normal,
-                                        VkrSsrParams params)
+                                        float minimum_depth_tolerance)
 {
     if (!vkr_ssr_valid_depth(center_depth) ||
         !vkr_ssr_valid_depth(neighbor_depth))
         return 0.0f;
-    float depth_tolerance = max(params.thickness, center_depth * 0.05f);
+    float depth_tolerance = max(minimum_depth_tolerance, center_depth * 0.05f);
     float depth_weight = vkr_ssr_saturate(
         1.0f - abs(neighbor_depth - center_depth) / depth_tolerance);
     float normal_weight = vkr_ssr_saturate(
@@ -739,7 +740,24 @@ float3 vkr_ssr_history_clamp(float3 history_color, float3 neighborhood_min,
     return clamp(history_color, neighborhood_min, neighborhood_max);
 }
 
-float4 vkr_ssr_temporal_filter(uint neighborhood_hits, float4 raw,
+float vkr_ssr_temporal_stability(float roughness)
+{
+    float blend = vkr_ssr_saturate((roughness - VKR_SSR_MIRROR_ROUGHNESS) /
+                                  (0.25f - VKR_SSR_MIRROR_ROUGHNESS));
+    return blend * blend * (3.0f - 2.0f * blend);
+}
+
+float vkr_ssr_temporal_weight(float configured_weight, float roughness,
+                               float2 motion_pixels)
+{
+    if (configured_weight <= 0.0f)
+        return 0.0f;
+    float stationary = 1.0f - vkr_ssr_saturate(length(motion_pixels));
+    return configured_weight + (1.0f - configured_weight) * (2.0f / 3.0f) *
+                                   vkr_ssr_temporal_stability(roughness) * stationary;
+}
+
+float4 vkr_ssr_temporal_filter(float roughness, uint neighborhood_hits, float4 raw,
                                float4 history, float3 neighborhood_min,
                                float3 neighborhood_max,
                                VkrSsrHistoryDecision decision)
@@ -750,11 +768,10 @@ float4 vkr_ssr_temporal_filter(uint neighborhood_hits, float4 raw,
     if (neighborhood_hits == 0u)
         return vkr_ssr_spatial_resolve(
             vkr_ssr_spatial_sample(history, decision.weight), 1.0f);
-    // Sparse bounds can collapse to a single current sample. Limit newly
-    // retained unclamped radiance, without weakening coverage accumulation or
-    // history already inside the current bounds.
-    float unclamped_weight = neighborhood_hits <= 2u
-                                 ? min(decision.weight, 0.5f) : 0.0f;
+    // Current hit counts fluctuate with jitter. A count-based clamp would make
+    // identical filtered samples jump when a third neighboring ray finds a hit.
+    // Rough surfaces accumulate their varying directions; mirrors retain bounds.
+    float unclamped_weight = decision.weight * vkr_ssr_temporal_stability(roughness);
     float3 clamped_history =
         vkr_ssr_history_clamp(history.xyz, neighborhood_min, neighborhood_max);
     // Coverage and covered radiance accumulate together. Multiplying the

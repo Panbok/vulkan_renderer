@@ -384,7 +384,7 @@ kernel void vkr_metal_packet_ssgi_composite(
                        max(1.0f - abs(offset.y), 0.0f);
       float weight = bilinear * vkr_ssr_receiver_bilateral_weight(
           offset, current_depth, root.history_depth.read(trace_pixel).x,
-          normal, receiver_normal, screen);
+          normal, receiver_normal, screen.thickness);
       if (weight <= 0.0f)
         continue;
       support_weight += weight;

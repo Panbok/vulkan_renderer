@@ -58,7 +58,8 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] Baked diffuse volumes, room boundaries, thick glass, multi-bounce diffuse
   transport, and photon caustics: [ADR-054](../adr/054-baked-diffuse-volumes.md).
 - [ ] Opaque SSR, consistent roughness eligibility, four-tap jitter-corrected history,
-  GPU ordering, sparse-history retention capped at 0.5, full-resolution leaves, absolute crossings
+  GPU ordering, continuous roughness-based history clamping, motion-adaptive
+  accumulation and empty-frame fading, full-resolution leaves, absolute crossings
   and earliest surface intersections, and probe fallback: [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).

@@ -41,25 +41,36 @@ filtering is bounded: minimum-roughness mirrors retain one source sample; roughe
 receivers use up to five nearby source samples and a 3×3 depth/normal-aware filter.
 The spatial filter accumulates radiance multiplied by confidence and normalizes
 by covered weight; all eligible taps contribute to the coverage denominator.
+Spatial and composite receiver weights use a depth tolerance of
+`max(0.02 m, 0.05 * center_depth)`, independently of ray thickness. This rejects
+nearby chrome and trim separated by more than the receiving surface tolerance.
+SSGI retains its previous minimum through an explicit scalar argument.
 The temporal filter blends covered radiance and confidence with the accepted
-history weight. The existing 3×3 raw neighborhood supplies a count of positive-
-coverage hits. With at least three hits, history is clamped against supported
-current radiance bounds, excluding misses. With one or two hits, the user approved
-retaining some otherwise-clipped history radiance. For configured history weight
-`w`, the unclamped component receives `u = min(w, 0.5)` and the clamped component
-receives `w - u`. Both components use the same validated history coverage, so
-coverage accumulation retains `w`. History already within bounds is unchanged.
-The 0.5 cap applies to the newly retained unclamped component, not the history
-fraction of RGB after coverage normalization. Lower configured weights remain
-lower. For an empty neighborhood, the user subsequently approved retaining
-depth/identity-validated history without a current-radiance clamp: coverage and
-covered radiance decay by the configured weight (default 0.85) each frame.
-Conditional radiance remains unchanged; rejected history clears immediately.
-After 16 consecutive misses, a stationary fully supported sample retains about
-7.4% coverage. This adds no reads, images or ABI fields.
-The sparse policy adds no texture reads, images or ABI fields. It trades abrupt
-brightness changes for possible brief trails from moving reflected objects, which
-receiver depth and identity cannot detect.
+history weight. The user approved tuning temporal clamping and roughness filtering
+within the existing ray, read and image budgets, accepting softness and short
+trails. Current hit count no longer changes the clamp policy: switching from two
+to three hits previously changed RGB even when filtered current radiance, coverage
+and history were identical.
+
+Clamping relaxes continuously with selected roughness. A smoothstep from the mirror
+threshold to 0.25 determines the fraction of validated history used without current
+radiance bounds. Mirrors use the current bounds; roughness 0.25 and above uses
+unclamped history. Both components retain the same coverage weight. Mirror sampling
+remains one source tap with no spatial blur, but its sparse temporal clamp is
+stricter than the superseded one/two-hit allowance.
+
+For configured weight `w`, roughness blend `s`, and unjittered motion magnitude `m`
+in full-resolution source pixels, accepted history uses
+`w + (1 - w) * (2/3) * s * (1 - saturate(m))`. Zero configured weight stays zero.
+At defaults this gives 0.95 for stationary rough receivers and 0.85 at one source
+pixel per frame or for mirrors. Invalid taps still contribute no history.
+
+Empty neighborhoods fade valid covered radiance and coverage together, preserving
+conditional radiance; rejected history clears immediately. At weight 0.95, history
+half-life is about 13.5 rendered frames. Receiver depth, identity and motion cannot
+detect a moving reflected object on a stationary bar, so retained reflections can
+trail. This policy adds no reads, images, rays or ABI fields.
+
 Both native paths skip out-of-bounds filter taps. Trace and composite eligibility
 use the same selected material roughness; normal-variance broadening changes BRDF
 weights without introducing a second, raster-dependent eligibility cutoff.
@@ -154,86 +165,46 @@ invocation only reads and writes its own HDR pixel.
 
 ## Evidence and remaining checks
 
-The Release wrapper compiles both production shader paths. A Slang-to-C++
-execution probe checks perspective/orthographic depth, within-cell intersections,
-odd-tail ownership, binary slab acceptance and temporal rejection. Compiled
-Vulkan reflection pins the 16-byte push constants and root strides 304/32/336/368/424
-bytes (the aligned composite host record is 432 bytes); each embedded SSR parameter record is 288 bytes. Metal runtime reflection
-pins roots 320/320/368/432/496 bytes and compute binding zero.
+Release wrappers compile the production shader paths and app/editor targets.
+The shared-math probe passes 116 outputs covering depth/slab traversal, odd tails,
+path-independent crossings, history reprojection/rejection, continuous rough
+accumulation, motion weights and receiver filtering. Native root layouts remain
+unchanged: Vulkan push constants are 16 bytes with root strides
+304/32/336/368/424 bytes (the composite host record is aligned to 432); Metal roots
+are 320/320/368/432/496 bytes. The shared parameter record remains 288 bytes.
 
-On Metal, the 321×241 planar-mirror fixture produces 722 half-resolution hits.
-Fifteen interior pixels differ from the analytic reflected emitter by at most
-0.000684 in linear HDR. Misses preserve the existing image, and a focused Metal
-API-validation run passes. Hidden-window resize captures exercise the intermediate
-514×386 image with 257×193 SSR; a separate capture-free round trip renders at the
-restored 642×482 extent with all SSR passes active.
+The native Metal 321×241 mirror fixture has 696 half-resolution hits; 15 interior
+samples match the analytic emitter within 0.000684 linear HDR. The current bar
+static/moving captures contain 7,090,696 and 1,385,763 finite RGBA16F tuples, with
+SSR confidence in [0,1]. A moving-camera capture with SSR and SSGI enabled also
+passes finite HDR, motion and reflection checks across three checkpoints. The geometric traversal replay independently agrees with
+a full-resolution DDA oracle's first supported hit coordinates across three jitter
+phases. [The traversal record](../../assets/verification/renderer-features/ssr-surface-traversal.txt)
+retains the earlier failures, exact commands and native evidence.
 
-The 1280×720 Bistro captures exercise TAA and reflection history. All HDR values
-are finite. One local Release timing observation records approximately 2.19 ms
-summed mean GPU time for the SSR passes, including 1.27 ms trace and 0.51 ms
-composite. This single-run observation is not an authoritative performance claim.
-Native Vulkan execution and bilateral image comparison remain unavailable on the
-current Metal host; ADR-044 therefore retains UNALIGNED status.
+In matched 1280×720 Bistro bar captures with 32 warmup frames, continuous filtering
+reduces counter-region pixels with more than three display codes of SSR-only
+variation from 1,260 to 383. The original hotspots fall from ranges of about 30
+codes to 3. After 96 warmup frames, those hotspots stay within 1–2 codes; tightening
+the receiver depth tolerance reduces remaining counter outliers from 151 to 108.
+Reflected contribution is retained. Smaller curved-surface/silhouette variation
+remains, including changes in receiver lighting after the stable incoming-radiance
+history. These results do not establish perfect reflections or absence of trails.
 
-The coverage-filter regression executes production shared functions with analytic
-inputs: sparse and dense constant hits retain identical radiance, while temporal
-coverage handles intermittent misses. The old temporal formula fails the same
-expected result. A repeated Metal mirror/API check retains 722 hits and a maximum
-0.000684 linear-HDR error. Moving Bistro captures retain finite output and unchanged
-motion vectors; these captures do not establish that all visible shimmer is gone.
-[The regression record](../../assets/verification/renderer-features/screen-effects-stability.txt)
-retains evidence. Current-frame fallback can still lose stability when compatible
-history is unavailable; the subsequent four-tap policy addresses nearest-history jumps.
+A matched local Release observation measures summed SSR means of 1.89 ms versus
+1.87 ms before the filtering changes, with three repetitions of 120 measured frames
+after 60 warmup frames. Workload and environment fingerprints match, but output
+changes intentionally and neither run is authoritative. [The rough-history record](../../assets/verification/renderer-features/ssr-rough-history.txt)
+retains configuration, commands, report digests, statistics and previews.
 
-A later stationary Bistro check exposed two history-selection failures: comparing
-jittered projections rejected consecutive frames, and requiring CPU-observed
-completion rejected the shared predecessor while it was in flight. The approved
-GPU-ordering policy above fixes both. The native static regression retains the
-same raw trace within FP16 noise and reduces mean covered-reflection variation
-by 45.81% (0.012930 to 0.007006 across two frame transitions). It preserves all
-924,963 motion values; the moving SSR+SSGI pair does too. Portable-TAA resize
-passes focused Metal API validation. [The history repair record](../../assets/verification/renderer-features/ssr-temporal-history.txt)
-retains exact commands, report digests, diagnostic rejection reasons and captures.
-These checks establish restored accumulation, not elimination of all SSR noise.
-
-The later jitter-corrected four-tap filter passes its affine-interpolation,
-identity/depth rejection and grid-center checks. Static street history variation
-falls 17.14% over eight jitter phases, below the existing 25% history-selection
-regression threshold. In the user-identified cafe under-bar view, the complete
-change reduces history variation only 1.46% in the selected region; it does not
-establish a visible improvement. That check preceded the separately approved sparse-history policy above: a lone
-current hit collapsed the radiance clamp and defeated accumulation even with valid
-history. At that stage, empty neighborhoods still cleared history.
-[The reprojection record](../../assets/verification/renderer-features/ssr-reprojection.txt)
-retains the failed threshold, native measurements, exact commands and previews.
-Matched moving captures preserve all 924,963 motion values; serial Metal API
-resize and compiled shader contracts pass. Native Vulkan remains unavailable.
-
-
-The subsequent surface-traversal repair passes 98 shared-math outputs, including
-independent slab and path-independent crossing checks. CPU replays of the cafe
-capture match a full-resolution DDA oracle's first-hit coordinates across three
-jitter phases. Native Metal under-bar hits increase from about 2,000 to about
-3,900 per phase, with finite static/moving output. These counts establish recovered
-surface intersections, not elimination of visible shimmer. A broader cafe check
-found visible counter/glassware pops: empty current neighborhoods erased
-validated history between intermittent hits on a normal-varying surface. The
-subsequently approved fade prevents abrupt erasure, but the eight-phase native
-check still fails visual acceptance: the largest counter-region channel range
-is 30 display codes, compared with 31 before the fade, and the number of
-varying pixels increases as more reflection coverage survives. Independent
-source geometry and approximate normal-map sampling reproduce the measured
-normal variation; no normal-path correctness defect was found. The updated
-shared-math check passes 106 outputs, including a 16-frame decay and immediate
-rejection of invalid history. The sparse-history
-relaxation alone improves under-bar history variation only 1.48%.
-[The surface-traversal record](../../assets/verification/renderer-features/ssr-surface-traversal.txt)
-retains the measurements, intermediate variants, commands, digests and previews.
-A focused API-only resize check passes. GPU shader validation crashes in MetalTools'
-report decoder with SSR both enabled and disabled; no shader result is available.
-Native Vulkan remains unrun. An SSR-off repeat also reproduces the tiny FP16 motion
-mismatch observed in this later batch, so strict motion equality is not claimed.
-
+Focused Metal API-only resize checks pass. GPU shader validation crashes inside
+the MetalTools report decoder with SSR both enabled and disabled; no shader result
+is available. An SSR-off repeat also reproduces a tiny FP16 motion mismatch, so
+strict motion equality is not claimed for the later batch. Native Vulkan and
+bilateral image comparison remain unavailable on this host; ADR-044 stays
+UNALIGNED. [The earlier history](../../assets/verification/renderer-features/ssr-temporal-history.txt)
+and [reprojection](../../assets/verification/renderer-features/ssr-reprojection.txt)
+records retain the completion/jitter failures and unavailable checks.
 
 ## Revisit when
 

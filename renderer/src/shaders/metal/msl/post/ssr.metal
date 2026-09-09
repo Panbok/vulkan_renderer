@@ -335,7 +335,7 @@ kernel void vkr_metal_packet_ssr_temporal(
             root.normal, root.clearcoat, neighbor_receiver);
         float weight = vkr_ssr_receiver_bilateral_weight(
             float2(x, y), center_depth, neighbor_depth, center_normal,
-            neighbor_normal, root.params);
+            neighbor_normal, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
         filtered += vkr_ssr_spatial_sample(root.raw.read(neighbor_pixel),
                                             weight);
         weight_sum += weight;
@@ -352,8 +352,9 @@ kernel void vkr_metal_packet_ssr_temporal(
   }
   // History is stored on the trace grid; receiver selection supplies motion only.
   float2 current_uv = vkr_ssr_uv_from_pixel(pixel, trace_extent);
+  float2 motion = root.motion.read(receiver_pixel).xy;
   float2 previous_uv = vkr_ssr_previous_uv(
-      root.params, current_uv, root.motion.read(receiver_pixel).xy);
+      root.params, current_uv, motion);
   float2 half_texel = float2(root.params.trace_texel_size_x,
                              root.params.trace_texel_size_y) * 0.5f;
   float2 coordinate = clamp(previous_uv, half_texel, 1.0f - half_texel) *
@@ -384,7 +385,9 @@ kernel void vkr_metal_packet_ssr_temporal(
   float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
   VkrSsrHistoryDecision decision;
   decision.accepted = history_support > 0.0f ? 1u : 0u;
-  decision.weight = decision.accepted != 0u ? root.params.temporal_weight : 0.0f;
+  decision.weight = decision.accepted != 0u
+      ? vkr_ssr_temporal_weight(root.params.temporal_weight, roughness,
+                                 motion * float2(source_extent)) : 0.0f;
   decision.expected_previous_depth = 0.0f;
   decision.reserved_float_0 = 0.0f;
   float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
@@ -403,7 +406,7 @@ kernel void vkr_metal_packet_ssr_temporal(
       }
     }
   root.output_color.write(vkr_ssr_temporal_filter(
-                              neighborhood_hits, raw, history, neighborhood_min,
+                              roughness, neighborhood_hits, raw, history, neighborhood_min,
                               neighborhood_max, decision),
                           pixel);
   root.output_depth.write(float4(center_depth, 0.0f, 0.0f, 1.0f), pixel);
@@ -475,7 +478,7 @@ static VkrMetalSsrReflectionSample vkr_metal_ssr_history_reflection(
           root.normal, root.clearcoat, receiver_pixel);
       float receiver_weight = bilinear * vkr_ssr_receiver_bilateral_weight(
           offset, current_depth, sample_depth, current_normal, sample_normal,
-          root.params);
+          VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
       if (receiver_weight <= 0.0f)
         continue;
       /* Support excludes out-of-bounds/incompatible receivers but retains

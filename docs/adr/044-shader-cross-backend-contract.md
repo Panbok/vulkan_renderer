@@ -388,13 +388,17 @@ compatibility excludes raster jitter, while trace retains its jittered projectio
 SSR offsets 280/284 now hold selected-producer jitter UV instead of unused floating
 extents; the 288-byte size is unchanged. Metal and Vulkan reproject with this delta
 and validate four history taps separately before covered-radiance interpolation.
-The existing raw neighborhood loop also counts supported hits. The shared temporal
-filter assigns up to 0.5 of the configured history weight to otherwise-clipped
-radiance for one or two hits, retaining the rest on clamped radiance. Their sum
-preserves coverage accumulation; dense neighborhoods retain their clamp, and
-empty ones fade depth/identity-validated history coverage at the configured
-weight (default 0.85), preserving conditional radiance; rejected history clears. This changes no resource layout or fetch count. SSGI's shared trace adapter
-initializes the unused-for-SSGI jitter offsets to zero.
+The shared temporal filter relaxes history clamping continuously from mirrors to
+roughness 0.25, avoiding the former two-to-three-hit discontinuity. Both native
+paths reuse selected roughness and unjittered motion to increase default history
+weight from 0.85 to 0.95 for stationary rough receivers; the boost ends at one
+full-resolution source pixel of motion per frame. Empty neighborhoods fade valid
+history, while rejected depth/identity history clears immediately. Receivers at
+roughness 0.25 or above use unclamped history. SSR receiver filters use a
+2 cm minimum depth tolerance; SSGI preserves its existing minimum through an
+explicit scalar argument. Images, roots and texture-read counts do not grow. Mirror sampling stays sharp,
+with a stricter sparse temporal clamp than the previous one/two-hit policy.
+SSGI's shared trace adapter initializes the unused-for-SSGI jitter offsets to zero.
 Composite eligibility now uses the same selected material roughness as trace;
 normal filtering still controls the BRDF weights. Both traces now use logical
 level zero for the existing full-resolution depth image and higher levels for the

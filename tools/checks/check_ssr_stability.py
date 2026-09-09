@@ -29,9 +29,9 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             4.8, 2.4, 1.2, 0.5, 8, 4, 2, 0.4, 8, 4, 2, 0.4,
             0, 0, 0, 0.5, 8, 4, 2, 0.5,
             .5025, .395, 1, 0, 0, 1, 6.5, 6.5, 6.5, .5, 100, 120, 3.2,
-            # Only unclamped history gets the .5 coefficient limit. Coverage
-            # keeps .85 history: (.15*.25*10 + .35*10 + .5*2) / (.15*.25 + .85).
-            6, 6, 10, 4.875/.8875, .8875, .85, 8, 10, 4.3,
+            # Rough reflection accumulation is continuous across support counts.
+            # Coverage stays .85*1 + .15*.25; radiance uses the same weights.
+            3.2, 3.2, 3.2, 2.075/.8875, .8875, .85, 8, 10, 4.3,
             # Empty front interval, true surface crossing, rear thickness slab.
             1, 0, 0, 1, .5, 1, 0, 0, 1, 1, 0, 0, 1,
             # SSGI keeps its existing symmetric slab and entry representative.
@@ -50,7 +50,9 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             (.9-388/641)/.8, (.9-388/641)/.8,
             # The old SSGI leaf and SSR level one instead cross at 254/641.
             (254/641-.1)/.8, (254/641-.1)/.8,
-            8, 4, 2, .85**16, 0, 0, 0, 0]
+            8, 4, 2, .85**16, 0, 0, 0, 0,
+            .95, .85, .90, .85, 0, .5,
+            0, (1-.01/.041)/2, .1, .5]
 assert len(actual) == len(expected), actual
 for i, (got, want) in enumerate(zip(actual, expected)):
     assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
@@ -64,7 +66,7 @@ print('temporal stable:', actual[16:20], 'intermittent:', actual[20:24],
 print('jitter UV:', actual[36:38], 'identity/depth acceptance:', actual[38:41],
       'bilinear affine radiance:', actual[42:46])
 print('identity grid:', actual[46:48], 'partial support:', actual[48])
-print('one/two-hit retention, dense clamp:', actual[49:52],
+print('one/two-hit retention, three-hit continuity:', actual[49:52],
       'mixed coverage:', actual[52:54], 'empty/lower/rejected:', actual[54:57])
 print('sparse history already within bounds:', actual[57])
 print('front-empty/crossing/rear-slab decisions:', actual[58:65])
@@ -77,3 +79,7 @@ print('path-independent full-pixel exits, positive/negative:', actual[92:96])
 print('SSGI half-resolution leaf / SSR level one:', actual[96:98])
 
 print('16-frame empty fade / rejected empty:', actual[98:106])
+
+print('motion-adaptive rough history, mirror, disabled, midpoint:', actual[106:112])
+
+print('SSR separated/near receivers, preserved SSGI, 2cm floor:', actual[112:116])
