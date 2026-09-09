@@ -1216,7 +1216,7 @@
       "condition": "scene_rendering && ssr_enabled",
       "extent": {
         "mode": "viewport",
-        "divisor": 2
+        "divisor": 1
       },
       "format": "R16G16B16A16_SFLOAT",
       "usage": [
@@ -1235,7 +1235,7 @@
       "condition": "scene_rendering && ssr_enabled",
       "extent": {
         "mode": "viewport",
-        "divisor": 2
+        "divisor": 1
       },
       "format": "R32_SFLOAT",
       "usage": [
@@ -1254,7 +1254,7 @@
       "condition": "scene_rendering && ssr_enabled",
       "extent": {
         "mode": "viewport",
-        "divisor": 2
+        "divisor": 1
       },
       "format": "R32G32_UINT",
       "usage": [
@@ -4137,16 +4137,6 @@
           "when": "gtao_enabled"
         },
         {
-          "image": "ssr_history_depth",
-          "access": "SAMPLED",
-          "binding": 8
-        },
-        {
-          "image": "ssr_receiver_pixel",
-          "access": "SAMPLED",
-          "binding": 9
-        },
-        {
           "image": "gbuffer_clearcoat",
           "access": "SAMPLED",
           "binding": 10
@@ -4233,16 +4223,6 @@
           "access": "SAMPLED",
           "binding": 7,
           "when": "gtao_enabled"
-        },
-        {
-          "image": "ssr_history_depth",
-          "access": "SAMPLED",
-          "binding": 8
-        },
-        {
-          "image": "ssr_receiver_pixel",
-          "access": "SAMPLED",
-          "binding": 9
         },
         {
           "image": "gbuffer_clearcoat",

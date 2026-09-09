@@ -2,10 +2,10 @@
 #include <cstdio>
 int main()
 {
-    float results[124] = {};
+    float results[128] = {};
     GlobalParams_0 globals = {};
     globals.g_results_0.data = results;
-    globals.g_results_0.count = 124;
+    globals.g_results_0.count = 128;
     ComputeVaryingInput input = {};
     input.startGroupID = uint3(0u, 0u, 0u);
     input.endGroupID = uint3(1u, 1u, 1u);

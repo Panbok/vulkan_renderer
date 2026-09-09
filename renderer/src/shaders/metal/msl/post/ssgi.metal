@@ -307,7 +307,7 @@ kernel void vkr_metal_packet_ssgi_temporal(
         screen, identity, root.history_identity.read(history_pixel).xy,
         root.history_depth.read(history_pixel).x,
         root.validity.read(receiver.pixel).y, previous_uv,
-        root.validity.read(receiver.pixel).x);
+        root.validity.read(receiver.pixel).x, trace_extent);
     raw = vkr_ssgi_temporal_filter(raw,
                                    root.history_color.read(history_pixel),
                                    neighborhood_mean, neighborhood_variance, decision);

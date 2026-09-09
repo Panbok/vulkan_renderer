@@ -61,9 +61,10 @@ swapchain; automation boot alone does not imply an offscreen target.
 Color channels declared `RGBA16_FLOAT_LE` publish tight, top-left, little-endian
 binary16 RGBA payloads separately from their PNG previews. Version 2 introduced
 the actual float16 payload; earlier output mislabeled PNG-only files as float16,
-so those baselines are incompatible. `ssr_reflection` advances to version 3 for
-[ADR-055](055-screen-space-reflections.md)'s receiver-shaded RGB, replacing incoming
-radiance. `ssr_raw` remains incoming radiance at version 2. Numeric comparison
+so those baselines are incompatible. `ssr_reflection` version 4 contains
+[ADR-055](055-screen-space-reflections.md)'s full-source-resolution receiver-shaded
+RGB. Version 3 held half-resolution shaded RGB; earlier versions held incoming
+radiance. Those history baselines are incompatible with the new extent and receiver. `ssr_raw` remains incoming radiance at version 2. Numeric comparison
 decodes finite half values and never substitutes
 a preview for radiance data. SDR final-color PNG and scalar/vector channels keep
 their existing contracts. Extended-linear final color under ADR-061 uses

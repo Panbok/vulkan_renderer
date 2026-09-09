@@ -823,20 +823,16 @@ vkr_global const VkrMetalPacketAbiField vkr_ssr_composite_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, normal_texture_id, "normal", 352),
     VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, gtao_visibility_texture_id,
                   "gtao_visibility", 360),
-    VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, history_depth_texture_id,
-                  "history_depth", 368),
-    VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, receiver_texture_id,
-                  "receiver", 376),
     VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, inverse_view_projection,
-                  "inverse_view_projection", 384),
-    VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, extent, "extent", 448),
-    VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, reserved, "reserved", 456),
+                  "inverse_view_projection", 368),
+    VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, extent, "extent", 432),
+    VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, reserved, "reserved", 440),
     VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, clearcoat_texture_id,
-                  "clearcoat", 464),
+                  "clearcoat", 448),
     VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, sheen_texture_id, "sheen",
-                  472),
+                  456),
     VKR_ABI_FIELD(VkrMetalPacketSsrCompositeRoot, anisotropy_texture_id,
-                  "anisotropy", 480),
+                  "anisotropy", 464),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_gtao_depth_root_fields[] = {
@@ -1387,7 +1383,7 @@ vkr_global const VkrMetalPacketAbiRecord
             464, 16, vkr_ssr_temporal_root_fields),
         [VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketSsrCompositeRoot, "VkrMetalPacketSsrCompositeRoot",
-            496, 16, vkr_ssr_composite_root_fields),
+            480, 16, vkr_ssr_composite_root_fields),
         [VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketDeferredLightingRoot,
                            "VkrMetalPacketDeferredLightingRoot", 240, 16,

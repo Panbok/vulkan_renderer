@@ -486,35 +486,40 @@ fallback. [ADR-054](adr/054-baked-diffuse-volumes.md) owns offline room detectio
 artifact layout, lifetime and evidence limits.
 
 Opaque SSR runs before transmission under
-[ADR-055](adr/055-screen-space-reflections.md). Its half-resolution trace has a
-separate current-frame hierarchy and reflection history. Full-resolution leaves,
-absolute cell crossings and earliest one-sided surface intersections stay within
-48 decisions per ray. Four history taps independently validate depth and identity;
-reprojection includes the selected producer's jitter delta. Raw trace RGB remains
-incoming radiance. Temporal history now contains receiver-shaded radiance,
-including indirect-specular GTAO and the selected coat or base sheen/anisotropy
-response. Composite removes the exact current full-resolution probe contribution
-and adds covered shaded history without multiplying its receiver response again.
+[ADR-055](adr/055-screen-space-reflections.md). Half-resolution rays retain the
+current-frame depth hierarchy, full-resolution leaves and 48-decision limit.
+Temporal shades each full-resolution source receiver and stores source-resolution
+color/depth/identity history. It gathers incoming radiance once from at most nine
+half-resolution raw taps and reuses those samples for bounds; mirrors retain a
+2×2 reconstruction footprint. Four history taps independently validate depth and
+identity on the source grid, with selected-producer jitter correction.
 
-History clamping relaxes continuously with roughness, reaching unclamped
-accumulation at 0.25. Default history weight rises from 0.85 to 0.95 for stationary
-rough receivers and returns to 0.85 at one source pixel of motion per frame.
-Empty neighborhoods fade valid history; rejected depth/identity history clears.
-Receiver filtering uses a 2 cm minimum depth tolerance, independently of ray
-thickness. The approved shaded-history extension adds at most 17 texture accesses
-per branch, with the existing images, rays and history ownership. Half-resolution
-receiver shading can soften material, coat and mirror boundaries and retain trails.
+History RGB includes the receiver's indirect-specular GTAO and selected coat or
+base sheen/anisotropy response. Composite loads same-pixel shaded history,
+subtracts the exact current probe contribution and adds covered history without
+multiplying its receiver response again. Full-resolution receiver shading avoids
+reconstructing one half-resolution material response across source pixels;
+incoming-radiance detail remains limited by the half-resolution rays.
 
-Current Metal shaded-history captures preserve the mirror oracle and reduce
-counter-region outliers while increasing smaller under-bar outliers. They do not
-establish uniform stability. The moving capture, Release editor build, and two
-serial API-only mirror-resize repetitions pass. Matched Release profiles record a
-small added SSR cost under ADR-055. `ssr_reflection` capture version 3 identifies the new
-RGB meaning; older incoming-radiance history is incompatible. Native Vulkan
-execution remains unavailable.
-ADR-044 records the unresolved backend differences in coat GTAO policy and trace
-source sampling. GPU shader validation previously crashed in MetalTools with SSR
-on or off; that run supplied no shader-validation result.
+Continuous clamping, motion-adaptive history weights and the 2 cm minimum receiver
+depth tolerance remain under ADR-055. Empty neighborhoods fade validated history;
+rejected depth/identity clears. History pool ownership and image count stay fixed.
+At source 1280×720 with three frame slots and five history instances, logical
+history payload grows by 65.917969 MiB to 87.890625 MiB, excluding alignment and
+resize overlap. Temporal shades about four times as many pixels, with at most
+80 texture reads per pixel. `ssr_reflection` capture version 4 distinguishes this
+source-resolution history from version 3 half-resolution shaded history.
+
+Release app/editor builds, shared math, compiled native layouts and the Metal
+mirror, static/moving Bistro, layered-material, combined SSR/SSGI and API-resize
+checks pass. Local matched profiles increase total SSR GPU time from 1.99 to
+2.63 ms at source 1025×577. Visual results remain mixed: some hotspots improve,
+but the fixed reflective bar-face region shows no decisive stability gain.
+[ADR-055](adr/055-screen-space-reflections.md) records the evidence and limits.
+Native Vulkan execution remains unavailable.
+ADR-044 records unresolved coat-GTAO and trace-source sampling parity gaps. GPU
+shader validation previously crashed in MetalTools with SSR on or off and supplied
+no shader-validation result.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte
 record per frame slot; a zero record bypasses fog. The in-place opaque/sky pass

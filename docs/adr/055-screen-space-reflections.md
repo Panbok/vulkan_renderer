@@ -8,9 +8,9 @@ authority: adr
 
 ## Status
 
-Accepted. Implemented on both packet backends. Shaded-history Metal mirror, static/moving
-Bistro, layered-material and API resize checks pass; native Vulkan evidence remains
-unavailable.
+Accepted. Full-source-resolution shaded history is implemented on both packet
+backends. Release builds, compiled layouts, native Metal captures and API-resize
+checks pass. Residual Bistro flicker remains; native Vulkan execution is unavailable.
 
 ## Context
 
@@ -25,46 +25,50 @@ hierarchy needed for reflection traversal.
 ## Decision
 
 SSR is an optional frame control on opaque surfaces with perceptual roughness
-at most 0.6. It runs at half width and height, with at most 48 hierarchy decisions
-per ray. A dedicated current-frame R32F pyramid stores minimum positive view
-depth. Zero means uncovered. Reductions retain odd source rows and columns;
+at most 0.6. Trace runs at half source width and height, with at most 48 hierarchy
+decisions per ray. Temporal shading and color/depth/identity history use the full
+source extent, before display reconstruction or scaling. A dedicated current-frame
+R32F pyramid stores minimum positive view depth. Zero means uncovered. Reductions retain odd source rows and columns;
 the last output cell owns the remaining source pixels.
 
 The base pass also records the nearest full-resolution receiver pixel, with
-stable top-left tie breaking. Trace and temporal filtering use that same receiver.
-The projected ray uses homogeneous interpolation, viewport clipping and cell
+stable top-left tie breaking. Trace uses that receiver; temporal shading uses its
+own full-resolution receiver and reconstructs incoming radiance from nearby trace
+receivers. The projected ray uses homogeneous interpolation, viewport clipping and cell
 entry/exit depth intervals. Hit coverage, depth thickness and facing checks
 reject unsupported intersections. Depth thickness is a binary hit tolerance; its
 residual is not fractional visibility. Rays use a separate small origin bias.
 
 Trace reads the completed opaque HDR image before transmission. It writes
-incoming radiance and confidence into a half-resolution RGBA16F image. Roughness
-filtering is bounded: minimum-roughness mirrors retain one source sample; rougher
-receivers use up to five nearby source samples and a 3×3 depth/normal-aware filter.
-The spatial filter accumulates radiance multiplied by confidence and normalizes
-by covered weight; all eligible taps contribute to the coverage denominator.
-Spatial and composite receiver weights use a depth tolerance of
-`max(0.02 m, 0.05 * center_depth)`, independently of ray thickness. This rejects
-nearby chrome and trim separated by more than the receiving surface tolerance.
-SSGI retains its previous minimum through an explicit scalar argument.
-The temporal pass applies the selected receiver's BRDF energy and indirect-specular
-GTAO weight before storing or blending history. Raw trace RGB remains incoming
-radiance; history RGB is receiver-shaded radiance. Base receivers include sheen
-allocation and anisotropic GGX; coated receivers include only the selected coat.
-Current neighborhood radiance bounds are multiplied by the same nonnegative
-receiver weight before clamping shaded history. The temporal filter blends covered
-shaded radiance and confidence with the accepted history weight. The user approved tuning temporal clamping and roughness filtering
-within the existing ray, read and image budgets, accepting softness and short
-trails. Current hit count no longer changes the clamp policy: switching from two
-to three hits previously changed RGB even when filtered current radiance, coverage
-and history were identical.
+incoming radiance and confidence into a half-resolution RGBA16F image. Mirrors
+retain one hit-source sample; rougher rays use at most five nearby source samples.
+No additional ray is traced for full-resolution history.
+
+Each source pixel gathers the half-resolution raw image once. Rough receivers use
+at most nine taps in a 3×3 footprint with a continuous tent of radius 1.5 trace
+pixels. Mirrors use the former composite's 2×2 footprint with tent radius 1. Each
+tap is weighted against the current full-resolution receiver's depth and selected
+normal. The receiver depth tolerance is `max(0.02 m, 0.05 * center_depth)`,
+independent of ray thickness. SSGI retains its previous minimum through an
+explicit scalar argument. The gather accumulates radiance multiplied by
+confidence and normalizes by covered weight; eligible taps contribute to the
+coverage denominator. The same loaded raw samples supply temporal bounds, so
+there is no second 3×3 clamp-read loop.
+
+Temporal applies its own full-resolution receiver's BRDF energy and
+indirect-specular GTAO before storing or blending history. Raw RGB remains
+incoming radiance; history RGB is receiver-shaded radiance. Base receivers include
+sheen allocation and anisotropic GGX; coated receivers include only the selected
+coat. Current raw bounds receive the same nonnegative receiver weight before
+clamping shaded history. Covered shaded radiance and confidence accumulate
+together. The user accepted roughness-dependent softness and short trails;
+current hit count does not introduce a separate clamp-policy threshold.
 
 Clamping relaxes continuously with selected roughness. A smoothstep from the mirror
 threshold to 0.25 determines the fraction of validated history used without current
 radiance bounds. Mirrors use the current bounds; roughness 0.25 and above uses
-unclamped history. Both components retain the same coverage weight. Mirror sampling
-remains one source tap with no spatial blur, but its sparse temporal clamp is
-stricter than the superseded one/two-hit allowance.
+unclamped history. Both components retain the same coverage weight. Mirrors retain
+their single hit-source sample and use the 2×2 reconstruction footprint above.
 
 For configured weight `w`, roughness blend `s`, and unjittered motion magnitude `m`
 in full-resolution source pixels, accepted history uses
@@ -76,8 +80,7 @@ Empty neighborhoods fade valid covered radiance and coverage together, preservin
 conditional radiance; rejected history clears immediately. At weight 0.95, history
 half-life is about 13.5 rendered frames. Receiver depth, identity and motion cannot
 detect a moving reflected object on a stationary bar, so retained reflections can
-trail. The continuous clamp and motion-weight policy itself adds no reads, images,
-rays or ABI fields; receiver shading has the separately approved cost below.
+trail. The approved storage and execution costs are recorded below.
 
 Both native paths skip out-of-bounds filter taps. Trace and composite eligibility
 use the same selected material roughness; normal-variance broadening changes BRDF
@@ -113,35 +116,36 @@ Projection compatibility uses the unjittered projection. Consecutive raster-jitt
 phases must not invalidate accumulation. Trace retains the current jittered
 projection; previous-depth reconstruction needs only the unchanged Z/W coefficients.
 Motion vectors exclude raster jitter. SSR history retains the raster grid, so
-reprojection starts at the half-resolution history texel center and adds motion
-from the selected receiver plus the producer's previous-minus-current jitter in UV.
-Using the selected full-resolution receiver UV as the origin would resample
-neighboring history even under zero motion and jitter.
+reprojection starts at the current full-resolution source-pixel center and adds
+that receiver's motion plus the producer's previous-minus-current jitter in UV.
+History coordinates and texel-edge bounds use the source extent, independently
+of the half-resolution trace extent.
 The user approved four bilinear history taps, each checked against its own depth
 and identity before its radiance contributes. Accepted taps interpolate covered
 radiance and coverage, renormalizing over valid support before applying the
 configured temporal weight. Invalid taps contribute nothing; if every tap fails,
 current radiance replaces history.
-This costs at most nine additional history texture reads per half-resolution pixel,
-with no additional image, ray or traversal step. The two formerly unused trailing
-parameter floats now carry jitter UV at offsets 280/284; the record remains 288 bytes.
+The existing four taps retain their per-tap color/depth/identity reads. Jitter UV
+remains at parameter offsets 280/284; the record remains 288 bytes.
 
 Radiance controls, scene/resource changes, cuts, projection and extent changes
 invalidate reuse. Ordinary camera and object motion
 use motion, depth and identity rejection. History remains independent of final
 TAA; disabling TAA must not introduce raster jitter or disable reflection history.
 
-Composite reads the filtered shaded reflection and applies
+Composite loads the same source pixel of filtered shaded history directly and applies
 `HDR - coverage * current_probe + coverage * shaded_history`. The removed probe
 term is recomputed at the full-resolution pixel to match the existing deferred
 lighting contribution. The new history term receives no second BRDF or GTAO
 multiplier. Zero coverage preserves the original HDR value. The composite reads and writes
 only its own full-resolution HDR pixel, after trace finishes sampling that image.
 It runs before the transmission background pyramid, so glass sees the result.
+Its former bilateral history reconstruction is removed; graph bindings 8
+(history depth) and 9 (trace receiver pixel) are no longer needed by composite.
 
 The graph owns the depth pyramid, receiver pixels and raw reflection as transient
-per-image resources. It owns the three history images and reuses them only after
-GPU completion. There is no duplicate resolved-reflection image: composite reads
+per-image resources. It owns full-source-resolution RGBA16F color, R32F depth and
+RG32_UINT identity histories and reuses them only after GPU completion. There is no duplicate resolved-reflection image: composite reads
 the current history output directly.
 
 Coated pixels use [ADR-062](062-layered-clearcoat.md)'s coat-priority policy:
@@ -152,23 +156,27 @@ weight by sheen allocation without another ray or history. Material/texture
 radiance revisions invalidate incompatible
 retained history without increasing history storage.
 
-The user approved moving receiver shading into the existing half-resolution
-history with at most 17 additional texture accesses per material branch and an
-absolute temporal ceiling of 92 accesses. Current Metal source reuses its center
-normal and stays within 91; this is a source access bound, not a GPU timing result.
-The existing five hit-source taps, 3×3 raw spatial filter, 3×3 clamp reads, four
-history taps, 48 traversal decisions, and image allocations are unchanged. No
-probe cubemap is sampled by temporal receiver shading.
+The user approved increasing the existing history images to the full source
+extent. At source 1280×720 with three frame slots and five history instances,
+color/depth/identity consume 87.890625 MiB instead of 21.972656 MiB: an increase
+of 65.917969 MiB, within the approved 65.92 MiB. These are logical payload bytes;
+they exclude backend alignment and overlap during resize. Image count, history
+pool ownership, reader retirement, rays, 48 traversal decisions and five
+hit-source taps remain unchanged. Temporal executes about four times as many
+pixels. The Metal source bound is 80 texture reads for rough base receivers and
+71 for rough coat receivers; mirrors need at most 55 and 46 respectively. Each
+output writes the same three images. Reusing the raw gather for bounds removes
+the old nine-read clamp loop. Temporal shading samples no probe cubemap.
 
-`SSR.Temporal` adds graph reads 17 (albedo), 18 (GTAO, only when enabled), 19
-(sheen), and 20 (anisotropy). It borrows existing frame/LUT resources. Metal uses
-a 464-byte temporal root and the existing per-consumer frame-root creation policy;
-its frame root and anisotropy record require three additional 512-byte upload
-cells, or 1536 reserved bytes per active SSR frame. Meaningful uploaded records
-grow by 592 bytes: 528 for the frame, 32 for anisotropy, and 32 for the temporal
-root. Vulkan reuses its frame-slot frame root and grows its temporal root from
-368 to 400 bytes, adding 32 upload bytes. Root layouts, assertions and reflection
-pin these contracts; graph history ownership and completion rules do not change.
+`SSR.Temporal` retains graph reads 17 (albedo), 18 (GTAO, only when enabled), 19
+(sheen), and 20 (anisotropy), borrowing existing frame/LUT resources. Temporal
+roots remain 464 bytes on Metal and 400 on Vulkan. Metal retains its per-consumer
+frame-root creation policy: three 512-byte upload cells (1536 reserved bytes,
+592 added payload bytes) established by shaded history. Vulkan retains its
+frame-slot frame root and the existing 32-byte temporal upload increase.
+Removing composite's two unused resource bindings shrinks its root from 496 to
+480 bytes on Metal and from 432 to 416 bytes on Vulkan. The shared parameter
+record stays 288 bytes. Assertions and compiled reflection pin native layouts.
 
 Old coat probe removal uses packed coat roughness to match deferred lighting.
 Metal removes the coat term with deferred's base GTAO cone; Vulkan removes its
@@ -182,12 +190,14 @@ a full-resolution integer load could address outside that 1×1 fallback.
 
 Off-screen, occluded and unsupported hits retain probe lighting. The bounded
 traversal can miss intersections; it does not replace scene geometry or probes.
-Coarse reflection filtering loses detail on rough surfaces. Receiver shading is
-now evaluated and accumulated at half resolution for every eligible material,
-including mirrors. Material, coat, and mirror boundaries can become softer, and
-retained receiver lighting can trail through motion or lighting changes. The user
-accepted those tradeoffs within the stated read budget. The additional graph
-images and passes exist only while SSR is enabled.
+Coarse incoming-radiance reconstruction still loses detail on rough surfaces.
+Full-resolution receiver shading avoids transporting one half-resolution
+receiver's material, coat or mirror response across neighboring source pixels.
+It does not add geometric reflection detail beyond the half-resolution rays, and
+depth/normal reconstruction can still soften boundaries. Retained history can
+trail through motion or lighting changes. The larger history allocation and
+fourfold temporal pixel count require measured memory and frame-cost checks.
+The additional graph images and passes exist only while SSR is enabled.
 
 The frame input adds `ssr_enabled` in version 35. Deterministic harness cases
 opt in explicitly; capture-summary version 10 preserves older summaries with
@@ -201,19 +211,55 @@ Reusing culling HZB or GTAO depth would couple reflection correctness to unrelat
 features. Adding SSR over fully evaluated probe specular would count reflected
 energy twice. Sampling HDR while modifying it would create cross-pixel feedback.
 A second full-resolution composite target is unnecessary because each composite
-invocation only reads and writes its own HDR pixel.
+invocation only reads and writes its own HDR pixel. Half-resolution shaded history
+was smaller but reconstructed material response across receiver boundaries. The
+accepted design spends history memory and temporal work to shade each source
+receiver while retaining the bounded half-resolution ray workload.
 
 ## Evidence and remaining checks
 
-Current shaded-history validation passes Release app/harness and editor builds and 124
+Release app and editor builds, 128 shared-math outputs, all ten production
+SSR/SSGI SPIR-V modules and Vulkan host syntax checks pass. Compiled Vulkan
+composite stride 416 and coat/sheen/anisotropy offsets 404/408/412 match host
+assertions; Metal's native 480-byte composite root passes pipeline validation.
+The mirror retains 696 raw hits and improves its maximum interior HDR error to
+0.000195313. Static/moving Bistro, layered materials and combined SSR/SSGI captures
+have finite payloads, valid coverage and source-resolution version-4 history.
+Two serial Metal API-validation resize repetitions pass.
+
+Visual evidence is mixed. Counter-edge pixel (548,244) becomes steady and the
+under-bar hotspot (904,562) improves from seven to five display codes of variation.
+Other thin edges regress. A fixed 86,265-pixel reflective bar-face polygon has
+470 pixels varying by more than three codes both before and after; its absolute
+SSR contribution drops 7.33%. This does not establish flicker-free reflections or
+a decisive whole-region stability improvement.
+
+Matched local Release profiles at source 1025×577 record temporal GPU time
+0.435→1.364 ms, composite 0.638→0.347 ms and total SSR 1.992→2.631 ms. These
+non-authoritative observations have identical effective configurations and
+fingerprints but unstable warmup; they are not an equivalent-output speed claim
+or a locked-60-fps result. [The full-resolution record](../../assets/verification/renderer-features/ssr-full-resolution-history.txt)
+contains exact commands, report digests, image metrics and retained preview/clip.
+
+`ssr_reflection` version 4 identifies full-source-resolution shaded RGB; version 3
+held half-resolution shaded RGB and `ssr_raw` remains incoming radiance at
+version 2. Prior captures cannot validate the new history extent. Native Vulkan
+execution and bilateral comparison remain unavailable.
+
+### Prior half-resolution shaded-history evidence
+
+The following results predate full-resolution history and establish its baseline,
+not validation of the current implementation.
+
+Half-resolution shaded-history validation passed Release app/harness and editor builds and 124
 shared-math outputs. Ten SSR/SSGI SPIR-V modules pass validation. Compiled temporal
 SPIR-V declares offsets 368/376/380/384/388/392 and `ArrayStride 400`, checked with
-`spirv-dis`. Current root sequences are 320/320/368/464/496 bytes on Metal and
+`spirv-dis`. That revision's root sequences were 320/320/368/464/496 bytes on Metal and
 304/32/336/400/424-byte declared strides on Vulkan (the composite host record is
 aligned to 432). The shared parameter record remains 288 bytes. Native Vulkan
 execution and bilateral image comparison remain unavailable.
 
-The current native Metal mirror capture retains 696 raw hits and 15 analytic
+That revision's native Metal mirror capture retains 696 raw hits and 15 analytic
 samples with maximum linear-HDR error 0.000684. The 1280×720 Bistro bar capture
 with 96 warmup frames contains 7,090,696 finite RGBA16F tuples and confidence in
 [0,1]. In its matched comparison, counter pixels with more than three display
@@ -241,7 +287,7 @@ Temporal changes from 0.309109 to 0.438030 ms and composite from 0.679913 to
 0.642413 ms. Output changes intentionally; this is a measured cost tradeoff,
 not an equivalent-output speedup.
 
-The `ssr_reflection` capture channel is version 3 because RGB now contains
+That revision used `ssr_reflection` version 3 because RGB contained
 receiver-shaded radiance; `ssr_raw` stays incoming radiance at version 2. The initial
 mirror, bar and layered captures above preceded that metadata bump but executed
 the same shaded-history shader behavior. Their provenance is recorded explicitly;
@@ -250,6 +296,8 @@ The final self-contained layered fixture and moving captures use version 3. A co
 passes finite-value, confidence and payload-hash checks over 2,310,726 tuples
 with both features enabled and reflection capture version 3. [The shaded-history record](../../assets/verification/renderer-features/ssr-shaded-history.txt)
 retains exact runs, commands, digests, numeric checks and outstanding gates.
+
+### Prior incoming-radiance-history evidence
 
 The evidence below predates shaded history and records the incoming-radiance
 history implementation. Its raw/history comparisons and timing results must not

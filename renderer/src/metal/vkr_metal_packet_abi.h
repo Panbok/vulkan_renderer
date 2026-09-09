@@ -560,8 +560,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrCompositeRoot {
   uint64_t specular_texture_id;
   uint64_t normal_texture_id;
   uint64_t gtao_visibility_texture_id;
-  uint64_t history_depth_texture_id;
-  uint64_t receiver_texture_id;
   Mat4 inverse_view_projection;
   uint32_t extent[2];
   uint32_t reserved[2];
@@ -570,16 +568,16 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrCompositeRoot {
   uint64_t anisotropy_texture_id;
 } VkrMetalPacketSsrCompositeRoot;
 
-_Static_assert(sizeof(VkrMetalPacketSsrCompositeRoot) == 496,
+_Static_assert(sizeof(VkrMetalPacketSsrCompositeRoot) == 480,
                "Metal SSR composite root ABI must remain 480 bytes");
 _Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot,
-                        clearcoat_texture_id) == 464u,
+                        clearcoat_texture_id) == 448u,
                "Metal SSR composite clearcoat ABI offset drift");
 _Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot, sheen_texture_id) ==
-                   472u,
+                   456u,
                "Metal SSR composite sheen ABI offset drift");
 _Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot,
-                        anisotropy_texture_id) == 480u,
+                        anisotropy_texture_id) == 464u,
                "Metal SSR composite anisotropy ABI offset drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSdsmRoot {

@@ -1882,7 +1882,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     prepared->dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->ssr_temporal_pipeline,
         .root = root_gpu,
-        .threads = MTLSizeMake(raw.width, raw.height, 1u),
+        .threads = MTLSizeMake(output_color.width, output_color.height, 1u),
         .group_size = MTLSizeMake(8u, 8u, 1u),
     };
     prepared->active = true_v;
@@ -1905,16 +1905,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
       renderer->prepared_frame.gtao_enabled
           ? vkr_metal_packet_pass_texture(renderer, pass, 7u)
           : (id<MTLTexture>)renderer->gtao_white_visibility.metal_texture;
-  id<MTLTexture> history_depth =
-      vkr_metal_packet_pass_texture(renderer, pass, 8u);
-  id<MTLTexture> receiver = vkr_metal_packet_pass_texture(renderer, pass, 9u);
   id<MTLTexture> clearcoat =
       vkr_metal_packet_pass_texture(renderer, pass, 10u);
   id<MTLTexture> sheen = vkr_metal_packet_pass_texture(renderer, pass, 11u);
   id<MTLTexture> anisotropy =
       vkr_metal_packet_pass_texture(renderer, pass, 12u);
   if (!hdr || !history || !vbuffer || !depth || !albedo || !specular ||
-      !normal || !gtao_visibility || !history_depth || !receiver || !clearcoat ||
+      !normal || !gtao_visibility || !clearcoat ||
       !sheen || !anisotropy ||
       !renderer->gtao_white_live || !renderer->ssr_composite_pipeline || hdr.width == 0u ||
       hdr.height == 0u || hdr.width > UINT32_MAX || hdr.height > UINT32_MAX)
@@ -1945,8 +1942,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
       .specular_texture_id = specular.gpuResourceID._impl,
       .normal_texture_id = normal.gpuResourceID._impl,
       .gtao_visibility_texture_id = gtao_visibility.gpuResourceID._impl,
-      .history_depth_texture_id = history_depth.gpuResourceID._impl,
-      .receiver_texture_id = receiver.gpuResourceID._impl,
       .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
       .sheen_texture_id = sheen.gpuResourceID._impl,
       .anisotropy_texture_id = anisotropy.gpuResourceID._impl,

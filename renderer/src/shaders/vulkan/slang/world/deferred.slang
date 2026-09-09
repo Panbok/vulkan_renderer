@@ -294,8 +294,6 @@ struct VkrVkSsrCompositeRoot
     uint specular_texture;
     uint normal_texture;
     uint gtao_visibility_texture;
-    uint history_depth_texture;
-    uint receiver_texture;
     uint linear_sampler;
     uint clearcoat_texture;
     uint sheen_texture;
@@ -2399,93 +2397,113 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
 void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkSsrTemporalRoot *root = g_ssr_temporal_push.root;
-    uint2 cell = thread_id.xy;
+    uint2 pixel = thread_id.xy;
     uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
-    if (any(cell >= trace_extent)) return;
-    float4 raw = g_textures[root.raw_texture].Load(int3(cell, 0));
-    uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(cell, 0));
-    uint2 identity = uint2(0u, 0u); float positive_depth = 0.0f;
-    float roughness = VKR_SSR_MIRROR_ROUGHNESS;
-    float3 receiver_weight = 0.0f;
-    if (all(receiver < source_extent))
+    if (any(pixel >= source_extent)) return;
+    uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel, 0)).x;
+    if (visible == 0u)
     {
-        uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
-        identity = vkr_vk_ssr_identity(root, visible);
-        float device_depth =
-            g_depth_textures[root.depth_texture].Load(int3(receiver, 0));
-        positive_depth = vkr_vk_ssr_positive_depth(
-            root.params, receiver, source_extent, device_depth);
-        float4 clearcoat_packed =
-            g_textures[root.clearcoat_texture].Load(int3(receiver, 0));
-        bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
-        float4 specular = clearcoat_active
-                              ? float4(0.0f)
-                              : g_textures[root.specular_texture].Load(
-                                    int3(receiver, 0));
-        roughness = clearcoat_active ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
-                                     : clamp(specular.a, 0.04f, 1.0f);
-        float3 normal = clearcoat_active
-                            ? vkr_vk_octahedral_decode(clearcoat_packed.zw)
-                            : vkr_vk_octahedral_decode(
-                                  g_textures[root.normal_texture].Load(
-                                      int3(receiver, 0)).xy);
-        if (vkr_ssr_hit_filter_tap_count(roughness) > 1u &&
-            vkr_ssr_valid_depth(positive_depth))
-        {
-            float4 filtered = 0.0f; float weights = 0.0f;
-            for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x)
-            {
-                int2 q = int2(cell) + int2(x, y);
-                if (any(q < 0) || any(q >= int2(trace_extent))) continue;
-                uint2 other_receiver = g_uint2_textures[root.receiver_texture].Load(int3(q, 0));
-                if (any(other_receiver >= source_extent)) continue;
-                float other_depth = vkr_vk_ssr_positive_depth(root.params, other_receiver, source_extent,
-                    g_depth_textures[root.depth_texture].Load(int3(other_receiver, 0)));
-                float3 other_normal = vkr_vk_ssr_selected_normal(
-                    root.normal_texture, root.clearcoat_texture, other_receiver);
-                float w = vkr_ssr_receiver_bilateral_weight(float2(x, y), positive_depth, other_depth,
-                                                            normal, other_normal, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
-                filtered += vkr_ssr_spatial_sample(
-                    g_textures[root.raw_texture].Load(int3(q, 0)), w);
-                weights += w;
-            }
-            if (weights > 0.0f) raw = vkr_ssr_spatial_resolve(filtered, weights);
-        }
-        float receiver_roughness = vkr_vk_ssr_filter_roughness(
-            root.normal_texture, root.clearcoat_texture, root.vbuffer_texture,
-            source_extent, receiver, visible, normal, roughness);
-        receiver_weight = vkr_vk_ssr_receiver_weight(
-            root.frame, root.params, root.albedo_texture,
-            root.gtao_visibility_texture, root.sheen_texture,
-            root.anisotropy_texture, receiver, device_depth, normal, specular,
-            clearcoat_packed, receiver_roughness);
+        g_storage_2d[root.output_color_texture][pixel] = 0.0f;
+        g_storage_2d[root.output_depth_texture][pixel] = 0.0f;
+        g_storage_uint2_2d[root.output_identity_texture][pixel] = 0u;
+        return;
     }
-    raw = vkr_ssr_shade_reflection(raw, receiver_weight);
-    // History is stored on the trace grid; receiver selection supplies motion only.
-    float2 uv = vkr_ssr_uv_from_pixel(cell, trace_extent);
-    float2 motion = all(receiver < source_extent) ? g_textures[root.motion_texture].Load(int3(receiver, 0)).xy : 0.0f;
+    float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+    float positive_depth = vkr_vk_ssr_positive_depth(
+        root.params, pixel, source_extent, device_depth);
+    float4 clearcoat_packed =
+        g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
+    bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
+    float4 specular = clearcoat_active
+                          ? float4(0.0f)
+                          : g_textures[root.specular_texture].Load(int3(pixel, 0));
+    float roughness = clearcoat_active ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
+                                         : clamp(specular.a, 0.04f, 1.0f);
+    if (!vkr_ssr_valid_depth(positive_depth) ||
+        !vkr_ssr_eligible(roughness, true, root.params))
+    {
+        g_storage_2d[root.output_color_texture][pixel] = 0.0f;
+        g_storage_2d[root.output_depth_texture][pixel] = 0.0f;
+        g_storage_uint2_2d[root.output_identity_texture][pixel] = 0u;
+        return;
+    }
+    float3 normal = clearcoat_active
+                        ? vkr_vk_octahedral_decode(clearcoat_packed.zw)
+                        : vkr_vk_octahedral_decode(
+                              g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
+    float receiver_roughness = vkr_vk_ssr_filter_roughness(
+        root.normal_texture, root.clearcoat_texture, root.vbuffer_texture,
+        source_extent, pixel, visible, normal, roughness);
+    float3 receiver_weight = vkr_vk_ssr_receiver_weight(
+        root.frame, root.params, root.albedo_texture,
+        root.gtao_visibility_texture, root.sheen_texture,
+        root.anisotropy_texture, pixel, device_depth, normal, specular,
+        clearcoat_packed, receiver_roughness);
+    float2 trace_coordinate = (float2(pixel) + 0.5f) * float2(trace_extent) /
+                              float2(source_extent) - 0.5f;
+    bool mirror = roughness <= VKR_SSR_MIRROR_ROUGHNESS;
+    int2 center = mirror ? int2(floor(trace_coordinate))
+                         : int2(floor(trace_coordinate + 0.5f));
+    int begin = mirror ? 0 : -1;
+    float4 filtered = 0.0f;
+    float support_weight = 0.0f;
+    float3 neighborhood_min = float3(3.402823466e+38f);
+    float3 neighborhood_max = float3(-3.402823466e+38f);
+    uint neighborhood_hits = 0u;
+    for (int y = begin; y < 2; ++y) for (int x = begin; x < 2; ++x)
+    {
+        int2 q = center + int2(x, y);
+        if (any(q < 0) || any(q >= int2(trace_extent))) continue;
+        float2 offset = float2(q) - trace_coordinate;
+        float grid_weight = vkr_ssr_reconstruction_grid_weight(offset, roughness);
+        if (grid_weight <= 0.0f) continue;
+        uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(q, 0));
+        if (any(receiver >= source_extent)) continue;
+        float neighbor_depth = vkr_vk_ssr_positive_depth(
+            root.params, receiver, source_extent,
+            g_depth_textures[root.depth_texture].Load(int3(receiver, 0)));
+        float3 neighbor_normal = vkr_vk_ssr_selected_normal(
+            root.normal_texture, root.clearcoat_texture, receiver);
+        float weight = grid_weight * vkr_ssr_receiver_bilateral_weight(
+            offset, positive_depth, neighbor_depth, normal, neighbor_normal,
+            VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
+        if (weight <= 0.0f) continue;
+        float4 sample = g_textures[root.raw_texture].Load(int3(q, 0));
+        filtered += vkr_ssr_spatial_sample(sample, weight);
+        support_weight += weight;
+        if (sample.w > 0.0f)
+        {
+            float3 shaded = sample.rgb * receiver_weight;
+            neighborhood_min = min(neighborhood_min, shaded);
+            neighborhood_max = max(neighborhood_max, shaded);
+            ++neighborhood_hits;
+        }
+    }
+    float4 raw = vkr_ssr_shade_reflection(
+        vkr_ssr_spatial_resolve(filtered, support_weight), receiver_weight);
+    uint2 identity = vkr_vk_ssr_identity(root, visible);
+    float2 uv = vkr_ssr_uv_from_pixel(pixel, source_extent);
+    float2 motion = g_textures[root.motion_texture].Load(int3(pixel, 0)).xy;
     float2 previous_uv = vkr_ssr_previous_uv(root.params, uv, motion);
-    float2 half_texel = float2(root.params.trace_texel_size_x,
-                               root.params.trace_texel_size_y) * 0.5f;
+    float2 half_texel = 0.5f / float2(source_extent);
     float2 coordinate = clamp(previous_uv, half_texel, 1.0f - half_texel) *
-                            float2(trace_extent) - 0.5f;
+                            float2(source_extent) - 0.5f;
     int2 first = int2(floor(coordinate));
-    float2 validity = all(receiver < source_extent) ?
-        g_textures[root.validity_texture].Load(int3(receiver, 0)).xy : 0.0f;
+    float2 validity = g_textures[root.validity_texture].Load(int3(pixel, 0)).xy;
     float4 history_sum = 0.0f;
     float history_support = 0.0f;
     if (root.params.history_valid != 0u) {
         for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
             int2 p = first + int2(x, y);
-            if (any(p < 0) || any(p >= int2(trace_extent))) continue;
+            if (any(p < 0) || any(p >= int2(source_extent))) continue;
             float weight = vkr_ssr_history_tap_weight(coordinate, p);
             if (weight <= 0.0f) continue;
             // Each color tap proves its own metadata before interpolation.
             VkrSsrHistoryDecision tap = vkr_ssr_temporal_accept(root.params,
                 identity, g_storage_uint2_2d[root.history_identity_texture][p],
                 g_depth_textures[root.history_depth_texture].Load(int3(p, 0)),
-                validity.y, previous_uv, validity.x);
+                validity.y, previous_uv, validity.x, source_extent);
             if (tap.accepted == 0u) continue;
             history_sum += vkr_ssr_spatial_sample(
                 g_textures[root.history_color_texture].Load(int3(p, 0)), weight);
@@ -2500,25 +2518,13 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
                                    motion * float2(source_extent)) : 0.0f;
     decision.expected_previous_depth = 0.0f;
     decision.reserved_float_0 = 0.0f;
-    float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
-    float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
-    uint neighborhood_hits = 0u;
-    for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
-        int2 q = int2(cell) + int2(x, y);
-        if (any(q < 0) || any(q >= int2(trace_extent))) continue;
-        float4 sample = vkr_ssr_shade_reflection(
-            g_textures[root.raw_texture].Load(int3(q, 0)), receiver_weight);
-        if (sample.w > 0.0f) {
-            ++neighborhood_hits;
-            neighborhood_min = min(neighborhood_min, sample.rgb);
-            neighborhood_max = max(neighborhood_max, sample.rgb);
-        }
-    }
-    float4 result = vkr_ssr_temporal_filter(roughness, neighborhood_hits, raw, history, neighborhood_min,
-                                            neighborhood_max, decision);
-    g_storage_2d[root.output_color_texture][cell] = result;
-    g_storage_2d[root.output_depth_texture][cell] = float4(positive_depth, 0, 0, 0);
-    g_storage_uint2_2d[root.output_identity_texture][cell] = identity;
+    float4 result = vkr_ssr_temporal_filter(
+        roughness, neighborhood_hits, raw, history, neighborhood_min,
+        neighborhood_max, decision);
+    g_storage_2d[root.output_color_texture][pixel] = result;
+    g_storage_2d[root.output_depth_texture][pixel] =
+        float4(positive_depth, 0, 0, 0);
+    g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
 }
 
 [shader("compute")]
@@ -2528,7 +2534,6 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     VkrVkSsrCompositeRoot *root = g_ssr_composite_push.root;
     uint2 pixel = thread_id.xy;
     uint2 extent = uint2(root.params.source_width, root.params.source_height);
-    uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     if (any(pixel >= extent)) return;
     uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel, 0)).x;
     if (visible == 0u) return;
@@ -2550,36 +2555,11 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float positive_depth = vkr_vk_ssr_positive_depth(root.params, pixel, extent, device_depth);
     if (!vkr_ssr_valid_depth(positive_depth)) return;
-    float2 trace_coordinate = (float2(pixel) + 0.5f) * float2(trace_extent) /
-                              float2(extent) - 0.5f;
-    int2 first = int2(floor(trace_coordinate));
-    float3 reflected_radiance = 0.0f;
-    float accepted_weight = 0.0f;
-    float support_weight = 0.0f;
-    for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x)
-    {
-        int2 cell = first + int2(x, y);
-        if (any(cell < 0) || any(cell >= int2(trace_extent))) continue;
-        uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(cell, 0));
-        if (any(receiver >= extent)) continue;
-        float2 offset = float2(cell) - trace_coordinate;
-        float spatial = max(1.0f - abs(offset.x), 0.0f) *
-                        max(1.0f - abs(offset.y), 0.0f);
-        float receiver_depth = g_depth_textures[root.history_depth_texture].Load(int3(cell, 0));
-        float3 receiver_normal = vkr_vk_ssr_selected_normal(
-            root.normal_texture, root.clearcoat_texture, receiver);
-        float support = spatial * vkr_ssr_receiver_bilateral_weight(
-            offset, positive_depth, receiver_depth, normal, receiver_normal,
-            VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
-        support_weight += support;
-        float4 sample = g_textures[root.reflection_texture].Load(int3(cell, 0));
-        float accepted = support * vkr_ssr_saturate(sample.a);
-        reflected_radiance += sample.rgb * accepted;
-        accepted_weight += accepted;
-    }
-    if (accepted_weight <= 0.0f || support_weight <= 0.0f) return;
-    float3 reflection = reflected_radiance / accepted_weight;
-    float confidence = accepted_weight / support_weight;
+    float4 reflection_sample =
+        g_textures[root.reflection_texture].Load(int3(pixel, 0));
+    if (reflection_sample.a <= 0.0f) return;
+    float3 reflection = reflection_sample.rgb;
+    float confidence = vkr_ssr_saturate(reflection_sample.a);
     float2 uv = vkr_ssr_uv_from_pixel(pixel, extent);
     float3 world = vkr_vk_deferred_homogeneous(mul(root.inverse_view_projection,
         float4(uv * 2.0f - 1.0f, device_depth, 1.0f)));

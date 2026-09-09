@@ -1277,10 +1277,8 @@ vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
     return false_v;
 
   const uint32_t current = renderer->history_output_index;
-  const uint32_t trace_width = Max(renderer->prepared_frame.viewport_width / 2u,
-                                   1u);
-  const uint32_t trace_height =
-      Max(renderer->prepared_frame.viewport_height / 2u, 1u);
+  const uint32_t history_width = renderer->prepared_frame.viewport_width;
+  const uint32_t history_height = renderer->prepared_frame.viewport_height;
   /* Projection compatibility excludes raster jitter: consecutive jitter phases
    * must retain history. Trace uses its own jittered projection; the stored
    * matrix supplies only unchanged Z/W coefficients for previous depth. Keep
@@ -1322,8 +1320,8 @@ vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
         depth->history_height != color->history_height ||
         identity->history_width != color->history_width ||
         identity->history_height != color->history_height ||
-        color->history_width != trace_width ||
-        color->history_height != trace_height ||
+        color->history_width != history_width ||
+        color->history_height != history_height ||
         MemCompare(&color->history_view_projection, &projection,
                    sizeof(projection)) != 0 ||
         MemCompare(&depth->history_view_projection,
@@ -2057,10 +2055,8 @@ vkr_metal_packet_mark_ssr_history_submitted(VkrMetalPacketRenderer *renderer,
     return;
   const uint32_t current = renderer->history_output_index;
   const uint32_t selected = renderer->selected_ssr_history_instance;
-  const uint32_t trace_width = Max(renderer->prepared_frame.viewport_width / 2u,
-                                   1u);
-  const uint32_t trace_height =
-      Max(renderer->prepared_frame.viewport_height / 2u, 1u);
+  const uint32_t history_width = renderer->prepared_frame.viewport_width;
+  const uint32_t history_height = renderer->prepared_frame.viewport_height;
   const Mat4 projection = vkr_metal_packet_clip_matrix(
       !renderer->convert_vulkan_clip_y, packet->input.globals.projection);
   if (packet->temporal.reset_reasons != 0u) {
@@ -2076,8 +2072,8 @@ vkr_metal_packet_mark_ssr_history_submitted(VkrMetalPacketRenderer *renderer,
     instance->history_frame_index = packet->input.frame.frame_index;
     instance->history_scene_generation = packet->input.frame.scene_generation;
     instance->history_view_projection = projection;
-    instance->history_width = trace_width;
-    instance->history_height = trace_height;
+    instance->history_width = history_width;
+    instance->history_height = history_height;
     instance->history_scene = (VkrMetalPacketTemporalSceneState){
         .signature = vkr_ssr_content_signature(packet),
         .radiance_revision = renderer->radiance_revision,

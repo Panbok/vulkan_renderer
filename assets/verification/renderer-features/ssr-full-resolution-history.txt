@@ -1,0 +1,163 @@
+Full-source-resolution SSR history — 2026-09-09
+
+Scope and result
+User approved +65.92 MiB logical history payload at 1280×720 source resolution with three frame slots,
+with half-resolution rays retained. Implementation starts from 410510c7 on main.
+History now shades and validates each source pixel; composite loads that exact
+history pixel without a late bilateral gather. Raw rays remain half resolution,
+48 traversal decisions and up to five source taps. One raw gather supplies resolve
+and clamp bounds (nine rough-surface taps or four mirror taps); four source-grid history taps validate depth
+and identity. SSGI explicitly keeps its half-resolution history extent.
+
+This implements the approved storage/reconstruction change. It does NOT establish
+flicker-free Bistro reflections. Some edges improve and others regress. The fixed
+bar-front polygon shows no decisive stability gain. No rejected filter trial is
+included, no baseline was promoted, and native Vulkan remains unavailable.
+
+Ownership, cost and ABI
+The graph still owns three color/depth/identity images in the same completion-safe
+history pool. At 1280×720 source resolution, five tuples of 8+4+8 bytes/pixel grow from
+21.97265625 to
+87.890625 MiB (+65.91796875 MiB). This excludes API tiling/alignment and resize overlap.
+At the actual Bistro source extent, 1025×577, the increase is 42.34018326 MiB. All pixel memory
+is allocated by graph realization, reused only after last GPU use completes, and
+retired through existing graph teardown/resize ownership. No CPU allocator or
+new persistent image type was introduced; no per-draw allocations or waits added.
+Maximum temporal texture reads per full-source pixel: rough base 80, rough coat 71;
+mirror base 55, mirror coat 46. Every live output writes the same three images.
+No extra probe reads occur in temporal. Composite removes guide bindings 8/9;
+its root shrinks from 496 to 480 bytes on Metal and 432 to 416 on Vulkan. Temporal roots remain 464/400 bytes;
+shared parameters 288 bytes. Existing history completion, motion-producer selection and
+jitter delta remain. Capture ssr_reflection version 4 is source-resolution shaded
+RGB; raw stays incoming RGB version 2. Older history captures are incompatible.
+
+Verification commands and results
+./build_release.sh
+./build_editor.sh Release
+python3 tools/checks/check_ssr_stability.py
+All pass. 128 shared-math outputs include explicit source-vs-trace history bounds
+and reconstruction support at entering/leaving taps. This CPU witness detects
+wrong-grid edge rejection independently of screenshot tolerance.
+
+spirv-val --target-env vulkan1.4 --scalar-block-layout <each production packet.ssr*.spv and packet.ssgi*.spv>
+All ten modules pass. spirv-dis of packet.ssr_composite.comp.spv reports stride 416,
+frame 288, inverse VP 304, texture fields 368–412; coat 404, sheen 408 and anisotropy 412 match
+host assertions. Vulkan deferred/pipeline translation units pass -fsyntax-only
+using current Release compile_commands.json commands with -c/-o replaced by
+-fsyntax-only. This is compilation evidence, NOT native Vulkan execution.
+Metal root record, host offsets, shader static assertions and native pipelines pass.
+
+Every normal snapshot used this exact wrapper, with the cases listed below:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/CASE --profile tools/profiles/local-offscreen.json
+
+ssr_mirror_on_local.case.json
+  20260909T055545.463Z-00fbb0; status pass; report sha256 ceb3f6a9a3e7146e0e1f9d467d36b2ccde1882a9873bb7265e27ec49e74511f0
+ssr_bar_settled.case.json
+  20260909T055618.841Z-00ffbf; status pass; report sha256 e8d30cee1d23d6696e509d08338d1047f2dff3c835753827d2c6a5cc96192851
+ssr_bar_motion.case.json
+  20260909T055832.047Z-0103ae; status pass; report sha256 7c3e1018a232c70e3a0c39f1683c7414352ed82e467ebdbd20bd73ba65d7ff9f
+ssr_shaded_layers.case.json
+  20260909T060026.728Z-010992; status pass; report sha256 889292711c8c374f8fca0e9609ff5a90b2ded924dc83621e74222be62b205a3c
+screen_motion_ssr_ssgi.case.json
+  20260909T060059.462Z-010a42; status pass; report sha256 e269fc05c7f55abd2a09357db128fba1da0ebd1352786cd29415bfbe133292dd
+
+Mirror: 696 raw hits; 15 analytic interior samples against RGB (0.8, 0.1, 0.02),
+max error 0.000195313 (prior 0.000683594). Source 321×241 preserves odd-tail behavior.
+Payload hashes, tight half encodings, finite values, confidence [0,1], v4 metadata
+and source-history/half-raw dimensions checked for all captured frames:
+20260909T055545.463Z-00fbb0 finite tuples 502566 source-sized v4 histories; covered pixels {0: 3127, 1: 3127}
+20260909T055618.841Z-00ffbf finite tuples 10642448 source-sized v4 histories; covered pixels {3: 435825, 4: 436045, 5: 436187, 6: 436077, 7: 436251, 8: 436703, 9: 436434, 10: 436710}
+20260909T055832.047Z-0103ae finite tuples 3005289 source-sized v4 histories; covered pixels {3: 221146, 4: 221486, 5: 221262}
+20260909T060026.728Z-010992 finite tuples 442368 source-sized v4 histories; covered pixels {1: 6595}
+20260909T060059.462Z-010a42 finite tuples 3005289 source-sized v4 histories; covered pixels {3: 225873, 4: 225536, 5: 224793}
+
+Layered fixture: left 3548 and right 3047 covered history pixels; confidence-weighted
+RGB sums 277.584771 and 1677.753872. Both uncoated aniso+sheen and coat remain nonblack.
+Static captures cover eight raster phases after 96 warmup frames; moving captures cover
+three checkpoints, not an extended motion-video quality acceptance. Preview PNG
+and MP4 are the new static frame and eight-phase cycle slowed to 8 fps and repeated four times.
+
+Static output comparison
+Baseline 20260909T051023.558Z-007895 (half-resolution shaded history), OFF 20260909T040825.944Z-0167e4.
+All compared final frames match raster phases 3,4,5,6,7,0,1,2. Effective configurations
+match except SSR disabled for OFF. Output 1280×720/source 1025×577, MetalFX temporal,
+manual exposure 8, GTAO on, SSGI off, fixed camera [-5.03,1.7,9.73], yaw −20.34, pitch −12.
+Direct ON pixel ranges are necessary: ON-OFF variation alone can rise even when
+SSR improves the visible image. Broad ROIs include surrounding object silhouettes.
+Counter meaningful pixels with direct range >3: 750→719; underbar 206→196.
+Counter ON-OFF mean absolute contribution.838806497->.838584443 display codes.
+Direct range targets:548,244:4->0;904,562:7->5;969,352:5->6;
+972,352:5->7;825,247:8->8;820,249:1->2. These are mixed results.
+baseline 20260909T051023.558Z-007895 report_sha256 b89e46df2164fb425995ca04cff0c2d7dc8e02abae8b7b80edc3f17fbfe96675 source_indices [547, 612, 613, 550, 487, 552, 553, 554] phase8 [3, 4, 5, 6, 7, 0, 1, 2]
+current 20260909T055618.841Z-00ffbf report_sha256 e8d30cee1d23d6696e509d08338d1047f2dff3c835753827d2c6a5cc96192851 source_indices [547, 548, 549, 550, 551, 552, 553, 554] phase8 [3, 4, 5, 6, 7, 0, 1, 2]
+off 20260909T040825.944Z-0167e4 report_sha256 38031701f1a38462f03ed8b4547f7ccb9dabeb8e9a0e4db6ccb9f9b7802d1ff3 source_indices [611, 612, 613, 614, 615, 616, 617, 618] phase8 [3, 4, 5, 6, 7, 0, 1, 2]
+config_differences {'current': {}, 'off': {'ssr_enabled': (True, False)}}
+polygon [(0, 253), (1107, 249), (1080, 283), (0, 378)] pixel_center_count 86265 units 8-bit display RGB codes; all eight phases3..10
+FIXED_POLYGON baseline {"pixels": 86265, "direct_range_gt3": 470, "direct_range_mean": 0.5708804265924766, "direct_range_p99": 3, "direct_range_max": 10, "direct_adjacent_mean": 0.12570181031318226, "range_better_than_off": 11266, "range_worse_than_off": 11105, "mean_abs_ssr_signal": 0.7074537761548716, "mean_signed_ssr_signal": 0.2240363994667594}
+FIXED_POLYGON current {"pixels": 86265, "direct_range_gt3": 470, "direct_range_mean": 0.5717498406074306, "direct_range_p99": 3, "direct_range_max": 10, "direct_adjacent_mean": 0.125963462531016, "range_better_than_off": 10131, "range_worse_than_off": 10042, "mean_abs_ssr_signal": 0.6555719778202824, "mean_signed_ssr_signal": 0.15123166985451805}
+FIXED_POLYGON off {"pixels": 86265, "direct_range_gt3": 480, "direct_range_mean": 0.5728163217991074, "direct_range_p99": 3, "direct_range_max": 10, "direct_adjacent_mean": 0.12646855067303683, "range_better_than_off": 0, "range_worse_than_off": 0, "mean_abs_ssr_signal": 0.0, "mean_signed_ssr_signal": 0.0}
+FIXED_MEANINGFUL_UNION baseline {"pixels": 13858, "direct_range_gt3": 57, "direct_range_mean": 0.5467599942271613, "direct_range_p99": 3, "direct_range_max": 7, "direct_adjacent_mean": 0.09786336240370011, "range_better_than_off": 2626, "range_worse_than_off": 2582, "mean_abs_ssr_signal": 3.6133821619281283, "mean_signed_ssr_signal": 0.6854644729879251}
+FIXED_MEANINGFUL_UNION current {"pixels": 13858, "direct_range_gt3": 56, "direct_range_mean": 0.5398325876749892, "direct_range_p99": 3, "direct_range_max": 7, "direct_adjacent_mean": 0.09709021435100233, "range_better_than_off": 2684, "range_worse_than_off": 2540, "mean_abs_ssr_signal": 3.4511112714677443, "mean_signed_ssr_signal": 0.40874705344686585}
+FIXED_MEANINGFUL_UNION off {"pixels": 13858, "direct_range_gt3": 68, "direct_range_mean": 0.5502958579881657, "direct_range_p99": 3, "direct_range_max": 7, "direct_adjacent_mean": 0.10043021393865673, "range_better_than_off": 0, "range_worse_than_off": 0, "mean_abs_ssr_signal": 0.0, "mean_signed_ssr_signal": 0.0}
+PER_RUN_MEANINGFUL_GT1 baseline {"pixels": 12815, "direct_range_gt3": 56, "direct_range_mean": 0.5707374170893484, "direct_range_p99": 3, "direct_range_max": 7, "direct_adjacent_mean": 0.10297456477713987, "range_better_than_off": 2452, "range_worse_than_off": 2485, "mean_abs_ssr_signal": 3.863125894134478, "mean_signed_ssr_signal": 0.6985336194563663}
+PER_RUN_MEANINGFUL_GT1 current {"pixels": 11656, "direct_range_gt3": 55, "direct_range_mean": 0.5838194921070693, "direct_range_p99": 3, "direct_range_max": 7, "direct_adjacent_mean": 0.10653413733372553, "range_better_than_off": 2224, "range_worse_than_off": 2253, "mean_abs_ssr_signal": 4.008539950812171, "mean_signed_ssr_signal": 0.39898264127202016}
+scope_note: Predeclared polygon only; no trimming or hotspot-based exclusions. Broad ROI regressions and improvements remain separate required context. No proof of all-scene or all-material improvement.
+
+API resize
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_temporal_resize.case.json --profile tools/profiles/local-windowed.json
+Two serial repetitions pass; both child stderr logs explicitly show Metal API
+Validation Enabled and contain no API errors. GPU shader validation was not run:
+a prior MetalTools crash with SSRon andoff supplied no validation result.
+Report 20260909T060218.582Z-011cb2 sha256 3816a5c6b0592bfff38dd63826ef0a5d9932952dcb9583928f2704254946858f
+
+Matched local cost (no equivalent-output speedup claim)
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_bar_cost.case.json --profile tools/profiles/local-offscreen-perf-audit-gpu.json
+Both runs use three repetitions of 120 measured frames after 60 warmup frames, same effective config and environment/
+workload/policy fingerprints. All selected SSR pass timestamps valid. Runs are
+non-authoritative: local profile, dirty provenance, unstable warmup. These are
+local cost observations; output and allocated history size intentionally changed.
+Temporal 0.434991→1.364230 ms; composite 0.638413→0.347048 ms;
+SSR sum 1.992201→2.631267 ms (+0.639066 ms). Frame-wall mean 15.336478→16.047839 ms,
+p95 16.860708->17.986499 ms; this does not establish a locked 60 fps budget.
+20260909T054807.055Z-00d381 report sha256 6c87bd8afb91e3d95d8050a6a7f8c30650221b5995ac2dc822dc9f9eeba06cc0
+20260909T060414.860Z-013888 report sha256 f2062e6e5c423bc6000cdb903e8922409c5c6d803d0ff4083d25d6ea74a45fa1
+configs equal True
+fingerprints {'environment_fingerprint': 'sha256:570f75124b9d8250b877c2052fa49465d2e4f7f5da0257d8afeebff5acd70c26', 'workload_fingerprint': 'sha256:c6d763450c9600f0f149ea34f0befeb48293b74fee4ecf73f26a21dd899e2f69', 'policy_fingerprint': 'sha256:52771ef04aa4978f6d858e132e46d0105055ce1aef5af805be1b4013dfdd74b7'} {'environment_fingerprint': 'sha256:570f75124b9d8250b877c2052fa49465d2e4f7f5da0257d8afeebff5acd70c26', 'workload_fingerprint': 'sha256:c6d763450c9600f0f149ea34f0befeb48293b74fee4ecf73f26a21dd899e2f69', 'policy_fingerprint': 'sha256:52771ef04aa4978f6d858e132e46d0105055ce1aef5af805be1b4013dfdd74b7'}
+20260909T054807.055Z-00d381 pass authoritative False authority_reasons ['profile.local_only', 'provenance.dirty', 'execution.warmup_unstable']
+SSR.DepthBase {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.06701423611111118, 'p50': 0.066875, 'p95': 0.07133333333333333, 'min': 0.06095833333333333, 'max': 0.07504166666666666, 'stddev': 0.0024985730640284627, 'total': 24.125125000000025}
+SSR.DepthMip.0 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.010878240740740754, 'p50': 0.010791666666666666, 'p95': 0.01125, 'min': 0.010333333333333333, 'max': 0.015125, 'stddev': 0.00047606596512984113, 'total': 3.9161666666666712}
+SSR.DepthMip.1 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.006223032407407411, 'p50': 0.006124999999999999, 'p95': 0.006625, 'min': 0.005791666666666666, 'max': 0.010916666666666667, 'stddev': 0.0004192178680153557, 'total': 2.2402916666666677}
+SSR.DepthMip.2 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.005995601851851852, 'p50': 0.005916666666666666, 'p95': 0.006375, 'min': 0.005541666666666666, 'max': 0.009583333333333333, 'stddev': 0.00043120464563397714, 'total': 2.1584166666666667}
+SSR.DepthMip.3 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.006185300925925928, 'p50': 0.006083333333333333, 'p95': 0.006625, 'min': 0.0057083333333333335, 'max': 0.010166666666666666, 'stddev': 0.000511843702512409, 'total': 2.226708333333334}
+SSR.DepthMip.4 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.0065678240740740645, 'p50': 0.006458333333333333, 'p95': 0.0069166666666666664, 'min': 0.0060416666666666665, 'max': 0.009666666666666667, 'stddev': 0.0004669854763260323, 'total': 2.364416666666663}
+SSR.DepthMip.5 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.006876504629629631, 'p50': 0.0067083333333333335, 'p95': 0.009166666666666667, 'min': 0.006166666666666667, 'max': 0.01, 'stddev': 0.0007053946754312189, 'total': 2.475541666666667}
+SSR.DepthMip.6 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.007128356481481484, 'p50': 0.006833333333333333, 'p95': 0.009708333333333333, 'min': 0.006333333333333333, 'max': 0.01025, 'stddev': 0.0008726452659968024, 'total': 2.5662083333333343}
+SSR.DepthMip.7 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.0062153935185185185, 'p50': 0.005958333333333333, 'p95': 0.008666666666666666, 'min': 0.005416666666666667, 'max': 0.009208333333333332, 'stddev': 0.0007817811894436106, 'total': 2.2375416666666665}
+SSR.DepthMip.8 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.0059442129629629645, 'p50': 0.005666666666666666, 'p95': 0.008541666666666666, 'min': 0.005166666666666667, 'max': 0.009708333333333333, 'stddev': 0.0009302410734034353, 'total': 2.139916666666667}
+SSR.Trace.Fullscreen {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.7897682870370375, 'p50': 0.7890833333333334, 'p95': 0.804875, 'min': 0.7724166666666666, 'max': 0.815, 'stddev': 0.00781014243920661, 'total': 284.3165833333335}
+SSR.Temporal {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.4349912037037038, 'p50': 0.4348333333333333, 'p95': 0.44466666666666665, 'min': 0.4227916666666667, 'max': 0.46629166666666666, 'stddev': 0.0058965767900724265, 'total': 156.59683333333336}
+SSR.Composite.Fullscreen {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.6384129629629629, 'p50': 0.637, 'p95': 0.6498333333333333, 'min': 0.6295416666666667, 'max': 0.6757083333333334, 'stddev': 0.006380719851209258, 'total': 229.82866666666663}
+SSR mean sum ms 1.992201157407408
+frame.wall {'unit': 'ns', 'sample_count': 360, 'invalid_count': 0, 'mean': 15336478.308333334, 'p50': 15286166, 'p95': 16860708, 'min': 9750083, 'max': 20780333, 'stddev': 1045358.3195188886, 'total': 5521132191}
+20260909T060414.860Z-013888 pass authoritative False authority_reasons ['profile.local_only', 'provenance.dirty', 'execution.warmup_unstable']
+SSR.DepthBase {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.06683564814814813, 'p50': 0.066625, 'p95': 0.07075, 'min': 0.0615, 'max': 0.11891666666666666, 'stddev': 0.0035402004650853303, 'total': 24.060833333333328}
+SSR.DepthMip.0 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.010965856481481481, 'p50': 0.010875, 'p95': 0.011375, 'min': 0.010333333333333333, 'max': 0.014333333333333333, 'stddev': 0.0004629151450999726, 'total': 3.947708333333333}
+SSR.DepthMip.1 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.006280208333333332, 'p50': 0.006208333333333333, 'p95': 0.006625, 'min': 0.005833333333333333, 'max': 0.009875, 'stddev': 0.0004970969688220168, 'total': 2.2608749999999995}
+SSR.DepthMip.2 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.006045717592592584, 'p50': 0.005916666666666666, 'p95': 0.006208333333333333, 'min': 0.005583333333333333, 'max': 0.02325, 'stddev': 0.0010149623246971766, 'total': 2.1764583333333305}
+SSR.DepthMip.3 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.006200578703703703, 'p50': 0.006083333333333333, 'p95': 0.006583333333333333, 'min': 0.0057083333333333335, 'max': 0.010291666666666666, 'stddev': 0.0006006463956198845, 'total': 2.232208333333333}
+SSR.DepthMip.4 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.00664085648148148, 'p50': 0.006583333333333333, 'p95': 0.007083333333333333, 'min': 0.005958333333333333, 'max': 0.00975, 'stddev': 0.0004777801189425484, 'total': 2.390708333333333}
+SSR.DepthMip.5 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.006754166666666666, 'p50': 0.006666666666666666, 'p95': 0.007083333333333333, 'min': 0.006208333333333333, 'max': 0.009833333333333333, 'stddev': 0.0005340923418563773, 'total': 2.4314999999999998}
+SSR.DepthMip.6 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.007419328703703706, 'p50': 0.007124999999999999, 'p95': 0.009916666666666666, 'min': 0.006625, 'max': 0.011083333333333332, 'stddev': 0.0009545757921086208, 'total': 2.670958333333334}
+SSR.DepthMip.7 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.0063182870370370355, 'p50': 0.006083333333333333, 'p95': 0.008833333333333334, 'min': 0.005666666666666666, 'max': 0.009333333333333332, 'stddev': 0.000829932457287412, 'total': 2.2745833333333327}
+SSR.DepthMip.8 {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.005751041666666665, 'p50': 0.005541666666666666, 'p95': 0.007166666666666667, 'min': 0.005208333333333333, 'max': 0.010624999999999999, 'stddev': 0.0006992706428171169, 'total': 2.0703749999999994}
+SSR.Trace.Fullscreen {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.7907774305555559, 'p50': 0.7900416666666666, 'p95': 0.80475, 'min': 0.7725833333333333, 'max': 0.8280416666666667, 'stddev': 0.008089627112306541, 'total': 284.67987500000015}
+SSR.Temporal {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 1.3642300925925932, 'p50': 1.3579166666666667, 'p95': 1.40375, 'min': 1.3436249999999998, 'max': 1.5007916666666665, 'stddev': 0.02014791318669166, 'total': 491.1228333333336}
+SSR.Composite.Fullscreen {'unit': 'ms', 'sample_count': 360, 'invalid_count': 0, 'mean': 0.34704756944444454, 'p50': 0.3463333333333333, 'p95': 0.35491666666666666, 'min': 0.33804166666666663, 'max': 0.38595833333333335, 'stddev': 0.004858167648034806, 'total': 124.93712500000004}
+SSR mean sum ms 2.6312667824074083
+frame.wall {'unit': 'ns', 'sample_count': 360, 'invalid_count': 0, 'mean': 16047839.222222222, 'p50': 15938333, 'p95': 17986499, 'min': 12402291, 'max': 34760000, 'stddev': 1666226.5363920468, 'total': 5777222120}
+
+Retention
+Keep current bar and portable layered v4 capture payloads for residual diagnosis
+and future native Vulkan comparison. No baseline promotion was requested or made.
+Other completed runs may be retired after recording this evidence. The Windows
+checklist retains native Vulkan, synchronization/resize and bilateral gates.

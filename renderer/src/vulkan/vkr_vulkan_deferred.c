@@ -1887,8 +1887,8 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
     return false_v;
   prepared->pipelines[0] =
       renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSR_TEMPORAL];
-  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
-  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][0] = (params.source_width + 7u) / 8u;
+  prepared->groups[0][1] = (params.source_height + 7u) / 8u;
   prepared->groups[0][2] = 1u;
   prepared->dispatch_count = 1u;
   return true_v;
@@ -1898,8 +1898,8 @@ bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
                                      VkrVulkanPreparedCompute *prepared,
                                      const VkrRgPass *pass) {
   uint32_t scene = 0u, reflection = 0u, vbuffer = 0u, depth = 0u, albedo = 0u,
-           specular = 0u, normal = 0u, history_depth = 0u, receiver = 0u,
-           clearcoat = 0u, sheen = 0u, anisotropy = 0u;
+           specular = 0u, normal = 0u, clearcoat = 0u, sheen = 0u,
+           anisotropy = 0u;
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &scene) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &reflection) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &vbuffer) ||
@@ -1907,8 +1907,6 @@ bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_sampled_index(renderer, pass, 4u, &albedo) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &specular) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &normal) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 8u, &history_depth) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 9u, &receiver) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 10u, &clearcoat) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 11u, &sheen) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 12u, &anisotropy))
@@ -1939,8 +1937,6 @@ bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
       .specular_texture = specular,
       .normal_texture = normal,
       .gtao_visibility_texture = gtao,
-      .history_depth_texture = history_depth,
-      .receiver_texture = receiver,
       .linear_sampler = renderer->transmission_sampler_slot,
       .clearcoat_texture = clearcoat,
       .sheen_texture = sheen,

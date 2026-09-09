@@ -57,19 +57,24 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] Energy-compensated GGX and shared DFG: [ADR-053](../adr/053-energy-compensated-ggx.md).
 - [ ] Baked diffuse volumes, room boundaries, thick glass, multi-bounce diffuse
   transport, and photon caustics: [ADR-054](../adr/054-baked-diffuse-volumes.md).
-- [ ] Opaque SSR: validate the 400-byte temporal root and graph bindings 17–20,
-  then capture version-3 `ssr_reflection` receiver-shaded history (including GTAO,
-  selected coat, base sheen
-  and anisotropy), exact full-resolution old-probe removal, and probe fallback.
-  Exercise GTAO disabled so normalized sampling covers the 1×1 sentinel.
-  Verify consistent roughness eligibility, four-tap jitter-corrected history,
-  GPU ordering, continuous roughness clamping, motion-adaptive accumulation,
-  empty-frame fading, full-resolution leaves, absolute crossings and earliest
-  surface intersections. Compare material/coat/mirror boundaries and trails within
-  the approved +17-access per-branch/92-access ceiling; prior incoming-radiance
-  history captures do not establish the new output meaning or cost.
-  Resolve the known Metal/Vulkan deferred coat-GTAO and trace-source sampling
-  differences before claiming parity: [ADR-055](../adr/055-screen-space-reflections.md).
+- [ ] Opaque SSR: validate the 400-byte temporal and 416-byte composite roots,
+  graph bindings 17–20, and removal of composite guide bindings 8/9. Capture
+  version-4 `ssr_reflection` at source resolution, with per-pixel receiver shading
+  (GTAO, selected coat, base sheen and anisotropy), exact old-probe removal and
+  probe fallback. Check the five color/depth/identity tuples: 87.89 MiB logical
+  payload at 1280×720, plus API allocation overhead; resize and retirement must
+  retain completion proofs. Exercise GTAO disabled so normalized sampling covers
+  the 1×1 sentinel. Verify source-grid four-tap jitter-corrected history, separate
+  SSGI history bounds, GPU ordering, continuous roughness clamping, motion-adaptive
+  accumulation and empty-frame fading. Raw reconstruction must reuse at most nine
+  guided samples for its clamp bounds, with four samples on mirrors; composite
+  reads one matching history pixel. Trace keeps half-resolution rays, full-resolution
+  leaves, absolute crossings and earliest surface intersections. Compare Bistro
+  material/coat/mirror boundaries, static/moving flicker, reflection strength,
+  trails and measured temporal cost. Prior half-resolution history captures do
+  not establish this output or cost. Resolve the known Metal/Vulkan deferred
+  coat-GTAO and trace-source sampling differences before claiming parity:
+  [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
 - [ ] Analytic height fog and ordered transmission composition:

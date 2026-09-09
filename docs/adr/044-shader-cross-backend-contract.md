@@ -376,69 +376,67 @@ its prior HDR fixture, and the corner lighting oracle has maximum HDR error
 validation pass. Native Vulkan execution and bilateral comparison remain
 unavailable, so the domain stays **UNALIGNED**. ADR-042 owns the lighting policy.
 
-Opaque SSR is **UNALIGNED**. It uses a shared 288-byte parameter record and
-16-byte Vulkan push constants. Current declared Vulkan root strides are
-304/32/336/400/424 bytes (the composite host record is aligned to 432); Metal roots
-are 320/320/368/464/496 bytes at compute binding zero. The temporal root appends
-frame/albedo/GTAO/sheen/anisotropy at Metal offsets 424/432/440/448/456 and Vulkan
-offsets 368/376/380/384/388, with explicit Vulkan padding at 392. Host assertions,
-Metal manifests and Vulkan reflection declarations cover the new fields. The
-Release app/harness and editor builds and 124 shared-math outputs pass; ten SSR/SSGI SPIR-V
-modules validate. Compiled temporal SPIR-V offsets and `ArrayStride 400` match the
-contract. Native Metal mirror, static/moving Bistro and layered-material captures
-have finite output, and two serial API-only mirror-resize repetitions pass. Matched
-Release profiles measure the intentional shading tradeoff; ADR-055 records the
-cost and output changes. Native Vulkan execution and bilateral image comparison
-remain unavailable.
-[ADR-055](055-screen-space-reflections.md) owns accepted depth, history,
-probe-replacement semantics and the per-branch read ledger.
+Opaque SSR is **UNALIGNED**. Its accepted full-source-resolution shaded-history
+contract retains the shared 288-byte parameters, 464-byte Metal temporal root and
+400-byte Vulkan temporal root. Composite roots shrink to 480 bytes on Metal and
+416 on Vulkan after removing history-depth and trace-receiver bindings 8/9.
+Vulkan push constants remain 16 bytes. Release builds, shared math, Vulkan host
+syntax and ten SSR/SSGI SPIR-V modules pass. Compiled composite stride 416 and
+coat/sheen/anisotropy offsets 404/408/412 match the host; native Metal root checks
+pass. Native Vulkan execution and bilateral image comparison remain unavailable.
+[ADR-055](055-screen-space-reflections.md) owns the storage, access and
+probe-replacement contracts and separates current evidence from prior baselines.
 
-Raw trace RGB contains incoming radiance; temporal history now contains
-receiver-shaded radiance, including selected-coat or base sheen/anisotropy energy
-and indirect-specular GTAO. Temporal bounds use the same current receiver weight.
-Composite removes the current full-resolution deferred probe term and adds covered
-shaded history without a second receiver multiplier. The approved extension adds
-at most 17 texture accesses per branch with an absolute temporal ceiling of 92;
-Metal center-normal reuse bounds its current source at 91. Images, rays and
-existing 3×3/four-tap filter budgets do not grow. Graph bindings 17–20 supply
-albedo, conditional GTAO, sheen and anisotropy. Existing frame/LUT ownership and
-completion rules remain in force. Metal reserves 1536 additional upload bytes per
-SSR frame for its frame/anisotropy records (592 added payload bytes including
-temporal growth); Vulkan reuses its frame root and adds 32 upload bytes.
-Half-resolution shading also applies to mirrors and can soften material/coat
-boundaries or retain trails.
+Trace remains half resolution with at most 48 decisions and five hit-source taps.
+Temporal now shades each full-resolution source receiver. It gathers at most nine
+raw taps once and reuses them for current bounds: rough receivers use a 3×3
+continuous tent of radius 1.5 trace pixels, mirrors the former composite's 2×2
+footprint with radius 1. Four source-grid history taps each validate depth and
+identity. Raw RGB remains incoming radiance; history RGB contains receiver-shaded
+radiance, including selected-coat or base sheen/anisotropy energy and indirect
+specular GTAO. Composite directly loads same-pixel shaded history, removes the
+exact current deferred probe term and adds covered history without another
+receiver multiplier. The former bilateral composite gather is removed.
 
-SSR history selection uses existing GPU dependencies for the exact motion
-producer even before CPU-observed completion; reuse waits for every reader.
-Projection compatibility excludes raster jitter while trace retains it. Offsets
-280/284 carry selected-producer jitter UV. Both backends validate four history
-taps separately before covered-radiance interpolation. Continuous roughness
-clamping reaches unclamped history at 0.25. Motion-adaptive defaults rise from
-0.85 to 0.95 on stationary rough receivers and return at one source pixel per
-frame. Empty neighborhoods fade validated history; rejected depth/identity clears.
-The receiver depth tolerance has a 2 cm minimum independent of ray thickness.
-Trace/composite use the same material-roughness eligibility cutoff. Full-resolution
-leaves, absolute crossings, earliest rear-slab intersections and same-pixel
-validation stay within 48 decisions and the existing depth allocation. SSGI retains
-its previous leaf, slab and receiver-minimum policies through shared adapters and
-initializes its unused jitter offsets to zero.
+The color/depth/identity image count and completion-safe history ownership do not
+change. At source 1280×720 with three frame slots and five history instances,
+logical history payload grows from 21.972656 to 87.890625 MiB (+65.917969 MiB,
+excluding alignment and resize overlap). Temporal executes about four times as
+many pixels, with a reviewed Metal ceiling of 80 texture reads plus three output
+writes per temporal invocation. Local matched profiles at source 1025×577 record
+SSR GPU time 1.992→2.631 ms; they are non-authoritative with unstable warmup.
+Graph bindings 17–20 still supply albedo, conditional GTAO, sheen and anisotropy.
+Existing frame/LUT ownership remains: Metal retains 1536 reserved upload bytes
+per SSR frame (592 payload bytes) added by shaded-history frame/anisotropy records;
+Vulkan reuses its frame root and retains the 32-byte temporal upload increase.
 
-Old coat subtraction now uses packed roughness and matches each backend's
-deferred term: Metal's base GTAO cone versus no Vulkan coat GTAO. That unresolved
-lighting-policy gap prevents a parity claim. Vulkan temporal/composite GTAO reads
-use normalized sampling so the disabled 1×1 sentinel is valid at every receiver;
-the prior composite integer load could exceed its extent. A source review also
-found Metal linear trace-source sampling versus Vulkan rounded point loads;
-bilateral rough-reflection acceptance must resolve this difference.
+History selects the exact motion producer through existing GPU dependencies even
+before CPU-observed completion; reuse waits for every reader. Source-pixel-center
+reprojection adds motion and the producer's previous-minus-current raster jitter
+from parameter offsets 280/284. Source extent controls coordinates and tap bounds.
+Continuous roughness clamping reaches unclamped history at 0.25. Motion-adaptive
+defaults rise from 0.85 to 0.95 on stationary rough receivers and return at one
+source pixel per frame. Empty neighborhoods fade validated history; rejected
+history clears. Receiver depth tolerance has a 2 cm minimum independent of ray
+thickness. Full-resolution trace leaves, absolute crossings, earliest rear-slab
+intersections and same-pixel validation keep the existing depth allocation.
+SSGI retains its previous leaf, slab and receiver-minimum policies through shared
+adapters and initializes its unused jitter offsets to zero.
 
-Earlier incoming-radiance-history Metal mirror, static/moving Bistro and API
-resize checks pass. They predate receiver-shaded history and do not validate its
-new color meaning or cost. GPU shader validation crashed in MetalTools even with
-SSR disabled and supplied no result. Current shaded-history captures preserve the
-mirror oracle and slightly reduce counter outliers while increasing small
-under-bar outliers; they do not establish uniform stability. `ssr_reflection`
-capture version 3 identifies shaded RGB. ADR-055 separates current results from
-retained incoming-radiance-history evidence and records the outstanding gates.
+Old coat subtraction uses packed roughness and each backend's deferred term:
+Metal's base GTAO cone versus no Vulkan coat GTAO. That pre-existing lighting-policy
+gap remains unresolved. Normalized temporal/composite GTAO sampling keeps the
+1×1 disabled sentinel valid at every source pixel. Metal linear trace-source
+sampling versus Vulkan rounded point loads is another unresolved source parity
+gap. Neither difference permits a bilateral acceptance claim.
+
+`ssr_reflection` version 4 identifies full-source-resolution shaded RGB; version 3
+captures were half-resolution shaded RGB. Raw capture stays version 2. Earlier
+captures predate the new history extent. Current Metal mirror, static/moving
+Bistro, layered-material, combined SSR/SSGI and two API-resize checks pass; the
+fixed bar-face polygon shows no decisive stability improvement. GPU shader
+validation previously crashed in MetalTools with SSR disabled as well as enabled
+and supplied no result. ADR-055 links current and prior evidence.
 
 Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
 native passes. Packet version 38 appends its prepared fog pointer without

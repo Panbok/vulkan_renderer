@@ -867,8 +867,6 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrCompositeRoot {
   uint32_t specular_texture;
   uint32_t normal_texture;
   uint32_t gtao_visibility_texture;
-  uint32_t history_depth_texture;
-  uint32_t receiver_texture;
   uint32_t linear_sampler;
   uint32_t clearcoat_texture;
   uint32_t sheen_texture;
@@ -1643,12 +1641,12 @@ _Static_assert(sizeof(VkrVulkanSsrTemporalRoot) == 400u &&
                    offsetof(VkrVulkanSsrTemporalRoot, anisotropy_texture) == 388u &&
                    offsetof(VkrVulkanSsrTemporalRoot, reserved) == 392u,
                "SSR temporal root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsrCompositeRoot) == 432u &&
+_Static_assert(sizeof(VkrVulkanSsrCompositeRoot) == 416u &&
                    offsetof(VkrVulkanSsrCompositeRoot, clearcoat_texture) ==
-                       412u &&
-                   offsetof(VkrVulkanSsrCompositeRoot, sheen_texture) == 416u &&
+                       404u &&
+                   offsetof(VkrVulkanSsrCompositeRoot, sheen_texture) == 408u &&
                    offsetof(VkrVulkanSsrCompositeRoot, anisotropy_texture) ==
-                       420u,
+                       412u,
                "SSR composite root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsgiDepthBaseRoot) == 304u,
                "SSGI depth-base root ABI size drift");

@@ -364,7 +364,8 @@ void ssgi_temporal_compute(uint3 thread_id : SV_DispatchThreadID)
             screen, identity, g_storage_uint2_2d[root.history_identity_texture][history_pixel],
             g_textures[root.history_depth_texture].Load(int3(history_pixel, 0)).x,
             g_textures[root.validity_texture].Load(int3(receiver.pixel, 0)).y,
-            previous_uv, g_textures[root.validity_texture].Load(int3(receiver.pixel, 0)).x);
+            previous_uv, g_textures[root.validity_texture].Load(int3(receiver.pixel, 0)).x,
+            trace_extent);
         raw = vkr_ssgi_temporal_filter(raw,
             g_textures[root.history_color_texture].Load(int3(history_pixel, 0)),
             neighborhood_mean, neighborhood_variance, decision);

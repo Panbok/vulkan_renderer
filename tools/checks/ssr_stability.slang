@@ -50,11 +50,11 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     params.temporal_depth_absolute = 0.01f;
     uint2 identity = uint2(1u, 2u);
     VkrSsrHistoryDecision matching = vkr_ssr_temporal_accept(params, identity,
-        identity, 0.5f, 0.5f, float2(0.5f), 1.0f);
+        identity, 0.5f, 0.5f, float2(0.5f), 1.0f, uint2(10u));
     VkrSsrHistoryDecision foreign = vkr_ssr_temporal_accept(params, identity,
-        uint2(2u, 2u), 0.5f, 0.5f, float2(0.5f), 1.0f);
+        uint2(2u, 2u), 0.5f, 0.5f, float2(0.5f), 1.0f, uint2(10u));
     VkrSsrHistoryDecision disoccluded = vkr_ssr_temporal_accept(params, identity,
-        identity, 0.75f, 0.5f, float2(0.5f), 1.0f);
+        identity, 0.75f, 0.5f, float2(0.5f), 1.0f, uint2(10u));
     g_results[36] = previous_uv.x;
     g_results[37] = previous_uv.y;
     g_results[38] = float(matching.accepted);
@@ -270,4 +270,12 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         g_results[28 + i] = black[i];
         g_results[32 + i] = rejected[i];
     }
+    // Source-resolution history accepts its first texel without widening
+    // the independently half-resolution SSGI history footprint.
+    g_results[124] = float(vkr_ssr_temporal_accept(params, identity, identity,
+        0.5f, 0.5f, float2(.025f), 1.0f, uint2(20u)).accepted);
+    g_results[125] = float(vkr_ssr_temporal_accept(params, identity, identity,
+        0.5f, 0.5f, float2(.025f), 1.0f, uint2(10u)).accepted);
+    g_results[126] = vkr_ssr_reconstruction_grid_weight(float2(1.5f, 0), .3f);
+    g_results[127] = vkr_ssr_reconstruction_grid_weight(float2(.5f), .04f);
 }
