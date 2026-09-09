@@ -89,11 +89,29 @@ stability gain. Portable TAA's approved settling window does not change MetalFX;
 records this limit. The source/input audit has not established an incorrect
 jitter sign, motion scale, producer selection or pre-exposure contract.
 
+The approved scale-dependent jitter trial was reverted after the 80%-scale
+Bistro bar comparison worsened. Across 24 matched checkpoints, bar pixels whose
+RGB range exceeded three display codes increased from 859 to 1,475; the maximum
+range increased from 11 to 13. MetalFX retains eight phases. The trial does not
+establish moving-image quality or timing. [The trial record](../../assets/verification/renderer-features/metalfx-jitter-trial.txt)
+preserves the cases, measurements and limits.
+
+A controlled replay through `MTL4FXTemporalScaler` found byte-identical output
+with black and bright inactive input padding. Fixed exposure values of 1 and 8
+did not improve its bar variation. [The replay record](../../assets/verification/renderer-features/metalfx-input-replay.txt)
+includes the standalone reproducer and distinguishes frozen captured inputs from
+current scene execution. Neither control justifies a production policy change.
+
 ## Alternatives considered
 
 Newest-completed portable history is the wrong motion source for private scaler
 history. CPU waiting for the previous encode would unnecessarily serialize frames.
 A fixed scale sacrifices detail throughout lighter intervals.
+
+Increasing the Halton period with the output/input area ratio follows Apple's
+[temporal upscaling guidance](https://developer.apple.com/videos/play/wwdc2022/10103/),
+but did not improve this reflective bar. Do not restore that policy as a flicker
+fix without new scene evidence.
 
 ## Revisit when
 

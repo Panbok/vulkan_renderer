@@ -526,7 +526,10 @@ mirror, static/moving Bistro, layered-material, combined SSR/SSGI and API-resize
 checks pass. With the bounded-fade/settling correction, the sampled portable-TAA
 bar region freezes after settling and static accumulation; early camera-stop
 differences fall with weaker intermittent reflections. MetalFX's fixed bar region
-shows no decisive stability gain. Earlier local profiles of the full-resolution
+shows no decisive stability gain. A subsequent scale-dependent MetalFX jitter
+trial worsened bar shimmer and was reverted; MetalFX retains eight phases.
+[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) records that result.
+Earlier local profiles of the full-resolution
 history change increased total SSR GPU time from 1.99 to 2.63 ms at source
 1025×577; they do not measure this settling correction.
 [ADR-055](adr/055-screen-space-reflections.md) records the evidence and limits.

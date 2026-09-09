@@ -1,0 +1,98 @@
+Rejected MetalFX scale-dependent jitter trial — 2026-09-09
+
+Decision
+The trial increases static display variation in the Bistro reflective-bar ROI.
+It is retained as diagnostic evidence only. It does not establish a rendering
+fix, performance result, cross-backend result, or baseline candidate.
+
+Commands recorded for the retained snapshots
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/metalfx_bar_jitter_static.case.json --profile tools/profiles/local-offscreen.json
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/metalfx_bar_jitter_turn_stop.case.json --profile tools/profiles/local-offscreen.json
+python3 .scratch/metalfx-jitter-evidence.py > .scratch/metalfx-jitter-evidence.json
+
+Static result
+Both static snapshots pass. They are 1280x720 Metal/MetalFX captures at 80%
+render scale, manual exposure 8, SSR and GTAO enabled, SSGI/bloom disabled.
+Their historical top-level reports state the rounded configured fallback
+1024x576, but the captured raw source channels are 1025x577. The trapezoid
+[(0,253),(1107,249),(1080,283),(0,378)] contains 86,265 output pixels. Each
+value is the maximum per-pixel RGB range across the 24 captured checkpoints 3..26.
+
+  final_color                         before       after       delta
+  mean maximum RGB range              0.746641     0.804208    +0.057567
+  p99 maximum RGB range               3 codes      4 codes     +1 code
+  maximum RGB range                   11 codes     13 codes    +2 codes
+  pixels with range over 3 codes      859          1475        +616 (+71.7%)
+
+The intermediate channels do not reverse that result: hdr_pre_bloom pixels over
+0.001 HDR increase 355 to 539; hdr_post_transmission increases 9,679 to 9,951;
+ssr_reflection remains 56. The output regression is sufficient to reject the
+trial for this static ROI.
+
+Static provenance
+  before run 20260909T084000.931Z-00b34b, pass, report
+  sha256:77c4b785b1fbc1ece531542b2199b0e5f31f9f93a56c7e2cb9fc50142f29b2f4
+  binary sha256:6f262008431e3daf2a7749bfc27a4fb8669bcf640fc1cee9465ca59dfa97d815
+
+  after run  20260909T084804.625Z-00dc3c, pass, report
+  sha256:5aa7b472153fa86678ab2a23b4d7a3099de9486c7e555384dcaf00f4fa4d55ce
+  binary sha256:041d0ef9d27d1b94d00224460bae1439bed956f6e5f5d35d97e75b54846ffc78
+
+Motion comparison
+The turn-and-stop snapshots pass at 800x600 output. Their historical top-level
+reports state the rounded configured fallback 640x480; captured raw source
+channels are 641x481. For each run, frames 6, 7 and 10 are compared with that
+run's frame-24 reference in the fixed output-space bar trapezoid
+[(0,211),(692,208),(675,236),(0,315)]. It contains 44,907 final-color pixels.
+Values below are pixels whose maximum RGB difference exceeds 3 display codes:
+
+  frame                             6             7             10
+  final_color before                268           189           87
+  final_color after                 287           188           116
+  mean max-code delta before        0.7642        0.6733        0.5136
+  mean max-code delta after         0.7790        0.6935        0.5300
+
+The same normalized output ROI maps by pixel center into the 641x481
+ssr_reflection source extent, yielding 28,847 source pixels. Premultiplied HDR
+RGB differences over 0.001 are 36/26/58 before and 48/42/49 after for frames
+6/7/10. Motion changes the scene and reflection legitimately; these comparisons
+do not measure ghosting or prove a temporal-quality difference.
+
+Motion provenance
+  before run 20260909T084510.233Z-00d046, pass, report
+  sha256:e0129378de663d01ba7d364fa7812a0d927d29739ef143a901f14d98c73f82ef
+  binary sha256:6f262008431e3daf2a7749bfc27a4fb8669bcf640fc1cee9465ca59dfa97d815
+
+  after run  20260909T085402.363Z-00f93a, pass, report
+  sha256:ded31889bddc1382399af5c3e1fe124933aaf0f3017b23a9bbe9164bae4d00c3
+  binary sha256:041d0ef9d27d1b94d00224460bae1439bed956f6e5f5d35d97e75b54846ffc78
+
+Preview
+metalfx-jitter-trial.png is a 555x270 image made from retained final-color PNGs.
+Top: after frame 24 bar crop. Middle: before per-pixel maximum RGB range across
+the static checkpoints. Bottom: after range. Blue marks one to three display
+codes; yellow/red marks more than three. The map uses the static trapezoid and
+is black outside it.
+
+Limits
+The reports are local, dirty, non-authoritative snapshots with no baseline.
+The two binaries differ, and camera-script version changes from 5 to 6, so this
+is evidence against the complete dirty experiment rather than an isolated A/B
+attribution. GPU timing was disabled in every snapshot; no timing claim follows.
+The 24 static samples are not a full 64-phase noise cycle. Native Vulkan,
+cross-backend parity, Metal API/shader validation, and dynamic-resolution
+transition evidence were not run for this trial.
+
+The four completed snapshot directories 20260909T084000.931Z-00b34b,
+20260909T084804.625Z-00dc3c, 20260909T084510.233Z-00d046 and
+20260909T085402.363Z-00f93a were retired after their report digests were checked
+against this record. This text and PNG preserve the decisive result. Earlier
+pending MetalFX and cross-machine captures remain untouched.
+
+The trial's production source and replay-version changes were restored to HEAD.
+./build_release.sh and ./build_editor.sh Release both pass with the original
+eight-phase MetalFX policy. Their build-log SHA256 values are
+95e014ba44ce3300eaf38c40dcb284520beb876fbaa2f07c2550bbbc76a829f5 and
+c6c1678a719c8e7fa162ca8f4a0a7fbeb20e149d8fee446addd23ebecca3aa8a.
+The later snapshot-only extent reporting correction has separate evidence in
+metalfx-snapshot-extent.txt; it does not alter rendered pixels.

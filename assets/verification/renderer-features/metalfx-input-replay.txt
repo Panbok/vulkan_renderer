@@ -1,0 +1,92 @@
+MetalFX input controls — 2026-09-09
+
+Result
+Unused input padding does not affect this eight-phase Metal4FX replay. Changing
+inactive RGB from black to 64 produces byte-identical output for all eight
+1280x720 RGBA16F frames. Fixed exposure 1 worsens bar variation; fixed exposure 8
+does not improve it. No production exposure or padding policy was changed.
+
+Device and inputs
+Apple M1 Pro, macOS 26.6.2 (25G83), actual MTL4FXTemporalScaler. Source snapshot
+20260909T061347.257Z-000f12, case local.ssr.bar_stage_diagnostic, report SHA256
+2a3d2f7d4251d1b8f81edd1ac5a1ebe8754042f1a42ef3dc660b31f53352efda.
+Its hdr_post_transmission, depth and motion_vectors channels supply unexposed
+RGBA16F, non-reversed R32F device depth and RG16F previousUV-currentUV motion.
+All 24 input file sizes/digests and channel producer identities were checked.
+Active content is 1025x577 in output-sized 1280x720 private input allocations.
+The historical parent report's 1024x576 is a rounded fallback, not the raw extent.
+Jitter phases are 3,4,5,6,7,0,1,2 from source frames 483,548,549,550,551,552,553,554.
+preExposure 1, active-size motion scaling, 128 warmup frames and 8 measured frames.
+Application exposure 8 is downstream and is not applied by this replay.
+
+Controlled results
+Bar polygon [(0,253),(1107,249),(1080,283),(0,378)] contains 86,265 output pixels.
+Ranges below are unexposed linear HDR, maximum RGB temporal range per pixel.
+
+  policy              mean max range     max range        pixels range>0.001
+  automatic           4.669674609e-5      0.0029296875      185
+  fixed 1             6.291616594e-5      0.0029449463      195
+  fixed 8             4.699856608e-5      0.0029602051      187
+
+Automatic mean RGB is [.002784980700,.002056955995,.001631426841]. Fixed 8 mean
+RGB is [.002785134824,.002057010245,.001631491529]. Similar mean brightness
+does not turn the unchanged variation into a quality gain.
+Each checked run contains 29,491,200 finite RGBA half-float components.
+The padding control has zero differing RGB pixels over 7,372,800 pixel samples.
+
+Reproducer
+tools/checks/replay_metalfx_capture.m is an isolated diagnostic, not a build or
+renderer path. It uses actual Metal4 command submission and Metal4FX, with no
+Metal3 fallback. The source owns private inputs/output, staging/readback,
+residency, scaler, compiler, queue, fence and command storage. Every submission
+completes, including error feedback, before CPU upload or command-memory reuse.
+Explicit fences order upload, scaler and readback. Run GPU commands serially.
+The converter accepts fixed-scale, eight-phase, camera-script-version 5 captures.
+
+Exact retained-input conversion and checked-source compilation:
+python3 tools/checks/prepare_metalfx_capture.py build/_artifacts/snapshot/20260909T061347.257Z-000f12/report.json .scratch/metalfx-replay/cycle-tracked.json
+xcrun clang -O2 -DNDEBUG -gline-tables-only -fobjc-arc -fblocks -mmacosx-version-min=26.0 -Wall -Wextra -Werror tools/checks/replay_metalfx_capture.m -framework Foundation -framework Metal -framework MetalFX -o .scratch/metalfx-replay/replay-tracked
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS .scratch/metalfx-replay/replay-tracked .scratch/metalfx-replay/cycle-tracked.json .scratch/metalfx-replay/black-auto-tracked 0 auto
+
+The tracked executable exits 0, finishes teardown, and produces eight byte-identical
+raw frames to the black automatic-exposure control from the original utility.
+Output directories must not exist. To reproduce the other controls, use another
+output directory, padding 64/auto, padding 0/fixed, and a manifest generated with
+--fixed-exposure 8 for the final fixed control. The actual diagnostic invocations:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS .scratch/metalfx-replay/replay .scratch/metalfx-replay/cycle.json .scratch/metalfx-replay/black-auto-clean 0 auto
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS .scratch/metalfx-replay/replay .scratch/metalfx-replay/cycle.json .scratch/metalfx-replay/bright-auto 64 auto
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS .scratch/metalfx-replay/replay .scratch/metalfx-replay/cycle.json .scratch/metalfx-replay/black-fixed 0 fixed
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS .scratch/metalfx-replay/replay .scratch/metalfx-replay/cycle-fixed8.json .scratch/metalfx-replay/black-fixed8 0 fixed
+python3 tools/checks/check_metalfx_replay.py .scratch/metalfx-replay/black-auto-clean .scratch/metalfx-replay/bright-auto --require-identical
+python3 .scratch/ssr-metalfx-replay-compare.py .scratch/metalfx-replay/black-auto-clean .scratch/metalfx-replay/black-fixed
+python3 .scratch/ssr-metalfx-replay-compare.py .scratch/metalfx-replay/black-auto-clean .scratch/metalfx-replay/black-fixed8
+python3 tools/checks/check_metalfx_replay.py .scratch/metalfx-replay/black-auto-clean .scratch/metalfx-replay/black-fixed8
+
+Report SHA256
+black-auto-clean 78a09da42f22fc6e9a316bd3b15bfe08c0cc054e3e18e427232d43a1cfa0d78c
+bright-auto ab8003929abed68ffbb62f0f119227fda6812557dd7670b635f478170af93e3f
+black-fixed 6cb7c3e1206c383440a70566a810560574ab3c8e1b0493d6d0a795e53113b834
+black-fixed8 b320bfe74df12a2c1fe7644b6a59198908e4d564f1a91181f4161ce5d917f9b7
+black-auto-tracked 1de41a3882b73c5ea5adee52bdf76dcf833764ccc5801d5f270d51f0a71d4aea
+Tracked executable SHA256
+0ddd9eecdddb7cb970b1ad48210de60988648eab19d2ed0dead9438492aafb0f
+Tracked Objective-C source SHA256
+9f181c1d78f44b6e948f338c966fe9cc92d83806f2c47c655bc608372bb84b0d
+
+Limits and cleanup
+This is a controlled SDK input-sensitivity check, not a current-scene quality,
+timing, native Vulkan, or API/shader-validation result. Captured source radiance
+predates the latest SSR fade. Its separate checkpoints are not consecutive
+simulation submissions; only the raster phase ordering is continuous. Repeating
+them does not reproduce evolving SSR/GTAO, production heap aliasing or in-flight
+overlap. No new 12-phase inputs are synthesized. Fixed exposure values 1 and 8
+do not cover all possible exposure policies.
+An initial utility run wrote all outputs, then crashed releasing a custom
+feedback queue through its descriptor. Removing that borrowed custom queue and
+using Metal's internally owned default fixed teardown; all controls above exit 0.
+This was a diagnostic utility defect, not an observed MetalFX render failure.
+The source snapshot remains retained for the ongoing MetalFX investigation.
+No baseline was promoted. The five completed replay output directories listed
+above were retired after their report digests and this record were checked.
+The initial failed utility output was also retired after its cleanup defect was
+diagnosed. The checked source, converter and comparison tool remain in the repo.

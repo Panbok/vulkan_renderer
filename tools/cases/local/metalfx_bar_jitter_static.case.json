@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "id": "local.metalfx.bar_jitter_static",
+  "suite": "local",
+  "description": "Bistro reflective bar over a common 24-frame window for eight- and twelve-phase MetalFX jitter.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": {
+    "warmup": 192,
+    "measure": 28
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "backend": "metal",
+    "render_scale": 0.8,
+    "upscaler": "metalfx_temporal",
+    "taa_enabled": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 8,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": false,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "image_sharpness": 0,
+    "ssr_enabled": true,
+    "ssgi_enabled": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -5.03,
+      1.7,
+      9.73
+    ],
+    "yaw": -20.34,
+    "pitch": -12,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 3,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 4,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 5,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 6,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 7,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 8,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 9,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 10,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 11,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 12,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 13,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 14,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 15,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 16,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 17,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 18,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 19,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 20,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 21,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 22,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 23,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 24,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 25,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    },
+    {
+      "at_frame": 26,
+      "channels": [
+        "final_color",
+        "hdr_pre_bloom",
+        "hdr_post_transmission",
+        "ssr_reflection"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "stat": "min",
+      "min": 1,
+      "metric": "draw.world.opaque_draws"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "packet.publication_omitted_candidates"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "visibility.gbuffer.resolve_invalid"
+    }
+  ]
+}
