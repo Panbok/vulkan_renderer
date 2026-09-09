@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-09
 authority: adr
 ---
 
@@ -51,6 +51,16 @@ renderer lifetime: callers stop rendering and destroy it. Native Vulkan terminal
 failures propagate through begin/render/cancel. A Metal failure after queue commit
 also reports `DEVICE_ERROR`; already-submitted GPU work and native history cannot
 be rolled back as though preparation had failed.
+
+The shared native pass/timing capacity is 163, derived from the authored main
+graph's full feature and repeat envelope. Disabling temporal reconstruction
+restores culling HZB generation, so the no-TAA graph is larger than the MetalFX
+or FSR graph. The CPU graph-expansion check covers all three modes and the 720p
+envelope without allocating 16K render targets. Backend-owned pass records,
+labels and timestamp capacity are reserved at initialization and released at
+renderer teardown; GPU completion rules and image budgets are unchanged.
+The [Bistro capacity check](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
+records the reproduced overflow, CPU graph envelope and native Metal validation.
 
 Preserve GPU-pointer roots, bindless texture/sampler tables and the authored
 render graph. GPU ranges still need native backing for indexed/indirect commands;

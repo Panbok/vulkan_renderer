@@ -1,0 +1,47 @@
+No-TAA main-graph capacity — 2026-09-09
+
+Change: shared native pass and timing capacity 114 -> 163. This covers the
+main.rendergraph.json feature/repeat envelope, including culling HZB generation
+when temporal reconstruction is disabled. The scene reported by the user exceeded
+114 with 115 passes. The local all-post Bistro reproduction needed 117, exceeding
+a concurrent intermediate 115-capacity build as well.
+
+Ownership: existing renderer-owned pass, label and timestamp storage is sized
+at initialization and released at renderer teardown. Command and history
+completion proofs are unchanged. There are no new graph images or per-draw
+allocations. Both native backends consume the shared bound; native Vulkan
+execution remains unavailable on macOS.
+
+CPU verification:
+./build_test.sh > .scratch/ssr-capacity-tests-pass.log 2>&1
+PASS all tests. The graph fixture expands and compiles the authored graph at
+163 passes with no TAA and HZB, 149 with MetalFX, 150 with FSR31, 163 with compact
+transmission, and 149 with all features at 1280x720. Max dimensions are 16384x16384;
+this fixture allocates graph metadata only, not 16K GPU images. FSR bloom uses
+the prepared scene-output extent. Existing test prerequisites were repaired:
+SDR surface-format calls supply prefer_extended_linear=false; capture-summary
+expects current v13 and checks v11-v13 fields; SSR history catalog expects v4.
+CPU log SHA-256: 87f019d494ed5101f23d3f8d9eb25415502e74650ba7052a45c70dc6208c1550
+
+Native reproduction and correction, Apple M1 Pro / Metal 4 / Darwin 25.6.0:
+./build_release.sh > .scratch/ssr-trail-baseline-build.log 2>&1
+./build_release.sh > .scratch/ssr-fast-fade-build.log 2>&1
+Both PASS. Build wrappers compile without cooking assets.
+
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_bar_no_taa.case.json --profile tools/profiles/local-offscreen.json
+Before: 20260909T071146.033Z-007d31, incomplete/exit 5.
+Report SHA-256: 210de7485d22744b1b7200078d1d5d0d1e27ee728309c4ad9f9db903c822124d.
+Child diagnostic: Metal packet stage failed: 117 passes exceed capacity 115.
+After: 20260909T072215.046Z-00baef, PASS.
+Report SHA-256: 4d37b2522a12d25d1977c72096826b7082e8c3f7149a821b9e8751ab4ddb26e0.
+Actual configuration: editor=true, TAA=false, spatial scale 1, SSR/SSGI/GTAO/bloom/
+DoF/motion blur enabled, 1280x720 output, three target images. Three draw/publication/
+visibility assertions pass. Reviewed final_color preview: ssr-no-taa-capacity.png.
+This capture also contains the separately evaluated SSR fast-fade shader; that
+filter does not change graph expansion or the capacity invariant.
+
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_bar_no_taa.case.json --profile tools/profiles/local-metal-offscreen-validation-serial.json
+PASS: 20260909T073101.779Z-00da96.
+Report SHA-256: ce81a25f40d389f90f3ca71d0a1a0c3f495c38e56cb9c5633b92fd0d753a4c64.
+Exactly one child; stderr confirms Metal API Validation Enabled. No API errors.
+No shader-validation, native Vulkan, pixel-parity or performance claim.

@@ -1605,6 +1605,12 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
 
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
+  enum {
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 163u,
+    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 149u,
+    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 150u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 149u,
+  };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
   assert(vkr_allocator_arena(&allocator));
@@ -1641,9 +1647,10 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .target_height = VKR_TEXTURE_MAX_DIMENSION,
       .window_width = VKR_TEXTURE_MAX_DIMENSION,
       .window_height = VKR_TEXTURE_MAX_DIMENSION,
+      .scene_output_width = VKR_TEXTURE_MAX_DIMENSION,
+      .scene_output_height = VKR_TEXTURE_MAX_DIMENSION,
       .viewport_width = VKR_TEXTURE_MAX_DIMENSION,
       .viewport_height = VKR_TEXTURE_MAX_DIMENSION,
-      .metalfx_enabled = true_v,
       .editor_enabled = true_v,
       .editor_image_available = true_v,
       .editor_image_width = VKR_TEXTURE_MAX_DIMENSION,
@@ -1675,9 +1682,20 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .bloom_mip_count = VKR_BLOOM_MAX_MIP_COUNT,
       .gtao_enabled = true_v,
       .gtao_depth_mip_count = VKR_GTAO_MAX_DEPTH_MIP_COUNT,
+      .ssr_enabled = true_v,
+      .ssr_depth_mip_count = 14u,
+      .ssgi_enabled = true_v,
+      .ssgi_depth_mip_count = 14u,
+      .subsurface_enabled = true_v,
+      .fog_enabled = true_v,
+      .froxel_fog_enabled = true_v,
+      .dof_enabled = true_v,
+      .motion_blur_enabled = true_v,
+      .editor_overlay_enabled = true_v,
   };
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length == VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT);
   assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   bool8_t found_compaction_state = false_v;
   for (uint64_t i = 0u; i < runtime->buffers.length; ++i) {
@@ -1702,9 +1720,53 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
+  frame.metalfx_enabled = true_v;
+  frame.hzb_build_enabled = false_v;
+  assert(vkr_rg_begin_frame(runtime, &frame));
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length == VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  frame.metalfx_enabled = false_v;
+  frame.fsr31_enabled = true_v;
+  assert(vkr_rg_begin_frame(runtime, &frame));
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length == VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  frame.fsr31_enabled = false_v;
+  frame.hzb_build_enabled = true_v;
   frame.transmission_compact_enabled = true_v;
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length == VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  frame.transmission_compact_enabled = false_v;
+  frame.target_width = 1280u;
+  frame.target_height = 720u;
+  frame.window_width = 1280u;
+  frame.window_height = 720u;
+  frame.scene_output_width = 1280u;
+  frame.scene_output_height = 720u;
+  frame.viewport_width = 1280u;
+  frame.viewport_height = 720u;
+  frame.editor_image_width = 1280u;
+  frame.editor_image_height = 720u;
+  frame.hzb_reduce_pass_count = 10u;
+  frame.ssr_depth_mip_count = 10u;
+  frame.ssgi_depth_mip_count = 10u;
+  frame.bloom_mip_count = 7u;
+  assert(vkr_rg_begin_frame(runtime, &frame));
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length ==
+         VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT);
   assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);

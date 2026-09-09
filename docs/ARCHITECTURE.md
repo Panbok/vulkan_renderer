@@ -267,6 +267,12 @@ active MetalFX passes; Metal ignores inactive FSR declarations. Disabled
 declarations do not block startup. There is one GPU-driven world topology;
 no retained-forward/legacy world branch remains.
 
+Shared native pass and timing storage covers the main graph's 163-pass maximum.
+The no-TAA path can expand beyond either temporal upscaler because it restores
+culling HZB generation. The graph-expansion test checks the full supported repeat
+envelope before native emission; [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
+records the ownership and bound.
+
 The graph describes image reads/writes/attachments, buffer access, compute
 and indirect dispatches, and transfer uses. Image state is tracked per mip/layer;
 compatible same-pass accesses combine before the barrier, and incompatible

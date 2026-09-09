@@ -26,7 +26,10 @@ typedef struct VkrRendererImplCapabilities {
 
 enum {
   VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY = 64,
-  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 114,
+  /* All main-graph feature conditions at their bounded repeat maxima total
+     163 passes without temporal upscaling. This path retains the 15-pass HZB
+     build, so it exceeds the MetalFX and FSR31 variants. */
+  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 163,
   VKR_RENDERER_IMPL_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
   VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,
