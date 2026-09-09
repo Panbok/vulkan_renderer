@@ -2623,12 +2623,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     } else if (renderer->prepared_frame.ssr_enabled &&
                vkr_metal_packet_graph_pass_is(
                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TEMPORAL)) {
-      /* Shaded history adds a complete frame root and its anisotropy record;
-       * the ordinary 464-byte temporal root still occupies one pass cell. */
-      const uint64_t shading_cells = VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT + 1u;
-      if (shading_cells > UINT64_MAX - root_count)
+      /* The 128-byte camera payload has one cell beside the ordinary
+       * 448-byte temporal root. Receiver material shading belongs to composite.
+       */
+      if (root_count == UINT64_MAX)
         return false_v;
-      root_count += shading_cells;
+      ++root_count;
     } else if (renderer->prepared_frame.ssr_enabled &&
                vkr_metal_packet_graph_pass_is(
                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_COMPOSITE)) {

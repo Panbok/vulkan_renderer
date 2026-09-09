@@ -1162,6 +1162,65 @@ vkr_internal bool8_t vkr_vk_validate_dof_root_abi(VkrVulkanRenderer *renderer,
   return valid;
 }
 vkr_internal bool8_t
+vkr_vk_validate_ssr_reprojection_abi(VkrVulkanRenderer *renderer) {
+  FilePath shader_path =
+      file_path_create(VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV,
+                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
+                             &size) != FILE_ERROR_NONE ||
+      size == 0u)
+    return false_v;
+  SpvReflectShaderModule module;
+  MemZero(&module, sizeof(module));
+  const SpvReflectResult created =
+      spvReflectCreateShaderModule((size_t)size, bytes, &module);
+  vkr_allocator_free(renderer->allocator, bytes, size,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (created != SPV_REFLECT_RESULT_SUCCESS)
+    return false_v;
+  uint32_t count = 0u;
+  SpvReflectBlockVariable *blocks[1] = {0};
+  bool8_t valid = spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_ssr_temporal", &count, NULL) ==
+                      SPV_REFLECT_RESULT_SUCCESS &&
+                  count == 1u &&
+                  spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_ssr_temporal", &count, blocks) ==
+                      SPV_REFLECT_RESULT_SUCCESS;
+  valid &= blocks[0] && blocks[0]->size == sizeof(VkrVulkanPushConstants);
+  SpvReflectBlockVariable *root =
+      valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
+  SpvReflectBlockVariable *reprojection =
+      vkr_vk_reflect_member(root, "reprojection");
+  valid &= vkr_vk_reflect_member_offset(
+      reprojection, "inverse_view",
+      offsetof(VkrSsrReprojectionGpuParams, inverse_view), NULL);
+  valid &= vkr_vk_reflect_member_offset(
+      reprojection, "previous_view",
+      offsetof(VkrSsrReprojectionGpuParams, previous_view), NULL);
+  valid &= vkr_vk_reflected_struct_size(reprojection) ==
+           sizeof(VkrSsrReprojectionGpuParams);
+  SpvReflectBlockVariable *transforms =
+      vkr_vk_reflect_member(root, "previous_transforms");
+  static const VkrVulkanReflectedField transform_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrTemporalTransformGPU, model),
+      VKR_VULKAN_REFLECTED_FIELD(VkrTemporalTransformGPU, generation),
+      VKR_VULKAN_REFLECTED_FIELD(VkrTemporalTransformGPU, frame_index),
+      VKR_VULKAN_REFLECTED_FIELD(VkrTemporalTransformGPU, valid),
+      VKR_VULKAN_REFLECTED_FIELD(VkrTemporalTransformGPU, reserved),
+  };
+  for (uint32_t i = 0u; i < ArrayCount(transform_fields); ++i)
+    valid &= vkr_vk_reflect_member_offset(transforms, transform_fields[i].name,
+                                          transform_fields[i].offset, NULL);
+  valid &= vkr_vk_reflected_struct_size(transforms) ==
+           sizeof(VkrTemporalTransformGPU);
+  spvReflectDestroyShaderModule(&module);
+  return valid;
+}
+
+vkr_internal bool8_t
 vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
   static const VkrVulkanReflectedField cull_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, candidates),
@@ -1364,19 +1423,23 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, destination_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, clearcoat_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, source_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, hit_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, reserved),
   };
   static const VkrVulkanReflectedField ssr_temporal_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, params),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, reprojection),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, visible_rows),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, previous_transforms),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot,
+                                 previous_frame_index),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, raw_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, receiver_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, vbuffer_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, depth_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, normal_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, motion_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, validity_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, hit_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot,
                                  history_color_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot,
@@ -1389,14 +1452,8 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
                                  output_depth_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot,
                                  output_identity_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, linear_sampler),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, specular_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, clearcoat_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, frame),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, albedo_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, gtao_visibility_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, sheen_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, anisotropy_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, reserved),
   };
   static const VkrVulkanReflectedField ssr_composite_fields[] = {
@@ -1697,6 +1754,7 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       renderer, VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV, "vk_ssr_temporal",
       ssr_temporal_fields, ArrayCount(ssr_temporal_fields),
       sizeof(VkrVulkanSsrTemporalRoot));
+  valid &= vkr_vk_validate_ssr_reprojection_abi(renderer);
   valid &= vkr_vk_validate_root_abi(
       renderer, VKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV, "vk_ssr_composite",
       ssr_composite_fields, ArrayCount(ssr_composite_fields),

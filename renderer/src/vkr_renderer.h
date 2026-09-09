@@ -575,8 +575,10 @@ typedef enum VkrTextureFormat {
   /** Two-channel half-float temporal motion in output UV units. */
   VKR_TEXTURE_FORMAT_R16G16_SFLOAT,
 
-  /** Immutable full-precision SH coefficients and exact room IDs. */
+  /** Full-precision SH/room data and reflection geometry history. */
   VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT,
+  /** Exact reflected-hit payloads and paired stable temporal identities. */
+  VKR_TEXTURE_FORMAT_R32G32B32A32_UINT,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;

@@ -57,29 +57,36 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] Energy-compensated GGX and shared DFG: [ADR-053](../adr/053-energy-compensated-ggx.md).
 - [ ] Baked diffuse volumes, room boundaries, thick glass, multi-bounce diffuse
   transport, and photon caustics: [ADR-054](../adr/054-baked-diffuse-volumes.md).
-- [ ] Opaque SSR: validate the 400-byte temporal and 416-byte composite roots,
-  graph bindings 17–20, and removal of composite guide bindings 8/9. Capture
-  version-4 `ssr_reflection` at source resolution, with per-pixel receiver shading
-  (GTAO, selected coat, base sheen and anisotropy), exact old-probe removal and
-  probe fallback. Check the five color/depth/identity tuples: 87.89 MiB logical
-  payload at 1280×720, plus API allocation overhead; resize and retirement must
-  retain completion proofs. Exercise GTAO disabled so normalized sampling covers
-  the 1×1 sentinel. Verify source-grid four-tap jitter-corrected history, separate
-  SSGI history bounds, GPU ordering, continuous roughness clamping, motion-adaptive
-  accumulation and empty-frame fading. Raw reconstruction must reuse at most nine
-  guided samples for its clamp bounds, with four samples on mirrors; composite
-  reads one matching history pixel. Trace keeps half-resolution rays, full-resolution
-  leaves, absolute crossings and earliest surface intersections. Compare Bistro
-  material/coat/mirror boundaries, static/moving flicker, reflection strength,
-  trails and measured temporal cost. Prior half-resolution history captures do
-  not establish this output or cost. Validate fractional linear-clamp trace source
-  sampling (sampler at trace-root offset 324, root size 336) and the corrected
-  coat-directed GTAO in deferred lighting and exact SSR probe removal. Include
-  subpixel hit motion, rough cone offsets and the disabled GTAO sentinel. Check
-  that empty-frame coverage and normalized out-of-current-bounds RGB retain at
-  most half per update, including sparse current coverage; assess the resulting
-  reflection-strength and trail tradeoff before claiming parity:
-  [ADR-055](../adr/055-screen-space-reflections.md).
+- [ ] Opaque SSR: validate the 512-byte temporal and 416-byte composite roots,
+  the 128-byte camera record at temporal offset 288, exact producer transform
+  reads and graph bindings 17/18. Trace adds the hit image at binding 9 while
+  retaining its 336-byte root. Check RGBA32_UINT sampled/storage format support.
+  Capture version-5 `ssr_reflection` is full-resolution incoming radiance;
+  composite applies current material/GTAO exactly once and removes the current
+  probe term. Prior shaded-history captures are not numerically comparable.
+  Check the expanded geometry/identity histories and raw-hit image: +98.4375 MiB
+  logical payload at source 1280×720 with three slots/five histories, or
+  +203.90625 MiB with eight slots/ten histories, excluding allocation overhead.
+  Resize, cancellation, scene reload and retirement must preserve completion.
+  Exercise no-TAA and TAA, subpixel jitter, camera translation, rigid reflected
+  objects and receivers, nonuniform/mirrored models, material/coat boundaries,
+  missing hits, foreign identities, depth discontinuities and normal rejection.
+  Run `ssr_reflected_hit_motion.case.json` and its
+  `tools/checks/check_ssr_reflected_hit.py` payload check: the moving emitter must
+  stop leaving red history when its current reflection loses coverage.
+  Run `ssr_reflected_hit_editor.case.json` for odd-size scaled editor bindings.
+  Unsupported correspondence must use current radiance/probes without fading
+  an old reflection. Four history taps retain individual validation; raw bounds
+  reuse nine guided samples (four on mirrors) and dominant metadata adds two
+  reads. Composite reads one history pixel and shades it at the current receiver.
+  Trace retains fractional linear-clamp sampling, half-resolution rays,
+  full-resolution leaves, absolute crossings and earliest rear-slab hits.
+  Compare the under-bar in/out case and the separate SSGI flicker camera in
+  `ssr_ghost_under_bar[_taa].case.json` and
+  `ssgi_bistro_remaining_flicker.case.json`. Check filtered coat SSR against exact
+  packed-roughness probe removal, sheen/anisotropy and disabled GTAO's 1×1 sentinel.
+  Assess visible trails, flicker, reflection strength and measured temporal cost
+  before claiming parity: [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
 - [ ] Analytic height fog and ordered transmission composition:

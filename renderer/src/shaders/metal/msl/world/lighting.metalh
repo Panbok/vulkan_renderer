@@ -408,7 +408,7 @@ static float4 vkr_metal_packet_diffuse_volume(
 
 /* The deferred pass and SSR composite share this exact local/global probe
  * reduction. `incoming_specular` deliberately excludes receiver BRDF terms:
- * SSR shades incoming radiance with this weight before temporal accumulation. */
+ * SSR shades filtered incoming radiance with the current receiver's weight. */
 struct VkrMetalPacketEnvironmentLighting {
   float3 irradiance;
   float3 incoming_specular;

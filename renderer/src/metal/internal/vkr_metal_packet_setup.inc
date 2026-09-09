@@ -375,9 +375,12 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
            VKR_METAL_PACKET_ABI_DRAW_ROOT)))
     return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT &&
-      !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                            root.bufferStructType, "instances",
-                                            VKR_METAL_PACKET_ABI_INSTANCE))
+      (!vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                             root.bufferStructType, "instances",
+                                             VKR_METAL_PACKET_ABI_INSTANCE) ||
+       !vkr_metal_packet_validate_nested_abi(
+           pipeline_label, root.bufferStructType, "transforms",
+           VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM)))
     return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT &&
       (!vkr_metal_packet_validate_nested_gpu_abi(
@@ -436,6 +439,34 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
        !vkr_metal_packet_validate_nested_abi(
            pipeline_label, root.bufferStructType, "instances",
            VKR_METAL_PACKET_ABI_INSTANCE)))
+    return false_v;
+  if ((record_id == VKR_METAL_PACKET_ABI_SSR_DEPTH_BASE_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_SSR_DEPTH_MIP_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_SSR_TRACE_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT) &&
+      !vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                            root.bufferStructType, "params",
+                                            VKR_METAL_PACKET_ABI_SSR_PARAMS))
+    return false_v;
+  if (record_id == VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT &&
+      (!vkr_metal_packet_validate_nested_gpu_abi(
+           pipeline_label, root.bufferStructType, "visible_rows",
+           VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
+       !vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                             root.bufferStructType, "instances",
+                                             VKR_METAL_PACKET_ABI_INSTANCE) ||
+       !vkr_metal_packet_validate_nested_abi(
+           pipeline_label, root.bufferStructType, "previous_transforms",
+           VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM) ||
+       !vkr_metal_packet_validate_nested_abi(
+           pipeline_label, root.bufferStructType, "reprojection",
+           VKR_METAL_PACKET_ABI_SSR_REPROJECTION_PARAMS)))
+    return false_v;
+  if (record_id == VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT &&
+      !vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                            root.bufferStructType, "frame",
+                                            VKR_METAL_PACKET_ABI_FRAME_ROOT))
     return false_v;
   if ((record_id == VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT ||

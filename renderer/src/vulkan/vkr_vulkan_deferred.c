@@ -959,6 +959,7 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
       transforms->instances[i].history_motion_valid = false_v;
   }
   if (slot->temporal_transform_output) {
+    slot->temporal_transform_output->history_view = packet->input.globals.view;
     slot->temporal_transform_output->history_motion_seconds = renderer->motion_seconds;
     slot->temporal_transform_output->history_motion_valid = true_v;
     slot->temporal_transform_output->history_producer_submit_value =
@@ -1650,7 +1651,7 @@ bool8_t vkr_vk_prepare_ssr_depth_mip(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
                                  VkrVulkanPreparedCompute *prepared,
                                  const VkrRgPass *pass) {
-  uint32_t textures[9] = {0};
+  uint32_t textures[10] = {0};
   for (uint32_t binding = 0u; binding < 7u; ++binding)
     if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
                                        &textures[binding]))
@@ -1658,6 +1659,8 @@ bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
   if (!vkr_vk_deferred_storage_index(renderer, pass, 7u, &textures[7]))
     return false_v;
   if (!vkr_vk_deferred_sampled_index(renderer, pass, 8u, &textures[8]))
+    return false_v;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 9u, &textures[9]))
     return false_v;
   const VkrSsrGpuParams params = vkr_vk_ssr_params(
       renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
@@ -1675,6 +1678,7 @@ bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
       .destination_texture = textures[7],
       .clearcoat_texture = textures[8],
       .source_sampler = renderer->transmission_sampler_slot,
+      .hit_texture = textures[9],
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrTraceRoot),
@@ -1854,34 +1858,29 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
   if (!vkr_vk_prepare_ssr_history(renderer, prepared, &colors, &depths,
                                   &identities, &previous_projection))
     return false_v;
-  uint32_t sampled[7] = {0};
+  uint32_t sampled[5] = {0};
   for (uint32_t binding = 0u; binding < ArrayCount(sampled); ++binding)
     if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
                                        &sampled[binding]))
       return false_v;
   uint32_t output_color = 0u, output_depth = 0u, output_identity = 0u,
-           specular = 0u, clearcoat = 0u, albedo = 0u, sheen = 0u, anisotropy = 0u;
+           specular = 0u, clearcoat = 0u, hit = 0u;
   if (!vkr_vk_deferred_storage_index(renderer, pass, 10u, &output_color) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 11u, &output_depth) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 12u, &output_identity) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 15u, &specular) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 16u, &clearcoat) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 17u, &albedo) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 19u, &sheen) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 20u, &anisotropy))
-    return false_v;
-  uint32_t gtao = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  if (vkr_rg_pass_find_image_use(&pass->desc, 18u, 0u) &&
-      !vkr_vk_deferred_sampled_index(renderer, pass, 18u, &gtao))
-    return false_v;
-  uint64_t frame_address = 0u;
-  if (!vkr_vk_packet_frame_root(slot, &frame_address))
+      !vkr_vk_deferred_sampled_index(renderer, pass, 17u, &hit))
     return false_v;
   VkrVulkanGraphBufferInstance *visible =
       vkr_vk_deferred_buffer(renderer, pass, 13u);
   VkrVulkanGraphBufferInstance *instances =
       vkr_vk_deferred_buffer(renderer, pass, 14u);
-  if (!visible || !instances)
+  const VkrRgBufferUse *transform_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 18u, 0u);
+  if (!visible || !instances || !transform_use ||
+      transform_use->buffer.id !=
+          renderer->temporal_transform_history_handle.id)
     return false_v;
   const uint32_t history_color =
       slot->ssr_history_valid ? slot->ssr_color_input->sampled_slot.index
@@ -1896,29 +1895,40 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
       vkr_vk_ssr_params(renderer, slot->ssr_history_valid, previous_projection);
   const VkrVulkanSsrTemporalRoot root = {
       .params = params,
+      .reprojection =
+          {
+              .inverse_view = mat4_inverse(params.view),
+              .previous_view =
+                  slot->ssr_history_valid
+                      ? slot->temporal_transform_input->history_view
+                      : params.view,
+          },
       .visible_rows = visible->buffer.address,
       .instances = instances->buffer.address,
+      /* The selected SSR tuple already proved this exact producer. The
+         temporal-transform barrier and submitted reader last use cover SSR. */
+      .previous_transforms =
+          slot->ssr_history_valid
+              ? slot->temporal_transform_input->buffer.address
+              : 0u,
+      .previous_frame_index =
+          slot->ssr_history_valid
+              ? (uint32_t)slot->ssr_color_input->history_frame_index
+              : 0u,
       .raw_texture = sampled[0],
       .receiver_texture = sampled[1],
       .vbuffer_texture = sampled[2],
       .depth_texture = sampled[3],
       .normal_texture = sampled[4],
-      .motion_texture = sampled[5],
-      .validity_texture = sampled[6],
+      .hit_texture = hit,
       .history_color_texture = history_color,
       .history_depth_texture = history_depth,
       .history_identity_texture = history_identity,
       .output_color_texture = output_color,
       .output_depth_texture = output_depth,
       .output_identity_texture = output_identity,
-      .linear_sampler = renderer->transmission_sampler_slot,
       .specular_texture = specular,
       .clearcoat_texture = clearcoat,
-      .frame = frame_address,
-      .albedo_texture = albedo,
-      .gtao_visibility_texture = gtao,
-      .sheen_texture = sheen,
-      .anisotropy_texture = anisotropy,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrTemporalRoot),

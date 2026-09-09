@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "id": "local.ssr.shaded_layers",
+  "id": "local.ssr.reflected_hit_editor",
   "suite": "local",
-  "description": "Current SSR receiver shading on coated and uncoated anisotropic/sheen reflectors with GTAO and unit environment.",
+  "description": "Editor SSR hit and material bindings at odd scaled extent with a moving reflected emitter.",
   "scene": "assets/scenes/fixtures/ssr_shaded_layers.scene.json",
   "seed": 1,
   "resolution": [
-    512,
-    384
+    513,
+    385
   ],
   "boot": "full",
   "target": "offscreen",
@@ -20,10 +20,10 @@
   "asset_ready_timeout_ms": 60000,
   "frames": {
     "warmup": 24,
-    "measure": 2
+    "measure": 6
   },
   "renderer": {
-    "editor": false,
+    "editor": true,
     "skybox": true,
     "taa_enabled": false,
     "exposure_mode": "manual",
@@ -38,7 +38,16 @@
     "bloom_enabled": false,
     "image_sharpness": 0,
     "gtao_radius": 0.5,
-    "gtao_power": 2.2
+    "gtao_power": 2.2,
+    "motion_blur_entity": "SSRRedEmitter",
+    "motion_blur_entity_velocity": [
+      2.4,
+      0,
+      0
+    ],
+    "motion_blur_enabled": false,
+    "render_scale": 0.8,
+    "upscaler": "spatial"
   },
   "camera": {
     "mode": "static",
@@ -55,15 +64,9 @@
   },
   "captures": [
     {
-      "at_frame": 1,
+      "at_frame": 4,
       "channels": [
         "final_color",
-        "hdr_pre_transmission",
-        "hdr_post_transmission",
-        "depth",
-        "gbuffer_normal",
-        "gbuffer_specular",
-        "gtao_visibility",
         "ssr_raw",
         "ssr_reflection"
       ]

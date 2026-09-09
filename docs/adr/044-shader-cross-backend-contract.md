@@ -392,7 +392,7 @@ horizon moments, packing, multi-bounce diffuse and cone specular arithmetic.
 Base deferred environment and SSR receiver weights use the shared cone factor.
 Deferred coat lighting and matching SSR probe removal use the coat-directed cone
 on both backends, with bent direction decoded against the coat normal and packed
-coat roughness. Shaded SSR history uses its filtered coat roughness. This corrects
+coat roughness. SSR composite uses filtered coat roughness for incoming reflection shading. This corrects
 Metal's former base-cone approximation and Vulkan's omitted coat occlusion;
 native Vulkan comparison is still missing. Baked volumes retain scalar AO. Metal's disabled output is byte-identical to
 its prior HDR fixture, and the corner lighting oracle has maximum HDR error
@@ -400,107 +400,79 @@ its prior HDR fixture, and the corner lighting oracle has maximum HDR error
 validation pass. Native Vulkan execution and bilateral comparison remain
 unavailable, so the domain stays **UNALIGNED**. ADR-042 owns the lighting policy.
 
-Opaque SSR is **UNALIGNED**. Its accepted full-source-resolution shaded-history
-contract retains the shared 288-byte parameters, 464-byte Metal temporal root and
-400-byte Vulkan temporal root. Composite roots shrink to 480 bytes on Metal and
-416 on Vulkan after removing history-depth and trace-receiver bindings 8/9.
-Vulkan push constants remain 16 bytes. Release builds, shared math, Vulkan host
-syntax and ten SSR/SSGI SPIR-V modules pass. Compiled composite stride 416 and
-coat/sheen/anisotropy offsets 404/408/412 match the host; native Metal root checks
-pass. Native Vulkan execution and bilateral image comparison remain unavailable.
-[ADR-055](055-screen-space-reflections.md) owns the storage, access and
-probe-replacement contracts and separates current evidence from prior baselines.
+Opaque SSR is **UNALIGNED** pending native Vulkan execution and same-revision
+bilateral comparison. [ADR-055](055-screen-space-reflections.md) owns its accepted
+reflected-hit reprojection, incoming-radiance history, storage and fallback policy.
+Shared `VkrSsrParams` stays 288 bytes. The temporal-only camera record is 128 bytes,
+with inverse current view at 0 and exact selected producer view at 64.
 
-Trace remains half resolution with at most 48 decisions and five hit-source taps.
-Temporal now shades each full-resolution source receiver. It gathers at most nine
-raw taps once and reuses them for current bounds: rough receivers use a 3×3
-continuous tent of radius 1.5 trace pixels, mirrors the former composite's 2×2
-footprint with radius 1. Four source-grid history taps each validate depth and
-identity. Raw RGB remains incoming radiance; history RGB contains receiver-shaded
-radiance, including selected-coat or base sheen/anisotropy energy and indirect
-specular GTAO. Composite directly loads same-pixel shaded history, removes the
-exact current deferred probe term and adds covered history without another
-receiver multiplier. The former bilateral composite gather is removed.
+| Root | Metal | Vulkan | Changed contract |
+| --- | ---: | ---: | --- |
+| SSR trace | 368 B | 336 B | New uint4 raw-hit output; occupies previous tail padding |
+| SSR temporal | 448 B | 512 B | Camera record, selected transforms, paired identities and wider geometry |
+| SSR composite | 480 B | 416 B | Same-pixel incoming history, current receiver shading |
 
-The color/depth/identity image count and completion-safe history ownership do not
-change. At source 1280×720 with three frame slots and five history instances,
-logical history payload grows from 21.972656 to 87.890625 MiB (+65.917969 MiB,
-excluding alignment and resize overlap). Temporal executes about four times as
-many pixels, with a reviewed Metal ceiling of 80 texture reads plus three output
-writes per temporal invocation. Local matched profiles at source 1025×577 record
-SSR GPU time 1.992→2.631 ms; they are non-authoritative with unstable warmup.
-Graph bindings 17–20 still supply albedo, conditional GTAO, sheen and anisotropy.
-Existing frame/LUT ownership remains: Metal retains 1536 reserved upload bytes
-per SSR frame (592 payload bytes) added by shaded-history frame/anisotropy records;
-Vulkan reuses its frame root and retains the 32-byte temporal upload increase.
+Metal binds the camera record through a constant pointer; temporal upload is
+576 payload bytes in two 512-byte cells, down from 1024 payload bytes in four
+cells when temporal owned the frame/LUT shading records. Vulkan embeds the camera
+record at offset 288, then visible rows/instances/prior transforms at 416/424/432,
+producer frame at 440, hit texture at 464, and output color/geometry/identity at
+480/484/488. Native assertions and compiled reflection pin each layout. Existing
+80-byte GPU transform rows retain their layout; CPU graph-buffer history metadata
+adds an owned camera view matrix, published only after successful submission.
 
-History selects the exact motion producer through existing GPU dependencies even
-before CPU-observed completion; reuse waits for every reader. Source-pixel-center
-reprojection adds motion and the producer's previous-minus-current raster jitter
-from parameter offsets 280/284. Source extent controls coordinates and tap bounds.
-Roughness continuously relaxes clamping, but at most half the normalized RGB
-residual outside current bounds survives each update, including sparse support.
-The shared supported filter caps normalized history RGB retention at the adjusted
-temporal weight; coverage normalization cannot amplify that weight when current
-support is sparse. Coverage averaging, empty decay and constant sparse radiance
-are unchanged. Shorter supported ghost trails can expose more fresh-sample noise;
-receiver identity still does not validate reflected-object identity.
-Motion-adaptive defaults rise from 0.85 to 0.95 on stationary rough receivers and
-return at one source pixel per frame. Empty neighborhoods retain at most half
-of validated coverage each frame; rejected history clears. The shared scene-static
-proof waits for 128 matching submitted frames with SSR enabled before allowing
-TAA/FSR's existing 128-sample static accumulation. Portable TAA uses shared
-ordinary/static-accumulate/SSR-settling mode constants and caps ordinary history
-at 0.9 while SSR is unsettled; SSR-off stationary retention stays 0.99. The TAA
-mode replaces its former scene-stationary word at Metal offset 216 and Vulkan
-124, keeping the respective 224/144-byte roots and existing texture-read ceilings.
-Camera stationarity and metadata validation remain separate. FSR and MetalFX are
-unchanged by this cap. Release builds, scalar-layout SPIR-V validation, reflected
-mode offset 124 and native Metal startup/API resize pass. The
-[cap evidence](../../assets/verification/renderer-features/ssr-taa-settling-cap.txt)
-records reduced held-reference error and increased pre-settle flicker. Native
-Vulkan execution and same-revision bilateral comparison remain unavailable;
-TAA retains its UNALIGNED state. Selected-producer CPU metadata
-owns the capped counter, which resets on invalid history or changed inputs and
-publishes only on successful submission. No roots, bindings or sampling ceilings
-change; native Vulkan verification remains unavailable. Receiver depth tolerance
-has a 2 cm minimum independent of ray thickness. Full-resolution trace leaves,
-absolute crossings, earliest rear-slab
-intersections and same-pixel validation keep the existing depth allocation.
-SSGI retains its previous leaf, slab and receiver-minimum policies through shared
-adapters; its history reprojection supplies its own selected-producer jitter offsets.
+Trace stores fractional hit UV, positive view depth and reflected visible-row
+identity in half-resolution RGBA32_UINT. The full-resolution geometry history is
+RGBA32F (receiver depth, virtual depth, selected view-normal octahedral components);
+RGBA32_UINT identity stores receiver and reflected instance index/generation.
+History color remains RGBA16F and now contains incoming radiance. The approved
+increase is 98.4375 MiB with three slots/five histories at source 1280×720, or
+203.90625 MiB with eight slots/ten histories. Alignment and resize overlap are
+excluded. History instance count and completion ownership are unchanged.
 
-Old coat subtraction matches deferred's coat-directed GTAO and packed roughness.
-Both decode bent direction against the coat normal. Coated composite pixels skip
-base normal-variance filtering; normalized GTAO sampling keeps the disabled 1×1
-sentinel valid. Both trace implementations preserve fractional hit and cone-offset
-coordinates with linear-clamp source sampling, replacing Vulkan's rounded point
-loads. Vulkan reuses its renderer-owned linear-clamp sampler at trace-root offset
-324; reserved padding begins at 328 and total root size remains 336 bytes. Mirrors
-still sample once and rough receivers at most five times. Source corrections do
-not establish native Vulkan or bilateral acceptance. The current fractional-filter
-and coat-cone checks are recorded with [ADR-055](055-screen-space-reflections.md).
+Both temporal entries gather the same raw radiance/bounds footprint, then read
+the dominant hit and its traced receiver's visible row once: two additional
+texture reads, below the approved nine. Cross-instance receiver correspondence
+cannot seed or reuse history. Transported hit/receiver models and producer camera
+supply virtual reflected-point motion; adding its UV delta preserves the current
+full-resolution pixel's offset. Current jittered projection plus producer-minus-
+current jitter supplies history UV; the previous ray/receiver-plane intersection
+supplies expected receiver depth. Four independently validated taps require
+receiver/hit identities, both depths and selected normals to match. Invalid or
+absent correspondence uses current radiance/probes immediately. Shared affine,
+projection, octahedral and acceptance math is executed by both native entries.
+Curved surfaces remain approximate.
 
-`ssr_reflection` version 4 identifies full-source-resolution shaded RGB; version 3
-captures were half-resolution shaded RGB. Raw capture stays version 2. Earlier
-captures predate the new history extent. Metal mirror, static/moving Bistro,
-layered-material, combined SSR/SSGI and two API-resize checks pass. The subsequent
-bounded-fade/settling correction passes 140 shared-math outputs, five SSR SPIR-V
-modules, host syntax and one serial Metal API hold. The sampled portable-TAA bar
-region freezes after settling and static accumulation. MetalFX's subsequent
-post-SDK stationary pass and its separate budget are recorded under ADR-040;
-the SSR fade alone did not decisively improve its stability. GPU shader
-validation previously crashed in MetalTools
-with SSR disabled as well as enabled and supplied no result.
-[ADR-055](055-screen-space-reflections.md#evidence-and-remaining-checks) links
-current and prior evidence. The domain remains UNALIGNED.
+The temporal source ceiling is 64 reads for rough base receivers and 62 for coat
+receivers, or 39/37 on mirrors, plus three writes. Former temporal material/LUT,
+motion and validity reads are removed. Graph bindings 17/18 supply the hit image
+and exact prior transform buffer. The graph declares these accesses; Metal event
+ordering and Vulkan same-queue barriers synchronize the selected producer, while
+submitted readers extend last use. Output reuse still requires GPU completion.
 
-The normalized-retention correction passes 156 shared Slang CPU outputs,
-including an in-bounds sparse-coverage step whose old RGB error decreases by at
-least 15% per supported update at weight 0.85. Both native temporal entries call
-the corrected shared helper; roots, texture reads, images and ray limits are
-unchanged. Current native Metal captures and their trail/coverage limits are in the
-[history-correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt).
+Composite applies current base BRDF, sheen/anisotropy and indirect-specular GTAO
+once. Coated pixels use filtered selected-normal roughness for new SSR and packed
+roughness with the coat-directed GTAO cone for exact old-probe removal. Trace
+keeps its one/five fractional linear-clamp source samples, half-resolution rays,
+full-resolution leaves and 48-decision limit. No ray or additional trace source
+read is introduced. `ssr_reflection` version 5 denotes full-resolution incoming
+radiance; earlier shaded versions cannot be compared numerically. Raw remains
+version 2.
+
+The shared supported RGB-retention cap and 128-frame SSR settling period remain.
+Portable TAA caps ordinary history at 90% while settling, through the unchanged
+224/144-byte Metal/Vulkan roots. Its mode remains at offsets 216/124. SSR-off
+stationary retention and the following checked 128-sample integral are unchanged;
+FSR and MetalFX retain their accepted policies. Release app/editor builds, 268
+independent shared-math outputs, eleven SSR/SSGI/deferred SPIR-V modules and
+Vulkan host syntax checks pass. Compiled temporal root/camera/transform strides
+are 512/128/80 bytes. Native Metal reflection, a serial API-validated resize,
+Bistro camera-motion captures, a moving reflected emitter, layered materials and
+an odd-size scaled editor capture pass their selected checks. The
+[reflected-hit record](../../assets/verification/renderer-features/ssr-reflected-hit.txt)
+owns exact commands, native layout evidence and the measured visual/cost limits.
+GPU shader validation previously crashed in MetalTools with SSR on and off and
+supplied no result. Native Vulkan and bilateral parity remain open gates.
 
 Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
 native passes. Packet version 38 appends its prepared fog pointer without

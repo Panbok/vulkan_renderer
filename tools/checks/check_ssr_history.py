@@ -28,7 +28,7 @@ def read(run):
             values = list(struct.iter_unpack('<4e', (run / c['data_path']).read_bytes()))
             assert len(values) == c['width'] * c['height']
             assert all(math.isfinite(v) for p in values for v in p)
-            key = (c['checkpoint_frame'], c['width'], c['height'])
+            key = (c['checkpoint_frame'], c['width'], c['height'], c['capture_version'])
             assert key not in frames
             frames[key] = values
         channels[channel] = frames
@@ -54,7 +54,7 @@ if __name__ == '__main__':
     assert before_config['ssr_enabled'] and before_config['taa_enabled']
     assert not before_config['dynamic_resolution']
     for channel in before:
-        assert before[channel].keys() == after[channel].keys(), 'Capture extents/checkpoints differ'
+        assert before[channel].keys() == after[channel].keys(), 'Capture extents/checkpoints/semantics differ'
     old_motion, new_motion = motion(before_run), motion(after_run)
     assert old_motion.keys() == new_motion.keys()
     for frame in old_motion:

@@ -497,15 +497,17 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTraceRoot {
   uint64_t hdr_texture_id;
   uint64_t raw_texture_id;
   uint64_t clearcoat_texture_id;
+  uint64_t hit_texture_id;
 } VkrMetalPacketSsrTraceRoot;
 
 _Static_assert(sizeof(VkrMetalPacketSsrTraceRoot) == 368,
                "Metal SSR trace root ABI must remain 368 bytes");
 _Static_assert(offsetof(VkrMetalPacketSsrTraceRoot, clearcoat_texture_id) ==
-                   352u,
-               "Metal SSR trace clearcoat ABI offset drift");
+                       352u &&
+                   offsetof(VkrMetalPacketSsrTraceRoot, hit_texture_id) == 360u,
+               "Metal SSR trace texture ABI offset drift");
 
-/** SSR temporal filtering owns one coherent color/depth/identity tuple. */
+/** SSR temporal filtering owns incoming radiance and reflected-hit geometry. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
   VkrSsrGpuParams params;
   uint64_t raw_texture_id;
@@ -513,8 +515,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
   uint64_t vbuffer_texture_id;
   uint64_t depth_texture_id;
   uint64_t normal_texture_id;
-  uint64_t motion_texture_id;
-  uint64_t validity_texture_id;
   uint64_t history_color_texture_id;
   uint64_t history_depth_texture_id;
   uint64_t history_identity_texture_id;
@@ -525,28 +525,22 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
   uint64_t instances;
   uint64_t specular_texture_id;
   uint64_t clearcoat_texture_id;
-  uint64_t frame;
-  uint64_t albedo_texture_id;
-  uint64_t gtao_visibility_texture_id;
-  uint64_t sheen_texture_id;
-  uint64_t anisotropy_texture_id;
+  uint64_t hit_texture_id;
+  uint64_t previous_transforms;
+  uint64_t reprojection;
+  uint32_t previous_frame_index;
+  uint32_t reserved;
 } VkrMetalPacketSsrTemporalRoot;
 
-_Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 464,
-               "Metal SSR temporal root ABI must remain 464 bytes");
-_Static_assert(offsetof(VkrMetalPacketSsrTemporalRoot,
-                        clearcoat_texture_id) == 416u,
-               "Metal SSR temporal clearcoat ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketSsrTemporalRoot, frame) == 424u &&
-                   offsetof(VkrMetalPacketSsrTemporalRoot,
-                            albedo_texture_id) == 432u &&
-                   offsetof(VkrMetalPacketSsrTemporalRoot,
-                            gtao_visibility_texture_id) == 440u &&
-                   offsetof(VkrMetalPacketSsrTemporalRoot,
-                            sheen_texture_id) == 448u &&
-                   offsetof(VkrMetalPacketSsrTemporalRoot,
-                            anisotropy_texture_id) == 456u,
-               "Metal SSR temporal shading ABI offset drift");
+_Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 448,
+               "Metal SSR temporal root ABI must remain 448 bytes");
+_Static_assert(
+    offsetof(VkrMetalPacketSsrTemporalRoot, clearcoat_texture_id) == 400u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, hit_texture_id) == 408u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, previous_transforms) == 416u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, reprojection) == 424u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, previous_frame_index) == 432u,
+    "Metal SSR temporal reprojection ABI offset drift");
 
 /** Full-resolution matching-pixel replacement of environment specular. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrCompositeRoot {
@@ -1148,6 +1142,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
+  VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
   VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_GTAO_PARAMS,
@@ -1161,6 +1156,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SSGI_TEMPORAL_ROOT,
   VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT,
   VKR_METAL_PACKET_ABI_SSR_PARAMS,
+  VKR_METAL_PACKET_ABI_SSR_REPROJECTION_PARAMS,
   VKR_METAL_PACKET_ABI_SSR_DEPTH_BASE_ROOT,
   VKR_METAL_PACKET_ABI_SSR_DEPTH_MIP_ROOT,
   VKR_METAL_PACKET_ABI_SSR_TRACE_ROOT,

@@ -40,7 +40,8 @@ typedef struct VkrSsrConfig {
  * hierarchy and history depths are positive view depth (`-view.z`), where zero
  * represents an uncovered pixel. `view` transforms the world-space G-buffer
  * normal before trace reflection. `previous_projection_*` linearize the
- * previous device depth supplied by the existing motion-validity buffer.
+ * previous device depth for shared surface-motion helpers used by SSGI.
+ * SSR history instead validates transported receiver and reflected-hit depths.
  */
 typedef struct VkrSsrGpuParams {
   Mat4 projection;
@@ -79,6 +80,17 @@ typedef struct VkrSsrGpuParams {
   float32_t history_jitter_uv_y;
 } VkrSsrGpuParams;
 
+/** Camera transforms for reflected-hit history, owned by the temporal pass. */
+typedef struct VkrSsrReprojectionGpuParams {
+  Mat4 inverse_view;
+  Mat4 previous_view;
+} VkrSsrReprojectionGpuParams;
+
+_Static_assert(sizeof(VkrSsrReprojectionGpuParams) == 128u &&
+                   offsetof(VkrSsrReprojectionGpuParams, inverse_view) == 0u &&
+                   offsetof(VkrSsrReprojectionGpuParams, previous_view) == 64u,
+               "SSR reprojection parameter ABI drift");
+
 _Static_assert(sizeof(VkrSsrGpuParams) == 288u,
                "SSR parameter ABI must remain 288 bytes");
 _Static_assert((sizeof(VkrSsrGpuParams) % 16u) == 0u,
@@ -101,7 +113,7 @@ uint32_t vkr_ssr_depth_mip_count(uint32_t source_width, uint32_t source_height);
  * Builds one GPU record from an already normalized configuration. `projection`
  * is the current jittered projection used by the opaque raster;
  * `previous_projection` belongs to the previous submitted raster and is used
- * only to linearize motion validity.y.
+ * only by shared surface-motion depth helpers; SSR uses reflected-hit transport.
  * History jitter defaults to zero; each backend supplies the selected producer's
  * jitter difference when temporal raster jitter is enabled.
  * A zero source extent returns a zero record so the caller can reject it at

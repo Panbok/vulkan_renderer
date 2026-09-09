@@ -824,35 +824,32 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTraceRoot {
   uint32_t destination_texture;
   uint32_t clearcoat_texture;
   uint32_t source_sampler;
-  uint32_t reserved[2];
+  uint32_t hit_texture;
+  uint32_t reserved;
 } VkrVulkanSsrTraceRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTemporalRoot {
   VkrSsrGpuParams params;
+  VkrSsrReprojectionGpuParams reprojection;
   uint64_t visible_rows;
   uint64_t instances;
+  uint64_t previous_transforms;
+  uint32_t previous_frame_index;
   uint32_t raw_texture;
   uint32_t receiver_texture;
   uint32_t vbuffer_texture;
   uint32_t depth_texture;
   uint32_t normal_texture;
-  uint32_t motion_texture;
-  uint32_t validity_texture;
+  uint32_t hit_texture;
   uint32_t history_color_texture;
   uint32_t history_depth_texture;
   uint32_t history_identity_texture;
   uint32_t output_color_texture;
   uint32_t output_depth_texture;
   uint32_t output_identity_texture;
-  uint32_t linear_sampler;
   uint32_t specular_texture;
   uint32_t clearcoat_texture;
-  uint64_t frame;
-  uint32_t albedo_texture;
-  uint32_t gtao_visibility_texture;
-  uint32_t sheen_texture;
-  uint32_t anisotropy_texture;
-  uint32_t reserved[2];
+  uint32_t reserved[3];
 } VkrVulkanSsrTemporalRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsrCompositeRoot {
@@ -1632,18 +1629,20 @@ _Static_assert(sizeof(VkrVulkanSsrDepthMipRoot) == 32u,
 _Static_assert(sizeof(VkrVulkanSsrTraceRoot) == 336u &&
                    offsetof(VkrVulkanSsrTraceRoot, clearcoat_texture) == 320u &&
                    offsetof(VkrVulkanSsrTraceRoot, source_sampler) == 324u &&
-                   offsetof(VkrVulkanSsrTraceRoot, reserved) == 328u,
+                   offsetof(VkrVulkanSsrTraceRoot, hit_texture) == 328u &&
+                   offsetof(VkrVulkanSsrTraceRoot, reserved) == 332u,
                "SSR trace root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsrTemporalRoot) == 400u &&
-                   offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 364u &&
-                   offsetof(VkrVulkanSsrTemporalRoot, frame) == 368u &&
-                   offsetof(VkrVulkanSsrTemporalRoot, albedo_texture) == 376u &&
-                   offsetof(VkrVulkanSsrTemporalRoot, gtao_visibility_texture) ==
-                       380u &&
-                   offsetof(VkrVulkanSsrTemporalRoot, sheen_texture) == 384u &&
-                   offsetof(VkrVulkanSsrTemporalRoot, anisotropy_texture) == 388u &&
-                   offsetof(VkrVulkanSsrTemporalRoot, reserved) == 392u,
-               "SSR temporal root ABI size drift");
+_Static_assert(
+    sizeof(VkrVulkanSsrTemporalRoot) == 512u &&
+        offsetof(VkrVulkanSsrTemporalRoot, reprojection) == 288u &&
+        offsetof(VkrVulkanSsrTemporalRoot, visible_rows) == 416u &&
+        offsetof(VkrVulkanSsrTemporalRoot, instances) == 424u &&
+        offsetof(VkrVulkanSsrTemporalRoot, previous_transforms) == 432u &&
+        offsetof(VkrVulkanSsrTemporalRoot, previous_frame_index) == 440u &&
+        offsetof(VkrVulkanSsrTemporalRoot, hit_texture) == 464u &&
+        offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 496u &&
+        offsetof(VkrVulkanSsrTemporalRoot, reserved) == 500u,
+    "SSR temporal root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrCompositeRoot) == 416u &&
                    offsetof(VkrVulkanSsrCompositeRoot, clearcoat_texture) ==
                        404u &&
@@ -1988,6 +1987,8 @@ typedef struct VkrVulkanGraphBufferInstance {
   uint64_t history_scene_generation;
   float64_t history_exposure_seconds;
   float64_t history_motion_seconds;
+  /** Camera of this transform producer; committed only after submission. */
+  Mat4 history_view;
   bool8_t history_motion_valid;
   bool8_t history_valid;
 } VkrVulkanGraphBufferInstance;

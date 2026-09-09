@@ -499,27 +499,35 @@ artifact layout, lifetime and evidence limits.
 Opaque SSR runs before transmission under
 [ADR-055](adr/055-screen-space-reflections.md). Half-resolution rays retain the
 current-frame depth hierarchy, full-resolution leaves and 48-decision limit.
-Temporal shades each full-resolution source receiver and stores source-resolution
-color/depth/identity history. It gathers incoming radiance once from at most nine
-half-resolution raw taps and reuses those samples for bounds; mirrors retain a
-2×2 reconstruction footprint. Four history taps independently validate depth and
-identity on the source grid, with selected-producer jitter correction.
+Trace writes incoming radiance and an exact integer hit record. Temporal gathers
+at most nine raw samples once for radiance and bounds (four on mirrors), then
+reprojects the strongest covered reflected hit using the current and selected
+producer's camera and instance transforms. The virtual-hit motion delta preserves
+the full-resolution receiver's offset from its half-resolution trace sample.
 
-History RGB includes the receiver's indirect-specular GTAO and selected coat or
-base sheen/anisotropy response. Composite loads same-pixel shaded history,
-subtracts the exact current probe contribution and adds covered history without
-multiplying its receiver response again. Full-resolution receiver shading avoids
-reconstructing one half-resolution material response across source pixels;
-incoming-radiance detail remains limited by the half-resolution rays.
+Four history taps validate receiver and reflected-instance identities, receiver
+and virtual depth, selected normal and producer jitter. The previous UV ray
+intersects the transported receiver plane to obtain its expected depth. A missing
+hit, different traced receiver, invalid transform or rejected correspondence uses
+current radiance or probes. Curved surfaces retain a tangent-plane approximation.
 
-Continuous clamping, motion-adaptive history weights and the 2 cm minimum receiver
-depth tolerance remain under ADR-055. Empty neighborhoods halve validated
-coverage; at most half of normalized out-of-bounds RGB survives each supported
-update. Supported normalized history RGB retention is also capped at the
-motion/roughness-adjusted temporal weight, so sparse current coverage cannot
-increase retention above that weight. Coverage averaging and empty decay remain
-unchanged; constant sparse radiance is preserved. This bounds supported ghost
-trails at the risk of more fresh-sample noise. Rejected depth/identity clears.
+Full-resolution history stores incoming light. Composite applies the current
+receiver's BRDF, indirect-specular GTAO, selected coat or base sheen/anisotropy
+response once, while removing the exact current probe contribution. Supported
+history retains the existing continuous clamp and motion-adaptive RGB retention
+cap; unsupported correspondence no longer supplies a fading old reflection.
+
+The graph owns a new half-resolution RGBA32_UINT hit image and expands geometry
+history to RGBA32F (receiver/virtual depths and octahedral selected view normal)
+and identity history to RGBA32_UINT (receiver/hit index-generation pairs). This
+adds 98.4375 MiB at source 1280×720 with three frame slots/five history instances,
+or 203.90625 MiB with eight slots/ten histories, excluding alignment and resize
+overlap. Temporal adds two metadata reads, below the approved nine, and removes
+its former receiver-shading reads. A 128-byte camera record borrows the exact
+selected transform producer; existing waits/barriers and reader retirement remain.
+`ssr_reflection` capture version 5 identifies full-resolution incoming radiance.
+Native Vulkan execution and bilateral comparison remain unavailable.
+
 SSR-enabled scenes wait 128 unchanged
 submitted frames before portable TAA, FSR or MetalFX's following pass begins
 128-sample static accumulation. Portable TAA caps ordinary history retention at
@@ -535,42 +543,13 @@ The selected producer's CPU metadata owns the counter; failed history/input
 equality resets it. SSR history pool ownership and image count stay fixed;
 [ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) owns the separate
 MetalFX output-history budget.
-At source 1280×720 with three frame slots and five history instances, logical
-history payload grows by 65.917969 MiB to 87.890625 MiB, excluding alignment and
-resize overlap. Temporal shades about four times as many pixels, with at most
-80 texture reads per pixel. `ssr_reflection` capture version 4 distinguishes this
-source-resolution history from version 3 half-resolution shaded history.
-
-The normalized-retention correction passes 156 shared Slang CPU outputs. Release
-Bistro captures cover static/moving TAA and static MetalFX with SSGI enabled; a
-small SSR/SSGI resize passes Metal API validation. The
-[history-correction record](../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
-records lower displayed variation and limits on interpreting reflection trails.
-The following native results describe earlier revisions.
-Release app/editor builds, shared math, compiled native layouts and the Metal
-mirror, static/moving Bistro, layered-material, combined SSR/SSGI and API-resize
-checks pass. With the bounded-fade/settling correction, the sampled portable-TAA
-bar region freezes after settling and static accumulation; early camera-stop
-differences fall with weaker intermittent reflections. MetalFX's following
-stationary accumulation pass substantially reduces measured static bar variation;
-moving flicker remains unresolved. The scale-dependent MetalFX jitter trial was
-reverted; MetalFX retains eight phases.
-[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) records the evidence
-and its limits.
-Earlier local profiles of the full-resolution
-history change increased total SSR GPU time from 1.99 to 2.63 ms at source
-1025×577; they do not measure this settling correction.
-[ADR-055](adr/055-screen-space-reflections.md) records the evidence and limits.
-Native Vulkan execution remains unavailable. Both trace implementations now use
-fractional linear-clamp HDR sampling within the existing one/five-tap budget.
-Deferred coat lighting and SSR probe subtraction use the coat-directed GTAO cone
-on both backends; these source corrections still need native Vulkan comparison.
-MetalFX `hdr_pre_bloom` captures read its reconstructed, subsequently accumulated
-HDR output. Version 3 retains private sample age in alpha; DoF and motion-blur
-color captures use version 2 because they can propagate that age. Presentation
-and Scene export restore opaque alpha.
-GPU shader validation previously crashed in MetalTools with SSR on or off and
-supplied no shader-validation result.
+The earlier TAA-cap evidence and the reflected-hit evidence are separated in
+[ADR-055](adr/055-screen-space-reflections.md). Shader compilation and native
+Metal checks do not establish Vulkan compatibility. MetalFX remains an authorized
+backend-specific reconstruction mode; its eight-phase jitter and post-SDK static
+accumulation are unchanged here. Its HDR capture retains private sample age in
+alpha, while presentation restores opaque alpha. GPU shader validation previously
+crashed in MetalTools with SSR on or off and supplied no shader-validation result.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte
 record per frame slot; a zero record bypasses fog. The in-place opaque/sky pass

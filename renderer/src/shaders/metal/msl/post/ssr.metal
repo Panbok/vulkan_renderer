@@ -30,6 +30,7 @@ struct alignas(16) VkrMetalPacketSsrTraceRoot {
   texture2d<float, access::sample> hdr;
   texture2d<float, access::write> raw;
   texture2d<float, access::read> clearcoat;
+  texture2d<uint, access::write> hit;
 };
 
 struct alignas(16) VkrMetalPacketSsrTemporalRoot {
@@ -39,8 +40,6 @@ struct alignas(16) VkrMetalPacketSsrTemporalRoot {
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::read> depth;
   texture2d<float, access::read> normal;
-  texture2d<float, access::read> motion;
-  texture2d<float, access::read> validity;
   texture2d<float, access::read> history_color;
   texture2d<float, access::read> history_depth;
   texture2d<uint, access::read> history_identity;
@@ -51,11 +50,11 @@ struct alignas(16) VkrMetalPacketSsrTemporalRoot {
   device VkrMetalPacketInstance *instances;
   texture2d<float, access::read> specular;
   texture2d<float, access::read> clearcoat;
-  constant VkrMetalPacketFrameRoot *frame;
-  texture2d<float, access::read> albedo;
-  texture2d<float, access::sample> gtao_visibility;
-  texture2d<float, access::read> sheen;
-  texture2d<float, access::read> anisotropy;
+  texture2d<uint, access::read> hit;
+  device VkrTemporalTransform *previous_transforms;
+  constant VkrSsrReprojectionParams *reprojection;
+  uint previous_frame_index;
+  uint reserved;
 };
 
 struct alignas(16) VkrMetalPacketSsrCompositeRoot {
@@ -83,17 +82,6 @@ static float vkr_metal_ssr_positive_depth(VkrSsrParams params, uint2 pixel,
   float3 view = vkr_ssr_reconstruct_view_position(
       params, vkr_ssr_uv_from_pixel(pixel, extent), device_depth);
   return vkr_ssr_valid_depth(-view.z) ? -view.z : 0.0f;
-}
-
-static uint2 vkr_metal_ssr_receiver_identity(
-    uint encoded, device VkrGpuVisibleDrawRow *visible_rows,
-    device VkrMetalPacketInstance *instances) {
-  if (encoded == 0u)
-    return uint2(0u);
-  const device VkrGpuVisibleDrawRow &visible = visible_rows[encoded - 1u];
-  const device VkrMetalPacketInstance &instance =
-      instances[visible.instance_index];
-  return uint2(instance.temporal_index + 1u, instance.temporal_generation);
 }
 
 static float3 vkr_metal_ssr_selected_normal(
@@ -199,6 +187,7 @@ kernel void vkr_metal_packet_ssr_trace(
   if (any(receiver_pixel == uint2(0xffffffffu)) ||
       root.vbuffer.read(receiver_pixel).x == 0u) {
     root.raw.write(float4(0.0f), pixel);
+    root.hit.write(uint4(0u), pixel);
     return;
   }
   uint2 source_extent =
@@ -207,6 +196,7 @@ kernel void vkr_metal_packet_ssr_trace(
       root.specular, root.clearcoat, receiver_pixel);
   if (!vkr_ssr_eligible(roughness, true, root.params)) {
     root.raw.write(float4(0.0f), pixel);
+    root.hit.write(uint4(0u), pixel);
     return;
   }
   float device_depth = root.depth.read(receiver_pixel).x;
@@ -215,6 +205,7 @@ kernel void vkr_metal_packet_ssr_trace(
       device_depth);
   if (!vkr_ssr_valid_depth(-origin.z)) {
     root.raw.write(float4(0.0f), pixel);
+    root.hit.write(uint4(0u), pixel);
     return;
   }
   float3 world_normal = vkr_metal_ssr_selected_normal(
@@ -232,6 +223,7 @@ kernel void vkr_metal_packet_ssr_trace(
   trace.mip = 0u;
   float3 hit_radiance = 0.0f;
   float confidence = 0.0f;
+  uint4 hit = uint4(0u);
   for (uint step = 0u; step < root.params.max_steps && trace.active != 0u;
        ++step) {
     uint2 mip_extent = trace.mip == 0u
@@ -262,9 +254,14 @@ kernel void vkr_metal_packet_ssr_trace(
     // A leaf represents exactly the pixel whose depth was loaded. A crossing
     // on its excluded exit boundary belongs to the next cell.
     float ray_depth = vkr_ssr_trace_depth_at(trace, resolve.hit_t);
-    if (!vkr_ssr_trace_hit_matches_pixel(trace, resolve.hit_t, source_pixel, root.params) ||
-        !vkr_ssr_depth_hit_matches(ray_depth, surface_depth, root.params) ||
-        root.vbuffer.read(source_pixel).x == 0u) {
+    if (!vkr_ssr_trace_hit_matches_pixel(trace, resolve.hit_t, source_pixel,
+                                         root.params) ||
+        !vkr_ssr_depth_hit_matches(ray_depth, surface_depth, root.params)) {
+      trace = vkr_ssr_trace_advance(trace, cell_exit);
+      continue;
+    }
+    uint hit_visible = root.vbuffer.read(source_pixel).x;
+    if (hit_visible == 0u) {
       trace = vkr_ssr_trace_advance(trace, cell_exit);
       continue;
     }
@@ -279,11 +276,14 @@ kernel void vkr_metal_packet_ssr_trace(
       confidence = vkr_ssr_trace_confidence(roughness, hit_uv,
                                              resolve.depth_confidence,
                                              root.params);
+      hit =
+          uint4(as_type<uint2>(hit_uv), as_type<uint>(ray_depth), hit_visible);
       break;
     }
     trace = vkr_ssr_trace_advance(trace, cell_exit);
   }
   root.raw.write(float4(hit_radiance, confidence), pixel);
+  root.hit.write(hit, pixel);
 }
 
 static float vkr_metal_ssr_filtered_roughness(
@@ -306,52 +306,6 @@ static float vkr_metal_ssr_filtered_roughness(
       roughness, 0.25f * (dot(dx, dx) + dot(dy, dy)));
 }
 
-static float3 vkr_metal_ssr_shading_weight(
-    constant VkrMetalPacketSsrTemporalRoot &root, uint2 receiver, uint visible,
-    float device_depth, float3 normal, float4 specular, float4 coat,
-    float material_roughness) {
-  uint2 extent(root.params.source_width, root.params.source_height);
-  float roughness = vkr_metal_ssr_filtered_roughness(
-      root.normal, root.clearcoat, root.vbuffer, extent, receiver, visible,
-      normal, material_roughness);
-  float3 view_position = vkr_ssr_reconstruct_view_position(
-      root.params, vkr_ssr_uv_from_pixel(receiver, extent), device_depth);
-  float3 view = normalize((transpose(root.params.view) *
-                          float4(-view_position, 0.0f)).xyz);
-  float occlusion = saturate(root.albedo.read(receiver).a);
-  constexpr sampler gtao_sampler(coord::normalized, address::clamp_to_edge,
-                                 filter::nearest);
-  float4 gtao = root.gtao_visibility.sample(
-      gtao_sampler, (float2(receiver) + 0.5f) / float2(extent));
-  if (vkr_clearcoat_active(coat.x)) {
-    VkrClearcoatLayer layer = vkr_metal_packet_prepare_clearcoat(
-        root.frame, coat.x, roughness, normal, view);
-    float cone = vkr_gtao_cone_specular(
-        vkr_gtao_decode_visibility(gtao),
-        vkr_gtao_decode_bent_normal(gtao, layer.normal),
-        reflect(-view, layer.normal), layer.roughness);
-    return layer.factor * vkr_metal_environment_receiver_weight(
-        reflect(-view, layer.normal), layer.normal, layer.roughness,
-        occlusion, cone, layer.energy);
-  }
-  float cone = vkr_gtao_cone_specular(
-      vkr_gtao_decode_visibility(gtao), vkr_gtao_decode_bent_normal(gtao, normal),
-      reflect(-view, normal), roughness);
-  VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
-      root.frame, normal, view, roughness, saturate(specular.rgb),
-      root.anisotropy.read(receiver));
-  float3 reflection = reflect(-view,
-      vkr_anisotropy_environment_normal(normal, view, energy));
-  float3 weight = vkr_metal_environment_receiver_weight(
-      reflection, normal, vkr_anisotropy_environment_roughness(roughness, energy),
-      occlusion, cone, energy);
-  float4 sheen = root.sheen.read(receiver);
-  if (vkr_sheen_active(sheen.rgb))
-    weight *= vkr_metal_packet_prepare_sheen(
-        root.frame, sheen.rgb, sheen.a, normal, view).base_transmission;
-  return weight;
-}
-
 kernel void vkr_metal_packet_ssr_temporal(
     constant VkrMetalPacketSsrTemporalRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
@@ -366,13 +320,14 @@ kernel void vkr_metal_packet_ssr_temporal(
     root.output_identity.write(uint4(0u), pixel);
     return;
   }
-  float device_depth = root.depth.read(pixel).x;
-  float center_depth = vkr_metal_ssr_positive_depth(
-      root.params, pixel, device_depth, source_extent);
+  float2 current_uv = vkr_ssr_uv_from_pixel(pixel, source_extent);
+  float3 receiver_view = vkr_ssr_reconstruct_view_position(
+      root.params, current_uv, root.depth.read(pixel).x);
+  float center_depth = -receiver_view.z;
   float4 coat = root.clearcoat.read(pixel);
   bool coat_active = vkr_clearcoat_active(coat.x);
-  float4 specular = coat_active ? float4(0.0f) : root.specular.read(pixel);
-  float roughness = clamp(coat_active ? coat.y : specular.w, 0.04f, 1.0f);
+  float roughness =
+      clamp(coat_active ? coat.y : root.specular.read(pixel).w, 0.04f, 1.0f);
   if (!vkr_ssr_eligible(roughness, true, root.params) ||
       !vkr_ssr_valid_depth(center_depth)) {
     root.output_color.write(float4(0.0f), pixel);
@@ -380,12 +335,15 @@ kernel void vkr_metal_packet_ssr_temporal(
     root.output_identity.write(uint4(0u), pixel);
     return;
   }
-  uint2 identity = vkr_metal_ssr_receiver_identity(
-      visible, root.visible_rows, root.instances);
+  const device VkrMetalPacketInstance &receiver_instance =
+      root.instances[root.visible_rows[visible - 1u].instance_index];
+  uint4 identity(receiver_instance.temporal_index + 1u,
+                 receiver_instance.temporal_generation, 0u, 0u);
   float3 center_normal = coat_active
       ? vkr_metal_packet_octahedral_decode(coat.zw)
       : vkr_metal_packet_octahedral_decode(root.normal.read(pixel).xy);
-  float2 current_uv = vkr_ssr_uv_from_pixel(pixel, source_extent);
+  float3 receiver_normal_view = normalize(
+      vkr_ssr_matrix_vector(root.params.view, float4(center_normal, 0.0f)).xyz);
   float2 trace_coordinate = current_uv * float2(trace_extent) - 0.5f;
   bool mirror = roughness <= VKR_SSR_MIRROR_ROUGHNESS;
   int2 gather_first = mirror ? int2(floor(trace_coordinate))
@@ -396,6 +354,11 @@ kernel void vkr_metal_packet_ssr_temporal(
   float3 neighborhood_min = float3(3.402823466e+38f);
   float3 neighborhood_max = float3(-3.402823466e+38f);
   uint neighborhood_hits = 0u;
+  float dominant_weight = 0.0f;
+  uint2 dominant_pixel = uint2(0u);
+  uint2 traced_receiver_pixel = uint2(0u);
+  float3 traced_receiver_view = 0.0f;
+  float3 traced_normal_world = 0.0f;
   for (int y = 0; y < gather_count; ++y) {
     for (int x = 0; x < gather_count; ++x) {
       int2 signed_neighbor = gather_first + int2(x, y);
@@ -409,8 +372,11 @@ kernel void vkr_metal_packet_ssr_temporal(
       uint2 receiver = root.receiver.read(neighbor).xy;
       if (any(receiver >= source_extent))
         continue;
-      float neighbor_depth = vkr_metal_ssr_positive_depth(
-          root.params, receiver, root.depth.read(receiver).x, source_extent);
+      float3 neighbor_view = vkr_ssr_reconstruct_view_position(
+          root.params, vkr_ssr_uv_from_pixel(receiver, source_extent),
+          root.depth.read(receiver).x);
+      float neighbor_depth =
+          vkr_ssr_valid_depth(-neighbor_view.z) ? -neighbor_view.z : 0.0f;
       float3 neighbor_normal = vkr_metal_ssr_selected_normal(
           root.normal, root.clearcoat, receiver);
       float weight = grid_weight * vkr_ssr_receiver_bilateral_weight(
@@ -425,27 +391,120 @@ kernel void vkr_metal_packet_ssr_temporal(
         ++neighborhood_hits;
         neighborhood_min = min(neighborhood_min, sample.rgb);
         neighborhood_max = max(neighborhood_max, sample.rgb);
+        float covered_weight = weight * sample.w;
+        if (covered_weight > dominant_weight) {
+          dominant_weight = covered_weight;
+          dominant_pixel = neighbor;
+          traced_receiver_pixel = receiver;
+          traced_receiver_view = neighbor_view;
+          traced_normal_world = neighbor_normal;
+        }
       }
     }
   }
-  float3 receiver_weight = vkr_metal_ssr_shading_weight(
-      root, pixel, visible, device_depth, center_normal, specular, coat, roughness);
-  float4 raw = vkr_ssr_shade_reflection(
-      vkr_ssr_spatial_resolve(filtered, weight_sum), receiver_weight);
-  if (neighborhood_hits > 0u) {
-    neighborhood_min *= receiver_weight;
-    neighborhood_max *= receiver_weight;
+  float4 raw = vkr_ssr_spatial_resolve(filtered, weight_sum);
+  VkrSsrReflectedHit hit = {};
+  float current_virtual_depth = 0.0f;
+  float3 previous_receiver_normal_view = 0.0f;
+  bool current_correspondence = false;
+  uint4 dominant_hit =
+      dominant_weight > 0.0f ? root.hit.read(dominant_pixel) : uint4(0u);
+  float hit_depth = as_type<float>(dominant_hit.z);
+  if (dominant_hit.w != 0u && vkr_ssr_valid_depth(hit_depth)) {
+    const device VkrMetalPacketInstance &hit_instance =
+        root.instances[root.visible_rows[dominant_hit.w - 1u].instance_index];
+    identity.zw = uint2(hit_instance.temporal_index + 1u,
+                        hit_instance.temporal_generation);
+    float3 hit_view = vkr_ssr_view_from_positive_depth(
+        root.params, as_type<float2>(dominant_hit.xy), hit_depth);
+    float3 traced_normal_view =
+        normalize(vkr_ssr_matrix_vector(root.params.view,
+                                        float4(traced_normal_world, 0.0f))
+                      .xyz);
+    current_virtual_depth = vkr_ssr_virtual_hit_depth(
+        traced_receiver_view, traced_normal_view, hit_view);
+    uint traced_visible = root.vbuffer.read(traced_receiver_pixel).x;
+    const device VkrMetalPacketInstance &traced_instance =
+        root.instances[root.visible_rows[traced_visible - 1u].instance_index];
+    current_correspondence =
+        traced_instance.temporal_index == receiver_instance.temporal_index &&
+        traced_instance.temporal_generation ==
+            receiver_instance.temporal_generation &&
+        receiver_instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
+        hit_instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
+        receiver_instance.temporal_generation != 0u &&
+        hit_instance.temporal_generation != 0u &&
+        vkr_ssr_valid_depth(current_virtual_depth);
+    if (current_correspondence && root.params.history_valid != 0u) {
+      const device VkrTemporalTransform &previous_receiver =
+          root.previous_transforms[receiver_instance.temporal_index];
+      const device VkrTemporalTransform &previous_hit =
+          root.previous_transforms[hit_instance.temporal_index];
+      if (previous_receiver.valid != 0u && previous_hit.valid != 0u &&
+          previous_receiver.generation ==
+              receiver_instance.temporal_generation &&
+          previous_hit.generation == hit_instance.temporal_generation &&
+          previous_receiver.frame_index == root.previous_frame_index &&
+          previous_hit.frame_index == root.previous_frame_index) {
+        float3 traced_world =
+            vkr_ssr_matrix_vector(root.reprojection->inverse_view,
+                                  float4(traced_receiver_view, 1.0f))
+                .xyz;
+        float3 receiver_world =
+            vkr_ssr_matrix_vector(root.reprojection->inverse_view,
+                                  float4(receiver_view, 1.0f))
+                .xyz;
+        float3 hit_world =
+            vkr_ssr_matrix_vector(root.reprojection->inverse_view,
+                                  float4(hit_view, 1.0f))
+                .xyz;
+        VkrSsrSurface prior_trace = vkr_ssr_transport_surface(
+            traced_world, traced_normal_world, receiver_instance.model,
+            previous_receiver.model);
+        VkrSsrSurface prior_receiver = vkr_ssr_transport_surface(
+            receiver_world, center_normal, receiver_instance.model,
+            previous_receiver.model);
+        float4 prior_hit = vkr_ssr_transport_point(
+            hit_world, hit_instance.model, previous_hit.model);
+        if (prior_trace.valid != 0u && prior_receiver.valid != 0u &&
+            prior_hit.w != 0.0f) {
+          float3 previous_trace_view =
+              vkr_ssr_matrix_vector(root.reprojection->previous_view,
+                                    float4(prior_trace.position, 1.0f))
+                  .xyz;
+          float3 previous_trace_normal_view =
+              normalize(vkr_ssr_matrix_vector(root.reprojection->previous_view,
+                                              float4(prior_trace.normal, 0.0f))
+                            .xyz);
+          float3 previous_hit_view =
+              vkr_ssr_matrix_vector(root.reprojection->previous_view,
+                                    float4(prior_hit.xyz, 1.0f))
+                  .xyz;
+          float3 previous_receiver_view =
+              vkr_ssr_matrix_vector(root.reprojection->previous_view,
+                                    float4(prior_receiver.position, 1.0f))
+                  .xyz;
+          previous_receiver_normal_view = normalize(
+              vkr_ssr_matrix_vector(root.reprojection->previous_view,
+                                    float4(prior_receiver.normal, 0.0f))
+                  .xyz);
+          hit = vkr_ssr_reproject_hit(
+              root.params, current_uv, traced_receiver_view, traced_normal_view,
+              hit_view, previous_trace_view, previous_trace_normal_view,
+              previous_hit_view, previous_receiver_view,
+              previous_receiver_normal_view);
+        }
+      }
+    }
   }
   float4 history_sum = 0.0f;
   float history_support = 0.0f;
-  float2 motion = root.motion.read(pixel).xy;
-  if (root.params.history_valid != 0u) {
-    float2 previous_uv = vkr_ssr_previous_uv(root.params, current_uv, motion);
+  if (hit.valid != 0u) {
     float2 half_texel = 0.5f / float2(source_extent);
-    float2 coordinate = clamp(previous_uv, half_texel, 1.0f - half_texel) *
-                            float2(source_extent) - 0.5f;
+    float2 coordinate = clamp(hit.previous_uv, half_texel, 1.0f - half_texel) *
+                            float2(source_extent) -
+                        0.5f;
     int2 first = int2(floor(coordinate));
-    float2 validity = root.validity.read(pixel).xy;
     for (int y = 0; y < 2; ++y) {
       for (int x = 0; x < 2; ++x) {
         int2 p = first + int2(x, y);
@@ -454,10 +513,10 @@ kernel void vkr_metal_packet_ssr_temporal(
         float weight = vkr_ssr_history_tap_weight(coordinate, p);
         if (weight <= 0.0f)
           continue;
-        VkrSsrHistoryDecision tap = vkr_ssr_temporal_accept(
-            root.params, identity, root.history_identity.read(uint2(p)).xy,
-            root.history_depth.read(uint2(p)).x, validity.y, previous_uv,
-            validity.x, source_extent);
+        VkrSsrHistoryDecision tap = vkr_ssr_reflected_history_accept(
+            root.params, hit, identity, root.history_identity.read(uint2(p)),
+            root.history_depth.read(uint2(p)), previous_receiver_normal_view,
+            source_extent);
         if (tap.accepted == 0u)
           continue;
         history_sum += vkr_ssr_spatial_sample(
@@ -469,16 +528,27 @@ kernel void vkr_metal_packet_ssr_temporal(
   float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
   VkrSsrHistoryDecision decision;
   decision.accepted = history_support > 0.0f ? 1u : 0u;
-  decision.weight = decision.accepted != 0u
-      ? vkr_ssr_temporal_weight(root.params.temporal_weight, roughness,
-                                 motion * float2(source_extent)) : 0.0f;
+  float2 reflected_motion =
+      hit.previous_uv - current_uv -
+      float2(root.params.history_jitter_uv_x, root.params.history_jitter_uv_y);
+  decision.weight =
+      decision.accepted != 0u
+          ? vkr_ssr_temporal_weight(root.params.temporal_weight, roughness,
+                                    reflected_motion * float2(source_extent))
+          : 0.0f;
   decision.expected_previous_depth = 0.0f;
   decision.reserved_float_0 = 0.0f;
   root.output_color.write(vkr_ssr_temporal_filter(
       roughness, neighborhood_hits, raw, history, neighborhood_min,
       neighborhood_max, decision), pixel);
-  root.output_depth.write(float4(center_depth, 0.0f, 0.0f, 1.0f), pixel);
-  root.output_identity.write(uint4(identity, 0u, 0u), pixel);
+  root.output_depth.write(
+      current_correspondence
+          ? float4(center_depth, current_virtual_depth,
+                   vkr_ssr_encode_normal(receiver_normal_view))
+          : float4(0.0f),
+      pixel);
+  root.output_identity.write(current_correspondence ? identity : uint4(0u),
+                             pixel);
 }
 
 static float3 vkr_metal_ssr_world_position(
@@ -556,11 +626,13 @@ kernel void vkr_metal_packet_ssr_composite(
     float3 old_specular = environment.incoming_specular *
                           environment.specular_receiver_weight *
                           sheen_base_transmission;
-    root.hdr.write(float4(vkr_ssr_replace_environment_specular(
-                                opaque, old_specular, reflection.rgb,
-                                reflection.w),
-                            1.0f),
-                   pixel);
+    float3 shaded_reflection = vkr_ssr_shade_reflection(
+        reflection, environment.ssr_receiver_weight).rgb * sheen_base_transmission;
+    root.hdr.write(
+        float4(vkr_ssr_replace_environment_specular(
+                   opaque, old_specular, shaded_reflection, reflection.w),
+               1.0f),
+        pixel);
     return;
   }
   VkrClearcoatLayer clearcoat = vkr_metal_packet_prepare_clearcoat(
@@ -575,10 +647,23 @@ kernel void vkr_metal_packet_ssr_composite(
           false);
   float3 old_coat = clearcoat.factor * coat_environment.incoming_specular *
                     coat_environment.specular_receiver_weight;
+  float filtered_roughness = vkr_metal_ssr_filtered_roughness(
+      root.normal, root.clearcoat, root.vbuffer, root.extent, pixel, visible,
+      normal, material_roughness);
+  VkrClearcoatLayer filtered_coat = vkr_metal_packet_prepare_clearcoat(
+      root.frame, clearcoat_packed.x, filtered_roughness, normal, view);
+  float filtered_cone = vkr_gtao_cone_specular(
+      gtao_visibility, vkr_gtao_decode_bent_normal(gtao, filtered_coat.normal),
+      reflect(-view, filtered_coat.normal), filtered_coat.roughness);
+  reflection.rgb *= filtered_coat.factor;
+  float3 shaded_reflection = vkr_ssr_shade_reflection(
+      reflection, vkr_metal_environment_receiver_weight(
+          reflect(-view, filtered_coat.normal), filtered_coat.normal,
+          filtered_coat.roughness, occlusion, filtered_cone,
+          filtered_coat.energy)).rgb;
   root.hdr.write(float4(vkr_ssr_replace_environment_specular(
-                              opaque, old_coat, reflection.rgb,
-                              reflection.w),
-                          1.0f),
+                            opaque, old_coat, shaded_reflection, reflection.w),
+                        1.0f),
                  pixel);
 }
 
@@ -588,7 +673,7 @@ static_assert(sizeof(VkrMetalPacketSsrDepthMipRoot) == 320,
               "Metal SSR depth-mip root ABI drift");
 static_assert(sizeof(VkrMetalPacketSsrTraceRoot) == 368,
               "Metal SSR trace root ABI drift");
-static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 464,
+static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 448,
               "Metal SSR temporal root ABI drift");
 static_assert(sizeof(VkrMetalPacketSsrCompositeRoot) == 480,
               "Metal SSR composite root ABI drift");

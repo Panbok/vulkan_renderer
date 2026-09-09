@@ -1210,6 +1210,26 @@
       ]
     },
     {
+      "name": "ssr_hit",
+      "type": "image",
+      "condition": "scene_rendering && ssr_enabled",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R32G32B32A32_UINT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "ssr_history_color",
       "type": "image",
       "condition": "scene_rendering && ssr_enabled",
@@ -1236,7 +1256,7 @@
         "mode": "viewport",
         "divisor": 1
       },
-      "format": "R32_SFLOAT",
+      "format": "R32G32B32A32_SFLOAT",
       "usage": [
         "STORAGE",
         "SAMPLED",
@@ -1255,7 +1275,7 @@
         "mode": "viewport",
         "divisor": 1
       },
-      "format": "R32G32_UINT",
+      "format": "R32G32B32A32_UINT",
       "usage": [
         "STORAGE",
         "SAMPLED",
@@ -3906,6 +3926,11 @@
           "image": "ssr_raw",
           "access": "STORAGE_WRITE",
           "binding": 7
+        },
+        {
+          "image": "ssr_hit",
+          "access": "STORAGE_WRITE",
+          "binding": 9
         }
       ],
       "execute": "pass.ssr.trace"
@@ -3971,6 +3996,11 @@
           "image": "ssr_raw",
           "access": "STORAGE_WRITE",
           "binding": 7
+        },
+        {
+          "image": "ssr_hit",
+          "access": "STORAGE_WRITE",
+          "binding": 9
         }
       ],
       "execute": "pass.ssr.trace"
@@ -4009,16 +4039,6 @@
           "binding": 4
         },
         {
-          "image": "temporal_motion",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
-          "image": "temporal_validity",
-          "access": "SAMPLED",
-          "binding": 6
-        },
-        {
           "buffer": "gpu_visible_draws",
           "access": "STORAGE_READ",
           "binding": 13
@@ -4039,25 +4059,14 @@
           "binding": 16
         },
         {
-          "image": "gbuffer_albedo",
+          "image": "ssr_hit",
           "access": "SAMPLED",
           "binding": 17
         },
         {
-          "image": "gtao_visibility",
-          "access": "SAMPLED",
-          "binding": 18,
-          "when": "gtao_enabled"
-        },
-        {
-          "image": "gbuffer_sheen",
-          "access": "SAMPLED",
-          "binding": 19
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 20
+          "buffer": "temporal_transform_history",
+          "access": "STORAGE_READ",
+          "binding": 18
         }
       ],
       "writes": [

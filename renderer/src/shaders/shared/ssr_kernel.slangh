@@ -61,6 +61,30 @@ struct VkrSsrParams
     float history_jitter_uv_y;
 };
 
+// Only the temporal pass needs camera transport. Both matrices belong to the
+// current frame and the exact selected history producer respectively.
+struct VkrSsrReprojectionParams
+{
+    float4x4 inverse_view;
+    float4x4 previous_view;
+};
+
+struct VkrSsrSurface
+{
+    float3 position;
+    float3 normal;
+    uint valid;
+};
+
+struct VkrSsrReflectedHit
+{
+    float2 previous_uv;
+    float expected_receiver_depth;
+    float expected_virtual_depth;
+    float current_virtual_depth;
+    uint valid;
+};
+
 struct VkrSsrTrace
 {
     float2 start_uv;
@@ -689,7 +713,7 @@ float vkr_ssr_receiver_bilateral_weight(float2 offset, float center_depth,
     return depth_weight * normal_weight * spatial_weight;
 }
 
-// RGB is radiance (incoming during spatial filtering, shaded in history),
+// RGB is incoming radiance in both raw and reflection history,
 // while alpha is hit coverage. A miss carries no radiance sample: include it in coverage support, never in the radiance
 // denominator. Otherwise sparse hits become darker as their coverage changes.
 float4 vkr_ssr_spatial_sample(float4 reflection, float receiver_weight)
@@ -750,6 +774,171 @@ VkrSsrHistoryDecision vkr_ssr_temporal_accept(
     return result;
 }
 
+// A hit stores positive view depth rather than device depth. Interpolate the
+// inverse-projected line so this also preserves orthographic projection.
+float3 vkr_ssr_view_from_positive_depth(VkrSsrParams params, float2 uv,
+                                         float positive_depth)
+{
+    float3 a = vkr_ssr_reconstruct_view_position(params, uv, 0.0f);
+    float3 b = vkr_ssr_reconstruct_view_position(params, uv, 0.5f);
+    return a + (b - a) * ((-positive_depth - a.z) / (b.z - a.z));
+}
+
+// Current and retained models are affine. Cofactors avoid a general 4x4 inverse
+// in this per-pixel path and also support nonuniform scale and mirrored models.
+float4 vkr_ssr_transport_point(float3 position, float4x4 current_model,
+                                float4x4 previous_model)
+{
+    float3 a = vkr_ssr_matrix_vector(current_model, float4(1, 0, 0, 0)).xyz;
+    float3 b = vkr_ssr_matrix_vector(current_model, float4(0, 1, 0, 0)).xyz;
+    float3 c = vkr_ssr_matrix_vector(current_model, float4(0, 0, 1, 0)).xyz;
+    float3 t = vkr_ssr_matrix_vector(current_model, float4(0, 0, 0, 1)).xyz;
+    float determinant = dot(a, cross(b, c));
+    if (!vkr_ssr_finite(determinant) || abs(determinant) <= 1e-12f)
+        return 0.0f;
+    float3 delta = position - t;
+    float3 local = float3(dot(delta, cross(b, c)), dot(delta, cross(c, a)),
+                           dot(delta, cross(a, b))) / determinant;
+    float3 previous = vkr_ssr_matrix_vector(previous_model, float4(local, 1)).xyz;
+    bool finite = all(previous == previous) &&
+                  all(abs(previous) < 3.402823466e+38f);
+    return float4(previous, finite ? 1.0f : 0.0f);
+}
+
+VkrSsrSurface vkr_ssr_transport_surface(float3 position, float3 normal,
+                                         float4x4 current_model,
+                                         float4x4 previous_model)
+{
+    VkrSsrSurface result;
+    float4 point = vkr_ssr_transport_point(position, current_model, previous_model);
+    result.position = point.xyz;
+    result.normal = 0.0f;
+    result.valid = 0u;
+    float3 a = vkr_ssr_matrix_vector(current_model, float4(1, 0, 0, 0)).xyz;
+    float3 b = vkr_ssr_matrix_vector(current_model, float4(0, 1, 0, 0)).xyz;
+    float3 c = vkr_ssr_matrix_vector(current_model, float4(0, 0, 1, 0)).xyz;
+    float3 local_normal = float3(dot(a, normal), dot(b, normal), dot(c, normal));
+    a = vkr_ssr_matrix_vector(previous_model, float4(1, 0, 0, 0)).xyz;
+    b = vkr_ssr_matrix_vector(previous_model, float4(0, 1, 0, 0)).xyz;
+    c = vkr_ssr_matrix_vector(previous_model, float4(0, 0, 1, 0)).xyz;
+    float determinant = dot(a, cross(b, c));
+    if (point.w == 0.0f || !vkr_ssr_finite(determinant) ||
+        abs(determinant) <= 1e-12f)
+        return result;
+    float3 previous_normal = (cross(b, c) * local_normal.x +
+                              cross(c, a) * local_normal.y +
+                              cross(a, b) * local_normal.z) / determinant;
+    float squared_length = dot(previous_normal, previous_normal);
+    if (!vkr_ssr_finite(squared_length) || squared_length <= 1e-12f)
+        return result;
+    result.normal = previous_normal / sqrt(squared_length);
+    result.valid = 1u;
+    return result;
+}
+
+float2 vkr_ssr_encode_normal(float3 normal)
+{
+    normal /= abs(normal.x) + abs(normal.y) + abs(normal.z);
+    float2 encoded = normal.xy;
+    if (normal.z < 0.0f)
+        encoded = (1.0f - abs(encoded.yx)) *
+                    float2(encoded.x >= 0.0f ? 1.0f : -1.0f,
+                            encoded.y >= 0.0f ? 1.0f : -1.0f);
+    return encoded;
+}
+
+float3 vkr_ssr_decode_normal(float2 encoded)
+{
+    float3 normal = float3(encoded, 1.0f - abs(encoded.x) - abs(encoded.y));
+    float correction = max(-normal.z, 0.0f);
+    normal.x += normal.x >= 0.0f ? -correction : correction;
+    normal.y += normal.y >= 0.0f ? -correction : correction;
+    return normalize(normal);
+}
+
+float vkr_ssr_virtual_hit_depth(float3 receiver, float3 normal, float3 hit)
+{
+    float depth = -(hit - 2.0f * normal * dot(normal, hit - receiver)).z;
+    return vkr_ssr_valid_depth(depth) ? depth : 0.0f;
+}
+
+VkrSsrReflectedHit vkr_ssr_reproject_hit(
+    VkrSsrParams params, float2 current_uv,
+    float3 traced_receiver, float3 traced_normal, float3 hit,
+    float3 previous_traced_receiver, float3 previous_traced_normal,
+    float3 previous_hit, float3 previous_receiver, float3 previous_receiver_normal)
+{
+    VkrSsrReflectedHit result;
+    result.previous_uv = current_uv;
+    result.expected_receiver_depth = 0.0f;
+    result.expected_virtual_depth = 0.0f;
+    result.current_virtual_depth = 0.0f;
+    result.valid = 0u;
+    float3 virtual_hit = hit - 2.0f * traced_normal *
+                                 dot(traced_normal, hit - traced_receiver);
+    float3 previous_virtual_hit = previous_hit - 2.0f * previous_traced_normal *
+        dot(previous_traced_normal, previous_hit - previous_traced_receiver);
+    VkrSsrProjectedPoint current = vkr_ssr_project_view_position(params, virtual_hit);
+    VkrSsrProjectedPoint previous =
+        vkr_ssr_project_view_position(params, previous_virtual_hit);
+    result.current_virtual_depth = current.positive_depth;
+    result.expected_virtual_depth = previous.positive_depth;
+    if (current.valid == 0u || previous.valid == 0u)
+        return result;
+    // A half-resolution hit belongs to its traced receiver. Applying its motion
+    // delta keeps every full-resolution pixel fixed when only raster jitter moves.
+    float2 previous_projection_uv = current_uv + previous.uv - current.uv;
+    result.previous_uv = previous_projection_uv +
+        float2(params.history_jitter_uv_x, params.history_jitter_uv_y);
+    // Projecting the virtual hit places us at a different receiver point. Its
+    // retained depth must match this plane intersection, not surface-motion depth.
+    float3 a = vkr_ssr_reconstruct_view_position(params, previous_projection_uv, 0.0f);
+    float3 b = vkr_ssr_reconstruct_view_position(params, previous_projection_uv, 0.5f);
+    float3 ray = b - a;
+    float denominator = dot(previous_receiver_normal, ray);
+    if (!vkr_ssr_finite(denominator) ||
+        abs(denominator) <= 1e-4f * length(ray))
+        return result;
+    float distance = dot(previous_receiver_normal, previous_receiver - a) / denominator;
+    float receiver_depth = -(a + ray * distance).z;
+    if (!vkr_ssr_valid_depth(receiver_depth) || !vkr_ssr_finite(distance) || distance < 0.0f)
+        return result;
+    result.expected_receiver_depth = receiver_depth;
+    result.valid = 1u;
+    return result;
+}
+
+VkrSsrHistoryDecision vkr_ssr_reflected_history_accept(
+    VkrSsrParams params, VkrSsrReflectedHit hit, uint4 current_identity,
+    uint4 history_identity, float4 history_geometry,
+    float3 previous_receiver_normal, uint2 history_extent)
+{
+    VkrSsrHistoryDecision result;
+    result.accepted = 0u;
+    result.weight = 0.0f;
+    result.expected_previous_depth = hit.expected_receiver_depth;
+    result.reserved_float_0 = 0.0f;
+    float2 half_texel = 0.5f / float2(history_extent);
+    bool in_bounds = all(hit.previous_uv >= half_texel) &&
+                     all(hit.previous_uv <= 1.0f - half_texel);
+    float receiver_error = max(params.temporal_depth_absolute,
+        params.temporal_depth_relative * hit.expected_receiver_depth);
+    float virtual_error = max(params.temporal_depth_absolute,
+        params.temporal_depth_relative * hit.expected_virtual_depth);
+    bool depth_matches = vkr_ssr_valid_depth(history_geometry.x) &&
+        vkr_ssr_valid_depth(history_geometry.y) &&
+        abs(history_geometry.x - hit.expected_receiver_depth) <= receiver_error &&
+        abs(history_geometry.y - hit.expected_virtual_depth) <= virtual_error;
+    bool normal_matches = dot(vkr_ssr_decode_normal(history_geometry.zw),
+                                previous_receiver_normal) >= 0.9f;
+    result.accepted = params.history_valid != 0u && hit.valid != 0u &&
+        current_identity.x != 0u && current_identity.z != 0u &&
+        all(current_identity == history_identity) && in_bounds &&
+        depth_matches && normal_matches ? 1u : 0u;
+    result.weight = result.accepted != 0u ? params.temporal_weight : 0.0f;
+    return result;
+}
+
 float3 vkr_ssr_history_clamp(float3 history_color, float3 neighborhood_min,
                              float3 neighborhood_max)
 {
@@ -800,14 +989,15 @@ float4 vkr_ssr_temporal_filter(float roughness, uint neighborhood_hits, float4 r
     return float4(color, coverage);
 }
 
-// History stores receiver-shaded radiance; coverage remains independent.
+// Composite shades filtered incoming radiance at the current receiver. Coverage
+// remains independent of the material response.
 float4 vkr_ssr_shade_reflection(float4 incoming, float3 receiver_weight)
 {
     return float4(incoming.xyz * receiver_weight, incoming.w);
 }
 
 // Remove the exact current probe term, then add the filtered shaded reflection.
-// Applying the current receiver response again would reintroduce its variation.
+// The current receiver response is applied once before this replacement.
 float3 vkr_ssr_replace_environment_specular(float3 opaque_hdr,
                                              float3 old_environment_specular,
                                              float3 shaded_reflection,

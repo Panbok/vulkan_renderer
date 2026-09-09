@@ -8,6 +8,9 @@ Independent pixel boundaries expose path-dependent crossing times and incorrect
 odd-extent coverage; SSGI must retain its existing half-resolution leaf.
 An in-bounds old reflection must lose at least 15% of its RGB error per supported
 frame at weight .85, even when fresh coverage is only .05.
+Planar mirror geometry independently distinguishes reflected-feature motion from
+receiver motion. Known affine point/normal transforms, jittered projections and
+history rejection cases exercise the production reprojection helpers directly.
 """
 import math
 import pathlib
@@ -55,11 +58,45 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             8, 4, 2, .5**16, 0, 0, 0, 0,
             .95, .85, .90, .85, 0, .5,
             0, (1-.01/.041)/2, .1, .5,
-            5, 5, 5, .6, 21.2, 20, 22, .6,
+            10, 10, 10, .6, 23, 20, 25, .6,
             1, 0, 0, .25, .44625, .2325, 40.125, .1953125, 6, 4, 3, 2.5, 2.25, 1/32, 8, 2,
             # A 15% fresh RGB share gives this independent geometric error bound.
             *[2 + 6 * .85**frame for frame in range(1, 6)], .8575,
-            8, 4, 2, .8575, 3.324675324675325, .1925, 0, 0, 0, 0]
+            8, 4, 2, .8575, 3.324675324675325, .1925, 0, 0, 0, 0,
+            # Mirror image (.6,0,-3) viewed from camera x=-.2 is at u=19/30.
+            # The current receiver (.4,0,-2) instead projects to u=.65.
+            19/30, .5, 2, 3, 3, 1, .65, 1/60,
+            # Full-resolution offsets from a trace receiver survive reprojection.
+            .6078125, .49375, 2, 3, 3, 1,
+            .6078125 + 1/30, .49375, 2, 3, 3, 1,
+            # Raster jitter changes UV without moving the tilted receiver plane.
+            .5025, .495, 2, 3, 3, 1,
+            # A reflected emitter moves from x=.6 to .4 in previous object pose.
+            17/30, .5, 2, 3, 3, 1,
+            # Prior receiver plane z=-2.5 mirrors the emitter to depth 4.
+            .575, .5, 2.5, 4, 3, 1,
+            # Object point (1,2,-1) under the independently specified prior model.
+            -7, 7, 6.5, 1, -7, 7, 6.5, 1,
+            -3/math.sqrt(157), 2/math.sqrt(157), 12/math.sqrt(157),
+            # Singular current/prior models, NaN point, zero normal; invalid rays.
+            0, 0, 0, 0, 0, 0, 0, 0,
+            .85, 1,
+            # Each identity word; receiver/virtual depth; normal; history absent;
+            # invalid hit; offscreen; missing hit/receiver; zero virtual depth.
+            *([0] * 13),
+            # Signed octahedral encoding has a known positive and folded branch.
+            6/13, 4/13, 6/math.sqrt(61), 4/math.sqrt(61), 3/math.sqrt(61),
+            -9/13, 7/13, -6/math.sqrt(61), 4/math.sqrt(61), -3/math.sqrt(61),
+            .4, .2, -2, .2, .1, -2,
+            # Orthographic translation is independent of reflected-hit depth.
+            .9, .5, 2, 3, 3, 1,
+            # One incoming history value receives only current material weights.
+            2, 4, 8, .6,
+            # A mirrored current affine transform preserves the same object data.
+            -7, 7, 6.5, 1,
+            -3/math.sqrt(157), 2/math.sqrt(157), 12/math.sqrt(157), 1,
+            # Current and previous raster jitter are both nonzero and unequal.
+            .6090625, .49625, 2, 3, 3, 1]
 assert len(actual) == len(expected), actual
 for i, (got, want) in enumerate(zip(actual, expected)):
     assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
@@ -96,7 +133,7 @@ print('motion-adaptive rough history, mirror, disabled, midpoint:', actual[106:1
 
 print('SSR separated/near receivers, preserved SSGI, 2cm floor:', actual[112:116])
 
-print("Shaded history, exact probe removal, miss/full coverage:", actual[116:124])
+print("Incoming history, current shading, exact probe removal:", actual[116:124])
 
 print("Full/half history bounds and entering reconstruction taps:", actual[124:128])
 
@@ -105,3 +142,17 @@ print("Fractional cone offsets and subpixel mirror movement:", actual[128:132])
 print("Unsupported RGB step, empty five-frame fade, mirror clamp:", actual[132:140])
 print("Sparse in-bounds old-image step / coverage:", actual[140:146])
 print("Constant sparse radiance / weak history / rejected miss:", actual[146:156])
+print("Planar reflection reprojection / receiver-motion error:", actual[156:164])
+print("Full-resolution stationary/translated offsets:", actual[164:176])
+print("Jitter with tilted receiver:", actual[176:182])
+print("Moving emitter / moving receiver plane:", actual[182:194])
+print("Affine point/surface/normal transport:", actual[194:205])
+print("Invalid transforms and ray-plane intersections:", actual[205:213])
+print("Reflected correspondence acceptance/rejection:", actual[213:228])
+print("Signed octahedral normal branches:", actual[228:238])
+print("Perspective/orthographic depth reconstruction:", actual[238:244])
+print("Orthographic reflected motion:", actual[244:250])
+print("Current receiver response:", actual[250:254])
+print("Mirrored affine transport:", actual[254:262])
+print("Unequal current/previous raster jitter:", actual[262:268])
+print(f"SSR production shared math: {len(actual)} outputs PASS")

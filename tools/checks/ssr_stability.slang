@@ -141,16 +141,15 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     g_results[114] = vkr_ssgi_spatial_weight(float2(1, 0), .82f, .74f, up, up, params);
     g_results[115] = vkr_ssr_receiver_bilateral_weight(float2(0), .01f, .02f,
         up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
-    // Constant incoming light with alternating receiver response must accumulate
-    // the shaded contribution. Multiplying after history would alternate 2/8.
-    float4 shaded_a = vkr_ssr_shade_reflection(float4(10, 10, 10, .6f), float3(.2f));
-    float4 shaded_b = vkr_ssr_shade_reflection(float4(10, 10, 10, .6f), float3(.8f));
+    // Reflection history follows a feature across receiver points. Constant
+    // incoming light stays 10; only the current receiver's response shades it.
     decision.weight = .5f;
     decision.accepted = 1u;
-    float4 shaded_history = vkr_ssr_temporal_filter(.3f, 3u, shaded_b,
-        shaded_a, float3(8), float3(8), decision);
+    float4 incoming_history = vkr_ssr_temporal_filter(.3f, 3u,
+        float4(10, 10, 10, .6f), float4(10, 10, 10, .6f), 10, 10, decision);
+    float4 shaded_history = vkr_ssr_shade_reflection(incoming_history, float3(.8f));
     for (uint component = 0u; component < 4u; ++component)
-        g_results[116u + component] = shaded_history[component];
+        g_results[116u + component] = incoming_history[component];
     g_results[120] = vkr_ssr_replace_environment_specular(
         float3(20), float3(3), shaded_history.rgb, shaded_history.a).x;
     g_results[121] = vkr_ssr_replace_environment_specular(
@@ -332,4 +331,277 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     float4 no_coverage = vkr_ssr_temporal_filter(.3f, 0u,
         0, 0, 1, -1, decision);
     for (uint i = 0u; i < 4u; ++i) g_results[152u + i] = no_coverage[i];
+
+    // Unit-focal perspective: u=.5+.5*x/-z, v=.5-.5*y/-z.
+    // The independently known mirror image of H=(.6,0,-1) in z=-2 is
+    // Q=(.6,0,-3). A previous camera at x=-.2 sees Q at u=19/30,
+    // while motion of the current receiver P=(.4,0,-2) gives u=.65.
+    VkrSsrParams reflected = (VkrSsrParams)0;
+    reflected.projection = float4x4(
+        1, 0, 0, 0,
+        0, -1, 0, 0,
+        0, 0, -1, -1,
+        0, 0, -1, 0);
+    reflected.inverse_projection = float4x4(
+        1, 0, 0, 0,
+        0, -1, 0, 0,
+        0, 0, 0, -1,
+        0, 0, -1, 1);
+    reflected.history_valid = 1u;
+    reflected.temporal_weight = .85f;
+    reflected.temporal_depth_absolute = .02f;
+    reflected.temporal_depth_relative = .05f;
+    float3 receiver_view = float3(.4f, 0, -2);
+    float3 receiver_normal = float3(0, 0, 1);
+    float3 hit_view = float3(.6f, 0, -1);
+    float3 camera_delta = float3(.2f, 0, 0);
+    VkrSsrReflectedHit translated = vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view + camera_delta, receiver_normal, hit_view + camera_delta,
+        receiver_view + camera_delta, receiver_normal);
+    g_results[156] = translated.previous_uv.x;
+    g_results[157] = translated.previous_uv.y;
+    g_results[158] = translated.expected_receiver_depth;
+    g_results[159] = translated.expected_virtual_depth;
+    g_results[160] = translated.current_virtual_depth;
+    g_results[161] = float(translated.valid);
+    float old_receiver_uv = vkr_ssr_project_view_position(
+        reflected, receiver_view + camera_delta).uv.x;
+    g_results[162] = old_receiver_uv;
+    g_results[163] = old_receiver_uv - translated.previous_uv.x;
+
+    // The trace receiver differs from this full-resolution receiver. Zero
+    // motion must preserve the latter's offset from the half-resolution ray.
+    float2 full_uv = float2(.6078125f, .49375f);
+    float3 full_receiver = float3(.43125f, .025f, -2);
+    VkrSsrReflectedHit fixed_offset = vkr_ssr_reproject_hit(reflected, full_uv,
+        receiver_view, receiver_normal, hit_view,
+        receiver_view, receiver_normal, hit_view, full_receiver, receiver_normal);
+    VkrSsrReflectedHit translated_offset = vkr_ssr_reproject_hit(reflected, full_uv,
+        receiver_view, receiver_normal, hit_view,
+        receiver_view + camera_delta, receiver_normal, hit_view + camera_delta,
+        full_receiver + camera_delta, receiver_normal);
+    g_results[164] = fixed_offset.previous_uv.x;
+    g_results[165] = fixed_offset.previous_uv.y;
+    g_results[166] = fixed_offset.expected_receiver_depth;
+    g_results[167] = fixed_offset.expected_virtual_depth;
+    g_results[168] = fixed_offset.current_virtual_depth;
+    g_results[169] = float(fixed_offset.valid);
+    g_results[170] = translated_offset.previous_uv.x;
+    g_results[171] = translated_offset.previous_uv.y;
+    g_results[172] = translated_offset.expected_receiver_depth;
+    g_results[173] = translated_offset.expected_virtual_depth;
+    g_results[174] = translated_offset.current_virtual_depth;
+    g_results[175] = float(translated_offset.valid);
+
+    // For the plane y+z=-2, H=(0,1,-2) mirrors to Q=(0,0,-3).
+    // Raster jitter changes lookup UV, never the plane-intersection depth.
+    reflected.history_jitter_uv_x = .0025f;
+    reflected.history_jitter_uv_y = -.005f;
+    float3 tilted_receiver = float3(0, 0, -2);
+    float3 tilted_normal = normalize(float3(0, 1, 1));
+    float3 tilted_hit = float3(0, 1, -2);
+    VkrSsrReflectedHit jittered = vkr_ssr_reproject_hit(reflected, float2(.5f),
+        tilted_receiver, tilted_normal, tilted_hit,
+        tilted_receiver, tilted_normal, tilted_hit, tilted_receiver, tilted_normal);
+    g_results[176] = jittered.previous_uv.x;
+    g_results[177] = jittered.previous_uv.y;
+    g_results[178] = jittered.expected_receiver_depth;
+    g_results[179] = jittered.expected_virtual_depth;
+    g_results[180] = jittered.current_virtual_depth;
+    g_results[181] = float(jittered.valid);
+    reflected.history_jitter_uv_x = 0;
+    reflected.history_jitter_uv_y = 0;
+
+    float4x4 identity_model = float4x4(
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+    float4x4 previous_hit_model = float4x4(
+        1, 0, 0, -.2f, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+    float4 transported_hit = vkr_ssr_transport_point(
+        hit_view, identity_model, previous_hit_model);
+    VkrSsrReflectedHit moving_hit = vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view, receiver_normal, transported_hit.xyz, receiver_view, receiver_normal);
+    g_results[182] = moving_hit.previous_uv.x;
+    g_results[183] = moving_hit.previous_uv.y;
+    g_results[184] = moving_hit.expected_receiver_depth;
+    g_results[185] = moving_hit.expected_virtual_depth;
+    g_results[186] = moving_hit.current_virtual_depth;
+    g_results[187] = float(moving_hit.valid);
+
+    // Moving the receiver plane from z=-2 to z=-2.5 puts the virtual image
+    // at z=-4 while its real emitter remains at z=-1.
+    float4x4 previous_receiver_model = float4x4(
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -.5f, 0, 0, 0, 1);
+    VkrSsrSurface transported_receiver = vkr_ssr_transport_surface(
+        receiver_view, receiver_normal, identity_model, previous_receiver_model);
+    VkrSsrReflectedHit moving_receiver = vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        transported_receiver.position, transported_receiver.normal, hit_view,
+        transported_receiver.position, transported_receiver.normal);
+    g_results[188] = moving_receiver.previous_uv.x;
+    g_results[189] = moving_receiver.previous_uv.y;
+    g_results[190] = moving_receiver.expected_receiver_depth;
+    g_results[191] = moving_receiver.expected_virtual_depth;
+    g_results[192] = moving_receiver.current_virtual_depth;
+    g_results[193] = float(moving_receiver.valid);
+
+    // Object point (1,2,-1) maps independently to (3,4,1) and (-7,7,6.5).
+    // Object normal (1,1,1) maps to (6,4,3)/sqrt(61) and (-3,2,12)/sqrt(157).
+    // Unequal scales and a 90-degree rotation expose transpose/inverse mistakes.
+    float4x4 current_affine = float4x4(
+        2, 0, 0, 1, 0, 3, 0, -2, 0, 0, 4, 5, 0, 0, 0, 1);
+    float4x4 previous_affine = float4x4(
+        0, -2, 0, -3, 3, 0, 0, 4, 0, 0, .5f, 7, 0, 0, 0, 1);
+    float4 affine_point = vkr_ssr_transport_point(
+        float3(3, 4, 1), current_affine, previous_affine);
+    VkrSsrSurface affine_surface = vkr_ssr_transport_surface(
+        float3(3, 4, 1), normalize(float3(6, 4, 3)), current_affine, previous_affine);
+    for (uint i = 0u; i < 4u; ++i) g_results[194u + i] = affine_point[i];
+    for (uint i = 0u; i < 3u; ++i) {
+        g_results[198u + i] = affine_surface.position[i];
+        g_results[202u + i] = affine_surface.normal[i];
+    }
+    g_results[201] = float(affine_surface.valid);
+    float4x4 singular = float4x4(
+        0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+    g_results[205] = vkr_ssr_transport_point(receiver_view, singular, identity_model).w;
+    g_results[206] = float(vkr_ssr_transport_surface(
+        receiver_view, receiver_normal, singular, identity_model).valid);
+    g_results[207] = float(vkr_ssr_transport_surface(
+        receiver_view, receiver_normal, identity_model, singular).valid);
+    g_results[208] = vkr_ssr_transport_point(
+        float3(asfloat(0x7fc00000u), 0, 0), identity_model, identity_model).w;
+    g_results[209] = float(vkr_ssr_transport_surface(
+        receiver_view, 0, identity_model, identity_model).valid);
+    g_results[210] = float(vkr_ssr_reproject_hit(reflected, float2(.5f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view, receiver_normal, hit_view,
+        float3(0, 0, -2), float3(1, 0, 0)).valid);
+    g_results[211] = float(vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        float3(.4f, 0, 2), receiver_normal, hit_view,
+        receiver_view, receiver_normal).valid);
+    g_results[212] = float(vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view, receiver_normal, hit_view,
+        float3(.4f, 0, 2), receiver_normal).valid);
+
+    uint4 reflected_identity = uint4(1u, 2u, 3u, 4u);
+    float4 geometry = float4(2, 3, 0, 0); // Front-facing +Z encodes to (0,0).
+    uint2 history_extent = uint2(1280, 720);
+    VkrSsrHistoryDecision reflected_matching = vkr_ssr_reflected_history_accept(
+        reflected, translated, reflected_identity, reflected_identity,
+        geometry, receiver_normal, history_extent);
+    g_results[213] = reflected_matching.weight;
+    g_results[214] = float(reflected_matching.accepted);
+    for (uint i = 0u; i < 4u; ++i) {
+        uint4 foreign_identity = reflected_identity;
+        foreign_identity[i] += 1u;
+        g_results[215u + i] = float(vkr_ssr_reflected_history_accept(
+            reflected, translated, reflected_identity, foreign_identity,
+            geometry, receiver_normal, history_extent).accepted);
+    }
+    g_results[219] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, reflected_identity, reflected_identity,
+        float4(3, 3, 0, 0), receiver_normal, history_extent).accepted);
+    g_results[220] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, reflected_identity, reflected_identity,
+        float4(2, 4, 0, 0), receiver_normal, history_extent).accepted);
+    g_results[221] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, reflected_identity, reflected_identity,
+        float4(2, 3, 1, 1), receiver_normal, history_extent).accepted);
+    reflected.history_valid = 0u;
+    g_results[222] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, reflected_identity, reflected_identity,
+        geometry, receiver_normal, history_extent).accepted);
+    reflected.history_valid = 1u;
+    VkrSsrReflectedHit invalid_hit = translated;
+    invalid_hit.valid = 0u;
+    g_results[223] = float(vkr_ssr_reflected_history_accept(
+        reflected, invalid_hit, reflected_identity, reflected_identity,
+        geometry, receiver_normal, history_extent).accepted);
+    invalid_hit = translated;
+    invalid_hit.previous_uv = float2(1.5f, .5f);
+    g_results[224] = float(vkr_ssr_reflected_history_accept(
+        reflected, invalid_hit, reflected_identity, reflected_identity,
+        geometry, receiver_normal, history_extent).accepted);
+    uint4 no_hit_identity = uint4(1u, 2u, 0u, 0u);
+    g_results[225] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, no_hit_identity, no_hit_identity,
+        geometry, receiver_normal, history_extent).accepted);
+    g_results[226] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, reflected_identity, reflected_identity,
+        float4(2, 0, 0, 0), receiver_normal, history_extent).accepted);
+    uint4 no_receiver_identity = uint4(0u, 0u, 3u, 4u);
+    g_results[227] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, no_receiver_identity, no_receiver_identity,
+        geometry, receiver_normal, history_extent).accepted);
+
+    float2 encoded_front = vkr_ssr_encode_normal(normalize(float3(6, 4, 3)));
+    float3 decoded_front = vkr_ssr_decode_normal(float2(6.0f / 13.0f, 4.0f / 13.0f));
+    float2 encoded_back = vkr_ssr_encode_normal(normalize(float3(-6, 4, -3)));
+    float3 decoded_back = vkr_ssr_decode_normal(float2(-9.0f / 13.0f, 7.0f / 13.0f));
+    for (uint i = 0u; i < 2u; ++i) {
+        g_results[228u + i] = encoded_front[i];
+        g_results[233u + i] = encoded_back[i];
+    }
+    for (uint i = 0u; i < 3u; ++i) {
+        g_results[230u + i] = decoded_front[i];
+        g_results[235u + i] = decoded_back[i];
+    }
+    float3 perspective_position = vkr_ssr_view_from_positive_depth(
+        reflected, float2(.6f, .45f), 2);
+    VkrSsrParams orthographic = reflected;
+    orthographic.projection = float4x4(
+        1, 0, 0, 0, 0, -1, 0, 0, 0, 0, -.1f, -.1f, 0, 0, 0, 1);
+    orthographic.inverse_projection = float4x4(
+        1, 0, 0, 0, 0, -1, 0, 0, 0, 0, -10, -1, 0, 0, 0, 1);
+    float3 orthographic_position = vkr_ssr_view_from_positive_depth(
+        orthographic, float2(.6f, .45f), 2);
+    for (uint i = 0u; i < 3u; ++i) {
+        g_results[238u + i] = perspective_position[i];
+        g_results[241u + i] = orthographic_position[i];
+    }
+    VkrSsrReflectedHit orthographic_hit = vkr_ssr_reproject_hit(
+        orthographic, float2(.8f, .5f), float3(.6f, 0, -2), receiver_normal, hit_view,
+        float3(.8f, 0, -2), receiver_normal, hit_view + camera_delta,
+        float3(.8f, 0, -2), receiver_normal);
+    g_results[244] = orthographic_hit.previous_uv.x;
+    g_results[245] = orthographic_hit.previous_uv.y;
+    g_results[246] = orthographic_hit.expected_receiver_depth;
+    g_results[247] = orthographic_hit.expected_virtual_depth;
+    g_results[248] = orthographic_hit.current_virtual_depth;
+    g_results[249] = float(orthographic_hit.valid);
+    float4 current_response = vkr_ssr_shade_reflection(incoming_history, float3(.2f, .4f, .8f));
+    for (uint i = 0u; i < 4u; ++i) g_results[250u + i] = current_response[i];
+
+    float4x4 mirrored_current = current_affine;
+    mirrored_current[0][0] = -2;
+    float4 mirrored_point = vkr_ssr_transport_point(
+        float3(-1, 4, 1), mirrored_current, previous_affine);
+    VkrSsrSurface mirrored_surface = vkr_ssr_transport_surface(
+        float3(-1, 4, 1), normalize(float3(-6, 4, 3)), mirrored_current, previous_affine);
+    for (uint i = 0u; i < 4u; ++i) g_results[254u + i] = mirrored_point[i];
+    for (uint i = 0u; i < 3u; ++i) g_results[258u + i] = mirrored_surface.normal[i];
+    g_results[261] = float(mirrored_surface.valid);
+
+    // Current raster jitter is (.0025,-.005), previous is (.00125,.0025).
+    // Matrix projection already contains current jitter; only their delta is added.
+    reflected.projection[0][2] = -.005f;
+    reflected.projection[1][2] = .01f;
+    reflected.inverse_projection[0][3] = -.005f;
+    reflected.inverse_projection[1][3] = -.01f;
+    reflected.history_jitter_uv_x = -.00125f;
+    reflected.history_jitter_uv_y = .0075f;
+    VkrSsrReflectedHit both_jittered = vkr_ssr_reproject_hit(
+        reflected, full_uv + float2(.0025f, -.005f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view, receiver_normal, hit_view, full_receiver, receiver_normal);
+    g_results[262] = both_jittered.previous_uv.x;
+    g_results[263] = both_jittered.previous_uv.y;
+    g_results[264] = both_jittered.expected_receiver_depth;
+    g_results[265] = both_jittered.expected_virtual_depth;
+    g_results[266] = both_jittered.current_virtual_depth;
+    g_results[267] = float(both_jittered.valid);
 }

@@ -2325,7 +2325,7 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   const VkrCaptureChannelDescription *ssr_reflection_description =
       vkr_renderer_capture_channel_get(ssr_reflection);
   assert(ssr_reflection_description &&
-         ssr_reflection_description->version == 4u);
+         ssr_reflection_description->version == 5u);
   assert(strcmp(ssr_reflection_description->canonical_encoding,
                 "RGBA16_FLOAT_LE") == 0);
   const VkrCaptureChannelId rgba16f_channels[] = {

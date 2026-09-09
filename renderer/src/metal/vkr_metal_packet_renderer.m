@@ -194,6 +194,7 @@ typedef struct VkrMetalPacketGraphBufferInstance {
   uint64_t last_use_submit_value;
   uint64_t history_producer_submit_value;
   Mat4 history_view_projection;
+  Mat4 history_view;
   uint32_t history_width;
   uint32_t history_height;
   uint64_t history_frame_index;

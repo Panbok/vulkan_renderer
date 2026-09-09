@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "id": "local.ssr.shaded_layers",
+  "id": "local.ssr.reflected_hit_motion",
   "suite": "local",
-  "description": "Current SSR receiver shading on coated and uncoated anisotropic/sheen reflectors with GTAO and unit environment.",
+  "description": "Move the reflected emitter over a fixed anisotropic/sheen receiver; exercise retained hit transforms without final TAA.",
   "scene": "assets/scenes/fixtures/ssr_shaded_layers.scene.json",
   "seed": 1,
   "resolution": [
@@ -20,7 +20,7 @@
   "asset_ready_timeout_ms": 60000,
   "frames": {
     "warmup": 24,
-    "measure": 2
+    "measure": 10
   },
   "renderer": {
     "editor": false,
@@ -38,7 +38,14 @@
     "bloom_enabled": false,
     "image_sharpness": 0,
     "gtao_radius": 0.5,
-    "gtao_power": 2.2
+    "gtao_power": 2.2,
+    "motion_blur_entity": "SSRRedEmitter",
+    "motion_blur_entity_velocity": [
+      2.4,
+      0,
+      0
+    ],
+    "motion_blur_enabled": false
   },
   "camera": {
     "mode": "static",
@@ -55,17 +62,33 @@
   },
   "captures": [
     {
-      "at_frame": 1,
+      "at_frame": 3,
       "channels": [
         "final_color",
         "hdr_pre_transmission",
-        "hdr_post_transmission",
-        "depth",
-        "gbuffer_normal",
-        "gbuffer_specular",
-        "gtao_visibility",
         "ssr_raw",
-        "ssr_reflection"
+        "ssr_reflection",
+        "motion_vectors"
+      ]
+    },
+    {
+      "at_frame": 4,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "ssr_raw",
+        "ssr_reflection",
+        "motion_vectors"
+      ]
+    },
+    {
+      "at_frame": 8,
+      "channels": [
+        "final_color",
+        "hdr_pre_transmission",
+        "ssr_raw",
+        "ssr_reflection",
+        "motion_vectors"
       ]
     }
   ],

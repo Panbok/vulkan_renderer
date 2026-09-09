@@ -1,0 +1,211 @@
+SSR reflected-hit reprojection — 2026-09-09
+
+Change and authorization
+User approved reflected-hit reprojection, incoming-radiance history and current
+receiver shading. Existing half-resolution rays, 48 traversal decisions and four
+history taps remain. Metadata adds 98.4375 MiB at source 1280x720 with 3 frame slots
+and 5 histories, or 203.90625 MiB with 8 slots/10 histories. Alignment and resize overlap
+are excluded. Two added temporal texture reads are below the approved nine.
+Shared camera parameters add 128 B; retained GPU transform rows remain 80 B.
+Metal temporal root 448 B plus 128 B camera upload; Vulkan temporal root 512 B.
+History color is now full-resolution incoming RGB, capture ssr_reflection v5.
+Do not numerically compare v4 shaded reflection captures with v5.
+
+Base revision a9088f6e6569f68517e4f68908990b8fc6a5ffe1. The prior 90% TAA
+settling cap, SSGI synchronization and stationary accumulation remain unchanged.
+Native Metal and Vulkan implement the same shared reprojection and acceptance
+math. Receiver/hit stable identities, producer transforms, view normals and
+receiver/virtual depths reject unsupported matches. Current radiance or probes
+replace rejected history immediately. Curved receivers remain approximate.
+
+Verification
+./build_release.sh PASS, including production MSL/Slang entry points.
+./build_editor.sh Release PASS, including editor/vkr_editor.
+python3 tools/checks/check_ssr_stability.py PASS, 268 outputs within absolute 1e-6.
+This independently checks exact planar UV 19/30 versus receiver-motion 0.65
+(21.3333 pixels wrong at 1280 width), jitter, full-resolution pixel offsets,
+moving hit/receiver, nonsingular/mirrored affine transforms, normal transport,
+orthographic reconstruction, invalid geometry/identities/depths and current
+receiver shading. NaN-initialized output also detects unwritten oracle slots.
+Native emitter check:
+python3 tools/checks/check_ssr_reflected_hit.py build/_artifacts/snapshot/20260909T125618.917Z-009a3b
+PASS: red raw/history pixels27/219 atframe3,16/155 atframe4,0/0 atframe8;
+their centroids move right. Frame8 still has6070 covered history pixels.
+Motion exceeds1pixel; TAA is disabled. This checks native binding/transport and
+unsupported-hit rejection; it is not a general curved-surface accuracy oracle.
+
+Eleven SSR/SSGI/deferred SPIR-V modules pass spirv-val with
+--target-env vulkan1.3 --scalar-block-layout. Vulkan requires scalarBlockLayout.
+spirv-cross --reflect and spirv-dis confirm temporal root 512 B, camera128B,
+retained transform80B and push16B. Actual compile_commands.json invocations for
+vkr_vulkan_deferred.c, vkr_vulkan_resources.c and vkr_vulkan_pipelines.c pass
+with -c/-o removed and -fsyntax-only appended. Exact commands, module hashes
+and compiled offsets are in ssr-reflected-hit-vulkan.txt.
+
+One serial Metal API validation process passes SSR+SSGI+TAA resize 642x482 to
+514x386 and back. Its stderr confirms Metal API Validation Enabled and contains
+no API errors. Shader validation was unset; prior MetalTools decoder crashes
+with SSR on/off make that separate diagnostic unavailable. No broad suite ran.
+Native Windows builds, Vulkan execution/API validation and bilateral image
+comparison remain unavailable on this macOS Metal host.
+
+Final layered-material capture:512x384, GTAO on, unit environment, TAA off.
+638,976 HDR/raw/history RGBA16F tuples are finite; SSR confidence is in[0,1].
+The two floor regions have2900/2901 nonblack covered history pixels, exercising
+the uncoated anisotropy/sheen and coat-priority paths. This establishes finite,
+non-degenerate participation, not analytic or bilateral lighting agreement.
+The editor odd-size scaled witness produces120x89 raw and241x179 history,
+53,819 finite tuples,300/1427 covered pixels respectively. The final layered
+capture and final cost run follow an algebra-preserving native composite cleanup
+that calls the already-tested shared current-shading helper on both backends.
+
+Bistro visual comparison
+Normal Release, AppleClang21.0.0.21000101, Darwin25.6.0, Apple M1 Pro, Metal4.
+Validation variables unset. Dirty/local snapshots are diagnostic observations.
+Ghost camera[-5.26673937,2.2547977,8.60194016],yaw-22.670229,pitch-30.7283916,
+FOV70,near0.100000001,far500. Output1509x907,source1207x726,80% spatial scaling,
+manual exposure8,GTAO on,SSGI off. Move0.65m diagonally in/out over18frames,
+then hold; capture6/18/20/32/48. Separate cases enable/disable portable TAA.
+Output-coordinate ROIs: countertop[600,390,1420,610],barfront[530,610,1370,840].
+Scale each bound to channel dimensions and round to nearest integer; use
+mean over pixels of max absolute RGB channel error in scene-linear HDR.
+
+No TAA: raw SSR bytes are identical before/after at all five checkpoints.
+At the four held checkpoints, motion bytes also match. The movingframe6 motion
+payload differs, so complete motion identity is not claimed.
+Against each run's frame48, HDR post-transmission error atfirsthold(frame18):
+countertop0.0004349590513 ->0.0001545008597 (-64.48%);
+barfront0.00007008829378 ->0.00003430733359 (-51.05%).
+Atframe20:countertop-56.46%,barfront-28.56%.
+Atframe32:countertop-28.59%,barfront+6.07%.
+Frame48 still contains history and is a settling reference, not ground truth.
+
+With TAA: compare HDR pre-bloom against each revision's separate320-warm-frame
+stationary reference at the same camera. Countertop error:
+frame18:0.001085401768 ->0.0007904594947 (-27.17%);
+frame20:0.0008571662149 ->0.0006072694630 (-29.15%);
+frame32:0.0005013314876 ->0.0003779780206 (-24.61%);
+frame48:0.0003748976144 ->0.0003274217931 (-12.66%).
+Barfront reductions are6.20%,7.31%,9.14%,3.46% respectively.
+These regional convergence observations include noise/jitter and intentional
+output changes; they are not exact ghost masks or proof of zero residual trails.
+The actual before/after images were inspected. Countertop reflections appear
+sharper with less smearing. The retained PNG is after-TAA frame32 final color.
+
+Separate flicker camera[-10.6416674,2.79686046,8.34293842],yaw-142.61412,
+pitch16.1631145,output1783x1093,source1426x874,SSGI+TAA on,80%spatial scaling.
+After32warm frames compare checkpoints0/1/4/8, before static accumulation.
+PNG-to-BMP via sips is diagnostic only; canonical payloads are unchanged.
+Per-pixel largest RGB range, all1,948,819pixels:
+mean0.9332785651 ->0.9390964476 display codes (+0.62%);
+pixels exceeding3codes48,097 ->48,677. Ceiling0.7204691 ->0.7220024;
+left wall1.3447197 ->1.3463866. This does not establish flicker-free rendering.
+
+Measured cost and memory
+Same ssr_bar_cost case/profile before and after, normal Release, no captures.
+Output1280x720/source1025x577,80%MetalFX,TAA on,SSR on,SSGI off,GTAO on,
+manual exposure8,offscreen,three target slots. Three isolated repetitions each
+measure120frames after60warm frames,360valid SSR samples. Warmup is stable and
+the GPU lane lock is acquired. Effective configuration and environment/workload/
+policy fingerprints match; all deterministic world draw counts and checked
+invalid/omission counters match. Opaque1149,transmission173,transparent2,
+collected3250,worldcalls14,commands2016; no invalid resolves or omitted candidates.
+Both reports are non-authoritative (profile.local_only,provenance.dirty).
+The intentional output change makes this a cost tradeoff, not a speedup claim.
+
+GPU mean milliseconds before -> final after:
+Trace0.841626852 ->0.817144560;
+Temporal1.370756481 ->1.556096875;
+Composite0.324428009 ->0.340293634;
+Sum of all SSR passes2.696822569 ->2.847288426 (+0.150465857ms,+5.58%).
+Temporal p951.439958333 ->1.636750000; population stddev0.077938967 ->0.124679155.
+All SSR passes have360valid samples. Other unsupported GPU scopes remain marked
+unsupported_timestamp_scope and are not included in SSR totals.
+The intermediate after profile recorded2.837761690ms; the final comparison above
+uses the binary after the shared-helper cleanup and retains both observations.
+
+Engine GPU live bytes3,625,975,808 ->3,693,084,672 (+64MiB);
+driver live bytes3,917,201,408 ->3,984,310,272 (same64MiBdelta).
+live_totals_exact=1; measured-frame allocation creations=0 in both runs.
+Graph images78 ->80; payload564,618,338 ->616,650,930 (+52,032,592bytes).
+Graph buffers34 and84,424,952bytes stay unchanged. The observed lazy realization
+matches2raw images and4history instances at the actual source extent:
+512*288*16*2 +1025*577*20*4 =52,032,592bytes. This is below the full3/5 capacity;
+do not interpret it as the approved worst-case allocation at1280x720.
+GPU resources560 ->562; allocations54 ->55; no measured retained-byte growth.
+
+Evidence handling
+Companion JSON retains report provenance/configuration/digests, exact run
+commands, metrics/spread, ROI results, raw identity checks and native fixture
+payload statistics. Snapshot baselines were not promoted. All listed portable
+snapshot trees remain local for later authorized Windows/Vulkan publication.
+Only this task's completed profile trees are retired after copying their results.
+Pre-existing vendor/ktx-software changes and older pending witnesses are preserved.
+
+Exact harness commands and report SHA-256 digests
+
+before_no_taa: 20260909T123325.999Z-002df3; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 e904c6ddcf95aa93c63ee6207160181b24391c3f97cd8af6e324f1a92761fe14
+
+before_taa: 20260909T115503.141Z-00d11d; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar_taa.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 f7731a3990ca7884fdb4ca5e43074a8b8d6b8b6f5d7a16a15f81f0d4f5a2065f
+
+before_flicker: 20260909T115631.462Z-00db9c; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssgi_bistro_remaining_flicker.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 e0ff2c60a91adda9ff2020f71712c1c93800030c0ea0c579953cec8063e24b71
+
+before_reference: 20260909T115814.513Z-00e32e; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar_reference.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 7743da3917025062409629fbb8d6ce163a0ba70411365f751196d46396af0189
+
+before_cost: 20260909T123423.064Z-0033b6; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_bar_cost.case.json --profile tools/profiles/local-offscreen-perf-audit-gpu.json
+report SHA256 3a7380b870746c9ac929d56611e7ca22f467251233bd70d6d50b5121e70a2801
+
+after_no_taa: 20260909T124753.776Z-00742b; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 9125efb1898e58759067b5420f556cbf258ffa630960d6824cd71cc4317dcb48
+
+after_taa: 20260909T124928.445Z-007d50; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar_taa.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 205062e0d110b3918fd91587a027a7e14056a2f3e6d2a9114905480e5b5eb7e2
+
+after_flicker: 20260909T125245.536Z-008b38; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssgi_bistro_remaining_flicker.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 81bd6d4b33c309e4918774d2e06f3a4019c66e1512bdee951566412c66edf8f7
+
+moving_emitter: 20260909T125618.917Z-009a3b; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_reflected_hit_motion.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 6c9a2f1a5895130551ff0109bd9f617ed103dba18a3d33a9df805c8c52c66e7f
+
+after_reference: 20260909T125751.451Z-00a5bf; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar_reference.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 9603d8d4697b320b7d05e7e123a64edb0ea7e0783d5108d5a0cfce3e75829853
+
+intermediate_cost: 20260909T130038.197Z-00b4c5; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_bar_cost.case.json --profile tools/profiles/local-offscreen-perf-audit-gpu.json
+report SHA256 3b93229a0ae546fae57689c247c8ef001a2252a82cc52485d841c995152a77c0
+
+editor_odd: 20260909T130555.115Z-00c8e9; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_reflected_hit_editor.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 3fc6f4f7f9dcc3fc2b571c0669b9f87e6fbf27c62f6003c4e8a04af9530c6173
+
+layers_final: 20260909T131227.079Z-00e855; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_shaded_layers.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 2177aa45c555761c8c2a5a456322ba7450345db9df718f1a4c1e808c5c94d263
+
+after_cost: 20260909T132054.372Z-0121cb; pass
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_bar_cost.case.json --profile tools/profiles/local-offscreen-perf-audit-gpu.json
+report SHA256 2abbbc27c2c42ce8c0c3f0079bd03b3d9657c143f43ed53f9c3462e5212fa2c7
+
+metal_api_resize: 20260909T124706.312Z-00759a; pass
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 ./build_release/tools/vkr_harness profile --case tools/cases/local/ssgi_history_resize.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
+report SHA256 8f716f27d5cae79698db1a4734d48506c8208096ffb8361fd77ec2a90d8d536a
+
+Retained preview SHA256 sha256:94982ac6315d6f755b51a7e5885a0e5546b36b22c8bde16f3d17d0d607961155
+
+Structural checks: documentation links649targets/87Markdown files,0missing;
+skill mirrors byte-identical; git diff --check PASS.
+Metal API stderr excerpt: 2026-09-09 15:47:06.623 vkr_harness[29869:10328095] Metal API Validation Enabled

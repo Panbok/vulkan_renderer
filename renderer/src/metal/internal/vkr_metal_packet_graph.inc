@@ -252,6 +252,8 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
     return MTLPixelFormatRG8Unorm;
   case VKR_TEXTURE_FORMAT_R32G32_UINT:
     return MTLPixelFormatRG32Uint;
+  case VKR_TEXTURE_FORMAT_R32G32B32A32_UINT:
+    return MTLPixelFormatRGBA32Uint;
   case VKR_TEXTURE_FORMAT_R16G16_SNORM:
     return MTLPixelFormatRG16Snorm;
   case VKR_TEXTURE_FORMAT_R16G16_SFLOAT:
@@ -1253,8 +1255,8 @@ vkr_metal_packet_select_froxel_history(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
-/* SSR history is deliberately independent of TAA. Motion/depth/identity
- * reject changing receivers in the shader, while these cold checks prove a
+/* SSR history is deliberately independent of TAA. Reflected-hit geometry and
+ * identities reject changed correspondence; these cold checks prove a
  * same-content tuple before any prior texture is bound. A shared temporal
  * producer is ordered by the existing submission event wait; other producers
  * must already be complete. Output reuse still requires completed last use. */
@@ -1960,6 +1962,7 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
     current_transform->history_view_projection =
         vkr_metal_packet_clip_matrix(renderer->convert_vulkan_clip_y,
                                      packet->temporal.current_view_projection);
+    current_transform->history_view = packet->input.globals.view;
     current_transform->history_width = renderer->prepared_frame.viewport_width;
     current_transform->history_height =
         renderer->prepared_frame.viewport_height;
