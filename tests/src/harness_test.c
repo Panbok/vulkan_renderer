@@ -2111,6 +2111,16 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.color_contrast = 1.05f;
   report.case_manifest.renderer.color_saturation = 0.95f;
   report.case_manifest.renderer.ssr_enabled = true_v;
+  string_copy(report.case_manifest.renderer.display_output, "extended_linear");
+  report.case_manifest.renderer.dof_enabled = true_v;
+  report.case_manifest.renderer.dof_focus_distance = 4.5f;
+  report.case_manifest.renderer.dof_f_stop = 2.8f;
+  report.case_manifest.renderer.motion_blur_enabled = true_v;
+  report.case_manifest.renderer.motion_blur_shutter_angle = 270.0f;
+  string_copy(report.case_manifest.renderer.motion_blur_entity, "Motion card");
+  report.case_manifest.renderer.motion_blur_entity_velocity_x = 1.25f;
+  report.case_manifest.renderer.motion_blur_entity_velocity_y = -0.5f;
+  report.case_manifest.renderer.motion_blur_entity_velocity_z = 0.75f;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -2120,7 +2130,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 10u);
+  assert(current_version == 13u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
   assert(summary.case_manifest.renderer.editor_stop_frame == 1u);
@@ -2142,6 +2152,18 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.color_contrast == 1.05f);
   assert(summary.case_manifest.renderer.color_saturation == 0.95f);
   assert(summary.case_manifest.renderer.ssr_enabled);
+  assert(strcmp(summary.case_manifest.renderer.display_output,
+                "extended_linear") == 0);
+  assert(summary.case_manifest.renderer.dof_enabled);
+  assert(summary.case_manifest.renderer.dof_focus_distance == 4.5f);
+  assert(summary.case_manifest.renderer.dof_f_stop == 2.8f);
+  assert(summary.case_manifest.renderer.motion_blur_enabled);
+  assert(summary.case_manifest.renderer.motion_blur_shutter_angle == 270.0f);
+  assert(strcmp(summary.case_manifest.renderer.motion_blur_entity,
+                "Motion card") == 0);
+  assert(summary.case_manifest.renderer.motion_blur_entity_velocity_x == 1.25f);
+  assert(summary.case_manifest.renderer.motion_blur_entity_velocity_y == -0.5f);
+  assert(summary.case_manifest.renderer.motion_blur_entity_velocity_z == 0.75f);
   assert(summary.case_manifest.content_scale == 1.25f);
 
   free(legacy);
@@ -2300,6 +2322,12 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   assert(ssr_depth_description && ssr_depth_description->version == 1u);
   assert(strcmp(ssr_depth_description->canonical_encoding, "R32_FLOAT_LE") ==
          0);
+  const VkrCaptureChannelDescription *ssr_reflection_description =
+      vkr_renderer_capture_channel_get(ssr_reflection);
+  assert(ssr_reflection_description &&
+         ssr_reflection_description->version == 4u);
+  assert(strcmp(ssr_reflection_description->canonical_encoding,
+                "RGBA16_FLOAT_LE") == 0);
   const VkrCaptureChannelId rgba16f_channels[] = {
       deferred_emissive,
       resolve_barycentric_lod,
@@ -2310,7 +2338,6 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
       hdr_pre_transmission,
       hdr_post_transmission,
       ssr_raw,
-      ssr_reflection,
   };
   for (uint32_t channel_index = 0u;
        channel_index < ArrayCount(rgba16f_channels); ++channel_index) {

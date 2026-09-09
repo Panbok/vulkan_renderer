@@ -116,29 +116,30 @@ static void test_srgb_surface_format_selection(void) {
   };
   const bool8_t all_usable[] = {true_v, true_v, true_v, true_v};
   VkSurfaceFormatKHR selected = vkr_vulkan_device_choose_surface_format(
-      formats, all_usable, ArrayCount(formats));
+      formats, all_usable, ArrayCount(formats), false_v);
   assert(selected.format == VK_FORMAT_B8G8R8A8_SRGB &&
          selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
-  selected = vkr_vulkan_device_choose_surface_format(formats, all_usable, 1u);
+  selected = vkr_vulkan_device_choose_surface_format(formats, all_usable, 1u,
+                                                     false_v);
   assert(selected.format == VK_FORMAT_R8G8B8A8_SRGB &&
          selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
   const bool8_t rgba_fallback[] = {true_v, false_v, true_v, true_v};
-  selected = vkr_vulkan_device_choose_surface_format(formats, rgba_fallback,
-                                                     ArrayCount(formats));
+  selected = vkr_vulkan_device_choose_surface_format(
+      formats, rgba_fallback, ArrayCount(formats), false_v);
   assert(selected.format == VK_FORMAT_R8G8B8A8_SRGB &&
          selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
-  selected =
-      vkr_vulkan_device_choose_surface_format(formats + 2u, all_usable, 2u);
+  selected = vkr_vulkan_device_choose_surface_format(
+      formats + 2u, all_usable, 2u, false_v);
   assert(selected.format == VK_FORMAT_UNDEFINED);
 
   const VkSurfaceFormatKHR unrestricted = {VK_FORMAT_UNDEFINED,
                                            VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
   const bool8_t unrestricted_usable = true_v;
-  selected = vkr_vulkan_device_choose_surface_format(&unrestricted,
-                                                     &unrestricted_usable, 1u);
+  selected = vkr_vulkan_device_choose_surface_format(
+      &unrestricted, &unrestricted_usable, 1u, false_v);
   assert(selected.format == VK_FORMAT_B8G8R8A8_SRGB &&
          selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
   printf("  test_srgb_surface_format_selection PASSED\n");
