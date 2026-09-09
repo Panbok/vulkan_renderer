@@ -264,6 +264,21 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
   return signature;
 }
 
+bool8_t vkr_temporal_prepare_static_accumulation(
+    bool8_t scene_matches, bool8_t ssr_enabled,
+    uint32_t previous_unchanged_frames, uint32_t *out_unchanged_frames) {
+  if (!scene_matches) {
+    *out_unchanged_frames = 0u;
+    return false_v;
+  }
+  *out_unchanged_frames =
+      previous_unchanged_frames < VKR_TEMPORAL_SSR_SETTLE_FRAMES
+          ? previous_unchanged_frames + 1u
+          : VKR_TEMPORAL_SSR_SETTLE_FRAMES;
+  return !ssr_enabled ||
+         previous_unchanged_frames >= VKR_TEMPORAL_SSR_SETTLE_FRAMES;
+}
+
 VkrTemporalSceneSignature
 vkr_ssr_content_signature(const VkrPreparedFrame *packet) {
   VkrTemporalSceneSignature signature = {

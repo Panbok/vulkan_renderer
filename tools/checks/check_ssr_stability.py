@@ -26,12 +26,12 @@ with tempfile.TemporaryDirectory(prefix='vkr-ssr-check-') as directory:
     actual = list(map(float, subprocess.check_output(
         [str(output / 'check')], text=True).split()))
 expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
-            4.8, 2.4, 1.2, 0.5, 8, 4, 2, 0.4, 8, 4, 2, 0.4,
+            4.8, 2.4, 1.2, 0.5, 8, 4, 2, 0.4, 8, 4, 2, 0.25,
             0, 0, 0, 0.5, 8, 4, 2, 0.5,
             .5025, .395, 1, 0, 0, 1, 6.5, 6.5, 6.5, .5, 100, 120, 3.2,
             # Rough reflection accumulation is continuous across support counts.
             # Coverage stays .85*1 + .15*.25; radiance uses the same weights.
-            3.2, 3.2, 3.2, 2.075/.8875, .8875, .85, 8, 10, 4.3,
+            6, 6, 6, 6, .8875, .5, 8, 10, 4.3,
             # Empty front interval, true surface crossing, rear thickness slab.
             1, 0, 0, 1, .5, 1, 0, 0, 1, 1, 0, 0, 1,
             # SSGI keeps its existing symmetric slab and entry representative.
@@ -50,11 +50,11 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             (.9-388/641)/.8, (.9-388/641)/.8,
             # The old SSGI leaf and SSR level one instead cross at 254/641.
             (254/641-.1)/.8, (254/641-.1)/.8,
-            8, 4, 2, .85**16, 0, 0, 0, 0,
+            8, 4, 2, .5**16, 0, 0, 0, 0,
             .95, .85, .90, .85, 0, .5,
             0, (1-.01/.041)/2, .1, .5,
             5, 5, 5, .6, 21.2, 20, 22, .6,
-            1, 0, 0, .25, .44625, .2325, 40.125, .1953125]
+            1, 0, 0, .25, .44625, .2325, 40.125, .1953125, 6, 4, 3, 2.5, 2.25, 1/32, 8, 2]
 assert len(actual) == len(expected), actual
 for i, (got, want) in enumerate(zip(actual, expected)):
     assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
@@ -91,3 +91,5 @@ print("Shaded history, exact probe removal, miss/full coverage:", actual[116:124
 print("Full/half history bounds and entering reconstruction taps:", actual[124:128])
 
 print("Fractional cone offsets and subpixel mirror movement:", actual[128:132])
+
+print("Unsupported RGB step, empty five-frame fade, mirror clamp:", actual[132:140])

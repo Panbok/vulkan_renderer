@@ -291,4 +291,23 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     float2 moved_hit = vkr_ssr_hit_filter_uv(fractional_hit + float2(.001953125f, 0),
                                            .04f, 0u, params);
     g_results[131] = (moved_hit.x - mirror_hit.x) * 100.0f;
+    // A vanished bright reflection must lose half its unsupported residual per
+    // frame even on a stationary rough receiver; current geometry still exists.
+    decision.weight = .95f;
+    decision.accepted = 1u;
+    float4 step_history = float4(10, 10, 10, 1);
+    for (uint frame = 0u; frame < 5u; ++frame) {
+        step_history = vkr_ssr_temporal_filter(.3f, 3u,
+            float4(2, 2, 2, 1), step_history, 2, 2, decision);
+        g_results[132u + frame] = step_history.x;
+    }
+    float4 empty_history = float4(8, 4, 2, 1);
+    for (uint frame = 0u; frame < 5u; ++frame)
+        empty_history = vkr_ssr_temporal_filter(.3f, 0u, 0,
+            empty_history, 1, -1, decision);
+    g_results[137] = empty_history.w;
+    g_results[138] = empty_history.x;
+    g_results[139] = vkr_ssr_temporal_filter(VKR_SSR_MIRROR_ROUGHNESS, 3u,
+        float4(2, 2, 2, 1), float4(10, 10, 10, 1), 2, 2, decision).x;
+
 }

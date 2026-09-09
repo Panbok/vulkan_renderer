@@ -415,11 +415,18 @@ History selects the exact motion producer through existing GPU dependencies even
 before CPU-observed completion; reuse waits for every reader. Source-pixel-center
 reprojection adds motion and the producer's previous-minus-current raster jitter
 from parameter offsets 280/284. Source extent controls coordinates and tap bounds.
-Continuous roughness clamping reaches unclamped history at 0.25. Motion-adaptive
-defaults rise from 0.85 to 0.95 on stationary rough receivers and return at one
-source pixel per frame. Empty neighborhoods fade validated history; rejected
-history clears. Receiver depth tolerance has a 2 cm minimum independent of ray
-thickness. Full-resolution trace leaves, absolute crossings, earliest rear-slab
+Roughness continuously relaxes clamping, but at most half the normalized RGB
+residual outside current bounds survives each update, including sparse support.
+Motion-adaptive defaults rise from 0.85 to 0.95 on stationary rough receivers and
+return at one source pixel per frame. Empty neighborhoods retain at most half
+of validated coverage each frame; rejected history clears. The shared scene-static
+proof waits for 128 matching submitted frames with SSR enabled before allowing
+TAA/FSR's existing 128-sample static accumulation. Selected-producer CPU metadata
+owns the capped counter, which resets on invalid history or changed inputs and
+publishes only on successful submission. No roots, bindings or sampling ceilings
+change; native Vulkan verification remains unavailable. Receiver depth tolerance
+has a 2 cm minimum independent of ray thickness. Full-resolution trace leaves,
+absolute crossings, earliest rear-slab
 intersections and same-pixel validation keep the existing depth allocation.
 SSGI retains its previous leaf, slab and receiver-minimum policies through shared
 adapters and initializes its unused jitter offsets to zero.
@@ -437,11 +444,15 @@ and coat-cone checks are recorded with [ADR-055](055-screen-space-reflections.md
 
 `ssr_reflection` version 4 identifies full-source-resolution shaded RGB; version 3
 captures were half-resolution shaded RGB. Raw capture stays version 2. Earlier
-captures predate the new history extent. Current Metal mirror, static/moving
-Bistro, layered-material, combined SSR/SSGI and two API-resize checks pass; the
-fixed bar-face polygon shows no decisive stability improvement. GPU shader
-validation previously crashed in MetalTools with SSR disabled as well as enabled
-and supplied no result. ADR-055 links current and prior evidence.
+captures predate the new history extent. Metal mirror, static/moving Bistro,
+layered-material, combined SSR/SSGI and two API-resize checks pass. The subsequent
+bounded-fade/settling correction passes 140 shared-math outputs, five SSR SPIR-V
+modules, host syntax and one serial Metal API hold. The sampled portable-TAA bar
+region freezes after settling and static accumulation; MetalFX shows no decisive
+stability improvement. GPU shader validation previously crashed in MetalTools
+with SSR disabled as well as enabled and supplied no result.
+[ADR-055](055-screen-space-reflections.md#evidence-and-remaining-checks) links
+current and prior evidence. The domain remains UNALIGNED.
 
 Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
 native passes. Packet version 38 appends its prepared fog pointer without

@@ -115,19 +115,48 @@ vkr_vk_temporal_scene_equal(const VkrVulkanTemporalSceneState *current,
          current->graph_revision == previous->graph_revision;
 }
 
+vkr_internal VkrVulkanGraphImageInstance *vkr_vk_fsr31_scene_history(
+    VkrVulkanRenderer *renderer, const VkrVulkanFrameSlot *slot) {
+  if (!slot->temporal_history_valid ||
+      !vkr_vk_temporal_scene_equal(&slot->temporal_scene,
+                                   &renderer->fsr31_history.scene))
+    return NULL;
+  VkrVulkanGraphImage *colors =
+      vkr_vk_temporal_graph_image(renderer, "fsr31_output_color");
+  const VkrVulkanFsr31History *history = &renderer->fsr31_history;
+  if (!history->valid || !colors ||
+      colors->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
+      history->history_index >= colors->instance_count ||
+      renderer->history_output_index >= colors->instance_count)
+    return NULL;
+  VkrVulkanGraphImageInstance *previous =
+      &colors->instances[history->history_index];
+  VkrVulkanGraphImageInstance *output =
+      &colors->instances[renderer->history_output_index];
+  if (!previous->history_valid || !previous->has_sampled_slot ||
+      previous->history_producer_submit_value != history->submit_value ||
+      previous->image.width != output->image.width ||
+      previous->image.height != output->image.height)
+    return NULL;
+  return previous;
+}
+
 bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass) {
-  const VkrVulkanFrameSlot *slot =
+  VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
+  const bool8_t scene_matches =
+      vkr_vk_fsr31_scene_history(renderer, slot) != NULL;
+  const bool8_t scene_stationary = vkr_temporal_prepare_static_accumulation(
+      scene_matches, renderer->prepared_frame.ssr_enabled,
+      renderer->fsr31_history.scene.unchanged_frames,
+      &slot->temporal_scene.unchanged_frames);
   VkrVulkanFsr31PrepareRoot root = {
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
       .transmission_enabled = renderer->prepared_frame.transmission_pending,
-      .scene_stationary =
-          slot->temporal_history_valid &&
-          vkr_vk_temporal_scene_equal(&slot->temporal_scene,
-                                      &renderer->fsr31_history.scene),
+      .scene_stationary = scene_stationary,
   };
   if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &root.scene_texture) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u,
@@ -176,40 +205,39 @@ bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
                         renderer->prepared_frame.viewport_height},
       .jitter_pixels = renderer->graph->packet->temporal.jitter_pixels,
   };
-  if (slot->temporal_history_valid &&
-      vkr_vk_temporal_scene_equal(&slot->temporal_scene,
-                                  &renderer->fsr31_history.scene)) {
-    VkrVulkanGraphImageInstance *previous =
-        &colors->instances[renderer->fsr31_history.history_index];
-    if (previous->history_valid && previous->has_sampled_slot &&
-        previous->history_producer_submit_value ==
-            renderer->fsr31_history.submit_value &&
-        previous->image.width == output->image.width &&
-        previous->image.height == output->image.height) {
-      root.scene_stationary = true_v;
-      root.history_texture = previous->sampled_slot.index;
-      slot->temporal_color_input = previous;
-      // The preceding submission owns this history. Order its writes before
-      // this read; the HISTORY pool separately proves completion before reuse.
-      prepared->image_barriers[0] = (VkImageMemoryBarrier2){
-          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-          .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-          .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-          .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-          .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-          .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .image = previous->image.handle,
-          .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                               .levelCount = 1u,
-                               .layerCount = 1u},
-      };
-      prepared->image_barrier_count = 1u;
-    }
+  VkrVulkanGraphImageInstance *previous =
+      vkr_vk_fsr31_scene_history(renderer, slot);
+  /* Re-evaluate from the committed producer so both FSR roots agree without
+     advancing the current slot a second time. */
+  uint32_t ignored_unchanged_frames = 0u;
+  const bool8_t scene_stationary = vkr_temporal_prepare_static_accumulation(
+      previous != NULL, renderer->prepared_frame.ssr_enabled,
+      renderer->fsr31_history.scene.unchanged_frames,
+      &ignored_unchanged_frames);
+  if (scene_stationary) {
+    root.scene_stationary = scene_stationary;
+    root.history_texture = previous->sampled_slot.index;
+    slot->temporal_color_input = previous;
+    // The preceding submission owns this history. Order its writes before
+    // this read; the HISTORY pool separately proves completion before reuse.
+    prepared->image_barriers[0] = (VkImageMemoryBarrier2){
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = previous->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    prepared->image_barrier_count = 1u;
   }
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u,
                                      &root.output_texture) ||
@@ -1382,6 +1410,16 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
       packet->temporal.enabled && slot->temporal_history_valid &&
       slot->temporal_color_input && slot->temporal_depth_input &&
       slot->temporal_identity_input && slot->temporal_surface_input;
+  const bool8_t scene_matches =
+      history_valid && vkr_vk_temporal_scene_equal(
+                           &slot->temporal_scene,
+                           &slot->temporal_color_input->history_scene);
+  const bool8_t scene_stationary = vkr_temporal_prepare_static_accumulation(
+      scene_matches, renderer->prepared_frame.ssr_enabled,
+      scene_matches
+          ? slot->temporal_color_input->history_scene.unchanged_frames
+          : 0u,
+      &slot->temporal_scene.unchanged_frames);
   const VkrVulkanTemporalResolveRoot root = {
       .visible_rows = visible->buffer.address,
       .instances = instances->buffer.address,
@@ -1416,10 +1454,7 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
           history_valid && MemCompare(&slot->temporal_previous_view_projection,
                                       &packet->temporal.current_view_projection,
                                       sizeof(Mat4)) == 0,
-      .scene_stationary =
-          history_valid && vkr_vk_temporal_scene_equal(
-                               &slot->temporal_scene,
-                               &slot->temporal_color_input->history_scene),
+      .scene_stationary = scene_stationary,
       .transmission_visible_rows =
           transmission_visible ? transmission_visible->buffer.address : 0u,
       .transmission_instances =

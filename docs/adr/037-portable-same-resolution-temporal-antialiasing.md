@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-05
+updated: 2026-09-09
 authority: adr
 ---
 
@@ -77,6 +77,18 @@ unjittered camera, geometry and transforms, materials, lighting, shadows and GTA
 controls. Native color history also records resource-radiance, candidate-publication
 and graph revisions. Both eligible records must match; a camera-only match is
 insufficient. Text and pending publication/upload/IBL writer frames are excluded.
+SSR-enabled frames first remain on ordinary TAA for 128 consecutive matching
+rendered frames, then begin the existing 128-sample static integral. This lets
+recursive reflection history settle before its output enters an image that can
+freeze. The user accepted this roughly 4.3-second sequence at 60 fps. One capped
+CPU counter belongs to each submitted scene-history record; mismatched scene,
+resource or graph state and invalid history reset it. Preparation advances the
+selected producer's count, but only successful submission publishes that result.
+Cancelled frames cannot advance the next producer. SSR toggles change the input
+signature; SSR-off scenes keep the original immediate accumulation rule.
+The shared rule also gates FSR composition masking and static convergence.
+MetalFX does not use this proof. No images, roots, bindings or read ceilings
+change; ordinary TAA runs during the settling period.
 The signature is a probabilistic content check, not collision-free equality.
 It excludes jitter/noise phase and downstream exposure, bloom and UI. Disabled
 portable TAA and MetalFX skip the scan.
@@ -129,6 +141,13 @@ depth motion can differ from the flow at the canonical pixel center.
 The portable consumer has shared semantics, but image quality depends on identity,
 reactivity and motion coverage. Source agreement and fixed-camera captures do
 not establish moving-camera or animation acceptance.
+
+The approved SSR settling window passes its CPU boundary/reset check and a
+native Metal camera-turn/hold at 80% scale. After settling and accumulation, the
+sampled bar region is identical in reconstructed HDR and final color. The first
+static sample can still change visibly, and early motion outliers remain.
+[The settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
+records the transitions and serial API validation; native Vulkan remains unrun.
 
 ## Alternatives considered
 

@@ -778,26 +778,23 @@ float4 vkr_ssr_temporal_filter(float roughness, uint neighborhood_hits, float4 r
                                float3 neighborhood_max,
                                VkrSsrHistoryDecision decision)
 {
-    // A missed jitter phase must not erase validated receiver history. Fade
-    // covered radiance and coverage together; rejected history has zero weight.
-    // Empty neighborhoods provide no bounds with which to clamp its radiance.
+    // Receiver identity cannot distinguish a jitter miss from disappearing
+    // reflected geometry. Halve unsupported coverage on every empty frame.
     if (neighborhood_hits == 0u)
         return vkr_ssr_spatial_resolve(
-            vkr_ssr_spatial_sample(history, decision.weight), 1.0f);
-    // Current hit counts fluctuate with jitter. A count-based clamp would make
-    // identical filtered samples jump when a third neighboring ray finds a hit.
-    // Rough surfaces accumulate their varying directions; mirrors retain bounds.
-    float unclamped_weight = decision.weight * vkr_ssr_temporal_stability(roughness);
+            vkr_ssr_spatial_sample(history, min(decision.weight, 0.5f)), 1.0f);
     float3 clamped_history =
         vkr_ssr_history_clamp(history.xyz, neighborhood_min, neighborhood_max);
-    // Coverage and covered radiance accumulate together. Multiplying the
-    // temporal weight by both coverage values attenuates rough reflections'
-    // history twice and leaves their hit/miss flicker entirely unfiltered.
-    float4 current = vkr_ssr_spatial_sample(raw, 1.0f - decision.weight);
-    float4 previous = vkr_ssr_spatial_sample(
-        float4(clamped_history, history.w), decision.weight - unclamped_weight) +
-        vkr_ssr_spatial_sample(history, unclamped_weight);
-    return vkr_ssr_spatial_resolve(current + previous, 1.0f);
+    // Preserve supported radiance and coverage averaging. Bound only the
+    // residual outside current radiance bounds to half the resolved signal,
+    // including when sparse current coverage would otherwise preserve it longer.
+    float4 accumulated = vkr_ssr_spatial_sample(raw, 1.0f - decision.weight) +
+        vkr_ssr_spatial_sample(float4(clamped_history, history.w), decision.weight);
+    float residual_weight = min(
+        decision.weight * vkr_ssr_temporal_stability(roughness) * history.w,
+        0.5f * accumulated.w);
+    accumulated.xyz += residual_weight * (history.xyz - clamped_history);
+    return vkr_ssr_spatial_resolve(accumulated, 1.0f);
 }
 
 // History stores receiver-shaded radiance; coverage remains independent.

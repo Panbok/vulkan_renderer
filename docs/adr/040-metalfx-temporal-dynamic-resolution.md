@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-09
 authority: adr
 ---
 
@@ -81,6 +81,13 @@ MetalFX is an authorized Metal-only consumer, not bilateral algorithm parity.
 GPU-work feedback does not guarantee a whole-frame FPS target. Moving-quality
 acceptance and matched performance remain separate from source integration.
 Validation of portable mode does not validate native MetalFX.
+
+Static Bistro bar shimmer remains unresolved with MetalFX at 80% scale. The
+bounded SSR fade reduces intermittent reflection strength without a decisive
+stability gain. Portable TAA's approved settling window does not change MetalFX;
+[the reflection evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
+records this limit. The source/input audit has not established an incorrect
+jitter sign, motion scale, producer selection or pre-exposure contract.
 
 ## Alternatives considered
 

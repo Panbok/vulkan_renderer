@@ -40,6 +40,16 @@ signature and native radiance, publication and graph revision checks to suppress
 optical composition contrast. Commit that proof with the previous successful FSR
 submission; camera or scene changes restore composition masking. Authored
 reactivity and missing-motion protection remain active in stationary scenes.
+With SSR enabled, retain normal composition masking and current SDK output for
+128 consecutive matching submitted frames before static convergence begins.
+The selected producer's scene metadata owns the capped settling counter;
+invalid producer/image or scene/resource/graph state resets it. Preparation and
+stabilization use the same producer checks and readiness rule. The existing
+successful-submit publication owns the counter; the SDK continues dispatching.
+Native Vulkan verification of this settling correction is pending.
+[The shared settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
+records the CPU boundary/reset oracle, host syntax and native Metal TAA result;
+it does not validate SDK-enabled FSR execution.
 
 The user-approved static convergence pass follows the SDK dispatch. It averages
 128 stationary FSR output samples at each canonical output pixel, then copies

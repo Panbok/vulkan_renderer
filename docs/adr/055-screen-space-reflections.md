@@ -64,11 +64,12 @@ clamping shaded history. Covered shaded radiance and confidence accumulate
 together. The user accepted roughness-dependent softness and short trails;
 current hit count does not introduce a separate clamp-policy threshold.
 
-Clamping relaxes continuously with selected roughness. A smoothstep from the mirror
-threshold to 0.25 determines the fraction of validated history used without current
-radiance bounds. Mirrors use the current bounds; roughness 0.25 and above uses
-unclamped history. Both components retain the same coverage weight. Mirrors retain
-their single hit-source sample and use the 2×2 reconstruction footprint above.
+Mirrors clamp history to the current radiance bounds. Rougher receivers retain
+part of the residual outside those bounds, using a smoothstep from the mirror
+threshold to 0.25. After coverage normalization, at most half that residual
+survives each update. This limit also applies when current coverage is sparse;
+in-bound history and coverage retain their normal temporal weights. Mirrors
+retain their single hit-source sample and 2×2 reconstruction footprint.
 
 For configured weight `w`, roughness blend `s`, and unjittered motion magnitude `m`
 in full-resolution source pixels, accepted history uses
@@ -76,11 +77,22 @@ in full-resolution source pixels, accepted history uses
 At defaults this gives 0.95 for stationary rough receivers and 0.85 at one source
 pixel per frame or for mirrors. Invalid taps still contribute no history.
 
-Empty neighborhoods fade valid covered radiance and coverage together, preserving
-conditional radiance; rejected history clears immediately. At weight 0.95, history
-half-life is about 13.5 rendered frames. Receiver depth, identity and motion cannot
-detect a moving reflected object on a stationary bar, so retained reflections can
-trail. The approved storage and execution costs are recorded below.
+Empty neighborhoods retain at most half of validated coverage per frame while
+preserving conditional RGB; rejected history clears immediately. Five consecutive
+empty frames leave at most 1/32 of the starting coverage. Receiver metadata cannot
+distinguish a jitter miss from disappearing reflected geometry, so this shortens
+trails at the cost of weaker intermittent reflections. History inside broad
+current bounds can still trail.
+
+Before scene-static accumulation begins, SSR-enabled scenes spend 128 unchanged
+frames on ordinary TAA under
+[ADR-037](037-portable-same-resolution-temporal-antialiasing.md). Then TAA collects
+its existing 128 samples and freezes the result. This excludes the early SSR
+convergence transient from that static mean. The user approved the roughly
+4.3-second sequence at 60 fps. A capped CPU counter is retained with submitted
+scene-history metadata and resets on failed input/history equality. The same
+rule gates FSR's static convergence; MetalFX remains a separate quality problem.
+There are no new images, rays, shader bindings or sampling ceilings.
 
 Both native paths skip out-of-bounds filter taps. Trace and composite eligibility
 use the same selected material roughness; normal-variance broadening changes BRDF
@@ -224,6 +236,17 @@ accepted design spends history memory and temporal work to shade each source
 receiver while retaining the bounded half-resolution ray workload.
 
 ## Evidence and remaining checks
+
+The bounded-fade and settling correction passes Release app/editor builds,
+140 shared-math outputs, five SSR SPIR-V modules, Vulkan host syntax and a serial
+Metal API-validation hold. At 80% scale with portable TAA, the fixed Bistro bar
+region is identical in final color and reconstructed HDR after settling and
+static accumulation. Early camera-stop differences fall, but some outliers rise
+and intermittent reflection strength falls. The first static sample can still
+change visibly; the sequence takes the approved settling plus accumulation time.
+MetalFX's eight-phase bar variation shows no decisive improvement. Native Vulkan
+and bilateral comparison remain unavailable. [The settling record](../../assets/verification/renderer-features/ssr-history-settling.txt)
+contains exact commands, digests, transition measurements and a final preview.
 
 The fractional-source and coat-occlusion corrections pass Release shader builds,
 132 shared-math outputs, eleven SSR/SSGI/deferred SPIR-V modules and the Metal

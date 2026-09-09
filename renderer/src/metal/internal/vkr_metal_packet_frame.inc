@@ -2382,6 +2382,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_temporal_resolve(
           upload->temporal_scene.graph_revision ==
               color_slot->instances[selected].history_scene.graph_revision,
   };
+  root->scene_stationary = vkr_temporal_prepare_static_accumulation(
+      root->scene_stationary, packet->ssr_enabled,
+      history_valid
+          ? color_slot->instances[selected].history_scene.unchanged_frames
+          : 0u,
+      &upload->temporal_scene.unchanged_frames);
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->temporal_resolve_pipeline,
       .root = root_gpu,

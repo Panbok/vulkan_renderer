@@ -216,12 +216,51 @@ vkr_internal void test_temporal_scene_signature(void) {
   packet.input.ui = &ui;
   assert(temporal_signature_equal(baseline,
                                   vkr_temporal_scene_signature(&packet)));
+  // Toggling SSR changes the rendered inputs and restarts settling. Stable
+  // inputs remain hashable while the separate accumulation gate waits.
+  packet.ssr_enabled = true_v;
+  const VkrTemporalSceneSignature reflection_frame =
+      vkr_temporal_scene_signature(&packet);
+  packet.input.frame.frame_index++;
+  assert(reflection_frame.eligible);
+  assert(!temporal_signature_equal(baseline, reflection_frame));
+  assert(temporal_signature_equal(reflection_frame,
+                                  vkr_temporal_scene_signature(&packet)));
+  packet.ssr_enabled = false_v;
+  assert(temporal_signature_equal(baseline,
+                                  vkr_temporal_scene_signature(&packet)));
   world.publication_pending = true_v;
   assert(!vkr_temporal_scene_signature(&packet).eligible);
   world.publication_pending = false_v;
   world.text_draw_count = 1u;
   assert(!vkr_temporal_scene_signature(&packet).eligible);
   printf("  test_temporal_scene_signature PASSED\n");
+}
+
+vkr_internal void test_temporal_ssr_settling(void) {
+  printf("  Running test_temporal_ssr_settling...\n");
+  uint32_t unchanged = 0u;
+  // The approved window is 128 matching rendered frames, followed by the
+  // existing static integral. A changed scene restarts the entire window.
+  for (uint32_t cycle = 0u; cycle < 2u; ++cycle) {
+    assert(!vkr_temporal_prepare_static_accumulation(
+        false_v, true_v, unchanged, &unchanged));
+    assert(unchanged == 0u);
+    for (uint32_t frame = 0u; frame < 128u; ++frame)
+      assert(!vkr_temporal_prepare_static_accumulation(
+          true_v, true_v, unchanged, &unchanged));
+    assert(vkr_temporal_prepare_static_accumulation(
+        true_v, true_v, unchanged, &unchanged));
+    for (uint32_t frame = 0u; frame < 512u; ++frame)
+      assert(vkr_temporal_prepare_static_accumulation(
+          true_v, true_v, unchanged, &unchanged));
+    assert(unchanged == 128u);
+  }
+  assert(!vkr_temporal_prepare_static_accumulation(
+      false_v, false_v, unchanged, &unchanged));
+  assert(vkr_temporal_prepare_static_accumulation(
+      true_v, false_v, unchanged, &unchanged));
+  printf("  test_temporal_ssr_settling PASSED\n");
 }
 
 vkr_internal void test_temporal_reset_reasons(void) {
@@ -600,6 +639,7 @@ bool32_t run_temporal_tests(void) {
   test_temporal_jitter_and_commit();
   test_temporal_projection_pixel_shift();
   test_temporal_scene_signature();
+  test_temporal_ssr_settling();
   test_temporal_reset_reasons();
   test_temporal_sequence_repeats();
   test_temporal_rotation_cut();

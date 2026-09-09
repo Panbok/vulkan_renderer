@@ -1927,6 +1927,8 @@ typedef struct VkrVulkanTemporalSceneState {
   uint64_t radiance_revision;
   uint64_t publication_generation;
   uint64_t graph_revision;
+  /** Consecutive submitted static frames, capped at the SSR settle limit. */
+  uint32_t unchanged_frames;
 } VkrVulkanTemporalSceneState;
 
 typedef struct VkrVulkanGraphImageInstance {

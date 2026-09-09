@@ -1,0 +1,277 @@
+SSR history fading and static accumulation — 2026-09-09
+
+Result and limits
+-----------------
+The approved 128-frame SSR settling window precedes the existing 128-sample
+static TAA/FSR integral. The tested Bistro bar becomes identical in final color
+and reconstructed HDR after that sequence. Early camera-stop differences fall,
+but intermittent reflections are weaker and some early pixel outliers increase.
+MetalFX flicker remains unresolved. This is local Metal evidence, not native
+Vulkan parity, an all-scene quality result, or a performance claim.
+
+The separate no-TAA pass-capacity correction and its diagnostics are recorded in
+ssr-no-taa-capacity.txt (commit 1bc546e5). Stale CPU capture/display fixture
+contracts were corrected separately in commit 25b742bb.
+
+Implemented policy
+------------------
+- Empty SSR neighborhoods retain at most half their validated coverage each
+  frame; conditional RGB stays unchanged. Rejected depth/identity clears.
+- Supported updates preserve in-bound temporal averaging, while at most half
+  the normalized RGB residual outside current bounds survives, including sparse
+  current coverage. Mirrors retain their hard clamp. Broad bounds can still
+  preserve stale reflected detail; receiver identity cannot prove hit identity.
+- With SSR enabled, the first 128 matching submitted scene frames remain on the
+  ordinary temporal path. Match 129 starts the existing 128-sample static mean.
+  At 60 fps, settling plus accumulation takes about 4.3 seconds.
+- One uint32 counter belongs to each native CPU scene-history record; padding
+  grows that record from 48 to 56 bytes. The selected producer owns the count.
+  Invalid history, changed scene/resource/graph state, or an SSR toggle restarts
+  the window. Only successful submission publishes prepared metadata.
+- Vulkan TAA and FSR preparation/stabilization use the same readiness rule.
+  During settling, FSR keeps normal composition masking and current SDK output.
+  SSR-off scenes retain immediate static accumulation. MetalFX is unchanged.
+- No new images, rays, roots, bindings, history instances or shader read ceilings.
+
+Build and numeric gates
+-----------------------
+Host: Apple M1 Pro, Darwin 25.6.0, Metal 4, AppleClang 21.0.0.21000101.
+Release runs were local, dirty, without accepted comparison baselines. Timing
+was disabled. Final builds and GPU runs were serialized; an earlier replay
+crossed an external binary rebuild and was excluded from comparisons.
+
+./build_test.sh > .scratch/ssr-settle-tests.log 2>&1
+  PASS. Counter boundary/reset and the full native graph envelope are covered.
+  The CPU oracle detects starting static accumulation before 128 unchanged
+  frames, failing to reset, and changing SSR-off behavior; a multi-second GPU
+  capture is more expensive and cannot isolate those CPU boundaries.
+  Log SHA-256: 844970f4b7e4170434b93fea903a1ca55f190fc36791576324ff632fcc9ddc47
+./build_release.sh > .scratch/ssr-settle-release.log 2>&1
+  PASS, including production Metal and Slang shader compilation.
+  Log SHA-256: 7b29b7776421b1a1e33d8257fe8815336dd31fa9702d97ba9083dd2f4a5956ae
+./build_editor.sh Release > .scratch/ssr-settle-editor.log 2>&1
+  PASS. No asset cooking was invoked by the wrappers.
+  Log SHA-256: e28f3ab835ce5574c5dd6d3bb3383c93cdbedd4f52a15f36ca61a1b5907bc9ed
+python3 tools/checks/check_ssr_stability.py
+  PASS, 140 shared shader-math outputs. A vanished 10->2 reflection produces
+  6, 4, 3, 2.5, 2.25; five empty frames leave coverage 1/32; a mirror clamps to 2.
+  This checks the independent decay bound, not image quality or GPU execution.
+  Log SHA-256: ae461bc9f6ede329f1ae922b4d904d0a5f402183a414a73b33a3fc131c250fad
+
+spirv-val --target-env vulkan1.4 MODULE
+  PASS for all five modules under build_release/renderer/generated/vulkan/:
+  packet.ssr_composite.comp.spv, packet.ssr_depth_base.comp.spv,
+  packet.ssr_depth_mip.comp.spv, packet.ssr_temporal.comp.spv,
+  packet.ssr_trace.comp.spv.
+Vulkan host syntax: PASS for vkr_vulkan_deferred.c and vkr_vulkan_pipelines.c,
+  using their build_release/compile_commands.json argument vectors with -c and
+  -o <object> removed and -fsyntax-only added, in each recorded working directory.
+  This macOS build has VKR_HAS_FSR3_UPSCALER=0; SDK-enabled Windows execution,
+  native Vulkan synchronization and bilateral pixels remain unchecked.
+
+Final shared shader SHA-256:
+  renderer/src/shaders/shared/ssr_kernel.slangh
+  1b179868b8c9dcb3a9017679511c6eb798ff174899e83743b3ac68108babded5
+  build_release/renderer/metal/library.metal
+  d7702358012d86c5288cc79e885612f5c62bd579c735c62ae0c99ac4743bb996
+The editor wrapper relinked the same Release tree between the long hold and
+later checks. Long-hold binary SHA-256:
+  4a19952195059a842ff734d43ae26effed0de814ff24c05560d92c5818bff5bf
+Final scaled/short/API binary SHA-256:
+  6f262008431e3daf2a7749bfc27a4fb8669bcf640fc1cee9465ca59dfa97d815
+
+Native snapshot commands and reports
+-----------------------------------
+For each CASE below, the exact snapshot command was:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
+  ./build_release/tools/vkr_harness snapshot \
+  --case tools/cases/local/CASE.case.json \
+  --profile tools/profiles/local-offscreen.json
+
+ssr_bar_turn_stop_settled: PASS, snapshot/20260909T075020.354Z-011a6b
+  Report SHA-256: 27da01ab65f76c48320bba643cbf54ddb172139fa9dbf619aad0b4903fe20192
+ssr_bar_scaled_taa: PASS, snapshot/20260909T075344.844Z-0133f8
+  Report SHA-256: 7d55078592e9d6946e3fb675fc3952e50ae3c694a5456f18a986886e57d9833e
+ssr_bar_turn_stop: PASS, snapshot/20260909T075750.718Z-014fd7
+  Report SHA-256: e4b380003b5f7761d6274eb3f068a67638597b66d9884cf50997b2242b3b1e63
+ssr_bar_turn_stop, controlled old-filter baseline: PASS,
+  snapshot/20260909T071826.529Z-00a455
+  Report SHA-256: 3c9eee917623dbd484e83a5d5a6e7272ca16801b58b080704e90f962f44c4bf6
+  Binary SHA-256: 63e3bcc3af77d14328269d3dcde6f24344c1249a784bf50a47bce14ab1602025
+  Old shared shader SHA-256:
+  9fa8f6cb0620706255b36c95013c318f870148f3189efa985f90eb3569622e56
+
+The turn/hold cases use 800x600 output, 640x480 source, spatial 80% scale, portable
+TAA, FXAA, exposure 8, GTAO/SSR enabled, SSGI/bloom disabled, and three offscreen
+images. Camera translation 0.4 m and yaw 3 degrees stop at frame 6. The long case
+captures through frame 274; the short case captures frames 6, 7, 10, 24.
+
+Fixed output bar polygon: (0,205), (768,208), (733,244), (0,353), containing
+68,119 pixel centers, or 43,617 at source resolution. Final-color metrics use the
+largest absolute RGB difference per pixel, in 8-bit display codes. Each run is
+compared to its own final captured frame, not a ground-truth reference.
+
+Short hold, old -> final:
+  frame 6:  pixels >3 codes 2405 -> 607; max difference 36 -> 59.
+  frame 7:  pixels >3 codes 1473 -> 486; max difference 26 -> 59.
+  frame 10: pixels >3 codes 426 -> 220; max difference 20 -> 12;
+            mean max-RGB difference 0.455453 -> 0.373772.
+  Frame-24 covered SSR mean RGB falls from 4.51835e-5 to 1.76783e-5;
+  mean confidence falls from 0.087580 to 0.059151. Lower trail differences partly
+  reflect weaker intermittent reflections. This is not a universal improvement.
+
+Long hold versus frame 274:
+  frame 130: mean max-RGB 0.479998, maximum 35, 273 pixels >3 codes.
+  frame 135: mean max-RGB 0.983734, maximum 40, 1346 pixels >3 codes.
+  frame 258: mean max-RGB 0.031768, maximum 1, zero pixels >3 codes.
+  frames 266/267/274: zero RGB difference in both final color and hdr_pre_bloom.
+  Pre-TAA HDR and raw source-grid SSR still vary with jitter. Frame 135 records
+  the fresh static integral near its start; the transition is not instant
+  stability. Its first sample excludes the warming TAA image (age 1, weight 0).
+  All 5,529,600 captured half-float tuples are finite. Source-sized v4 history
+  coverage is valid; covered counts at frames 130/135/258/266/267/274 are
+  162797/162865/162799/162799/162885/162797.
+
+The separate scaled static case uses 1280x720 output and reported 1024x576 source,
+80% spatial scale, TAA, FXAA disabled, 288 warmup frames, and frames 3/4/7/10.
+Fixed polygon (0,253), (1107,249), (1080,283), (0,378), 86,265 pixel centers:
+zero final RGB variation across every sampled frame. Six previously inspected
+edge hotspots also have zero variation. These finite checkpoints do not prove
+all materials, motion, or untested jitter phases.
+
+Native API and material coverage
+-------------------------------
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 \
+  ./build_release/tools/vkr_harness profile \
+  --case tools/cases/local/ssr_bar_turn_stop_settled.case.json \
+  --profile tools/profiles/local-metal-offscreen-validation-serial.json
+  PASS, profile/20260909T075541.711Z-01393a, one child.
+  Report SHA-256: e8b7e774b7eb5d2f88e1b36d4282747faace49d27574576d88710abf1069ea6e
+  Child confirms Metal API Validation Enabled, with no API error or warning.
+  GPU shader validation was unset. Earlier MetalTools crashes occurred with
+  SSR disabled too; they provide no shader-validation result.
+
+Snapshot command above with CASE=ssr_shaded_layers:
+  PASS, snapshot/20260909T073307.255Z-00e17a (TAA disabled).
+  Report SHA-256: c546d202ded68d3def512b3455bec3a9d85dcef9a768ee9b2ab498270ca13c4b
+python3 tools/checks/check_clearcoat_fixture.py \
+  build/_artifacts/snapshot/20260909T073307.255Z-00e17a
+  PASS: SSR raw 1521 hits/209 red; floor 721 hits/73 red; GTAO active;
+  material/normal/roughness/glass witnesses pass. All 638,976 half-float tuples
+  finite; v4 source-grid history contains 6595 covered pixels. Backend-neutral
+  manifest, native Metal provenance. Retain raw payload for pending Vulkan.
+
+Unresolved MetalFX and rejected trials
+-------------------------------------
+Snapshot command above with CASE=ssr_bar_settled:
+  PASS, snapshot/20260909T072339.589Z-00bf25, fast-fade shader with MetalFX.
+  Report SHA-256: 87710d9c8369a84f4995ba99d2ce8bcda5fcd5cadd3ca2b74c026cb0580cfcc6
+  Compared with 20260909T064030.196Z-012204 across eight static jitter phases,
+  the fixed 86,265-pixel bar has 472 -> 470 pixels varying >3 codes. Mean absolute
+  SSR-on minus SSR-off display RGB falls 0.655528 -> 0.383905. This is about 41%
+  weaker signal without a decisive shimmer improvement. The fixed meaningful
+  union also worsens from 56 to 67 volatile pixels. Do not equate a smaller
+  ON-minus-OFF signal with reduced actual ON instability.
+
+Permanently excluding SSR from static TAA was rejected: a scaled static trial
+left 491 bar pixels varying >3 codes, maximum 28, despite six calm hotspots.
+The approved finite settling window replaces that trial. A native-scale run
+070503 crossed a binary rebuild and is excluded from comparisons. Other trial
+digests and their disposition are preserved in the appended retirement ledger.
+
+Retained evidence
+-----------------
+ssr-history-settling.png is the reviewed final frame 274 of the long hold.
+Retain raw snapshots 075020 (settling), 072339 (unresolved MetalFX) and 073307
+(portable material witness) while this reflection investigation and native
+Vulkan comparison remain open. Earlier pending cross-machine payloads are
+unchanged. No baseline was promoted. Completed disposable runs are removed only
+after their commands, results and digests are recorded here or in the separate
+capacity record.
+
+Retirement ledger
+-----------------
+All listed paths are under build/_artifacts/. Snapshot commands use the
+snapshot invocation above with the then-current tools/cases/local manifest.
+API profiles use the serial API command above and its listed case. Temporary
+trial manifests have changed or been removed; manifest digests distinguish them.
+snapshot/20260909T070308.052Z-004a60
+  pass, exit 0; case local.ssr.bar_no_taa
+  Case SHA-256: sha256:9b42ea36c0b16dc10b763fa1c252d131b60ace187b9fa14d43c90bdc6f8c0083
+  Report SHA-256: c5d90aa32ec882a5f3e1a30bd43a34962548c1e3d83d82419a7427eea477dad7
+  Warmup/measure: 8/2
+  Minimal no-TAA case passes but does not exercise the overflow.
+snapshot/20260909T070503.767Z-005678
+  pass, exit 0; case local.ssr.bar_native_taa
+  Case SHA-256: sha256:d69fdbf7805f68641b4a22318fbe7027b6994159df044714dac3a265a25c31ac
+  Report SHA-256: e7ea736c8c2e12c9a24ee66844f46b271950370bbc21ee8299782c2c3066b5af
+  Warmup/measure: 160/12
+  Discard comparison: replay crossed a binary rebuild; temporary native-scale case removed.
+snapshot/20260909T071014.306Z-0075c8
+  pass, exit 0; case local.ssr.bar_scaled_taa
+  Case SHA-256: sha256:5247f53e59adc1192fd02483fac66c5aeefa124725efaffd62fc7621aa4d4cfa
+  Report SHA-256: a75fef6028b87ddebbe446e9602925b3911b3f7ddd7b7d30c625f79c2ff65f05
+  Warmup/measure: 160/12
+  Fast fade with old immediate static TAA; six hotspot ranges zero after 160 warmup frames.
+snapshot/20260909T071146.033Z-007d31
+  incomplete, exit 5; case local.ssr.bar_no_taa
+  Case SHA-256: sha256:91679e015779a82d94a63bf33b3d11d8dc3c97661fcc77d4ed718ba7b8032b50
+  Report SHA-256: 210de7485d22744b1b7200078d1d5d0d1e27ee728309c4ad9f9db903c822124d
+  Warmup/measure: 8/2
+  No-TAA overflow reproduced; see ssr-no-taa-capacity.txt.
+snapshot/20260909T071315.367Z-0085e5
+  pass, exit 0; case local.ssr.bar_turn_stop
+  Case SHA-256: sha256:84837e85ecc17f58b0ec80c1cb4b8a0aa6a4dd78602ac88bc06f76c05edd1b91
+  Report SHA-256: 0696b814ea4096dd6a3b0e92ad14326de912d2a3c2777b40f30ec183ffc2236f
+  Warmup/measure: 96/32
+  Fast filter with old static TAA; not the intended old-filter baseline.
+snapshot/20260909T071826.529Z-00a455
+  pass, exit 0; case local.ssr.bar_turn_stop
+  Case SHA-256: sha256:84837e85ecc17f58b0ec80c1cb4b8a0aa6a4dd78602ac88bc06f76c05edd1b91
+  Report SHA-256: 3c9eee917623dbd484e83a5d5a6e7272ca16801b58b080704e90f962f44c4bf6
+  Warmup/measure: 96/32
+  Controlled old-filter turn/stop baseline; decisive comparison above.
+snapshot/20260909T072215.046Z-00baef
+  pass, exit 0; case local.ssr.bar_no_taa
+  Case SHA-256: sha256:91679e015779a82d94a63bf33b3d11d8dc3c97661fcc77d4ed718ba7b8032b50
+  Report SHA-256: 4d37b2522a12d25d1977c72096826b7082e8c3f7149a821b9e8751ab4ddb26e0
+  Warmup/measure: 8/2
+  Corrected no-TAA capture; preview and checks in capacity record.
+snapshot/20260909T072850.293Z-00d0df
+  pass, exit 0; case local.ssr.bar_turn_stop
+  Case SHA-256: sha256:84837e85ecc17f58b0ec80c1cb4b8a0aa6a4dd78602ac88bc06f76c05edd1b91
+  Report SHA-256: 1b747faf20fe3d8ea261004d9f1302ec475a7792e43688cc6869b94eaa299bc4
+  Warmup/measure: 96/32
+  Rejected permanent SSR exclusion from static TAA; early results match final settling warmup.
+snapshot/20260909T072958.179Z-00d6f6
+  pass, exit 0; case local.ssr.bar_scaled_taa
+  Case SHA-256: sha256:5247f53e59adc1192fd02483fac66c5aeefa124725efaffd62fc7621aa4d4cfa
+  Report SHA-256: c6b2969411b11d49739729b55e49fb31336ec9c894f81c50f9264b2a1d9abe39
+  Warmup/measure: 160/12
+  Rejected permanent exclusion: static bar has 491 pixels varying >3 codes, maximum 28.
+profile/20260909T073101.779Z-00da96
+  pass, exit 0; case local.ssr.bar_no_taa
+  Case SHA-256: sha256:91679e015779a82d94a63bf33b3d11d8dc3c97661fcc77d4ed718ba7b8032b50
+  Report SHA-256: ce81a25f40d389f90f3ca71d0a1a0c3f495c38e56cb9c5633b92fd0d753a4c64
+  Warmup/measure: 8/2
+  Corrected no-TAA API validation passes; see capacity record.
+snapshot/20260909T075344.844Z-0133f8
+  pass, exit 0; case local.ssr.bar_scaled_taa
+  Case SHA-256: sha256:34b85452881998ecb18a84842cc7523669a88f0486be334582367d46fcd622f2
+  Report SHA-256: 7d55078592e9d6946e3fb675fc3952e50ae3c694a5456f18a986886e57d9833e
+  Warmup/measure: 288/12
+  Final scaled static check, zero sampled bar variation; decisive results above.
+profile/20260909T075541.711Z-01393a
+  pass, exit 0; case local.ssr.bar_turn_stop_settled
+  Case SHA-256: sha256:c8a23f946a840082bbee79ea78702196df252d8cd4d228e85ebf0e2e3fa82282
+  Report SHA-256: e8b7e774b7eb5d2f88e1b36d4282747faace49d27574576d88710abf1069ea6e
+  Warmup/measure: 96/276
+  Final settling API validation passes; decisive results above.
+snapshot/20260909T075750.718Z-014fd7
+  pass, exit 0; case local.ssr.bar_turn_stop
+  Case SHA-256: sha256:84837e85ecc17f58b0ec80c1cb4b8a0aa6a4dd78602ac88bc06f76c05edd1b91
+  Report SHA-256: e4b380003b5f7761d6274eb3f068a67638597b66d9884cf50997b2242b3b1e63
+  Warmup/measure: 96/32
+  Final early turn/stop comparison; decisive results above.
+
+Preview SHA-256: 5246ee4a3da0f87e98fb8f5ab5fe6706a2c8f398f63239cd48733482d12a70bd

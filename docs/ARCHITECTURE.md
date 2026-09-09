@@ -508,8 +508,13 @@ reconstructing one half-resolution material response across source pixels;
 incoming-radiance detail remains limited by the half-resolution rays.
 
 Continuous clamping, motion-adaptive history weights and the 2 cm minimum receiver
-depth tolerance remain under ADR-055. Empty neighborhoods fade validated history;
-rejected depth/identity clears. History pool ownership and image count stay fixed.
+depth tolerance remain under ADR-055. Empty neighborhoods halve validated
+coverage; at most half of normalized out-of-bounds RGB survives each supported
+update. Rejected depth/identity clears. SSR-enabled scenes retain ordinary TAA
+for 128 unchanged submitted frames before TAA/FSR begins its existing 128-sample
+static accumulation. The selected producer's CPU metadata owns the settling
+counter; failed history/input equality resets it. This does not change MetalFX.
+History pool ownership and image count stay fixed.
 At source 1280×720 with three frame slots and five history instances, logical
 history payload grows by 65.917969 MiB to 87.890625 MiB, excluding alignment and
 resize overlap. Temporal shades about four times as many pixels, with at most
@@ -518,9 +523,12 @@ source-resolution history from version 3 half-resolution shaded history.
 
 Release app/editor builds, shared math, compiled native layouts and the Metal
 mirror, static/moving Bistro, layered-material, combined SSR/SSGI and API-resize
-checks pass. Local matched profiles increase total SSR GPU time from 1.99 to
-2.63 ms at source 1025×577. Visual results remain mixed: some hotspots improve,
-but the fixed reflective bar-face region shows no decisive stability gain.
+checks pass. With the bounded-fade/settling correction, the sampled portable-TAA
+bar region freezes after settling and static accumulation; early camera-stop
+differences fall with weaker intermittent reflections. MetalFX's fixed bar region
+shows no decisive stability gain. Earlier local profiles of the full-resolution
+history change increased total SSR GPU time from 1.99 to 2.63 ms at source
+1025×577; they do not measure this settling correction.
 [ADR-055](adr/055-screen-space-reflections.md) records the evidence and limits.
 Native Vulkan execution remains unavailable. Both trace implementations now use
 fractional linear-clamp HDR sampling within the existing one/five-tap budget.

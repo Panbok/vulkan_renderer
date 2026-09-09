@@ -119,6 +119,7 @@ typedef struct VkrMetalPacketTemporalSceneState {
   uint64_t radiance_revision;
   uint64_t publication_generation;
   uint64_t graph_revision;
+  uint32_t unchanged_frames;
 } VkrMetalPacketTemporalSceneState;
 
 /** Completion-gated metadata for one SSGI history ring instance. */

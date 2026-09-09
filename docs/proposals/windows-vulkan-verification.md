@@ -75,8 +75,10 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   not establish this output or cost. Validate fractional linear-clamp trace source
   sampling (sampler at trace-root offset 324, root size 336) and the corrected
   coat-directed GTAO in deferred lighting and exact SSR probe removal. Include
-  subpixel hit motion, rough cone offsets and the disabled GTAO sentinel before
-  claiming parity:
+  subpixel hit motion, rough cone offsets and the disabled GTAO sentinel. Check
+  that empty-frame coverage and normalized out-of-current-bounds RGB retain at
+  most half per update, including sparse current coverage; assess the resulting
+  reflection-strength and trail tradeoff before claiming parity:
   [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
@@ -137,6 +139,23 @@ insufficient.
 
 ## Temporal, target, and WSI checks
 
+- [ ] Disable TAA with all post effects in Bistro and verify that the expanded
+  graph fits the shared 163-pass native capacity. Port the Metal-pinned
+  `ssr_bar_no_taa.case.json` settings to a Vulkan witness and inspect the actual
+  native pass count and frame result. The CPU envelope check and
+  [Metal capacity evidence](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
+  do not establish native Vulkan acceptance.
+- [ ] With SSR and portable TAA enabled below 100% scale, exercise a camera turn
+  followed by a hold beyond 256 unchanged frames. Port the Metal-pinned
+  `ssr_bar_turn_stop.case.json`, `ssr_bar_turn_stop_settled.case.json` and
+  `ssr_bar_scaled_taa.case.json` settings to Vulkan, then repeat with FSR 3.1.
+  Check that the first 128 matching submitted frames keep ordinary accumulation
+  and FSR composition masking, then begin the existing 128-sample static mean.
+  Motion, SSR toggles, invalid history, scene/resource changes and resize must
+  reset the settling counter. Failed submissions must not advance it. Compare
+  trails, reflection strength, the first static sample and the final held image;
+  [Metal settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
+  does not validate FSR SDK execution or native Vulkan history ordering.
 - [ ] Run the portable TAA reference and Vulkan FSR 3.1 static case, then the
   moving-camera cases. Use `snapshot` and inspect final color, motion/depth
   channels, history age/validity assertions, and the effective render/output
