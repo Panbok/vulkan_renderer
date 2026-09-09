@@ -351,6 +351,7 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/bloom.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/dof.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/motion_blur.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/metalfx.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/gtao.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/ssr.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/ssgi.metal"

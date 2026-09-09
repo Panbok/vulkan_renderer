@@ -797,6 +797,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       [renderer->gtao_depth_prefilter_pipeline release];
       [renderer->deferred_lighting_pipeline release];
       [renderer->temporal_resolve_pipeline release];
+      [renderer->metalfx_stabilize_pipeline release];
       [renderer->transmission_shade_pipeline release];
       [renderer->transmission_shade_partitioned_pipeline release];
       [renderer->transmission_shade_production_pipeline release];

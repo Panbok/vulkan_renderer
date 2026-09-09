@@ -1044,9 +1044,8 @@
         "TRANSFER_SRC"
       ],
       "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
+        "HISTORY",
+        "RESIZABLE"
       ]
     },
     {
@@ -7498,6 +7497,19 @@
         }
       ],
       "execute": "pass.metalfx.temporal"
+    },
+    {
+      "name": "MetalFX.Stabilize",
+      "type": "compute",
+      "condition": "scene_rendering && metalfx_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        {"image": "temporal_validity", "access": "SAMPLED", "binding": 1}
+      ],
+      "writes": [
+        {"image": "metalfx_output_color", "access": "STORAGE_READ_WRITE", "binding": 0}
+      ],
+      "execute": "pass.metalfx.stabilize"
     },
     {
       "name": "Temporal.Resolve.Editor",

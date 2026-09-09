@@ -618,7 +618,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
                ? 4u
                : 0u) |
           (editor_rect ? VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED
-                       : 0u),
+                       : 0u) |
+          (renderer->metalfx_enabled ? VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA
+                                     : 0u),
       .image_sharpness = !editor_rect && packet->input.globals.render_mode ==
                                              VKR_RENDER_MODE_DEFAULT
                              ? packet->input.globals.image_sharpness
@@ -2426,6 +2428,81 @@ vkr_internal bool8_t vkr_metal_packet_prepare_metalfx_temporal(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_prepare_metalfx_stabilize(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> output = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> validity = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  VkrMetalPacketImage *colors =
+      vkr_metal_packet_named_image_slot(renderer, "metalfx_output_color");
+  if (!output || !validity || !colors || !renderer->metalfx_stabilize_pipeline)
+    return false_v;
+  const uint32_t selected = renderer->selected_temporal_history_instance;
+  const VkrMetalPacketImageInstance *prior_color =
+      selected < colors->instance_count ? &colors->instances[selected] : NULL;
+  const VkrMetalPacketGraphBufferInstance *prior_transform =
+      prior_color
+          ? vkr_metal_packet_graph_buffer_instance(
+                renderer, renderer->temporal_transform_history_handle, selected)
+          : NULL;
+  const bool8_t history_valid =
+      packet->temporal.history_valid && packet->temporal.reset_reasons == 0u &&
+      prior_color && prior_transform && prior_color->history_valid &&
+      prior_color->history_frame_index ==
+          prior_transform->history_frame_index &&
+      prior_color->history_producer_submit_value ==
+          prior_transform->history_producer_submit_value &&
+      prior_color->history_scene_generation ==
+          packet->input.frame.scene_generation &&
+      prior_color->history_width == renderer->prepared_frame.viewport_width &&
+      prior_color->history_height == renderer->prepared_frame.viewport_height;
+  const VkrMetalPacketTemporalSceneState *previous =
+      history_valid ? &colors->instances[selected].history_scene : NULL;
+  const VkrMetalPacketTemporalSceneState *current = &upload->temporal_scene;
+  const bool8_t scene_matches =
+      history_valid && current->signature.eligible &&
+      upload->ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK &&
+      previous->signature.eligible &&
+      current->signature.hash[0] == previous->signature.hash[0] &&
+      current->signature.hash[1] == previous->signature.hash[1] &&
+      current->radiance_revision == previous->radiance_revision &&
+      current->publication_generation == previous->publication_generation &&
+      current->graph_revision == previous->graph_revision;
+  const bool8_t stationary = vkr_temporal_prepare_static_accumulation(
+      scene_matches, packet->ssr_enabled,
+      history_valid ? previous->unchanged_frames : 0u,
+      &upload->temporal_scene.unchanged_frames);
+  id<MTLTexture> history =
+      history_valid
+          ? (id<MTLTexture>)colors->instances[selected].resource.metal_texture
+          : output;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketMetalfxStabilizeRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketMetalfxStabilizeRoot){
+      .output_texture_id = output.gpuResourceID._impl,
+      .history_texture_id = history.gpuResourceID._impl,
+      .validity_texture_id = validity.gpuResourceID._impl,
+      .output_extent = {(uint32_t)output.width, (uint32_t)output.height},
+      .source_extent = {renderer->prepared_frame.viewport_width,
+                        renderer->prepared_frame.viewport_height},
+      .jitter_pixels = packet->temporal.jitter_pixels,
+      .history_valid = history_valid,
+      .scene_stationary = stationary,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->metalfx_stabilize_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(output.width, output.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_transmission_shade(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -3476,6 +3553,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL:
     return vkr_metal_packet_prepare_metalfx_temporal(renderer, pass, packet,
                                                      prepared);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE:
+    return vkr_metal_packet_prepare_metalfx_stabilize(renderer, pass, packet,
+                                                      prepared, upload);
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM:
     return vkr_metal_packet_prepare_temporal_transform(renderer, pass, packet,
                                                        prepared, upload);
@@ -4012,8 +4092,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
     VkrMetalPacketFrameUpload frame_upload = {0};
     const VkrMetalPacketTemporalSceneState temporal_scene = {
-        .signature = packet->scene_rendering && packet->temporal.enabled &&
-                             !renderer->metalfx_enabled
+        .signature = packet->scene_rendering && packet->temporal.enabled
                          ? vkr_temporal_scene_signature(packet)
                          : (VkrTemporalSceneSignature){0},
         .radiance_revision = renderer->radiance_revision,
@@ -4703,9 +4782,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
        is the ADR-029 rollback: a cancelled frame commits nothing and the
        previous contents stay authoritative. */
     vkr_rg_commit_retained_state(renderer->graph);
-    if (packet->scene_rendering && !renderer->metalfx_enabled) {
-      VkrMetalPacketImage *colors =
-          vkr_metal_packet_named_image_slot(renderer, "temporal_history_color");
+    if (packet->scene_rendering) {
+      VkrMetalPacketImage *colors = vkr_metal_packet_named_image_slot(
+          renderer, renderer->metalfx_enabled ? "metalfx_output_color"
+                                               : "temporal_history_color");
       if (colors && renderer->history_output_index < colors->instance_count) {
         frame_upload.temporal_scene.signature.eligible =
             frame_upload.temporal_scene.signature.eligible &&

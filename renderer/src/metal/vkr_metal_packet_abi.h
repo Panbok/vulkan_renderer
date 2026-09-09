@@ -792,6 +792,35 @@ _Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, scene_stationary) ==
                    216u,
                "Metal temporal static-scene ABI drift");
 
+/** Post-MetalFX stationary mean. Output alpha stores private sample age. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketMetalfxStabilizeRoot {
+  uint64_t output_texture_id;
+  uint64_t history_texture_id;
+  uint64_t validity_texture_id;
+  uint32_t output_extent[2];
+  uint32_t source_extent[2];
+  /** Current raster jitter in top-left source pixels, separate from motion. */
+  Vec2 jitter_pixels;
+  uint32_t history_valid;
+  uint32_t scene_stationary;
+  uint32_t reserved[2];
+} VkrMetalPacketMetalfxStabilizeRoot;
+
+_Static_assert(sizeof(VkrMetalPacketMetalfxStabilizeRoot) == 64u &&
+                   _Alignof(VkrMetalPacketMetalfxStabilizeRoot) == 16u,
+               "MetalFX stabilize root size/alignment ABI drift");
+_Static_assert(
+    offsetof(VkrMetalPacketMetalfxStabilizeRoot, output_texture_id) == 0u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, history_texture_id) == 8u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, validity_texture_id) == 16u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, output_extent) == 24u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, source_extent) == 32u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, jitter_pixels) == 40u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, history_valid) == 48u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, scene_stationary) == 52u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, reserved) == 56u,
+    "MetalFX stabilize root field ABI drift");
+
 /** Per-dispatch deferred-lighting resources and reconstruction contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   uint64_t frame;
@@ -977,6 +1006,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowCascade {
   Vec4 origin_inv_size_sun;
 } VkrMetalPacketShadowCascade;
 
+enum { VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u };
+
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
   uint64_t source_texture_id;
   uint32_t flags;
@@ -1157,6 +1188,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_DOF_PARAMS,
   VKR_METAL_PACKET_ABI_DOF_ROOT,
   VKR_METAL_PACKET_ABI_BLOOM_ROOT,
+  VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

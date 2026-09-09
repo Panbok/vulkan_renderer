@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "id": "local.metalfx.accumulation_validity",
+  "suite": "local",
+  "description": "Static MetalFX accumulation excludes transparency and resets when an opaque object moves.",
+  "scene": "assets/scenes/fixtures/motion_blur_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    512,
+    384
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 160,
+    "measure": 6
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "backend": "metal",
+    "taa_enabled": true,
+    "render_scale": 0.8,
+    "upscaler": "metalfx_temporal",
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "gtao_enabled": false,
+    "ssr_enabled": false,
+    "ssgi_enabled": false,
+    "bloom_enabled": false,
+    "motion_blur_enabled": false,
+    "motion_blur_shutter_angle": 180,
+    "motion_blur_entity": "Motion card",
+    "motion_blur_entity_velocity": [
+      2.4,
+      0,
+      0
+    ]
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.5,
+      1.2
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 45,
+    "near_plane": 0.05,
+    "far_plane": 10
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "hdr_pre_bloom",
+        "final_color",
+        "scene_color"
+      ]
+    },
+    {
+      "at_frame": 3,
+      "channels": [
+        "hdr_pre_bloom",
+        "final_color",
+        "scene_color"
+      ]
+    }
+  ]
+}

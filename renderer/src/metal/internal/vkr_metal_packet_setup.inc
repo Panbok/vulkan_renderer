@@ -85,6 +85,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT:
   case VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT:
   case VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT:
+  case VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT:
@@ -1009,6 +1010,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_temporal_resolve",
           VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT, false_v,
           @"VKR Metal packet temporal resolve");
+  renderer->metalfx_stabilize_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_metalfx_stabilize",
+          VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT, false_v,
+          @"VKR MetalFX stationary accumulation");
   renderer->transmission_shade_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_transmission_shade",
@@ -1175,6 +1181,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->atmosphere_multiple_scattering_pipeline ||
       !renderer->atmosphere_source_pipeline || !renderer->atmosphere_sun_pipeline ||
       !renderer->temporal_resolve_pipeline ||
+      !renderer->metalfx_stabilize_pipeline ||
       !renderer->transmission_shade_pipeline ||
       !renderer->transmission_shade_partitioned_pipeline ||
       !renderer->transmission_shade_production_pipeline ||
@@ -1282,6 +1289,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->froxel_apply_pipeline, "Froxel application pipeline"},
       {renderer->deferred_lighting_pipeline, "deferred lighting pipeline"},
       {renderer->temporal_resolve_pipeline, "temporal resolve pipeline"},
+      {renderer->metalfx_stabilize_pipeline, "MetalFX stationary accumulation"},
       {renderer->transmission_shade_pipeline, "transmission shade pipeline"},
       {renderer->transmission_shade_partitioned_pipeline,
        "partitioned transmission shade pipeline"},

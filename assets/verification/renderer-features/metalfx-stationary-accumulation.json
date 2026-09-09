@@ -1,0 +1,617 @@
+{
+  "reset": {
+    "age128_pixels_by_capture": {
+      "0": 455094,
+      "3": 0,
+      "6": 0,
+      "7": 0,
+      "134": 0,
+      "266": 433861,
+      "274": 433861
+    },
+    "cross_replay_age128_rgb_late": {
+      "changed_rgb_pixels": 155136,
+      "changed_rgb_pixels_by_later_capture": [
+        155136
+      ],
+      "persistent_age128_pixels": 433861,
+      "verdict": "inconclusive: checkpoints are independent MetalFX replays"
+    },
+    "final": {
+      "opaque_final_png_pixels": 3360000
+    },
+    "hdr_capture_digests": [
+      "sha256:41a2d2a4ac2b1809a8efe99812c08c35da99a97133c45426791cb217d613fbe8",
+      "sha256:503275e89fa794052c903b72bf75b7bba08034532c1564f4841574aa435b799e",
+      "sha256:af3412a72f2ddba21d837bb0e2c94d329f9bf3912c46fd5ca9eb4d8d7c08ed12",
+      "sha256:62df4ea028603d2b9b789cfeee650cc32452817c65ff003d5a1e687b7e0e91c9",
+      "sha256:6faae51058792aaa2fa250e0a7cfb0e2dccc4aa578bdeca3caab1c27c2821106",
+      "sha256:1baef6b7e686fe5ef0207466866c33d25fda41c622547e7cf54d58c63150cf09",
+      "sha256:b38905217581b4b650a8c536cf1a1a87d7ef62b123c597d2ca5bbc642c1c4423"
+    ],
+    "hdr_capture_version": 3,
+    "provenance": {
+      "backend": "metal",
+      "binary_sha256": "sha256:7e36234d2ef0aff643bbe8c301d323c5cf5682e9f14d51677e756941d8a91ab3",
+      "dirty": true,
+      "git_sha": "71aeb3d42ebede16d6d08f6cbf8d2b5eb77df198",
+      "render_resolution": [
+        641,
+        481
+      ],
+      "report_sha256": "sha256:bcf8613d86e26ffbb1695dd94bad691c01167085adc778e4e71d06446550c0bc",
+      "resolution": [
+        800,
+        600
+      ],
+      "ssr_enabled": true,
+      "upscaler": "metalfx_temporal"
+    },
+    "replay_provenance": {
+      "captures": [
+        {
+          "checkpoint_frame": 0,
+          "child_index": 0,
+          "child_report_sha256": "sha256:f05779b52f81c482e060de185f3a3bf7067b95259c5d00bea3fb1e2f5488e334",
+          "source_frame_index": 896,
+          "submit_serial": 1165
+        },
+        {
+          "checkpoint_frame": 3,
+          "child_index": 1,
+          "child_report_sha256": "sha256:4275ea27fd7df036b55af66e939c843201a951e8642935557256d24d7556c60b",
+          "source_frame_index": 963,
+          "submit_serial": 1239
+        },
+        {
+          "checkpoint_frame": 6,
+          "child_index": 2,
+          "child_report_sha256": "sha256:187ce8021da90e1c818683029c2589aaebe24a7ff6368df9bf040c291f5cb3ea",
+          "source_frame_index": 902,
+          "submit_serial": 1149
+        },
+        {
+          "checkpoint_frame": 7,
+          "child_index": 3,
+          "child_report_sha256": "sha256:5954ffdd5277a4275207a67fc0c72cf09d6cf95aabe75b74815a30c54f476c8b",
+          "source_frame_index": 903,
+          "submit_serial": 1161
+        },
+        {
+          "checkpoint_frame": 134,
+          "child_index": 4,
+          "child_report_sha256": "sha256:5893719967afdde89b71a80d03da012f9b3ec5b1b1f1d833677f791250456746",
+          "source_frame_index": 1030,
+          "submit_serial": 1295
+        },
+        {
+          "checkpoint_frame": 266,
+          "child_index": 5,
+          "child_report_sha256": "sha256:172ef4178367b3a8bbe0b33352b5da4c87620a7c7f6c893244797d1e3e76baab",
+          "source_frame_index": 1162,
+          "submit_serial": 1419
+        },
+        {
+          "checkpoint_frame": 274,
+          "child_index": 6,
+          "child_report_sha256": "sha256:5ed4f1563271022c33f9b1def4b0709a05fa12dc92ad07a4910001016825c6a0",
+          "source_frame_index": 1170,
+          "submit_serial": 1428
+        }
+      ],
+      "independent_child_replays": true
+    },
+    "scene_capture_digests": [
+      "sha256:be39d627ec48b9f0f17acad3ada453ba0b85b00be2b5d79c4b6f0ef60f8e6bc8",
+      "sha256:722d4f28f16584d14be807b2f213dfd55e7b196f63358d94a361cc92ab3d17f8",
+      "sha256:fedc75b0a52969d43d384ff7e431dcc40747df2a1aa92af0af7da61e77a716c7",
+      "sha256:32942f80e9a73369716f544d43ebe152c3f9f16f3416cf49a4a04787fccf1c98",
+      "sha256:4dcc40a7293c9ead99823db2231ac45a00342d071e87c00bbb05b6ba40fd98df",
+      "sha256:37ee1889913223f70d419c1b8776d957be5a6b4aff1617f9e52b7ae5843c3a05",
+      "sha256:f6f406b03a4b4212daeb592e7a44f5e06a3eb22c3880033a01326c7f634a3249"
+    ]
+  },
+  "static_after": {
+    "age128_pixels_by_capture": [
+      886399,
+      886399,
+      886399,
+      886399
+    ],
+    "bar": {
+      "bar_pixels": 86265,
+      "max_rgb_range": 0.0004425048828125,
+      "mean_max_rgb_range": 6.442773945330329e-07,
+      "mean_rgb_by_capture": [
+        [
+          0.0027464026832127305,
+          0.0020335347384485597,
+          0.0016192510930488457
+        ],
+        [
+          0.002746410184146176,
+          0.002033537800730895,
+          0.0016192519850629465
+        ],
+        [
+          0.0027464168227762926,
+          0.002033540481609835,
+          0.0016192541042010155
+        ],
+        [
+          0.0027464162755453337,
+          0.002033542946912942,
+          0.0016192546175755136
+        ]
+      ],
+      "mean_rgb_delta_from_first": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          7.500933445550584e-09,
+          3.0622823352609296e-09,
+          8.920141008218058e-10
+        ],
+        [
+          1.4139563562099583e-08,
+          5.743161275110348e-09,
+          3.0111521698381744e-09
+        ],
+        [
+          1.3592332603201696e-08,
+          8.208464382167269e-09,
+          3.5245266679154175e-09
+        ]
+      ],
+      "pixels_rgb_range_gt_0_001": 0
+    },
+    "cross_replay_age128_rgb": {
+      "changed_rgb_pixels": 289822,
+      "changed_rgb_pixels_by_later_capture": [
+        230631,
+        230515,
+        234903
+      ],
+      "persistent_age128_pixels": 886399,
+      "verdict": "inconclusive: checkpoints are independent MetalFX replays"
+    },
+    "final": {
+      "bar_srgb_normalized": {
+        "bar_pixels": 86265,
+        "max_rgb_range": 0.007843137254901988,
+        "mean_max_rgb_range": 3.8549703774166026e-05,
+        "mean_rgb_by_capture": [
+          [
+            0.12395593605204211,
+            0.08292459509741414,
+            0.05913692759315515
+          ],
+          [
+            0.12395648156671817,
+            0.08292423142096345,
+            0.05913733672916219
+          ],
+          [
+            0.12395598151159844,
+            0.08292523153120288,
+            0.05913679121448614
+          ],
+          [
+            0.12395698162183787,
+            0.08292536790987189,
+            0.05913683667404247
+          ]
+        ],
+        "mean_rgb_delta_from_first": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            5.455146760563467e-07,
+            -3.6367645069035337e-07,
+            4.091360070387906e-07
+          ],
+          [
+            4.5459556327620554e-08,
+            6.364337887393434e-07,
+            -1.3637866901061724e-07
+          ],
+          [
+            1.0455697957573173e-06,
+            7.728124577499607e-07,
+            -9.091911267605779e-08
+          ]
+        ],
+        "pixels_rgb_range_gt_0_001": 847
+      },
+      "opaque_final_png_pixels": 3686400
+    },
+    "hdr_capture_digests": [
+      "sha256:0b06486710403ca87d20604f279d1507f657ee36d115171e2c0a2fe6561da54e",
+      "sha256:3f6c96bedb789c447f5285683ad864621741c2ceef0f81aafb07d41c65126671",
+      "sha256:71a60c1e3edf4eaafd5ca90710c407e0dec90d83d2aad5da1c26c4c341c183dd",
+      "sha256:f0452f0cef2497caab72a2922068166a13ea841e47360ba265c6a5c66691a2cd"
+    ],
+    "hdr_capture_version": 3,
+    "provenance": {
+      "backend": "metal",
+      "binary_sha256": "sha256:7e36234d2ef0aff643bbe8c301d323c5cf5682e9f14d51677e756941d8a91ab3",
+      "dirty": true,
+      "git_sha": "71aeb3d42ebede16d6d08f6cbf8d2b5eb77df198",
+      "render_resolution": [
+        1025,
+        577
+      ],
+      "report_sha256": "sha256:3ca9363260c502da44242db474371f13e5da3ced46479bd94b12194be0777732",
+      "resolution": [
+        1280,
+        720
+      ],
+      "ssr_enabled": true,
+      "upscaler": "metalfx_temporal"
+    },
+    "replay_provenance": {
+      "captures": [
+        {
+          "checkpoint_frame": 3,
+          "child_index": 0,
+          "child_report_sha256": "sha256:239c30629477d1b93935d63a291db6bf65b14a57137bd0ae086d64a0b2136627",
+          "source_frame_index": 771,
+          "submit_serial": 1022
+        },
+        {
+          "checkpoint_frame": 4,
+          "child_index": 1,
+          "child_report_sha256": "sha256:555d93a19ee44df23e91c4c8fc4c5b958db6f85b7177065d6bd7a2ad335e42a7",
+          "source_frame_index": 772,
+          "submit_serial": 1030
+        },
+        {
+          "checkpoint_frame": 7,
+          "child_index": 2,
+          "child_report_sha256": "sha256:63d9556bf197f5f1b2158ba7eb2f2a44095725d8ef5a7a4047234f3f16a1b074",
+          "source_frame_index": 775,
+          "submit_serial": 1032
+        },
+        {
+          "checkpoint_frame": 10,
+          "child_index": 3,
+          "child_report_sha256": "sha256:0e25f3f5a0e4c9b7f126641346e8ade398d26c3e6daa90869a8b2450ea6e0a4b",
+          "source_frame_index": 778,
+          "submit_serial": 1033
+        }
+      ],
+      "independent_child_replays": true
+    }
+  },
+  "static_before": {
+    "age_validation": "not_applicable: capture_version lacks private age metadata",
+    "bar": {
+      "bar_pixels": 86265,
+      "max_rgb_range": 0.0025787353515625,
+      "mean_max_rgb_range": 4.081910971951804e-05,
+      "mean_rgb_by_capture": [
+        [
+          0.002774977895451139,
+          0.0020555057159708607,
+          0.0016382051469111577
+        ],
+        [
+          0.0027748626563498325,
+          0.0020556542947037645,
+          0.001638367507987414
+        ],
+        [
+          0.0027758558197366404,
+          0.0020568415343792537,
+          0.001639653425427276
+        ],
+        [
+          0.0027749203035384133,
+          0.0020558018425419827,
+          0.0016385498340113407
+        ]
+      ],
+      "mean_rgb_delta_from_first": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          -1.1523910130664672e-07,
+          1.4857873290377577e-07,
+          1.6236107625629964e-07
+        ],
+        [
+          8.779242855012567e-07,
+          1.3358184083930164e-06,
+          1.4482785161181854e-06
+        ],
+        [
+          -5.759191272578651e-08,
+          2.9612657112196294e-07,
+          3.44687100182952e-07
+        ]
+      ],
+      "pixels_rgb_range_gt_0_001": 108
+    },
+    "final": {
+      "bar_srgb_normalized": {
+        "bar_pixels": 86265,
+        "max_rgb_range": 0.03137254901960784,
+        "mean_max_rgb_range": 0.0018678877103498921,
+        "mean_rgb_by_capture": [
+          [
+            0.12497673038959976,
+            0.08370613578996776,
+            0.059724446899260486
+          ],
+          [
+            0.12498141272390252,
+            0.08372322858315064,
+            0.05973881211906312
+          ],
+          [
+            0.1249947323739094,
+            0.08373768472206596,
+            0.0597572232393798
+          ],
+          [
+            0.12496709296365623,
+            0.08370140799610866,
+            0.05971944634806337
+          ]
+        ],
+        "mean_rgb_delta_from_first": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            4.6823343027579956e-06,
+            1.709279318287682e-05,
+            1.436521980263672e-05
+          ],
+          [
+            1.8001984309637398e-05,
+            3.1548932098196536e-05,
+            3.277634011931291e-05
+          ],
+          [
+            -9.637425943537226e-06,
+            -4.727793859099494e-06,
+            -5.0005511971137895e-06
+          ]
+        ],
+        "pixels_rgb_range_gt_0_001": 36003
+      },
+      "opaque_final_png_pixels": 3686400
+    },
+    "hdr_capture_digests": [
+      "sha256:b53cc26900b8ebe1d0e8ca50798f8c970f9fbb1637369892801e8b48436d4566",
+      "sha256:f89dab35c52c1556b6e1de7052f13712b1ef6e3c667346adbcd899e46f9a00c4",
+      "sha256:bb49fcdb1a755910344a0978c3aebfa0ca69ce8bac3ed7dc0c99b28726889ec9",
+      "sha256:910aea060a0445243da72b472ee5bd0b33950db9eb1e27787b54a0397e7df9a1"
+    ],
+    "hdr_capture_version": 2,
+    "provenance": {
+      "backend": "metal",
+      "binary_sha256": "sha256:8b2f1a54b523e70fcff042e85171385c756e87ab3e7ae6af431d477ff2340fa8",
+      "dirty": true,
+      "git_sha": "71aeb3d42ebede16d6d08f6cbf8d2b5eb77df198",
+      "render_resolution": [
+        1025,
+        577
+      ],
+      "report_sha256": "sha256:de99390b360d0e41d8f9f8bfa5ef38d3c7225aa59aa4b65c6409f3789feca18f",
+      "resolution": [
+        1280,
+        720
+      ],
+      "ssr_enabled": true,
+      "upscaler": "metalfx_temporal"
+    },
+    "replay_provenance": {
+      "captures": [
+        {
+          "checkpoint_frame": 3,
+          "child_index": 0,
+          "child_report_sha256": "sha256:73f72f9e2b58dadf627fae93f7807f636352c61b64f99d667b511ad290c0a838",
+          "source_frame_index": 771,
+          "submit_serial": 1030
+        },
+        {
+          "checkpoint_frame": 4,
+          "child_index": 1,
+          "child_report_sha256": "sha256:7d0e9d62e03eac81712b74b0309fe8ab144ca16aa33077dac9fae8204ad64b83",
+          "source_frame_index": 772,
+          "submit_serial": 1034
+        },
+        {
+          "checkpoint_frame": 7,
+          "child_index": 2,
+          "child_report_sha256": "sha256:b51b92f40fcd6ca3c86405159d9f7f6b9c391e70d2c10fff7d523d340375b2a2",
+          "source_frame_index": 775,
+          "submit_serial": 1028
+        },
+        {
+          "checkpoint_frame": 10,
+          "child_index": 3,
+          "child_report_sha256": "sha256:9f904706afa3b48bdfde11bd55fd5cd9d16ab699b89884b24eafa284dafa5160",
+          "source_frame_index": 842,
+          "submit_serial": 1105
+        }
+      ],
+      "independent_child_replays": true
+    }
+  },
+  "static_comparison": {
+    "authoritative_ab_comparison": false,
+    "final_srgb_mean_max_rgb_range": {
+      "after": 3.8549703774166026e-05,
+      "before": 0.0018678877103498921
+    },
+    "final_srgb_mean_rgb_by_capture": {
+      "after": [
+        [
+          0.12395593605204211,
+          0.08292459509741414,
+          0.05913692759315515
+        ],
+        [
+          0.12395648156671817,
+          0.08292423142096345,
+          0.05913733672916219
+        ],
+        [
+          0.12395598151159844,
+          0.08292523153120288,
+          0.05913679121448614
+        ],
+        [
+          0.12395698162183787,
+          0.08292536790987189,
+          0.05913683667404247
+        ]
+      ],
+      "before": [
+        [
+          0.12497673038959976,
+          0.08370613578996776,
+          0.059724446899260486
+        ],
+        [
+          0.12498141272390252,
+          0.08372322858315064,
+          0.05973881211906312
+        ],
+        [
+          0.1249947323739094,
+          0.08373768472206596,
+          0.0597572232393798
+        ],
+        [
+          0.12496709296365623,
+          0.08370140799610866,
+          0.05971944634806337
+        ]
+      ]
+    },
+    "mean_max_rgb_range": {
+      "after": 6.442773945330329e-07,
+      "before": 4.081910971951804e-05
+    },
+    "mean_rgb_by_capture": {
+      "after": [
+        [
+          0.0027464026832127305,
+          0.0020335347384485597,
+          0.0016192510930488457
+        ],
+        [
+          0.002746410184146176,
+          0.002033537800730895,
+          0.0016192519850629465
+        ],
+        [
+          0.0027464168227762926,
+          0.002033540481609835,
+          0.0016192541042010155
+        ],
+        [
+          0.0027464162755453337,
+          0.002033542946912942,
+          0.0016192546175755136
+        ]
+      ],
+      "before": [
+        [
+          0.002774977895451139,
+          0.0020555057159708607,
+          0.0016382051469111577
+        ],
+        [
+          0.0027748626563498325,
+          0.0020556542947037645,
+          0.001638367507987414
+        ],
+        [
+          0.0027758558197366404,
+          0.0020568415343792537,
+          0.001639653425427276
+        ],
+        [
+          0.0027749203035384133,
+          0.0020558018425419827,
+          0.0016385498340113407
+        ]
+      ]
+    },
+    "non_authoritative_reasons": [
+      "binary_sha256 differs",
+      "hdr capture_version differs; alpha metadata differs"
+    ]
+  },
+  "status": "pass",
+  "validity": {
+    "final": {
+      "opaque_final_png_pixels": 393216
+    },
+    "frame0_opaque_age128_pixels": 750,
+    "frame0_transparent_age0_pixels": 600,
+    "frame3_age0_pixels": 196608,
+    "hdr_capture_digests": [
+      "sha256:d800ee29c18128af98772e55540117ca95c51768c2dc869bcdee97a763c31135",
+      "sha256:66b06f9c043ecded2559018afd1dc1d9a2e424d459ce0396c3f9a688a3dcac46"
+    ],
+    "hdr_capture_version": 3,
+    "provenance": {
+      "backend": "metal",
+      "binary_sha256": "sha256:7e36234d2ef0aff643bbe8c301d323c5cf5682e9f14d51677e756941d8a91ab3",
+      "dirty": true,
+      "git_sha": "71aeb3d42ebede16d6d08f6cbf8d2b5eb77df198",
+      "render_resolution": [
+        410,
+        308
+      ],
+      "report_sha256": "sha256:86681563e3e8070eb32764da870e01277f47f7bfa7a418e106c2721df15e17f1",
+      "resolution": [
+        512,
+        384
+      ],
+      "ssr_enabled": false,
+      "upscaler": "metalfx_temporal"
+    },
+    "replay_provenance": {
+      "captures": [
+        {
+          "checkpoint_frame": 0,
+          "child_index": 0,
+          "child_report_sha256": "sha256:910d232b5b24991a73843c11e4f49946e330347a5dacf1118447457d62faab63",
+          "source_frame_index": 224,
+          "submit_serial": 299
+        },
+        {
+          "checkpoint_frame": 3,
+          "child_index": 1,
+          "child_report_sha256": "sha256:2f94db30a501083cc1bd5f7300fdb620e9cb3df5463ce6e98dfd7c3613403255",
+          "source_frame_index": 227,
+          "submit_serial": 302
+        }
+      ],
+      "independent_child_replays": true
+    },
+    "scene_capture_digests": [
+      "sha256:ee3540c79f60684007a35c58a6702d8a56d8ca8b6b2824e4fcd33499e23a09db",
+      "sha256:31cf32f7a2692076121caa6f42c7d509ee952536baa2705c666136683bc6643b"
+    ],
+    "scene_png_opaque_pixels": 393216
+  }
+}

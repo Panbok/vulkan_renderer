@@ -102,7 +102,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [037](adr/037-portable-same-resolution-temporal-antialiasing.md) | Portable temporal antialiasing, motion-aware coverage and checked static accumulation | partial |
 | [038](adr/038-sh-l2-diffuse-irradiance.md) | GPU-resident L2 diffuse response | implemented |
 | [039](adr/039-metal-internal-render-scale.md) | Separate internal Scene and physical output extents | implemented |
-| [040](adr/040-metalfx-temporal-dynamic-resolution.md) | MetalFX reconstruction, completed-GPU scale control and unresolved bar shimmer | implemented |
+| [040](adr/040-metalfx-temporal-dynamic-resolution.md) | MetalFX reconstruction, stationary accumulation and completed-GPU scale control | implemented |
 | [041](adr/041-retained-cascaded-shadows.md) | Stable fits and retained directional shadow cascades | implemented |
 | [042](adr/042-scene-linear-post-processing.md) | Scene-linear exposure with completed-history time, bloom and directional ambient visibility | implemented |
 | [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation, color transfer and image sharpness | implemented |

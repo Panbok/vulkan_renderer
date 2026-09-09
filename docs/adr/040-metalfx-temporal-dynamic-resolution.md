@@ -31,6 +31,37 @@ MetalFX writes Scene-output-resolution HDR before exposure/bloom/tonemap. Panele
 UI stays native and composes after the reconstructed Scene; portable resolve is
 omitted in this mode.
 
+Follow the SDK with `MetalFX.Stabilize`, an output-resolution compute pass that
+accumulates eligible stationary samples. The shared CPU scene signature and
+native radiance, publication and graph revisions must match the exact preceding
+submitted output/transform producer. Camera, scene, material, light, resource or
+viewport changes, missing history and scaler resets immediately preserve current
+MetalFX RGB and write sample age zero. Pending publication, text and active
+upload/IBL writers remain ineligible. With SSR enabled, 128 consecutive matching
+submitted frames first retain current MetalFX output; the following 128 eligible
+samples form a finite mean. Completed eligible pixels copy that mean. This adds
+no reprojection of its own and leaves the SDK's private history active.
+
+The pass maps each canonical output center into the active source grid with
+current raster jitter and reads four integer `temporal_validity` texels. Any
+missing-motion marker or transmission/blend marker bypasses accumulation, even
+when authored transparency reactivity is zero. Only reliable opaque/background
+footprints accumulate. This uses existing validity, not an added MetalFX reactive
+mask or FSR's optical-composition policy. The ceiling is six texture reads and
+one write per output pixel: current color, four validity reads and previous color.
+Global settling/reset bypasses need one current-color read and one write.
+
+Retain `metalfx_output_color` in the existing completion-gated history pool.
+With three frame slots, its instance count changes from three to five. The two
+extra RGBA16F outputs add 14.0625 MiB of pixel storage at 1280×720; native
+allocation rounding and temporary old/new resize allocations are excluded.
+Existing per-image metadata owns the scene signature and settling count, and
+publishes only after successful submission. Input selection and combined
+last-use tracking preserve the common pool's completion proof. Alpha stores
+private per-pixel sample age from 0 to 128. Scene presentation/export restores
+opaque alpha; raw HDR diagnostics retain the versioned age contract described
+in [ADR-044](044-shader-cross-backend-contract.md).
+
 Previous transforms and matrices must identify the exact preceding scaler encode.
 A missing predecessor resets history. An in-flight predecessor is ordered with a
 GPU shared event and retained through consumption. Untracked graph textures use
@@ -82,12 +113,17 @@ GPU-work feedback does not guarantee a whole-frame FPS target. Moving-quality
 acceptance and matched performance remain separate from source integration.
 Validation of portable mode does not validate native MetalFX.
 
-Static Bistro bar shimmer remains unresolved with MetalFX at 80% scale. The
-bounded SSR fade reduces intermittent reflection strength without a decisive
-stability gain. Portable TAA's approved settling window does not change MetalFX;
-[the reflection evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
-records this limit. The source/input audit has not established an incorrect
-jitter sign, motion scale, producer selection or pre-exposure contract.
+Stationary accumulation substantially reduces the measured static Bistro bar
+variation at 80% scale. The mean per-pixel maximum RGB range in final normalized
+sRGB fell from 0.00186788771 to 0.0000385497038, about 97.94%; the corresponding
+HDR range fell from 0.0000408191097 to 0.000000644277395.
+[The accumulation record](../../assets/verification/renderer-features/metalfx-stationary-accumulation.txt)
+owns the exact commands, cases and report digests. Its checkpoints come from
+independent child processes, so this is a descriptive variation measurement,
+not proof of exact freezing along one continuous history. Moving MetalFX flicker
+remains unresolved. There is no matched performance or native Vulkan claim.
+The settling window is a policy, not proof that recursive SSR or SDK output has
+fully converged; a finite mean can retain sampling bias until its next reset.
 
 The approved scale-dependent jitter trial was reverted after the 80%-scale
 Bistro bar comparison worsened. Across 24 matched checkpoints, bar pixels whose
@@ -122,5 +158,7 @@ faults, or another backend gains an authorized temporal upscaler.
 
 [`vkr_dynamic_resolution.c`](../../renderer/src/vkr_dynamic_resolution.c),
 [`vkr_metal_packet_setup.inc`](../../renderer/src/metal/internal/vkr_metal_packet_setup.inc),
-[`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc), and
-[`vkr_metal_packet_frame.inc`](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc).
+[`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc),
+[`vkr_metal_packet_frame.inc`](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc),
+[`vkr_metal_packet_graph.inc`](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc), and
+[`post/metalfx.metal`](../../renderer/src/shaders/metal/msl/post/metalfx.metal).

@@ -510,11 +510,13 @@ incoming-radiance detail remains limited by the half-resolution rays.
 Continuous clamping, motion-adaptive history weights and the 2 cm minimum receiver
 depth tolerance remain under ADR-055. Empty neighborhoods halve validated
 coverage; at most half of normalized out-of-bounds RGB survives each supported
-update. Rejected depth/identity clears. SSR-enabled scenes retain ordinary TAA
-for 128 unchanged submitted frames before TAA/FSR begins its existing 128-sample
-static accumulation. The selected producer's CPU metadata owns the settling
-counter; failed history/input equality resets it. This does not change MetalFX.
-History pool ownership and image count stay fixed.
+update. Rejected depth/identity clears. SSR-enabled scenes wait 128 unchanged
+submitted frames before portable TAA, FSR or MetalFX's following pass begins
+128-sample static accumulation. Current reconstruction continues during settling.
+The selected producer's CPU metadata owns the counter; failed history/input
+equality resets it. SSR history pool ownership and image count stay fixed;
+[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) owns the separate
+MetalFX output-history budget.
 At source 1280×720 with three frame slots and five history instances, logical
 history payload grows by 65.917969 MiB to 87.890625 MiB, excluding alignment and
 resize overlap. Temporal shades about four times as many pixels, with at most
@@ -525,10 +527,12 @@ Release app/editor builds, shared math, compiled native layouts and the Metal
 mirror, static/moving Bistro, layered-material, combined SSR/SSGI and API-resize
 checks pass. With the bounded-fade/settling correction, the sampled portable-TAA
 bar region freezes after settling and static accumulation; early camera-stop
-differences fall with weaker intermittent reflections. MetalFX's fixed bar region
-shows no decisive stability gain. A subsequent scale-dependent MetalFX jitter
-trial worsened bar shimmer and was reverted; MetalFX retains eight phases.
-[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) records that result.
+differences fall with weaker intermittent reflections. MetalFX's following
+stationary accumulation pass substantially reduces measured static bar variation;
+moving flicker remains unresolved. The scale-dependent MetalFX jitter trial was
+reverted; MetalFX retains eight phases.
+[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) records the evidence
+and its limits.
 Earlier local profiles of the full-resolution
 history change increased total SSR GPU time from 1.99 to 2.63 ms at source
 1025×577; they do not measure this settling correction.
@@ -537,7 +541,10 @@ Native Vulkan execution remains unavailable. Both trace implementations now use
 fractional linear-clamp HDR sampling within the existing one/five-tap budget.
 Deferred coat lighting and SSR probe subtraction use the coat-directed GTAO cone
 on both backends; these source corrections still need native Vulkan comparison.
-MetalFX `hdr_pre_bloom` captures now read its actual reconstructed HDR output.
+MetalFX `hdr_pre_bloom` captures read its reconstructed, subsequently accumulated
+HDR output. Version 3 retains private sample age in alpha; DoF and motion-blur
+color captures use version 2 because they can propagate that age. Presentation
+and Scene export restore opaque alpha.
 GPU shader validation previously crashed in MetalTools with SSR on or off and
 supplied no shader-validation result.
 
@@ -642,7 +649,17 @@ limit (up to 16); devices without it report a maximum of 1.
 
 Metal supports explicit internal scale and MetalFX temporal reconstruction. The
 sample selects dynamic MetalFX in direct and paneled modes; zero-initialized
-renderer API callers use unit-scale spatial mode. Vulkan spatial rendering
+renderer API callers use unit-scale spatial mode. A post-MetalFX pass averages
+128 eligible stationary output samples after the SSR settling window. Scene,
+camera, material, light, resource or viewport changes immediately restore current
+MetalFX RGB and clear sample age; transparent or unreliable-motion footprints
+bypass this added accumulation. The existing RGBA16F output becomes a five-instance
+history image: two extra instances add 14.0625 MiB of pixel storage at 1280×720
+with three frame slots, excluding native allocation rounding and resize overlap.
+The pass reads current color, four existing validity texels and previous color,
+then writes once; it adds no mask or depth image. This addresses stationary
+shimmer, not moving MetalFX quality, and has no matched performance claim.
+Vulkan spatial rendering
 rejects non-unit scale and MetalFX. Vulkan FSR 3.1 accepts a fixed scale in
 `[1/3, 1]`, including Native AA, with no frame generation or dynamic resolution.
 It consumes raw HDR, normalized previous-UV minus current-UV motion, portable

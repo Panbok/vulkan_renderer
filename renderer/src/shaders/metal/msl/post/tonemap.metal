@@ -12,6 +12,7 @@ struct alignas(16) VkrMetalPacketTonemapRoot {
 
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED =
     1u << 3u;
+static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u;
 
 static float3 vkr_metal_packet_aces_fitted(float3 color) {
   const float a = 2.51;
@@ -51,6 +52,9 @@ static float4 vkr_metal_packet_finish_output(
     float4 color, uint flags, VkrDisplayOutputParams display_output) {
   if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED) == 0u)
     color.rgb = vkr_display_output_scale(color.rgb, display_output);
+  // Post-MetalFX alpha carries private history age, never scene opacity.
+  if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA) != 0u)
+    color.a = 1.0f;
   return color;
 }
 

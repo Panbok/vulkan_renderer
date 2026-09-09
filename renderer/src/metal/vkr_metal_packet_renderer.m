@@ -677,6 +677,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> froxel_integrate_pipeline;
   id<MTLComputePipelineState> froxel_apply_pipeline;
   id<MTLComputePipelineState> temporal_resolve_pipeline;
+  id<MTLComputePipelineState> metalfx_stabilize_pipeline;
   id<MTLComputePipelineState> transmission_shade_pipeline;
   id<MTLComputePipelineState> transmission_shade_partitioned_pipeline;
   id<MTLComputePipelineState> transmission_shade_production_pipeline;

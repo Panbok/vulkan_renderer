@@ -43,6 +43,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STAGE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SUBSURFACE_GATHER,
@@ -131,6 +132,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.temporal.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.metalfx.stage", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.metalfx.temporal", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.metalfx.stabilize", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.subsurface.gather", VKR_RG_PASS_TYPE_COMPUTE},
@@ -1906,14 +1908,16 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
   if (!packet || !renderer->active_command_slot)
     return;
   VkrMetalPacketImage *slots[] = {
-      vkr_metal_packet_named_image_slot(renderer, "temporal_history_color"),
+      vkr_metal_packet_named_image_slot(
+          renderer, renderer->metalfx_enabled ? "metalfx_output_color"
+                                               : "temporal_history_color"),
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_depth"),
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_identity"),
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_surface"),
   };
   const uint32_t current = renderer->history_output_index;
   const uint32_t selected = renderer->selected_temporal_history_instance;
-  if (!renderer->metalfx_enabled) {
+  {
     /* A submitted reset excludes every pre-reset producer, even while its
        replacement is still in flight. Completion continues to govern reuse. */
     if (packet->temporal.reset_reasons != 0u && slots[0])
@@ -1972,7 +1976,7 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
   }
   if (selected == UINT32_MAX)
     return;
-  if (!renderer->metalfx_enabled) {
+  {
     for (uint32_t i = 0u; i < ArrayCount(slots); ++i) {
       if (slots[i] && selected < slots[i]->instance_count)
         slots[i]->instances[selected].last_use_submit_value = MAX(

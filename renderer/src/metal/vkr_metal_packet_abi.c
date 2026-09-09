@@ -1001,6 +1001,26 @@ vkr_global const VkrMetalPacketAbiField vkr_deferred_lighting_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, subsurface_source_texture_id, "subsurface_source", 232),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_metalfx_stabilize_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, output_texture_id,
+                  "output", 0),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, history_texture_id,
+                  "history", 8),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, validity_texture_id,
+                  "validity", 16),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, output_extent,
+                  "output_extent", 24),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, source_extent,
+                  "source_extent", 32),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, jitter_pixels,
+                  "jitter_pixels", 40),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, history_valid,
+                  "history_valid", 48),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, scene_stationary,
+                  "scene_stationary", 52),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, reserved, "reserved", 56),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, visible_rows,
                   "visible_rows", 0),
@@ -1388,6 +1408,10 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketDeferredLightingRoot,
                            "VkrMetalPacketDeferredLightingRoot", 240, 16,
                            vkr_deferred_lighting_root_fields),
+        [VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketMetalfxStabilizeRoot,
+                           "VkrMetalPacketMetalfxStabilizeRoot", 64, 16,
+                           vkr_metalfx_stabilize_root_fields),
         [VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTemporalResolveRoot,
                            "VkrMetalPacketTemporalResolveRoot", 224, 16,

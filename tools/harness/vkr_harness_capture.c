@@ -1623,6 +1623,8 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
   const bool8_t bgra = item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM ||
                        item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
   const bool8_t hdr = item->format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+  const bool8_t opaque_scene = string_equals(
+      vkr_renderer_capture_channel_get(item->channel)->name, "scene_color");
   const bool8_t oct_normal = item->format == VKR_TEXTURE_FORMAT_R16G16_SNORM;
   const bool8_t grayscale = item->format == VKR_TEXTURE_FORMAT_R8_UNORM;
   for (uint32_t y = 0; y < item->height; ++y) {
@@ -1689,7 +1691,7 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
             vkr_harness_capture_half_to_float(
                 vkr_harness_capture_read_u16(texel + 4u)),
             item->display_exposure);
-        target[x * 4u + 3u] =
+        target[x * 4u + 3u] = opaque_scene ? 255u :
             (uint8_t)(Clamp(vkr_harness_capture_half_to_float(
                                 vkr_harness_capture_read_u16(texel + 6u)),
                             0.0f, 1.0f) *

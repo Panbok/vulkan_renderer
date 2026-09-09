@@ -2343,7 +2343,9 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
        channel_index < ArrayCount(rgba16f_channels); ++channel_index) {
     const VkrCaptureChannelDescription *description =
         vkr_renderer_capture_channel_get(rgba16f_channels[channel_index]);
-    assert(description && description->version == 2u);
+    assert(description &&
+           description->version ==
+               (rgba16f_channels[channel_index] == hdr_pre_bloom ? 3u : 2u));
     assert(strcmp(description->canonical_encoding, "RGBA16_FLOAT_LE") == 0);
   }
 
@@ -2546,7 +2548,7 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
                               expected_hdr_components[component]);
   }
   assert(strcmp(first->captures[6].canonical_encoding, "RGBA16_FLOAT_LE") == 0);
-  assert(first->captures[6].capture_version == 2u);
+  assert(first->captures[6].capture_version == 3u);
   assert(raw_size == sizeof(expected_hdr));
   assert(MemCompare(raw, expected_hdr, sizeof(expected_hdr)) == 0);
   snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,

@@ -78,6 +78,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_UI,
   VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STAGE,
   VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL,
+  VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STABILIZE,
   VKR_VULKAN_GRAPH_EXECUTOR_COUNT,
 } VkrVulkanGraphExecutorKind;
 
@@ -190,6 +191,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     // are recognized, but active MetalFX passes are rejected by validation.
     {"pass.metalfx.stage", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.metalfx.temporal", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.metalfx.stabilize", VKR_RG_PASS_TYPE_COMPUTE},
 };
 _Static_assert(ArrayCount(s_vk_graph_executors) ==
                    VKR_VULKAN_GRAPH_EXECUTOR_COUNT,
@@ -241,7 +243,8 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
       return false_v;
     }
     if (kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STAGE ||
-        kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL) {
+        kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL ||
+        kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STABILIZE) {
       log_error(
           "Vulkan graph pass '%.*s' requires unsupported MetalFX executor '%s'",
           (int)pass->desc.name.length, pass->desc.name.str, executor->name);

@@ -1,0 +1,114 @@
+Post-MetalFX stationary accumulation — 2026-09-09
+
+Decision and implementation
+User approved 128 unchanged frames of SSR settling, then 128 stationary samples,
+with immediate camera/scene reset. MetalFX output now uses the existing HISTORY
+pool (five images for three frame slots). Two added RGBA16F images cost
+14.0625 MiB at 1280x720. The post-SDK pass uses at most six texture reads and one
+write per output pixel. Four source-validity taps reject transparent and
+unreliable-motion footprints. Alpha stores sample age; presentation and Scene
+PNG export restore opaque alpha. Raw HDR capture versions: hdr_pre_bloom3,
+dof_color2, motion_blur_color2. No additional rays. MetalFX stays at eight jitter
+phases; the earlier scale-dependent experiment remains rejected.
+
+Environment and scope
+Apple M1 Pro, macOS26.6.2(25G83), Metal4, normal Release, validation variables
+unset. Baseline binary main71aeb3d42ebede16d6d08f6cbf8d2b5eb77df198; after binary
+contains this change. All observations are local and non-authoritative for
+performance. No native Vulkan or Windows execution. Apple validation wrappers
+have previously made MetalFX unavailable; these are ordinary native runs, not
+API/shader-validation evidence.
+
+Build commands
+./build_release.sh > .scratch/metalfx-accumulation-build2.log 2>&1 : PASS
+./build_editor.sh Release > .scratch/metalfx-accumulation-editor-build.log 2>&1 : PASS
+Vulkan graph host source: compile_commands.json argument vector for
+vkr_vulkan_graph.c with -c and -o <object> removed, -fsyntax-only appended: PASS.
+Exact vector retained in .scratch/metalfx-accumulation-vulkan-syntax.log.
+This checks host syntax only, not native Vulkan behavior.
+
+Snapshot commands
+Prefix each command with:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS
+./build_release/tools/vkr_harness snapshot --case <case below> --profile tools/profiles/local-offscreen.json
+
+Static case: tools/cases/local/metalfx_bar_accumulation.case.json
+Bistro reflective bar, output1280x720, actual source1025x577 (requested80%),
+three output slots, SSR/GTAO on, SSGI/bloom off, manual exposure8, warmup320,
+checkpoints3/4/7/10. Both runs PASS.
+Before: build/_artifacts/snapshot/20260909T092913.504Z-017637/report.json
+SHA256 de99390b360d0e41d8f9f8bfa5ef38d3c7225aa59aa4b65c6409f3789feca18f
+After: build/_artifacts/snapshot/20260909T093810.623Z-000d8f/report.json
+SHA256 3ca9363260c502da44242db474371f13e5da3ced46479bd94b12194be0777732
+Bar polygon: (0,253),(1107,249),(1080,283),(0,378); 86265 pixel centers.
+Mean maximum RGB temporal range, normalized final sRGB:
+0.00186788771 -> 0.0000385497038 (97.94% lower).
+Mean maximum RGB temporal range, scene-linear HDR:
+4.08191097e-5 -> 6.44277395e-7 (98.42% lower).
+Frame3 mean final bar RGB:
+before [0.124976730,0.083706136,0.059724447]
+after  [0.123955936,0.082924595,0.059136928]
+Mean brightness also shifts slightly; this is a descriptive comparison, not
+pixel-equivalence or a performance claim. HDR values are finite; final alpha
+is255. Tracked MetalFX output screenshot (filename below) is the after frame3
+final_color capture, copied byte-for-byte:
+metalfx-stationary-accumulation.png
+
+Snapshot checkpoints each run in a separate replay child. Among886399 pixels
+at age128 in all four after checkpoints,289822 differ in RGB bits. These are
+cross-replay differences, not a continuous-history freeze test. Exact frozen
+output within one continuous SDK lineage remains unverified. Motion shimmer
+and transition quality remain open; these captures do not prove perfect
+reflections. The checker reports this comparison as inconclusive.
+
+Camera reset: tools/cases/local/metalfx_bar_reset.case.json
+Output800x600, actual source641x481, warmup320. Movement stops at checkpoint6.
+PASS: build/_artifacts/snapshot/20260909T093931.515Z-001ba4/report.json
+SHA256 bcf8613d86e26ffbb1695dd94bad691c01167085adc778e4e71d06446550c0bc
+Checkpoint0 has455094 age128 pixels. Checkpoints3/6/7/134 have all age0.
+Checkpoints266/274 each have433861 age128 pixels. Finite HDR and final alpha255.
+Late RGB equality across independent children is inconclusive as above.
+
+Transparency and object reset:
+tools/cases/local/metalfx_accumulation_validity.case.json
+Static camera, moving opaque card and stationary transparent card; SSR off.
+PASS: build/_artifacts/snapshot/20260909T094916.089Z-005341/report.json
+SHA256 86681563e3e8070eb32764da870e01277f47f7bfa7a418e106c2721df15e17f1
+Checkpoint0: all600 transparent interior pixels x430:450,y175:205 have age0;
+all750 opaque backdrop pixels x240:270,y180:205 have age128.
+Checkpoint3: moving the object resets all196608 pixels to age0.
+Both Scene and final PNG captures have alpha255 at both checkpoints.
+
+Lifecycle command (same environment prefix):
+./build_release/tools/vkr_harness profile --case tools/cases/local/editor_transport_bistro_metalfx_resize_resume.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
+PASS: build/_artifacts/profile/20260909T094941.633Z-00563c/report.json
+SHA256 ae11350ddbdefb26ac915b9029ef15185a74b9d2297f8cbd177ef823c8cb07b5
+Bistro editor stop, frozen resize and resume with DRS. Profile name does not
+enable validation; validation variables were unset. Initial attempt with
+local-windowed.json was rejected before execution for fifo/immediate mismatch.
+
+Resolved implementation failure
+First Release compile succeeded but native initialization found a missing ABI
+root-buffer-index registration. Added buffer0 registration and rebuilt; all
+native runs above use the corrected binary.
+Failed report20260909T093554.840Z-000528:
+SHA256 fc3d8ea713dbd15d5de0d733f57634df9de0f5a8a4bfba832520f381614fd413
+Diagnostic: Metal ABI root binding1 missing for VKR MetalFX stationary accumulation.
+
+Reproduction checker: tools/checks/check_metalfx_accumulation.py
+Use --static-before <before-run> --static-after <after-run> --reset <reset-run>
+--validity-run <validity-run>. It verifies capture/report digests, finite HDR,
+private ages, reset stages, transparency, PNG alpha and descriptive variation.
+No baseline was promoted. Existing pending cross-machine payloads were preserved.
+
+CPU graph and capture contract verification
+./build_test.sh > .scratch/metalfx-accumulation-tests3.log 2>&1 : PASS
+Existing full-feature graph schedule/capacity case now expects150 MetalFX passes,
+below163 capacity. Existing capture-converter checks retain hdr_pre_bloom v3.
+Two earlier suite runs stopped at stale v2 expectations, corrected in the final
+run. No unit tests were added. Native Metal cases exercise the shader ABI/output;
+the CPU suite does not establish GPU parity or synchronization correctness.
+
+The complete checker output is retained as metalfx-stationary-accumulation.json.
+This task's completed snapshot/profile run trees were retired after recording
+these results; unrelated and pending cross-machine captures were left intact.

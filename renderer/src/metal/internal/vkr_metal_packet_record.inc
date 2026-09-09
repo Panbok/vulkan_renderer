@@ -13,6 +13,13 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE:
+    // MetalFX owns its encoders; its final write is published through this
+    // fence.
+    [encoder waitForFence:renderer->metalfx_temporal_scaler.fence
+        beforeEncoderStages:MTLStageDispatch];
+    vkr_metal_packet_record_dispatch(renderer, encoder, &pass->dispatch);
+    break;
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE: {
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {

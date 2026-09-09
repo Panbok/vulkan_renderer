@@ -101,6 +101,28 @@ single native run cannot establish bilateral parity. MetalFX is an explicit
 backend-specific mode under ADR-040. Current missing native evidence is summarized
 in [ARCHITECTURE](../ARCHITECTURE.md).
 
+MetalFX's post-SDK stationary accumulation is an authorized Metal-only
+**UNALIGNED** exception under [ADR-040](040-metalfx-temporal-dynamic-resolution.md).
+Its native `VkrMetalPacketMetalfxStabilizeRoot` is 64 bytes, aligned to 16:
+output/history/validity texture IDs occupy bytes 0/8/16, output and source extents
+24/32, source-pixel jitter 40, history-valid and stationary flags 48/52, and
+reserved padding 56. The kernel consumes current output plus at most four
+jitter-adjusted integer validity samples and one same-pixel previous output,
+then writes once. Validity at or below 0.5 rejects unsupported motion; values
+above 1.5 reject all transmission/blend samples, including zero authored
+reactivity. It adds no reactive-mask image and does not inherit FSR composition
+mask behavior. The shared 128-sample limit and CPU SSR settling gate are reused;
+portable TAA/FSR algorithms are unchanged.
+
+MetalFX output alpha is private static-sample age. Metal's tonemap opaque-alpha
+flag occupies bit 4 and restores alpha 1 for Scene presentation/export, including
+paths through motion blur or DoF that preserve source alpha. Raw
+`hdr_pre_bloom` version 3, `dof_color` version 2 and `motion_blur_color` version 2
+retain that age when their producer is in the MetalFX/FSR post chain. Earlier
+capture versions cannot be treated as the same alpha contract. The bounded
+stationary improvement and continuous-history/moving-quality limits belong to
+ADR-040; they do not establish native Vulkan or bilateral parity.
+
 Vulkan FSR 3.1 is an authorized backend-specific **UNALIGNED** exception under
 ADR-052. Its prepare shader converts raw HDR, temporal validity and nearest
 transmission depth into depth and mask inputs. The SDK consumes these with
@@ -273,6 +295,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Opaque SSGI (UNALIGNED) | `shared/ssgi_kernel.slangh` | `metal/msl/post/ssgi.metal` | `vulkan/slang/post/ssgi.slang` |
 | Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
 | Temporal resolve | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
+| MetalFX stationary accumulation (UNALIGNED: authorized Metal-only feature) | shared static-sample limit and CPU settling metadata | `metal/msl/post/metalfx.metal`, MetalFX SDK encode | — |
 | FSR 3.1 (UNALIGNED: authorized Vulkan-only feature) | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
 | Tonemap/FXAA/sharpening (UNALIGNED) | shared exposure state, `shared/sharpen_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
@@ -448,8 +471,10 @@ captures predate the new history extent. Metal mirror, static/moving Bistro,
 layered-material, combined SSR/SSGI and two API-resize checks pass. The subsequent
 bounded-fade/settling correction passes 140 shared-math outputs, five SSR SPIR-V
 modules, host syntax and one serial Metal API hold. The sampled portable-TAA bar
-region freezes after settling and static accumulation; MetalFX shows no decisive
-stability improvement. GPU shader validation previously crashed in MetalTools
+region freezes after settling and static accumulation. MetalFX's subsequent
+post-SDK stationary pass and its separate budget are recorded under ADR-040;
+the SSR fade alone did not decisively improve its stability. GPU shader
+validation previously crashed in MetalTools
 with SSR disabled as well as enabled and supplied no result.
 [ADR-055](055-screen-space-reflections.md#evidence-and-remaining-checks) links
 current and prior evidence. The domain remains UNALIGNED.

@@ -1607,7 +1607,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
     VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 163u,
-    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 149u,
+    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 150u,
     VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 150u,
     VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 149u,
   };
