@@ -66,7 +66,11 @@ so those baselines are incompatible. `ssr_reflection` version 4 contains
 RGB. Version 3 held half-resolution shaded RGB; earlier versions held incoming
 radiance. Those history baselines are incompatible with the new extent and receiver. `ssr_raw` remains incoming radiance at version 2. Numeric comparison
 decodes finite half values and never substitutes
-a preview for radiance data. SDR final-color PNG and scalar/vector channels keep
+a preview for radiance data. Under MetalFX, both `scene_color` and `hdr_pre_bloom`
+select `metalfx_output_color`; the former remains a display-converted PNG and the
+latter is raw reconstructed scene-linear HDR. Portable temporal modes select
+`temporal_history_color`. This avoids capturing the inactive portable history as
+MetalFX output. SDR final-color PNG and scalar/vector channels keep
 their existing contracts. Extended-linear final color under ADR-061 uses
 `RGBA16_FLOAT_LE` version 2 with `extended_srgb_linear` color space. Its
 sidecar records producer `display_headroom` and `display_output_scale`; its

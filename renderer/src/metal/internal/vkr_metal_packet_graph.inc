@@ -2386,7 +2386,8 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
 
     const char *source_name = channel->source_name;
     uint32_t source_slice = 0;
-    if (string_equals(channel->name, "scene_color"))
+    if (string_equals(channel->name, "scene_color") ||
+        string_equals(channel->name, "hdr_pre_bloom"))
       source_name = renderer->metalfx_enabled ? "metalfx_output_color"
                                               : "temporal_history_color";
     else if (string_equals(channel->name, "hdr_pre_transmission") &&
