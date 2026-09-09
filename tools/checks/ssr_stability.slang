@@ -19,7 +19,7 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     decision.accepted = 1u;
     float4 stable = vkr_ssr_temporal_filter(0.25f, 3u,
         float4(8, 4, 2, 0.5), float4(4, 2, 1, 0.5), 0, 16, decision);
-    float4 intermittent = vkr_ssr_temporal_filter(0.25f, 3u,
+    float4 intermittent = vkr_ssr_temporal_filter(0.25f, 0u,
         0, float4(8, 4, 2, 0.5), 0, 16, decision);
     float4 unsupported = vkr_ssr_temporal_filter(0.25f, 0u,
         0, float4(8, 4, 2, 0.5), 1, -1, decision);
@@ -309,5 +309,27 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     g_results[138] = empty_history.x;
     g_results[139] = vkr_ssr_temporal_filter(VKR_SSR_MIRROR_ROUGHNESS, 3u,
         float4(2, 2, 2, 1), float4(10, 10, 10, 1), 2, 2, decision).x;
-
+    // Broad bounds admit the old image, but sparse fresh coverage must still
+    // replace at least 15% of its conditional radiance on every supported frame.
+    decision.weight = .85f;
+    float4 sparse_step = float4(8, 8, 8, 1);
+    for (uint frame = 0u; frame < 5u; ++frame) {
+        sparse_step = vkr_ssr_temporal_filter(.3f, 1u,
+            float4(2, 2, 2, .05f), sparse_step, 0, 10, decision);
+        g_results[140u + frame] = sparse_step.x;
+        if (frame == 0u) g_results[145] = sparse_step.w;
+    }
+    float4 constant_sparse = vkr_ssr_temporal_filter(.3f, 1u,
+        float4(8, 4, 2, .05f), float4(8, 4, 2, 1), 0, 10, decision);
+    for (uint i = 0u; i < 4u; ++i) g_results[146u + i] = constant_sparse[i];
+    // Weak old coverage must keep its lower contribution; the cap cannot
+    // promote it to the configured temporal weight.
+    float4 weak_history = vkr_ssr_temporal_filter(.3f, 1u,
+        float4(2, 2, 2, 1), float4(8, 8, 8, .05f), 0, 10, decision);
+    g_results[150] = weak_history.x;
+    g_results[151] = weak_history.w;
+    decision.weight = 0.0f;
+    float4 no_coverage = vkr_ssr_temporal_filter(.3f, 0u,
+        0, 0, 1, -1, decision);
+    for (uint i = 0u; i < 4u; ++i) g_results[152u + i] = no_coverage[i];
 }

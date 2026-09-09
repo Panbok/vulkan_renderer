@@ -785,16 +785,19 @@ float4 vkr_ssr_temporal_filter(float roughness, uint neighborhood_hits, float4 r
             vkr_ssr_spatial_sample(history, min(decision.weight, 0.5f)), 1.0f);
     float3 clamped_history =
         vkr_ssr_history_clamp(history.xyz, neighborhood_min, neighborhood_max);
-    // Preserve supported radiance and coverage averaging. Bound only the
-    // residual outside current radiance bounds to half the resolved signal,
-    // including when sparse current coverage would otherwise preserve it longer.
-    float4 accumulated = vkr_ssr_spatial_sample(raw, 1.0f - decision.weight) +
-        vkr_ssr_spatial_sample(float4(clamped_history, history.w), decision.weight);
+    float history_coverage = decision.weight * vkr_ssr_saturate(history.w);
+    float coverage = (1.0f - decision.weight) * vkr_ssr_saturate(raw.w) +
+                     history_coverage;
+    if (coverage <= 0.0f)
+        return float4(0.0f);
+    // Sparse current coverage must not normalize old radiance retention above
+    // the temporal weight. Coverage still follows the original weighted mean.
+    float history_weight = min(history_coverage / coverage, decision.weight);
     float residual_weight = min(
-        decision.weight * vkr_ssr_temporal_stability(roughness) * history.w,
-        0.5f * accumulated.w);
-    accumulated.xyz += residual_weight * (history.xyz - clamped_history);
-    return vkr_ssr_spatial_resolve(accumulated, 1.0f);
+        history_weight * vkr_ssr_temporal_stability(roughness), 0.5f);
+    float3 color = vkr_ssr_lerp(raw.xyz, clamped_history, history_weight) +
+                   residual_weight * (history.xyz - clamped_history);
+    return float4(color, coverage);
 }
 
 // History stores receiver-shaded radiance; coverage remains independent.

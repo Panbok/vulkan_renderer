@@ -60,15 +60,16 @@ indirect-specular GTAO before storing or blending history. Raw RGB remains
 incoming radiance; history RGB is receiver-shaded radiance. Base receivers include
 sheen allocation and anisotropic GGX; coated receivers include only the selected
 coat. Current raw bounds receive the same nonnegative receiver weight before
-clamping shaded history. Covered shaded radiance and confidence accumulate
-together. The user accepted roughness-dependent softness and short trails;
+clamping shaded history. Confidence retains its weighted mean while normalized
+history RGB retention is capped at the motion/roughness-adjusted temporal weight.
+The user accepted roughness-dependent softness and short trails;
 current hit count does not introduce a separate clamp-policy threshold.
 
 Mirrors clamp history to the current radiance bounds. Rougher receivers retain
 part of the residual outside those bounds, using a smoothstep from the mirror
 threshold to 0.25. After coverage normalization, at most half that residual
-survives each update. This limit also applies when current coverage is sparse;
-in-bound history and coverage retain their normal temporal weights. Mirrors
+survives each update. This limit also applies when current coverage is sparse.
+Mirrors
 retain their single hit-source sample and 2×2 reconstruction footprint.
 
 For configured weight `w`, roughness blend `s`, and unjittered motion magnitude `m`
@@ -76,6 +77,18 @@ in full-resolution source pixels, accepted history uses
 `w + (1 - w) * (2/3) * s * (1 - saturate(m))`. Zero configured weight stays zero.
 At defaults this gives 0.95 for stationary rough receivers and 0.85 at one source
 pixel per frame or for mirrors. Invalid taps still contribute no history.
+
+Let `W` be that adjusted weight, `a` current coverage and `b` history coverage.
+Coverage remains `D = (1-W)*a + W*b`. For supported neighborhoods, normalized
+history RGB uses `t = min(W*b/D, W)` when `D > 0`; zero coverage resolves to zero.
+The result is `lerp(current, clamped_history, t)` plus
+`min(t*s, 0.5) * (history-clamped_history)`. Previously, coverage normalization
+could raise in-bound old RGB retention above the intended weight: at `W=0.85`,
+`a=0.05`, `b=1`, it retained about 99.13% instead of at most 85%. The cap preserves
+constant sparse radiance and shortens supported old-image trails, with more
+fresh-sample noise possible where current coverage is sparse. Receiver validation
+still does not identify the reflected object, so this is a retention bound rather
+than complete ghost rejection. It adds no reads, images, rays or bindings.
 
 Empty neighborhoods retain at most half of validated coverage per frame while
 preserving conditional RGB; rejected history clears immediately. Five consecutive
@@ -236,6 +249,19 @@ accepted design spends history memory and temporal work to shade each source
 receiver while retaining the bounded half-resolution ray workload.
 
 ## Evidence and remaining checks
+
+The normalized-retention correction passes all 156 analytic outputs from
+`python3 tools/checks/check_ssr_stability.py`. With broad bounds, old RGB 8 and
+current RGB 2 at coverage 0.05 and weight 0.85 resolve to 7.1, then lose at least
+15% of the remaining error on each of five supported updates. Constant sparse
+radiance, weak history and the unchanged empty fade also pass. Current native
+Metal captures cover the reported cafe camera while static and turning, with
+SSGI enabled. Motion and raw reflection coverage match the prior revision;
+localized accumulated-coverage differences also occur in a same-binary replay.
+Incoming SSGI radiance changes, so this comparison cannot isolate the SSR cap
+or prove complete ghost elimination. The CPU check establishes the retention
+bound; neither check establishes a performance improvement. [The history-correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
+owns the combined SSGI/SSR evidence.
 
 The bounded-fade and settling correction passes Release app/editor builds,
 140 shared-math outputs, five SSR SPIR-V modules, Vulkan host syntax and a serial
