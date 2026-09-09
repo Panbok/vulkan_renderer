@@ -1,0 +1,34 @@
+Snapshot render-extent propagation — 2026-09-09
+
+The snapshot parent now adopts the first verified child summary's actual render
+width and height, alongside its content scale. The child already obtains these
+dimensions from the renderer device information. No new state or rounding policy
+is introduced. Previously the parent fell back to nearest-rounded requested
+scale, while Metal's accepted source extent rounds upward.
+
+Verification
+./build_release.sh
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/motion_blur_metalfx_local.case.json --profile tools/profiles/local-offscreen.json
+
+Release build and snapshot pass on Apple M1 Pro, macOS 26.6.2 (25G83).
+The small fixture uses MetalFX at 80% scale with three offscreen images.
+Parent effective_config.render_resolution, verified child report and raw
+motion_vectors dimensions all equal 410x308. Reconstructed motion_blur_color
+is 512x384, matching output resolution. The old parent fallback would be 410x307.
+All 126,280 raw motion pixels are finite; the capture digest matches its report.
+This is an evidence-reporting correction, not a rendering quality/speed claim.
+No CPU suite is needed: the native snapshot exposes the actual child dimensions
+that were missing at the parent aggregation boundary.
+
+Run 20260909T091429.878Z-01469d, pass, report SHA256
+8a8b8c2117be9cfd1bd3c7d64b1c90bd861b41f3835fb66c54ce9d77640d97bc
+Verified child captures/0/report.json SHA256
+ab126f2baa4c3477459c072a51097b38c7dfbe84a1503421d929b253608ac0bc
+Harness executable SHA256
+8b2f1a54b523e70fcff042e85171385c756e87ab3e7ae6af431d477ff2340fa8
+Release build-log SHA256
+591cf2be99f4c974148615df4457ac04dcda6561af6dd9860623972a15072925
+
+Metal API/shader validation and native Windows/Vulkan were not run; command or
+resource behavior is unchanged. The completed local snapshot was retired after
+its report and raw capture were checked. No baseline was proposed or promoted.

@@ -377,6 +377,10 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                   sizeof(reference->policy_fingerprint), "%s",
                   summary.policy_fingerprint);
     if (report.completed_repetitions == 0u) {
+      report.case_manifest.renderer.render_width =
+          summary.case_manifest.renderer.render_width;
+      report.case_manifest.renderer.render_height =
+          summary.case_manifest.renderer.render_height;
       report.case_manifest.content_scale = summary.case_manifest.content_scale;
       string_format(report.provenance.gpu, sizeof(report.provenance.gpu), "%s",
                     summary.provenance.gpu);

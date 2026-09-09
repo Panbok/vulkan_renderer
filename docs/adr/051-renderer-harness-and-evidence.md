@@ -25,6 +25,11 @@ warmup, measured frames, and captures. Profiles own repetitions,
 instrumentation, environment constraints, stability, and authority requirements.
 The parent launches isolated children and records effective configuration and
 build/device provenance alongside workload, policy, and environment fingerprints.
+Snapshot reports adopt the first verified child's actual render extent, as
+profile reports do. Recomputing that extent from requested scale used obsolete
+nearest rounding and could disagree with the captured source textures. The
+[MetalFX extent check](../../assets/verification/renderer-features/metalfx-snapshot-extent.txt)
+records parent/child/capture agreement after this correction.
 The camera script is versioned: warmup holds its initial pose and measured frame
 zero starts the authored path. Version 5 starts warmup at the common zero of the
 active raster jitter and 64-phase GTAO noise sequences, invalidating temporal
