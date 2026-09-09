@@ -141,6 +141,23 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     g_results[114] = vkr_ssgi_spatial_weight(float2(1, 0), .82f, .74f, up, up, params);
     g_results[115] = vkr_ssr_receiver_bilateral_weight(float2(0), .01f, .02f,
         up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
+    // Constant incoming light with alternating receiver response must accumulate
+    // the shaded contribution. Multiplying after history would alternate 2/8.
+    float4 shaded_a = vkr_ssr_shade_reflection(float4(10, 10, 10, .6f), float3(.2f));
+    float4 shaded_b = vkr_ssr_shade_reflection(float4(10, 10, 10, .6f), float3(.8f));
+    decision.weight = .5f;
+    decision.accepted = 1u;
+    float4 shaded_history = vkr_ssr_temporal_filter(.3f, 3u, shaded_b,
+        shaded_a, float3(8), float3(8), decision);
+    for (uint component = 0u; component < 4u; ++component)
+        g_results[116u + component] = shaded_history[component];
+    g_results[120] = vkr_ssr_replace_environment_specular(
+        float3(20), float3(3), shaded_history.rgb, shaded_history.a).x;
+    g_results[121] = vkr_ssr_replace_environment_specular(
+        float3(20), float3(3), shaded_history.rgb, 0).x;
+    g_results[122] = vkr_ssr_replace_environment_specular(
+        float3(20), float3(3), shaded_history.rgb, 1).x;
+    g_results[123] = vkr_ssr_shade_reflection(float4(10, 10, 10, .6f), float3(0)).a;
     params.source_width = 2u;
     params.source_height = 1u;
     params.thickness = 0.1f;

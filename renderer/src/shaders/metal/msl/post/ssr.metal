@@ -51,6 +51,11 @@ struct alignas(16) VkrMetalPacketSsrTemporalRoot {
   device VkrMetalPacketInstance *instances;
   texture2d<float, access::read> specular;
   texture2d<float, access::read> clearcoat;
+  constant VkrMetalPacketFrameRoot *frame;
+  texture2d<float, access::read> albedo;
+  texture2d<float, access::sample> gtao_visibility;
+  texture2d<float, access::read> sheen;
+  texture2d<float, access::read> anisotropy;
 };
 
 struct alignas(16) VkrMetalPacketSsrCompositeRoot {
@@ -83,10 +88,8 @@ static float vkr_metal_ssr_positive_depth(VkrSsrParams params, uint2 pixel,
 }
 
 static uint2 vkr_metal_ssr_receiver_identity(
-    texture2d<uint, access::read> vbuffer, uint2 receiver_pixel,
-    device VkrGpuVisibleDrawRow *visible_rows,
+    uint encoded, device VkrGpuVisibleDrawRow *visible_rows,
     device VkrMetalPacketInstance *instances) {
-  uint encoded = vbuffer.read(receiver_pixel).x;
   if (encoded == 0u)
     return uint2(0u);
   const device VkrGpuVisibleDrawRow &visible = visible_rows[encoded - 1u];
@@ -289,6 +292,68 @@ kernel void vkr_metal_packet_ssr_trace(
   root.raw.write(float4(hit_radiance, confidence), pixel);
 }
 
+static float vkr_metal_ssr_filtered_roughness(
+    texture2d<float, access::read> normals,
+    texture2d<float, access::read> coats,
+    texture2d<uint, access::read> vbuffer, uint2 extent, uint2 pixel,
+    uint visible_index, float3 normal, float roughness) {
+  uint2 limit = extent - 1u;
+  uint2 pixel_x = min(pixel + uint2(1u, 0u), limit);
+  uint2 pixel_y = min(pixel + uint2(0u, 1u), limit);
+  float3 normal_x = vkr_metal_ssr_selected_normal(
+      normals, coats, pixel_x);
+  float3 normal_y = vkr_metal_ssr_selected_normal(
+      normals, coats, pixel_y);
+  float same_x = vbuffer.read(pixel_x).x == visible_index ? 1.0f : 0.0f;
+  float same_y = vbuffer.read(pixel_y).x == visible_index ? 1.0f : 0.0f;
+  float3 dx = (normal_x - normal) * same_x;
+  float3 dy = (normal_y - normal) * same_y;
+  return vkr_ggx_filter_roughness(
+      roughness, 0.25f * (dot(dx, dx) + dot(dy, dy)));
+}
+
+static float3 vkr_metal_ssr_shading_weight(
+    constant VkrMetalPacketSsrTemporalRoot &root, uint2 receiver, uint visible,
+    float device_depth, float3 normal, float4 specular, float4 coat,
+    float material_roughness) {
+  uint2 extent(root.params.source_width, root.params.source_height);
+  float roughness = vkr_metal_ssr_filtered_roughness(
+      root.normal, root.clearcoat, root.vbuffer, extent, receiver, visible,
+      normal, material_roughness);
+  float3 view_position = vkr_ssr_reconstruct_view_position(
+      root.params, vkr_ssr_uv_from_pixel(receiver, extent), device_depth);
+  float3 view = normalize((transpose(root.params.view) *
+                          float4(-view_position, 0.0f)).xyz);
+  float occlusion = saturate(root.albedo.read(receiver).a);
+  constexpr sampler gtao_sampler(coord::normalized, address::clamp_to_edge,
+                                 filter::nearest);
+  float4 gtao = root.gtao_visibility.sample(
+      gtao_sampler, (float2(receiver) + 0.5f) / float2(extent));
+  float cone = vkr_gtao_cone_specular(
+      vkr_gtao_decode_visibility(gtao), vkr_gtao_decode_bent_normal(gtao, normal),
+      reflect(-view, normal), roughness);
+  if (vkr_clearcoat_active(coat.x)) {
+    VkrClearcoatLayer layer = vkr_metal_packet_prepare_clearcoat(
+        root.frame, coat.x, roughness, normal, view);
+    return layer.factor * vkr_metal_environment_receiver_weight(
+        reflect(-view, layer.normal), layer.normal, layer.roughness,
+        occlusion, cone, layer.energy);
+  }
+  VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
+      root.frame, normal, view, roughness, saturate(specular.rgb),
+      root.anisotropy.read(receiver));
+  float3 reflection = reflect(-view,
+      vkr_anisotropy_environment_normal(normal, view, energy));
+  float3 weight = vkr_metal_environment_receiver_weight(
+      reflection, normal, vkr_anisotropy_environment_roughness(roughness, energy),
+      occlusion, cone, energy);
+  float4 sheen = root.sheen.read(receiver);
+  if (vkr_sheen_active(sheen.rgb))
+    weight *= vkr_metal_packet_prepare_sheen(
+        root.frame, sheen.rgb, sheen.a, normal, view).base_transmission;
+  return weight;
+}
+
 kernel void vkr_metal_packet_ssr_temporal(
     constant VkrMetalPacketSsrTemporalRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
@@ -304,17 +369,21 @@ kernel void vkr_metal_packet_ssr_temporal(
   }
   uint2 source_extent =
       uint2(root.params.source_width, root.params.source_height);
+  uint visible = root.vbuffer.read(receiver_pixel).x;
   uint2 identity = vkr_metal_ssr_receiver_identity(
-      root.vbuffer, receiver_pixel, root.visible_rows, root.instances);
+      visible, root.visible_rows, root.instances);
+  float device_depth = root.depth.read(receiver_pixel).x;
   float center_depth = vkr_metal_ssr_positive_depth(
-      root.params, receiver_pixel, root.depth.read(receiver_pixel).x,
-      source_extent);
+      root.params, receiver_pixel, device_depth, source_extent);
   float4 raw = root.raw.read(pixel);
-  float roughness = vkr_metal_ssr_selected_roughness(
-      root.specular, root.clearcoat, receiver_pixel);
+  float4 coat = root.clearcoat.read(receiver_pixel);
+  bool coat_active = vkr_clearcoat_active(coat.x);
+  float4 specular = coat_active ? float4(0.0f) : root.specular.read(receiver_pixel);
+  float roughness = clamp(coat_active ? coat.y : specular.w, 0.04f, 1.0f);
+  float3 center_normal = coat_active
+      ? vkr_metal_packet_octahedral_decode(coat.zw)
+      : vkr_metal_packet_octahedral_decode(root.normal.read(receiver_pixel).xy);
   if (roughness > VKR_SSR_MIRROR_ROUGHNESS) {
-    float3 center_normal = vkr_metal_ssr_selected_normal(
-        root.normal, root.clearcoat, receiver_pixel);
     float4 filtered = 0.0f;
     float weight_sum = 0.0f;
     for (int y = -1; y <= 1; ++y) {
@@ -344,6 +413,11 @@ kernel void vkr_metal_packet_ssr_temporal(
     if (weight_sum > 0.0f)
       raw = vkr_ssr_spatial_resolve(filtered, weight_sum);
   }
+  float3 receiver_weight = vkr_metal_ssr_shading_weight(
+      root, receiver_pixel, visible, device_depth, center_normal, specular, coat,
+      roughness);
+  float4 incoming = raw;
+  raw = vkr_ssr_shade_reflection(incoming, receiver_weight);
   if (root.params.history_valid == 0u) {
     root.output_color.write(float4(raw.rgb, saturate(raw.w)), pixel);
     root.output_depth.write(float4(center_depth, 0.0f, 0.0f, 1.0f), pixel);
@@ -390,8 +464,8 @@ kernel void vkr_metal_packet_ssr_temporal(
                                  motion * float2(source_extent)) : 0.0f;
   decision.expected_previous_depth = 0.0f;
   decision.reserved_float_0 = 0.0f;
-  float3 neighborhood_min = raw.w > 0.0f ? raw.rgb : float3(3.402823466e+38f);
-  float3 neighborhood_max = raw.w > 0.0f ? raw.rgb : float3(-3.402823466e+38f);
+  float3 neighborhood_min = incoming.w > 0.0f ? incoming.rgb : float3(3.402823466e+38f);
+  float3 neighborhood_max = incoming.w > 0.0f ? incoming.rgb : float3(-3.402823466e+38f);
   uint neighborhood_hits = 0u;
   for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
@@ -405,6 +479,10 @@ kernel void vkr_metal_packet_ssr_temporal(
         }
       }
     }
+  if (neighborhood_hits > 0u) {
+    neighborhood_min *= receiver_weight;
+    neighborhood_max *= receiver_weight;
+  }
   root.output_color.write(vkr_ssr_temporal_filter(
                               roughness, neighborhood_hits, raw, history, neighborhood_min,
                               neighborhood_max, decision),
@@ -421,23 +499,6 @@ static float3 vkr_metal_ssr_world_position(
   return world.xyz / max(abs(world.w), 1e-7f) * sign(world.w);
 }
 
-static float vkr_metal_ssr_filtered_roughness(
-    constant VkrMetalPacketSsrCompositeRoot &root, uint2 pixel,
-    uint visible_index, float3 normal, float roughness) {
-  uint2 limit = root.extent - 1u;
-  uint2 pixel_x = min(pixel + uint2(1u, 0u), limit);
-  uint2 pixel_y = min(pixel + uint2(0u, 1u), limit);
-  float3 normal_x = vkr_metal_ssr_selected_normal(
-      root.normal, root.clearcoat, pixel_x);
-  float3 normal_y = vkr_metal_ssr_selected_normal(
-      root.normal, root.clearcoat, pixel_y);
-  float same_x = root.vbuffer.read(pixel_x).x == visible_index ? 1.0f : 0.0f;
-  float same_y = root.vbuffer.read(pixel_y).x == visible_index ? 1.0f : 0.0f;
-  float3 dx = (normal_x - normal) * same_x;
-  float3 dy = (normal_y - normal) * same_y;
-  return vkr_ggx_filter_roughness(
-      roughness, 0.25f * (dot(dx, dx) + dot(dy, dy)));
-}
 
 struct VkrMetalSsrReflectionSample {
   float3 radiance;
@@ -520,8 +581,16 @@ kernel void vkr_metal_packet_ssr_composite(
   // BRDF weights.
   if (!vkr_ssr_eligible(material_roughness, true, root.params))
     return;
-  float roughness = vkr_metal_ssr_filtered_roughness(
-      root, pixel, visible, normal, material_roughness);
+  // Deferred shades both base and coat using this base-normal GTAO footprint.
+  uint2 limit = root.extent - 1u;
+  uint2 px = min(pixel + uint2(1u, 0u), limit);
+  uint2 py = min(pixel + uint2(0u, 1u), limit);
+  float3 dx = (vkr_metal_packet_octahedral_decode(root.normal.read(px).xy) - base_normal) *
+      (root.vbuffer.read(px).x == visible ? 1.0f : 0.0f);
+  float3 dy = (vkr_metal_packet_octahedral_decode(root.normal.read(py).xy) - base_normal) *
+      (root.vbuffer.read(py).x == visible ? 1.0f : 0.0f);
+  float roughness = vkr_ggx_filter_roughness(clamp(specular.w, 0.04f, 1.0f),
+      0.25f * (dot(dx, dx) + dot(dy, dy)));
   float current_depth = vkr_metal_ssr_positive_depth(
       root.params, pixel, root.depth.read(pixel).x, root.extent);
   VkrMetalSsrReflectionSample reflection =
@@ -538,9 +607,9 @@ kernel void vkr_metal_packet_ssr_composite(
   float4 gtao = root.gtao_visibility.sample(
       gtao_sampler, (float2(pixel) + 0.5f) / float2(root.extent));
   float gtao_visibility = vkr_gtao_decode_visibility(gtao);
-  float3 gtao_bent_normal = vkr_gtao_decode_bent_normal(gtao, normal);
+  float3 gtao_bent_normal = vkr_gtao_decode_bent_normal(gtao, base_normal);
   float gtao_specular_cone = vkr_gtao_cone_specular(
-      gtao_visibility, gtao_bent_normal, reflect(-view, normal), roughness);
+      gtao_visibility, gtao_bent_normal, reflect(-view, base_normal), roughness);
   float3 opaque = root.hdr.read(pixel).rgb;
   if (!clearcoat_active) {
     VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
@@ -561,15 +630,13 @@ kernel void vkr_metal_packet_ssr_composite(
                           sheen_base_transmission;
     root.hdr.write(float4(vkr_ssr_replace_environment_specular(
                                 opaque, old_specular, reflection.radiance,
-                                environment.ssr_receiver_weight *
-                                    sheen_base_transmission,
                                 reflection.confidence),
                             1.0f),
                    pixel);
     return;
   }
   VkrClearcoatLayer clearcoat = vkr_metal_packet_prepare_clearcoat(
-      root.frame, clearcoat_packed.x, roughness, normal, view);
+      root.frame, clearcoat_packed.x, clearcoat_packed.y, normal, view);
   VkrMetalPacketEnvironmentLighting coat_environment =
       vkr_metal_packet_environment_lighting(
           root.frame, world_position, clearcoat.normal, clearcoat.normal, view,
@@ -579,7 +646,6 @@ kernel void vkr_metal_packet_ssr_composite(
                     coat_environment.specular_receiver_weight;
   root.hdr.write(float4(vkr_ssr_replace_environment_specular(
                               opaque, old_coat, reflection.radiance,
-                              clearcoat.factor * coat_environment.ssr_receiver_weight,
                               reflection.confidence),
                           1.0f),
                  pixel);
@@ -591,7 +657,7 @@ static_assert(sizeof(VkrMetalPacketSsrDepthMipRoot) == 320,
               "Metal SSR depth-mip root ABI drift");
 static_assert(sizeof(VkrMetalPacketSsrTraceRoot) == 368,
               "Metal SSR trace root ABI drift");
-static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 432,
+static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 464,
               "Metal SSR temporal root ABI drift");
 static_assert(sizeof(VkrMetalPacketSsrCompositeRoot) == 496,
               "Metal SSR composite root ABI drift");

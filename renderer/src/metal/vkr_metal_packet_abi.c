@@ -787,6 +787,13 @@ vkr_global const VkrMetalPacketAbiField vkr_ssr_temporal_root_fields[] = {
                   "specular", 408),
     VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, clearcoat_texture_id,
                   "clearcoat", 416),
+    VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, frame, "frame", 424),
+    VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, albedo_texture_id, "albedo", 432),
+    VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, gtao_visibility_texture_id,
+                  "gtao_visibility", 440),
+    VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, sheen_texture_id, "sheen", 448),
+    VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, anisotropy_texture_id,
+                  "anisotropy", 456),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_fog_params_fields[] = {
@@ -1377,7 +1384,7 @@ vkr_global const VkrMetalPacketAbiRecord
             vkr_ssr_trace_root_fields),
         [VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketSsrTemporalRoot, "VkrMetalPacketSsrTemporalRoot",
-            432, 16, vkr_ssr_temporal_root_fields),
+            464, 16, vkr_ssr_temporal_root_fields),
         [VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketSsrCompositeRoot, "VkrMetalPacketSsrCompositeRoot",
             496, 16, vkr_ssr_composite_root_fields),

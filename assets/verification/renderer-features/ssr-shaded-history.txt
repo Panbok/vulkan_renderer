@@ -1,0 +1,169 @@
+SSR receiver-shaded history — 2026-09-09
+
+Decision and implementation
+User approved moving material/AO shading into the existing half-resolution SSR
+history, with up to 17 additional texture accesses per pixel, no additional
+images/rays, and possible material/coat/mirror boundary softness. History now
+contains shaded radiance and independent coverage. Trace/raw remains incoming
+radiance. Current spatial radiance and its clamp bounds receive the same selected
+receiver weight before temporal accumulation. Composite subtracts the exact
+current probe contribution and adds shaded history without another BRDF/GTAO
+multiplication. Depth/identity rejection, jitter reprojection, four validated
+history taps, empty-frame fade and GPU completion/producer rules remain.
+
+The weight includes GGX or anisotropic material energy, horizon/specular AO,
+directional GTAO cone, coat factor for selected coats and sheen allocation for
+uncoated bases. It excludes authored IBL gain. The exact old probe term retains
+that gain. Composite now uses deferred's base-normal roughness footprint at
+textured coat boundaries. Coat subtraction uses raw authored coat roughness and
+the GTAO policy actually written by each backend's deferred pass. Metal applies
+the base GTAO cone; Vulkan's existing coat probe path does not. That pre-existing
+native policy gap remains recorded rather than silently changing deferred output.
+Vulkan GTAO reads now use normalized sampling, matching deferred and safely
+sampling the disabled 1x1 sentinel instead of an out-of-bounds full-size Load.
+
+Budgets and ownership
+No new persistent images, rays, or traversal steps. Approved source-access ceiling
+is 92, with at most 17 added on any branch. Reviewed Metal maximum is 91 because
+center clearcoat is retained. Shader accesses are not physical texel-fetch counts.
+Temporal appends frame/albedo/GTAO/sheen/anisotropy references: Metal root 464 bytes;
+Vulkan 400 bytes, including explicit tail padding. Metal reserves three additional
+512-byte upload cells (1536 bytes per active SSR frame, 592 bytes of added payload).
+Vulkan reuses the existing frame root and adds 32 upload bytes. Existing per-slot
+upload ownership and completion retirement remain. Graph reads 17–20 declare the
+new existing-image dependencies; GTAO 18 is conditional with native fallback.
+SSR content signatures already include GTAO controls and radiance revisions.
+Capture ssr_reflection version 3 denotes shaded RGB. Raw SSR retains version 2.
+
+Verification commands
+./build_release.sh
+./build_editor.sh Release
+python3 tools/checks/check_ssr_stability.py
+spirv-val --target-env vulkan1.4 --scalar-block-layout <each production packet.ssr*.spv and packet.ssgi*.spv>
+spirv-dis build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv -o .scratch/ssr-shaded-temporal.spvasm
+
+124 shared-math outputs pass. The new independent witness keeps incoming light 10
+constant while receiver response alternates 0.2/0.8: accumulating shaded values 2/8
+produces 5, rather than reapplying current response to produce 8. Coverage remains
+0.6; opaque 20, old probe 3 and shaded 5 produce 21.2 after composite, with unchanged
+miss and full-coverage limits. Production Release app/harness and editor builds pass.
+Ten SSR/SSGI SPIR-V modules validate. Compiled temporal root has ArrayStride 400,
+appended offsets 368/376/380/384/388 and explicit padding 392. Metal host/shader
+assertions pin 464. Native Vulkan execution/host build remains unavailable here.
+
+Native quality: M1 Pro, Darwin 25.6, Release, validation variables unset.
+Bar output 1280x720, scene 1025x577, trace 512x288, scale 0.8, MetalFX temporal,
+manual exposure 8. Static camera [-5.03,1.7,9.73], yaw-20.34, pitch-12; 96 warmup
+frames followed by eight independently replayed raster-jitter checkpoints.
+Matched SSR-off subtraction and the same counter ROI/thresholds as the preceding
+ssr-rough-history.txt record give:
+  counter volatile pixels 108 -> 95;
+  counter mean absolute display contribution 0.837653 ->0.838806 codes;
+  original strong hotspots remain within 1–2 codes;
+  remaining edge (548,244) range 8 -> 4, (549,244) 8 -> 5, (550,244) 8 -> 4;
+  largest remaining counter range 7 at (969,352), versus previous maximum 8.
+The lower under-bar ROI worsens from 9 to 25 volatile pixels (maximum 6 codes).
+This is a local improvement, not global invariance or proof of perfect reflections.
+Receiver shading at half resolution changes local brightness/detail; retained
+history can trail reflected objects even when the camera/receiver is stationary.
+The selected static capture has 7,090,696 finite RGBA16F tuples. The moving bar
+capture has 1,385,763; reflection confidence stays in [0,1] and payload hashes match.
+Moving history metadata reports version 3. Finite moving output is not a ghosting
+or temporal image-equivalence proof.
+
+Mirror: 696 raw hits; 15 analytic interior emitter samples, maximum linear HDR error
+0.000684, unchanged from prior selected implementation.
+New layer fixture enables a unit environment and GTAO with an uncoated rough
+anisotropic/sheen floor beside a coat-priority floor. All 294,912 RGBA16F tuples are
+finite, confidence is in [0,1]. Bottom-half left/right regions have 693/710 nonblack
+raw hits and 747/710 nonblack history samples. These regions exercise visible
+reflection coverage; the counts do not constitute an independent BRDF oracle.
+Preview ssr-shaded-history.png and clip ssr-shaded-history-slow.mp4 retain the
+bar result. The eight-phase static clip is deliberately slowed to 8 fps.
+
+Exact snapshot command prefix:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case <case> --profile tools/profiles/local-offscreen.json
+
+tools/cases/local/ssr_mirror_on_local.case.json
+20260909T050941.912Z-006f15
+sha256:e61e076355bc5a566f53b6590c72e6d061825332c6a43361ae19ed415f06786c
+status:pass; authoritative:False
+
+tools/cases/local/ssr_bar_settled.case.json
+20260909T051023.558Z-007895
+sha256:b89e46df2164fb425995ca04cff0c2d7dc8e02abae8b7b80edc3f17fbfe96675
+status:pass; authoritative:False
+
+tools/cases/local/ssr_shaded_layers.case.json
+20260909T051257.476Z-00ab95
+sha256:173c933cd98e8c144ba55afafdf47dac598425d6f967bc83346f3f7f0e1b1104
+status:pass; authoritative:False
+
+tools/cases/local/ssr_bar_motion.case.json
+20260909T051419.262Z-00bc27
+sha256:e653d7eb8ae225dc8f6f5c4a60e41744f924dfe62da157e9e83593d3f94f772b
+status:pass; authoritative:False
+
+The first mirror/bar/layer reports predate the metadata-only version bump and
+label reflection captures version 2 despite running the same shaded implementation.
+They are local diagnostics, not candidates for cross-version baseline promotion.
+
+Matched Release cost command:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_bar_cost.case.json --profile tools/profiles/local-offscreen-perf-audit-gpu.json
+Three repetitions, 120 measured frames each after 60 warmup. No build, GPU run or
+heavy CPU analysis overlapped either measured run. Output changed intentionally;
+these local non-authoritative measurements do not establish a speedup.
+
+20260909T050528.054Z-0127f4
+sha256:70cf4d2c40988b473b0a4d069ccdbfe7964e510267554e2342505f357b50d1e4
+SSR sum of GPU means: 1.9113716435185193 ms
+SSR.Trace.Fullscreen {"unit": "ms", "sample_count": 360, "invalid_count": 0, "mean": 0.7924376157407409, "p50": 0.7913333333333333, "p95": 0.8066666666666666, "min": 0.7739166666666666, "max": 0.8259583333333333, "stddev": 0.00834644454607338, "total": 285.2775416666667}
+SSR.Temporal {"unit": "ms", "sample_count": 360, "invalid_count": 0, "mean": 0.3091086805555555, "p50": 0.30741666666666667, "p95": 0.32316666666666666, "min": 0.297625, "max": 0.3445, "stddev": 0.0068180793832764205, "total": 111.27912499999998}
+SSR.Composite.Fullscreen {"unit": "ms", "sample_count": 360, "invalid_count": 0, "mean": 0.6799126157407412, "p50": 0.6762083333333333, "p95": 0.6985416666666666, "min": 0.66575, "max": 0.7277916666666666, "stddev": 0.010402457808557851, "total": 244.76854166666683}
+frame.wall {"unit": "ns", "sample_count": 360, "invalid_count": 0, "mean": 15222831.172222223, "p50": 15195958, "p95": 16172583, "min": 8209541, "max": 22113999, "stddev": 771422.9246442134, "total": 5480219222}
+draw.world.calls_issued {"unit": "count", "sample_count": 360, "invalid_count": 0, "mean": 14, "p50": 14, "p95": 14, "min": 14, "max": 14, "stddev": 0, "total": 5040}
+memory.gpu.live_totals_exact {"unit": "count", "sample_count": 360, "invalid_count": 0, "mean": 1, "p50": 1, "p95": 1, "min": 1, "max": 1, "stddev": 0, "total": 360}
+
+20260909T051506.869Z-00cba6
+sha256:752d8d32f53a02dd718df0a1aa5a26d696fe62e387d2afb96cf9380e5327d26d
+SSR sum of GPU means: 2.003074421296296 ms
+SSR.Trace.Fullscreen {"unit": "ms", "sample_count": 360, "invalid_count": 0, "mean": 0.792991666666666, "p50": 0.7916666666666666, "p95": 0.808125, "min": 0.7755, "max": 0.8221666666666666, "stddev": 0.008269529354246264, "total": 285.47699999999975}
+SSR.Temporal {"unit": "ms", "sample_count": 360, "invalid_count": 0, "mean": 0.4380300925925924, "p50": 0.4363333333333333, "p95": 0.453625, "min": 0.424375, "max": 0.4835, "stddev": 0.008152263796446894, "total": 157.69083333333327}
+SSR.Composite.Fullscreen {"unit": "ms", "sample_count": 360, "invalid_count": 0, "mean": 0.6424133101851855, "p50": 0.6398333333333334, "p95": 0.657875, "min": 0.6321249999999999, "max": 0.6945, "stddev": 0.008592193227088454, "total": 231.2687916666668}
+frame.wall {"unit": "ns", "sample_count": 360, "invalid_count": 0, "mean": 15438873.358333332, "p50": 15309666, "p95": 17782166, "min": 1677249, "max": 30803375, "stddev": 2178453.8182949894, "total": 5557994409}
+draw.world.calls_issued {"unit": "count", "sample_count": 360, "invalid_count": 0, "mean": 14, "p50": 14, "p95": 14, "min": 14, "max": 14, "stddev": 0, "total": 5040}
+memory.gpu.live_totals_exact {"unit": "count", "sample_count": 360, "invalid_count": 0, "mean": 1, "p50": 1, "p95": 1, "min": 1, "max": 1, "stddev": 0, "total": 360}
+Workload/policy/environment fingerprints and effective configurations match.
+
+Bounded Metal API validation:
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 ./build_release/tools/vkr_harness profile --case tools/cases/local/ssr_temporal_resize.case.json --profile tools/profiles/local-windowed.json
+20260909T051625.426Z-00e10a
+sha256:43212265630fee7d35d0570f023bfe3f8f1af80cedbce819867d8085e701aab3
+Two serial repetitions pass; both stderr logs confirm Metal API Validation Enabled,
+with no validation error. This exercises added roots, fallback binding and
+completion-safe history across an odd-extent resize round trip. Metal GPU shader
+validation remains unavailable after the prior MetalTools report-decoder crash
+with SSR both on and off; no new GPU-validation pass is claimed. Native Vulkan
+and cross-backend pixel comparison remain unavailable/UNALIGNED.
+
+Final SSR + SSGI moving regression:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/screen_motion_ssr_ssgi.case.json --profile tools/profiles/local-offscreen.json
+20260909T051952.058Z-0109ea
+sha256:8d16a550a85aba5237b37cc51f2a84771f8236de6374cb787a399ca9ce9a0d23
+2,310,726 finite RG/RGBA16F tuples across three checkpoints. Reflection confidence
+is in [0,1], history capture version is 3, and payload hashes match. SSR and SSGI
+are both enabled in effective configuration. Execution passes; no visual baseline
+or absence-of-ghosting claim follows from the finite check.
+
+Final self-contained layered fixture:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_shaded_layers.case.json --profile tools/profiles/local-offscreen.json
+20260909T052142.085Z-0116dd
+sha256:dbcafcaca2fffc5371cc30cc03dee907438b1a7ad76924590e95e0131ac8a92a
+Execution passes; all 294,912 RGBA16F tuples finite, confidence [0,1], reflection
+capture version 3. Fixture now references its tracked unit-white HDR input at
+tests/fixtures/rendering/ssr/shaded_white.hdr, copied byte-for-byte from the
+original local furnace input. It requires no cooking side effect in a build.
+This final portable payload remains local for future native parity work; no
+baseline promotion was requested or performed. Bar payloads remain for residual
+edge diagnosis. Completed profile, API, initial layer, mirror, moving and combined
+SSGI run trees are retired after copying these results and digests.

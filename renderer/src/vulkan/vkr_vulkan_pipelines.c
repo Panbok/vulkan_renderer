@@ -1391,6 +1391,12 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, linear_sampler),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, specular_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, clearcoat_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, frame),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, albedo_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, gtao_visibility_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, sheen_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, anisotropy_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, reserved),
   };
   static const VkrVulkanReflectedField ssr_composite_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, params),

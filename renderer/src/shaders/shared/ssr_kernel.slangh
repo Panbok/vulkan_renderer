@@ -672,8 +672,8 @@ float vkr_ssr_receiver_bilateral_weight(float2 offset, float center_depth,
     return depth_weight * normal_weight * spatial_weight;
 }
 
-// RGB is incoming radiance, while alpha is hit coverage. A miss carries no
-// radiance sample: include it in coverage support, never in the radiance
+// RGB is radiance (incoming during spatial filtering, shaded in history),
+// while alpha is hit coverage. A miss carries no radiance sample: include it in coverage support, never in the radiance
 // denominator. Otherwise sparse hits become darker as their coverage changes.
 float4 vkr_ssr_spatial_sample(float4 reflection, float receiver_weight)
 {
@@ -784,20 +784,21 @@ float4 vkr_ssr_temporal_filter(float roughness, uint neighborhood_hits, float4 r
     return vkr_ssr_spatial_resolve(current + previous, 1.0f);
 }
 
-// `old_environment_specular` is the exact local-probe/global-environment term
-// already present in opaque HDR. `receiver_weight` is its receiver-side DFG
-// reflectance, specular visibility and IBL controls. Replacing only its
-// incoming radiance preserves all other opaque lighting on both a hit and miss.
+// History stores receiver-shaded radiance; coverage remains independent.
+float4 vkr_ssr_shade_reflection(float4 incoming, float3 receiver_weight)
+{
+    return float4(incoming.xyz * receiver_weight, incoming.w);
+}
+
+// Remove the exact current probe term, then add the filtered shaded reflection.
+// Applying the current receiver response again would reintroduce its variation.
 float3 vkr_ssr_replace_environment_specular(float3 opaque_hdr,
                                              float3 old_environment_specular,
-                                             float3 ssr_incoming_radiance,
-                                             float3 receiver_weight,
+                                             float3 shaded_reflection,
                                              float confidence)
 {
-    float3 replacement = ssr_incoming_radiance * receiver_weight;
-    return opaque_hdr - old_environment_specular +
-           vkr_ssr_lerp(old_environment_specular, replacement,
-                vkr_ssr_saturate(confidence));
+    return opaque_hdr + vkr_ssr_saturate(confidence) *
+                            (shaded_reflection - old_environment_specular);
 }
 
 #endif

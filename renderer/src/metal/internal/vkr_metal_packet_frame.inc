@@ -1799,9 +1799,20 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         vkr_metal_packet_pass_texture(renderer, pass, 15u);
     id<MTLTexture> clearcoat =
         vkr_metal_packet_pass_texture(renderer, pass, 16u);
+    id<MTLTexture> albedo =
+        vkr_metal_packet_pass_texture(renderer, pass, 17u);
+    id<MTLTexture> gtao_visibility =
+        renderer->prepared_frame.gtao_enabled
+            ? vkr_metal_packet_pass_texture(renderer, pass, 18u)
+            : (id<MTLTexture>)renderer->gtao_white_visibility.metal_texture;
+    id<MTLTexture> sheen =
+        vkr_metal_packet_pass_texture(renderer, pass, 19u);
+    id<MTLTexture> anisotropy =
+        vkr_metal_packet_pass_texture(renderer, pass, 20u);
     if (!raw || !receiver || !vbuffer || !depth || !normal || !motion ||
         !validity || !output_color || !output_depth || !output_identity ||
-        !visible || !instances || !specular || !clearcoat ||
+        !visible || !instances || !specular || !clearcoat || !albedo ||
+        !gtao_visibility || !sheen || !anisotropy || !renderer->gtao_white_live ||
         !renderer->ssr_temporal_pipeline)
       return false_v;
     const uint32_t selected = renderer->selected_ssr_history_instance;
@@ -1828,6 +1839,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         history_valid ? (id<MTLTexture>)identity_slot->instances[selected]
                             .resource.metal_texture
                       : output_identity;
+    const Mat4 view_projection = vkr_metal_packet_clip_matrix(
+        renderer->convert_vulkan_clip_y,
+        mat4_mul(packet->temporal.jittered_projection, packet->input.globals.view));
+    uint64_t frame_root_gpu = 0u;
+    uint32_t frame_flags = 0u;
+    if (!vkr_metal_packet_create_frame_root(
+            renderer, packet, upload, upload->gpu_draw_instances_gpu,
+            renderer->ssr_params.source_width, renderer->ssr_params.source_height,
+            view_projection, true_v, false_v, &frame_root_gpu, &frame_flags))
+      return false_v;
     uint64_t root_gpu = 0u;
     VkrMetalPacketSsrTemporalRoot *root =
         vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -1852,6 +1873,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         .instances = instances->resource.gpu_address,
         .specular_texture_id = specular.gpuResourceID._impl,
         .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
+        .frame = frame_root_gpu,
+        .albedo_texture_id = albedo.gpuResourceID._impl,
+        .gtao_visibility_texture_id = gtao_visibility.gpuResourceID._impl,
+        .sheen_texture_id = sheen.gpuResourceID._impl,
+        .anisotropy_texture_id = anisotropy.gpuResourceID._impl,
     };
     prepared->dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->ssr_temporal_pipeline,
@@ -1860,6 +1886,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         .group_size = MTLSizeMake(8u, 8u, 1u),
     };
     prepared->active = true_v;
+    if (!renderer->prepared_frame.gtao_enabled)
+      renderer->gtao_white_last_use_submit_value = renderer->submit_value + 1u;
     return true_v;
   }
 

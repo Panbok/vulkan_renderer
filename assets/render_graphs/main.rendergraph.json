@@ -4038,6 +4038,27 @@
           "image": "gbuffer_clearcoat",
           "access": "SAMPLED",
           "binding": 16
+        },
+        {
+          "image": "gbuffer_albedo",
+          "access": "SAMPLED",
+          "binding": 17
+        },
+        {
+          "image": "gtao_visibility",
+          "access": "SAMPLED",
+          "binding": 18,
+          "when": "gtao_enabled"
+        },
+        {
+          "image": "gbuffer_sheen",
+          "access": "SAMPLED",
+          "binding": 19
+        },
+        {
+          "image": "gbuffer_anisotropy",
+          "access": "SAMPLED",
+          "binding": 20
         }
       ],
       "writes": [

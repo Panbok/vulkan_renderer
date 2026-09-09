@@ -408,7 +408,7 @@ static float4 vkr_metal_packet_diffuse_volume(
 
 /* The deferred pass and SSR composite share this exact local/global probe
  * reduction. `incoming_specular` deliberately excludes receiver BRDF terms:
- * SSR replaces incoming radiance, then reapplies the same receiver weight. */
+ * SSR shades incoming radiance with this weight before temporal accumulation. */
 struct VkrMetalPacketEnvironmentLighting {
   float3 irradiance;
   float3 incoming_specular;
@@ -417,6 +417,16 @@ struct VkrMetalPacketEnvironmentLighting {
   /* SSR hit HDR is already scene radiance, so it receives no IBL gain. */
   float3 ssr_receiver_weight;
 };
+
+static float3 vkr_metal_environment_receiver_weight(
+    float3 reflection, float3 normal, float roughness, float occlusion,
+    float gtao_specular_cone, VkrGgxMaterialEnergy energy) {
+  float horizon = saturate(1.0f + dot(reflection, normal));
+  float visibility = horizon * horizon *
+      vkr_metal_packet_specular_ao(occlusion, energy.no_v, roughness) *
+      gtao_specular_cone;
+  return energy.reflectance * visibility;
+}
 
 static VkrMetalPacketEnvironmentLighting
 vkr_metal_packet_environment_lighting(
@@ -427,12 +437,8 @@ vkr_metal_packet_environment_lighting(
   VkrMetalPacketEnvironmentLighting result = {};
   roughness = vkr_anisotropy_environment_roughness(roughness, energy);
   float3 reflection = reflect(-view, vkr_anisotropy_environment_normal(specular_normal, view, energy));
-  float horizon = saturate(1.0 + dot(reflection, specular_normal));
-  float specular_visibility =
-      horizon * horizon * vkr_metal_packet_specular_ao(occlusion, energy.no_v,
-                                                        roughness) *
-      gtao_specular_cone;
-  result.ssr_receiver_weight = energy.reflectance * specular_visibility;
+  result.ssr_receiver_weight = vkr_metal_environment_receiver_weight(
+      reflection, specular_normal, roughness, occlusion, gtao_specular_cone, energy);
   if ((frame->flags & 2u) == 0u)
     return result;
   constexpr sampler environment_sampler(coord::normalized,

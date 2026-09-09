@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-09
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -59,9 +59,12 @@ completed snapshot. Offscreen cases use ordinary images without a window or
 swapchain; automation boot alone does not imply an offscreen target.
 
 Color channels declared `RGBA16_FLOAT_LE` publish tight, top-left, little-endian
-binary16 RGBA payloads separately from their PNG previews. Their capture version
-is 2: earlier output mislabeled PNG-only files as float16, so those baselines are
-incompatible. Numeric comparison decodes finite half values and never substitutes
+binary16 RGBA payloads separately from their PNG previews. Version 2 introduced
+the actual float16 payload; earlier output mislabeled PNG-only files as float16,
+so those baselines are incompatible. `ssr_reflection` advances to version 3 for
+[ADR-055](055-screen-space-reflections.md)'s receiver-shaded RGB, replacing incoming
+radiance. `ssr_raw` remains incoming radiance at version 2. Numeric comparison
+decodes finite half values and never substitutes
 a preview for radiance data. SDR final-color PNG and scalar/vector channels keep
 their existing contracts. Extended-linear final color under ADR-061 uses
 `RGBA16_FLOAT_LE` version 2 with `extended_srgb_linear` color space. Its

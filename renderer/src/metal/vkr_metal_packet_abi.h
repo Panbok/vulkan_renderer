@@ -525,13 +525,28 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
   uint64_t instances;
   uint64_t specular_texture_id;
   uint64_t clearcoat_texture_id;
+  uint64_t frame;
+  uint64_t albedo_texture_id;
+  uint64_t gtao_visibility_texture_id;
+  uint64_t sheen_texture_id;
+  uint64_t anisotropy_texture_id;
 } VkrMetalPacketSsrTemporalRoot;
 
-_Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 432,
-               "Metal SSR temporal root ABI must remain 432 bytes");
+_Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 464,
+               "Metal SSR temporal root ABI must remain 464 bytes");
 _Static_assert(offsetof(VkrMetalPacketSsrTemporalRoot,
                         clearcoat_texture_id) == 416u,
                "Metal SSR temporal clearcoat ABI offset drift");
+_Static_assert(offsetof(VkrMetalPacketSsrTemporalRoot, frame) == 424u &&
+                   offsetof(VkrMetalPacketSsrTemporalRoot,
+                            albedo_texture_id) == 432u &&
+                   offsetof(VkrMetalPacketSsrTemporalRoot,
+                            gtao_visibility_texture_id) == 440u &&
+                   offsetof(VkrMetalPacketSsrTemporalRoot,
+                            sheen_texture_id) == 448u &&
+                   offsetof(VkrMetalPacketSsrTemporalRoot,
+                            anisotropy_texture_id) == 456u,
+               "Metal SSR temporal shading ABI offset drift");
 
 /** Full-resolution matching-pixel replacement of environment specular. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrCompositeRoot {

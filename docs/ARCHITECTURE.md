@@ -12,7 +12,7 @@ implementations own GPU resources, pipelines, commands and completion; shared
 code owns portable contracts and scene-facing systems. Linux, D3D12 and the
 retired Vulkan 1.2 renderer are not current execution paths.
 
-This document describes code present on 2026-09-07. It does not certify a fresh
+This document describes code present on 2026-09-09. It does not certify a fresh
 native run or a performance result. [INDEX](INDEX.md) locates accepted decisions
 and proposals; [CONTEXT](CONTEXT.md) defines vocabulary.
 
@@ -486,26 +486,35 @@ fallback. [ADR-054](adr/054-baked-diffuse-volumes.md) owns offline room detectio
 artifact layout, lifetime and evidence limits.
 
 Opaque SSR runs before transmission under
-[ADR-055](adr/055-screen-space-reflections.md). The accepted half-resolution
-path has a separate current-frame hierarchy and reflection history. Projection
-compatibility excludes raster jitter; trace still uses the jittered projection.
-History reprojection corrects the jitter delta and validates each of four bilinear
-taps independently. Trace intersects full-resolution depth beneath the existing
-half-resolution hierarchy. Absolute cell crossings and the earliest one-sided
-surface-slab hit select the first supported source pixel without increasing the
-48-step limit or allocating another image. Spatial and temporal filters accumulate covered radiance and coverage
-together, preserving hit brightness as support varies. History clamping relaxes
-continuously with roughness, reaching unclamped accumulation at 0.25. Default
-history weight rises from 0.85 to 0.95 for stationary rough receivers, returning
-to 0.85 at one source pixel of motion per frame. Empty neighborhoods fade valid
-history; rejected depth/identity history clears immediately. Receiver filtering
-uses a 2 cm minimum depth tolerance, independently of ray thickness.
-Trace and composite use
-the same material-roughness eligibility cutoff. Metal static/moving captures and
-API-only resize checks pass. GPU shader validation crashes in MetalTools with SSR
-on or off. The dominant cafe bar hotspots are stabilized in the retained Metal
-captures; smaller curved-surface and silhouette variation remains under investigation. Native
-Vulkan execution remains unavailable.
+[ADR-055](adr/055-screen-space-reflections.md). Its half-resolution trace has a
+separate current-frame hierarchy and reflection history. Full-resolution leaves,
+absolute cell crossings and earliest one-sided surface intersections stay within
+48 decisions per ray. Four history taps independently validate depth and identity;
+reprojection includes the selected producer's jitter delta. Raw trace RGB remains
+incoming radiance. Temporal history now contains receiver-shaded radiance,
+including indirect-specular GTAO and the selected coat or base sheen/anisotropy
+response. Composite removes the exact current full-resolution probe contribution
+and adds covered shaded history without multiplying its receiver response again.
+
+History clamping relaxes continuously with roughness, reaching unclamped
+accumulation at 0.25. Default history weight rises from 0.85 to 0.95 for stationary
+rough receivers and returns to 0.85 at one source pixel of motion per frame.
+Empty neighborhoods fade valid history; rejected depth/identity history clears.
+Receiver filtering uses a 2 cm minimum depth tolerance, independently of ray
+thickness. The approved shaded-history extension adds at most 17 texture accesses
+per branch, with the existing images, rays and history ownership. Half-resolution
+receiver shading can soften material, coat and mirror boundaries and retain trails.
+
+Current Metal shaded-history captures preserve the mirror oracle and reduce
+counter-region outliers while increasing smaller under-bar outliers. They do not
+establish uniform stability. The moving capture, Release editor build, and two
+serial API-only mirror-resize repetitions pass. Matched Release profiles record a
+small added SSR cost under ADR-055. `ssr_reflection` capture version 3 identifies the new
+RGB meaning; older incoming-radiance history is incompatible. Native Vulkan
+execution remains unavailable.
+ADR-044 records the unresolved backend differences in coat GTAO policy and trace
+source sampling. GPU shader validation previously crashed in MetalTools with SSR
+on or off; that run supplied no shader-validation result.
 
 Scenes may author analytic height fog. Frame preparation uploads one 32-byte
 record per frame slot; a zero record bypasses fog. The in-place opaque/sky pass

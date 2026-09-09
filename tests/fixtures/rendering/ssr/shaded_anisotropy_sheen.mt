@@ -1,0 +1,14 @@
+name=ssr_shaded_anisotropy_sheen
+type=pbr
+base_color=0.10,0.10,0.10,1.0
+metallic=0.75
+roughness=0.3
+clearcoat_factor=0.0
+sheen_color=0.7,0.1,0.03
+sheen_roughness=0.55
+anisotropy_strength=0.7
+anisotropy_rotation=0.65
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

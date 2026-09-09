@@ -1821,12 +1821,22 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
                                        &sampled[binding]))
       return false_v;
   uint32_t output_color = 0u, output_depth = 0u, output_identity = 0u,
-           specular = 0u, clearcoat = 0u;
+           specular = 0u, clearcoat = 0u, albedo = 0u, sheen = 0u, anisotropy = 0u;
   if (!vkr_vk_deferred_storage_index(renderer, pass, 10u, &output_color) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 11u, &output_depth) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 12u, &output_identity) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 15u, &specular) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 16u, &clearcoat))
+      !vkr_vk_deferred_sampled_index(renderer, pass, 16u, &clearcoat) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 17u, &albedo) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 19u, &sheen) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 20u, &anisotropy))
+    return false_v;
+  uint32_t gtao = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 18u, 0u) &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 18u, &gtao))
+    return false_v;
+  uint64_t frame_address = 0u;
+  if (!vkr_vk_packet_frame_root(slot, &frame_address))
     return false_v;
   VkrVulkanGraphBufferInstance *visible =
       vkr_vk_deferred_buffer(renderer, pass, 13u);
@@ -1865,6 +1875,11 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
       .linear_sampler = renderer->transmission_sampler_slot,
       .specular_texture = specular,
       .clearcoat_texture = clearcoat,
+      .frame = frame_address,
+      .albedo_texture = albedo,
+      .gtao_visibility_texture = gtao,
+      .sheen_texture = sheen,
+      .anisotropy_texture = anisotropy,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrTemporalRoot),
