@@ -430,8 +430,11 @@ increase is 98.4375 MiB with three slots/five histories at source 1280×720, or
 203.90625 MiB with eight slots/ten histories. Alignment and resize overlap are
 excluded. History instance count and completion ownership are unchanged.
 
-Both temporal entries gather the same raw radiance/bounds footprint, then read
-the dominant hit and its traced receiver's visible row once: two additional
+Both temporal entries gather the same raw radiance/bounds footprint. The shared
+ranking helper selects the largest weighted RGB component, breaking equal-energy
+ties by covered weight. History geometry therefore follows the sample supplying
+light, including bright lamps surrounded by more widely covered dark objects.
+They read that hit and its traced receiver's visible row once: two additional
 texture reads, below the approved nine. Cross-instance receiver correspondence
 cannot seed or reuse history. Transported hit/receiver models and producer camera
 supply virtual reflected-point motion; adding its UV delta preserves the current
@@ -473,6 +476,14 @@ an odd-size scaled editor capture pass their selected checks. The
 owns exact commands, native layout evidence and the measured visual/cost limits.
 GPU shader validation previously crashed in MetalTools with SSR on and off and
 supplied no result. Native Vulkan and bilateral parity remain open gates.
+
+The later radiance-owner correction preserves these layouts, reads and rejection
+rules. Its 290-output Slang oracle, production app/editor builds and temporal
+SPIR-V validation pass. Metal covers the reported bar view, camera motion with
+SSGI/MetalFX, emitter disappearance and serial API-validated resize. The
+[radiance-owner record](../../assets/verification/renderer-features/ssr-radiance-owner.txt)
+records reduced sampled-phase flicker and residual thin-edge/missing-hit shimmer;
+native Vulkan execution and bilateral comparisons remain unavailable.
 
 Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
 native passes. Packet version 38 appends its prepared fog pointer without

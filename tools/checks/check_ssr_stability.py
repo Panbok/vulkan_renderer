@@ -11,6 +11,8 @@ frame at weight .85, even when fresh coverage is only .05.
 Planar mirror geometry independently distinguishes reflected-feature motion from
 receiver motion. Known affine point/normal transforms, jittered projections and
 history rejection cases exercise the production reprojection helpers directly.
+Weighted RGB contributions independently identify the reflected object that
+dominates incoming light, including dark coverage, black ties and disappearance.
 """
 import math
 import pathlib
@@ -96,7 +98,16 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             -7, 7, 6.5, 1,
             -3/math.sqrt(157), 2/math.sqrt(157), 12/math.sqrt(157), 1,
             # Current and previous raster jitter are both nonzero and unequal.
-            .6090625, .49625, 2, 3, 3, 1]
+            .6090625, .49625, 2, 3, 3, 1,
+            # RGB numerator .32 beats .0008; .1 loses to .8. Equal energy
+            # favors covered weight, including black; exact ties preserve order.
+            1, 0, 1, 0, 1, 0, 0, 0, 1,
+            # Red .8 beats cyan .6; covered light .08 loses to .5;
+            # blue .8 beats yellow .6.
+            1, 0, 1,
+            # Identity/tap: the lamp moves among taps, then loses all support.
+            # A black neighborhood selects the widest covered current trace.
+            17, 1, 17, 0, 17, 2, 23, 0, 31, 1]
 assert len(actual) == len(expected), actual
 for i, (got, want) in enumerate(zip(actual, expected)):
     assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
@@ -155,4 +166,6 @@ print("Orthographic reflected motion:", actual[244:250])
 print("Current receiver response:", actual[250:254])
 print("Mirrored affine transport:", actual[254:262])
 print("Unequal current/previous raster jitter:", actual[262:268])
+print("Radiance contribution, coverage ties and missing samples:", actual[268:280])
+print("Representative identity/tap across lamp movement and disappearance:", actual[280:290])
 print(f"SSR production shared math: {len(actual)} outputs PASS")

@@ -55,9 +55,13 @@ Temporal history stores incoming light, so history lookup does not transport the
 previous receiver's material, BRDF or GTAO response.
 
 The user approved reflected-hit reprojection to replace receiver-motion lookup.
-The gather retains its strongest covered trace sample without averaging hit
-positions across objects. Two additional reads fetch that sample's hit metadata
-and traced receiver's visible row. Its stable receiver identity must match the
+The gather retains the trace with the largest component of weighted RGB entering
+the spatial numerator, without averaging hit positions across objects. Covered
+weight breaks equal-energy ties; traversal order resolves exact ties. Ranking
+coverage alone can tag a lamp-dominated mixture with a dark object's geometry,
+rejecting otherwise reusable lamp history as raster jitter moves the samples.
+Both backends use the shared ranking helper. Two additional reads fetch that
+sample's hit metadata and traced receiver's visible row. Its stable receiver identity must match the
 current pixel before history may use the plane. A different receiver can still
 contribute current spatial radiance, but cannot establish temporal correspondence.
 
@@ -170,6 +174,21 @@ pixel. Off-screen geometry and exact curved-surface transport require capabiliti
 outside this bounded screen-space design.
 
 ## Evidence and remaining checks
+
+The radiance-owner correction uses the user's later bar camera at
+1784×1093 output, 80% spatial scaling, TAA enabled and SSGI disabled. Across
+checkpoints 0/1/4/8, mean coverage-weighted peak-RGB range falls 26.4% on the bar
+lip, while mean light rises 15.0%. The previously worst lamp pixel's TAA-output
+range falls 93.5%; the whole bar-lip TAA range falls 17.6%. Final display-code range falls only
+2.7%. These sampled-phase
+measurements do not establish flicker-free motion: thin edges and absent current
+hits still shimmer. The unchanged rejection checks pass the moving-emitter
+disappearance case. Release app/editor builds, 290 shared-math outputs, temporal
+SPIR-V validation, a MetalFX/SSGI camera move and serial Metal API resize pass.
+[The radiance-owner record](../../assets/verification/renderer-features/ssr-radiance-owner.txt)
+owns commands, payload measurements, cost limits and the remaining coverage.
+
+The original reflected-hit implementation has the following evidence:
 
 Release app and editor builds pass. The shared production Slang check passes
 268 independently expected outputs within 1e-6, including the exact planar

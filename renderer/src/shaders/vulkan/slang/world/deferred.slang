@@ -2401,7 +2401,7 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     float3 neighborhood_min = float3(3.402823466e+38f);
     float3 neighborhood_max = float3(-3.402823466e+38f);
     uint neighborhood_hits = 0u;
-    float dominant_weight = 0.0f;
+    float4 dominant_contribution = 0.0f;
     int2 dominant_cell = int2(0);
     uint2 traced_pixel = uint2(0u);
     float3 traced_receiver = 0.0f;
@@ -2425,17 +2425,18 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
             VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
         if (weight <= 0.0f) continue;
         float4 sample = g_textures[root.raw_texture].Load(int3(q, 0));
-        filtered += vkr_ssr_spatial_sample(sample, weight);
+        float4 contribution = vkr_ssr_spatial_sample(sample, weight);
+        filtered += contribution;
         support_weight += weight;
         if (sample.w > 0.0f)
         {
             neighborhood_min = min(neighborhood_min, sample.rgb);
             neighborhood_max = max(neighborhood_max, sample.rgb);
             ++neighborhood_hits;
-            float covered_weight = weight * sample.w;
-            if (covered_weight > dominant_weight)
+            if (vkr_ssr_reprojection_sample_dominates(
+                    contribution, dominant_contribution))
             {
-                dominant_weight = covered_weight;
+                dominant_contribution = contribution;
                 dominant_cell = q;
                 traced_pixel = receiver;
                 traced_receiver = neighbor_view;
@@ -2459,9 +2460,9 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     float current_virtual_depth = 0.0f;
     float3 previous_receiver_normal_view = 0.0f;
     bool current_correspondence = false;
-    if (dominant_weight > 0.0f)
+    if (dominant_contribution.w > 0.0f)
     {
-        // Only the dominant covered sample supplies a hit and a traced plane.
+        // The largest light contribution supplies the hit and traced plane.
         // The two metadata reads are independent of the gather footprint.
         uint4 raw_hit = g_uint4_textures[root.hit_texture].Load(int3(dominant_cell, 0));
         uint traced_visible = g_uint2_textures[root.vbuffer_texture].Load(int3(traced_pixel, 0)).x;

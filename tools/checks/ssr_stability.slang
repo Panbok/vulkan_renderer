@@ -604,4 +604,72 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     g_results[265] = both_jittered.expected_virtual_depth;
     g_results[266] = both_jittered.current_virtual_depth;
     g_results[267] = float(both_jittered.valid);
+
+    // The lamp contributes .32 to the RGB numerator; the more widely covered
+    // dark object contributes .0008. History must describe the lamp.
+    float4 candidate_dark = vkr_ssr_spatial_sample(float4(.001f, .001f, .001f, 1), .8f);
+    float4 candidate_lamp = vkr_ssr_spatial_sample(float4(8, 6, 2, 1), .04f);
+    g_results[268] = float(vkr_ssr_reprojection_sample_dominates(candidate_lamp, candidate_dark));
+    // Unweighted brightness cannot win: .001*100=.1 is below .8*1=.8.
+    g_results[269] = float(vkr_ssr_reprojection_sample_dominates(
+        vkr_ssr_spatial_sample(float4(100, 100, 100, 1), .001f),
+        vkr_ssr_spatial_sample(float4(1, 1, 1, 1), .8f)));
+    float4 candidate_narrow = vkr_ssr_spatial_sample(float4(4, 3, 2, 1), .25f);
+    float4 candidate_wide = vkr_ssr_spatial_sample(float4(2, 1.5f, 1, 1), .5f);
+    g_results[270] = float(vkr_ssr_reprojection_sample_dominates(candidate_wide, candidate_narrow));
+    g_results[271] = float(vkr_ssr_reprojection_sample_dominates(candidate_narrow, candidate_wide));
+    float4 candidate_black_narrow = vkr_ssr_spatial_sample(float4(0, 0, 0, 1), .2f);
+    float4 candidate_black_wide = vkr_ssr_spatial_sample(float4(0, 0, 0, 1), .8f);
+    g_results[272] = float(vkr_ssr_reprojection_sample_dominates(candidate_black_wide, candidate_black_narrow));
+    g_results[273] = float(vkr_ssr_reprojection_sample_dominates(candidate_black_narrow, candidate_black_wide));
+    // An exact tie preserves the first trace. Uncovered light cannot seed it.
+    g_results[274] = float(vkr_ssr_reprojection_sample_dominates(candidate_lamp, candidate_lamp));
+    g_results[275] = float(vkr_ssr_reprojection_sample_dominates(
+        vkr_ssr_spatial_sample(float4(100, 100, 100, 0), 1), float4(0)));
+    g_results[276] = float(vkr_ssr_reprojection_sample_dominates(candidate_black_wide, float4(0)));
+    // The largest RGB contribution, rather than mean RGB or luminance, owns
+    // the metadata. Both red and blue can be the deciding component.
+    g_results[277] = float(vkr_ssr_reprojection_sample_dominates(
+        vkr_ssr_spatial_sample(float4(4, 0, 0, 1), .2f),
+        vkr_ssr_spatial_sample(float4(0, 3, 3, 1), .2f)));
+    g_results[278] = float(vkr_ssr_reprojection_sample_dominates(
+        vkr_ssr_spatial_sample(float4(8, 6, 2, .1f), .1f),
+        vkr_ssr_spatial_sample(float4(1, 1, 1, 1), .5f)));
+    g_results[279] = float(vkr_ssr_reprojection_sample_dominates(
+        vkr_ssr_spatial_sample(float4(0, 0, 4, 1), .2f),
+        vkr_ssr_spatial_sample(float4(3, 3, 0, 1), .2f)));
+
+    // Move the lamp among raw taps while preserving its larger contribution.
+    // Removing its coverage selects current dark geometry immediately; a
+    // fully black neighborhood still chooses the widest covered trace.
+    float4 representative_contributions[15] = {
+        candidate_dark, candidate_lamp, candidate_black_narrow,
+        vkr_ssr_spatial_sample(float4(4, 3, 1, 1), .1f), candidate_dark,
+        vkr_ssr_spatial_sample(float4(1, 1, 1, 1), .1f),
+        candidate_dark, vkr_ssr_spatial_sample(float4(1, 1, 1, 1), .1f),
+        vkr_ssr_spatial_sample(float4(2, 1.5f, .5f, 1), .3f),
+        candidate_dark, vkr_ssr_spatial_sample(float4(8, 6, 2, 0), .04f), candidate_black_narrow,
+        candidate_black_narrow, candidate_black_wide,
+        vkr_ssr_spatial_sample(float4(100, 100, 100, 0), .5f)
+    };
+    uint representative_identities[15] = {
+        23u, 17u, 31u, 17u, 23u, 31u, 23u, 31u, 17u,
+        23u, 17u, 31u, 23u, 31u, 17u
+    };
+    for (uint phase = 0u; phase < 5u; ++phase) {
+        float4 representative = 0.0f;
+        uint winner_identity = 0u;
+        uint winner_tap = 3u;
+        for (uint tap = 0u; tap < 3u; ++tap) {
+            uint candidate_index = phase * 3u + tap;
+            float4 contribution = representative_contributions[candidate_index];
+            if (vkr_ssr_reprojection_sample_dominates(contribution, representative)) {
+                representative = contribution;
+                winner_identity = representative_identities[candidate_index];
+                winner_tap = tap;
+            }
+        }
+        g_results[280u + phase * 2u] = float(winner_identity);
+        g_results[281u + phase * 2u] = float(winner_tap);
+    }
 }

@@ -354,7 +354,7 @@ kernel void vkr_metal_packet_ssr_temporal(
   float3 neighborhood_min = float3(3.402823466e+38f);
   float3 neighborhood_max = float3(-3.402823466e+38f);
   uint neighborhood_hits = 0u;
-  float dominant_weight = 0.0f;
+  float4 dominant_contribution = 0.0f;
   uint2 dominant_pixel = uint2(0u);
   uint2 traced_receiver_pixel = uint2(0u);
   float3 traced_receiver_view = 0.0f;
@@ -385,15 +385,16 @@ kernel void vkr_metal_packet_ssr_temporal(
       if (weight <= 0.0f)
         continue;
       float4 sample = root.raw.read(neighbor);
-      filtered += vkr_ssr_spatial_sample(sample, weight);
+      float4 contribution = vkr_ssr_spatial_sample(sample, weight);
+      filtered += contribution;
       weight_sum += weight;
       if (sample.w > 0.0f) {
         ++neighborhood_hits;
         neighborhood_min = min(neighborhood_min, sample.rgb);
         neighborhood_max = max(neighborhood_max, sample.rgb);
-        float covered_weight = weight * sample.w;
-        if (covered_weight > dominant_weight) {
-          dominant_weight = covered_weight;
+        if (vkr_ssr_reprojection_sample_dominates(
+                contribution, dominant_contribution)) {
+          dominant_contribution = contribution;
           dominant_pixel = neighbor;
           traced_receiver_pixel = receiver;
           traced_receiver_view = neighbor_view;
@@ -408,7 +409,7 @@ kernel void vkr_metal_packet_ssr_temporal(
   float3 previous_receiver_normal_view = 0.0f;
   bool current_correspondence = false;
   uint4 dominant_hit =
-      dominant_weight > 0.0f ? root.hit.read(dominant_pixel) : uint4(0u);
+      dominant_contribution.w > 0.0f ? root.hit.read(dominant_pixel) : uint4(0u);
   float hit_depth = as_type<float>(dominant_hit.z);
   if (dominant_hit.w != 0u && vkr_ssr_valid_depth(hit_depth)) {
     const device VkrMetalPacketInstance &hit_instance =

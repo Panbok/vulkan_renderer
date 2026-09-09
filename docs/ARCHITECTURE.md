@@ -501,9 +501,13 @@ Opaque SSR runs before transmission under
 current-frame depth hierarchy, full-resolution leaves and 48-decision limit.
 Trace writes incoming radiance and an exact integer hit record. Temporal gathers
 at most nine raw samples once for radiance and bounds (four on mirrors), then
-reprojects the strongest covered reflected hit using the current and selected
-producer's camera and instance transforms. The virtual-hit motion delta preserves
+reprojects the hit supplying the largest weighted RGB contribution using the
+current and selected producer's camera and instance transforms. The virtual-hit motion delta preserves
 the full-resolution receiver's offset from its half-resolution trace sample.
+Coverage breaks equal-radiance ties. This prevents dark geometry from owning
+history whose light comes from a neighboring lamp, without changing rejection
+checks or the ray, image and texture-read budgets. Thin geometry and missing
+current samples can still shimmer before stationary accumulation.
 
 Four history taps validate receiver and reflected-instance identities, receiver
 and virtual depth, selected normal and producer jitter. The previous UV ray

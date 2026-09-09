@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "id": "local.ssr.reflected_hit_flicker_motion",
+  "suite": "local",
+  "description": "Reported Bistro bar view with translation and hold, SSGI and MetalFX enabled.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    1784,
+    1093
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": {
+    "warmup": 32,
+    "measure": 24
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "render_scale": 0.8,
+    "upscaler": "metalfx_temporal",
+    "taa_enabled": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 8,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": false,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "image_sharpness": 0,
+    "ssr_enabled": true,
+    "ssgi_enabled": true,
+    "backend": "metal"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "interpolation": "linear",
+    "keys": [
+      {
+        "t": 0,
+        "position": [
+          -6.08679438,
+          2.16728449,
+          9.40748692
+        ],
+        "yaw": -29.7409668,
+        "pitch": -1.66192317
+      },
+      {
+        "t": 0.1,
+        "position": [
+          -5.83679438,
+          2.16728449,
+          8.90748692
+        ],
+        "yaw": -29.7409668,
+        "pitch": -1.66192317
+      },
+      {
+        "t": 0.2,
+        "position": [
+          -6.08679438,
+          2.16728449,
+          9.40748692
+        ],
+        "yaw": -29.7409668,
+        "pitch": -1.66192317
+      },
+      {
+        "t": 0.4,
+        "position": [
+          -6.08679438,
+          2.16728449,
+          9.40748692
+        ],
+        "yaw": -29.7409668,
+        "pitch": -1.66192317
+      }
+    ]
+  },
+  "captures": [
+    {
+      "at_frame": 6,
+      "channels": [
+        "final_color",
+        "ssr_raw",
+        "ssr_reflection",
+        "hdr_pre_transmission",
+        "hdr_pre_bloom",
+        "motion_vectors"
+      ]
+    },
+    {
+      "at_frame": 12,
+      "channels": [
+        "final_color",
+        "ssr_raw",
+        "ssr_reflection",
+        "hdr_pre_transmission",
+        "hdr_pre_bloom",
+        "motion_vectors"
+      ]
+    },
+    {
+      "at_frame": 20,
+      "channels": [
+        "final_color",
+        "ssr_raw",
+        "ssr_reflection",
+        "hdr_pre_transmission",
+        "hdr_pre_bloom",
+        "motion_vectors"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "stat": "min",
+      "min": 1,
+      "metric": "draw.world.opaque_draws"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "packet.publication_omitted_candidates"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "visibility.gbuffer.resolve_invalid"
+    }
+  ]
+}

@@ -722,6 +722,21 @@ float4 vkr_ssr_spatial_sample(float4 reflection, float receiver_weight)
     return float4(reflection.xyz * covered_weight, covered_weight);
 }
 
+// Geometry must identify the sample contributing the most incoming light to
+// the filtered RGB. Coverage alone can select a dark sample while a neighboring
+// lamp supplies nearly all of that RGB. Maximum RGB preserves saturated lights;
+// coverage breaks equal-energy ties, including an entirely black neighborhood.
+bool vkr_ssr_reprojection_sample_dominates(float4 contribution,
+                                          float4 dominant_contribution)
+{
+    float radiance = max(contribution.x, max(contribution.y, contribution.z));
+    float dominant_radiance = max(dominant_contribution.x,
+        max(dominant_contribution.y, dominant_contribution.z));
+    return radiance > dominant_radiance ||
+           (radiance == dominant_radiance &&
+            contribution.w > dominant_contribution.w);
+}
+
 float4 vkr_ssr_spatial_resolve(float4 weighted_reflection, float support_weight)
 {
     if (weighted_reflection.w <= 0.0f || support_weight <= 0.0f)

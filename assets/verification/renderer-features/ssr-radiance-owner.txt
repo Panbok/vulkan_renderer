@@ -1,0 +1,89 @@
+SSR correspondence follows the incoming light — 2026-09-09
+
+Change
+The spatial reconstruction can receive almost all its light from a lamp while
+its largest covered sample hits a dark object. Using that dark object's hit as
+the history identity rejects the lamp every time raster jitter changes coverage.
+Metal and Vulkan now select the largest weighted RGB component already entering
+the spatial numerator. Covered weight breaks equal-energy ties, including black
+neighborhoods; exact ties preserve traversal order. No image, ray, texture read,
+root ABI, lifetime, history-retention or rejection threshold changes.
+
+Diagnosis
+Temporary Metal diagnostics packed history-acceptance masks into the existing
+reflection output. They are diagnostic data, not version-5 incoming radiance,
+and must never be promoted as portable baselines. At source pixel (937,602),
+receiver identity, receiver depth and normal pass while reflected identity and
+virtual depth fail. The raw 3x3 footprint contains a bright lamp in every checked
+phase, but the former coverage winner can be a dark sample. Roughness is stable
+at 92/255. Mask definitions, per-region counts, hotspots and report digests are
+retained in ssr-radiance-owner.json before retiring these two diagnostic runs.
+
+Normal Release output
+Apple M1 Pro / Metal 4, Bistro, output 1784x1093, source 1427x874, 80% spatial,
+TAA on, SSGI off, manual exposure 8, GTAO on, bloom off. Camera world position
+[-6.08679438,2.16728449,9.40748692], yaw -29.7409668, pitch -1.66192317,
+FOV 70, near 0.100000001, far 500. The user supplied no render scale with this
+camera; 80% matches prior reports. Checkpoints 0/1/4/8 are independent replays,
+before stationary accumulation. They are not a continuous clip or all phases.
+
+Bar-lip mean coverage-weighted peak-RGB range: 0.00557215 -> 0.00409841 (-26.4%).
+Its mean coverage-weighted peak RGB: 0.00359646 -> 0.00413768 (+15.0%).
+Bar-lip pre-TAA HDR RGB range: 0.00137492 -> 0.00115219 (-16.2%).
+Bar-lip TAA HDR RGB range: 0.00017759 -> 0.00014631 (-17.6%).
+The lamp hotspot (937,602) TAA red range: 0.0319824 -> 0.00207520 (-93.5%).
+Final display-code bar-lip range: 0.829625 -> 0.807622 (-2.7%, out of 255).
+The panel/counter and upper woodwork improve little in the final output. Thin
+geometry and absent current hits still shimmer; this is a partial correction.
+Raw ROI statistics match exactly. Outside those ROIs, 0/3/21/11 raw components
+out of 1,246,324 differ at checkpoints 0/1/4/8 across the before/after replays.
+
+Ghost rejection
+The moving-emitter fixture has zero red reflection pixels at checkpoint 8 after
+current red support disappears, with 6,070 other history pixels still covered.
+The prior under-bar in/out case remains close to its own 320-warm-frame reference:
+TAA HDR convergence errors change by less than 0.7% in both checked regions at
+held checkpoints 18/20/32/48. Each revision has its own reference; these are
+regional convergence observations, not an exact ghost mask. The new camera's
+MetalFX+SSGI translation/hold case also renders with finite history and valid
+coverage (actual source 1428x875). No matched motion-flicker claim is made.
+
+Checks
+./build_release.sh
+./build_editor.sh Release
+python3 tools/checks/check_ssr_stability.py
+spirv-val --target-env vulkan1.3 --scalar-block-layout build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv
+python3 tools/checks/check_ssr_reflected_hit.py build/_artifacts/snapshot/20260909T141731.005Z-00db61
+python3 tools/checks/check_ssr_reflected_flicker.py build/_artifacts/snapshot/20260909T134520.520Z-001400 build/_artifacts/snapshot/20260909T141617.893Z-00d72f
+
+All pass. The shared production Slang oracle retains 268 prior outputs and adds
+22 independently expected cases: weighted lamp/dark selection, unweighted
+brightness counterexamples, coverage ties, unsupported/black samples, saturated
+channels, tap-position changes and lamp disappearance. Absolute tolerance 1e-6.
+The affected temporal SPIR-V SHA-256 is
+796ac37914afa9f911966ce4704aa253b443c499984771483211c7991ee0c8ca.
+One serial API-validated SSR/SSGI resize passes; stderr confirms Metal API
+Validation Enabled and contains no error. No GPU shader-validation suite ran.
+
+The JSON record retains exact harness commands, all report digests, provenance,
+effective configurations, fingerprints, capture hashes, finite/coverage checks,
+metrics and the full oracle log. Normal runs unset MTL_DEBUG_LAYER,
+MTL_SHADER_VALIDATION and VK_INSTANCE_LAYERS. The API run sets only
+MTL_DEBUG_LAYER=1. The screenshot is ssr-radiance-owner.png.
+
+Local GPU cost
+Matched configuration/fingerprints with the prior ssr-reflected-hit.json cost:
+source 1025x577, output 1280x720, 80% MetalFX, SSR on, SSGI off; three children,
+60 warmup + 120 measured frames each, 360 valid GPU samples per SSR pass.
+SSR GPU sum: 2.84729 -> 2.85398 ms; temporal: 1.55610 -> 1.55778 ms.
+Graph images remain 616,650,930 bytes; GPU live allocation remains 3,693,084,672
+bytes with exact accounting and zero measured allocation creations. These are
+non-authoritative local/dirty observations. CPU warmup is unstable after the
+change; neither a speedup nor an authoritative no-regression claim is supported.
+
+Limits and retention
+Native Windows/Vulkan execution and bilateral pixel comparison remain unavailable.
+All production snapshots remain local pending authorized baseline publication.
+No baseline was promoted. The user subsequently approved a separate full-resolution
+SSR trial (up to 4x rays and 64 MiB / 169 MiB extra image storage at 1280x720 with
+3 / 8 frame slots, excluding alignment/resize); it is not part of this correction.

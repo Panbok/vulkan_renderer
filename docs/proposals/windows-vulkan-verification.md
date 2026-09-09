@@ -75,6 +75,13 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   `tools/checks/check_ssr_reflected_hit.py` payload check: the moving emitter must
   stop leaving red history when its current reflection loses coverage.
   Run `ssr_reflected_hit_editor.case.json` for odd-size scaled editor bindings.
+  Run `ssr_reflected_hit_flicker.case.json` at the later reported bar camera and
+  `tools/checks/check_ssr_reflected_flicker.py` on its retained snapshot. Confirm
+  that weighted RGB, rather than coverage alone, selects the history's reflected
+  object. Assess the bar lip and upper woodwork before static accumulation;
+  absent current hits and thin edges remain limitations on Metal. The separate
+  `ssr_reflected_hit_flicker_motion.case.json` is MetalFX-specific; use a separately
+  identified Vulkan/FSR witness for that mode, not a bilateral comparison.
   Unsupported correspondence must use current radiance/probes without fading
   an old reflection. Four history taps retain individual validation; raw bounds
   reuse nine guided samples (four on mirrors) and dominant metadata adds two
