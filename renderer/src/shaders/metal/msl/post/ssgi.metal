@@ -297,20 +297,44 @@ kernel void vkr_metal_packet_ssgi_temporal(
         neighborhood_square_sum / neighborhood_weight -
             neighborhood_mean * neighborhood_mean, float3(0.0f));
     float2 current_uv = vkr_ssr_uv_from_pixel(receiver.pixel, source_extent);
-    float2 previous_uv = current_uv + root.motion.read(receiver.pixel).xy;
+    float2 previous_uv = vkr_ssr_previous_uv(
+        screen, current_uv, root.motion.read(receiver.pixel).xy);
     float2 half_texel(root.params.trace_texel_size_x * 0.5f,
                       root.params.trace_texel_size_y * 0.5f);
-    float2 history_uv = clamp(previous_uv, half_texel, 1.0f - half_texel);
-    uint2 history_pixel = min(uint2(floor(history_uv * float2(trace_extent))),
-                              trace_extent - 1u);
-    VkrSsrHistoryDecision decision = vkr_ssr_temporal_accept(
-        screen, identity, root.history_identity.read(history_pixel).xy,
-        root.history_depth.read(history_pixel).x,
-        root.validity.read(receiver.pixel).y, previous_uv,
-        root.validity.read(receiver.pixel).x, trace_extent);
-    raw = vkr_ssgi_temporal_filter(raw,
-                                   root.history_color.read(history_pixel),
-                                   neighborhood_mean, neighborhood_variance, decision);
+    float2 coordinate = clamp(previous_uv, half_texel, 1.0f - half_texel) *
+                            float2(trace_extent) - 0.5f;
+    int2 first = int2(floor(coordinate));
+    float2 validity = root.validity.read(receiver.pixel).xy;
+    float3 history_sum(0.0f);
+    float history_support = 0.0f;
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        int2 p = first + int2(x, y);
+        if (any(p < 0) || any(p >= int2(trace_extent)))
+          continue;
+        float weight = vkr_ssr_history_tap_weight(coordinate, p);
+        if (weight <= 0.0f)
+          continue;
+        VkrSsrHistoryDecision tap = vkr_ssr_temporal_accept(
+            screen, identity, root.history_identity.read(uint2(p)).xy,
+            root.history_depth.read(uint2(p)).x, validity.y, previous_uv,
+            validity.x, trace_extent);
+        if (tap.accepted == 0u)
+          continue;
+        float4 sample = root.history_color.read(uint2(p));
+        float confidence_weight = weight * saturate(sample.w);
+        history_sum += sample.rgb * confidence_weight;
+        history_support += confidence_weight;
+      }
+    }
+    if (history_support > 0.0f) {
+      VkrSsrHistoryDecision decision = {};
+      decision.accepted = 1u;
+      decision.weight = screen.temporal_weight;
+      raw = vkr_ssgi_temporal_filter(
+          raw, float4(history_sum / history_support, 1.0f),
+          neighborhood_mean, neighborhood_variance, decision);
+    }
   }
   root.output_color.write(raw, pixel);
   root.output_depth.write(float4(receiver.positive_depth, 0.0f, 0.0f, 1.0f), pixel);

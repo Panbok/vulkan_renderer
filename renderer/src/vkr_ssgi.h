@@ -75,8 +75,8 @@ typedef struct VkrSsgiGpuParams {
 
   float32_t trace_texel_size_x;
   float32_t trace_texel_size_y;
-  float32_t trace_extent_x;
-  float32_t trace_extent_y;
+  float32_t history_jitter_uv_x;
+  float32_t history_jitter_uv_y;
 } VkrSsgiGpuParams;
 
 _Static_assert(sizeof(VkrSsgiGpuParams) == 288u,

@@ -440,6 +440,11 @@ reprojection adds motion and the producer's previous-minus-current raster jitter
 from parameter offsets 280/284. Source extent controls coordinates and tap bounds.
 Roughness continuously relaxes clamping, but at most half the normalized RGB
 residual outside current bounds survives each update, including sparse support.
+The shared supported filter caps normalized history RGB retention at the adjusted
+temporal weight; coverage normalization cannot amplify that weight when current
+support is sparse. Coverage averaging, empty decay and constant sparse radiance
+are unchanged. Shorter supported ghost trails can expose more fresh-sample noise;
+receiver identity still does not validate reflected-object identity.
 Motion-adaptive defaults rise from 0.85 to 0.95 on stationary rough receivers and
 return at one source pixel per frame. Empty neighborhoods retain at most half
 of validated coverage each frame; rejected history clears. The shared scene-static
@@ -452,7 +457,7 @@ has a 2 cm minimum independent of ray thickness. Full-resolution trace leaves,
 absolute crossings, earliest rear-slab
 intersections and same-pixel validation keep the existing depth allocation.
 SSGI retains its previous leaf, slab and receiver-minimum policies through shared
-adapters and initializes its unused jitter offsets to zero.
+adapters; its history reprojection supplies its own selected-producer jitter offsets.
 
 Old coat subtraction matches deferred's coat-directed GTAO and packed roughness.
 Both decode bent direction against the coat normal. Coated composite pixels skip
@@ -478,6 +483,13 @@ validation previously crashed in MetalTools
 with SSR disabled as well as enabled and supplied no result.
 [ADR-055](055-screen-space-reflections.md#evidence-and-remaining-checks) links
 current and prior evidence. The domain remains UNALIGNED.
+
+The normalized-retention correction passes 156 shared Slang CPU outputs,
+including an in-bounds sparse-coverage step whose old RGB error decreases by at
+least 15% per supported update at weight 0.85. Both native temporal entries call
+the corrected shared helper; roots, texture reads, images and ray limits are
+unchanged. Current native Metal captures and their trail/coverage limits are in the
+[history-correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt).
 
 Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
 native passes. Packet version 38 appends its prepared fog pointer without
@@ -508,25 +520,34 @@ scale or SDR clamp. Maximum numeric error is 0.003899. Native Vulkan execution r
 unavailable, so affected presentation entries are **UNALIGNED**.
 
 SSGI shares a 288-byte parameter record and has five phases: depth base/mips,
-trace, temporal, and composite. Deferred lighting writes the isolated
-direct/emissive source only when SSGI is enabled; its roots retain existing
-solar fields and append the direct-source identifier and enable flag, producing
-192-byte Metal and 160-byte Vulkan roots. Generated Vulkan SPIR-V validation and
-reflection prove roots of 304/32/320/368/416 bytes. Generated Metal source
-matches its 320/320/352/400/448-byte native roots; see
-[the retained reflection review](../../assets/verification/renderer-features/ssgi-final-spirv.txt).
+trace, temporal, and composite. Bytes 280/284 now carry
+`history_jitter_uv_x/y` in the former unused tail. Deferred lighting writes the
+isolated direct/emissive source only when SSGI is enabled; its roots retain
+existing solar fields and append the direct-source identifier and enable flag,
+producing 192-byte Metal and 160-byte Vulkan roots.
 
 Both native paths use the same 256-phase Hammersley trace sequence and 3×3 raw
 bilateral filter over nearest covered receivers. Valid misses remain zero samples
-in that normalized average. SSGI accepts only completed history tuples;
-when portable TAA or MetalFX's shared motion predecessor is still in flight, SSGI falls
-back to current radiance without waiting. Metal API validation proves completion,
-TAA-jitter reuse, disable/re-enable, and resize behavior in
-[the lifecycle record](../../assets/verification/renderer-features/ssgi-lifecycle-api-completed.txt). Native source-isolation,
-emissive-bounce, baked-volume exclusion, editor output and Bistro cost checks
-pass. Native Vulkan execution and bilateral comparison remain unavailable, so
-SSGI is **UNALIGNED**. [ADR-060](060-screen-space-diffuse-indirect-lighting.md)
-owns the feature policy and acceptance evidence.
+in that normalized average. History selection proves the exact
+temporal-transform instance, submit, frame, scene and compatible retained tuple.
+That same-queue predecessor may be in flight through existing barriers; no other
+in-flight tuple is eligible. Reprojection adds the producer's previous-minus-
+current raster jitter to unjittered motion on the raw grid. FSR uses its active
+phase count; MetalFX remains fixed at eight phases and no-TAA keeps zero offsets.
+Four bilinear color/depth/identity taps validate each depth and identity before
+resolving RGB with bilinear × history-confidence weight. The four taps add nine
+history texture accesses over the former single tap, with no new images or rays.
+
+Release builds, all ten SSR/SSGI SPIR-V modules, compiled parameter offsets and
+Vulkan host syntax pass. Current Metal captures cover TAA/MetalFX and no-TAA,
+and a serial SSR/SSGI resize passes Metal API validation. The
+[correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
+retains the reported-view comparisons and their limits. Earlier source-isolation,
+emissive-bounce, baked-volume exclusion,
+editor output and Bistro checks predate it. Native Vulkan execution and bilateral
+comparison remain unavailable, so SSGI is **UNALIGNED**.
+[ADR-060](060-screen-space-diffuse-indirect-lighting.md) owns the feature policy
+and acceptance evidence.
 
 Froxel volumetric fog uses a 928-byte `VkrFroxelFogParams` record. Fields through
 byte 799 retain their existing offsets; unjittered current view-projection and

@@ -1,0 +1,74 @@
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv : 0
+ef08428838ab2a79ca8d572ddd9417364d0a6430956369c23490d36ab2787e01
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv : 0
+1b9c6451a6a5d7ad1ffde0d3e8e303a135ef427057f802c8a9d8795bccd60d99
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv : 0
+1fd9b5a0010666ecf0b1239e491964b56cd08151bca7696d4423c7a147b67400
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv : 0
+75c5d04a73bee10841da93addfee993c7d96e43c8cc10c7c3b627c06eaea06a5
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv : 0
+45dd3eb6cf635149c20bdf28f544f795603492826e45cef55f57a79582631a4c
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv : 0
+ed323bdb4f4ffd72bae99637e65e25648e4ddf5a28805f7dfc094ce8c885a587
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv : 0
+8edd2461a9adf97467c539717f69883f40de60a392d609a2e0d971c9edfe179d
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv : 0
+0cb4f8df1075b9126af8b04536ea2555ca7886d1cdac84181e14e697d9f6394c
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv : 0
+ca748dcb50899a95b382b77db107a69d2f07d6c754b4d201ebabbefacdbf781f
+OpMemberName %VkrSsgiParams_natural 0 "projection"
+OpMemberName %VkrSsgiParams_natural 1 "inverse_projection"
+OpMemberName %VkrSsgiParams_natural 2 "view"
+OpMemberName %VkrSsgiParams_natural 3 "source_width"
+OpMemberName %VkrSsgiParams_natural 4 "source_height"
+OpMemberName %VkrSsgiParams_natural 5 "trace_width"
+OpMemberName %VkrSsgiParams_natural 6 "trace_height"
+OpMemberName %VkrSsgiParams_natural 7 "depth_mip_count"
+OpMemberName %VkrSsgiParams_natural 8 "max_steps"
+OpMemberName %VkrSsgiParams_natural 9 "history_valid"
+OpMemberName %VkrSsgiParams_natural 10 "sample_phase"
+OpMemberName %VkrSsgiParams_natural 11 "thickness"
+OpMemberName %VkrSsgiParams_natural 12 "max_distance"
+OpMemberName %VkrSsgiParams_natural 13 "normal_bias"
+OpMemberName %VkrSsgiParams_natural 14 "edge_fade_pixels"
+OpMemberName %VkrSsgiParams_natural 15 "temporal_weight"
+OpMemberName %VkrSsgiParams_natural 16 "temporal_depth_relative"
+OpMemberName %VkrSsgiParams_natural 17 "temporal_depth_absolute"
+OpMemberName %VkrSsgiParams_natural 18 "reserved_float_0"
+OpMemberName %VkrSsgiParams_natural 19 "previous_projection_m22"
+OpMemberName %VkrSsgiParams_natural 20 "previous_projection_m23"
+OpMemberName %VkrSsgiParams_natural 21 "previous_projection_m32"
+OpMemberName %VkrSsgiParams_natural 22 "previous_projection_m33"
+OpMemberName %VkrSsgiParams_natural 23 "trace_texel_size_x"
+OpMemberName %VkrSsgiParams_natural 24 "trace_texel_size_y"
+OpMemberName %VkrSsgiParams_natural 25 "history_jitter_uv_x"
+OpMemberName %VkrSsgiParams_natural 26 "history_jitter_uv_y"
+OpMemberDecorate %VkrSsgiParams_natural 0 Offset 0
+OpMemberDecorate %VkrSsgiParams_natural 1 Offset 64
+OpMemberDecorate %VkrSsgiParams_natural 2 Offset 128
+OpMemberDecorate %VkrSsgiParams_natural 3 Offset 192
+OpMemberDecorate %VkrSsgiParams_natural 4 Offset 196
+OpMemberDecorate %VkrSsgiParams_natural 5 Offset 200
+OpMemberDecorate %VkrSsgiParams_natural 6 Offset 204
+OpMemberDecorate %VkrSsgiParams_natural 7 Offset 208
+OpMemberDecorate %VkrSsgiParams_natural 8 Offset 212
+OpMemberDecorate %VkrSsgiParams_natural 9 Offset 216
+OpMemberDecorate %VkrSsgiParams_natural 10 Offset 220
+OpMemberDecorate %VkrSsgiParams_natural 11 Offset 224
+OpMemberDecorate %VkrSsgiParams_natural 12 Offset 228
+OpMemberDecorate %VkrSsgiParams_natural 13 Offset 232
+OpMemberDecorate %VkrSsgiParams_natural 14 Offset 236
+OpMemberDecorate %VkrSsgiParams_natural 15 Offset 240
+OpMemberDecorate %VkrSsgiParams_natural 16 Offset 244
+OpMemberDecorate %VkrSsgiParams_natural 17 Offset 248
+OpMemberDecorate %VkrSsgiParams_natural 18 Offset 252
+OpMemberDecorate %VkrSsgiParams_natural 19 Offset 256
+OpMemberDecorate %VkrSsgiParams_natural 20 Offset 260
+OpMemberDecorate %VkrSsgiParams_natural 21 Offset 264
+OpMemberDecorate %VkrSsgiParams_natural 22 Offset 268
+OpMemberDecorate %VkrSsgiParams_natural 23 Offset 272
+OpMemberDecorate %VkrSsgiParams_natural 24 Offset 276
+OpMemberDecorate %VkrSsgiParams_natural 25 Offset 280
+OpMemberDecorate %VkrSsgiParams_natural 26 Offset 284
+spirv-val --target-env vulkan1.4 build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv : 0
+0da7b29d80c666deb38aa129df24b1ad66884416a521b3e08f5140db91d357a5

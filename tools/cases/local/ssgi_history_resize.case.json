@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "local.ssgi.synchronized_history_resize",
+  "suite": "local",
+  "description": "Synchronized SSR/SSGI history across temporal jitter and odd-extent resize.",
+  "scene": "assets/scenes/fixtures/ssr_mirror_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    321,
+    241
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 8,
+    "measure": 2
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": true,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "aces_fitted",
+    "gtao_enabled": false,
+    "ssr_enabled": true,
+    "image_sharpness": 0,
+    "upscaler": "spatial",
+    "ssgi_enabled": true
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.5,
+      3
+    ],
+    "yaw": -90,
+    "pitch": -20,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ],
+  "resize_round_trip": [
+    257,
+    193
+  ]
+}

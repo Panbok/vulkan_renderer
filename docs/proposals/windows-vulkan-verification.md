@@ -89,7 +89,8 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] Froxel volumetric fog, scattering history, and invalid-input fallback:
   [ADR-059](../adr/059-froxel-volumetric-fog.md).
 - [ ] Independent SSGI, source classification, shared motion predecessor consistency,
-  history, and baked-volume suppression: [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md).
+  exact in-flight producer ordering, jitter-corrected four-tap depth/identity
+  rejection, no-TAA zero jitter, and baked-volume suppression: [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md).
 - [ ] Extended-linear scRGB/EDR output, headroom mapping, and SDR fallback:
   [ADR-061](../adr/061-extended-linear-display-output.md).
 - [ ] Layered clearcoat maps, coat energy, and coat-priority SSR:

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-09
 authority: adr
 ---
 
@@ -8,9 +8,10 @@ authority: adr
 
 ## Status
 
-Accepted. Production graph, native commands, and completion-gated history are
-integrated. Focused Metal output and lifetime checks pass. Native Vulkan
-execution remains unavailable on this host.
+Accepted. Production graph, native commands and completion-protected history
+ownership are integrated. Current Metal captures cover TAA, MetalFX, camera
+movement and no-TAA; a small resize passes Metal API validation. Native Vulkan execution remains
+unavailable on this host.
 
 ## Context
 
@@ -44,9 +45,23 @@ The temporal pass applies a 3×3 raw spatial filter before history clamping. It
 reconstructs each nearest covered neighbor, rejects depth or normal discontinuities,
 and uses compact bilateral weights; valid misses remain zero-valued samples in
 the normalized average. This preserves constant radiance on a locally continuous
-surface without mixing discontinuous receivers. Temporal acceptance then validates
-only completed color/depth/identity tuples against motion, stable identity, depth,
-and lighting/resource revisions.
+surface without mixing discontinuous receivers.
+
+History is the color/depth/identity tuple matching the transform that supplies
+motion: its instance, submit value, frame, scene generation,
+lighting/resource revisions, dimensions, and retained shadow state must match.
+Metal uses its existing submission-event wait; Vulkan uses its existing same-queue
+image barriers. These order the shared predecessor before CPU-observed completion.
+Other producers must already be complete.
+The temporal pass reprojects the unjittered motion coordinate onto the raw grid by
+adding the producer's previous-minus-current raster jitter. FSR derives that
+jitter from its active upscale sequence length; non-FSR paths, including MetalFX,
+use the fixed eight-phase sequence. No-TAA leaves the offsets zero.
+
+Four bilinear history color taps independently validate depth and stable identity.
+Their RGB values resolve with bilinear weight multiplied by each tap's history
+confidence. This changes one color/depth/identity lookup into four, adding nine
+history texture accesses per temporal invocation without new images or rays.
 
 Composite the diffuse residual after deferred lighting and before SSR. Apply
 receiver diffuse energy, albedo and material AO once. Do not apply GTAO visibility
@@ -62,18 +77,19 @@ image dependencies; Metal and Vulkan realize storage and retain independent
 completion-proven history tuples. Failed or canceled submissions do not publish
 new history.
 
-Portable TAA and MetalFX may use an immediate in-flight predecessor for shared
-motion continuity. SSGI selects only a completed tuple from that same producer.
-An older completed SSGI tuple must not replace the reconstruction motion reference.
-When no compatible completed tuple exists, SSGI sets history invalid and uses the
-current one-ray estimate without waiting or recreating images.
+Portable TAA, FSR and MetalFX select the immediate transform predecessor for
+motion continuity. SSGI consumes its exact matching tuple through the existing
+queue dependency, even when the GPU has not completed it. An older completed
+tuple cannot replace that motion reference. When no compatible predecessor exists,
+SSGI sets history invalid and uses the current one-ray estimate without waiting or
+recreating images.
 
 ## Consequences
 
 SSGI adds dynamic screen-visible diffuse bounce outside valid baked-volume cells.
 It cannot recover off-screen emitters or occluders and does not replace baked
 multi-bounce lighting. Low ray count requires spatial and temporal filtering; changed content or a
-missing completed tuple can temporarily lose accumulated detail. Storage and
+missing compatible predecessor can temporarily lose accumulated detail. Storage and
 traversal costs are explicit and remain optional.
 
 ## Alternatives considered
@@ -96,16 +112,22 @@ five native phases are integrated: depth base/mips, trace, temporal, and
 composite. Deferred lighting writes the isolated direct/emissive source only
 when SSGI is enabled.
 
-The Release wrapper passed after the spatial filter. Generated Vulkan SPIR-V
-passed validation and reflects the 288-byte parameter record, five SSGI roots
-(304/32/320/368/416 bytes), and the 160-byte deferred root; generated Metal
-source reflects matching parameters and 320/320/352/400/448-byte native roots.
-See [the retained reflection review](../../assets/verification/renderer-features/ssgi-final-spirv.txt).
-Metal API validation proved completed tuple reuse across TAA jitter without image
-recreation and correct disable/re-enable/resize behavior in
-[the lifecycle record](../../assets/verification/renderer-features/ssgi-lifecycle-api-completed.txt). The
-spatial emission capture completed in
-[the retained run record](../../assets/verification/renderer-features/ssgi-emission-on-spatial.txt).
+`VkrSsgiParams` remains 288 bytes. Its former unused tail at bytes 280 and 284
+is `history_jitter_uv_x/y`; no root or image allocation changes. The Metal and
+Vulkan temporal shaders implement the same four-tap, confidence-weighted
+reconstruction and exact-predecessor contract.
+
+Earlier Release, reflection and Metal API records cover the preceding
+completed-history implementation. The current revision passes Release app/editor
+builds, all ten SSR/SSGI SPIR-V validation checks, compiled parameter reflection,
+Vulkan host syntax and a serial Metal API resize check. Current Bistro captures
+reduce excess displayed variation above the SSGI-off control by 86.6% in the
+reported view; a no-TAA emission fixture also runs successfully.
+[The correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
+retains commands, hashes and limits; native Vulkan remains unavailable.
+The existing source-isolation, emission and
+baked-volume observations remain evidence for the SSGI source and composite
+policy, not for this temporal change.
 
 The source-isolation capture has 98,304 byte-identical HDR pixels with SSGI
 on/off. The emissive fixture gains red bounce at 2,853 non-emissive opaque
@@ -129,8 +151,8 @@ both run identities and distributions.
 Native Vulkan execution and bilateral comparison remain unavailable, so SSGI
 stays **UNALIGNED** under [ADR-044](044-shader-cross-backend-contract.md).
 
-The MetalFX Bistro camera-sweep regression now preserves all 924,963 captured
-motion pixels relative to SSGI disabled. Before the fix, selecting older completed
-SSGI transforms approximately doubled motion vectors and distorted reconstruction.
+The retained MetalFX Bistro camera-sweep record preserves all 924,963 captured
+motion pixels relative to SSGI disabled after the earlier motion-producer fix.
 [The regression record](../../assets/verification/renderer-features/screen-effects-stability.txt)
-retains commands, report digests, and before/after captures.
+predates synchronized selection and four-tap validation, so it does not establish
+the current temporal contract.

@@ -54,8 +54,8 @@ struct VkrSsgiParams
 
     float trace_texel_size_x;
     float trace_texel_size_y;
-    float trace_extent_x;
-    float trace_extent_y;
+    float history_jitter_uv_x;
+    float history_jitter_uv_y;
 };
 
 struct VkrSsgiReceiver
@@ -97,8 +97,8 @@ VkrSsrParams vkr_ssgi_screen_trace_params(VkrSsgiParams params)
     result.previous_projection_m33 = params.previous_projection_m33;
     result.trace_texel_size_x = params.trace_texel_size_x;
     result.trace_texel_size_y = params.trace_texel_size_y;
-    result.history_jitter_uv_x = 0.0f;
-    result.history_jitter_uv_y = 0.0f;
+    result.history_jitter_uv_x = params.history_jitter_uv_x;
+    result.history_jitter_uv_y = params.history_jitter_uv_y;
     return result;
 }
 

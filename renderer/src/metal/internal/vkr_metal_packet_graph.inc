@@ -1375,7 +1375,9 @@ vkr_metal_packet_select_ssr_history(VkrMetalPacketRenderer *renderer) {
 
 /* SSGI history is deliberately independent of TAA. Motion/depth/identity
  * reject changing receivers in the shader, while these cold checks prove a
- * completed, same-content tuple before any prior texture is bound. */
+ * same-content tuple before any prior texture is bound. The exact shared
+ * motion producer is ordered by the existing submission event wait; other
+ * producers must be complete. Completion still governs output reuse. */
 vkr_internal bool8_t
 vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
   renderer->selected_ssgi_history_instance = UINT32_MAX;
@@ -1432,7 +1434,8 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
         !identity->live ||
         !color->history_valid || !depth->history_valid ||
         !identity->history_valid || !source_age_in_ring ||
-        color->history_producer_submit_value > completed ||
+        (color->history_producer_submit_value > completed &&
+         renderer->selected_temporal_history_instance != i) ||
         candidate->producer_submit_value !=
             color->history_producer_submit_value ||
         candidate->graph_generation != colors->graph_generation ||
@@ -1446,8 +1449,6 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
             color->history_producer_submit_value ||
         identity->history_producer_submit_value !=
             color->history_producer_submit_value ||
-        depth->history_producer_submit_value > completed ||
-        identity->history_producer_submit_value > completed ||
         depth->history_frame_index != color->history_frame_index ||
         identity->history_frame_index != color->history_frame_index ||
         depth->history_scene_generation != color->history_scene_generation ||
@@ -1492,7 +1493,6 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
         !transform || !transform->history_valid ||
         transform->history_producer_submit_value !=
             color->history_producer_submit_value ||
-        transform->history_producer_submit_value > completed ||
         transform->history_frame_index != color->history_frame_index ||
         transform->history_scene_generation != color->history_scene_generation ||
         transform->history_width != renderer->prepared_frame.viewport_width ||

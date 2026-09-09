@@ -405,11 +405,16 @@ Optional SSGI traces one cosine-weighted ray per nearest covered half-resolution
 receiver from a deterministic 256-phase Hammersley sequence. Its direct source
 contains punctual/rectangle radiance and emission, excluding environment, probes,
 baked diffuse, SSR, fog, and post effects. A 3×3 depth/normal bilateral raw
-filter includes valid misses as zero samples before completion-gated temporal
-filtering. SSGI uses completed color/depth/identity tuples matching the shared
-motion predecessor. If that predecessor is still in flight, SSGI uses current
-radiance without changing motion vectors. SSR can consume the matching producer
-through the existing GPU dependency, retaining accumulation during frames in flight.
+filter includes valid misses as zero samples before temporal filtering. SSGI selects the color/depth/identity tuple only when it matches the
+motion-transform instance and submit/frame/scene tuple. Existing native queue
+dependencies admit that shared predecessor while in flight; no unrelated
+in-flight tuple is eligible. Unjittered motion gains the producer's
+previous-minus-current raster jitter on the raw grid. FSR uses its active phase
+count, MetalFX remains at eight phases, and no-TAA leaves zero jitter offsets.
+Four bilinear history taps independently validate depth and identity, then resolve
+RGB with bilinear × history-confidence weight. This adds nine history texture
+accesses over the former single tap, with no new SSGI images or rays. When no
+compatible predecessor exists, SSGI uses current radiance without waiting.
 Composite applies the diffuse residual before SSR and excludes valid baked-volume
 cells. It remains optional and disabled by default; [ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md)
 owns its storage and evidence limits.
@@ -510,7 +515,12 @@ incoming-radiance detail remains limited by the half-resolution rays.
 Continuous clamping, motion-adaptive history weights and the 2 cm minimum receiver
 depth tolerance remain under ADR-055. Empty neighborhoods halve validated
 coverage; at most half of normalized out-of-bounds RGB survives each supported
-update. Rejected depth/identity clears. SSR-enabled scenes wait 128 unchanged
+update. Supported normalized history RGB retention is also capped at the
+motion/roughness-adjusted temporal weight, so sparse current coverage cannot
+increase retention above that weight. Coverage averaging and empty decay remain
+unchanged; constant sparse radiance is preserved. This bounds supported ghost
+trails at the risk of more fresh-sample noise. Rejected depth/identity clears.
+SSR-enabled scenes wait 128 unchanged
 submitted frames before portable TAA, FSR or MetalFX's following pass begins
 128-sample static accumulation. Current reconstruction continues during settling.
 The selected producer's CPU metadata owns the counter; failed history/input
@@ -523,6 +533,12 @@ resize overlap. Temporal shades about four times as many pixels, with at most
 80 texture reads per pixel. `ssr_reflection` capture version 4 distinguishes this
 source-resolution history from version 3 half-resolution shaded history.
 
+The normalized-retention correction passes 156 shared Slang CPU outputs. Release
+Bistro captures cover static/moving TAA and static MetalFX with SSGI enabled; a
+small SSR/SSGI resize passes Metal API validation. The
+[history-correction record](../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
+records lower displayed variation and limits on interpreting reflection trails.
+The following native results describe earlier revisions.
 Release app/editor builds, shared math, compiled native layouts and the Metal
 mirror, static/moving Bistro, layered-material, combined SSR/SSGI and API-resize
 checks pass. With the bounded-fade/settling correction, the sampled portable-TAA

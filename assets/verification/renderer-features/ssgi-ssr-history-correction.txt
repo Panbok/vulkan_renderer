@@ -1,0 +1,162 @@
+SSGI flicker and retained SSR radiance — 2026-09-09
+
+User report and decisions
+Flicker occurs with SSGI enabled, with MetalFX either on or off. Previous
+reflections linger as ghosts after moving, then visibly fade. The supplied
+Bistro camera is position[-7.69028807,2.75491858,9.38050938], yaw924.58667,
+pitch-9.85266209, FOV70, near0.100000001, far500, output1784x1093.
+The user approved exact synchronized SSGI predecessor selection and four
+individually depth/identity-validated history taps: no new images/rays and at
+most nine additional history reads per half-resolution pixel. Existing budgets
+and stationary settling periods remain unchanged.
+
+Changes
+SSGI motion is unjittered, but history resides on the raster grid. Both native
+shaders now add previous-minus-current jitter UV before lookup. Two unused
+parameter floats at offsets280/284 now carry those offsets; parameters remain
+288bytes, with no root growth. FSR uses its active phase count, MetalFX uses
+eight phases, and no-TAA uses zero offsets. Four bilinear taps independently
+validate depth/identity and resolve RGB with bilinear*confidence weights.
+The exact shared motion producer may remain in flight: existing Metal event
+ordering / Vulkan same-queue barriers protect reads. Other producers must be
+complete. Tuple coherence, last-reader retirement and output-reuse completion
+proofs remain; Vulkan now checks exact transform instance and submit value too.
+
+SSR formerly normalized history RGB by blended coverage. With current coverage
+.05, history coverage1 and weight.85, effective old-RGB retention became .99125.
+Supported normalized RGB retention is now capped at the intended temporal weight.
+Coverage blending and empty-neighborhood decay formulas are unchanged. Sparse
+hits admit more fresh-sample noise; this bounds a long trail without increasing
+reads/storage. Reflected-object identity is still not retained, so this does
+not establish complete ghost elimination in every scene.
+
+Independent arithmetic check
+python3 tools/checks/check_ssr_stability.py : PASS,156 production shared Slang
+CPU outputs. CurrentRGB2/coverage.05 and historyRGB8/coverage1 with weight.85
+resolve to RGB7.1 and coverage.8575, versus former RGB7.9475. Five supported
+updates give7.1,6.335,5.68475,5.13204,4.66223; remaining error contracts by at
+least.85 each step. Constant sparse RGB, weak history, true misses and the
+existing empty fade remain covered. This isolates the normalization failure
+more directly than a scene whose SSGI source radiance also changes.
+
+Build and native checks
+./build_release.sh > .scratch/ssgi-ssr-history-build.log 2>&1 : PASS
+./build_editor.sh Release > .scratch/ssgi-ssr-history-editor-build.log 2>&1 : PASS
+All10 generated SSR/SSGI modules pass spirv-val --target-env vulkan1.4.
+Exact commands, binary SHA256 and SSGI field reflection are retained in
+ssgi-ssr-history-correction-spirv.txt. Native Metal pipeline creation validates
+the reflected288-byte parameter ABI in the captures below.
+Vulkan deferred host source passes its compile_commands.json argument vector
+with -c/-o removed and -fsyntax-only appended; exact command and output remain
+in .scratch/ssgi-vulkan-host-syntax.log. Native Vulkan/Windows and bilateral
+pixel comparison are unavailable. No performance claim; all observations are
+local Release on Apple M1 Pro/macOS26.6.2(25G83), Metal4. No full CPU suite was
+run: the targeted arithmetic check and native frame/resize checks cover the
+changed invariants. Build wrappers did no cooking.
+
+Snapshot reproduction
+All snapshots below used this prefix and command:
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case CASE --profile tools/profiles/local-offscreen.json
+Case directory: tools/cases/local/. Baseline binary was main43098f96; after
+binary contains these fixes. All listed runs PASS. Static cases warm32 frames
+and capture0/1/4/8, before the existing final static freeze. Exposure is manual8,
+SSR/GTAO enabled, bloom disabled, three offscreen images, requested80% scale.
+Spatial+TAA source1427x874; MetalFX source1428x875. Final output1784x1093.
+
+Case -> snapshot run suffix -> report SHA256
+ssgi_bistro_reported_static_on.case.json (before)
+20260909T103146.406Z-010136
+dd069261d7e2def5b12317ccca1fdf34ecfdc7f9bcf33bb51ae0a2a6837b7616
+ssgi_bistro_reported_static_off.case.json (before)
+20260909T103337.343Z-01065a
+7d54c6e613b1d39507eb142865ad904eea4e738b8a4dd3cb257a4db8ba712117
+ssgi_bistro_reported_static_on.case.json (after)
+20260909T104728.748Z-014ce5
+d8ae517ee2311c49a86eed8a692b9878e213ef47980c1ee0806b2da22a148328
+ssgi_bistro_reported_static_off.case.json (after)
+20260909T105418.552Z-0161eb
+1edef30f18b799a3d1b0b85afbb77bd41bdd9f726c6b5ad02c47d0c31dcd1d39
+ssgi_bistro_reported_diffuse.case.json (SSR off, before)
+20260909T104253.141Z-012f95
+ed284e5df21a45a10f3baa78e553d0446cab32008f1b8cabfe9fe22505f89bfc
+ssgi_bistro_reported_diffuse.case.json (SSR off, after)
+20260909T105029.769Z-0159fa
+ea3d5b28b6e62c3f606bb6cd13d3e2152483eb2959fff0ce329fb7dc96d0415e
+ssgi_bistro_reported_metalfx_on.case.json (after)
+20260909T105622.765Z-0168c3
+a9697fd0324d050db82582ef2c2937a9f72da86bd5852f6316af05c87d8b8d02
+ssgi_bistro_reported_metalfx_off.case.json (after)
+20260909T105937.824Z-017089
+b3efe5bc1018d3b2683c52d1d3a980bf7600b5484f788827e82439d821c122ee
+
+Displayed variation
+For each pixel, take each RGB channel's max-minus-min across the four captures,
+then the maximum of those three ranges. Report mean range in8-bit display codes
+and count exceeding3codes. Canonical PNG digests were verified. Analysis uses
+/usr/bin/sips PNG-to-BMP conversion on every compared image, without changing
+canonical captures. These are independent replay processes, not a continuous
+recording or an authoritative benchmark. Raw HDR jitter dominates its range,
+so displayed output is the quality comparison; mean color is reported separately
+in the retained JSON.
+
+Full image (1,949,912 pixels):
+                                  mean range       count>3
+TAA SSGI on before                 .854110339       70425
+TAA SSGI on after                  .585635659       35504
+TAA SSGI off before                .548604758       29480
+TAA SSGI off after                 .544734326       29429
+SSGI-on mean range falls31.4%; changing-pixel count falls49.6%.
+Excess mean range above its matched SSGI-off control falls86.6%.
+SSR-disabled diffuse case: mean.312919763->.294440980; count3913->2502.
+MetalFX after: SSGI on mean.893196206/count67267; off.848940875/count61219.
+This confirms successful native execution in both reconstruction modes; there
+is no before/after MetalFX improvement claim from that pair alone. Remaining
+variation is nonzero. Exact motion/static quality still needs user review.
+
+Turn and stop
+ssgi_bistro_reported_turn_stop.case.json warms64, turns yaw5degrees over.1s,
+then holds. Captures0/3/6/8/20 use the same supplied starting camera.
+Before20260909T103545.396Z-010d5d
+b9a1a48d43914ab2da54233531bf94e1ed0b494ba127c649839e10afd595ccc7
+After20260909T105159.798Z-015d73
+8d082507c9151e83caf996502620b99787b19f413cbe0208a26082a1b34c5e4c
+Motion bytes and raw SSR alpha are exact at all five checkpoints. Accumulated
+alpha differs at744/1912/1373/756/2416 of1,247,198 pixels, with maxima
+.015869/.615112/.022583/.059814/.375977. A same-binary frame3 repeat also differs
+at1565 history-alpha pixels, max.615112; rawalpha is exact and only one RG16F
+motion component changes by1.1920928955078125e-7. The repeat used a reduced
+capture list, so its workload fingerprint differs. Neither comparison proves
+bit-identical accumulated coverage. SSGI changes incoming RGB as well; native
+RGB differences do not isolate the SSR cap or prove complete ghost removal.
+The retained JSON records150 artifact digests,10 child-report hashes, locations,
+sparse-RGB deltas and limitations.
+Temporary repeat case was the turn/stop case restricted to checkpoint3:
+20260909T110151.410Z-017aba
+657cefdd4900e213bee5d6afb9067c40974cd0de133a0be0b34aa466b4fd41cc
+It was rejected under .scratch/ before being run under tools/cases/local/.
+
+Native API and no-TAA
+With no other GPU process active:
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 ./build_release/tools/vkr_harness profile --case tools/cases/local/ssgi_history_resize.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
+PASS profile20260909T110405.882Z-01836d
+a77534e3d00e7df072a509c9b42f01c156abc998582a2a17cccba3712bbfa64e
+Child stderr confirms Metal API Validation Enabled; no API errors. SSR+SSGI,
+portable TAA, three WSI images, odd-extent resize and teardown. Shader validation
+was unset. Initial manifest was rejected for explicit windowed image count;
+removing that field lets WSI select the actual three images.
+
+Ordinary Release snapshot of ssgi_emission_on_local.case.json (SSR/GTAO/TAA off):
+PASS20260909T110435.860Z-01833c
+6ce21b2b16c2ffd8566af5946b3d842831d2b64d52d1a92bce8701c89aa7ab9c
+Both98,304-pixel HDR captures are finite and nonblack. This checks execution
+without raster jitter, not an independent irradiance-accuracy oracle.
+
+Artifacts
+ssgi-ssr-history-correction.png is the after static-on frame0 final PNG copied
+byte-for-byte. The .json retains descriptive measurements and comparisons.
+Scratch analysis commands were python3 .scratch/ssgi_reported_stats.py RUN...,
+python3 .scratch/ssgi_final_stats.py RUN_SUFFIX..., plus the turn comparison
+record. Region bounds/means and source extents are explicit in the retained JSON.
+No baseline was promoted. The portable no-TAA witness and earlier pending
+cross-machine payloads remain; this task's other completed run trees are retired
+after recording these results.

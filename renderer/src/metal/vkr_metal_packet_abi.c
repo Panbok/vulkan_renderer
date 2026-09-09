@@ -612,8 +612,8 @@ vkr_global const VkrMetalPacketAbiField vkr_ssgi_params_fields[] = {
                   "trace_texel_size_x", 272),
     VKR_ABI_FIELD(VkrSsgiGpuParams, trace_texel_size_y,
                   "trace_texel_size_y", 276),
-    VKR_ABI_FIELD(VkrSsgiGpuParams, trace_extent_x, "trace_extent_x", 280),
-    VKR_ABI_FIELD(VkrSsgiGpuParams, trace_extent_y, "trace_extent_y", 284),
+    VKR_ABI_FIELD(VkrSsgiGpuParams, history_jitter_uv_x, "history_jitter_uv_x", 280),
+    VKR_ABI_FIELD(VkrSsgiGpuParams, history_jitter_uv_y, "history_jitter_uv_y", 284),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ssgi_depth_base_root_fields[] = {

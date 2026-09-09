@@ -1139,8 +1139,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
         previous_transform->history_valid &&
         previous_transform->history_producer_submit_value ==
             ssgi_colors->instances[selected].history_producer_submit_value &&
-        previous_transform->history_producer_submit_value <=
-            renderer->completion.signaledValue &&
+        (previous_transform->history_producer_submit_value <=
+             renderer->completion.signaledValue ||
+         selected == renderer->selected_temporal_history_instance) &&
         previous_transform->history_frame_index ==
             ssgi_colors->instances[selected].history_frame_index &&
         previous_transform->history_scene_generation ==
@@ -4016,17 +4017,33 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     const bool8_t ssgi_history_valid =
         renderer->selected_ssgi_history_instance != UINT32_MAX;
     Mat4 ssgi_previous_projection = ssgi_projection;
-    if (ssgi_history_valid)
-      ssgi_previous_projection = renderer
-                                     ->ssgi_history[renderer
-                                                        ->selected_ssgi_history_instance]
-                                     .raster_projection;
+    Vec2 ssgi_history_jitter_uv = {0};
+    if (ssgi_history_valid) {
+      const VkrMetalPacketSsgiHistoryState *history =
+          &renderer->ssgi_history[renderer->selected_ssgi_history_instance];
+      ssgi_previous_projection = history->raster_projection;
+      if (packet->temporal.enabled) {
+        const Vec2 previous_jitter =
+            vkr_temporal_jitter_for_frame((uint32_t)history->frame_index);
+        ssgi_history_jitter_uv.x =
+            (previous_jitter.x - packet->temporal.jitter_pixels.x) /
+            (float32_t)renderer->prepared_frame.viewport_width;
+        const float32_t jitter_y_sign =
+            renderer->convert_vulkan_clip_y ? 1.0f : -1.0f;
+        ssgi_history_jitter_uv.y =
+            jitter_y_sign *
+            (previous_jitter.y - packet->temporal.jitter_pixels.y) /
+            (float32_t)renderer->prepared_frame.viewport_height;
+      }
+    }
     renderer->ssgi_params = vkr_ssgi_gpu_params(
         &renderer->ssgi_config, ssgi_projection, mat4_inverse(ssgi_projection),
         packet->input.globals.view, ssgi_previous_projection,
         renderer->prepared_frame.viewport_width,
         renderer->prepared_frame.viewport_height, ssgi_history_valid,
         (uint32_t)packet->input.frame.frame_index);
+    renderer->ssgi_params.history_jitter_uv_x = ssgi_history_jitter_uv.x;
+    renderer->ssgi_params.history_jitter_uv_y = ssgi_history_jitter_uv.y;
     if (packet->scene_rendering &&
         !vkr_metal_packet_select_exposure_history(renderer)) {
       log_error("Metal packet stage failed: exposure history selection");

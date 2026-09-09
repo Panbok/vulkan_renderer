@@ -125,7 +125,5 @@ VkrSsgiGpuParams vkr_ssgi_gpu_params(const VkrSsgiConfig *config, Mat4 projectio
       .previous_projection_m33 = previous_projection.m33,
       .trace_texel_size_x = 1.0f / (float32_t)trace_width,
       .trace_texel_size_y = 1.0f / (float32_t)trace_height,
-      .trace_extent_x = (float32_t)trace_width,
-      .trace_extent_y = (float32_t)trace_height,
   };
 }

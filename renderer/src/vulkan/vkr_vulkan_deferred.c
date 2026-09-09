@@ -2387,12 +2387,31 @@ vkr_internal VkrSsgiGpuParams vkr_vk_ssgi_params(VkrVulkanRenderer *renderer,
                                                  Mat4 previous_projection) {
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 projection = packet->temporal.jittered_projection;
-  return vkr_ssgi_gpu_params(&renderer->ssgi_config, projection,
-                             mat4_inverse(projection),
-                             packet->input.globals.view, previous_projection,
-                             renderer->prepared_frame.viewport_width,
-                             renderer->prepared_frame.viewport_height,
-                             history_valid, packet->input.frame.frame_index);
+  VkrSsgiGpuParams params = vkr_ssgi_gpu_params(
+      &renderer->ssgi_config, projection, mat4_inverse(projection),
+      packet->input.globals.view, previous_projection,
+      renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height, history_valid,
+      packet->input.frame.frame_index);
+  if (!history_valid || !packet->temporal.enabled)
+    return params;
+  const VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  const uint32_t phase_count =
+      renderer->prepared_frame.fsr31_enabled
+          ? vkr_temporal_upscale_sequence_length(
+                renderer->prepared_frame.viewport_width,
+                renderer->prepared_frame.scene_output_width)
+          : VKR_TEMPORAL_SEQUENCE_LENGTH;
+  const Vec2 previous_jitter = vkr_temporal_jitter_for_frame_phases(
+      (uint32_t)slot->ssgi_color_input->history_frame_index, phase_count);
+  params.history_jitter_uv_x =
+      (previous_jitter.x - packet->temporal.jitter_pixels.x) /
+      (float32_t)params.source_width;
+  params.history_jitter_uv_y =
+      (previous_jitter.y - packet->temporal.jitter_pixels.y) /
+      (float32_t)params.source_height;
+  return params;
 }
 
 bool8_t vkr_vk_prepare_ssgi_depth_base(VkrVulkanRenderer *renderer,
@@ -2562,17 +2581,30 @@ vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
       !scene.signature.eligible)
     goto selected;
 
+  if (!slot->temporal_history_valid || !slot->temporal_transform_input ||
+      !vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle))
+    goto selected;
+  VkrVulkanGraphBuffer *transforms = &renderer->graph_buffers[
+      renderer->temporal_transform_history_handle.id - 1u];
+  if (!transforms->live || transforms->instance_count != colors->instance_count)
+    return false_v;
+
   VkrVulkanGraphImageInstance *selected = NULL;
   uint32_t selected_index = UINT32_MAX;
   for (uint32_t i = 0u; i < colors->instance_count; ++i) {
     VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
     const VkrVulkanSsgiHistory *metadata = &renderer->ssgi_histories[i];
     if (i == current || !metadata->valid || !candidate->history_valid ||
-        metadata->producer_submit_value > renderer->completed_value ||
         metadata->producer_submit_value !=
             candidate->history_producer_submit_value ||
-        !slot->temporal_history_valid ||
+        &transforms->instances[i] != slot->temporal_transform_input ||
+        candidate->history_producer_submit_value !=
+            slot->temporal_transform_input->history_producer_submit_value ||
         candidate->history_frame_index != slot->temporal_previous_frame_index ||
+        candidate->history_frame_index !=
+            slot->temporal_transform_input->history_frame_index ||
+        candidate->history_scene_generation !=
+            slot->temporal_transform_input->history_scene_generation ||
         candidate->history_scene_generation !=
             packet->input.frame.scene_generation ||
         MemCompare(metadata->dimensions, dimensions, sizeof(dimensions)) != 0 ||
@@ -2602,6 +2634,10 @@ vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
     }
   }
   if (selected) {
+    /* This is the exact temporal-transform predecessor. It may still be in
+       flight; the transform dependency and these same-queue barriers order
+       its writes before the SSGI history reads. No unrelated producer is
+       eligible for an in-flight read. */
     VkrVulkanGraphImageInstance *depth = &depths->instances[selected_index];
     VkrVulkanGraphImageInstance *identity =
         &identities->instances[selected_index];
