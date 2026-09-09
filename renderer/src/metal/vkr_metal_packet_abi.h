@@ -467,7 +467,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrDepthBaseRoot {
   uint64_t depth_texture_id;
   uint64_t vbuffer_texture_id;
   uint64_t pyramid_texture_id;
-  uint64_t receiver_texture_id;
 } VkrMetalPacketSsrDepthBaseRoot;
 
 _Static_assert(sizeof(VkrMetalPacketSsrDepthBaseRoot) == 320,
@@ -485,7 +484,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrDepthMipRoot {
 _Static_assert(sizeof(VkrMetalPacketSsrDepthMipRoot) == 320,
                "Metal SSR depth-mip root ABI must remain 320 bytes");
 
-/** Half-resolution SSR trace resources. */
+/** Each source pixel owns one SSR trace and its reflected-hit record. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTraceRoot {
   VkrSsrGpuParams params;
   uint64_t depth_texture_id;
@@ -493,7 +492,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTraceRoot {
   uint64_t normal_texture_id;
   uint64_t specular_texture_id;
   uint64_t pyramid_texture_id;
-  uint64_t receiver_texture_id;
   uint64_t hdr_texture_id;
   uint64_t raw_texture_id;
   uint64_t clearcoat_texture_id;
@@ -503,15 +501,14 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTraceRoot {
 _Static_assert(sizeof(VkrMetalPacketSsrTraceRoot) == 368,
                "Metal SSR trace root ABI must remain 368 bytes");
 _Static_assert(offsetof(VkrMetalPacketSsrTraceRoot, clearcoat_texture_id) ==
-                       352u &&
-                   offsetof(VkrMetalPacketSsrTraceRoot, hit_texture_id) == 360u,
+                       344u &&
+                   offsetof(VkrMetalPacketSsrTraceRoot, hit_texture_id) == 352u,
                "Metal SSR trace texture ABI offset drift");
 
 /** SSR temporal filtering owns incoming radiance and reflected-hit geometry. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
   VkrSsrGpuParams params;
   uint64_t raw_texture_id;
-  uint64_t receiver_texture_id;
   uint64_t vbuffer_texture_id;
   uint64_t depth_texture_id;
   uint64_t normal_texture_id;
@@ -532,14 +529,14 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
   uint32_t reserved;
 } VkrMetalPacketSsrTemporalRoot;
 
-_Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 448,
-               "Metal SSR temporal root ABI must remain 448 bytes");
+_Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 432,
+               "Metal SSR temporal root ABI must remain 432 bytes");
 _Static_assert(
-    offsetof(VkrMetalPacketSsrTemporalRoot, clearcoat_texture_id) == 400u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, hit_texture_id) == 408u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, previous_transforms) == 416u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, reprojection) == 424u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, previous_frame_index) == 432u,
+    offsetof(VkrMetalPacketSsrTemporalRoot, clearcoat_texture_id) == 392u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, hit_texture_id) == 400u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, previous_transforms) == 408u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, reprojection) == 416u &&
+        offsetof(VkrMetalPacketSsrTemporalRoot, previous_frame_index) == 424u,
     "Metal SSR temporal reprojection ABI offset drift");
 
 /** Full-resolution matching-pixel replacement of environment specular. */

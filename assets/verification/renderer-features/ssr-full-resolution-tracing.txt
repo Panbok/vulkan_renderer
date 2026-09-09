@@ -1,0 +1,132 @@
+Full-resolution SSR tracing — 2026-09-09
+
+Bistro's bar still lost current reflection samples after reflected-hit reprojection
+removed most trails. The user approved a full-resolution trial, preserving the
+existing ghost rejection, with nominally four times the rays and up to 64 MiB
+additional logical images for three frame slots (169 MiB for eight) at 1280×720.
+
+Retained implementation
+Each source pixel owns its ray, raw incoming radiance and integer hit record.
+The independent depth pyramid remains floor-half, with full-resolution leaves,
+odd trailing rows/columns and the 48-decision limit. Remove the redundant receiver
+coordinate image and its depth-base/trace/temporal bindings on both backends.
+
+Rough temporal gathers use nine source pixels at offsets {-2,0,2} on each axis,
+weighted at half those offsets to retain approximately the previous filter width.
+Mirrors use their exact center ray. Four independently validated history taps,
+receiver/hit identities, both depths, selected normals, incoming-radiance shading
+and unsupported-hit fallback remain. No old reflection survives without support.
+
+The immediate-neighbor full-resolution trial narrowed the filter and improved
+bar-lip display variation only 24.6%. The retained wider footprint improves it
+34.5%. Both trials are recorded separately in ssr-full-resolution-tracing.json.
+
+Static image observation
+Before: main 3e3790f4, corrected half-resolution SSR.
+Camera: world [-6.08679438, 2.16728449, 9.40748692], yaw -29.7409668,
+pitch -1.66192317, FOV 70, near 0.100000001, far 500.
+Output 1784×1093; source 1427×874; 80% spatial scaling, portable TAA on,
+SSGI off, GTAO on, manual exposure 8, AgX, bloom off, sharpness 0.
+The latest user report did not specify scale; 80% was retained from prior reports.
+
+Case: tools/cases/local/ssr_reflected_hit_flicker.case.json
+Profile: tools/profiles/local-offscreen.json
+Four isolated checkpoint replays (0/1/4/8), before checked static accumulation.
+Metric: per-pixel largest RGB-channel range across checkpoints, averaged over
+fixed output-space regions. Values are display codes out of 255, not a temporal
+frequency score or a continuous clip. Mean peak code checks unintended darkening.
+
+Region        Mean code range before → after    Mean peak code before → after
+Bar lip       0.807622 → 0.529363 (-34.5%)       39.923586 → 40.208137
+Bar panel     0.468959 → 0.481234 (+2.6%)        75.711335 → 75.725834
+Counter       1.238926 → 1.169055 (-5.6%)        73.973479 → 74.170392
+Upper gloss   0.792050 → 0.687098 (-13.3%)       55.576129 → 55.672234
+
+On the bar lip, pixels with a range above eight display codes fall 407 → 108;
+the worst range falls 133 → 63. The panel gains newly resolved lamp samples and
+has 28 pixels above eight codes where the old half-resolution trace had none.
+This is a partial improvement. Do not claim all reflections are flicker-free.
+
+The bar-lip post-TAA HDR covered-peak range falls 0.000146312 → 0.0000729322;
+mean covered peak light stays 0.00370295 → 0.00370191. Incoming reflection values
+and energy are recorded separately: raw rays and shading can fluctuate more
+locally even when the displayed regional range decreases. The two full-resolution
+trials retain the same ray code; 18–79 of 4,988,792 raw half components differ per
+checkpoint across their independent replays. They are not byte-identical runs.
+
+A remaining counter pixel (source 647,534) changes decoded G-buffer normal by
+29.66 degrees between phases 0 and 4. Full-resolution rays do not filter this
+normal variation. Thin geometry, missing screen-space coverage and local tangent
+planes also remain limits; more rays alone cannot guarantee stable reflections.
+
+Ghost and integration observations
+The moving-emitter fixture has TAA disabled and a stationary receiver. Its red
+reflection moves, then leaves zero red history pixels at checkpoint 8 while
+other reflections retain coverage. The existing check passes.
+
+At the separate user under-bar camera, in/out movement is compared with each
+revision's own independent 320-warm-frame reference. Held-frame post-TAA HDR
+error changes by at most +1.27% on the countertop and +1.09% on the bar front.
+This is a convergence observation with jitter/noise differences, not an exact
+ghost mask. It does not show the former long misplaced-reflection trail.
+
+Native Metal execution also covers the reported view with SSGI and MetalFX during
+translation/hold, odd scaled editor dimensions, clearcoat and sheen. Both material
+payload checks pass, including 2735 floor SSR hits and 141 red coat-priority hits.
+Their floor ROI now scales with the actual raw extent; thresholds are unchanged.
+A single serial API-validated SSR/SSGI resize/teardown run passes; stderr explicitly
+reports Metal API Validation Enabled and contains no validation error. GPU shader
+validation was not requested.
+
+Cost and ownership
+Matched local Release profile: Apple M1 Pro, Metal, source 1025×577,
+output 1280×720, 80% MetalFX, SSR on/SSGI off, three independent children,
+60 warmup and 120 measured frames each. There are 360 valid GPU samples per SSR
+pass. Configuration/fingerprints and ordinary draw/visibility work match.
+
+Sum of SSR pass means: 2.853980 → 4.952207 ms (+2.098227 ms).
+Trace: 0.820922 → 2.794314 ms; temporal: 1.557781 → 1.683087 ms.
+These runs are local/dirty with unstable CPU warmup. They are observations of an
+intentional quality/cost change, not an authoritative performance comparison.
+
+At that realized extent, graph-image payload grows 616650930 → 635602146 bytes;
+GPU live allocation grows 3693084672 → 3760193536 bytes (+64 MiB). No measured
+frame creates GPU allocations. Raw images realize two instances in this run;
+the full configured upper bound remains the budget below.
+
+At source 1280×720 the net logical increase is 42.1875 MiB for three frame slots
+or 112.5 MiB for eight, below the approved 64/169 MiB trial bounds. Including the
+previous reflected-hit history expansion, the combined increase is
+140.625/316.40625 MiB. Alignment and resize overlap are excluded. The actual ray
+bound is one/source pixel; odd rounding gives 4.002805 times the old floor-half
+ray grid at 1427×874.
+
+The render graph owns the images and their existing completion/retirement rules.
+Color/geometry/identity history and prior transforms retain the exact selected
+producer; no new waits, history instances or CPU allocations are introduced.
+Temporal source-read ceilings are 63 for rough base, 60 for mixed-neighbor coat,
+52 for an entirely coated footprint and 23/20 for base/coat mirrors, plus three
+writes. Buffer accesses and hardware sampling transactions are excluded.
+
+Native contracts and evidence limits
+Metal depth-base/trace/temporal roots: 320/368/432 bytes. Vulkan:
+304/336/512 bytes; composite remains Metal 480 / Vulkan 416. The first native
+trial caught a stale Metal durable ABI size (448); it was corrected to 432 before
+the successful captures. Production builds, SPIR-V validation, compiled layout
+checks and host syntax results are recorded in the adjacent JSON.
+
+The shared math is unchanged except explanatory comments. Existing reflected-hit
+and radiance-ranking oracles retain their earlier 290-output evidence; this change
+is checked through native source/trace extents, material payloads and correspondence
+captures. No new CPU test suite was needed.
+
+Native Windows/Vulkan execution and bilateral image comparison are unavailable.
+The shader domain remains UNALIGNED in ADR-044. Capture encoding remains raw
+version 2 and incoming-radiance history version 5; dimensions come from metadata.
+Old half-resolution raw payloads are not equivalent-work byte comparisons.
+
+Exact commands, reports, digests, configuration, payload checks and measurements:
+ssr-full-resolution-tracing.json. Preview: ssr-full-resolution-tracing.png.
+Production snapshot payloads remain local for possible authorized cross-machine
+baseline publication. No baseline was promoted. Disposable profiles and the
+failed ABI startup can be retired after their decisive results are recorded.

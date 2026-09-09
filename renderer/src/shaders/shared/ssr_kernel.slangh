@@ -900,8 +900,8 @@ VkrSsrReflectedHit vkr_ssr_reproject_hit(
     result.expected_virtual_depth = previous.positive_depth;
     if (current.valid == 0u || previous.valid == 0u)
         return result;
-    // A half-resolution hit belongs to its traced receiver. Applying its motion
-    // delta keeps every full-resolution pixel fixed when only raster jitter moves.
+    // A gathered hit belongs to its traced receiver. Applying its motion delta
+    // keeps the output pixel fixed when only raster jitter moves.
     float2 previous_projection_uv = current_uv + previous.uv - current.uv;
     result.previous_uv = previous_projection_uv +
         float2(params.history_jitter_uv_x, params.history_jitter_uv_y);

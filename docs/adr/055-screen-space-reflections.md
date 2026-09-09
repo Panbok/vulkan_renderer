@@ -8,7 +8,7 @@ authority: adr
 
 ## Status
 
-Accepted. Reflected-hit reprojection and full-source-resolution incoming-radiance
+Accepted. Full-source-resolution tracing, reflected-hit reprojection and incoming-radiance
 history are implemented on both packet backends. Native validation and image
 comparison evidence are recorded below; native Vulkan execution is unavailable.
 
@@ -25,10 +25,10 @@ hierarchy needed for reflection traversal.
 ## Decision
 
 SSR is optional on opaque surfaces with perceptual roughness at most 0.6.
-Half-resolution rays use an independent current-frame positive-depth pyramid,
-full-resolution leaves and at most 48 hierarchy decisions. The nearest covered
-source pixel owns each trace, with stable top-left tie breaking and odd-extent
-reductions that retain the final rows and columns. Zero depth means uncovered.
+Each covered source pixel owns its ray. Tracing uses an independent current-frame
+positive-depth pyramid, full-resolution leaves and at most 48 hierarchy decisions.
+The pyramid begins at floor-half extent; its odd-extent reductions retain the final
+rows and columns independently of trace resolution. Zero depth means uncovered.
 Coated pixels trace the coat; uncoated pixels trace the base. Misses retain probes.
 
 Traversal uses homogeneous interpolation, clipped screen bounds, absolute cell
@@ -39,16 +39,19 @@ pixel, allowing numerical roundoff ahead of the surface. Mirrors sample incoming
 HDR once; rough receivers use at most five linear-clamp samples at fractional hit
 coordinates. SSGI retains its prior leaf/slab policies through shared adapters.
 
-Trace writes half-resolution RGBA16F incoming radiance/coverage and RGBA32_UINT
+Trace writes full-source-resolution RGBA16F incoming radiance/coverage and RGBA32_UINT
 hit metadata. The latter contains the bit patterns of hit UV and positive view
 depth, plus the visible-draw row that identifies the reflected instance. Integer
 storage preserves these bits without floating-point conversion. Every miss and
 early return writes zero metadata. No extra ray or trace texture read is needed;
 the accepted leaf already reads the hit's visible row.
 
-Temporal runs at full source resolution. It reconstructs incoming radiance from
-at most nine raw taps in a 3×3 continuous tent; mirrors use four taps with a 2×2
-footprint. Depth/selected-normal bilateral weights use a 2 cm minimum receiver
+Temporal runs at full source resolution. Rough receivers gather nine raw taps
+at source-pixel offsets {-2,0,2} on each axis. Grid and bilateral spatial weights
+use half those offsets, preserving approximately the former half-resolution
+filter width. Each output retains its own center ray. Mirrors use their exact
+current ray; other tent weights are zero at this integer coordinate.
+Depth/selected-normal bilateral weights use a 2 cm minimum receiver
 depth tolerance and 5% relative tolerance. Covered weights normalize radiance;
 all eligible weights normalize coverage. The same raw samples supply clamp bounds.
 Temporal history stores incoming light, so history lookup does not transport the
@@ -60,8 +63,9 @@ the spatial numerator, without averaging hit positions across objects. Covered
 weight breaks equal-energy ties; traversal order resolves exact ties. Ranking
 coverage alone can tag a lamp-dominated mixture with a dark object's geometry,
 rejecting otherwise reusable lamp history as raster jitter moves the samples.
-Both backends use the shared ranking helper. Two additional reads fetch that
-sample's hit metadata and traced receiver's visible row. Its stable receiver identity must match the
+Both backends use the shared ranking helper. One additional read fetches that
+sample's hit metadata; the gather retains its already-loaded visible row.
+Its stable receiver identity must match the
 current pixel before history may use the plane. A different receiver can still
 contribute current spatial radiance, but cannot establish temporal correspondence.
 
@@ -75,7 +79,7 @@ after successful submission. History works with TAA disabled.
 For plane point `P`, unit normal `n` and hit `H`, the virtual reflected point is
 `Q = H - 2*n*dot(n,H-P)`. Projecting the current and transported prior virtual
 points gives a UV motion delta. Adding this delta to the current full-resolution
-pixel preserves its offset from the traced half-resolution receiver. Reusing the
+pixel preserves its offset from a neighboring traced receiver. Reusing the
 current jittered projection requires the selected producer's previous-minus-current
 jitter, retained at parameter offsets 280/284. The prior UV ray intersects the
 transported receiver plane to determine expected receiver depth; receiver-motion
@@ -115,14 +119,24 @@ extends last use; output reuse and retirement require producer and reader
 completion. Scene/resource/radiance revisions, cuts, projection or extent changes
 invalidate incompatible history. No extra wait or history instance is introduced.
 
-The approved resource change at source 1280×720 is:
+The user approved testing full-resolution rays while preserving ghost rejection,
+with at most 64 MiB additional logical images for three slots or 169 MiB for eight
+at source 1280×720. The retained implementation removes the redundant receiver
+coordinate image, so this change adds 42.1875 / 112.5 MiB over reflected-hit SSR.
+One ray per source pixel is nominally four times the prior floor-half grid;
+odd rounding gives 4.002805 times at 1427×874.
+
+Combined with the earlier approved reflected-hit history expansion, the resource
+change at source 1280×720 is:
 
 | Resource | Format and extent | Three frame slots / five histories | Eight frame slots / ten histories |
 | --- | --- | ---: | ---: |
-| New raw hit | Half-resolution RGBA32_UINT, per frame image | +10.546875 MiB | +28.125 MiB |
+| Raw radiance | Half → full-source RGBA16F, per frame image | +15.820313 MiB | +42.187500 MiB |
+| New raw hit | Full-source RGBA32_UINT, per frame image | +42.187500 MiB | +112.500000 MiB |
+| Removed receiver coordinate | Half-resolution RG32_UINT, per frame image | −5.273438 MiB | −14.062500 MiB |
 | Geometry history | Full-resolution R32F → RGBA32F | +52.734375 MiB | +105.468750 MiB |
 | Identity history | Full-resolution RG32_UINT → RGBA32_UINT | +35.156250 MiB | +70.312500 MiB |
-| Total increase | Logical image payload | **98.437500 MiB** | **203.906250 MiB** |
+| Total increase | Logical image payload | **140.625000 MiB** | **316.406250 MiB** |
 
 RGBA32F geometry stores receiver depth, virtual depth and two signed octahedral
 components of the selected view-space normal. RGBA32_UINT identity stores the
@@ -131,7 +145,7 @@ RGBA16F color remains unchanged in size; all three histories now total
 175.781250 MiB with five instances. Alignment and resize overlap are excluded.
 Resources exist only while SSR is enabled.
 
-The temporal shader uses two additional metadata reads, below the approved nine,
+The temporal shader uses one additional metadata read, below the approved nine,
 and retains four history taps and three output writes. Moving receiver shading
 to composite removes temporal material/LUT reads. Graph bindings 17/18 now supply
 hit metadata and prior transforms; temporal motion, validity and former material
@@ -153,8 +167,8 @@ Reflected-object correspondence addresses the wrong-surface trail that retention
 caps alone cannot align. Incoming-radiance history lets the current receiver own
 material response even when a reflected feature moves across that surface.
 Unsupported coverage returns to probes immediately, which can expose trace misses
-or fresh-sample noise. Screen-space visibility, finite ray budget, half-resolution
-incoming detail and tangent-plane approximation still limit the result. This does
+or fresh-sample noise. Screen-space visibility, finite ray budget, subpixel normal
+variation and tangent-plane approximation still limit the result. This does
 not guarantee perfect reflections or replace scene geometry and probes.
 
 The wider history consumes the approved memory and bandwidth. Models and camera
@@ -174,6 +188,18 @@ pixel. Off-screen geometry and exact curved-surface transport require capabiliti
 outside this bounded screen-space design.
 
 ## Evidence and remaining checks
+
+The full-resolution trial uses the same later bar camera, four checkpoint replays
+and 80% spatial/TAA settings as the radiance-owner correction below. Keeping the
+former rough filter width reduces mean final display-code range on the bar lip
+34.5%, from 0.80762 to 0.52936 out of 255. Mean peak display code changes
+39.9236→40.2081; pixels changing by more than eight codes fall 407→108.
+Countertop and upper woodwork ranges fall 5.6% and 13.3%; the panel range rises
+2.6%, and some newly resolved lamp pixels fluctuate more. This is a partial
+improvement, not a flicker-free result. The immediate-neighbor full-resolution
+trial reduced bar-lip range only 24.6% and is superseded by the wider footprint.
+Commands, payload digests, native checks and cost limits belong to the
+[full-resolution tracing record](../../assets/verification/renderer-features/ssr-full-resolution-tracing.txt).
 
 The radiance-owner correction uses the user's later bar camera at
 1784×1093 output, 80% spatial scaling, TAA enabled and SSGI disabled. Across

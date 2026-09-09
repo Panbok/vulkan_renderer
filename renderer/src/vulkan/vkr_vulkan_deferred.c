@@ -1574,22 +1574,22 @@ vkr_internal VkrSsrGpuParams vkr_vk_ssr_params(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_ssr_depth_base(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedCompute *prepared,
                                       const VkrRgPass *pass) {
-  uint32_t depth = 0u, vbuffer = 0u, destination = 0u, receiver = 0u;
+  uint32_t depth = 0u, vbuffer = 0u, destination = 0u;
   if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &depth) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &vbuffer) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 2u, &destination) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 3u, &receiver))
+      !vkr_vk_deferred_storage_index(renderer, pass, 2u, &destination))
     return false_v;
   const VkrSsrGpuParams params = vkr_vk_ssr_params(
       renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
-  if (!params.trace_width || !params.trace_height)
+  if (!params.source_width || !params.source_height)
     return false_v;
+  const uint32_t depth_width = vkr_ssr_reduced_extent(params.source_width);
+  const uint32_t depth_height = vkr_ssr_reduced_extent(params.source_height);
   const VkrVulkanSsrDepthBaseRoot root = {
       .params = params,
       .depth_texture = depth,
       .vbuffer_texture = vbuffer,
       .destination_depth_texture = destination,
-      .receiver_texture = receiver,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrDepthBaseRoot),
@@ -1597,8 +1597,8 @@ bool8_t vkr_vk_prepare_ssr_depth_base(VkrVulkanRenderer *renderer,
     return false_v;
   prepared->pipelines[0] =
       renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SSR_DEPTH_BASE];
-  prepared->groups[0][0] = (params.trace_width + 7u) / 8u;
-  prepared->groups[0][1] = (params.trace_height + 7u) / 8u;
+  prepared->groups[0][0] = (depth_width + 7u) / 8u;
+  prepared->groups[0][1] = (depth_height + 7u) / 8u;
   prepared->groups[0][2] = 1u;
   prepared->dispatch_count = 1u;
   return true_v;
@@ -1651,35 +1651,27 @@ bool8_t vkr_vk_prepare_ssr_depth_mip(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
                                  VkrVulkanPreparedCompute *prepared,
                                  const VkrRgPass *pass) {
-  uint32_t textures[10] = {0};
-  for (uint32_t binding = 0u; binding < 7u; ++binding)
-    if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
-                                       &textures[binding]))
-      return false_v;
-  if (!vkr_vk_deferred_storage_index(renderer, pass, 7u, &textures[7]))
-    return false_v;
-  if (!vkr_vk_deferred_sampled_index(renderer, pass, 8u, &textures[8]))
-    return false_v;
-  if (!vkr_vk_deferred_storage_index(renderer, pass, 9u, &textures[9]))
-    return false_v;
   const VkrSsrGpuParams params = vkr_vk_ssr_params(
       renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
   if (params.depth_mip_count != renderer->prepared_frame.ssr_depth_mip_count)
     return false_v;
-  const VkrVulkanSsrTraceRoot root = {
+  VkrVulkanSsrTraceRoot root = {
       .params = params,
-      .depth_texture = textures[0],
-      .vbuffer_texture = textures[1],
-      .normal_texture = textures[2],
-      .specular_texture = textures[3],
-      .depth_pyramid_texture = textures[4],
-      .receiver_texture = textures[5],
-      .source_texture = textures[6],
-      .destination_texture = textures[7],
-      .clearcoat_texture = textures[8],
       .source_sampler = renderer->transmission_sampler_slot,
-      .hit_texture = textures[9],
   };
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &root.depth_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &root.vbuffer_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &root.normal_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 3u, &root.specular_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 4u,
+                                      &root.depth_pyramid_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &root.source_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 7u,
+                                      &root.destination_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 8u,
+                                      &root.clearcoat_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 9u, &root.hit_texture))
+    return false_v;
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrTraceRoot),
                                  &prepared->root_address))
@@ -1858,14 +1850,14 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
   if (!vkr_vk_prepare_ssr_history(renderer, prepared, &colors, &depths,
                                   &identities, &previous_projection))
     return false_v;
-  uint32_t sampled[5] = {0};
-  for (uint32_t binding = 0u; binding < ArrayCount(sampled); ++binding)
-    if (!vkr_vk_deferred_sampled_index(renderer, pass, binding,
-                                       &sampled[binding]))
-      return false_v;
-  uint32_t output_color = 0u, output_depth = 0u, output_identity = 0u,
+  uint32_t raw = 0u, vbuffer = 0u, depth = 0u, normal = 0u,
+           output_color = 0u, output_depth = 0u, output_identity = 0u,
            specular = 0u, clearcoat = 0u, hit = 0u;
-  if (!vkr_vk_deferred_storage_index(renderer, pass, 10u, &output_color) ||
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &raw) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &vbuffer) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 3u, &depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 4u, &normal) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 10u, &output_color) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 11u, &output_depth) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 12u, &output_identity) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 15u, &specular) ||
@@ -1915,11 +1907,10 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
           slot->ssr_history_valid
               ? (uint32_t)slot->ssr_color_input->history_frame_index
               : 0u,
-      .raw_texture = sampled[0],
-      .receiver_texture = sampled[1],
-      .vbuffer_texture = sampled[2],
-      .depth_texture = sampled[3],
-      .normal_texture = sampled[4],
+      .raw_texture = raw,
+      .vbuffer_texture = vbuffer,
+      .depth_texture = depth,
+      .normal_texture = normal,
       .hit_texture = hit,
       .history_color_texture = history_color,
       .history_depth_texture = history_depth,

@@ -801,7 +801,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrDepthBaseRoot {
   uint32_t depth_texture;
   uint32_t vbuffer_texture;
   uint32_t destination_depth_texture;
-  uint32_t receiver_texture;
+  uint32_t reserved;
 } VkrVulkanSsrDepthBaseRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsrDepthMipRoot {
@@ -819,13 +819,12 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTraceRoot {
   uint32_t normal_texture;
   uint32_t specular_texture;
   uint32_t depth_pyramid_texture;
-  uint32_t receiver_texture;
   uint32_t source_texture;
   uint32_t destination_texture;
   uint32_t clearcoat_texture;
   uint32_t source_sampler;
   uint32_t hit_texture;
-  uint32_t reserved;
+  uint32_t reserved[2];
 } VkrVulkanSsrTraceRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTemporalRoot {
@@ -836,7 +835,6 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTemporalRoot {
   uint64_t previous_transforms;
   uint32_t previous_frame_index;
   uint32_t raw_texture;
-  uint32_t receiver_texture;
   uint32_t vbuffer_texture;
   uint32_t depth_texture;
   uint32_t normal_texture;
@@ -849,7 +847,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTemporalRoot {
   uint32_t output_identity_texture;
   uint32_t specular_texture;
   uint32_t clearcoat_texture;
-  uint32_t reserved[3];
+  uint32_t reserved[4];
 } VkrVulkanSsrTemporalRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsrCompositeRoot {
@@ -1622,15 +1620,16 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, visible_rows) == 176u,
                "Deferred lighting-root visible-row ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsrDepthBaseRoot) == 304u,
+_Static_assert(sizeof(VkrVulkanSsrDepthBaseRoot) == 304u &&
+                   offsetof(VkrVulkanSsrDepthBaseRoot, reserved) == 300u,
                "SSR depth-base root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrDepthMipRoot) == 32u,
                "SSR depth-mip root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrTraceRoot) == 336u &&
-                   offsetof(VkrVulkanSsrTraceRoot, clearcoat_texture) == 320u &&
-                   offsetof(VkrVulkanSsrTraceRoot, source_sampler) == 324u &&
-                   offsetof(VkrVulkanSsrTraceRoot, hit_texture) == 328u &&
-                   offsetof(VkrVulkanSsrTraceRoot, reserved) == 332u,
+                   offsetof(VkrVulkanSsrTraceRoot, clearcoat_texture) == 316u &&
+                   offsetof(VkrVulkanSsrTraceRoot, source_sampler) == 320u &&
+                   offsetof(VkrVulkanSsrTraceRoot, hit_texture) == 324u &&
+                   offsetof(VkrVulkanSsrTraceRoot, reserved) == 328u,
                "SSR trace root ABI size drift");
 _Static_assert(
     sizeof(VkrVulkanSsrTemporalRoot) == 512u &&
@@ -1639,9 +1638,9 @@ _Static_assert(
         offsetof(VkrVulkanSsrTemporalRoot, instances) == 424u &&
         offsetof(VkrVulkanSsrTemporalRoot, previous_transforms) == 432u &&
         offsetof(VkrVulkanSsrTemporalRoot, previous_frame_index) == 440u &&
-        offsetof(VkrVulkanSsrTemporalRoot, hit_texture) == 464u &&
-        offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 496u &&
-        offsetof(VkrVulkanSsrTemporalRoot, reserved) == 500u,
+        offsetof(VkrVulkanSsrTemporalRoot, hit_texture) == 460u &&
+        offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 492u &&
+        offsetof(VkrVulkanSsrTemporalRoot, reserved) == 496u,
     "SSR temporal root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrCompositeRoot) == 416u &&
                    offsetof(VkrVulkanSsrCompositeRoot, clearcoat_texture) ==

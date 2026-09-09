@@ -497,16 +497,18 @@ fallback. [ADR-054](adr/054-baked-diffuse-volumes.md) owns offline room detectio
 artifact layout, lifetime and evidence limits.
 
 Opaque SSR runs before transmission under
-[ADR-055](adr/055-screen-space-reflections.md). Half-resolution rays retain the
-current-frame depth hierarchy, full-resolution leaves and 48-decision limit.
-Trace writes incoming radiance and an exact integer hit record. Temporal gathers
-at most nine raw samples once for radiance and bounds (four on mirrors), then
+[ADR-055](adr/055-screen-space-reflections.md). Each source pixel owns its ray;
+the current-frame depth hierarchy still begins at floor-half extent, with
+full-resolution leaves and a 48-decision limit. Trace writes full-source incoming
+radiance and an exact integer hit record. Temporal gathers nine rough raw samples
+at offsets {-2,0,2} for radiance and bounds, retaining approximately the former
+filter width; mirrors use their exact current ray. It then
 reprojects the hit supplying the largest weighted RGB contribution using the
 current and selected producer's camera and instance transforms. The virtual-hit motion delta preserves
-the full-resolution receiver's offset from its half-resolution trace sample.
+the receiver's offset from a neighboring trace sample.
 Coverage breaks equal-radiance ties. This prevents dark geometry from owning
-history whose light comes from a neighboring lamp, without changing rejection
-checks or the ray, image and texture-read budgets. Thin geometry and missing
+history whose light comes from a neighboring lamp. The full-resolution change
+preserves rejection checks and the temporal sampling budget. Thin geometry and missing
 current samples can still shimmer before stationary accumulation.
 
 Four history taps validate receiver and reflected-instance identities, receiver
@@ -521,14 +523,17 @@ response once, while removing the exact current probe contribution. Supported
 history retains the existing continuous clamp and motion-adaptive RGB retention
 cap; unsupported correspondence no longer supplies a fading old reflection.
 
-The graph owns a new half-resolution RGBA32_UINT hit image and expands geometry
-history to RGBA32F (receiver/virtual depths and octahedral selected view normal)
-and identity history to RGBA32_UINT (receiver/hit index-generation pairs). This
-adds 98.4375 MiB at source 1280×720 with three frame slots/five history instances,
-or 203.90625 MiB with eight slots/ten histories, excluding alignment and resize
-overlap. Temporal adds two metadata reads, below the approved nine, and removes
-its former receiver-shading reads. A 128-byte camera record borrows the exact
-selected transform producer; existing waits/barriers and reader retirement remain.
+The graph owns full-source RGBA16F raw light and RGBA32_UINT hit images; source
+pixel ownership replaces the former receiver-coordinate image. RGBA32F geometry
+history retains receiver/virtual depths and the octahedral selected view normal.
+RGBA32_UINT identity history retains receiver/hit index-generation pairs.
+Full-resolution tracing adds 42.1875 MiB over reflected-hit SSR at source
+1280×720 with three frame slots, or 112.5 MiB with eight, below the approved
+64/169 MiB limits. Including the earlier history expansion, the total increase
+is 140.625/316.40625 MiB, excluding alignment and resize overlap.
+Temporal adds one winner-hit read; its visible row comes from the gather.
+A 128-byte camera record borrows the exact selected transform producer;
+existing waits/barriers and reader retirement remain.
 `ssr_reflection` capture version 5 identifies full-resolution incoming radiance.
 Native Vulkan execution and bilateral comparison remain unavailable.
 

@@ -59,14 +59,19 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   transport, and photon caustics: [ADR-054](../adr/054-baked-diffuse-volumes.md).
 - [ ] Opaque SSR: validate the 512-byte temporal and 416-byte composite roots,
   the 128-byte camera record at temporal offset 288, exact producer transform
-  reads and graph bindings 17/18. Trace adds the hit image at binding 9 while
-  retaining its 336-byte root. Check RGBA32_UINT sampled/storage format support.
+  reads and graph bindings 17/18. Trace writes the hit image at binding 9 with
+  a 336-byte root. Check the removed depth-base/trace/temporal receiver bindings
+  3/5/1 and temporal hit/output indices at offsets 460/476/480/484.
+  Trace/raw/hit use source extent; the depth pyramid remains floor-half with
+  odd trailing rows/columns retained. Check RGBA32_UINT sampled/storage support.
   Capture version-5 `ssr_reflection` is full-resolution incoming radiance;
   composite applies current material/GTAO exactly once and removes the current
   probe term. Prior shaded-history captures are not numerically comparable.
-  Check the expanded geometry/identity histories and raw-hit image: +98.4375 MiB
-  logical payload at source 1280×720 with three slots/five histories, or
-  +203.90625 MiB with eight slots/ten histories, excluding allocation overhead.
+  Check the expanded geometry/identity histories, full-source raw/hit images and
+  removed receiver-coordinate image: +140.625 MiB logical payload at source
+  1280×720 with three slots/five histories, or +316.40625 MiB with eight slots/ten
+  histories, excluding allocation overhead. Full-resolution tracing accounts for
+  42.1875/112.5 MiB of this increase over the prior reflected-hit implementation.
   Resize, cancellation, scene reload and retirement must preserve completion.
   Exercise no-TAA and TAA, subpixel jitter, camera translation, rigid reflected
   objects and receivers, nonuniform/mirrored models, material/coat boundaries,
@@ -84,9 +89,11 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   identified Vulkan/FSR witness for that mode, not a bilateral comparison.
   Unsupported correspondence must use current radiance/probes without fading
   an old reflection. Four history taps retain individual validation; raw bounds
-  reuse nine guided samples (four on mirrors) and dominant metadata adds two
-  reads. Composite reads one history pixel and shades it at the current receiver.
-  Trace retains fractional linear-clamp sampling, half-resolution rays,
+  reuse nine guided rough samples at source offsets {-2,0,2}, weighted at half
+  those offsets. Mirrors use their exact current ray. Dominant metadata adds one
+  hit read; the gather retains its visible row. Composite reads one history pixel
+  and shades it at the current receiver. Trace uses one ray per source pixel,
+  fractional linear-clamp sampling,
   full-resolution leaves, absolute crossings and earliest rear-slab hits.
   Compare the under-bar in/out case and the separate SSGI flicker camera in
   `ssr_ghost_under_bar[_taa].case.json` and

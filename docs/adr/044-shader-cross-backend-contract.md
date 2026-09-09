@@ -408,34 +408,41 @@ with inverse current view at 0 and exact selected producer view at 64.
 
 | Root | Metal | Vulkan | Changed contract |
 | --- | ---: | ---: | --- |
-| SSR trace | 368 B | 336 B | New uint4 raw-hit output; occupies previous tail padding |
-| SSR temporal | 448 B | 512 B | Camera record, selected transforms, paired identities and wider geometry |
+| SSR depth base | 320 B | 304 B | Independent floor-half extent; receiver-coordinate output removed |
+| SSR trace | 368 B | 336 B | Full-source raw and uint4 hit; receiver-coordinate input removed |
+| SSR temporal | 432 B | 512 B | Camera record, selected transforms, paired identities and wider geometry; receiver input removed |
 | SSR composite | 480 B | 416 B | Same-pixel incoming history, current receiver shading |
 
 Metal binds the camera record through a constant pointer; temporal upload is
-576 payload bytes in two 512-byte cells, down from 1024 payload bytes in four
+560 payload bytes in two 512-byte cells, down from 1024 payload bytes in four
 cells when temporal owned the frame/LUT shading records. Vulkan embeds the camera
 record at offset 288, then visible rows/instances/prior transforms at 416/424/432,
-producer frame at 440, hit texture at 464, and output color/geometry/identity at
-480/484/488. Native assertions and compiled reflection pin each layout. Existing
+producer frame at 440, hit texture at 460, and output color/geometry/identity at
+476/480/484. Specular/coat indices are 488/492 and tail padding begins at 496.
+Metal temporal hit/transforms/camera/frame fields are 400/408/416/424; its
+durable ABI manifest pins 432 bytes. Native assertions and compiled reflection pin each layout. Existing
 80-byte GPU transform rows retain their layout; CPU graph-buffer history metadata
 adds an owned camera view matrix, published only after successful submission.
 
 Trace stores fractional hit UV, positive view depth and reflected visible-row
-identity in half-resolution RGBA32_UINT. The full-resolution geometry history is
+identity in full-source RGBA32_UINT. The full-resolution geometry history is
 RGBA32F (receiver depth, virtual depth, selected view-normal octahedral components);
 RGBA32_UINT identity stores receiver and reflected instance index/generation.
 History color remains RGBA16F and now contains incoming radiance. The approved
-increase is 98.4375 MiB with three slots/five histories at source 1280×720, or
-203.90625 MiB with eight slots/ten histories. Alignment and resize overlap are
-excluded. History instance count and completion ownership are unchanged.
+full-resolution trial adds 42.1875 MiB with three slots at source 1280×720, or
+112.5 MiB with eight, below the approved 64/169 MiB bounds. Including the earlier
+reflected-hit history expansion, the increase is 140.625/316.40625 MiB. Alignment
+and resize overlap are excluded. History instance count and completion ownership
+are unchanged; the obsolete half-size RG32_UINT receiver image is removed.
 
-Both temporal entries gather the same raw radiance/bounds footprint. The shared
+Both temporal entries gather rough raw samples at source offsets {-2,0,2}, with
+half-offset grid/bilateral weights preserving the former physical filter width.
+Integer source coordinates give mirrors one nonzero center tap. The shared
 ranking helper selects the largest weighted RGB component, breaking equal-energy
 ties by covered weight. History geometry therefore follows the sample supplying
 light, including bright lamps surrounded by more widely covered dark objects.
-They read that hit and its traced receiver's visible row once: two additional
-texture reads, below the approved nine. Cross-instance receiver correspondence
+They read that hit once and retain its visible row from the gather: one additional
+texture read, below the approved nine. Cross-instance receiver correspondence
 cannot seed or reuse history. Transported hit/receiver models and producer camera
 supply virtual reflected-point motion; adding its UV delta preserves the current
 full-resolution pixel's offset. Current jittered projection plus producer-minus-
@@ -446,8 +453,9 @@ absent correspondence uses current radiance/probes immediately. Shared affine,
 projection, octahedral and acceptance math is executed by both native entries.
 Curved surfaces remain approximate.
 
-The temporal source ceiling is 64 reads for rough base receivers and 62 for coat
-receivers, or 39/37 on mirrors, plus three writes. Former temporal material/LUT,
+The temporal source ceiling is 63 reads for rough base receivers and 60 for coat
+receivers with mixed neighbors (52 for a fully coated footprint), or 23/20 on
+mirrors, plus three writes. Former temporal material/LUT,
 motion and validity reads are removed. Graph bindings 17/18 supply the hit image
 and exact prior transform buffer. The graph declares these accesses; Metal event
 ordering and Vulkan same-queue barriers synchronize the selected producer, while
@@ -456,9 +464,12 @@ submitted readers extend last use. Output reuse still requires GPU completion.
 Composite applies current base BRDF, sheen/anisotropy and indirect-specular GTAO
 once. Coated pixels use filtered selected-normal roughness for new SSR and packed
 roughness with the coat-directed GTAO cone for exact old-probe removal. Trace
-keeps its one/five fractional linear-clamp source samples, half-resolution rays,
-full-resolution leaves and 48-decision limit. No ray or additional trace source
-read is introduced. `ssr_reflection` version 5 denotes full-resolution incoming
+keeps its one/five fractional linear-clamp source samples, full-resolution leaves
+and 48-decision limit. It now traces each source pixel, nominally four times the
+former floor-half grid, without another per-ray source read. The depth pyramid
+remains independently floor-half. Removed graph bindings are depth-base 3,
+trace 5 and temporal 1; surviving bindings retain their numbers.
+`ssr_reflection` version 5 denotes full-resolution incoming
 radiance; earlier shaded versions cannot be compared numerically. Raw remains
 version 2.
 
@@ -466,7 +477,8 @@ The shared supported RGB-retention cap and 128-frame SSR settling period remain.
 Portable TAA caps ordinary history at 90% while settling, through the unchanged
 224/144-byte Metal/Vulkan roots. Its mode remains at offsets 216/124. SSR-off
 stationary retention and the following checked 128-sample integral are unchanged;
-FSR and MetalFX retain their accepted policies. Release app/editor builds, 268
+FSR and MetalFX retain their accepted policies. The original reflected-hit change
+passed Release app/editor builds, 268
 independent shared-math outputs, eleven SSR/SSGI/deferred SPIR-V modules and
 Vulkan host syntax checks pass. Compiled temporal root/camera/transform strides
 are 512/128/80 bytes. Native Metal reflection, a serial API-validated resize,
@@ -477,13 +489,20 @@ owns exact commands, native layout evidence and the measured visual/cost limits.
 GPU shader validation previously crashed in MetalTools with SSR on and off and
 supplied no result. Native Vulkan and bilateral parity remain open gates.
 
-The later radiance-owner correction preserves these layouts, reads and rejection
-rules. Its 290-output Slang oracle, production app/editor builds and temporal
+Before the full-resolution trial, the radiance-owner correction preserved the
+original reflected-hit layouts, reads and rejection rules. Its 290-output Slang oracle, production app/editor builds and temporal
 SPIR-V validation pass. Metal covers the reported bar view, camera motion with
 SSGI/MetalFX, emitter disappearance and serial API-validated resize. The
 [radiance-owner record](../../assets/verification/renderer-features/ssr-radiance-owner.txt)
 records reduced sampled-phase flicker and residual thin-edge/missing-hit shimmer;
 native Vulkan execution and bilateral comparisons remain unavailable.
+
+The retained full-resolution trial updates the root layouts and source-read
+ceilings above, with the same correspondence and rejection math. Production
+Metal captures exercise the later bar camera, a moving emitter and layered
+clearcoat/sheen materials. The narrower immediate-neighbor trial is superseded
+by nine spaced rough taps; both results remain in the
+[full-resolution tracing record](../../assets/verification/renderer-features/ssr-full-resolution-tracing.txt).
 
 Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
 native passes. Packet version 38 appends its prepared fog pointer without

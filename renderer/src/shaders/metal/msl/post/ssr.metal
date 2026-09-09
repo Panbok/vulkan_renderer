@@ -8,7 +8,6 @@ struct alignas(16) VkrMetalPacketSsrDepthBaseRoot {
   texture2d<float, access::read> depth;
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::write> pyramid;
-  texture2d<uint, access::write> receiver;
 };
 
 struct alignas(16) VkrMetalPacketSsrDepthMipRoot {
@@ -26,7 +25,6 @@ struct alignas(16) VkrMetalPacketSsrTraceRoot {
   texture2d<float, access::read> normal;
   texture2d<float, access::read> specular;
   texture2d<float, access::read> pyramid;
-  texture2d<uint, access::read> receiver;
   texture2d<float, access::sample> hdr;
   texture2d<float, access::write> raw;
   texture2d<float, access::read> clearcoat;
@@ -36,7 +34,6 @@ struct alignas(16) VkrMetalPacketSsrTraceRoot {
 struct alignas(16) VkrMetalPacketSsrTemporalRoot {
   VkrSsrParams params;
   texture2d<float, access::read> raw;
-  texture2d<uint, access::read> receiver;
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::read> depth;
   texture2d<float, access::read> normal;
@@ -117,20 +114,18 @@ static float3 vkr_metal_ssr_hdr_cone(
 kernel void vkr_metal_packet_ssr_depth_base(
     constant VkrMetalPacketSsrDepthBaseRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
-  uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
-  if (any(pixel >= trace_extent))
+  uint2 depth_extent = uint2(root.pyramid.get_width(), root.pyramid.get_height());
+  if (any(pixel >= depth_extent))
     return;
   uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
   uint begin_x = vkr_ssr_reduction_child_begin(pixel.x);
   uint begin_y = vkr_ssr_reduction_child_begin(pixel.y);
-  uint end_x = vkr_ssr_reduction_child_end(pixel.x, trace_extent.x,
+  uint end_x = vkr_ssr_reduction_child_end(pixel.x, depth_extent.x,
                                             source_extent.x);
-  uint end_y = vkr_ssr_reduction_child_end(pixel.y, trace_extent.y,
+  uint end_y = vkr_ssr_reduction_child_end(pixel.y, depth_extent.y,
                                             source_extent.y);
   float values[9] = {0.0f};
   uint count = 0u;
-  float nearest = 3.402823466e+38f;
-  uint2 selected = uint2(0xffffffffu);
   for (uint y = begin_y; y < end_y; ++y) {
     for (uint x = begin_x; x < end_x; ++x) {
       uint2 child = uint2(x, y);
@@ -139,10 +134,6 @@ kernel void vkr_metal_packet_ssr_depth_base(
                             root.depth.read(child).x, source_extent)
                         : 0.0f;
       values[count++] = value;
-      if (vkr_ssr_valid_depth(value) && value < nearest) {
-        nearest = value;
-        selected = child;
-      }
     }
   }
   root.pyramid.write(float4(vkr_ssr_depth_reduce(
@@ -150,7 +141,6 @@ kernel void vkr_metal_packet_ssr_depth_base(
                          values[5], values[6], values[7], values[8], count),
                      0.0f, 0.0f, 1.0f),
                      pixel);
-  root.receiver.write(uint4(selected, 0u, 0u), pixel);
 }
 
 kernel void vkr_metal_packet_ssr_depth_mip(
@@ -183,9 +173,8 @@ kernel void vkr_metal_packet_ssr_trace(
   uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
   if (any(pixel >= trace_extent))
     return;
-  uint2 receiver_pixel = root.receiver.read(pixel).xy;
-  if (any(receiver_pixel == uint2(0xffffffffu)) ||
-      root.vbuffer.read(receiver_pixel).x == 0u) {
+  uint2 receiver_pixel = pixel;
+  if (root.vbuffer.read(receiver_pixel).x == 0u) {
     root.raw.write(float4(0.0f), pixel);
     root.hit.write(uint4(0u), pixel);
     return;
@@ -344,10 +333,12 @@ kernel void vkr_metal_packet_ssr_temporal(
       : vkr_metal_packet_octahedral_decode(root.normal.read(pixel).xy);
   float3 receiver_normal_view = normalize(
       vkr_ssr_matrix_vector(root.params.view, float4(center_normal, 0.0f)).xyz);
-  float2 trace_coordinate = current_uv * float2(trace_extent) - 0.5f;
+  float2 trace_coordinate = float2(pixel);
   bool mirror = roughness <= VKR_SSR_MIRROR_ROUGHNESS;
+  // Retain the half-resolution gather's physical width with full-source rays.
+  int gather_stride = mirror ? 1 : 2;
   int2 gather_first = mirror ? int2(floor(trace_coordinate))
-                            : int2(floor(trace_coordinate + 0.5f)) - 1;
+                            : int2(floor(trace_coordinate + 0.5f)) - gather_stride;
   int gather_count = mirror ? 2 : 3;
   float4 filtered = 0.0f;
   float weight_sum = 0.0f;
@@ -356,21 +347,22 @@ kernel void vkr_metal_packet_ssr_temporal(
   uint neighborhood_hits = 0u;
   float4 dominant_contribution = 0.0f;
   uint2 dominant_pixel = uint2(0u);
-  uint2 traced_receiver_pixel = uint2(0u);
+  uint traced_visible = 0u;
   float3 traced_receiver_view = 0.0f;
   float3 traced_normal_world = 0.0f;
   for (int y = 0; y < gather_count; ++y) {
     for (int x = 0; x < gather_count; ++x) {
-      int2 signed_neighbor = gather_first + int2(x, y);
+      int2 signed_neighbor = gather_first + int2(x, y) * gather_stride;
       if (any(signed_neighbor < 0) || any(signed_neighbor >= int2(trace_extent)))
         continue;
       uint2 neighbor = uint2(signed_neighbor);
-      float2 offset = float2(neighbor) - trace_coordinate;
+      float2 offset = (float2(neighbor) - trace_coordinate) / float(gather_stride);
       float grid_weight = vkr_ssr_reconstruction_grid_weight(offset, roughness);
       if (grid_weight <= 0.0f)
         continue;
-      uint2 receiver = root.receiver.read(neighbor).xy;
-      if (any(receiver >= source_extent))
+      uint2 receiver = neighbor;
+      uint neighbor_visible = root.vbuffer.read(receiver).x;
+      if (neighbor_visible == 0u)
         continue;
       float3 neighbor_view = vkr_ssr_reconstruct_view_position(
           root.params, vkr_ssr_uv_from_pixel(receiver, source_extent),
@@ -396,7 +388,7 @@ kernel void vkr_metal_packet_ssr_temporal(
                 contribution, dominant_contribution)) {
           dominant_contribution = contribution;
           dominant_pixel = neighbor;
-          traced_receiver_pixel = receiver;
+          traced_visible = neighbor_visible;
           traced_receiver_view = neighbor_view;
           traced_normal_world = neighbor_normal;
         }
@@ -424,7 +416,6 @@ kernel void vkr_metal_packet_ssr_temporal(
                       .xyz);
     current_virtual_depth = vkr_ssr_virtual_hit_depth(
         traced_receiver_view, traced_normal_view, hit_view);
-    uint traced_visible = root.vbuffer.read(traced_receiver_pixel).x;
     const device VkrMetalPacketInstance &traced_instance =
         root.instances[root.visible_rows[traced_visible - 1u].instance_index];
     current_correspondence =
@@ -674,7 +665,7 @@ static_assert(sizeof(VkrMetalPacketSsrDepthMipRoot) == 320,
               "Metal SSR depth-mip root ABI drift");
 static_assert(sizeof(VkrMetalPacketSsrTraceRoot) == 368,
               "Metal SSR trace root ABI drift");
-static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 448,
+static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 432,
               "Metal SSR temporal root ABI drift");
 static_assert(sizeof(VkrMetalPacketSsrCompositeRoot) == 480,
               "Metal SSR composite root ABI drift");

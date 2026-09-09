@@ -42,6 +42,8 @@ typedef struct VkrSsrConfig {
  * normal before trace reflection. `previous_projection_*` linearize the
  * previous device depth for shared surface-motion helpers used by SSGI.
  * SSR history instead validates transported receiver and reflected-hit depths.
+ * SSR trace extents equal the source; the independent depth pyramid starts at
+ * floor-half extent and retains odd trailing pixels in its last reduction cell.
  */
 typedef struct VkrSsrGpuParams {
   Mat4 projection;

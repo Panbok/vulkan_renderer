@@ -1662,9 +1662,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         vkr_metal_packet_pass_texture(renderer, pass, 1u);
     id<MTLTexture> pyramid =
         vkr_metal_packet_pass_texture(renderer, pass, 2u);
-    id<MTLTexture> receiver =
-        vkr_metal_packet_pass_texture(renderer, pass, 3u);
-    if (!depth || !vbuffer || !pyramid || !receiver ||
+    if (!depth || !vbuffer || !pyramid ||
         !renderer->ssr_depth_base_pipeline || pyramid.width == 0u ||
         pyramid.height == 0u)
       return false_v;
@@ -1678,7 +1676,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         .depth_texture_id = depth.gpuResourceID._impl,
         .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
         .pyramid_texture_id = pyramid.gpuResourceID._impl,
-        .receiver_texture_id = receiver.gpuResourceID._impl,
     };
     prepared->dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->ssr_depth_base_pipeline,
@@ -1739,14 +1736,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         vkr_metal_packet_pass_texture(renderer, pass, 3u);
     id<MTLTexture> pyramid =
         vkr_metal_packet_pass_texture(renderer, pass, 4u);
-    id<MTLTexture> receiver =
-        vkr_metal_packet_pass_texture(renderer, pass, 5u);
     id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 6u);
     id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 7u);
     id<MTLTexture> clearcoat =
         vkr_metal_packet_pass_texture(renderer, pass, 8u);
     id<MTLTexture> hit = vkr_metal_packet_pass_texture(renderer, pass, 9u);
-    if (!depth || !vbuffer || !normal || !specular || !pyramid || !receiver ||
+    if (!depth || !vbuffer || !normal || !specular || !pyramid ||
         !hdr || !raw || !clearcoat || !hit || !renderer->ssr_trace_pipeline ||
         raw.width == 0u || raw.height == 0u)
       return false_v;
@@ -1762,7 +1757,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         .normal_texture_id = normal.gpuResourceID._impl,
         .specular_texture_id = specular.gpuResourceID._impl,
         .pyramid_texture_id = pyramid.gpuResourceID._impl,
-        .receiver_texture_id = receiver.gpuResourceID._impl,
         .hdr_texture_id = hdr.gpuResourceID._impl,
         .raw_texture_id = raw.gpuResourceID._impl,
         .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
@@ -1780,8 +1774,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
 
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TEMPORAL) {
     id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 0u);
-    id<MTLTexture> receiver =
-        vkr_metal_packet_pass_texture(renderer, pass, 1u);
     id<MTLTexture> vbuffer =
         vkr_metal_packet_pass_texture(renderer, pass, 2u);
     id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 3u);
@@ -1803,7 +1795,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     id<MTLTexture> hit = vkr_metal_packet_pass_texture(renderer, pass, 17u);
     const VkrRgBufferUse *transform_use =
         vkr_rg_pass_find_buffer_use(&pass->desc, 18u, 0u);
-    if (!raw || !receiver || !vbuffer || !depth || !normal || !output_color ||
+    if (!raw || !vbuffer || !depth || !normal || !output_color ||
         !output_depth || !output_identity || !visible || !instances ||
         !specular || !clearcoat || !hit || !transform_use ||
         transform_use->buffer.id !=
@@ -1868,7 +1860,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     *root = (VkrMetalPacketSsrTemporalRoot){
         .params = renderer->ssr_params,
         .raw_texture_id = raw.gpuResourceID._impl,
-        .receiver_texture_id = receiver.gpuResourceID._impl,
         .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
         .depth_texture_id = depth.gpuResourceID._impl,
         .normal_texture_id = normal.gpuResourceID._impl,

@@ -1400,7 +1400,7 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrDepthBaseRoot, vbuffer_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrDepthBaseRoot,
                                  destination_depth_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrDepthBaseRoot, receiver_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrDepthBaseRoot, reserved),
   };
   static const VkrVulkanReflectedField ssr_depth_mip_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrDepthMipRoot,
@@ -1418,7 +1418,6 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, normal_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, specular_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, depth_pyramid_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, receiver_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, source_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, destination_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, clearcoat_texture),
@@ -1435,7 +1434,6 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot,
                                  previous_frame_index),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, raw_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, receiver_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, vbuffer_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, depth_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, normal_texture),

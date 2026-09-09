@@ -98,16 +98,14 @@ VkrSsrGpuParams vkr_ssr_gpu_params(const VkrSsrConfig *config, Mat4 projection,
     return (VkrSsrGpuParams){0};
 
   const VkrSsrConfig prepared = config ? *config : vkr_ssr_config_default();
-  const uint32_t trace_width = vkr_ssr_reduced_extent(source_width);
-  const uint32_t trace_height = vkr_ssr_reduced_extent(source_height);
   return (VkrSsrGpuParams){
       .projection = projection,
       .inverse_projection = inverse_projection,
       .view = view,
       .source_width = source_width,
       .source_height = source_height,
-      .trace_width = trace_width,
-      .trace_height = trace_height,
+      .trace_width = source_width,
+      .trace_height = source_height,
       .depth_mip_count = vkr_ssr_depth_mip_count(source_width, source_height),
       .max_steps = prepared.max_steps,
       .history_valid = history_valid ? 1u : 0u,
@@ -122,7 +120,7 @@ VkrSsrGpuParams vkr_ssr_gpu_params(const VkrSsrConfig *config, Mat4 projection,
       .previous_projection_m23 = previous_projection.m23,
       .previous_projection_m32 = previous_projection.m32,
       .previous_projection_m33 = previous_projection.m33,
-      .trace_texel_size_x = 1.0f / (float32_t)trace_width,
-      .trace_texel_size_y = 1.0f / (float32_t)trace_height,
+      .trace_texel_size_x = 1.0f / (float32_t)source_width,
+      .trace_texel_size_y = 1.0f / (float32_t)source_height,
   };
 }

@@ -1170,32 +1170,12 @@
       "mip_levels": "full_chain"
     },
     {
-      "name": "ssr_receiver_pixel",
-      "type": "image",
-      "condition": "scene_rendering && ssr_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R32G32_UINT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
       "name": "ssr_raw",
       "type": "image",
       "condition": "scene_rendering && ssr_enabled",
       "extent": {
         "mode": "viewport",
-        "divisor": 2
+        "divisor": 1
       },
       "format": "R16G16B16A16_SFLOAT",
       "usage": [
@@ -1215,7 +1195,7 @@
       "condition": "scene_rendering && ssr_enabled",
       "extent": {
         "mode": "viewport",
-        "divisor": 2
+        "divisor": 1
       },
       "format": "R32G32B32A32_UINT",
       "usage": [
@@ -3822,11 +3802,6 @@
             "base_mip": 0,
             "mip_count": 1
           }
-        },
-        {
-          "image": "ssr_receiver_pixel",
-          "access": "STORAGE_WRITE",
-          "binding": 3
         }
       ],
       "execute": "pass.ssr.depth_base"
@@ -3899,11 +3874,6 @@
           "binding": 4
         },
         {
-          "image": "ssr_receiver_pixel",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
           "image": "hdr_pre_transmission",
           "access": "SAMPLED",
           "binding": 6,
@@ -3969,11 +3939,6 @@
           "binding": 4
         },
         {
-          "image": "ssr_receiver_pixel",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
           "image": "scene_pre_transmission",
           "access": "SAMPLED",
           "binding": 6,
@@ -4017,11 +3982,6 @@
           "image": "ssr_raw",
           "access": "SAMPLED",
           "binding": 0
-        },
-        {
-          "image": "ssr_receiver_pixel",
-          "access": "SAMPLED",
-          "binding": 1
         },
         {
           "image": "opaque_vbuffer",

@@ -224,7 +224,7 @@ struct VkrVkSsrDepthBaseRoot
     uint depth_texture;
     uint vbuffer_texture;
     uint destination_depth_texture;
-    uint receiver_texture;
+    uint reserved;
 };
 
 struct VkrVkSsrDepthMipRoot
@@ -244,13 +244,12 @@ struct VkrVkSsrTraceRoot
     uint normal_texture;
     uint specular_texture;
     uint depth_pyramid_texture;
-    uint receiver_texture;
     uint source_texture;
     uint destination_texture;
     uint clearcoat_texture;
     uint source_sampler;
     uint hit_texture;
-    uint reserved;
+    uint reserved[2];
 };
 
 struct VkrVkSsrTemporalRoot
@@ -262,7 +261,6 @@ struct VkrVkSsrTemporalRoot
     VkrTemporalTransform *previous_transforms;
     uint previous_frame_index;
     uint raw_texture;
-    uint receiver_texture;
     uint vbuffer_texture;
     uint depth_texture;
     uint normal_texture;
@@ -275,7 +273,7 @@ struct VkrVkSsrTemporalRoot
     uint output_identity_texture;
     uint specular_texture;
     uint clearcoat_texture;
-    uint reserved[3];
+    uint reserved[4];
 };
 
 struct VkrVkSsrCompositeRoot
@@ -2121,15 +2119,14 @@ void vk_ssr_depth_base(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkSsrDepthBaseRoot *root = g_ssr_depth_base_push.root;
     uint2 cell = thread_id.xy;
-    uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
-    if (any(cell >= trace_extent)) return;
+    uint2 depth_extent = max(source_extent / 2u, uint2(1u));
+    if (any(cell >= depth_extent)) return;
     uint2 begin = uint2(vkr_ssr_reduction_child_begin(cell.x),
                         vkr_ssr_reduction_child_begin(cell.y));
-    uint2 end = uint2(vkr_ssr_reduction_child_end(cell.x, trace_extent.x, source_extent.x),
-                      vkr_ssr_reduction_child_end(cell.y, trace_extent.y, source_extent.y));
+    uint2 end = uint2(vkr_ssr_reduction_child_end(cell.x, depth_extent.x, source_extent.x),
+                      vkr_ssr_reduction_child_end(cell.y, depth_extent.y, source_extent.y));
     float nearest = 0.0f;
-    uint2 receiver = uint2(0xffffffffu, 0xffffffffu);
     for (uint y = begin.y; y < end.y; ++y)
     for (uint x = begin.x; x < end.x; ++x)
     {
@@ -2143,11 +2140,9 @@ void vk_ssr_depth_base(uint3 thread_id : SV_DispatchThreadID)
             (!vkr_ssr_valid_depth(nearest) || positive < nearest))
         {
             nearest = positive;
-            receiver = p;
         }
     }
     g_storage_2d[root.destination_depth_texture][cell] = float4(nearest, 0, 0, 0);
-    g_storage_uint2_2d[root.receiver_texture][cell] = receiver;
 }
 
 [shader("compute")]
@@ -2259,14 +2254,9 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
     uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
     if (any(cell >= trace_extent)) return;
-    uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(cell, 0));
+    uint2 receiver = cell;
     float4 raw = 0.0f;
     uint4 hit = 0u;
-    if (any(receiver >= source_extent)) {
-        g_storage_2d[root.destination_texture][cell] = raw;
-        g_storage_uint4_2d[root.hit_texture][cell] = hit;
-        return;
-    }
     uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
     float roughness = vkr_vk_ssr_selected_roughness(
         root.specular_texture, root.clearcoat_texture, receiver);
@@ -2390,9 +2380,10 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     float3 normal = clearcoat_active
         ? vkr_vk_octahedral_decode(clearcoat_packed.zw)
         : vkr_vk_octahedral_decode(g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
-    float2 trace_coordinate = (float2(pixel) + 0.5f) * float2(trace_extent) /
-                              float2(source_extent) - 0.5f;
+    float2 trace_coordinate = float2(pixel);
     bool mirror = roughness <= VKR_SSR_MIRROR_ROUGHNESS;
+    // Retain the half-resolution gather's physical width with full-source rays.
+    int gather_stride = mirror ? 1 : 2;
     int2 center = mirror ? int2(floor(trace_coordinate))
                          : int2(floor(trace_coordinate + 0.5f));
     int begin = mirror ? 0 : -1;
@@ -2403,18 +2394,19 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     uint neighborhood_hits = 0u;
     float4 dominant_contribution = 0.0f;
     int2 dominant_cell = int2(0);
-    uint2 traced_pixel = uint2(0u);
+    uint traced_visible = 0u;
     float3 traced_receiver = 0.0f;
     float3 traced_world_normal = 0.0f;
     for (int y = begin; y < 2; ++y) for (int x = begin; x < 2; ++x)
     {
-        int2 q = center + int2(x, y);
+        int2 q = center + int2(x, y) * gather_stride;
         if (any(q < 0) || any(q >= int2(trace_extent))) continue;
-        float2 offset = float2(q) - trace_coordinate;
+        float2 offset = (float2(q) - trace_coordinate) / float(gather_stride);
         float grid_weight = vkr_ssr_reconstruction_grid_weight(offset, roughness);
         if (grid_weight <= 0.0f) continue;
-        uint2 receiver = g_uint2_textures[root.receiver_texture].Load(int3(q, 0));
-        if (any(receiver >= source_extent)) continue;
+        uint2 receiver = uint2(q);
+        uint neighbor_visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
+        if (neighbor_visible == 0u) continue;
         float3 neighbor_view = vkr_ssr_reconstruct_view_position(
             root.params, vkr_ssr_uv_from_pixel(receiver, source_extent),
             g_depth_textures[root.depth_texture].Load(int3(receiver, 0)));
@@ -2438,7 +2430,7 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
             {
                 dominant_contribution = contribution;
                 dominant_cell = q;
-                traced_pixel = receiver;
+                traced_visible = neighbor_visible;
                 traced_receiver = neighbor_view;
                 traced_world_normal = neighbor_normal;
             }
@@ -2463,9 +2455,9 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     if (dominant_contribution.w > 0.0f)
     {
         // The largest light contribution supplies the hit and traced plane.
-        // The two metadata reads are independent of the gather footprint.
+        // The hit read is independent of the gather footprint; its receiver row
+        // was retained from that sample's existing vbuffer load.
         uint4 raw_hit = g_uint4_textures[root.hit_texture].Load(int3(dominant_cell, 0));
-        uint traced_visible = g_uint2_textures[root.vbuffer_texture].Load(int3(traced_pixel, 0)).x;
         uint2 traced_identity = vkr_vk_ssr_identity(root, traced_visible);
         float hit_depth = asfloat(raw_hit.z);
         if (raw_hit.w != 0u && vkr_ssr_valid_depth(hit_depth))
