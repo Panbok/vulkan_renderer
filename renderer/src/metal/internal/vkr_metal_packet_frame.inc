@@ -2328,6 +2328,26 @@ vkr_internal bool8_t vkr_metal_packet_prepare_temporal_resolve(
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
   if (!root)
     return false_v;
+  const bool8_t scene_matches =
+      history_valid && upload->temporal_scene.signature.eligible &&
+      upload->ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK &&
+      color_slot->instances[selected].history_scene.signature.eligible &&
+      upload->temporal_scene.signature.hash[0] ==
+          color_slot->instances[selected].history_scene.signature.hash[0] &&
+      upload->temporal_scene.signature.hash[1] ==
+          color_slot->instances[selected].history_scene.signature.hash[1] &&
+      upload->temporal_scene.radiance_revision ==
+          color_slot->instances[selected].history_scene.radiance_revision &&
+      upload->temporal_scene.publication_generation ==
+          color_slot->instances[selected].history_scene.publication_generation &&
+      upload->temporal_scene.graph_revision ==
+          color_slot->instances[selected].history_scene.graph_revision;
+  const bool8_t scene_stationary = vkr_temporal_prepare_static_accumulation(
+      scene_matches, packet->ssr_enabled,
+      history_valid
+          ? color_slot->instances[selected].history_scene.unchanged_frames
+          : 0u,
+      &upload->temporal_scene.unchanged_frames);
   *root = (VkrMetalPacketTemporalResolveRoot){
       .visible_rows = visible->resource.gpu_address,
       .instances = instances->resource.gpu_address,
@@ -2369,28 +2389,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_temporal_resolve(
                               (uint32_t)color_slot->instances[selected]
                                   .history_frame_index)
                         : (Vec2){0},
-      .scene_stationary =
-          history_valid && upload->temporal_scene.signature.eligible &&
-          upload->ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK &&
-          color_slot->instances[selected].history_scene.signature.eligible &&
-          upload->temporal_scene.signature.hash[0] ==
-              color_slot->instances[selected].history_scene.signature.hash[0] &&
-          upload->temporal_scene.signature.hash[1] ==
-              color_slot->instances[selected].history_scene.signature.hash[1] &&
-          upload->temporal_scene.radiance_revision ==
-              color_slot->instances[selected].history_scene.radiance_revision &&
-          upload->temporal_scene.publication_generation ==
-              color_slot->instances[selected]
-                  .history_scene.publication_generation &&
-          upload->temporal_scene.graph_revision ==
-              color_slot->instances[selected].history_scene.graph_revision,
+      .scene_history_mode = scene_stationary
+          ? VKR_TEMPORAL_HISTORY_STATIC_ACCUMULATE
+          : (packet->ssr_enabled ? VKR_TEMPORAL_HISTORY_SSR_SETTLING
+                                 : VKR_TEMPORAL_HISTORY_ORDINARY),
   };
-  root->scene_stationary = vkr_temporal_prepare_static_accumulation(
-      root->scene_stationary, packet->ssr_enabled,
-      history_valid
-          ? color_slot->instances[selected].history_scene.unchanged_frames
-          : 0u,
-      &upload->temporal_scene.unchanged_frames);
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->temporal_resolve_pipeline,
       .root = root_gpu,

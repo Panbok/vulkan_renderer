@@ -721,7 +721,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint32_t transmission_vbuffer_texture;
   uint32_t transmission_depth_texture;
   uint32_t transmission_enabled;
-  uint32_t scene_stationary;
+  uint32_t scene_history_mode;
   Vec2 current_jitter_pixels;
   Vec2 previous_jitter_pixels;
 } VkrVulkanTemporalResolveRoot;
@@ -1605,7 +1605,7 @@ _Static_assert(offsetof(VkrVulkanResolveRoot, sky_reprojection) == 352u,
 _Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 144u,
                "Temporal resolve-root ABI size drift");
 _Static_assert(
-    offsetof(VkrVulkanTemporalResolveRoot, scene_stationary) == 124u &&
+    offsetof(VkrVulkanTemporalResolveRoot, scene_history_mode) == 124u &&
         offsetof(VkrVulkanTemporalResolveRoot, current_jitter_pixels) == 128u &&
         offsetof(VkrVulkanTemporalResolveRoot, previous_jitter_pixels) == 136u,
     "Temporal resolve-root scene/jitter ABI drift");

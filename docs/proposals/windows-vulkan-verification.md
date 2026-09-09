@@ -153,7 +153,12 @@ insufficient.
   Check that the first 128 matching submitted frames keep ordinary accumulation
   and FSR composition masking, then begin the existing 128-sample static mean.
   Motion, SSR toggles, invalid history, scene/resource changes and resize must
-  reset the settling counter. Failed submissions must not advance it. Compare
+  reset the settling counter. Failed submissions must not advance it. Verify the
+  TAA root's history mode at offset 124 (144-byte root): SSR settling caps ordinary
+  history at 0.9, SSR-off ordinary stationary retention stays 0.99, and mode 1
+  alone enables the checked static integral. Compare the user under-bar in/out
+  case `ssr_ghost_under_bar_taa` and separate `ssgi_bistro_remaining_flicker` case
+  for shorter trails and the possible pre-settle shimmer tradeoff. Compare
   trails, reflection strength, the first static sample and the final held image;
   [Metal settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
   does not validate FSR SDK execution or native Vulkan history ordering.

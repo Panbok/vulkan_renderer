@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "shaders/shared/temporal_contract.slangh"
 #include "math/mat.h"
 #include "math/vec.h"
 

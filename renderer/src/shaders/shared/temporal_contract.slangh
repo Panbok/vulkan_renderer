@@ -1,0 +1,9 @@
+#ifndef VKR_TEMPORAL_CONTRACT_SLANGH
+#define VKR_TEMPORAL_CONTRACT_SLANGH
+
+// TAA resolve policy, lowered from the selected producer's CPU scene proof.
+#define VKR_TEMPORAL_HISTORY_ORDINARY 0u
+#define VKR_TEMPORAL_HISTORY_STATIC_ACCUMULATE 1u
+#define VKR_TEMPORAL_HISTORY_SSR_SETTLING 2u
+
+#endif

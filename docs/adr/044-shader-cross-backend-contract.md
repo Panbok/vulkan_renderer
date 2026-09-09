@@ -449,7 +449,18 @@ Motion-adaptive defaults rise from 0.85 to 0.95 on stationary rough receivers an
 return at one source pixel per frame. Empty neighborhoods retain at most half
 of validated coverage each frame; rejected history clears. The shared scene-static
 proof waits for 128 matching submitted frames with SSR enabled before allowing
-TAA/FSR's existing 128-sample static accumulation. Selected-producer CPU metadata
+TAA/FSR's existing 128-sample static accumulation. Portable TAA uses shared
+ordinary/static-accumulate/SSR-settling mode constants and caps ordinary history
+at 0.9 while SSR is unsettled; SSR-off stationary retention stays 0.99. The TAA
+mode replaces its former scene-stationary word at Metal offset 216 and Vulkan
+124, keeping the respective 224/144-byte roots and existing texture-read ceilings.
+Camera stationarity and metadata validation remain separate. FSR and MetalFX are
+unchanged by this cap. Release builds, scalar-layout SPIR-V validation, reflected
+mode offset 124 and native Metal startup/API resize pass. The
+[cap evidence](../../assets/verification/renderer-features/ssr-taa-settling-cap.txt)
+records reduced held-reference error and increased pre-settle flicker. Native
+Vulkan execution and same-revision bilateral comparison remain unavailable;
+TAA retains its UNALIGNED state. Selected-producer CPU metadata
 owns the capped counter, which resets on invalid history or changed inputs and
 publishes only on successful submission. No roots, bindings or sampling ceilings
 change; native Vulkan verification remains unavailable. Receiver depth tolerance

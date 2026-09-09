@@ -1311,7 +1311,7 @@ struct alignas(16) VkrMetalPacketTemporalResolveRoot {
   uint transmission_reserved[2];
   float2 current_jitter_pixels;
   float2 previous_jitter_pixels;
-  uint scene_stationary;
+  uint scene_history_mode;
 };
 
 static float vkr_metal_packet_temporal_luminance(float3 color) {
@@ -1543,9 +1543,11 @@ kernel void vkr_metal_packet_temporal_resolve(
 
     // CPU scene/resource equality proves that missing current coverage is
     // another sample of the same radiance field, including thin transmission.
-    bool checked_static = root.scene_stationary != 0u && root.history_valid != 0u &&
-                          validity.x > 0.5f && !(blend_overlay && identity.x == 0u) &&
-                          (identity.x == 0u || surface_token != 0u);
+    bool checked_static =
+        root.scene_history_mode == VKR_TEMPORAL_HISTORY_STATIC_ACCUMULATE &&
+        root.history_valid != 0u && validity.x > 0.5f &&
+        !(blend_overlay && identity.x == 0u) &&
+        (identity.x == 0u || surface_token != 0u);
     if (checked_static)
     {
         constexpr sampler nearest(coord::normalized, address::clamp_to_edge, filter::nearest);
@@ -1638,11 +1640,9 @@ kernel void vkr_metal_packet_temporal_resolve(
     }
     history.rgb = clamp(history.rgb, neighborhood_min, neighborhood_max);
   }
-  /* A fixed 0.9 EMA preserves a visible periodic residual from the eight-phase
-     jitter sequence. Once both the camera and surface are stationary, retain
-     enough history to make that residual sub-perceptual. Moving surfaces keep
-     the responsive path even when the camera itself is still. */
-  float history_retention = stationary_surface ? 0.99 : 0.9;
+
+  float history_retention = vkr_temporal_history_retention(
+      stationary_surface, root.scene_history_mode);
   float history_weight = accepted ? history_retention * history_confidence * (1.0 - reactive) *
                                         saturate(1.0 - motion_pixels / 128.0)
                                   : 0.0;

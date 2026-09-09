@@ -100,7 +100,10 @@ current bounds can still trail.
 Before scene-static accumulation begins, SSR-enabled scenes spend 128 unchanged
 frames on ordinary TAA under
 [ADR-037](037-portable-same-resolution-temporal-antialiasing.md). Then TAA collects
-its existing 128 samples and freezes the result. This excludes the early SSR
+its existing 128 samples and freezes the result. During settling, portable TAA
+retains at most 90% history rather than boosting stationary surfaces to 99%.
+[ADR-037](037-portable-same-resolution-temporal-antialiasing.md) owns this approved
+response-versus-shimmer choice and the unchanged native root sizes. This excludes the early SSR
 convergence transient from that static mean. The user approved the roughly
 4.3-second sequence at 60 fps. A capped CPU counter is retained with submitted
 scene-history metadata and resets on failed input/history equality. The same
@@ -135,7 +138,8 @@ Metal's submission event wait and Vulkan's same-queue write/read barriers. An
 unrelated producer must already be complete. Tuple members and the motion
 transform must have the same producer submission. Every reader extends last use;
 output reuse and retirement still require completion of producers and readers.
-This adds no images or waits and leaves SSGI's completed-only policy unchanged.
+This adds no images or waits. SSGI now follows its separately approved
+synchronized-predecessor policy under [ADR-060](060-screen-space-diffuse-indirect-lighting.md).
 
 Projection compatibility uses the unjittered projection. Consecutive raster-jitter
 phases must not invalidate accumulation. Trace retains the current jittered

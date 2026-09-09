@@ -1265,7 +1265,7 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
                                  transmission_enabled),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
-                                 scene_stationary),
+                                 scene_history_mode),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
                                  current_jitter_pixels),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,

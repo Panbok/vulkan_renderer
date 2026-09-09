@@ -1454,7 +1454,10 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
           history_valid && MemCompare(&slot->temporal_previous_view_projection,
                                       &packet->temporal.current_view_projection,
                                       sizeof(Mat4)) == 0,
-      .scene_stationary = scene_stationary,
+      .scene_history_mode = scene_stationary
+          ? VKR_TEMPORAL_HISTORY_STATIC_ACCUMULATE
+          : (packet->ssr_enabled ? VKR_TEMPORAL_HISTORY_SSR_SETTLING
+                                 : VKR_TEMPORAL_HISTORY_ORDINARY),
       .transmission_visible_rows =
           transmission_visible ? transmission_visible->buffer.address : 0u,
       .transmission_instances =

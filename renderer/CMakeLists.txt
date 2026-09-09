@@ -315,6 +315,7 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/fog_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/froxel_fog_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/atmosphere_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/temporal_contract.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/temporal_filter_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/dfg_contract.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/ggx_kernel.slangh"

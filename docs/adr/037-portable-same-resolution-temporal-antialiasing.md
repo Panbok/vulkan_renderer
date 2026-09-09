@@ -89,6 +89,25 @@ signature; SSR-off scenes keep the original immediate accumulation rule.
 The shared rule also gates FSR composition masking and static convergence.
 MetalFX does not use this proof. No images, roots, bindings or read ceilings
 change; ordinary TAA runs during the settling period.
+
+The user approved capping ordinary TAA history retention at 0.9 while SSR is
+unsettled, including immediately after camera movement stops. Previously the
+stationary-surface boost to 0.99 could preserve an old reflection through much
+of the settling interval. Confidence, reactivity, motion attenuation and current
+neighborhood clamping still reduce that cap. SSR-off ordinary stationary TAA
+retains 0.99, and the checked 128-sample integral remains unchanged. Faster
+response may expose more shimmer before convergence; this does not correct
+SSR's own receiver-based reflection reprojection or MetalFX's private history.
+
+Native TAA lowering encodes ordinary, static-accumulate or SSR-settling mode in
+the existing scene-history word. The selected producer's scene equality and
+unchanged-frame counter retain their CPU ownership. Camera stationarity remains
+separate because it also controls metadata validation. Metal's mode is at offset
+216 in its 224-byte root; Vulkan's is at offset 124 in its 144-byte root. Shared
+constants and retention math define both shader paths. There are no new images,
+texture reads, rays, root bytes or lifetime changes. FSR and MetalFX policy is
+unchanged by this cap.
+
 The signature is a probabilistic content check, not collision-free equality.
 It excludes jitter/noise phase and downstream exposure, bloom and UI. Disabled
 portable TAA and MetalFX skip the scan.
@@ -148,6 +167,16 @@ sampled bar region is identical in reconstructed HDR and final color. The first
 static sample can still change visibly, and early motion outliers remain.
 [The settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
 records the transitions and serial API validation; native Vulkan remains unrun.
+
+The 90% settling cap passes Release compilation, native Metal captures and a
+serial Metal API resize. At the user under-bar camera, half a second after
+stopping, scene-linear error against a long-held reference decreases by 28% on
+the countertop and 56% on the bar front. In the separate SSGI-on flicker view,
+pixels varying by more than 3/255 increase from 26,467 to 48,097 before settling.
+The [cap evidence](../../assets/verification/renderer-features/ssr-taa-settling-cap.txt)
+records configurations, raw measurements, commands and the independent-replay
+limits. This establishes a response/shimmer tradeoff; SSR's own trails remain.
+Native Vulkan and bilateral comparison remain unavailable.
 
 ## Alternatives considered
 

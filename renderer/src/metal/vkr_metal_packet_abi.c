@@ -1079,8 +1079,8 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
                   "current_jitter_pixels", 200),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, previous_jitter_pixels,
                   "previous_jitter_pixels", 208),
-    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, scene_stationary,
-                  "scene_stationary", 216),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, scene_history_mode,
+                  "scene_history_mode", 216),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_transmission_shade_root_fields[] = {

@@ -778,7 +778,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint32_t transmission_reserved[2];
   Vec2 current_jitter_pixels;
   Vec2 previous_jitter_pixels;
-  uint32_t scene_stationary;
+  uint32_t scene_history_mode;
 } VkrMetalPacketTemporalResolveRoot;
 
 _Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 224,
@@ -788,7 +788,7 @@ _Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot,
                    offsetof(VkrMetalPacketTemporalResolveRoot,
                             previous_jitter_pixels) == 208u,
                "Metal temporal-resolve jitter ABI drift");
-_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, scene_stationary) ==
+_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, scene_history_mode) ==
                    216u,
                "Metal temporal static-scene ABI drift");
 

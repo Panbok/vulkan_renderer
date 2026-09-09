@@ -1,0 +1,104 @@
+SSR settling: portable TAA retention cap
+2026-09-09; implementation based on main0c861b59, dirty renderer changes.
+
+User decision: cap ordinary portable TAA history at0.9 during SSR settling,
+instead of the0.99 stationary boost. Existing128frame gate and128sample static
+integral remain. Modes ordinary0/static-accumulate1/SSR-settling2 replace one
+TAA root word; Metal offset216/root224B, Vulkan offset124/root144B.
+Camera validation, scene equality/counter ownership, GPU lifetimes, FSR and
+MetalFX remain unchanged. No added images, texture reads, rays or upload bytes.
+
+Changed shaders: shared temporal_contract.slangh/temporal_filter_kernel.slangh,
+Metal world/gpu_draws.metal, Vulkan world/deferred.slang. No cooked assets changed.
+
+Environment: Release; Apple M1 Pro; Metal4; Darwin25.6.0; AppleClang21.0.0.
+Snapshot runs are local/non-authoritative, offscreen with3images, manual
+exposure8, AgX,80%spatial scale,TAA,SSR,GTAO; bloom disabled.
+Ghost output1509x907/source1207x726; SSGI disabled to isolate reflections.
+Flicker output1783x1093/source1426x874; SSGI enabled.
+Cases retain both distinct user-supplied camera locations.
+
+Ghost observation:0.65m diagonal in/out over18frames, then hold. With noTAA,
+fresh rawSSR is byte-identical in the two bar ROIs at heldframes18/20/32/48,
+while shaded history continues changing. The remaining SSR-only trail is real.
+
+Convergence reference: same under-bar camera, stationary for320warm frames.
+Compare mean absolute maximum RGB channel error in scene-linear hdr_pre_bloom.
+Countertop source ROI[480,312,1136,488],115456pixels; bar-front ROI
+[424,488,1096,672],123648pixels. This includes jitter/noise differences,
+not an exact ghost mask. Half a second after stop(frame48):
+countertop0.00052050 ->0.00037490 (28.0% lower);
+bar front0.00023486 ->0.00010225 (56.5% lower).
+At frame32 (~0.233s after stop): countertop24.3% lower, bar front52.6% lower.
+At frame20 (~0.033s): countertop7.5% lower, bar front13.8% lower.
+Results relative to own frame48 initially suggested more error; that endpoint
+still contains history, so only the held reference supports this convergence claim.
+
+Flicker tradeoff: warm32, independent checkpoints0/1/4/8. Per-pixel largest
+RGB max-minus-min in8bit final color; sipsPNG->BMP used identically for both.
+All1,948,819pixels: mean range0.544421519 ->0.933278565 display codes (+71.4%);
+count with range>3codes26,467 ->48,097 (+81.7%).
+Ceiling mean0.364350878 ->0.720469058; >3codes967 ->4,422.
+The cap is measurably more responsive and noisier before static convergence.
+
+Upstream boundary: rawSSR and motion byte-identical at all5matched checkpoints.
+ShadedSSR/pre-TAA HDR have sparse cross-replay differences: at frame20,289
+SSRhalf components differ(max0.01611328125),138pre-TAA components differ
+(max0.0005340576171875). Other exact/small cases are in companionJSON.
+Do not claim complete upstream-history identity or that this cap removes all ghosts.
+
+Verification:
+./build_editor.sh Release PASS; rebuilt editor/vkr_editor.
+./build_release.sh PASS (build2). Initial build caught a stale Vulkan reflected
+scene_stationary field; renamed it with its host/shader counterpart.
+spirv-val --target-env vulkan1.4 --scalar-block-layout build_release/renderer/generated/vulkan/packet.temporal_resolve.comp.spv PASS.
+SHA256989d93769fa9b062fcab94ce06fc871167d7c30a03de230a7eb69580c0f3b5fe.
+spirv-dis shows scene_history_mode member26 at offset124. Initial validation
+without --scalar-block-layout rejected the pre-existing extent at offset76;
+vkr_vulkan_device.c requires/enables scalarBlockLayout.
+Actual compile_commands.json invocations for vkr_vulkan_deferred.c and
+vkr_vulkan_pipelines.c with -c/-o removed and -fsyntax-only appended PASS.
+Exact invocations retained in companion ssr-taa-settling-cap-vulkan.txt.
+Metal startup/reflection and serial APIresize PASS; child stderr explicitly
+reports Metal API Validation Enabled, with no API errors.
+Documentation link check656targets/87files PASS; skill mirrors and gitdiffcheck PASS.
+No newCPUtest: this is a single policy branch, covered by production build,
+compiled ABI and native output comparisons. Windows/native Vulkan unavailable.
+
+Run commands and report SHA256:
+no_taa_before: 20260909T112528.225Z-0051f6
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 5363c5e308db1dc7ae5520d5176c1027e7465f06c945baa5c1376ccfb982f9bd; PASS
+
+taa_before: 20260909T112647.695Z-0055b8
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar_taa.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 48592d50fe3626491cbb89e97f823c26ed1bcd880513c46213decd65e2a63bbd; PASS
+
+flicker_before: 20260909T112806.565Z-005d9f
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssgi_bistro_remaining_flicker.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 4042f97eeb006207879b666faa0ffbe4024c1dde35cc7710c14f6c5f0ce7987e; PASS
+
+taa_after: 20260909T115503.141Z-00d11d
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar_taa.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 f7731a3990ca7884fdb4ca5e43074a8b8d6b8b6f5d7a16a15f81f0d4f5a2065f; PASS
+
+flicker_after: 20260909T115631.462Z-00db9c
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssgi_bistro_remaining_flicker.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 e0ff2c60a91adda9ff2020f71712c1c93800030c0ea0c579953cec8063e24b71; PASS
+
+held_reference: 20260909T115814.513Z-00e32e
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/ssr_ghost_under_bar_reference.case.json --profile tools/profiles/local-offscreen.json
+report SHA256 7743da3917025062409629fbb8d6ce163a0ba70411365f751196d46396af0189; PASS
+
+metal_api: 20260909T115920.340Z-00e73f
+env -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS MTL_DEBUG_LAYER=1 ./build_release/tools/vkr_harness profile --case tools/cases/local/ssgi_history_resize.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
+report SHA256 1934845b0113111909c296ee0f7796beab4ee93d637ae69e0781a7d40f5b2585; PASS
+
+Screenshot is the exact afterTAA frame32finalPNG; its SHA256 is
+60bae547366109989a7dcea1b001f493b395338434c29279fbd38f83c45ce459.
+AfterTAA115503, flicker115631 and held-reference115814 portable raw payloads
+remain local for pending Windows/Vulkan comparison; baseline promotion not authorized.
+Earlier pending witnesses, including110435, are untouched.
+
+The completed before/no-TAA and initial misidentified-camera snapshot trees plus
+the API profile were removed after recording their report digests/results.

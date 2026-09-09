@@ -522,7 +522,15 @@ unchanged; constant sparse radiance is preserved. This bounds supported ghost
 trails at the risk of more fresh-sample noise. Rejected depth/identity clears.
 SSR-enabled scenes wait 128 unchanged
 submitted frames before portable TAA, FSR or MetalFX's following pass begins
-128-sample static accumulation. Current reconstruction continues during settling.
+128-sample static accumulation. Portable TAA caps ordinary history retention at
+90% during settling, including after camera movement stops; its former stationary
+99% boost could prolong reflection trails. This uses the existing TAA root word
+for an explicit history mode, with unchanged image storage and texture reads.
+SSR-off retention, the checked static integral, FSR and MetalFX remain unchanged.
+The [cap evidence](../assets/verification/renderer-features/ssr-taa-settling-cap.txt)
+shows faster convergence and increased shimmer before convergence on Metal.
+Current reconstruction
+continues during settling.
 The selected producer's CPU metadata owns the counter; failed history/input
 equality resets it. SSR history pool ownership and image count stay fixed;
 [ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) owns the separate

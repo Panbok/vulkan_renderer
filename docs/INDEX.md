@@ -99,7 +99,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [034](adr/034-offline-cooked-font-artifacts.md) | Cooked MTSDF font artifacts | implemented |
 | [035](adr/035-canonical-mtsdf-screen-pixel-range-shading.md) | Derivative-based MTSDF coverage | implemented |
 | [036](adr/036-dpi-derived-ui-text-scale.md) | Window content scale before UI layout | implemented |
-| [037](adr/037-portable-same-resolution-temporal-antialiasing.md) | Portable temporal antialiasing, motion-aware coverage and checked static accumulation | partial |
+| [037](adr/037-portable-same-resolution-temporal-antialiasing.md) | Portable temporal antialiasing, bounded SSR-settling retention and checked static accumulation | partial |
 | [038](adr/038-sh-l2-diffuse-irradiance.md) | GPU-resident L2 diffuse response | implemented |
 | [039](adr/039-metal-internal-render-scale.md) | Separate internal Scene and physical output extents | implemented |
 | [040](adr/040-metalfx-temporal-dynamic-resolution.md) | MetalFX reconstruction, stationary accumulation and completed-GPU scale control | implemented |

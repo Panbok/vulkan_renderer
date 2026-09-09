@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "id": "local.ssgi.bistro_remaining_flicker",
+  "suite": "local",
+  "description": "User remaining-flicker camera; pre-settle SSGI-on TAA stability control for ghost corrections.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    1783,
+    1093
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": {
+    "warmup": 32,
+    "measure": 12
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "render_scale": 0.8,
+    "upscaler": "spatial",
+    "taa_enabled": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 8,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": false,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "image_sharpness": 0,
+    "ssr_enabled": true,
+    "ssgi_enabled": true
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -10.6416674,
+      2.79686046,
+      8.34293842
+    ],
+    "yaw": -142.61412,
+    "pitch": 16.1631145,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "hdr_post_transmission",
+        "ssr_reflection",
+        "motion_vectors"
+      ]
+    },
+    {
+      "at_frame": 1,
+      "channels": [
+        "final_color",
+        "hdr_post_transmission",
+        "ssr_reflection",
+        "motion_vectors"
+      ]
+    },
+    {
+      "at_frame": 4,
+      "channels": [
+        "final_color",
+        "hdr_post_transmission",
+        "ssr_reflection",
+        "motion_vectors"
+      ]
+    },
+    {
+      "at_frame": 8,
+      "channels": [
+        "final_color",
+        "hdr_post_transmission",
+        "ssr_reflection",
+        "motion_vectors"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "stat": "min",
+      "min": 1,
+      "metric": "draw.world.opaque_draws"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "packet.publication_omitted_candidates"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "visibility.gbuffer.resolve_invalid"
+    }
+  ]
+}

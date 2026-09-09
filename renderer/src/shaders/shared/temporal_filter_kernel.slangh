@@ -1,3 +1,14 @@
+#ifndef VKR_TEMPORAL_CONTRACT_SLANGH
+#include "temporal_contract.slangh"
+#endif
+
+// Recursive SSR radiance must settle before the stationary retention boost.
+float vkr_temporal_history_retention(bool stationary_surface, uint scene_history_mode)
+{
+    return stationary_surface && scene_history_mode != VKR_TEMPORAL_HISTORY_SSR_SETTLING
+               ? 0.99f : 0.9f;
+}
+
 // Two complete 64-phase GTAO noise cycles, also divisible by raster jitter's
 // eight phases. Verified unchanged scenes retain the completed integral.
 #define VKR_TEMPORAL_STATIC_SAMPLE_COUNT 128.0f
