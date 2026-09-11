@@ -17,7 +17,9 @@ target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats PRIVATE 
 if(APPLE)
     target_link_libraries(vkr_runtime PRIVATE "-framework Cocoa" "-framework GameController")
 elseif(WIN32)
-    target_link_libraries(vkr_runtime PRIVATE Xinput dxgi)
+    # The HDR display query references IID_IDXGIFactory1/IID_IDXGIOutput6, whose
+    # definitions live in dxguid, not in the dxgi import library.
+    target_link_libraries(vkr_runtime PRIVATE Xinput dxgi dxguid)
 endif()
 
 # Demo controls and presentation policy are optional consumers of the runtime.

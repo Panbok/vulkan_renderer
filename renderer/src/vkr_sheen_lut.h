@@ -29,8 +29,14 @@
  * {mixture fraction A, relative reserve, absolute reserve, E normalization};
  * table 3 stores mixture fraction B in R and zero in GBA.
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern const uint16_t
     vkr_sheen_energy_lut_pixels[VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT];
 extern const uint16_t vkr_sheen_ltc_lut_pixels[VKR_SHEEN_LTC_LUT_TABLE_COUNT]
                                             [VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT *
                                              VKR_SHEEN_LTC_LUT_CHANNEL_COUNT];
+#ifdef __cplusplus
+}
+#endif

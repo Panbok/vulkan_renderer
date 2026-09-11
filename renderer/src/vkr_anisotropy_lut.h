@@ -36,14 +36,14 @@
  * (F0*rectangle_A + F90*rectangle_B) / mass, then the GGX energy scale.
  * Existing isotropic tables remain authoritative when strength is zero.
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern const uint16_t
     vkr_anisotropy_lut_pixels[VKR_ANISOTROPY_LUT_TABLE_COUNT]
                              [VKR_ANISOTROPY_LUT_TABLE_TEXEL_COUNT *
                               VKR_ANISOTROPY_LUT_CHANNEL_COUNT];
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 /* Caller supplies finite material-domain values and first-quadrant azimuth. */
 void vkr_anisotropy_dfg_sample(float no_v, float roughness, float strength,
                                float azimuth, float out_ab[2]);

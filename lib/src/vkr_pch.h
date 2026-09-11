@@ -36,6 +36,12 @@
 
 // clang-format off
 #if defined(PLATFORM_WINDOWS)
+// windows.h defines `min`/`max` function-like macros that break every C++ use
+// of std::min, std::max, and std::numeric_limits<T>::min(). This header is the
+// project's only include site for windows.h, so suppress them here.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <windowsx.h>
 #include <io.h>
