@@ -207,3 +207,11 @@ bool8_t vkr_json_get_string(VkrJsonReader *reader, const char *field_name,
  */
 bool8_t vkr_json_get_bool(VkrJsonReader *reader, const char *field_name,
                           bool8_t *out_value);
+
+/** Parse a JSON string into owned, null-terminated UTF-8. Reject malformed
+ * escapes, unpaired surrogates, noncanonical UTF-8 and embedded NUL. The caller
+ * releases length + 1 bytes with STRING tag or its allocator's enclosing scope.
+ * Failure leaves the reader position unchanged and output empty. */
+bool8_t vkr_json_parse_string_decoded(VkrJsonReader *reader,
+                                      VkrAllocator *allocator,
+                                      String8 *out_value);

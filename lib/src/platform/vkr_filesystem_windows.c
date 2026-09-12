@@ -4,10 +4,89 @@
 
 #include "core/logger.h"
 
+#include <wchar.h>
+
+#define VKR_WINDOWS_PATH_WCHARS 32768u
+
+/* Native conversion is bounded cold-path stack storage. No path bytes or
+ * platform buffer escape an operation. Normalize before adding the long-path
+ * prefix because Win32 extended paths do not interpret dot components. */
+static bool8_t fs_windows_path(const FilePath *path,
+                               wchar_t output[VKR_WINDOWS_PATH_WCHARS]) {
+  if (!path || !path->path.str || !path->path.length ||
+      path->path.length > INT_MAX ||
+      memchr(path->path.str, 0, path->path.length)) {
+    return false_v;
+  }
+  wchar_t input[VKR_WINDOWS_PATH_WCHARS];
+  int32_t length = MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)path->path.str,
+      (int32_t)path->path.length, input, VKR_WINDOWS_PATH_WCHARS - 1);
+  if (length <= 0) {
+    return false_v;
+  }
+  input[length] = 0;
+  for (int32_t i = 0; i < length; ++i) {
+    if (input[i] == L'/') {
+      input[i] = L'\\';
+    }
+  }
+  if (length >= 4 && !wcsncmp(input, L"\\\\.\\", 4)) {
+    return false_v;
+  }
+  if (length >= 8 && !wcsncmp(input, L"\\\\?\\UNC\\", 8)) {
+    MemCopy(input + 2, input + 8, ((uint64_t)length - 8 + 1) * sizeof(wchar_t));
+    input[0] = L'\\';
+    input[1] = L'\\';
+  } else if (length >= 4 && !wcsncmp(input, L"\\\\?\\", 4)) {
+    if (length < 7 || input[5] != L':' || input[6] != L'\\') {
+      return false_v;
+    }
+    MemCopy(input, input + 4, ((uint64_t)length - 4 + 1) * sizeof(wchar_t));
+  }
+  DWORD used =
+      GetFullPathNameW(input, VKR_WINDOWS_PATH_WCHARS - 8, output + 8, NULL);
+  if (!used || used >= VKR_WINDOWS_PATH_WCHARS - 8) {
+    return false_v;
+  }
+  if (output[8] == L'\\' && output[9] == L'\\') {
+    MemCopy(output + 8, output + 10,
+            ((uint64_t)used - 2 + 1) * sizeof(wchar_t));
+    MemCopy(output, L"\\\\?\\UNC\\", 8 * sizeof(wchar_t));
+  } else {
+    if (used < 3 || output[9] != L':' || output[10] != L'\\') {
+      return false_v;
+    }
+    MemCopy(output + 4, output + 8, ((uint64_t)used + 1) * sizeof(wchar_t));
+    MemCopy(output, L"\\\\?\\", 4 * sizeof(wchar_t));
+  }
+  return true_v;
+}
+
+static FileError fs_windows_error(DWORD error) {
+  switch (error) {
+  case ERROR_FILE_NOT_FOUND:
+  case ERROR_PATH_NOT_FOUND:
+    return FILE_ERROR_NOT_FOUND;
+  case ERROR_ACCESS_DENIED:
+  case ERROR_SHARING_VIOLATION:
+    return FILE_ERROR_ACCESS_DENIED;
+  case ERROR_ALREADY_EXISTS:
+  case ERROR_FILE_EXISTS:
+    return FILE_ERROR_ALREADY_EXISTS;
+  case ERROR_INVALID_NAME:
+  case ERROR_FILENAME_EXCED_RANGE:
+    return FILE_ERROR_INVALID_PATH;
+  default:
+    return FILE_ERROR_IO_ERROR;
+  }
+}
+
 vkr_internal String8 fs_string_duplicate(VkrAllocator *allocator,
                                          const String8 *src) {
-  if (!src || !src->str || src->length == 0)
+  if (!src || !src->str || src->length == 0) {
     return (String8){0};
+  }
   uint8_t *mem = vkr_allocator_alloc(allocator, src->length + 1,
                                      VKR_ALLOCATOR_MEMORY_TAG_STRING);
   MemCopy(mem, src->str, src->length);
@@ -43,8 +122,9 @@ FilePath file_path_create(const char *path, VkrAllocator *allocator,
 }
 
 String8 file_path_get_directory(VkrAllocator *allocator, String8 path) {
-  if (!path.str || path.length == 0)
+  if (!path.str || path.length == 0) {
     return (String8){0};
+  }
   uint64_t last_slash = path.length;
   for (uint64_t i = path.length; i > 0; --i) {
     if (path.str[i - 1] == '/' || path.str[i - 1] == '\\') {
@@ -52,15 +132,17 @@ String8 file_path_get_directory(VkrAllocator *allocator, String8 path) {
       break;
     }
   }
-  if (last_slash == path.length)
+  if (last_slash == path.length) {
     return (String8){0};
+  }
   String8 dir = {.str = path.str, .length = last_slash};
   return fs_string_duplicate(allocator, &dir);
 }
 
 String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
-  if (!dir.str || dir.length == 0)
+  if (!dir.str || dir.length == 0) {
     return fs_string_duplicate(allocator, &file);
+  }
   char last = (char)dir.str[dir.length - 1];
   bool8_t needs_sep = (last != '/' && last != '\\');
   uint64_t len = dir.length + (needs_sep ? 1 : 0) + file.length;
@@ -70,195 +152,184 @@ String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
   uint64_t offset = 0;
   MemCopy(buf, dir.str, dir.length);
   offset += dir.length;
-  if (needs_sep)
+  if (needs_sep) {
     buf[offset++] = '\\';
+  }
   MemCopy(buf + offset, file.str, file.length);
   buf[len] = '\0';
   return (String8){.str = buf, .length = len};
 }
 
 bool8_t file_exists(const FilePath *path) {
-  DWORD dwAttrib = GetFileAttributesA((char *)path->path.str);
-  return (dwAttrib != INVALID_FILE_ATTRIBUTES);
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  return fs_windows_path(path, native) &&
+         GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES;
 }
 
 FileError file_stats(const FilePath *path, FileStats *out_stats) {
-  WIN32_FILE_ATTRIBUTE_DATA data;
-  if (GetFileAttributesExA((char *)path->path.str, GetFileExInfoStandard,
-                           &data)) {
-    LARGE_INTEGER size;
-    size.HighPart = data.nFileSizeHigh;
-    size.LowPart = data.nFileSizeLow;
-    out_stats->size = (uint64_t)size.QuadPart;
-    ULARGE_INTEGER ull;
-    ull.LowPart = data.ftLastWriteTime.dwLowDateTime;
-    ull.HighPart = data.ftLastWriteTime.dwHighDateTime;
-    out_stats->last_modified = (ull.QuadPart / 10000000ULL) - 11644473600ULL;
-    return FILE_ERROR_NONE;
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!out_stats || !fs_windows_path(path, native)) {
+    return FILE_ERROR_INVALID_PATH;
   }
-  return FILE_ERROR_NOT_FOUND;
+  WIN32_FILE_ATTRIBUTE_DATA data;
+  if (!GetFileAttributesExW(native, GetFileExInfoStandard, &data)) {
+    return fs_windows_error(GetLastError());
+  }
+  LARGE_INTEGER size;
+  size.HighPart = data.nFileSizeHigh;
+  size.LowPart = data.nFileSizeLow;
+  out_stats->size = (uint64_t)size.QuadPart;
+  ULARGE_INTEGER time;
+  time.LowPart = data.ftLastWriteTime.dwLowDateTime;
+  time.HighPart = data.ftLastWriteTime.dwHighDateTime;
+  out_stats->last_modified = (time.QuadPart / 10000000ULL) - 11644473600ULL;
+  return FILE_ERROR_NONE;
 }
 
 bool8_t file_create_directory(const FilePath *path) {
-  if (CreateDirectoryA((char *)path->path.str, NULL))
-    return true_v;
-  if (GetLastError() != ERROR_ALREADY_EXISTS)
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!fs_windows_path(path, native)) {
     return false_v;
-  const DWORD attributes = GetFileAttributesA((const char *)path->path.str);
+  }
+  if (CreateDirectoryW(native, NULL)) {
+    return true_v;
+  }
+  if (GetLastError() != ERROR_ALREADY_EXISTS) {
+    return false_v;
+  }
+  DWORD attributes = GetFileAttributesW(native);
   return attributes != INVALID_FILE_ATTRIBUTES &&
          (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 FileError file_create_directory_exclusive(const FilePath *path) {
-  if (!path || !path->path.str) {
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!fs_windows_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
-  if (CreateDirectoryA((char *)path->path.str, NULL)) {
-    return FILE_ERROR_NONE;
-  }
-  return GetLastError() == ERROR_ALREADY_EXISTS ? FILE_ERROR_ALREADY_EXISTS
-                                                : FILE_ERROR_IO_ERROR;
+  return CreateDirectoryW(native, NULL) ? FILE_ERROR_NONE
+                                        : fs_windows_error(GetLastError());
 }
 
 FileError file_path_resolve(const FilePath *path, char *out_path,
                             uint64_t out_capacity) {
-  if (!path || !path->path.str || !out_path || out_capacity == 0u ||
-      out_capacity > UINT32_MAX) {
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!out_path || !out_capacity || out_capacity > INT_MAX ||
+      !fs_windows_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
+  out_path[0] = 0;
   HANDLE handle =
-      CreateFileA((const char *)path->path.str, FILE_READ_ATTRIBUTES,
+      CreateFileW(native, FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
                   OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
   if (handle == INVALID_HANDLE_VALUE) {
-    return GetLastError() == ERROR_FILE_NOT_FOUND ? FILE_ERROR_NOT_FOUND
-                                                  : FILE_ERROR_IO_ERROR;
+    return fs_windows_error(GetLastError());
   }
-  char resolved[4096];
-  const DWORD length =
-      GetFinalPathNameByHandleA(handle, resolved, sizeof(resolved),
+  wchar_t resolved[VKR_WINDOWS_PATH_WCHARS];
+  DWORD length =
+      GetFinalPathNameByHandleW(handle, resolved, ArrayCount(resolved),
                                 FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
   CloseHandle(handle);
-  if (length == 0u || length >= sizeof(resolved)) {
-    return FILE_ERROR_IO_ERROR;
-  }
-  const char *source = resolved;
-  char normalized[4096];
-  if (string_n_equals(source, "\\\\?\\UNC\\", 8u)) {
-    const int32_t written =
-        string_format(normalized, sizeof(normalized), "\\\\%s", source + 8u);
-    if (written < 0 || (uint64_t)written >= sizeof(normalized)) {
-      return FILE_ERROR_INVALID_PATH;
-    }
-    source = normalized;
-  } else if (string_n_equals(source, "\\\\?\\", 4u)) {
-    source += 4u;
-  }
-  const uint64_t normalized_length = string_length(source);
-  if (normalized_length + 1u > out_capacity) {
+  if (!length || length >= ArrayCount(resolved)) {
     return FILE_ERROR_INVALID_PATH;
   }
-  MemCopy(out_path, source, normalized_length + 1u);
-  return FILE_ERROR_NONE;
+  const wchar_t *source = resolved;
+  if (length >= 8 && !wcsncmp(source, L"\\\\?\\UNC\\", 8)) {
+    resolved[6] = L'\\';
+    source += 6;
+  } else if (length >= 4 && !wcsncmp(source, L"\\\\?\\", 4)) {
+    source += 4;
+  }
+  return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, source, -1,
+                             out_path, (int32_t)out_capacity, NULL, NULL) > 0
+             ? FILE_ERROR_NONE
+             : FILE_ERROR_INVALID_PATH;
 }
 
 bool8_t file_path_equals(const char *lhs, const char *rhs) {
   if (!lhs || !rhs) {
     return false_v;
   }
-  const uint64_t lhs_length = string_length(lhs);
-  return lhs_length == string_length(rhs) &&
-         string_n_equalsi(lhs, rhs, lhs_length);
+  FilePath left = {
+      .path = string8_create_from_cstr((const uint8_t *)lhs, strlen(lhs))};
+  FilePath right = {
+      .path = string8_create_from_cstr((const uint8_t *)rhs, strlen(rhs))};
+  wchar_t a[VKR_WINDOWS_PATH_WCHARS];
+  wchar_t b[VKR_WINDOWS_PATH_WCHARS];
+  return fs_windows_path(&left, a) && fs_windows_path(&right, b) &&
+         CompareStringOrdinal(a, -1, b, -1, TRUE) == CSTR_EQUAL;
 }
 
 bool8_t file_path_starts_with(const char *path, const char *prefix) {
-  return path && prefix &&
-         string_n_equalsi(path, prefix, string_length(prefix));
+  if (!path || !prefix) {
+    return false_v;
+  }
+  FilePath full = {
+      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path))};
+  FilePath start = {.path = string8_create_from_cstr((const uint8_t *)prefix,
+                                                     strlen(prefix))};
+  wchar_t a[VKR_WINDOWS_PATH_WCHARS];
+  wchar_t b[VKR_WINDOWS_PATH_WCHARS];
+  if (!fs_windows_path(&full, a) || !fs_windows_path(&start, b)) {
+    return false_v;
+  }
+  size_t length = wcslen(b);
+  return wcslen(a) >= length &&
+         CompareStringOrdinal(a, (int32_t)length, b, (int32_t)length, TRUE) ==
+             CSTR_EQUAL;
 }
 
 bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
-  assert_log(allocator != NULL, "allocator is NULL");
-  assert_log(path != NULL, "path is NULL");
-  assert_log(path->str != NULL, "path string is NULL");
-  assert_log(path->length > 0, "path length is 0");
-
-  VkrAllocatorScope scope = vkr_allocator_begin_scope(allocator);
-  if (!vkr_allocator_scope_is_valid(&scope))
-    return false_v;
-
-  char *buffer = (char *)vkr_allocator_alloc(allocator, path->length + 1,
-                                             VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!buffer) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  (void)allocator;
+  if (!path) {
     return false_v;
   }
-  MemCopy(buffer, path->str, (size_t)path->length);
-  buffer[path->length] = '\0';
-
-  const char sep = '\\';
-
-  for (uint64_t i = 0; i < path->length; ++i) {
-    char c = buffer[i];
-    bool8_t is_separator = (c == '/' || c == '\\');
-    if (!is_separator)
-      continue;
-
-    if (i == 0) {
-      buffer[i] = sep;
-      continue;
-    }
-    if (i > 0 && buffer[i - 1] == ':') {
-      buffer[i] = sep;
-      continue;
-    }
-
-    char saved = buffer[i];
-    buffer[i] = '\0';
-
-    if (buffer[0] != '\0') {
-      String8 path_str = string8_create_from_cstr((const uint8_t *)buffer,
-                                                  string_length(buffer));
-      FilePathType path_type = FILE_PATH_TYPE_RELATIVE;
-      if (buffer[0] == '/' || buffer[0] == '\\' ||
-          (string_length(buffer) >= 3 && buffer[1] == ':' &&
-           (buffer[2] == '/' || buffer[2] == '\\'))) {
-        path_type = FILE_PATH_TYPE_ABSOLUTE;
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  FilePath input = {.path = *path};
+  if (!fs_windows_path(&input, native)) {
+    return false_v;
+  }
+  size_t start = 7; // \\?\C:\ drive root
+  if (!wcsncmp(native, L"\\\\?\\UNC\\", 8)) {
+    start = 8;
+    for (uint32_t component = 0; component < 2; ++component) {
+      while (native[start] && native[start] != L'\\') {
+        ++start;
       }
-
-      FilePath file_path = {.path = path_str, .type = path_type};
-      if (!file_create_directory(&file_path)) {
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      if (native[start]) {
+        ++start;
+      }
+    }
+  }
+  for (size_t i = start;; ++i) {
+    wchar_t saved = native[i];
+    if (saved != L'\\' && saved != 0) {
+      continue;
+    }
+    native[i] = 0;
+    if (!CreateDirectoryW(native, NULL)) {
+      DWORD error = GetLastError();
+      DWORD attributes = GetFileAttributesW(native);
+      if (error != ERROR_ALREADY_EXISTS ||
+          attributes == INVALID_FILE_ATTRIBUTES ||
+          !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
         return false_v;
       }
     }
-    buffer[i] = sep;
-  }
-
-  uint64_t final_len = string_length(buffer);
-  if (final_len > 1 &&
-      (buffer[final_len - 1] == '/' || buffer[final_len - 1] == '\\')) {
-    if (!(final_len == 3 && buffer[1] == ':')) {
-      buffer[final_len - 1] = '\0';
+    native[i] = saved;
+    if (!saved) {
+      break;
     }
   }
-
-  String8 final_path_str =
-      string8_create_from_cstr((const uint8_t *)buffer, string_length(buffer));
-  FilePathType final_path_type = FILE_PATH_TYPE_RELATIVE;
-  if (buffer[0] == '/' || buffer[0] == '\\' ||
-      (string_length(buffer) >= 3 && buffer[1] == ':' &&
-       (buffer[2] == '/' || buffer[2] == '\\'))) {
-    final_path_type = FILE_PATH_TYPE_ABSOLUTE;
-  }
-  FilePath final_file_path = {.path = final_path_str, .type = final_path_type};
-
-  bool8_t result = file_create_directory(&final_file_path);
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  return result;
+  return true_v;
 }
 
 FileError file_open(const FilePath *path, FileMode mode,
                     FileHandle *out_handle) {
+  if (!path || !path->path.str || !path->path.length || !out_handle) {
+    return FILE_ERROR_INVALID_PATH;
+  }
   DWORD access = 0;
   DWORD share = FILE_SHARE_READ;
   DWORD disposition = OPEN_EXISTING;
@@ -275,10 +346,12 @@ FileError file_open(const FilePath *path, FileMode mode,
     return FILE_ERROR_INVALID_MODE;
   }
 
-  if (has_read)
+  if (has_read) {
     access |= GENERIC_READ;
-  if (has_write)
+  }
+  if (has_write) {
     access |= GENERIC_WRITE;
+  }
 
   if (has_exclusive) {
     disposition = CREATE_NEW;
@@ -297,13 +370,14 @@ FileError file_open(const FilePath *path, FileMode mode,
     disposition = OPEN_EXISTING;
   }
 
-  HANDLE hFile = CreateFileA((char *)path->path.str, access, share, NULL,
-                             disposition, flags, NULL);
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!fs_windows_path(path, native)) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  HANDLE hFile =
+      CreateFileW(native, access, share, NULL, disposition, flags, NULL);
   if (hFile == INVALID_HANDLE_VALUE) {
-    const DWORD error = GetLastError();
-    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS)
-      return FILE_ERROR_ALREADY_EXISTS;
-    return FILE_ERROR_OPEN_FAILED;
+    return fs_windows_error(GetLastError());
   }
 
   if (has_append) {
@@ -337,8 +411,9 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
     DWORD chunk = (DWORD)(remaining > 0xFFFFFFFF ? 0xFFFFFFFF : remaining);
     DWORD written = 0;
     if (!WriteFile((HANDLE)handle->handle, current, chunk, &written, NULL) ||
-        written == 0)
+        written == 0) {
       return FILE_ERROR_IO_ERROR;
+    }
     *bytes_written += written;
     current += written;
     remaining -= written;
@@ -353,13 +428,15 @@ FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
   uint8_t *buffer =
       size ? vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE)
            : NULL;
-  if (!buffer && size > 0u)
+  if (!buffer && size > 0u) {
     return FILE_ERROR_IO_ERROR;
+  }
   FileError error = file_read_into(handle, buffer, size, bytes_read);
   if (error != FILE_ERROR_NONE) {
-    if (buffer)
+    if (buffer) {
       vkr_allocator_free(allocator, buffer, size,
                          VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    }
     *bytes_read = 0;
     return error;
   }
@@ -379,11 +456,13 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
   while (remaining > 0) {
     DWORD chunk = (DWORD)(remaining > 0xFFFFFFFF ? 0xFFFFFFFF : remaining);
     DWORD read_len = 0;
-    if (!ReadFile((HANDLE)handle->handle, current, chunk, &read_len, NULL))
+    if (!ReadFile((HANDLE)handle->handle, current, chunk, &read_len, NULL)) {
       return FILE_ERROR_IO_ERROR;
+    }
     *bytes_read += read_len;
-    if (read_len < chunk)
+    if (read_len < chunk) {
       break; // EOF or partial read
+    }
     current += read_len;
     remaining -= read_len;
   }
@@ -391,16 +470,18 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
 }
 
 static FileError fs_remaining_size(FileHandle *handle, uint64_t *out_size) {
-  if (!handle || !handle->handle)
+  if (!handle || !handle->handle) {
     return FILE_ERROR_INVALID_HANDLE;
+  }
   const HANDLE file = (HANDLE)handle->handle;
   LARGE_INTEGER size;
   LARGE_INTEGER position;
   const LARGE_INTEGER zero = {0};
   if (!GetFileSizeEx(file, &size) ||
       !SetFilePointerEx(file, zero, &position, FILE_CURRENT) ||
-      position.QuadPart < 0 || position.QuadPart > size.QuadPart)
+      position.QuadPart < 0 || position.QuadPart > size.QuadPart) {
     return FILE_ERROR_IO_ERROR;
+  }
   *out_size = (uint64_t)(size.QuadPart - position.QuadPart);
   return FILE_ERROR_NONE;
 }
@@ -411,8 +492,9 @@ FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
   *bytes_read = 0;
   uint64_t size = 0;
   FileError error = fs_remaining_size(handle, &size);
-  if (error != FILE_ERROR_NONE)
+  if (error != FILE_ERROR_NONE) {
     return error;
+  }
   error = file_read(handle, allocator, size, bytes_read, out_buffer);
   if (error == FILE_ERROR_NONE && *bytes_read != size) {
     vkr_allocator_free(allocator, *out_buffer, size,
@@ -433,49 +515,48 @@ FileError file_sync(FileHandle *handle) {
 }
 
 FileError file_remove(const FilePath *path) {
-  if (!path || !path->path.str) {
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!fs_windows_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
-  if (DeleteFileA((const char *)path->path.str)) {
-    return FILE_ERROR_NONE;
-  }
-  return GetLastError() == ERROR_FILE_NOT_FOUND ? FILE_ERROR_NOT_FOUND
-                                                : FILE_ERROR_IO_ERROR;
+  return DeleteFileW(native) ? FILE_ERROR_NONE
+                             : fs_windows_error(GetLastError());
 }
 
 FileError file_rename(const FilePath *source, const FilePath *destination,
                       bool8_t overwrite) {
-  if (!source || !source->path.str || !destination || !destination->path.str) {
+  wchar_t from[VKR_WINDOWS_PATH_WCHARS];
+  wchar_t to[VKR_WINDOWS_PATH_WCHARS];
+  if (!fs_windows_path(source, from) || !fs_windows_path(destination, to)) {
     return FILE_ERROR_INVALID_PATH;
   }
   DWORD flags = MOVEFILE_WRITE_THROUGH;
   if (overwrite) {
     flags |= MOVEFILE_REPLACE_EXISTING;
   }
-  if (MoveFileExA((const char *)source->path.str,
-                  (const char *)destination->path.str, flags)) {
-    return FILE_ERROR_NONE;
-  }
-  return GetLastError() == ERROR_ALREADY_EXISTS ? FILE_ERROR_ALREADY_EXISTS
-                                                : FILE_ERROR_IO_ERROR;
+  return MoveFileExW(from, to, flags) ? FILE_ERROR_NONE
+                                      : fs_windows_error(GetLastError());
 }
 
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
                          VkrAllocator *line_allocator, uint64_t max_line_length,
                          String8 *out_line) {
   *out_line = (String8){0};
-  if (!handle || !handle->handle)
+  if (!handle || !handle->handle) {
     return FILE_ERROR_INVALID_HANDLE;
+  }
   HANDLE hFile = (HANDLE)handle->handle;
-  if (max_line_length == 0 || max_line_length == UINT64_MAX)
+  if (max_line_length == 0 || max_line_length == UINT64_MAX) {
     return FILE_ERROR_LINE_TOO_LONG;
+  }
   VkrAllocator *target_alloc = line_allocator ? line_allocator : allocator;
   FileError error = FILE_ERROR_NONE;
 
   uint8_t *result_buf = vkr_allocator_alloc(target_alloc, max_line_length + 1,
                                             VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!result_buf)
+  if (!result_buf) {
     return FILE_ERROR_IO_ERROR;
+  }
 
   char chunk[128];
   uint64_t total_len = 0;
@@ -492,8 +573,9 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
       error = FILE_ERROR_IO_ERROR;
       goto cleanup;
     }
-    if (read_len == 0)
+    if (read_len == 0) {
       break;
+    }
 
     int newline_idx = -1;
     for (DWORD i = 0; i < read_len; i++) {
@@ -542,8 +624,9 @@ cleanup:
 FileError file_write_line(FileHandle *handle, const String8 *text) {
   uint64_t written = 0;
   FileError error = file_write(handle, text->length, text->str, &written);
-  if (error != FILE_ERROR_NONE)
+  if (error != FILE_ERROR_NONE) {
     return error;
+  }
   return file_write(handle, 1, (const uint8_t *)"\n", &written);
 }
 
@@ -552,14 +635,17 @@ FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
   *out_data = (String8){0};
   uint64_t size = 0;
   FileError error = fs_remaining_size(handle, &size);
-  if (error != FILE_ERROR_NONE)
+  if (error != FILE_ERROR_NONE) {
     return error;
-  if (size == UINT64_MAX)
+  }
+  if (size == UINT64_MAX) {
     return FILE_ERROR_IO_ERROR;
+  }
   uint8_t *buffer =
       vkr_allocator_alloc(allocator, size + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!buffer)
+  if (!buffer) {
     return FILE_ERROR_IO_ERROR;
+  }
   uint64_t bytes_read = 0;
   error = file_read_into(handle, buffer, size, &bytes_read);
   if (error != FILE_ERROR_NONE || bytes_read != size) {
@@ -614,13 +700,15 @@ FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
 
-  if (file_open(path, mode, &handle) != FILE_ERROR_NONE)
+  if (file_open(path, mode, &handle) != FILE_ERROR_NONE) {
     return FILE_ERROR_OPEN_FAILED;
+  }
 
   FileError err = file_read_all(&handle, allocator, out_data, out_size);
   file_close(&handle);
-  if (err != FILE_ERROR_NONE)
+  if (err != FILE_ERROR_NONE) {
     return err;
+  }
 
   if ((uintptr_t)(*out_data) % 4 != 0) {
     uint8_t *old_buffer = *out_data;

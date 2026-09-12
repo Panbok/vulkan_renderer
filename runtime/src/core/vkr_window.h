@@ -68,6 +68,8 @@ typedef struct VkrWindow {
   VkrAtomicUint64 content_scale_state;
   /** Create the native window without activating or showing it. */
   bool8_t hidden;
+  /** UI-thread opt-in: native close requests wait for resolve_close. */
+  bool8_t defer_close;
 } VkrWindow;
 
 typedef struct VkrWindowPixelSize {
@@ -144,6 +146,13 @@ void vkr_window_destroy(VkrWindow *window);
  */
 bool8_t vkr_window_update(VkrWindow *window);
 
+/** UI-thread only. Deferred native requests keep the window and surface alive
+ * until the caller resolves them. Repeated requests coalesce. */
+bool8_t vkr_window_close_requested(const VkrWindow *window);
+/** Clear a pending request. Confirmation dispatches WINDOW_CLOSE and makes the
+ * next update return false; normal teardown releases the native window. */
+void vkr_window_resolve_close(VkrWindow *window, bool8_t confirm);
+
 /**
  * @brief Gets the physical output-pixel size of the native client area.
  * @param window Pointer to the `Window` to query. Must not be NULL.
@@ -189,6 +198,9 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height);
  * @return Pointer to the CAMetalLayer, or NULL if not available.
  */
 void *vkr_window_get_metal_layer(VkrWindow *window);
+
+/** Borrowed NSWindow for platform integrations; UI thread only. */
+void *vkr_window_get_cocoa_handle(VkrWindow *window);
 #endif
 
 #if defined(PLATFORM_WINDOWS)
@@ -209,6 +221,7 @@ void *vkr_window_get_win32_instance(VkrWindow *window);
 
 /**
  * @brief Sets the mouse capture state.
+ * Repeating the current state does not hide, center or restore the cursor.
  * @param window Pointer to the `Window` to modify.
  * @param capture `true` if the mouse should be captured, `false` otherwise.
  * @note This function is platform-specific and may not be available on all

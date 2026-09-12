@@ -84,11 +84,17 @@ String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
 }
 
 bool8_t file_exists(const FilePath *path) {
+  if (!path || !path->path.str || !path->path.length) {
+    return false_v;
+  }
   struct stat buffer;
   return stat((char *)path->path.str, &buffer) == 0;
 }
 
 FileError file_stats(const FilePath *path, FileStats *out_stats) {
+  if (!path || !path->path.str || !path->path.length || !out_stats) {
+    return FILE_ERROR_INVALID_PATH;
+  }
   struct stat buffer;
   if (stat((char *)path->path.str, &buffer) == 0) {
     out_stats->size = (uint64_t)buffer.st_size;
@@ -208,6 +214,9 @@ bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
 
 FileError file_open(const FilePath *path, FileMode mode,
                     FileHandle *out_handle) {
+  if (!path || !path->path.str || !path->path.length || !out_handle) {
+    return FILE_ERROR_INVALID_PATH;
+  }
   int flags = 0;
   mode_t access_mode = 0644;
 
@@ -246,6 +255,12 @@ FileError file_open(const FilePath *path, FileMode mode,
 
   int fd = open((char *)path->path.str, flags, access_mode);
   if (fd == -1) {
+    if (errno == ENOENT || errno == ENOTDIR) {
+      return FILE_ERROR_NOT_FOUND;
+    }
+    if (errno == EACCES || errno == EPERM) {
+      return FILE_ERROR_ACCESS_DENIED;
+    }
     if (errno == EEXIST)
       return FILE_ERROR_ALREADY_EXISTS;
     log_error("Failed to open file '%s': %s", path->path.str, strerror(errno));

@@ -86,6 +86,8 @@ VkrTime vkr_platform_get_local_time();
 bool8_t vkr_platform_get_utc_time(VkrTime *out_time);
 
 uint32_t vkr_platform_get_process_id(void);
+/** Canonical UTF-8 executable path, including a terminator, independent of CWD. */
+bool8_t vkr_platform_executable_path(char *path, uint32_t capacity);
 
 bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
 

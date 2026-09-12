@@ -5,6 +5,8 @@
 #include "containers/str.h"
 
 #include <mach/mach.h>
+#include <mach-o/dyld.h>
+#include <limits.h>
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/resource.h>
@@ -12,6 +14,22 @@
 #include <sys/wait.h>
 
 static mach_timebase_info_data_t timebase_info;
+
+bool8_t vkr_platform_executable_path(char *path, uint32_t capacity) {
+  if (!path || capacity == 0u) {
+    return false_v;
+  }
+  path[0] = '\0';
+  char executable[PATH_MAX];
+  uint32_t size = sizeof(executable);
+  char canonical[PATH_MAX];
+  if (_NSGetExecutablePath(executable, &size) != 0 ||
+      !realpath(executable, canonical) || strlen(canonical) >= capacity) {
+    return false_v;
+  }
+  MemCopy(path, canonical, strlen(canonical) + 1u);
+  return true_v;
+}
 static bool32_t timebase_initialized = false;
 
 bool8_t vkr_platform_init() {

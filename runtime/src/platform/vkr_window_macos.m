@@ -64,6 +64,7 @@ typedef struct PlatformState {
   ContentView *view;
   CAMetalLayer *layer;
   bool8_t quit_flagged;
+  bool8_t close_requested;
   EventManager *event_manager;
   InputState *input_state;
   VkrWindow *owner;
@@ -238,6 +239,10 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (BOOL)windowShouldClose:(id)sender {
+  if (state->owner->defer_close) {
+    state->close_requested = true_v;
+    return NO;
+  }
   state->quit_flagged = true_v;
 
   Event event = {.type = EVENT_TYPE_WINDOW_CLOSE};
@@ -669,11 +674,21 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 @end // ContentView
 
 @interface ApplicationDelegate : NSObject <NSApplicationDelegate> {
+@public
+  PlatformState *state;
 }
 
 @end // ApplicationDelegate
 
 @implementation ApplicationDelegate
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+  if (state && state->owner->defer_close) {
+    state->close_requested = true_v;
+    return NSTerminateCancel;
+  }
+  return NSTerminateNow;
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   // Posting an empty event at start
@@ -727,6 +742,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     window->platform_state = NULL;
     return false_v;
   }
+  MemZero(state, sizeof(*state));
 
   state->app_delegate = nil;
   state->wnd_delegate = nil;
@@ -762,6 +778,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
       vkr_window_destroy(window);
       return false_v;
     }
+    state->app_delegate->state = state;
     [NSApp setDelegate:state->app_delegate];
 
     // Window delegate creation
@@ -843,6 +860,14 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     if (!window->hidden) {
       [NSApp activateIgnoringOtherApps:YES];
       [state->window makeKeyAndOrderFront:nil];
+      if (getenv("VKR_WINDOW_DIAGNOSTICS")) {
+        NSRect frame = [state->window frame];
+        fprintf(stderr, "VKR window pid=%d visible=%d key=%d miniaturized=%d policy=%ld frame=%.0f,%.0f %.0fx%.0f screen=%p\n",
+                getpid(), [state->window isVisible], [state->window isKeyWindow],
+                [state->window isMiniaturized], (long)[NSApp activationPolicy],
+                frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
+                (void *)[state->window screen]);
+      }
     }
 
     event_manager_dispatch(event_manager,
@@ -894,6 +919,24 @@ void vkr_window_destroy(VkrWindow *window) {
   input_shutdown(state->input_state);
   free(state);
   window->platform_state = NULL;
+}
+
+bool8_t vkr_window_close_requested(const VkrWindow *window) {
+  const PlatformState *state = window ? window->platform_state : NULL;
+  return state && state->close_requested;
+}
+
+void vkr_window_resolve_close(VkrWindow *window, bool8_t confirm) {
+  PlatformState *state = window ? window->platform_state : NULL;
+  if (!state || !state->close_requested) {
+    return;
+  }
+  state->close_requested = false_v;
+  if (confirm && !state->quit_flagged) {
+    state->quit_flagged = true_v;
+    Event event = {.type = EVENT_TYPE_WINDOW_CLOSE};
+    event_manager_dispatch(state->event_manager, event);
+  }
 }
 
 bool8_t vkr_window_update(VkrWindow *window) {
@@ -996,6 +1039,14 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
   return true_v;
 }
 
+void *vkr_window_get_cocoa_handle(VkrWindow *window) {
+  if (!window || !window->platform_state) {
+    return NULL;
+  }
+  PlatformState *state = (PlatformState *)window->platform_state;
+  return state->window;
+}
+
 void *vkr_window_get_metal_layer(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
@@ -1009,6 +1060,13 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
   PlatformState *state = (PlatformState *)window->platform_state;
+
+  // Capture is a state transition. Modal UI may request release every frame;
+  // only an actual transition restores the cursor saved on capture entry.
+  capture = capture ? true_v : false_v;
+  if (state->mouse_captured == capture) {
+    return;
+  }
 
   @autoreleasepool {
     if (capture) {

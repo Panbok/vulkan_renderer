@@ -1,8 +1,10 @@
 #include "core/vkr_json_writer.h"
 
 #include "core/vkr_threads.h"
+#include "filesystem/filesystem.h"
 
 #if defined(PLATFORM_WINDOWS)
+#include <fcntl.h>
 #include <io.h>
 #include <process.h>
 #else
@@ -253,12 +255,8 @@ vkr_internal bool8_t vkr_json_writer_escaped(VkrJsonWriter *writer,
       continue;
     }
     if (c < 0x20u || c == 0x7Fu) {
-      const uint8_t sequence[] = {'\\',
-                                  'u',
-                                  '0',
-                                  '0',
-                                  (uint8_t)hex[c >> 4u],
-                                  (uint8_t)hex[c & 0x0Fu]};
+      const uint8_t sequence[] = {
+          '\\', 'u', '0', '0', (uint8_t)hex[c >> 4u], (uint8_t)hex[c & 0x0Fu]};
       if (!vkr_json_writer_emit(writer, sequence, sizeof(sequence))) {
         return false_v;
       }
@@ -381,6 +379,44 @@ vkr_internal bool8_t vkr_json_file_sink(void *context, const uint8_t *data,
   return file && fwrite(data, 1u, (size_t)length, file) == length;
 }
 
+static FilePath vkr_json_file_path(const char *path) {
+  return (FilePath){
+      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+}
+
+static FILE *vkr_json_file_open(const char *path) {
+#if defined(PLATFORM_WINDOWS)
+  FilePath native_path = vkr_json_file_path(path);
+  FileHandle handle = {0};
+  if (file_open(&native_path,
+                FILE_MODE_WRITE | FILE_MODE_CREATE | FILE_MODE_TRUNCATE,
+                &handle) != FILE_ERROR_NONE) {
+    return NULL;
+  }
+  // Transfer the Unicode-aware filesystem handle into the CRT stream. Each
+  // failure releases through the current owner; fclose owns successful streams.
+  int descriptor =
+      _open_osfhandle((intptr_t)handle.handle, _O_WRONLY | _O_BINARY);
+  if (descriptor == -1) {
+    file_close(&handle);
+    return NULL;
+  }
+  FILE *stream = _fdopen(descriptor, "wb");
+  if (!stream) {
+    _close(descriptor);
+  }
+  return stream;
+#else
+  return fopen(path, "wb");
+#endif
+}
+
+static void vkr_json_file_remove(const char *path) {
+  FilePath native_path = vkr_json_file_path(path);
+  (void)file_remove(&native_path);
+}
+
 bool8_t vkr_json_file_writer_begin(VkrJsonFileWriter *file_writer,
                                    String8 final_path) {
   if (!file_writer || !final_path.str || final_path.length == 0 ||
@@ -396,20 +432,21 @@ bool8_t vkr_json_file_writer_begin(VkrJsonFileWriter *file_writer,
   MemCopy(file_writer->final_path, final_path.str, final_path.length);
   file_writer->final_path[final_path.length] = '\0';
 #if defined(PLATFORM_WINDOWS)
-  const unsigned long long process_id = (unsigned long long)GetCurrentProcessId();
+  const unsigned long long process_id =
+      (unsigned long long)GetCurrentProcessId();
 #else
   const unsigned long long process_id = (unsigned long long)getpid();
 #endif
   // Process and thread both participate: concurrent runs of the harness may
   // target the same final path, and a temp name they share would corrupt both.
-  const int32_t length = snprintf(
-      file_writer->temp_path, sizeof(file_writer->temp_path), "%s.tmp.%llu.%llu",
-      file_writer->final_path, process_id,
-      (unsigned long long)vkr_thread_current_id());
+  const int32_t length =
+      snprintf(file_writer->temp_path, sizeof(file_writer->temp_path),
+               "%s.tmp.%llu.%llu", file_writer->final_path, process_id,
+               (unsigned long long)vkr_thread_current_id());
   if (length <= 0 || (uint64_t)length >= sizeof(file_writer->temp_path)) {
     return false_v;
   }
-  file_writer->file = fopen(file_writer->temp_path, "wb");
+  file_writer->file = vkr_json_file_open(file_writer->temp_path);
   if (!file_writer->file) {
     return false_v;
   }
@@ -435,21 +472,17 @@ bool8_t vkr_json_file_writer_commit(VkrJsonFileWriter *file_writer) {
   const bool8_t closed = fclose(file_writer->file) == 0;
   file_writer->file = NULL;
   if (!durable || !closed) {
-    remove(file_writer->temp_path);
+    vkr_json_file_remove(file_writer->temp_path);
     file_writer->active = false_v;
     return false_v;
   }
 
-#if defined(PLATFORM_WINDOWS)
+  FilePath source = vkr_json_file_path(file_writer->temp_path);
+  FilePath destination = vkr_json_file_path(file_writer->final_path);
   const bool8_t promoted =
-      MoveFileExA(file_writer->temp_path, file_writer->final_path,
-                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  const bool8_t promoted =
-      rename(file_writer->temp_path, file_writer->final_path) == 0;
-#endif
+      file_rename(&source, &destination, true_v) == FILE_ERROR_NONE;
   if (!promoted) {
-    remove(file_writer->temp_path);
+    vkr_json_file_remove(file_writer->temp_path);
   }
   file_writer->active = false_v;
   return promoted;
@@ -464,7 +497,7 @@ void vkr_json_file_writer_abort(VkrJsonFileWriter *file_writer) {
     file_writer->file = NULL;
   }
   if (file_writer->temp_path[0]) {
-    remove(file_writer->temp_path);
+    vkr_json_file_remove(file_writer->temp_path);
   }
   file_writer->active = false_v;
 }

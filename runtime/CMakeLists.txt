@@ -15,11 +15,11 @@ target_include_directories(vkr_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(vkr_runtime PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
 target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats PRIVATE vkr_ktx_read vkr_image_decode)
 if(APPLE)
-    target_link_libraries(vkr_runtime PRIVATE "-framework Cocoa" "-framework GameController")
+    target_link_libraries(vkr_runtime PRIVATE "-framework Cocoa" "-framework GameController" "-framework UniformTypeIdentifiers")
 elseif(WIN32)
     # The HDR display query references IID_IDXGIFactory1/IID_IDXGIOutput6, whose
     # definitions live in dxguid, not in the dxgi import library.
-    target_link_libraries(vkr_runtime PRIVATE Xinput dxgi dxguid)
+    target_link_libraries(vkr_runtime PRIVATE Xinput dxgi dxguid ole32 shell32 uuid)
 endif()
 
 # Demo controls and presentation policy are optional consumers of the runtime.

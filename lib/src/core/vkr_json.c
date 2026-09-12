@@ -328,3 +328,166 @@ bool8_t vkr_json_get_bool(VkrJsonReader *reader, const char *field_name,
   reader->pos = saved_pos;
   return false_v;
 }
+
+static bool8_t json_decode_hex4(const uint8_t *bytes, uint32_t *value) {
+  *value = 0;
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint8_t c = bytes[i];
+    uint32_t digit;
+    if (c >= '0' && c <= '9') {
+      digit = c - '0';
+    } else if (c >= 'a' && c <= 'f') {
+      digit = c - 'a' + 10;
+    } else if (c >= 'A' && c <= 'F') {
+      digit = c - 'A' + 10;
+    } else {
+      return false_v;
+    }
+    *value = (*value << 4) | digit;
+  }
+  return true_v;
+}
+
+bool8_t vkr_json_parse_string_decoded(VkrJsonReader *reader,
+                                      VkrAllocator *allocator,
+                                      String8 *out_value) {
+  if (!reader || !allocator || !out_value) {
+    return false_v;
+  }
+  *out_value = (String8){0};
+  VkrJsonReader cursor = *reader;
+  String8 raw = {0};
+  if (!vkr_json_parse_string(&cursor, &raw) || raw.length == UINT64_MAX) {
+    return false_v;
+  }
+  uint8_t *buffer = vkr_allocator_alloc(allocator, raw.length + 1,
+                                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!buffer) {
+    return false_v;
+  }
+  uint64_t used = 0;
+  for (uint64_t i = 0; i < raw.length;) {
+    uint32_t codepoint = raw.str[i++];
+    if (codepoint < 0x20) {
+      goto invalid;
+    }
+    if (codepoint == '\\') {
+      if (i >= raw.length) {
+        goto invalid;
+      }
+      codepoint = raw.str[i++];
+      switch (codepoint) {
+      case '"':
+      case '\\':
+      case '/':
+        break;
+      case 'b':
+        codepoint = '\b';
+        break;
+      case 'f':
+        codepoint = '\f';
+        break;
+      case 'n':
+        codepoint = '\n';
+        break;
+      case 'r':
+        codepoint = '\r';
+        break;
+      case 't':
+        codepoint = '\t';
+        break;
+      case 'u':
+        if (raw.length - i < 4 || !json_decode_hex4(raw.str + i, &codepoint)) {
+          goto invalid;
+        }
+        i += 4;
+        if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+          uint32_t low = 0;
+          if (raw.length - i < 6 || raw.str[i] != '\\' ||
+              raw.str[i + 1] != 'u' ||
+              !json_decode_hex4(raw.str + i + 2, &low) || low < 0xdc00 ||
+              low > 0xdfff) {
+            goto invalid;
+          }
+          codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + low - 0xdc00;
+          i += 6;
+        } else if (codepoint >= 0xdc00 && codepoint <= 0xdfff) {
+          goto invalid;
+        }
+        break;
+      default:
+        goto invalid;
+      }
+    } else if (codepoint >= 0x80) {
+      uint32_t remaining;
+      uint32_t minimum;
+      if (codepoint >= 0xc2 && codepoint <= 0xdf) {
+        remaining = 1;
+        minimum = 0x80;
+        codepoint &= 0x1f;
+      } else if (codepoint >= 0xe0 && codepoint <= 0xef) {
+        remaining = 2;
+        minimum = 0x800;
+        codepoint &= 0x0f;
+      } else if (codepoint >= 0xf0 && codepoint <= 0xf4) {
+        remaining = 3;
+        minimum = 0x10000;
+        codepoint &= 7;
+      } else {
+        goto invalid;
+      }
+      if (raw.length - i < remaining) {
+        goto invalid;
+      }
+      for (uint32_t j = 0; j < remaining; ++j) {
+        uint8_t next = raw.str[i++];
+        if ((next & 0xc0) != 0x80) {
+          goto invalid;
+        }
+        codepoint = (codepoint << 6) | (next & 0x3f);
+      }
+      if (codepoint < minimum || codepoint > 0x10ffff ||
+          (codepoint >= 0xd800 && codepoint <= 0xdfff)) {
+        goto invalid;
+      }
+    }
+    if (codepoint == 0) {
+      goto invalid;
+    }
+    if (codepoint < 0x80) {
+      buffer[used++] = (uint8_t)codepoint;
+    } else if (codepoint < 0x800) {
+      buffer[used++] = (uint8_t)(0xc0 | (codepoint >> 6));
+      buffer[used++] = (uint8_t)(0x80 | (codepoint & 0x3f));
+    } else if (codepoint < 0x10000) {
+      buffer[used++] = (uint8_t)(0xe0 | (codepoint >> 12));
+      buffer[used++] = (uint8_t)(0x80 | ((codepoint >> 6) & 0x3f));
+      buffer[used++] = (uint8_t)(0x80 | (codepoint & 0x3f));
+    } else {
+      buffer[used++] = (uint8_t)(0xf0 | (codepoint >> 18));
+      buffer[used++] = (uint8_t)(0x80 | ((codepoint >> 12) & 0x3f));
+      buffer[used++] = (uint8_t)(0x80 | ((codepoint >> 6) & 0x3f));
+      buffer[used++] = (uint8_t)(0x80 | (codepoint & 0x3f));
+    }
+  }
+  buffer[used] = 0;
+  if (used == raw.length) {
+    *out_value = (String8){.str = buffer, .length = used};
+  } else {
+    uint8_t *exact = vkr_allocator_alloc(allocator, used + 1,
+                                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    if (!exact) {
+      goto invalid;
+    }
+    MemCopy(exact, buffer, used + 1);
+    *out_value = (String8){.str = exact, .length = used};
+    vkr_allocator_free(allocator, buffer, raw.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  *reader = cursor;
+  return true_v;
+invalid:
+  vkr_allocator_free(allocator, buffer, raw.length + 1,
+                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  return false_v;
+}

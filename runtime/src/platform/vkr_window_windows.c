@@ -17,6 +17,7 @@ typedef struct PlatformState {
   HINSTANCE instance;
   HWND window;
   bool8_t quit_flagged;
+  bool8_t close_requested;
   EventManager *event_manager;
   InputState *input_state;
   VkrWindow *owner;
@@ -311,6 +312,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     window->platform_state = NULL;
     return false_v;
   }
+  MemZero(state, sizeof(*state));
 
   // Initialize state
   state->instance = GetModuleHandle(NULL);
@@ -452,6 +454,24 @@ void vkr_window_destroy(VkrWindow *window) {
   input_shutdown(state->input_state);
   free(state);
   window->platform_state = NULL;
+}
+
+bool8_t vkr_window_close_requested(const VkrWindow *window) {
+  const PlatformState *state = window ? window->platform_state : NULL;
+  return state && state->close_requested;
+}
+
+void vkr_window_resolve_close(VkrWindow *window, bool8_t confirm) {
+  PlatformState *state = window ? window->platform_state : NULL;
+  if (!state || !state->close_requested) {
+    return;
+  }
+  state->close_requested = false_v;
+  if (confirm && !state->quit_flagged) {
+    state->quit_flagged = true_v;
+    Event event = {.type = EVENT_TYPE_WINDOW_CLOSE};
+    event_manager_dispatch(state->event_manager, event);
+  }
 }
 
 bool8_t vkr_window_update(VkrWindow *window) {
@@ -608,6 +628,13 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
 
   PlatformState *state = (PlatformState *)window->platform_state;
 
+  // Capture is a state transition. Modal UI may request release every frame;
+  // only an actual transition restores the cursor saved on capture entry.
+  capture = capture ? true_v : false_v;
+  if (state->mouse_captured == capture) {
+    return;
+  }
+
   if (capture) {
     state->mouse_captured = true_v;
 
@@ -715,6 +742,10 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
 
   switch (msg) {
   case WM_CLOSE: {
+    if (state->owner->defer_close) {
+      state->close_requested = true_v;
+      return FALSE;
+    }
     state->quit_flagged = true_v;
     Event event = {.type = EVENT_TYPE_WINDOW_CLOSE};
     event_manager_dispatch(state->event_manager, event);

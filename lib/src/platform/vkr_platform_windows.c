@@ -13,6 +13,26 @@
 
 vkr_internal const DWORD vkr_platform_process_stop_wait_ms = 5000u;
 
+bool8_t vkr_platform_executable_path(char *path, uint32_t capacity) {
+  if (!path || capacity == 0u || capacity > INT_MAX) {
+    return false_v;
+  }
+  path[0] = '\0';
+  wchar_t executable[32768];
+  const DWORD length = GetModuleFileNameW(NULL, executable, ArrayCount(executable));
+  if (!length || length >= ArrayCount(executable) ||
+      !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, executable, -1, path,
+                           (int)capacity, NULL, NULL)) {
+    return false_v;
+  }
+  for (char *at = path; *at; ++at) {
+    if (*at == '\\') {
+      *at = '/';
+    }
+  }
+  return true_v;
+}
+
 bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length) {
   if (!buffer || capacity == 0u || !out_length)
