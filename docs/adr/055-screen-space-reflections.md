@@ -258,9 +258,14 @@ capacity remains governed by the approved bound above.
 
 [The reflected-hit record](../../assets/verification/renderer-features/ssr-reflected-hit.txt)
 retains exact commands, report digests, measurements, compiled ABI evidence and
-a screenshot. Native Windows/Vulkan execution and bilateral image comparison
-remain unavailable; the shader domain stays UNALIGNED in ADR-044. Portable
-snapshot payloads remain local pending authorized baseline publication.
+a screenshot. The Windows SSGI investigation found that Vulkan SSR composite
+shared its zeroed-frame-root pattern; the host now fills materials, instances
+and frame constants before that dispatch. Release shader compilation and root
+reflection pass, but the checked-in Vulkan mirror witness still references the
+missing `assets/textures/ssr_black_local.hdr`, while the available Bistro SSR
+case is Metal-pinned. Native Vulkan SSR output and bilateral image comparison
+therefore remain unavailable; the shader domain stays UNALIGNED in ADR-044.
+Portable snapshot payloads remain local pending authorized baseline publication.
 
 Earlier evidence describes superseded correspondence and capture versions.
 The retained [TAA settling cap](../../assets/verification/renderer-features/ssr-taa-settling-cap.txt),

@@ -143,7 +143,7 @@ decisions before dependent implementation.
 | [Deformable scene effects](proposals/deformable-scene-effects.md) | A bounded deformation pilot with shared pass and history inputs. |
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
 | [Graph-owned IBL baking](proposals/graph-owned-ibl-baking.md) | Declare queued bake resources and dependencies in the graph. |
-| [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md) | Pending Windows/Vulkan native, cooker, presentation, temporal, and editor acceptance checks. |
+| [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md) | Active Windows/Vulkan record: native renderer subset executed; bilateral Metal, cooker, HDR/DPI, and manual editor gates remain. |
 | [Static-scene batching](proposals/static-scene-batching.md) | Evaluate static geometry merging against current GPU draw preparation. |
 | [Terrain rendering](proposals/terrain-rendering.md) | Terrain data, tile ownership, LOD, and existing draw-path integration. |
 | [Visibility-buffer MSAA](proposals/visibility-buffer-msaa.md) | Multisample visibility and resolve after a demonstrated quality need. |

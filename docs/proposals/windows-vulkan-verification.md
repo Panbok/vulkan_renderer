@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-11
+updated: 2026-09-12
 authority: proposal
 ---
 
@@ -10,6 +10,56 @@ This checklist records evidence still required on a Windows Vulkan host. The
 ADRs define the feature contracts. A successful build or compiled SPIR-V
 reflection does not prove native Vulkan execution, synchronization, display
 behavior, or Metal/Vulkan pixel parity.
+
+## 2026-09-12 Windows execution record
+
+The runnable native renderer subset now passes on an AMD Radeon RX 6700 XT,
+driver 26.6.3, Vulkan API 1.4.315 and SDK 1.4.357. Debug witnesses loaded
+`VK_LAYER_KHRONOS_validation` with synchronization validation enabled and no
+API or synchronization errors. Reports remain local and non-authoritative
+because the fixes are not yet committed.
+
+| Coverage | Result | Report and SHA-256 |
+| --- | --- | --- |
+| SSGI emission on/off, Release | pass | `20260912T103829.989Z-000bd8` / `6980163ae7bcc5a7cfe9d93c42cbbc26c6154b05ebd448fdc423e2b6eed6dd62`; `20260912T103835.198Z-001187` / `21858b94498b2fe0d265a0ef6b0c0d2a172acef8d45ef8ebb56fa8fa04667ba6` |
+| SSGI Bistro, Release | pass | `20260912T103625.242Z-002637` / `db8d1d6000d6407206037b0f718d145181c0e2e7b55bbe312211767fecc2e93c` |
+| SSGI focused Debug validation | pass | `20260912T111516.304Z-004249` / `8368380187d0358eadf810dfe0b0a1e187db988ade6933ac00da749dc2018ac1` |
+| 2/4/8-image offscreen lifetime, Debug | pass | `20260912T104041.035Z-000492`, `20260912T104101.370Z-0031b3`, `20260912T104206.851Z-000f86` |
+| Hidden-window acquire/present/resize, Debug validation | pass | `20260912T104336.637Z-0001e4` / `301515fafe6df78a381b1933b03bf00dbb195ee406532234aa9245f4124fd78f` |
+| Portable TAA reference and FSR static/motion, Release snapshots | pass | `20260912T104649.504Z-002149`, `20260912T104706.781Z-0022c8`, `20260912T104723.602Z-00356b` |
+| Clearcoat, sheen, anisotropy, thin-sheet diffuse, DoF and motion-blur resize, Debug validation | pass | `20260912T104809.336Z-001bf5` through `20260912T104951.620Z-002541` |
+| Profiled surface diffusion, Release snapshot and Debug resize validation | pass | `20260912T111422.875Z-003ffe` / `ce2ee2896257522f972aa200a9eeae78937ba9ed0be9decc77af81920ad9664b`; `20260912T111336.086Z-003163` / `9457566e5ba9fac63cf042b8e2e87fb041a780293cbfadc7dbb288743e474db9` |
+| Full-feature Bistro texture streaming and 1258x752/866x555 resize, Release / Debug validation | pass | `20260912T115416.259Z-003742` / `b440a48dcd851e1657e8d0355e81b22d473d0bea8b87884c6d7fb94e2b79ddb1`; `20260912T115010.173Z-003268` / `6d02aed7706799c832c5a7b03685d7862c531385bc0ddf19cdb4bc4220f38008` |
+
+The reported SSGI device loss was reproduced before repair. Its Vulkan path
+mixed sampled and storage descriptor indices, AMD lost the device on the
+unannotated variable trace loop, and SSGI/SSR composite allocated zeroed frame
+roots before material access. The corrected path uses typed sampled descriptors,
+an explicit loop policy and fully populated roots. The sweep also exposed and
+fixed the same zeroed-root defect in subsurface gather, plus a publication race:
+the subsurface graph now waits for profile-bank initialization to complete.
+Harness children now fail when rendering records a
+fatal error even if the host closes normally in that frame.
+
+The later Bistro editor run exposed a separate CPU allocation boundary during
+texture streaming. Each new Vulkan image-pool block needs a 47,640-byte
+`VkrGpuMemoryCore` record, but graph resize and texture publication exhausted the
+renderer DMemory's former 64 MiB reserve. The reserve is now 96 MiB while its
+initial 2 MiB commit and GPU completion rules remain unchanged. The retained
+regression case enables FSR 3.1, bloom, GTAO, SSR and SSGI, loads all 632 texture
+assignments, and performs the reported 1258x752 to 866x555 resize round trip. Two
+Release and two validation-enabled Debug runs ended with zero pending, failed or
+demanded-missing assignments, zero omitted publication candidates, empty stderr,
+and no Vulkan API or synchronization diagnostics.
+
+This Windows host cannot complete the checklist's bilateral Metal comparisons,
+HDR-display inspection, multi-DPI monitor transitions or manual editor/Bakery
+UI actions. Those boxes remain open rather than being inferred from Vulkan.
+The original eight-image WSI item also combined incompatible requirements:
+windowed image count is selected by WSI and the harness rejects a forced count.
+The new eight-image witness therefore covers offscreen frame-slot/history
+lifetime; acquire/present/resize remains covered separately by the driver-selected
+three-image hidden-window witness.
 
 ## Build and shader gates
 
@@ -268,14 +318,15 @@ insufficient.
   also requests three images, to cover resize and history invalidation at that
   count.
 
-- [ ] Add and run the matching eight-image Vulkan witness. The repository has
-  four-image and three-image cases, but no checked-in eight-image case yet;
-  this item stays pending until that manifest is added. Exercise startup,
-  repeated acquire/submit/present, resize, history, retained images, and clean
-  shutdown at eight images. Pair it with the existing
+- [x] Add and run the matching eight-image offscreen Vulkan lifetime witness.
+  The checked-in `p21_vulkan_offscreen_8image.case.json` exercises startup,
+  repeated submit, history, retained images and clean shutdown at eight images.
+  Pair it with the existing
   `p21_vulkan_offscreen_2image.case.json` and
-  `p21_vulkan_offscreen_4image.case.json` lifetime witnesses.
-- [ ] Run the hidden-window WSI case under Vulkan validation:
+  `p21_vulkan_offscreen_4image.case.json` lifetime witnesses. A windowed target
+  cannot force eight swapchain images; WSI acquire/present/resize is the next
+  separate item and uses the selected image count.
+- [x] Run the hidden-window WSI case under Vulkan validation:
 
   ```powershell
   .\build_debug\tools\vkr_harness.exe profile `

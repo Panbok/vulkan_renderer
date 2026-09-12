@@ -691,6 +691,24 @@ barycentric normalization sums at `1e-8`, Vulkan at `1e-12`; interpolated tangen
 handedness exactly zero maps to zero on Metal and positive handedness on Vulkan.
 These need a shared edge-case oracle before changing their thresholds or output.
 
+## Windows Vulkan native feature sweep
+
+On 2026-09-12 an AMD Radeon RX 6700 XT, driver 26.6.3 and Vulkan API
+1.4.315 completed focused Debug synchronization-validation resize profiles for
+clearcoat, sheen, anisotropy, thin-sheet diffuse transmission, depth of field,
+motion blur and profiled surface diffusion. Report IDs are
+`20260912T104809.336Z-001bf5`, `20260912T104830.342Z-00367b`,
+`20260912T104851.122Z-00302b`, `20260912T104911.922Z-003cff`,
+`20260912T104932.786Z-0034d3`, `20260912T104951.620Z-002541` and
+`20260912T111336.086Z-003163`. Child logs confirm Khronos validation with
+synchronization checks and contain no API errors.
+
+The sweep also passes Release portable-TAA reference and Vulkan FSR static and
+motion snapshots. SSGI has separate Release emission/Bistro and Debug validation
+witnesses recorded in ADR-060. These local dirty-tree runs establish the Vulkan
+half of bounded execution only. They do not change any feature from UNALIGNED:
+same-revision Metal captures and canonical float16 comparisons remain required.
+
 ## Post-reconstruction depth of field
 
 The six DoF entry points and native roots are **UNALIGNED** pending native

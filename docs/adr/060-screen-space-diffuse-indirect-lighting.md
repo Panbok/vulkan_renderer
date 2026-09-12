@@ -148,7 +148,29 @@ with graphics validation variables unset; the paired off case changes only
 SSGI. [The measurement record](../../assets/verification/renderer-features/ssgi-cost-numeric.txt) retains
 both run identities and distributions.
 
-Native Vulkan execution and bilateral comparison remain unavailable, so SSGI
+Native Vulkan execution now passes on Windows with an AMD Radeon RX 6700 XT,
+driver 26.6.3 and Vulkan API 1.4.315. The reported device loss exposed three
+independent defects: sampled graph slots were indexed through storage descriptor
+arrays, the variable trace loop needed an explicit `[loop]` policy for the AMD
+compiler, and the composite pass allocated but did not populate its frame root
+before reading material rows. The Vulkan shader now uses typed sampled arrays,
+preserves the authored 24-step bound with explicit loop control, and the host
+fills the composite root before dispatch. SSR composite used the same root
+pattern and is corrected by the same ownership rule.
+
+The Release emission on/off reports are
+`20260912T103829.989Z-000bd8` (`6980163ae7bcc5a7cfe9d93c42cbbc26c6154b05ebd448fdc423e2b6eed6dd62`)
+and `20260912T103835.198Z-001187`
+(`21858b94498b2fe0d265a0ef6b0c0d2a172acef8d45ef8ebb56fa8fa04667ba6`).
+The Release Bistro report is `20260912T103625.242Z-002637`
+(`db8d1d6000d6407206037b0f718d145181c0e2e7b55bbe312211767fecc2e93c`).
+Focused Debug synchronization validation is
+`20260912T111516.304Z-004249`
+(`8368380187d0358eadf810dfe0b0a1e187db988ade6933ac00da749dc2018ac1`).
+The child loaded Khronos validation and reported no API or synchronization
+errors. These dirty-tree local reports establish bounded native Vulkan
+execution, not authoritative acceptance or pixel parity. Same-revision Metal
+execution and bilateral comparison remain unavailable on this host, so SSGI
 stays **UNALIGNED** under [ADR-044](044-shader-cross-backend-contract.md).
 
 The retained MetalFX Bistro camera-sweep record preserves all 924,963 captured

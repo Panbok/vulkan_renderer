@@ -213,9 +213,28 @@ Results are retained in `.scratch/subsurface-half-range.json` and
 `.scratch/renderer-improvements-subsurface-final-release.log` and
 `.scratch/subsurface-final-reflection.json`. The dedicated Release editor build
 also passes with `env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_editor.sh Release`; its log is
-`.scratch/renderer-improvements-post-effects-editor.log`. Native Vulkan execution
-and bilateral comparison remain unavailable on this Mac. The feature remains UNALIGNED under
-[ADR-044](044-shader-cross-backend-contract.md). No frame-cost claim is made.
+`.scratch/renderer-improvements-post-effects-editor.log`.
+
+Native Vulkan execution now passes on Windows. The first Debug validation run
+found that gather allocated a fresh frame root but left it zeroed before
+material-table access, causing device loss when published geometry appeared.
+The pass now derives and fills its frame constants at the owning dispatch. The
+Vulkan graph also remains disabled while the profile bank is queued, becoming
+eligible after its initialization submission completes; sentinel profile slot
+zero remains an explicit identity gather.
+
+The 513x321 -> 257x193 -> 513x321 hidden-window run loaded Khronos
+synchronization validation, completed without API diagnostics and passed the
+visibility assertion. Report `20260912T111336.086Z-003163` has SHA-256
+`9457566e5ba9fac63cf042b8e2e87fb041a780293cbfadc7dbb288743e474db9`.
+The Release offscreen snapshot, including final color, both HDR stages,
+subsurface source/composite, G-buffer and visibility channels, also passes:
+`20260912T111422.875Z-003ffe`, SHA-256
+`ce2ee2896257522f972aa200a9eeae78937ba9ed0be9decc77af81920ad9664b`.
+This dirty-tree local witness establishes bounded native Vulkan execution only.
+The feature remains **UNALIGNED** under
+[ADR-044](044-shader-cross-backend-contract.md) until same-revision Metal
+comparison passes. No frame-cost claim is made.
 
 ## Alternatives considered
 

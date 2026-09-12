@@ -333,8 +333,11 @@ profiles, 32 samples and a 32 internal-pixel radius cap. Two graph-owned RGBA16F
 images hold the diffuse source and composite; the existing texture system owns
 the immutable 8,320-byte profile bank. The offline baker samples the matching
 full-tail surface BSSRDF, including direct and photon irradiance. Native Metal
-integration checks pass; [ADR-068](adr/068-profiled-surface-diffusion.md) owns the
-energy allocation, geometry approximation and evidence limits.
+integration checks and a bounded Windows Vulkan synchronization-validation
+resize pass now succeed. Vulkan withholds the subsurface graph until profile-bank
+initialization completes, then fills the gather frame root at the dispatch owner before
+material access. [ADR-068](adr/068-profiled-surface-diffusion.md) owns the energy
+allocation, geometry approximation and evidence limits.
 
 Optional motion blur runs after reconstruction and exposure metering, before
 depth of field and bloom. The separate composites preserve temporal history.
@@ -419,7 +422,10 @@ accesses over the former single tap, with no new SSGI images or rays. When no
 compatible predecessor exists, SSGI uses current radiance without waiting.
 Composite applies the diffuse residual before SSR and excludes valid baked-volume
 cells. It remains optional and disabled by default; [ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md)
-owns its storage and evidence limits.
+owns its storage and evidence limits. Release emission and Bistro runs plus a
+focused Windows Vulkan synchronization-validation run pass on RX 6700 XT after
+correcting descriptor-family use, AMD trace-loop control and composite frame-root
+initialization. Bilateral Metal/Vulkan comparison remains open.
 
 Offline texture mips use linear-light sRGB color filtering and area-weighted
 footprints that retain odd source edges. Alpha and non-sRGB channels remain
@@ -544,7 +550,10 @@ Temporal adds one winner-hit read; its visible row comes from the gather.
 A 128-byte camera record borrows the exact selected transform producer;
 existing waits/barriers and reader retirement remain.
 `ssr_reflection` capture version 5 identifies full-resolution incoming radiance.
-Native Vulkan execution and bilateral comparison remain unavailable.
+Vulkan SSR composite frame-root initialization is corrected and its compiled
+root reflects, but native output remains unavailable because the checked-in
+Vulkan fixture references a missing local HDR asset and the Bistro case is
+Metal-pinned. Bilateral comparison remains unavailable.
 
 SSR-enabled scenes wait 128 unchanged
 submitted frames before portable TAA, FSR or MetalFX's following pass begins
@@ -715,7 +724,11 @@ diagnostics because the installed native MetalFX wrappers are incompatible. See
 CPU storage uses arenas for bulk lifetimes, DMemory for individual release and
 pools for fixed-size churn. Borrowed views can be invalidated by capacity growth;
 allocator synchronization is explicit. Vulkan driver host allocations use null
-callbacks and are outside VKR CPU totals. See
+callbacks and are outside VKR CPU totals. The renderer graph DMemory starts with
+a 2 MiB commit and reserves 96 MiB of stable virtual address space. Vulkan uses
+that owner for graph state, descriptor tables and per-block GPU allocation
+metadata; the reserve covers texture publication while a resized graph remains
+completion-protected. See
 [ADR-006](adr/006-cpu-memory-allocators.md).
 
 Vulkan descriptor/material publication requires coherent host-visible storage;

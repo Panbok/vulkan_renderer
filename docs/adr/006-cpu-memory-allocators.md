@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -46,7 +46,12 @@ layout (`line_count == 0`); successful empty text has one line. UI and world tex
 keep the previous published layout when rebuilding fails.
 
 Vulkan uses null `VkAllocationCallbacks`; driver host allocation is outside these
-CPU totals. Device-memory accounting belongs to ADR-024.
+CPU totals. The renderer-owned graph DMemory commits 2 MiB initially and reserves
+96 MiB. Its stable address range also owns Vulkan descriptor tables and bounded
+per-block `VkrGpuMemoryCore` records. A graph resize can keep the prior native
+realization alive while Bistro texture publication adds image blocks, so the
+reserve covers that cold-boundary overlap without committing it at startup.
+Device-memory accounting belongs to ADR-024.
 
 Allocator scopes already track temporary bytes and nesting without changing
 callee allocation APIs. Scope support is explicit per allocator; arena scope
