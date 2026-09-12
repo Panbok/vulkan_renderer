@@ -32,10 +32,17 @@ VkrHashTable(VkrFontSystemEntry);
  * @param max_mtsdf_font_count The maximum number of mtsdf fonts.
  */
 typedef struct VkrFontSystemConfig {
+  /** Optional absolute installed bootstrap font directory; copied at init. */
+  const char *bootstrap_directory;
   uint32_t max_system_font_count; // The maximum number of system fonts.
   uint32_t max_bitmap_font_count; // The maximum number of bitmap fonts.
   uint32_t max_mtsdf_font_count;  // The maximum number of mtsdf fonts.
 } VkrFontSystemConfig;
+
+struct VkrFontSystem;
+String8 vkr_font_system_bootstrap_path(struct VkrFontSystem *system,
+                                     const char *filename,
+                                     VkrAllocator *allocator);
 
 #define VKR_FONT_CONFIG_MAX_FACES 16
 

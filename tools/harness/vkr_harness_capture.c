@@ -1159,7 +1159,71 @@ typedef struct VkrHarnessCaptureSummaryHeaderV12 {
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV12;
 
+typedef struct VkrHarnessCaseV13 {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfig renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
+  float32_t content_scale;
+} VkrHarnessCaseV13;
+
+_Static_assert(offsetof(VkrHarnessCaseV13, content_scale) ==
+                       offsetof(VkrHarnessCase, content_scale) &&
+                   sizeof(VkrHarnessCaseV13) <= sizeof(VkrHarnessCase),
+               "Version 13 capture case prefix must remain readable");
+
 typedef struct VkrHarnessCaptureSummaryHeaderV13 {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV13 case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV13;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV14 {
   uint8_t magic[8];
   uint32_t version;
   uint32_t capture_count;
@@ -1180,7 +1244,7 @@ typedef struct VkrHarnessCaptureSummaryHeaderV13 {
   VkrHarnessCase case_manifest;
   VkrHarnessProfile profile;
   VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV13;
+} VkrHarnessCaptureSummaryHeaderV14;
 
 _Static_assert(
     offsetof(VkrHarnessCaptureSummaryHeaderV2, case_manifest) ==
@@ -1407,7 +1471,7 @@ static void vkr_harness_case_from_v9(const VkrHarnessCaseV9 *source,
 }
 
 static void vkr_harness_case_from_v10(const VkrHarnessCaseV10 *source,
-                                     VkrHarnessCase *destination) {
+                                      VkrHarnessCase *destination) {
   MemZero(destination, sizeof(*destination));
   MemCopy(destination, source, offsetof(VkrHarnessCaseV10, renderer));
   MemCopy(&destination->renderer, &source->renderer, sizeof(source->renderer));
@@ -1516,8 +1580,9 @@ vkr_harness_capture_value_name(VkrCaptureValueKind value_kind) {
 static const char *
 vkr_harness_capture_color_space_name(VkrCaptureColorSpace color_space) {
   return color_space == VKR_CAPTURE_COLOR_SPACE_SRGB ? "srgb"
-      : color_space == VKR_CAPTURE_COLOR_SPACE_EXTENDED_LINEAR
-          ? "extended_srgb_linear" : "none";
+         : color_space == VKR_CAPTURE_COLOR_SPACE_EXTENDED_LINEAR
+             ? "extended_srgb_linear"
+             : "none";
 }
 
 /** Canonical output is top-left; a bottom-left source is flipped on read. */
@@ -1611,10 +1676,11 @@ static uint8_t vkr_harness_capture_linear_to_srgb8(float32_t value,
 }
 
 static uint8_t vkr_harness_capture_display_to_srgb8(float32_t value,
-                                                     float32_t output_scale) {
+                                                    float32_t output_scale) {
   const float32_t linear = Clamp(value / output_scale, 0.0f, 1.0f);
-  const float32_t srgb = linear <= 0.0031308f ? linear * 12.92f
-      : 1.055f * vkr_pow_f32(linear, 1.0f / 2.4f) - 0.055f;
+  const float32_t srgb =
+      linear <= 0.0031308f ? linear * 12.92f
+                           : 1.055f * vkr_pow_f32(linear, 1.0f / 2.4f) - 0.055f;
   return (uint8_t)(Clamp(srgb, 0.0f, 1.0f) * 255.0f + 0.5f);
 }
 
@@ -1673,10 +1739,12 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
                 vkr_harness_capture_half_to_float(
                     vkr_harness_capture_read_u16(texel + component * 2u)),
                 item->display_output.output_scale);
-          target[x * 4u + 3u] = (uint8_t)(Clamp(
-              vkr_harness_capture_half_to_float(
-                  vkr_harness_capture_read_u16(texel + 6u)), 0.0f, 1.0f) *
-              255.0f + 0.5f);
+          target[x * 4u + 3u] =
+              (uint8_t)(Clamp(vkr_harness_capture_half_to_float(
+                                  vkr_harness_capture_read_u16(texel + 6u)),
+                              0.0f, 1.0f) *
+                            255.0f +
+                        0.5f);
           continue;
         }
         target[x * 4u + 0u] = vkr_harness_capture_linear_to_srgb8(
@@ -1691,12 +1759,14 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
             vkr_harness_capture_half_to_float(
                 vkr_harness_capture_read_u16(texel + 4u)),
             item->display_exposure);
-        target[x * 4u + 3u] = opaque_scene ? 255u :
-            (uint8_t)(Clamp(vkr_harness_capture_half_to_float(
-                                vkr_harness_capture_read_u16(texel + 6u)),
-                            0.0f, 1.0f) *
-                          255.0f +
-                      0.5f);
+        target[x * 4u + 3u] =
+            opaque_scene
+                ? 255u
+                : (uint8_t)(Clamp(vkr_harness_capture_half_to_float(
+                                      vkr_harness_capture_read_u16(texel + 6u)),
+                                  0.0f, 1.0f) *
+                                255.0f +
+                            0.5f);
         continue;
       }
       target[x * 4u + 0u] = source[x * 4u + (bgra ? 2u : 0u)];
@@ -1864,8 +1934,9 @@ vkr_harness_capture_canonical_rgba16f(const VkrCaptureItemResult *item,
 
 /** Writes a tight top-left IEEE-754 binary16 RG payload with a fixed byte
  * order. The DoF CoC has no display color transform. */
-static void vkr_harness_capture_canonical_rg16f(
-    const VkrCaptureItemResult *item, uint8_t *tight) {
+static void
+vkr_harness_capture_canonical_rg16f(const VkrCaptureItemResult *item,
+                                    uint8_t *tight) {
   for (uint32_t y = 0; y < item->height; ++y) {
     const uint8_t *source = vkr_harness_capture_row(item, y);
     uint8_t *target = tight + (uint64_t)y * item->width * 4u;
@@ -1958,10 +2029,12 @@ static bool8_t vkr_harness_capture_write_metadata(
                                    capture->preview_sha256) &&
       vkr_harness_json_emit_name(writer, "preview_normalization") &&
       vkr_json_writer_begin_object(writer) &&
-      vkr_harness_json_emit_string(writer, "mode",
-                                   depth ? "observed_range"
-                                         : item->color_space == VKR_CAPTURE_COLOR_SPACE_EXTENDED_LINEAR
-                                               ? "display_white_sdr" : "identity") &&
+      vkr_harness_json_emit_string(
+          writer, "mode",
+          depth ? "observed_range"
+          : item->color_space == VKR_CAPTURE_COLOR_SPACE_EXTENDED_LINEAR
+              ? "display_white_sdr"
+              : "identity") &&
       vkr_harness_json_emit_f64(writer, "min", (float64_t)preview_min) &&
       vkr_harness_json_emit_f64(writer, "max", (float64_t)preview_max) &&
       vkr_json_writer_end_object(writer) && vkr_json_writer_end_object(writer);
@@ -2100,8 +2173,7 @@ bool8_t vkr_harness_capture_publish(
     Scratch scratch = scratch_create(arenas->transient);
     const uint64_t preview_bytes = (uint64_t)item->width * item->height * 4u;
     const uint64_t canonical_bytes =
-        (uint64_t)item->width * item->height *
-        (rgba16f_canonical ? 8u : 4u);
+        (uint64_t)item->width * item->height * (rgba16f_canonical ? 8u : 4u);
     uint8_t *rgba =
         arena_alloc(arenas->transient, preview_bytes, ARENA_MEMORY_TAG_ARRAY);
     uint8_t *tight = png_canonical
@@ -2124,8 +2196,7 @@ bool8_t vkr_harness_capture_publish(
                 vkr_harness_capture_read_u16(texel));
             const float32_t g = vkr_harness_capture_half_to_float(
                 vkr_harness_capture_read_u16(texel + 2u));
-            target[x * 4u] =
-                (uint8_t)(Clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f);
+            target[x * 4u] = (uint8_t)(Clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f);
             target[x * 4u + 1u] =
                 (uint8_t)(Clamp(g, 0.0f, 1.0f) * 255.0f + 0.5f);
             target[x * 4u + 2u] = 0u;
@@ -2162,8 +2233,7 @@ bool8_t vkr_harness_capture_publish(
       /* Digests of the payloads must exist before the sidecar quotes them. */
       ok = vkr_harness_sha256_file(data_path, capture->data_sha256) &&
            vkr_harness_sha256_file(png_path, capture->preview_sha256) &&
-           vkr_harness_capture_write_metadata(metadata_path, capture,
-                                              item,
+           vkr_harness_capture_write_metadata(metadata_path, capture, item,
                                               preview_min, preview_max) &&
            vkr_harness_sha256_file(metadata_path, capture->metadata_sha256) &&
            vkr_harness_report_add_artifact(
@@ -2208,7 +2278,7 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
       (uint64_t)report->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
       (uint64_t)report->artifact_count * sizeof(VkrHarnessArtifact);
-  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV13) +
+  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV14) +
                         capture_bytes + artifact_bytes;
   Scratch scratch = scratch_create(transient);
   uint8_t *bytes = arena_alloc(transient, size, ARENA_MEMORY_TAG_ARRAY);
@@ -2217,10 +2287,10 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
     return false_v;
   }
   MemZero(bytes, size);
-  VkrHarnessCaptureSummaryHeaderV13 *header =
-      (VkrHarnessCaptureSummaryHeaderV13 *)bytes;
+  VkrHarnessCaptureSummaryHeaderV14 *header =
+      (VkrHarnessCaptureSummaryHeaderV14 *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
-  header->version = 13u;
+  header->version = 14u;
   header->capture_count = report->capture_count;
   header->artifact_count = report->artifact_count;
   header->tool = (uint32_t)report->tool;
@@ -2282,7 +2352,8 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
        common->version != 6u && common->version != 7u &&
        common->version != 8u && common->version != 9u &&
        common->version != 10u && common->version != 11u &&
-       common->version != 12u && common->version != 13u) ||
+       common->version != 12u && common->version != 13u &&
+       common->version != 14u) ||
       common->tool > VKR_HARNESS_TOOL_COMPARE ||
       common->exit_code > VKR_HARNESS_EXIT_ERROR ||
       common->capture_count > VKR_HARNESS_MAX_CAPTURE_RESULTS ||
@@ -2290,18 +2361,19 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
     return false_v;
   }
   const uint64_t header_size =
-      common->version == 2u   ? sizeof(VkrHarnessCaptureSummaryHeaderV2)
-      : common->version == 3u ? sizeof(VkrHarnessCaptureSummaryHeaderV3)
-      : common->version == 4u ? sizeof(VkrHarnessCaptureSummaryHeaderV4)
-      : common->version == 5u ? sizeof(VkrHarnessCaptureSummaryHeaderV5)
-      : common->version == 6u ? sizeof(VkrHarnessCaptureSummaryHeaderV6)
-      : common->version == 7u ? sizeof(VkrHarnessCaptureSummaryHeaderV7)
-      : common->version == 8u ? sizeof(VkrHarnessCaptureSummaryHeaderV8)
-      : common->version == 9u ? sizeof(VkrHarnessCaptureSummaryHeaderV9)
+      common->version == 2u    ? sizeof(VkrHarnessCaptureSummaryHeaderV2)
+      : common->version == 3u  ? sizeof(VkrHarnessCaptureSummaryHeaderV3)
+      : common->version == 4u  ? sizeof(VkrHarnessCaptureSummaryHeaderV4)
+      : common->version == 5u  ? sizeof(VkrHarnessCaptureSummaryHeaderV5)
+      : common->version == 6u  ? sizeof(VkrHarnessCaptureSummaryHeaderV6)
+      : common->version == 7u  ? sizeof(VkrHarnessCaptureSummaryHeaderV7)
+      : common->version == 8u  ? sizeof(VkrHarnessCaptureSummaryHeaderV8)
+      : common->version == 9u  ? sizeof(VkrHarnessCaptureSummaryHeaderV9)
       : common->version == 10u ? sizeof(VkrHarnessCaptureSummaryHeaderV10)
       : common->version == 11u ? sizeof(VkrHarnessCaptureSummaryHeaderV11)
       : common->version == 12u ? sizeof(VkrHarnessCaptureSummaryHeaderV12)
-                              : sizeof(VkrHarnessCaptureSummaryHeaderV13);
+      : common->version == 13u ? sizeof(VkrHarnessCaptureSummaryHeaderV13)
+                               : sizeof(VkrHarnessCaptureSummaryHeaderV14);
   const uint64_t capture_bytes =
       (uint64_t)common->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
@@ -2411,9 +2483,18 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
                               &out_summary->case_manifest);
     out_summary->profile = header->profile;
     out_summary->provenance = header->provenance;
-  } else {
+  } else if (common->version == 13u) {
     const VkrHarnessCaptureSummaryHeaderV13 *header =
         (const VkrHarnessCaptureSummaryHeaderV13 *)bytes;
+    MemZero(&out_summary->case_manifest, sizeof(out_summary->case_manifest));
+    MemCopy(&out_summary->case_manifest, &header->case_manifest,
+            sizeof(header->case_manifest));
+    out_summary->case_manifest.asset_context = VKR_HARNESS_ASSET_CONTEXT_LEGACY;
+    out_summary->profile = header->profile;
+    out_summary->provenance = header->provenance;
+  } else {
+    const VkrHarnessCaptureSummaryHeaderV14 *header =
+        (const VkrHarnessCaptureSummaryHeaderV14 *)bytes;
     out_summary->case_manifest = header->case_manifest;
     out_summary->profile = header->profile;
     out_summary->provenance = header->provenance;

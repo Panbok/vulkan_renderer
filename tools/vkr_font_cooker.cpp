@@ -96,6 +96,7 @@ struct Config {
 };
 
 struct Options {
+  fs::path inspect_font;
   fs::path config_path;
   fs::path output_override;
   bool has_output_override = false;
@@ -1066,10 +1067,55 @@ bool cook(const Config &config, const fs::path &output,
   return success;
 }
 
+bool inspect_font(const fs::path &source, const fs::path &output) {
+  std::vector<uint8_t> bytes;
+  std::error_code error;
+  const uint64_t size = fs::file_size(source, error);
+  if (error || size > 64u * 1024u * 1024u || !read_bytes(source, &bytes)) {
+    return false;
+  }
+  FT_Library library = nullptr;
+  FT_Face face = nullptr;
+  bool success = false;
+  if (FT_Init_FreeType(&library) != 0 ||
+      FT_New_Memory_Face(library, bytes.data(), (FT_Long)bytes.size(), 0, &face) != 0 ||
+      !face->family_name || !face->style_name) {
+    goto cleanup;
+  }
+  {
+    const std::string name = std::string(face->family_name) + "/" + face->style_name;
+    if (name.size() > 4096u || name.find_first_of("\r\n=") != std::string::npos) {
+      goto cleanup;
+    }
+    std::ofstream document(output, std::ios::binary | std::ios::trunc);
+    document << "{\"version\":1,\"face_index\":0,\"face\":\"";
+    for (unsigned char value : name) {
+      if (value < 32u || value == '\\' || value == '"') {
+        document << "\\u" << std::hex << std::setw(4) << std::setfill('0') << (unsigned)value << std::dec;
+      } else {
+        document.put((char)value);
+      }
+    }
+    document << "\"}\n";
+    document.flush();
+    success = document.good();
+  }
+cleanup:
+  if (face) {
+    FT_Done_Face(face);
+  }
+  if (library) {
+    FT_Done_FreeType(library);
+  }
+  return success;
+}
+
 bool parse_args(int argc, char **argv, Options *out) {
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if (arg == "--config" && i + 1 < argc)
+    if (arg == "--inspect-font" && i + 1 < argc)
+      out->inspect_font = argv[++i];
+    else if (arg == "--config" && i + 1 < argc)
       out->config_path = argv[++i];
     else if (arg == "--output" && i + 1 < argc) {
       out->output_override = argv[++i];
@@ -1083,12 +1129,14 @@ bool parse_args(int argc, char **argv, Options *out) {
     else
       return false;
   }
-  return out->identity_self_test || !out->config_path.empty();
+  return out->identity_self_test || !out->config_path.empty() ||
+         (!out->inspect_font.empty() && out->has_output_override);
 }
 
 void print_usage(const char *program) {
   std::cerr << "Usage: " << program
             << " --config <file.fontcfg> [--output <file.vkfa>] [--force]\n"
+            << "       " << program << " --inspect-font <file.ttf|file.otf> --output <face.json>\n"
             << "       " << program << " --identity-self-test\n";
 }
 
@@ -1099,6 +1147,9 @@ int main(int argc, char **argv) {
   if (!parse_args(argc, argv, &options)) {
     print_usage(argv[0]);
     return 2;
+  }
+  if (!options.inspect_font.empty()) {
+    return inspect_font(options.inspect_font, options.output_override) ? 0 : 1;
   }
   if (options.identity_self_test) {
     return identity_self_test() ? 0 : 1;

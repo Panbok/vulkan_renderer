@@ -42,6 +42,7 @@ typedef struct VkrMeshCookedReader {
 
 typedef struct VkrMeshCookedDependencyBuild {
   String8 path;
+  String8 physical_path;
   uint64_t byte_size;
   uint8_t hash[32];
   uint64_t string_offset;
@@ -452,8 +453,8 @@ static bool8_t vkr_mesh_cooked_hash_dependencies(
     }
     uint8_t *bytes = NULL;
     uint64_t size = 0;
-    bool8_t ok = vkr_mesh_cooked_read_file(scratch_allocator,
-                                           dependencies[i].path, &bytes, &size);
+    bool8_t ok = vkr_mesh_cooked_read_file(
+        scratch_allocator, dependencies[i].physical_path, &bytes, &size);
     if (ok) {
       VkrMeshCookedSha256 file_sha;
       vkr_mesh_cooked_sha256_init(&file_sha);
@@ -685,6 +686,47 @@ static bool8_t vkr_mesh_cooked_source_validate(VkrAllocator *scratch_allocator,
   return true_v;
 }
 
+static bool8_t
+vkr_mesh_cooked_write_source_metadata(VkrMeshCookedWriter *writer,
+                                      const VkrMeshSource *source) {
+  bool8_t ok = true_v;
+  ok = ok && vkr_mesh_cooked_writer_u64(writer, source->fingerprint);
+  ok = ok && vkr_mesh_cooked_writer_u32(writer, source->animation_count);
+  ok = ok && vkr_mesh_cooked_writer_u32(writer, 0u);
+  for (uint64_t i = 0; ok && i < source->nodes.length; ++i) {
+    const VkrMeshSourceNode *node = &source->nodes.data[i];
+    ok = vkr_mesh_cooked_writer_u32(writer, node->parent) &&
+         vkr_mesh_cooked_writer_u32(writer, node->mesh) &&
+         vkr_mesh_cooked_writer_u32(writer, node->mesh_variant) &&
+         vkr_mesh_cooked_writer_u32(writer, node->camera) &&
+         vkr_mesh_cooked_writer_u32(writer, node->skin) &&
+         vkr_mesh_cooked_writer_u32(writer, node->light) &&
+         vkr_mesh_cooked_writer_u32(writer, node->in_scene);
+    for (uint32_t f = 0; f < 16u; ++f) {
+      ok = ok && vkr_mesh_cooked_writer_f32(writer, node->local.elements[f]);
+    }
+    ok = ok && vkr_mesh_cooked_writer_f32(writer, node->punctual.color.x) &&
+         vkr_mesh_cooked_writer_f32(writer, node->punctual.color.y) &&
+         vkr_mesh_cooked_writer_f32(writer, node->punctual.color.z) &&
+         vkr_mesh_cooked_writer_f32(writer, node->punctual.intensity) &&
+         vkr_mesh_cooked_writer_f32(writer, node->punctual.range) &&
+         vkr_mesh_cooked_writer_f32(writer, node->punctual.inner_cone) &&
+         vkr_mesh_cooked_writer_f32(writer, node->punctual.outer_cone) &&
+         vkr_mesh_cooked_writer_u32(writer, node->punctual.kind);
+    ok =
+        ok && vkr_mesh_cooked_writer_u32(writer, (uint32_t)node->name.length) &&
+        vkr_mesh_cooked_writer_bytes(writer, node->name.str, node->name.length);
+  }
+  for (uint64_t i = 0; ok && i < source->meshes.length; ++i) {
+    ok = vkr_mesh_cooked_writer_u32(writer,
+                                    source->meshes.data[i].source_mesh_index) &&
+         vkr_mesh_cooked_writer_u32(writer,
+                                    source->meshes.data[i].first_range) &&
+         vkr_mesh_cooked_writer_u32(writer, source->meshes.data[i].range_count);
+  }
+  return ok;
+}
+
 bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
                                const VkrMeshCookedEncodeInfo *info,
                                uint8_t **out_data, uint64_t *out_size) {
@@ -742,7 +784,13 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
     if (!vkr_mesh_cooked_string_is_valid(info->dependency_paths[i], false_v)) {
       return false_v;
     }
-    dependencies[i].path = info->dependency_paths[i];
+    dependencies[i].physical_path = info->dependency_paths[i];
+    dependencies[i].path = info->dependency_references
+                               ? info->dependency_references[i]
+                               : info->dependency_paths[i];
+    if (!vkr_mesh_cooked_string_is_valid(dependencies[i].path, false_v)) {
+      return false_v;
+    }
     dependencies[i].string_offset = string_size;
     if (!vkr_mesh_cooked_add_u64(string_size, dependencies[i].path.length,
                                  &string_size)) {
@@ -1121,41 +1169,7 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
     ok = ok && vkr_mesh_cooked_writer_bytes(&writer, dependencies[i].hash, 32u);
     ok = ok && vkr_mesh_cooked_writer_u64(&writer, 0u);
   }
-  ok = ok && vkr_mesh_cooked_writer_u64(&writer, source->fingerprint);
-  ok = ok && vkr_mesh_cooked_writer_u32(&writer, source->animation_count);
-  ok = ok && vkr_mesh_cooked_writer_u32(&writer, 0u);
-  for (uint64_t i = 0; ok && i < source->nodes.length; ++i) {
-    const VkrMeshSourceNode *node = &source->nodes.data[i];
-    ok = vkr_mesh_cooked_writer_u32(&writer, node->parent) &&
-         vkr_mesh_cooked_writer_u32(&writer, node->mesh) &&
-         vkr_mesh_cooked_writer_u32(&writer, node->mesh_variant) &&
-         vkr_mesh_cooked_writer_u32(&writer, node->camera) &&
-         vkr_mesh_cooked_writer_u32(&writer, node->skin) &&
-         vkr_mesh_cooked_writer_u32(&writer, node->light) &&
-         vkr_mesh_cooked_writer_u32(&writer, node->in_scene);
-    for (uint32_t f = 0; f < 16u; ++f)
-      ok = ok && vkr_mesh_cooked_writer_f32(&writer, node->local.elements[f]);
-    ok = ok && vkr_mesh_cooked_writer_f32(&writer, node->punctual.color.x) &&
-         vkr_mesh_cooked_writer_f32(&writer, node->punctual.color.y) &&
-         vkr_mesh_cooked_writer_f32(&writer, node->punctual.color.z) &&
-         vkr_mesh_cooked_writer_f32(&writer, node->punctual.intensity) &&
-         vkr_mesh_cooked_writer_f32(&writer, node->punctual.range) &&
-         vkr_mesh_cooked_writer_f32(&writer, node->punctual.inner_cone) &&
-         vkr_mesh_cooked_writer_f32(&writer, node->punctual.outer_cone) &&
-         vkr_mesh_cooked_writer_u32(&writer, node->punctual.kind);
-    ok = ok &&
-         vkr_mesh_cooked_writer_u32(&writer, (uint32_t)node->name.length) &&
-         vkr_mesh_cooked_writer_bytes(&writer, node->name.str,
-                                      node->name.length);
-  }
-  for (uint64_t i = 0; ok && i < source->meshes.length; ++i) {
-    ok =
-        vkr_mesh_cooked_writer_u32(&writer,
-                                   source->meshes.data[i].source_mesh_index) &&
-        vkr_mesh_cooked_writer_u32(&writer,
-                                   source->meshes.data[i].first_range) &&
-        vkr_mesh_cooked_writer_u32(&writer, source->meshes.data[i].range_count);
-  }
+  ok = ok && vkr_mesh_cooked_write_source_metadata(&writer, source);
   if (!ok || writer.offset != string_offset) {
     return false_v;
   }
@@ -1242,5 +1256,70 @@ bool8_t vkr_mesh_cooked_write_atomic(VkrAllocator *scratch_allocator,
     (void)file_remove(&temporary);
     return false_v;
   }
+  return true_v;
+}
+
+/* The caller decoded input successfully and only edits source-node values.
+ * Preserve compressed geometry streams and every string/offset verbatim. */
+bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
+                                       const uint8_t *input, uint64_t size,
+                                       const VkrMeshSource *source,
+                                       uint8_t **out_data) {
+  if (!allocator || !input || size < VKR_MESH_COOKED_HEADER_SIZE || !source ||
+      !out_data) {
+    return false_v;
+  }
+  uint64_t directory_offset = 0, dependency_offset = 0, string_offset = 0,
+           stream_offset = 0;
+  uint32_t dependency_count = 0, range_count = 0, node_count = 0,
+           mesh_count = 0;
+  MemCopy(&range_count, input + 40u, sizeof(range_count));
+  MemCopy(&dependency_count, input + 44u, sizeof(dependency_count));
+  MemCopy(&directory_offset, input + 48u, sizeof(directory_offset));
+  MemCopy(&dependency_offset, input + 56u, sizeof(dependency_offset));
+  MemCopy(&string_offset, input + 64u, sizeof(string_offset));
+  MemCopy(&stream_offset, input + 80u, sizeof(stream_offset));
+  MemCopy(&node_count, input + 264u, sizeof(node_count));
+  MemCopy(&mesh_count, input + 268u, sizeof(mesh_count));
+  range_count = vkr_mesh_cooked_to_le32(range_count);
+  dependency_count = vkr_mesh_cooked_to_le32(dependency_count);
+  node_count = vkr_mesh_cooked_to_le32(node_count);
+  mesh_count = vkr_mesh_cooked_to_le32(mesh_count);
+  directory_offset = vkr_mesh_cooked_to_le64(directory_offset);
+  dependency_offset = vkr_mesh_cooked_to_le64(dependency_offset);
+  string_offset = vkr_mesh_cooked_to_le64(string_offset);
+  stream_offset = vkr_mesh_cooked_to_le64(stream_offset);
+  uint64_t metadata_offset =
+      dependency_offset +
+      (uint64_t)dependency_count * VKR_MESH_COOKED_DEPENDENCY_SIZE;
+  if (node_count != source->nodes.length ||
+      mesh_count != source->meshes.length ||
+      directory_offset > metadata_offset || metadata_offset > string_offset ||
+      string_offset > stream_offset || stream_offset > size ||
+      !vkr_mesh_cooked_source_validate(allocator, source, range_count)) {
+    return false_v;
+  }
+  uint8_t *copy =
+      vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (!copy) {
+    return false_v;
+  }
+  MemCopy(copy, input, size);
+  VkrMeshCookedWriter writer = {
+      .data = copy, .size = string_offset, .offset = metadata_offset};
+  if (!vkr_mesh_cooked_write_source_metadata(&writer, source) ||
+      writer.offset != string_offset) {
+    return false_v;
+  }
+  uint32_t metadata_crc = vkr_mesh_cooked_to_le32(vkr_mesh_cooked_crc32(
+      copy + directory_offset, stream_offset - directory_offset));
+  MemCopy(copy + VKR_MESH_COOKED_METADATA_CRC_OFFSET, &metadata_crc,
+          sizeof(metadata_crc));
+  MemZero(copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET, sizeof(uint32_t));
+  uint32_t header_crc = vkr_mesh_cooked_to_le32(
+      vkr_mesh_cooked_crc32(copy, VKR_MESH_COOKED_HEADER_SIZE));
+  MemCopy(copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET, &header_crc,
+          sizeof(header_crc));
+  *out_data = copy;
   return true_v;
 }

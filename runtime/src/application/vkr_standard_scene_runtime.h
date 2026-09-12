@@ -101,6 +101,7 @@ typedef struct VkrStandardSceneRuntimeConfig {
   /** Completion-driven policy; valid only for MetalFX temporal mode. */
   VkrDynamicResolutionConfig dynamic_resolution;
   bool8_t capture_enabled;
+  const char *bootstrap_font_directory;
   uint32_t capture_ring_capacity;
   uint64_t capture_max_batch_bytes;
   /** Boot intent only: `profile`, `requested_mask`, and `excluded_mask` are

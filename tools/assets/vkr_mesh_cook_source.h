@@ -17,3 +17,14 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
     uint32_t range_override_count, VkrAllocator *source_allocator,
     VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
     VkrRendererError *out_error);
+
+/* Managed outputs live below an absolute bundle root. output_path must be a
+ * direct child of that root. import_id contains only ASCII letters, digits,
+ * '-' and '_'. All published dependency references are file-relative. The
+ * caller owns the unpublished bundle and removes it on failure/cancellation. */
+bool8_t vkr_mesh_cook_source_managed(
+    String8 source_path, String8 output_path, String8 bundle_root,
+    String8 import_id, const VkrSceneLightRangeOverride *range_overrides,
+    uint32_t range_override_count, VkrAllocator *source_allocator,
+    VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
+    VkrRendererError *out_error);

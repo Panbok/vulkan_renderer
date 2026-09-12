@@ -1,10 +1,10 @@
 #pragma once
 
+#include "assets/vkr_mesh_source.h"
 #include "containers/str.h"
 #include "containers/vector.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
-#include "assets/vkr_mesh_source.h"
 #include "vkr_buffer.h"
 #include "vkr_renderer.h"
 
@@ -48,13 +48,15 @@ typedef bool8_t (*VkrMeshLoaderGltfPrimitiveFn)(
 typedef struct VkrMeshLoaderGltfParseInfo {
   String8 source_path;          // The path to the glTF source file.
   String8 source_dir;           // The directory of the glTF source file.
+  String8 bundle_root;          // Optional absolute managed output root.
+  String8 import_id;            // Stable managed namespace; never a host path.
   String8 source_stem;          // The stem of the glTF source file.
   VkrAllocator *load_allocator; // The allocator to use for loading resources.
   VkrAllocator *scratch_allocator; // The allocator to use for scratch memory.
   VkrRendererError *out_error;     // The error to use for the output.
   VkrMeshLoaderGltfPrimitiveFn
-      on_primitive; // The callback to use for the primitives.
-  void *user_data;  // User-defined data to pass to the callback.
+      on_primitive;          // The callback to use for the primitives.
+  void *user_data;           // User-defined data to pass to the callback.
   VkrMeshSource *out_source; // Required for local-space node-preserving import.
   Vector_String8 *out_dependency_paths; // The paths to the dependency files.
   Vector_String8 *out_generated_material_paths; // The paths to the generated
@@ -66,7 +68,7 @@ typedef struct VkrMeshLoaderGltfParseInfo {
  * @brief Parse a glTF source, emit mesh-local triangle primitives, and generate
  * deterministic material files for referenced glTF materials.
  *
- * Embedded image sources (`data:` URIs and `image.buffer_view`) are rejected.
+ * Embedded PNG/JPEG image sources are extracted before material conversion.
  * On failure, `out_error` is filled when provided.
  * @param info The information to use for the parse.
  * @return True if the parse was successful, false otherwise.

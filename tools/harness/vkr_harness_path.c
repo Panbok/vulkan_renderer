@@ -114,3 +114,33 @@ bool8_t vkr_harness_resolve_existing_path(const char *root,
   }
   return true_v;
 }
+
+bool8_t vkr_harness_renderer_directory(const char *executable, const char *root,
+                                       char out[VKR_HARNESS_PATH_MAX]) {
+  char marker[VKR_HARNESS_PATH_MAX];
+  if (!vkr_harness_resolve_existing_path(root, "workspace.json", marker,
+                                         NULL)) {
+    return vkr_harness_realpath(root, out);
+  }
+  if (!vkr_harness_realpath(executable, out)) {
+    return false_v;
+  }
+  /* Installed tools live below the installation root. Development tools live
+   * below build_release/tools; ascend without using a scene's asset root. */
+  for (uint32_t i = 0; i < 5; ++i) {
+    char *slash = strrchr(out, '/');
+    char *backslash = strrchr(out, '\\');
+    if (backslash && (!slash || backslash > slash)) {
+      slash = backslash;
+    }
+    if (!slash) {
+      break;
+    }
+    *slash = '\0';
+    if (vkr_harness_resolve_existing_path(
+            out, "assets/render_graphs/main.rendergraph.json", marker, NULL)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}

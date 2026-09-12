@@ -1,4 +1,5 @@
 #include "renderer/resources/loaders/system_font_loader.h"
+#include "filesystem/vkr_asset_path.h"
 
 #include "containers/str.h"
 #include "core/logger.h"
@@ -28,6 +29,7 @@ typedef struct VkrSystemFontParseState {
 
   uint32_t font_size;
   uint32_t font_index;
+  uint32_t last_codepoint;
   uint32_t atlas_width;
   uint32_t atlas_height;
 
@@ -45,6 +47,7 @@ typedef struct VkrSystemFontRequest {
   String8 query;
   uint32_t size;
   uint32_t font_index;
+  uint32_t last_codepoint;
 } VkrSystemFontRequest;
 
 vkr_internal String8 vkr_system_font_strip_query(String8 name,
@@ -71,6 +74,7 @@ vkr_internal VkrSystemFontRequest vkr_system_font_parse_request(String8 name) {
 
   uint32_t size = VKR_SYSTEM_FONT_DEFAULT_SIZE;
   uint32_t font_index = VKR_SYSTEM_FONT_DEFAULT_INDEX;
+  uint32_t last_codepoint = VKR_SYSTEM_FONT_LAST_CODEPOINT;
   uint64_t start = 0;
   while (start < query.length) {
     uint64_t end = start;
@@ -92,10 +96,18 @@ vkr_internal VkrSystemFontRequest vkr_system_font_parse_request(String8 name) {
       String8 value = string8_substring(&param, eq_pos + 1, param.length);
       String8 key_size = string8_lit("size");
       String8 key_index = string8_lit("index");
+      String8 key_glyph_last = string8_lit("glyph_last");
       if (string8_equalsi(&key, &key_size)) {
         int32_t parsed = 0;
         if (string8_to_i32(&value, &parsed) && parsed > 0) {
           size = (uint32_t)parsed;
+        }
+      } else if (string8_equalsi(&key, &key_glyph_last)) {
+        uint32_t parsed = 0;
+        int32_t signed_value = 0;
+        if (string8_to_i32(&value, &signed_value) && signed_value >= 255) {
+          parsed = (uint32_t)signed_value;
+          last_codepoint = Min(parsed, VKR_SYSTEM_FONT_UI_LAST_CODEPOINT);
         }
       } else if (string8_equalsi(&key, &key_index)) {
         int32_t parsed = 0;
@@ -113,6 +125,7 @@ vkr_internal VkrSystemFontRequest vkr_system_font_parse_request(String8 name) {
       .query = query,
       .size = size,
       .font_index = font_index,
+      .last_codepoint = last_codepoint,
   };
 }
 
@@ -125,9 +138,7 @@ vkr_internal bool8_t vkr_system_font_read_file(VkrSystemFontParseState *state,
     return false_v;
   }
 
-  FilePath fp =
-      file_path_create((const char *)file_path.str, state->temp_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(state->temp_allocator, file_path);
 
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -197,10 +208,54 @@ vkr_system_font_init_stbtt(VkrSystemFontParseState *state) {
   return true_v;
 }
 
+/* Measure before allocation so large requested sizes retain their supported
+ * range without allocating a maximum-sized atlas for every font face. */
+static bool8_t vkr_system_font_atlas_fits(VkrSystemFontParseState *state,
+                                          uint32_t size) {
+  uint32_t x = VKR_SYSTEM_FONT_ATLAS_PADDING;
+  uint32_t y = VKR_SYSTEM_FONT_ATLAS_PADDING;
+  uint32_t row_height = 0;
+  for (uint32_t cp = VKR_SYSTEM_FONT_FIRST_CODEPOINT;
+       cp <= state->last_codepoint; ++cp) {
+    int32_t glyph = stbtt_FindGlyphIndex(&state->font_info, (int32_t)cp);
+    if (!glyph && cp != ' ') {
+      continue;
+    }
+    int32_t x0, y0, x1, y1;
+    stbtt_GetGlyphBitmapBox(&state->font_info, glyph, state->scale,
+                            state->scale, &x0, &y0, &x1, &y1);
+    uint32_t width = (uint32_t)(x1 - x0);
+    uint32_t height = (uint32_t)(y1 - y0);
+    if (width + 2 * VKR_SYSTEM_FONT_ATLAS_PADDING > size ||
+        height + 2 * VKR_SYSTEM_FONT_ATLAS_PADDING > size) {
+      return false_v;
+    }
+    if (x + width + VKR_SYSTEM_FONT_ATLAS_PADDING > size) {
+      x = VKR_SYSTEM_FONT_ATLAS_PADDING;
+      y += row_height + VKR_SYSTEM_FONT_ATLAS_PADDING;
+      row_height = 0;
+    }
+    if (y + height + VKR_SYSTEM_FONT_ATLAS_PADDING > size) {
+      return false_v;
+    }
+    x += width + VKR_SYSTEM_FONT_ATLAS_PADDING;
+    row_height = Max(row_height, height);
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t
 vkr_system_font_rasterize_glyphs(VkrSystemFontParseState *state) {
   assert_log(state != NULL, "State is NULL");
 
+  while (!vkr_system_font_atlas_fits(state, state->atlas_width)) {
+    if (state->atlas_width >= VKR_SYSTEM_FONT_MAX_ATLAS_SIZE) {
+      *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
+    state->atlas_width *= 2;
+    state->atlas_height = state->atlas_width;
+  }
   uint64_t atlas_size = (uint64_t)state->atlas_width * state->atlas_height;
   state->atlas_bitmap = vkr_allocator_alloc(state->temp_allocator, atlas_size,
                                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -211,7 +266,7 @@ vkr_system_font_rasterize_glyphs(VkrSystemFontParseState *state) {
   MemZero(state->atlas_bitmap, atlas_size);
 
   if (!vector_reserve_VkrFontGlyph(&state->glyphs,
-                                   VKR_SYSTEM_FONT_LAST_CODEPOINT -
+                                   state->last_codepoint -
                                        VKR_SYSTEM_FONT_FIRST_CODEPOINT + 1u)) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -221,7 +276,7 @@ vkr_system_font_rasterize_glyphs(VkrSystemFontParseState *state) {
   uint32_t row_height = 0;
 
   for (uint32_t cp = VKR_SYSTEM_FONT_FIRST_CODEPOINT;
-       cp <= VKR_SYSTEM_FONT_LAST_CODEPOINT; ++cp) {
+       cp <= state->last_codepoint; ++cp) {
     int32_t glyph_index = stbtt_FindGlyphIndex(&state->font_info, (int32_t)cp);
     if (glyph_index == 0 && cp != ' ') {
       continue;
@@ -660,6 +715,7 @@ vkr_internal bool8_t vkr_system_font_loader_load(
       .font_size = Clamp(request.size, VKR_SYSTEM_FONT_MIN_SIZE,
                          VKR_SYSTEM_FONT_MAX_SIZE),
       .font_index = request.font_index,
+      .last_codepoint = request.last_codepoint,
       .atlas_width = VKR_SYSTEM_FONT_DEFAULT_ATLAS_SIZE,
       .atlas_height = VKR_SYSTEM_FONT_DEFAULT_ATLAS_SIZE,
       .out_error = out_error,

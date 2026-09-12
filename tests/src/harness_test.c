@@ -1306,6 +1306,8 @@ vkr_internal void test_harness_report_shape(void) {
   report.case_manifest.renderer.dynamic_resolution_target_frame_ms =
       1000.0f / 75.0f;
   report.case_manifest.content_scale = 1.25f;
+  report.case_manifest.asset_context =
+      VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
   VkrHarnessMetricResult resolution_metrics[] = {
       {.name = "frame.render_scale",
        .unit = "ratio",
@@ -2199,6 +2201,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.dynamic_resolution_target_frame_ms =
       1000.0f / 75.0f;
   report.case_manifest.content_scale = 1.25f;
+  report.case_manifest.asset_context =
+      VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
   report.case_manifest.renderer.editor_stop_frame = 1u;
   report.case_manifest.renderer.editor_resume_frame = 4u;
   string_copy(report.case_manifest.renderer.display_transform, "agx");
@@ -2226,9 +2230,11 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 13u);
+  assert(current_version == 14u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
+  assert(summary.case_manifest.asset_context ==
+         VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
   assert(summary.case_manifest.renderer.editor_stop_frame == 1u);
   assert(summary.case_manifest.renderer.editor_resume_frame == 4u);
   assert(summary.case_manifest.renderer.gtao_enabled);
@@ -3114,6 +3120,89 @@ vkr_internal void test_harness_editor_diagnostic_manifests(void) {
   }
 }
 
+#if !defined(_WIN32)
+static void test_harness_managed_workspace_closure(void) {
+  printf("  Running test_harness_managed_workspace_closure...\n");
+  char root[] = "/tmp/vkr_managed_manifest_XXXXXX";
+  assert(mkdtemp(root));
+  VkrHarnessError error = {0};
+  char jobs[VKR_HARNESS_PATH_MAX];
+  snprintf(jobs, sizeof(jobs), "%s/jobs", root);
+  assert(vkr_harness_make_directories(jobs, &error));
+  char workspace[VKR_HARNESS_PATH_MAX];
+  char case_path[VKR_HARNESS_PATH_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  char mesh[VKR_HARNESS_PATH_MAX];
+  char remap[VKR_HARNESS_PATH_MAX];
+  char material[VKR_HARNESS_PATH_MAX];
+  char texture[VKR_HARNESS_PATH_MAX];
+  snprintf(workspace, sizeof(workspace), "%s/workspace.json", root);
+  snprintf(case_path, sizeof(case_path), "%s/case.json", jobs);
+  snprintf(scene, sizeof(scene), "%s/scene.json", jobs);
+  snprintf(mesh, sizeof(mesh), "%s/model.vkb", jobs);
+  snprintf(remap, sizeof(remap), "%s/model.vkb.remap.json", jobs);
+  snprintf(material, sizeof(material), "%s/material.mt", jobs);
+  snprintf(texture, sizeof(texture), "%s/texture.png", jobs);
+  const char *case_json =
+      "{\"schema_version\":1,\"asset_context\":\"managed_workspace\","
+      "\"id\":\"smoke.managed\",\"suite\":\"smoke\",\"scene\":\"jobs/"
+      "scene.json\","
+      "\"seed\":1,\"resolution\":[64,64],\"boot\":\"full\",\"target\":"
+      "\"offscreen\","
+      "\"present\":\"none\",\"cache\":\"isolated_cold\",\"fixed_delta\":0.016,"
+      "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,\"skybox\":"
+      "true,"
+      "\"shadow_preset\":\"default\",\"shadow_cascades\":4},"
+      "\"camera\":{\"mode\":\"static\",\"position\":[0,0,0],\"yaw\":0,"
+      "\"pitch\":0}}";
+  assert(vkr_harness_atomic_write(case_path, case_json, strlen(case_json),
+                                  &error));
+  char scene_json[VKR_HARNESS_PATH_MAX + 32];
+  snprintf(scene_json, sizeof(scene_json), "{\"mesh\":\"%s\"}", mesh);
+  assert(
+      vkr_harness_atomic_write(scene, scene_json, strlen(scene_json), &error));
+  VkrHarnessCase parsed = {0};
+  assert(!vkr_harness_case_load(root, "jobs/case.json", &parsed, &error));
+  const char *marker = "{\"version\":1}";
+  assert(vkr_harness_atomic_write(workspace, marker, strlen(marker), &error));
+  assert(vkr_harness_case_load(root, "jobs/case.json", &parsed, &error));
+  assert(parsed.asset_context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
+  const char *remap_json = "{\"version\":1,\"materials\":{\"legacy/"
+                           "missing.mt\":\"./material\\u002emt\"}}";
+  assert(vkr_harness_atomic_write(mesh, "mesh fixture", 12, &error));
+  assert(
+      vkr_harness_atomic_write(remap, remap_json, strlen(remap_json), &error));
+  assert(vkr_harness_atomic_write(material, "map_albedo=./texture.png\n", 25,
+                                  &error));
+  assert(vkr_harness_atomic_write(texture, "texture fixture", 15, &error));
+  Arena *arena = arena_create(MB(8), MB(4));
+  assert(arena);
+  VkrHarnessSceneManifest manifest = {0};
+  bool8_t built = vkr_harness_scene_manifest_build_context(
+      root, "jobs/scene.json", parsed.asset_context, arena, &manifest, &error);
+  if (!built) {
+    fprintf(stderr, "Managed closure: %s\n", error.message);
+  }
+  assert(built);
+  assert(manifest.asset_count == 5);
+  assert(remove(texture) == 0);
+  assert(symlink("/etc/passwd", texture) == 0);
+  assert(!vkr_harness_scene_manifest_build_context(
+      root, "jobs/scene.json", parsed.asset_context, arena, &manifest, &error));
+  assert(remove(texture) == 0);
+  assert(remove(material) == 0);
+  assert(remove(remap) == 0);
+  assert(remove(mesh) == 0);
+  assert(remove(scene) == 0);
+  assert(remove(case_path) == 0);
+  assert(remove(workspace) == 0);
+  assert(rmdir(jobs) == 0);
+  assert(rmdir(root) == 0);
+  arena_destroy(arena);
+  printf("  test_harness_managed_workspace_closure PASSED\n");
+}
+#endif
+
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_json_integer_and_escaped_key_boundaries();
@@ -3128,6 +3217,7 @@ bool32_t run_harness_tests(void) {
   test_harness_fingerprints();
 #if !defined(_WIN32)
   test_harness_scene_manifest_tracks_transitive_content();
+  test_harness_managed_workspace_closure();
 #endif
   test_harness_subsystem_plans();
   test_harness_case_profile_pairing();

@@ -85,18 +85,24 @@ vkr_internal int vkr_harness_spawn_child(
       {.name = "VKR_FXAA_DISABLED",
        .value = renderer->fxaa_enabled ? "0" : "1"},
   };
-  VkrPlatformEnvironmentVariable environment[ArrayCount(environment_defaults) + 1u] = {0};
+  VkrPlatformEnvironmentVariable
+      environment[ArrayCount(environment_defaults) + 1u] = {0};
   MemCopy(environment, environment_defaults, sizeof(environment_defaults));
   uint32_t environment_count = ArrayCount(environment_defaults);
   if (cache_path && cache_path[0]) {
     environment[environment_count++] = (VkrPlatformEnvironmentVariable){
         .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
   }
+  char renderer_directory[VKR_HARNESS_PATH_MAX];
+  if (!vkr_harness_renderer_directory(executable, repo_root,
+                                      renderer_directory)) {
+    return VKR_HARNESS_EXIT_ERROR;
+  }
   const VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
       .argument_count = argument_count,
-      .working_directory = repo_root,
+      .working_directory = renderer_directory,
       .stdout_path = stdout_path,
       .stderr_path = stderr_path,
       .environment = environment,
@@ -676,7 +682,9 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     vkr_harness_emit_result("invalid", VKR_HARNESS_EXIT_INVALID, NULL, NULL);
     return VKR_HARNESS_EXIT_INVALID;
   }
-  if (!vkr_harness_profile_load(repo_root, profile_path, &profile, &error)) {
+  if (!vkr_harness_profile_load_context(repo_root, profile_path,
+                                        case_manifest.asset_context, &profile,
+                                        &error)) {
     /* An unreadable profile is a missing instrument, not a malformed one. */
     const bool8_t missing = string_n_equals(error.code, "path.", 5u) ||
                             string_equals(error.code, "manifest.read");
@@ -790,9 +798,9 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   char scene_manifest_file_digest[VKR_HARNESS_DIGEST_MAX] = {0};
   string_format(scene_manifest_path, sizeof(scene_manifest_path),
                 "%s/scene-content-manifest.json", run_root);
-  if (!vkr_harness_scene_manifest_build(repo_root, case_manifest.scene,
-                                        arenas.persistent, &scene_manifest,
-                                        &error) ||
+  if (!vkr_harness_scene_manifest_build_context(
+          repo_root, case_manifest.scene, case_manifest.asset_context,
+          arenas.persistent, &scene_manifest, &error) ||
       !vkr_harness_scene_manifest_write(scene_manifest_path, &scene_manifest,
                                         &error) ||
       !vkr_harness_sha256_file(scene_manifest_path,

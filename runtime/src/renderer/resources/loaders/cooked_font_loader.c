@@ -1,4 +1,5 @@
 #include "renderer/resources/loaders/cooked_font_loader.h"
+#include "filesystem/vkr_asset_path.h"
 
 #include "containers/str.h"
 #include "core/logger.h"
@@ -323,8 +324,7 @@ static bool8_t vkr_cooked_font_loader_load(VkrResourceLoader *self,
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     goto cleanup;
   }
-  FilePath path = file_path_create((const char *)file_path.str, temp_alloc,
-                                   FILE_PATH_TYPE_RELATIVE);
+  FilePath path = vkr_asset_path_file(temp_alloc, file_path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);

@@ -31,3 +31,12 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                VkrAllocator *scratch_allocator,
                                const uint8_t *data, uint64_t size,
                                VkrMeshCookedDecoded *out_decoded);
+
+/** Apply an optional adjacent .remap.json to decoded material references.
+ * Missing sidecar preserves the original references; an existing sidecar must
+ * map every nonempty reference exactly once. Mapped views borrow scratch until
+ * its release; consumers must copy them before returning to their caller.
+ * No geometry/source identity or cooked bytes change. */
+bool8_t vkr_mesh_cooked_apply_material_remap(VkrAllocator *scratch,
+                                             String8 source_path,
+                                             VkrMeshCookedDecoded *decoded);

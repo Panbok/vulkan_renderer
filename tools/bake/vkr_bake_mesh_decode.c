@@ -1,4 +1,5 @@
 #include "bake/vkr_bake_mesh_decode.h"
+#include "filesystem/vkr_asset_path.h"
 
 #include "assets/vkr_mesh_cooked.h"
 #include "memory/arena.h"
@@ -210,11 +211,11 @@ vkr_internal bool8_t vkr_bake_mesh_build_source_worlds(
   return true_v;
 }
 
-bool8_t vkr_bake_mesh_decode(const uint8_t *data, uint64_t size,
-                             Mat4 entity_world,
-                             uint32_t *in_out_source_instance,
-                             const VkrBakeMeshDecodeCallbacks *callbacks,
-                             void *user) {
+bool8_t vkr_bake_mesh_decode_file(String8 source_path, const uint8_t *data,
+                                  uint64_t size, Mat4 entity_world,
+                                  uint32_t *in_out_source_instance,
+                                  const VkrBakeMeshDecodeCallbacks *callbacks,
+                                  void *user) {
   if (!data || size == 0u || !in_out_source_instance || !callbacks ||
       !callbacks->emit_triangle) {
     return false_v;
@@ -238,6 +239,23 @@ bool8_t vkr_bake_mesh_decode(const uint8_t *data, uint64_t size,
       vkr_allocator_arena(&scratch_allocator) &&
       vkr_mesh_cooked_decode(&result_allocator, &scratch_allocator, data, size,
                              &decoded);
+  if (success && source_path.length) {
+    success = vkr_mesh_cooked_apply_material_remap(&scratch_allocator,
+                                                   source_path, &decoded);
+    for (uint64_t i = 0; success && i < decoded.ranges.length; ++i) {
+      String8 original = decoded.ranges.data[i].material_name;
+      if (!original.length) {
+        continue;
+      }
+      String8 resolved =
+          vkr_asset_path_resolve(&result_allocator, source_path, original);
+      if (!resolved.str) {
+        success = false_v;
+        break;
+      }
+      decoded.ranges.data[i].material_name = resolved;
+    }
+  }
   if (success && decoded.source.nodes.length > 0u) {
     Mat4 *source_worlds = NULL;
     success = vkr_bake_mesh_build_source_worlds(
@@ -275,4 +293,13 @@ bool8_t vkr_bake_mesh_decode(const uint8_t *data, uint64_t size,
   arena_destroy(scratch_arena);
   arena_destroy(result_arena);
   return success;
+}
+
+bool8_t vkr_bake_mesh_decode(const uint8_t *data, uint64_t size,
+                             Mat4 entity_world,
+                             uint32_t *in_out_source_instance,
+                             const VkrBakeMeshDecodeCallbacks *callbacks,
+                             void *user) {
+  return vkr_bake_mesh_decode_file((String8){0}, data, size, entity_world,
+                                   in_out_source_instance, callbacks, user);
 }

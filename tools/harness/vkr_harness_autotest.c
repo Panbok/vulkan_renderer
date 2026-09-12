@@ -65,11 +65,16 @@ vkr_internal int vkr_harness_autotest_spawn(
       command,      "--repo-root",     repo_root,
       "--case",     case_path,         "--profile",
       profile_path, "--artifact-root", artifact_root_relative};
+  char renderer_directory[VKR_HARNESS_PATH_MAX];
+  if (!vkr_harness_renderer_directory(executable, repo_root,
+                                      renderer_directory)) {
+    return VKR_HARNESS_EXIT_ERROR;
+  }
   const VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
       .argument_count = ArrayCount(arguments),
-      .working_directory = repo_root,
+      .working_directory = renderer_directory,
       .stdout_path = stdout_path,
       .stderr_path = stderr_path,
       .timeout_ms = timeout_ms,
@@ -166,7 +171,9 @@ int vkr_harness_autotest_run(const char *executable, const char *repo_root,
   VkrHarnessProfile profile = {0};
   VkrSubsystemPlan subsystem_plan = {0};
   if (!vkr_harness_case_load(repo_root, case_path, &case_manifest, &error) ||
-      !vkr_harness_profile_load(repo_root, profile_path, &profile, &error) ||
+      !vkr_harness_profile_load_context(repo_root, profile_path,
+                                        case_manifest.asset_context, &profile,
+                                        &error) ||
       case_manifest.capture_count == 0u ||
       !vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_AUTOTEST, &case_manifest,
                                   &subsystem_plan, &error)) {
@@ -359,18 +366,16 @@ publish:
     if (*cursor == '\\')
       *cursor = '/';
   uint64_t repo_root_length = string_length(repo_root);
-  while (repo_root_length > 0u &&
-         (repo_root[repo_root_length - 1u] == '/' ||
-          repo_root[repo_root_length - 1u] == '\\')) {
+  while (repo_root_length > 0u && (repo_root[repo_root_length - 1u] == '/' ||
+                                   repo_root[repo_root_length - 1u] == '\\')) {
     repo_root_length--;
   }
   const char *report_relative = report_path + repo_root_length;
   if (*report_relative == '/' || *report_relative == '\\')
     report_relative++;
-  vkr_harness_stdout(
-      "{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
-      "\"sha256\":\"%s\"}\n",
-      report.status, report.exit_code, report_relative, digest);
+  vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
+                     "\"sha256\":\"%s\"}\n",
+                     report.status, report.exit_code, report_relative, digest);
   result = report.exit_code;
 cleanup:
   if (result == VKR_HARNESS_EXIT_ERROR && error.message[0]) {

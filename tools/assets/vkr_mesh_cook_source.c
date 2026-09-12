@@ -83,6 +83,8 @@ typedef struct VkrMeshLoaderState {
   String8 source_stem;
   String8 source_extension;
   String8 material_dir;
+  String8 bundle_root;
+  String8 import_id;
 
   VkrRendererError *out_error;
 } VkrMeshLoaderState;
@@ -152,7 +154,9 @@ vkr_internal bool8_t vkr_mesh_loader_read_file_to_string(
   assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(out_content != NULL, "Out content is NULL");
 
-  FilePath fp = file_path_create(string8_cstr(&file_path), allocator,
+  String8 terminated_path = string8_create_formatted(
+      allocator, "%.*s", (int32_t)file_path.length, file_path.str);
+  FilePath fp = file_path_create(string8_cstr(&terminated_path), allocator,
                                  vkr_mesh_loader_path_is_absolute(file_path)
                                      ? FILE_PATH_TYPE_ABSOLUTE
                                      : FILE_PATH_TYPE_RELATIVE);
@@ -532,9 +536,11 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
   assert_log(material != NULL, "Material is NULL");
   assert_log(relative_path.str != NULL, "Relative path is NULL");
 
-  FilePath dir_path =
-      file_path_create(string8_cstr(&state->material_dir),
-                       state->load_allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath dir_path = file_path_create(
+      string8_cstr(&state->material_dir), state->load_allocator,
+      vkr_mesh_loader_path_is_absolute(state->material_dir)
+          ? FILE_PATH_TYPE_ABSOLUTE
+          : FILE_PATH_TYPE_RELATIVE);
   if (!file_ensure_directory(state->load_allocator, &dir_path.path)) {
     log_error("MeshLoader: failed to create material directory '%s'",
               string8_cstr(&state->material_dir));
@@ -544,7 +550,9 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
 
   FilePath file_path =
       file_path_create((const char *)relative_path.str, state->load_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+                       vkr_mesh_loader_path_is_absolute(relative_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
 
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_WRITE);
@@ -572,10 +580,13 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
         state->load_allocator, "alpha_cutoff=%f", alpha_cutoff);
   }
 
+  String8 display_name =
+      state->bundle_root.length
+          ? string8_get_stem(state->load_allocator, relative_path)
+          : material->name;
   String8 lines[] = {
       string8_create_formatted(state->load_allocator, "name=%.*s",
-                               (int32_t)material->name.length,
-                               material->name.str),
+                               (int32_t)display_name.length, display_name.str),
       string8_create_formatted(state->load_allocator, "diffuse_texture=%.*s",
                                (int32_t)material->diffuse_map.length,
                                material->diffuse_map.str),
@@ -645,8 +656,17 @@ vkr_internal bool8_t vkr_mesh_loader_resolve_material(
   }
 
   if (!mat->generated_path.str) {
-    mat->generated_path = vkr_mesh_loader_make_material_path(
-        state->load_allocator, &state->source_stem, material_name);
+    if (state->bundle_root.length) {
+      uint64_t index = (uint64_t)(mat - state->materials.data);
+      mat->generated_path = string8_create_formatted(
+          state->load_allocator, "%.*s/%.*s_%llu.mt",
+          (int32_t)state->material_dir.length, state->material_dir.str,
+          (int32_t)state->import_id.length, state->import_id.str,
+          (unsigned long long)index);
+    } else {
+      mat->generated_path = vkr_mesh_loader_make_material_path(
+          state->load_allocator, &state->source_stem, material_name);
+    }
   }
 
   if (!mat->generated) {
@@ -769,8 +789,12 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
       material_path =
           string8_duplicate(state->load_allocator, &builder->material_name);
     } else {
-      vkr_mesh_loader_resolve_material(state, &builder->material_name,
-                                       &material_path, NULL);
+      if (!vkr_mesh_loader_resolve_material(state, &builder->material_name,
+                                            &material_path, NULL) &&
+          state->bundle_root.length) {
+        *state->out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+        return false_v;
+      }
     }
   }
 
@@ -955,6 +979,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
                                            &file_str, NULL))
     return false_v;
 
+  String8 mtl_dir = file_path_get_directory(state->load_allocator, full_path);
   VkrMeshLoaderMaterialDef *current = NULL;
   uint64_t offset = 0;
   while (offset < file_str.length) {
@@ -1016,19 +1041,31 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
     } else if (vkr_string8_starts_with(&line, "map_Kd")) {
       String8 value = vkr_string8_trimmed_suffix(&line, 6);
       current->diffuse_map =
-          vkr_mesh_loader_texture_path(state->load_allocator, &value);
+          state->bundle_root.length
+              ? (vkr_mesh_loader_path_is_absolute(value)
+                     ? string8_duplicate(state->load_allocator, &value)
+                     : file_path_join(state->load_allocator, mtl_dir, value))
+              : vkr_mesh_loader_texture_path(state->load_allocator, &value);
     } else if (vkr_string8_starts_with(&line, "map_d")) {
       current->cutout = true_v;
     } else if (vkr_string8_starts_with(&line, "map_Ks")) {
       String8 value = vkr_string8_trimmed_suffix(&line, 6);
       current->specular_map =
-          vkr_mesh_loader_texture_path(state->load_allocator, &value);
+          state->bundle_root.length
+              ? (vkr_mesh_loader_path_is_absolute(value)
+                     ? string8_duplicate(state->load_allocator, &value)
+                     : file_path_join(state->load_allocator, mtl_dir, value))
+              : vkr_mesh_loader_texture_path(state->load_allocator, &value);
     } else if (vkr_string8_starts_with(&line, "map_bump") ||
                vkr_string8_starts_with(&line, "bump")) {
       uint64_t idx = vkr_string8_starts_with(&line, "map_bump") ? 8 : 4;
       String8 value = vkr_string8_trimmed_suffix(&line, idx);
       current->normal_map =
-          vkr_mesh_loader_texture_path(state->load_allocator, &value);
+          state->bundle_root.length
+              ? (vkr_mesh_loader_path_is_absolute(value)
+                     ? string8_duplicate(state->load_allocator, &value)
+                     : file_path_join(state->load_allocator, mtl_dir, value))
+              : vkr_mesh_loader_texture_path(state->load_allocator, &value);
     } else if (vkr_string8_starts_with(&line, "shader")) {
       String8 value = vkr_string8_trimmed_suffix(&line, 6);
       current->shader_name = string8_duplicate(state->load_allocator, &value);
@@ -1225,6 +1262,8 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
     Vector_String8 dependency_paths = {.allocator = state->load_allocator};
     Vector_String8 generated_asset_paths = {.allocator = state->load_allocator};
     VkrMeshLoaderGltfParseInfo parse_info = {
+        .bundle_root = state->bundle_root,
+        .import_id = state->import_id,
         .source_path = state->source_path,
         .source_dir = state->source_dir,
         .source_stem = state->source_stem,
@@ -1266,9 +1305,103 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
   return false_v;
 }
 
-bool8_t vkr_mesh_cook_source_with_light_ranges(
-    String8 source_path, String8 output_path,
-    const VkrSceneLightRangeOverride *range_overrides,
+/* Each copied blob is identified by its contents, retaining its extension.
+ * The job allocator owns references; temporary bytes end with the local scope.
+ */
+vkr_internal bool8_t vkr_mesh_loader_bundle_copy(VkrMeshLoaderState *state,
+                                                 String8 source,
+                                                 const char *directory,
+                                                 String8 *out_physical,
+                                                 String8 *out_reference) {
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(state->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return false_v;
+  }
+  String8 bytes = {0};
+  bool8_t ok = vkr_mesh_loader_read_file_to_string(state->scratch_allocator,
+                                                   source, &bytes, NULL);
+  if (ok) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (uint64_t i = 0; i < bytes.length; ++i) {
+      hash = (hash ^ bytes.str[i]) * UINT64_C(1099511628211);
+    }
+    String8 extension =
+        vkr_mesh_loader_get_extension(state->load_allocator, source);
+    for (uint64_t i = 0; i < extension.length; ++i) {
+      uint8_t c = extension.str[i];
+      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+        ok = false_v;
+      }
+    }
+    if (ok) {
+      *out_reference = string8_create_formatted(
+          state->load_allocator, "./%s/%016llx.%.*s", directory,
+          (unsigned long long)hash, (int32_t)extension.length, extension.str);
+      *out_physical = file_path_join(state->load_allocator, state->bundle_root,
+                                     *out_reference);
+      ok = vkr_mesh_cooked_write_atomic(state->scratch_allocator, *out_physical,
+                                        bytes.str, bytes.length);
+    }
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
+  return ok;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_bundle_material(VkrMeshLoaderState *state,
+                                                     String8 physical) {
+  String8 content = {0};
+  if (!vkr_mesh_loader_read_file_to_string(state->load_allocator, physical,
+                                           &content, NULL)) {
+    return false_v;
+  }
+  String8 rewritten = string8_lit("");
+  uint64_t offset = 0;
+  while (offset < content.length) {
+    String8 line = {0};
+    vkr_mesh_loader_parse_next_line(&content, &offset, &line);
+    uint64_t equals = 0;
+    while (equals < line.length && line.str[equals] != '=') {
+      ++equals;
+    }
+    if (equals >= 8 && equals < line.length &&
+        MemCompare(line.str + equals - 8, "_texture", 8) == 0 &&
+        equals + 1 < line.length) {
+      String8 value = string8_substring(&line, equals + 1, line.length);
+      uint64_t query = 0;
+      while (query < value.length && value.str[query] != '?') {
+        ++query;
+      }
+      String8 path = string8_substring(&value, 0, query);
+      String8 suffix = string8_substring(&value, query, value.length);
+      String8 copied = {0};
+      String8 reference = {0};
+      if (!vkr_mesh_loader_bundle_copy(state, path, "textures", &copied,
+                                       &reference)) {
+        return false_v;
+      }
+      String8 relative = string8_substring(&reference, 2, reference.length);
+      line = string8_create_formatted(
+          state->load_allocator, "%.*s=./../%.*s%.*s", (int32_t)equals,
+          line.str, (int32_t)relative.length, relative.str,
+          (int32_t)suffix.length, suffix.str);
+      if (!vkr_mesh_loader_capture_source_dependency(state, copied)) {
+        return false_v;
+      }
+    }
+    rewritten = string8_create_formatted(
+        state->load_allocator, "%.*s%.*s\n", (int32_t)rewritten.length,
+        rewritten.str, (int32_t)line.length, line.str);
+    if (!rewritten.str) {
+      return false_v;
+    }
+  }
+  return vkr_mesh_cooked_write_atomic(state->scratch_allocator, physical,
+                                      rewritten.str, rewritten.length);
+}
+
+vkr_internal bool8_t vkr_mesh_cook_source_internal(
+    String8 source_path, String8 output_path, String8 bundle_root,
+    String8 import_id, const VkrSceneLightRangeOverride *range_overrides,
     uint32_t range_override_count, VkrAllocator *source_allocator,
     VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
     VkrRendererError *out_error) {
@@ -1297,6 +1430,12 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
   if (!vkr_mesh_loader_state_create(source_allocator, scratch_allocator,
                                     source_path, out_error, &state))
     return false_v;
+  state.bundle_root = bundle_root;
+  state.import_id = import_id;
+  if (bundle_root.length) {
+    state.material_dir =
+        file_path_join(source_allocator, bundle_root, string8_lit("materials"));
+  }
   if (!vkr_mesh_loader_parse_source(&state) ||
       (!state.source.nodes.length && (state.merged_buffer.vertex_count == 0 ||
                                       state.merged_buffer.index_count == 0 ||
@@ -1316,6 +1455,27 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
     return false_v;
   }
 
+  if (bundle_root.length) {
+    for (uint64_t i = 0; i < state.merged_submeshes.length; ++i) {
+      String8 material = state.merged_submeshes.data[i].material_name;
+      if (!material.length) {
+        continue;
+      }
+      bool8_t already_written = false_v;
+      for (uint64_t j = 0; j < i; ++j) {
+        if (string8_equals(&material,
+                           &state.merged_submeshes.data[j].material_name)) {
+          already_written = true_v;
+          break;
+        }
+      }
+      if (!already_written &&
+          !vkr_mesh_loader_bundle_material(&state, material)) {
+        *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+        return false_v;
+      }
+    }
+  }
   uint32_t dependency_count = (uint32_t)state.source_dependencies.length;
   String8 *dependency_paths = vkr_allocator_alloc(
       scratch_allocator, (uint64_t)dependency_count * sizeof(String8),
@@ -1324,8 +1484,25 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
+  String8 *dependency_references =
+      bundle_root.length
+          ? vkr_allocator_alloc(scratch_allocator,
+                                (uint64_t)dependency_count * sizeof(String8),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
+  if (bundle_root.length && !dependency_references) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   for (uint32_t i = 0; i < dependency_count; ++i) {
     dependency_paths[i] = state.source_dependencies.data[i].path;
+    if (bundle_root.length &&
+        !vkr_mesh_loader_bundle_copy(&state, dependency_paths[i],
+                                     "dependencies", &dependency_paths[i],
+                                     &dependency_references[i])) {
+      *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+      return false_v;
+    }
   }
 
   VkrGeometryUploadRange *cooked_ranges = state.merged_submeshes.length
@@ -1341,6 +1518,13 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
   for (uint32_t i = 0; i < state.merged_submeshes.length; ++i) {
     const VkrMeshLoaderSubmeshRange *source_range =
         &state.merged_submeshes.data[i];
+    String8 material_name = source_range->material_name;
+    if (bundle_root.length && material_name.length) {
+      String8 suffix = string8_substring(&material_name, bundle_root.length + 1,
+                                         material_name.length);
+      material_name = string8_create_formatted(
+          source_allocator, "./%.*s", (int32_t)suffix.length, suffix.str);
+    }
     cooked_ranges[i] = (VkrGeometryUploadRange){
         .range_id = source_range->range_id,
         .first_index = source_range->first_index,
@@ -1350,27 +1534,30 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
         .center = source_range->center,
         .min_extents = source_range->min_extents,
         .max_extents = source_range->max_extents,
-        .material_name = source_range->material_name,
+        .material_name = material_name,
         .shader_override = source_range->shader_override,
         .pipeline_domain = source_range->pipeline_domain,
     };
   }
   VkrMeshCookedEncodeInfo encode_info = {
-      .source_path = source_path,
+      .source_path =
+          bundle_root.length ? dependency_references[0] : source_path,
       .source = state.source,
+      .dependency_references = dependency_references,
       .dependency_paths = dependency_paths,
       .dependency_count = dependency_count,
-      .mesh_buffer = {
-          .vertex_size = state.merged_buffer.vertex_size,
-          .vertex_count = state.merged_buffer.vertex_count,
-          .vertices = state.merged_buffer.vertices,
-          .index_size = state.merged_buffer.index_size,
-          .index_count = state.merged_buffer.index_count,
-          .indices = state.merged_buffer.indices,
-          .vertex_layout = state.merged_buffer.vertex_layout,
-          .decodes = state.merged_buffer.decodes,
-          .decode_count = state.merged_buffer.decode_count,
-      },
+      .mesh_buffer =
+          {
+              .vertex_size = state.merged_buffer.vertex_size,
+              .vertex_count = state.merged_buffer.vertex_count,
+              .vertices = state.merged_buffer.vertices,
+              .index_size = state.merged_buffer.index_size,
+              .index_count = state.merged_buffer.index_count,
+              .indices = state.merged_buffer.indices,
+              .vertex_layout = state.merged_buffer.vertex_layout,
+              .decodes = state.merged_buffer.decodes,
+              .decode_count = state.merged_buffer.decode_count,
+          },
       .ranges = cooked_ranges,
       .range_count = (uint32_t)state.merged_submeshes.length,
       .budgets = vkr_packed_geometry_default_budgets(),
@@ -1383,6 +1570,40 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
                                     artifact_size)) {
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
+  }
+
+  if (bundle_root.length) {
+    String8 remap = string8_lit("{\"version\":1,\"materials\":{");
+    bool8_t comma = false_v;
+    for (uint32_t i = 0; i < encode_info.range_count; ++i) {
+      String8 material = cooked_ranges[i].material_name;
+      if (!material.length) {
+        continue;
+      }
+      bool8_t duplicate = false_v;
+      for (uint32_t j = 0; j < i; ++j) {
+        if (string8_equals(&material, &cooked_ranges[j].material_name)) {
+          duplicate = true_v;
+          break;
+        }
+      }
+      if (duplicate) {
+        continue;
+      }
+      /* Managed names consist only of generated ASCII IDs and fixed folders. */
+      remap = string8_create_formatted(source_allocator, "%.*s%s\"%.*s\":\"%.*s\"",
+          (int32_t)remap.length, remap.str, comma ? "," : "",
+          (int32_t)material.length, material.str, (int32_t)material.length, material.str);
+      comma = true_v;
+    }
+    remap = string8_create_formatted(source_allocator, "%.*s}}\n", (int32_t)remap.length, remap.str);
+    String8 remap_path = string8_create_formatted(source_allocator, "%.*s.remap.json",
+        (int32_t)output_path.length, output_path.str);
+    if (!remap.str || !remap_path.str || !vkr_mesh_cooked_write_atomic(scratch_allocator,
+        remap_path, remap.str, remap.length)) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return false_v;
+    }
   }
 
   if (out_stats) {
@@ -1408,4 +1629,48 @@ bool8_t vkr_mesh_cook_source(String8 source_path, String8 output_path,
   return vkr_mesh_cook_source_with_light_ranges(
       source_path, output_path, NULL, 0u, source_allocator, scratch_allocator,
       out_stats, out_error);
+}
+
+bool8_t vkr_mesh_cook_source_with_light_ranges(
+    String8 source_path, String8 output_path,
+    const VkrSceneLightRangeOverride *range_overrides,
+    uint32_t range_override_count, VkrAllocator *source_allocator,
+    VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
+    VkrRendererError *out_error) {
+  return vkr_mesh_cook_source_internal(source_path, output_path, (String8){0},
+                                       (String8){0}, range_overrides,
+                                       range_override_count, source_allocator,
+                                       scratch_allocator, out_stats, out_error);
+}
+
+bool8_t vkr_mesh_cook_source_managed(
+    String8 source_path, String8 output_path, String8 bundle_root,
+    String8 import_id, const VkrSceneLightRangeOverride *range_overrides,
+    uint32_t range_override_count, VkrAllocator *source_allocator,
+    VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
+    VkrRendererError *out_error) {
+  bool8_t valid =
+      vkr_mesh_loader_path_is_absolute(bundle_root) && import_id.length &&
+      import_id.length <= 128 && output_path.length > bundle_root.length + 1 &&
+      MemCompare(output_path.str, bundle_root.str, bundle_root.length) == 0 &&
+      output_path.str[bundle_root.length] == '/';
+  for (uint64_t i = 0; i < import_id.length; ++i) {
+    uint8_t c = import_id.str[i];
+    valid = valid && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_');
+  }
+  for (uint64_t i = bundle_root.length + 1; valid && i < output_path.length;
+       ++i) {
+    valid = output_path.str[i] != '/' && output_path.str[i] != '\\';
+  }
+  if (!valid) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    return false_v;
+  }
+  return vkr_mesh_cook_source_internal(source_path, output_path, bundle_root,
+                                       import_id, range_overrides,
+                                       range_override_count, source_allocator,
+                                       scratch_allocator, out_stats, out_error);
 }

@@ -247,10 +247,10 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   }
   if (case_manifest->renderer.ssgi_enabled)
     ADD("renderer.ssgi", "%u", case_manifest->renderer.ssgi_enabled);
-  /* Disabled DoF has no output or workload effect, preserving legacy identity. */
+  /* Disabled DoF has no output or workload effect, preserving legacy identity.
+   */
   if (case_manifest->renderer.dof_enabled) {
-    ADD("renderer.dof", "%u,%.9g,%.9g",
-        case_manifest->renderer.dof_enabled,
+    ADD("renderer.dof", "%u,%.9g,%.9g", case_manifest->renderer.dof_enabled,
         case_manifest->renderer.dof_focus_distance,
         case_manifest->renderer.dof_f_stop);
   }
@@ -266,7 +266,8 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
         case_manifest->renderer.motion_blur_entity_velocity_y,
         case_manifest->renderer.motion_blur_entity_velocity_z);
   }
-  if (string_equals(case_manifest->renderer.display_output, "auto_extended_linear"))
+  if (string_equals(case_manifest->renderer.display_output,
+                    "auto_extended_linear"))
     ADD("renderer.display_output", "%s",
         case_manifest->renderer.display_output);
   ADD("renderer.gtao", "%u,%.9g,%.9g", case_manifest->renderer.gtao_enabled,
@@ -404,8 +405,9 @@ bool8_t vkr_harness_case_fingerprints(
   VkrHarnessSceneManifest manifest = {0};
   const bool8_t ok =
       repo_root && case_manifest && arena &&
-      vkr_harness_scene_manifest_build(repo_root, case_manifest->scene, arena,
-                                       &manifest, out_error) &&
+      vkr_harness_scene_manifest_build_context(repo_root, case_manifest->scene,
+                                               case_manifest->asset_context,
+                                               arena, &manifest, out_error) &&
       vkr_harness_case_fingerprints_with_scene_digest(
           tool, case_manifest, profile, subsystem_mask, environment_fields,
           environment_field_count, manifest.sha256, out_environment,

@@ -1,9 +1,10 @@
-#include <stb_truetype.h>
 #include "renderer/systems/vkr_font_system.h"
+#include <stb_truetype.h>
 
 #include "containers/str.h"
 #include "core/logger.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_asset_path.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/bitmap_font_loader.h"
@@ -11,6 +12,20 @@
 #include "renderer/resources/loaders/mtsdf_font_loader.h"
 #include "renderer/resources/loaders/system_font_loader.h"
 #include "renderer/systems/vkr_resource_system.h"
+
+String8 vkr_font_system_bootstrap_path(VkrFontSystem *system,
+                                       const char *filename,
+                                       VkrAllocator *allocator) {
+  const char *directory = system->config.bootstrap_directory;
+  if (!directory || !directory[0]) {
+    directory = "assets/fonts";
+  }
+  return file_path_join(allocator,
+                        string8_create_from_cstr((const uint8_t *)directory,
+                                                 string_length(directory)),
+                        string8_create_from_cstr((const uint8_t *)filename,
+                                                 string_length(filename)));
+}
 
 // =============================================================================
 // Font Config Parser Constants
@@ -138,8 +153,7 @@ vkr_internal VkrFontConfig vkr_font_config_parse(String8 fontcfg_path,
   // Get the directory containing the .fontcfg file for relative path resolution
   String8 config_dir = file_path_get_directory(scratch_alloc, fontcfg_path);
 
-  FilePath fp = file_path_create((const char *)fontcfg_path.str, scratch_alloc,
-                                 FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(scratch_alloc, fontcfg_path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle handle = {0};
@@ -284,9 +298,9 @@ vkr_internal VkrFontConfig vkr_font_config_parse(String8 fontcfg_path,
       bool8_t cooker_only = false_v;
       for (uint32_t i = 0;
            i < sizeof(cooker_only_keys) / sizeof(cooker_only_keys[0]); ++i) {
-        String8 cooker_key = string8_create_from_cstr(
-            (const uint8_t *)cooker_only_keys[i],
-            string_length(cooker_only_keys[i]));
+        String8 cooker_key =
+            string8_create_from_cstr((const uint8_t *)cooker_only_keys[i],
+                                     string_length(cooker_only_keys[i]));
         if (string8_equalsi(&key, &cooker_key)) {
           cooker_only = true_v;
           break;
@@ -364,8 +378,7 @@ vkr_internal uint32_t vkr_font_system_get_font_count_from_file(
     return 0;
   }
 
-  FilePath fp = file_path_create((const char *)file_path.str, temp_alloc,
-                                 FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(temp_alloc, file_path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -426,8 +439,12 @@ vkr_internal bool8_t vkr_font_system_load_single_variant(
   uint32_t size =
       config->size > 0 ? config->size : VKR_SYSTEM_FONT_DEFAULT_SIZE;
   String8 load_name = string8_create_formatted(
-      &system->temp_allocator, "%.*s?size=%u&index=%u",
-      (int32_t)config->file.length, config->file.str, size, font_index);
+      &system->temp_allocator, "%.*s?size=%u&index=%u&glyph_last=%u",
+      (int32_t)config->file.length, config->file.str, size, font_index,
+      (system->config.bootstrap_directory &&
+       system->config.bootstrap_directory[0])
+          ? VKR_SYSTEM_FONT_UI_LAST_CODEPOINT
+          : VKR_SYSTEM_FONT_LAST_CODEPOINT);
   if (!load_name.str) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -647,6 +664,17 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   }
 
   system->config = *config;
+  if (config->bootstrap_directory) {
+    String8 copied =
+        string8_create_from_cstr((const uint8_t *)config->bootstrap_directory,
+                                 string_length(config->bootstrap_directory));
+    copied = string8_duplicate(&system->allocator, &copied);
+    if (!copied.str) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      goto initialization_failure;
+    }
+    system->config.bootstrap_directory = (const char *)copied.str;
+  }
   system->job_system = NULL;
 
   system->fonts = array_create_VkrFont(&system->allocator, max_fonts);
@@ -673,12 +701,18 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
 
 #if defined(PLATFORM_WINDOWS)
   String8 font_name = string8_lit("NotoSansCJK-Windows");
-  String8 fontcfg_path =
-      string8_lit("assets/fonts/NotoSansCJK-Windows.fontcfg");
+  String8 fontcfg_path = vkr_font_system_bootstrap_path(
+      system, "NotoSansCJK-Windows.fontcfg", &system->allocator);
 #else
   String8 font_name = string8_lit("NotoSansCJK");
-  String8 fontcfg_path = string8_lit("assets/fonts/NotoSansCJK.fontcfg");
+  String8 fontcfg_path = vkr_font_system_bootstrap_path(
+      system, "NotoSansCJK.fontcfg", &system->allocator);
 #endif
+  if (config->bootstrap_directory && config->bootstrap_directory[0]) {
+    font_name = string8_lit("UbuntuMono");
+    fontcfg_path = vkr_font_system_bootstrap_path(system, "UbuntuMono.fontcfg",
+                                                  &system->allocator);
+  }
   VkrRendererError font_load_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_font_system_load_from_file(system, font_name, fontcfg_path,
                                       &font_load_error)) {
@@ -701,8 +735,8 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   }
 
   String8 font_bitmap_name = string8_lit("UbuntuMono-bitmap");
-  String8 fontcfg_bitmap_path =
-      string8_lit("assets/fonts/UbuntuMono-bitmap.fontcfg");
+  String8 fontcfg_bitmap_path = vkr_font_system_bootstrap_path(
+      system, "UbuntuMono-bitmap.fontcfg", &system->allocator);
   if (!vkr_font_system_load_from_file(system, font_bitmap_name,
                                       fontcfg_bitmap_path, &font_load_error)) {
     String8 err_str = vkr_renderer_get_error_string(font_load_error);
@@ -723,8 +757,8 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   }
 
   String8 font_mtsdf_name = string8_lit("UbuntuMono-mtsdf");
-  String8 fontcfg_mtsdf_path =
-      string8_lit("assets/fonts/UbuntuMono-cooked.fontcfg");
+  String8 fontcfg_mtsdf_path = vkr_font_system_bootstrap_path(
+      system, "UbuntuMono-cooked.fontcfg", &system->allocator);
   if (!vkr_font_system_load_from_file(system, font_mtsdf_name,
                                       fontcfg_mtsdf_path, &font_load_error)) {
     String8 err_str = vkr_renderer_get_error_string(font_load_error);

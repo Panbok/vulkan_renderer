@@ -1600,7 +1600,9 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   VkrHarnessCase case_manifest = {0};
   VkrHarnessProfile profile = {0};
   if (!vkr_harness_case_load(repo_root, case_path, &case_manifest, &error) ||
-      !vkr_harness_profile_load(repo_root, profile_path, &profile, &error)) {
+      !vkr_harness_profile_load_context(repo_root, profile_path,
+                                        case_manifest.asset_context, &profile,
+                                        &error)) {
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
@@ -1942,14 +1944,28 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                        .update = vkr_harness_child_update,
                    });
 
-  String8 scene = string8_create_from_cstr((const uint8_t *)case_manifest.scene,
-                                           string_length(case_manifest.scene));
+  char managed_scene[VKR_HARNESS_PATH_MAX];
+  const char *scene_path = case_manifest.scene;
+  if (case_manifest.asset_context ==
+      VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE) {
+    if (!vkr_harness_resolve_existing_path(repo_root, case_manifest.scene,
+                                           managed_scene, &error)) {
+      goto cleanup;
+    }
+    scene_path = managed_scene;
+  }
+  String8 scene = string8_create_from_cstr((const uint8_t *)scene_path,
+                                           string_length(scene_path));
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene,
                                 &application->frame_allocator,
                                 &child.scene_resource, &load_error)) {
     child.failed = true_v;
     string_format(child.failure, sizeof(child.failure), "scene.enqueue_failed");
+    String8 diagnostic = vkr_renderer_get_error_string(load_error);
+    vkr_harness_stderr("Scene request failed: %.*s (%.*s)\n",
+                       (int32_t)diagnostic.length, diagnostic.str,
+                       (int32_t)scene.length, scene.str);
   } else {
     vkr_standard_scene_runtime_run(application);
     if (!child.failed &&

@@ -1,4 +1,5 @@
 #include "renderer/resources/loaders/mtsdf_font_loader.h"
+#include "filesystem/vkr_asset_path.h"
 
 #include "containers/str.h"
 #include "core/logger.h"
@@ -617,8 +618,7 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
 
   String8 file_path_nt = string8_duplicate(temp_alloc, &request.file_path);
 
-  FilePath fp = file_path_create((const char *)file_path_nt.str, temp_alloc,
-                                 FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(temp_alloc, file_path_nt);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -679,6 +679,12 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
   MemCopy(metadata.glyphs.data, glyphs.data,
           glyphs.length * sizeof(VkrMtsdfGlyph));
 
+  request.atlas_path =
+      vkr_asset_path_resolve(temp_alloc, request.file_path, request.atlas_path);
+  if (!request.atlas_path.str) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    goto fail;
+  }
   String8 atlas_request = string8_create_formatted(
       temp_alloc, "%.*s?cs=linear&tc=data_mask&source=only",
       (int32_t)request.atlas_path.length, request.atlas_path.str);

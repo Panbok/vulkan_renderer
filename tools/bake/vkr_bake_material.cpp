@@ -693,7 +693,11 @@ bool8_t texture_store_find_or_load(VkrBakeTextureStore *store,
                                    VkrBakeMaterialError *out_error) {
   fs::path source(request.path);
   std::error_code error;
-  if (!source.is_absolute() && !fs::exists(source, error)) {
+  const bool8_t owner_relative =
+      request.path.rfind("./", 0) == 0 || request.path.rfind("../", 0) == 0;
+  if (owner_relative && !material_directory.empty()) {
+    source = (material_directory / source).lexically_normal();
+  } else if (!source.is_absolute() && !fs::exists(source, error)) {
     error.clear();
     const fs::path local = material_directory / source;
     if (fs::exists(local, error)) source = local;

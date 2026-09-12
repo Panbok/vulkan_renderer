@@ -10,6 +10,7 @@ extern "C" {
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <new>
 #include <string>
@@ -27,6 +28,8 @@ struct EntityImport {
   Vec3 position = {0.0f, 0.0f, 0.0f};
   VkrQuat rotation = vkr_quat_identity();
   Vec3 scale = {1.0f, 1.0f, 1.0f};
+  Mat4 matrix = {};
+  bool has_matrix = false;
   std::string mesh_path;
   bool skip_geometry = false;
   ShapeKind shape = ShapeKind::None;
@@ -226,6 +229,37 @@ bool parse_transform(const VkrJsonReader *entity, EntityImport *out) {
   VkrJsonReader object = {};
   if (!vkr_json_enter_object(&reader, &object))
     return false;
+  VkrJsonReader matrix = object;
+  if (vkr_json_find_field(&matrix, "matrix")) {
+    for (const char *field : {"pos", "rot", "scale"}) {
+      VkrJsonReader member = object;
+      if (vkr_json_find_field(&member, field)) {
+        return false;
+      }
+    }
+    if (!parse_float_array(&matrix, out->matrix.elements, 16u)) {
+      return false;
+    }
+    for (float32_t value : out->matrix.elements) {
+      if (!std::isfinite(value)) {
+        return false;
+      }
+    }
+    out->has_matrix = true;
+    const Mat4 local = out->matrix;
+    out->position =
+        vec3_new(local.elements[12], local.elements[13], local.elements[14]);
+    const Vec3 y =
+        vec3_new(local.elements[4], local.elements[5], local.elements[6]);
+    const Vec3 z =
+        vec3_new(local.elements[8], local.elements[9], local.elements[10]);
+    const float32_t sy = vec3_length(y), sz = vec3_length(z);
+    if (sy > 1e-8f && sz > 1e-8f) {
+      out->rotation =
+          vkr_quat_look_at(vec3_scale(z, -1.0f / sz), vec3_scale(y, 1.0f / sy));
+    }
+    return true;
+  }
   Vec3 value3 = {};
   if (read_vec3(&object, "pos", &value3))
     out->position = value3;
@@ -650,8 +684,10 @@ bool compute_entity_worlds(const std::vector<EntityImport> &entities,
       const EntityImport &entity = entities[index];
       Mat4 local = mat4_mul(mat4_translate(entity.position),
                             vkr_quat_to_mat4(entity.rotation));
-      if (include_scale)
-        local = mat4_mul(local, mat4_scale(entity.scale));
+      if (include_scale) {
+        local = entity.has_matrix ? entity.matrix
+                                  : mat4_mul(local, mat4_scale(entity.scale));
+      }
       (*out)[index] =
           entity.parent < 0 ? local : mat4_mul((*out)[entity.parent], local);
       for (float32_t value : (*out)[index].elements)
@@ -814,9 +850,17 @@ bool append_mesh(VkrBakeScene *scene, const std::string &path,
       .emit_triangle = append_mesh_triangle,
       .emit_light = append_mesh_light,
   };
-  if (!vkr_bake_mesh_decode(bytes.data(), bytes.size(), entity_world,
-                            next_instance, &callbacks, &context))
+  String8 source_path = {.str = (uint8_t *)path.data(), .length = path.size()};
+  if (!vkr_bake_mesh_decode_file(source_path, bytes.data(), bytes.size(),
+                                 entity_world, next_instance, &callbacks,
+                                 &context))
     return false;
+  const std::string sidecar = path + ".remap.json";
+  std::error_code sidecar_error;
+  if (std::filesystem::is_regular_file(sidecar, sidecar_error) &&
+      !append_unique_path(&scene->dependency_paths, sidecar)) {
+    return false;
+  }
   return append_unique_path(&scene->dependency_paths, path);
 }
 

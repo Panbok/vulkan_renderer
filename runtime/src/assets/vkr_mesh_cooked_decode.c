@@ -1,10 +1,12 @@
 #include "assets/vkr_mesh_cooked.h"
 
+#include "assets/vkr_mesh_decode.h"
 #include "core/logger.h"
+#include "core/vkr_json.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_asset_path.h"
 #include "platform/vkr_platform.h"
-#include "assets/vkr_mesh_decode.h"
 #include <math.h>
 
 #define VKR_MESH_COOKED_HEADER_SIZE 272u
@@ -1266,5 +1268,156 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   out_decoded->decoded_bytes =
       vertex_bytes + index_bytes +
       (uint64_t)range_count * sizeof(VkrGpuGeometryDecodeRecord);
+  return true_v;
+}
+
+static bool8_t mesh_remap_take(VkrJsonReader *reader, uint8_t token) {
+  vkr_json_skip_whitespace(reader);
+  if (reader->pos >= reader->length || reader->data[reader->pos] != token) {
+    return false_v;
+  }
+  ++reader->pos;
+  return true_v;
+}
+
+static bool8_t mesh_remap_materials(VkrJsonReader *reader,
+                                    VkrAllocator *scratch,
+                                    const VkrMeshCookedDecoded *decoded,
+                                    String8 *mapped) {
+  if (!mesh_remap_take(reader, '{')) {
+    return false_v;
+  }
+  if (mesh_remap_take(reader, '}')) {
+    return true_v;
+  }
+  for (;;) {
+    String8 source = {0};
+    String8 destination = {0};
+    if (!vkr_json_parse_string_decoded(reader, scratch, &source) ||
+        !source.length || !mesh_remap_take(reader, ':') ||
+        !vkr_json_parse_string_decoded(reader, scratch, &destination) ||
+        destination.length < 3 || destination.str[0] != '.' ||
+        destination.str[1] != '/' || destination.length > 32767) {
+      return false_v;
+    }
+    bool8_t found = false_v;
+    for (uint64_t i = 0; i < decoded->ranges.length; ++i) {
+      const String8 original = decoded->ranges.data[i].material_name;
+      if (original.length == source.length &&
+          MemCompare(original.str, source.str, source.length) == 0) {
+        if (mapped[i].str) {
+          return false_v;
+        }
+        mapped[i] = destination;
+        found = true_v;
+      }
+    }
+    if (!found) {
+      return false_v;
+    }
+    if (mesh_remap_take(reader, '}')) {
+      return true_v;
+    }
+    if (!mesh_remap_take(reader, ',')) {
+      return false_v;
+    }
+  }
+}
+
+bool8_t vkr_mesh_cooked_apply_material_remap(VkrAllocator *scratch,
+                                             String8 name,
+                                             VkrMeshCookedDecoded *decoded) {
+  if (!scratch || !decoded || !name.str || !name.length) {
+    return false_v;
+  }
+  String8 suffix = string8_create_formatted(scratch, "%.*s.remap.json",
+                                            (int)name.length, name.str);
+  if (!suffix.str) {
+    return false_v;
+  }
+  FilePath path = vkr_asset_path_file(scratch, suffix);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle file = {0};
+  FileError error = file_open(&path, mode, &file);
+  if (error == FILE_ERROR_NOT_FOUND) {
+    return true_v;
+  }
+  if (error != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  FileStats stats = {0};
+  if (file_stats(&path, &stats) != FILE_ERROR_NONE || stats.size > MB(16) ||
+      stats.size == 0) {
+    file_close(&file);
+    return false_v;
+  }
+  uint8_t *bytes = vkr_allocator_alloc(scratch, stats.size + 1,
+                                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  uint64_t read = 0;
+  if (!bytes ||
+      file_read_into(&file, bytes, stats.size + 1, &read) != FILE_ERROR_NONE ||
+      read != stats.size) {
+    file_close(&file);
+    return false_v;
+  }
+  file_close(&file);
+  VkrJsonReader reader = vkr_json_reader_create(bytes, read);
+  String8 *mapped = NULL;
+  if (decoded->ranges.length) {
+    mapped =
+        vkr_allocator_alloc(scratch, decoded->ranges.length * sizeof(*mapped),
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!mapped) {
+      return false_v;
+    }
+    MemZero(mapped, decoded->ranges.length * sizeof(*mapped));
+  }
+  if (!mesh_remap_take(&reader, '{')) {
+    return false_v;
+  }
+  bool8_t version_seen = false_v;
+  bool8_t materials_seen = false_v;
+  for (;;) {
+    String8 key = {0};
+    if (!vkr_json_parse_string_decoded(&reader, scratch, &key) ||
+        !mesh_remap_take(&reader, ':')) {
+      return false_v;
+    }
+    if (key.length == 7 && MemCompare(key.str, "version", 7) == 0) {
+      if (version_seen || !mesh_remap_take(&reader, '1')) {
+        return false_v;
+      }
+      version_seen = true_v;
+    } else if (key.length == 9 && MemCompare(key.str, "materials", 9) == 0) {
+      if (materials_seen ||
+          !mesh_remap_materials(&reader, scratch, decoded, mapped)) {
+        return false_v;
+      }
+      materials_seen = true_v;
+    } else {
+      return false_v;
+    }
+    if (mesh_remap_take(&reader, '}')) {
+      break;
+    }
+    if (!mesh_remap_take(&reader, ',')) {
+      return false_v;
+    }
+  }
+  vkr_json_skip_whitespace(&reader);
+  if (!version_seen || !materials_seen || reader.pos != reader.length) {
+    return false_v;
+  }
+  for (uint64_t i = 0; i < decoded->ranges.length; ++i) {
+    if (decoded->ranges.data[i].material_name.length && !mapped[i].str) {
+      return false_v;
+    }
+  }
+  for (uint64_t i = 0; i < decoded->ranges.length; ++i) {
+    if (mapped[i].str) {
+      decoded->ranges.data[i].material_name = mapped[i];
+    }
+  }
   return true_v;
 }

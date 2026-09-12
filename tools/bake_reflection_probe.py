@@ -68,14 +68,14 @@ def atomic_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
-def valid_scene_manifest(manifest, scene=None):
+def valid_scene_manifest(manifest, scene=None, root=REPO):
     if not isinstance(manifest, dict):
         raise ValueError('Scene-content manifest is not an object')
     if manifest.get('schema_version') != 1 or manifest.get('kind') != SCENE_MANIFEST_KIND:
         raise ValueError('Unexpected scene-content manifest contract')
     if not isinstance(manifest.get('scene'), str) or not manifest['scene']:
         raise ValueError('Scene-content manifest is missing its scene')
-    if scene is not None and manifest['scene'] != scene.relative_to(REPO).as_posix():
+    if scene is not None and manifest['scene'] != scene.relative_to(root).as_posix():
         raise ValueError('Scene-content manifest scene differs from the requested scene')
     if not isinstance(manifest.get('sha256'), str) or not manifest['sha256'].startswith('sha256:'):
         raise ValueError('Scene-content manifest is missing its digest')
@@ -86,7 +86,7 @@ def valid_scene_manifest(manifest, scene=None):
     for asset in assets:
         if not isinstance(asset, dict) or not isinstance(asset.get('path'), str):
             raise ValueError('Scene-content manifest contains an invalid asset')
-        path = confined_path(REPO, asset['path'], 'Scene asset')
+        path = confined_path(root, asset['path'], 'Scene asset')
         if path in paths or not path.is_file() or not isinstance(asset.get('bytes'), int):
             raise ValueError('Scene-content manifest contains an unavailable asset')
         if (asset['bytes'] < 0 or asset['bytes'] >= 1 << 64 or
@@ -105,8 +105,8 @@ def valid_scene_manifest(manifest, scene=None):
     return paths
 
 
-def protect_source_assets(output, sidecar, scene, manifest):
-    sources = valid_scene_manifest(manifest, scene)
+def protect_source_assets(output, sidecar, scene, manifest, root=REPO):
+    sources = valid_scene_manifest(manifest, scene, root)
     sources.add(scene)
     conflicts = [path for path in (output, sidecar) if path in sources]
     if conflicts:
@@ -184,16 +184,16 @@ def capture_from_report(run, report, face, size):
             'metadata_sha256': capture['metadata_sha256']}
 
 
-def check(output, sidecar):
+def check(output, sidecar, root=REPO):
     try:
         metadata = json.loads(sidecar.read_text())
         if (metadata.get('schema_version') != 1 or metadata.get('recipe_version') != RECIPE_VERSION or
                 metadata.get('source_channel') != CHANNEL or digest(output) != metadata.get('output_sha256')):
             return False
-        scene = confined_path(REPO, metadata.get('scene'), 'Bake scene')
-        if not scene.is_file() or not scene.is_relative_to(REPO / 'assets' / 'scenes'):
+        scene = confined_path(root, metadata.get('scene'), 'Bake scene')
+        if not scene.is_file() or (root == REPO and not scene.is_relative_to(REPO / 'assets' / 'scenes')):
             return False
-        protect_source_assets(output, sidecar, scene, metadata.get('scene_manifest'))
+        protect_source_assets(output, sidecar, scene, metadata.get('scene_manifest'), root)
         captures = metadata.get('captures')
         if not isinstance(captures, list) or [item.get('face') for item in captures] != list(FACES):
             return False
@@ -207,8 +207,9 @@ def check(output, sidecar):
 
 
 def bake(args, output, sidecar):
-    scene = confined_path(REPO, args.scene, 'Scene')
-    if not scene.is_file() or not scene.is_relative_to(REPO / 'assets' / 'scenes'):
+    root = Path(args.workspace_root).resolve(strict=True) if args.workspace_root else REPO
+    scene = confined_path(root, args.scene, 'Scene')
+    if not scene.is_file() or (root == REPO and not scene.is_relative_to(REPO / 'assets' / 'scenes')):
         raise ValueError('--scene must name an existing scene under assets/scenes')
     if not args.position or not all(math.isfinite(value) for value in args.position):
         raise ValueError('--position requires three finite world coordinates')
@@ -220,10 +221,15 @@ def bake(args, output, sidecar):
     harness = executable('vkr_harness', args.harness)
     packer = executable('vkr_hdr_cube_packer', args.packer)
     job_id = uuid.uuid4().hex
-    cases = REPO / 'tools' / 'cases' / 'local' / ('probe_bake_' + job_id)
-    job = REPO / 'build' / '_artifacts' / 'probe_bake' / job_id
+    job = root / 'jobs' / ('probe_bake_' + job_id) if args.workspace_root else REPO / 'build' / '_artifacts' / 'probe_bake' / job_id
+    cases = job / 'cases' if args.workspace_root else REPO / 'tools' / 'cases' / 'local' / ('probe_bake_' + job_id)
     cases.mkdir(parents=True)
-    job.mkdir(parents=True)
+    job.mkdir(parents=True, exist_ok=True)
+    profile = 'tools/profiles/local-offscreen.json'
+    if args.workspace_root:
+        profile_source = Path(args.profile).resolve() if args.profile else Path(__file__).resolve().parent / 'profiles' / 'local-offscreen.json'
+        shutil.copyfile(profile_source, job / 'profile.json')
+        profile = (job / 'profile.json').relative_to(root).as_posix()
     captures = []
     runs = []
     scene_manifest = None
@@ -236,7 +242,7 @@ def bake(args, output, sidecar):
             case = {
                 'schema_version': 1, 'id': 'local.probe_bake.' + face, 'suite': 'local',
                 'description': 'Static HDR probe face; global illumination retained, local probes disabled.',
-                'scene': scene.relative_to(REPO).as_posix(), 'seed': 1,
+                'scene': scene.relative_to(root).as_posix(), 'seed': 1,
                 'resolution': [args.size, args.size], 'boot': 'full', 'target': 'offscreen',
                 'present': 'none', 'target_image_count': 2, 'cache': 'isolated_cold',
                 'fixed_delta': 1 / 60, 'repetitions': 1, 'repetition_timeout_ms': 300000,
@@ -252,13 +258,17 @@ def bake(args, output, sidecar):
                 'captures': [{'at_frame': 0, 'channels': [CHANNEL]}],
                 'assertions': [{'metric': 'visibility.gbuffer.resolve_invalid', 'stat': 'max', 'max': 0}],
             }
+            if args.workspace_root:
+                case['asset_context'] = 'managed_workspace'
             path = cases / (face + '.case.json')
             path.write_text(json.dumps(case, indent=2) + '\n')
             shutil.copyfile(path, job / path.name)
-            command = [str(harness), 'snapshot', '--case', path.relative_to(REPO).as_posix(),
-                       '--profile', 'tools/profiles/local-offscreen.json']
+            command = [str(harness), 'snapshot', '--case', path.relative_to(root).as_posix(),
+                       '--profile', profile]
+            if args.workspace_root:
+                command += ['--repo-root', str(root)]
             print(f'Capturing {face} at {args.size}x{args.size}', flush=True)
-            result = subprocess.run(command, cwd=REPO, env=environment, text=True,
+            result = subprocess.run(command, cwd=root, env=environment, text=True,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=330)
             (job / (face + '.log')).write_text(result.stdout)
             if result.returncode:
@@ -268,8 +278,8 @@ def bake(args, output, sidecar):
             if not publications:
                 raise RuntimeError(f'{face} produced no report; see {job}')
             publication = publications[-1]
-            report_path = confined_path(REPO, publication.get('report'), 'Snapshot report')
-            snapshot_root = REPO / 'build' / '_artifacts' / 'snapshot'
+            report_path = confined_path(root, publication.get('report'), 'Snapshot report')
+            snapshot_root = root / 'build' / '_artifacts' / 'snapshot'
             if not report_path.is_relative_to(snapshot_root.resolve()) or not report_path.is_file():
                 raise RuntimeError('Capture report is outside the snapshot artifact tree')
             if digest(report_path) != publication.get('sha256'):
@@ -285,7 +295,7 @@ def bake(args, output, sidecar):
             run = report_path.parent
             runs.append(run)
             manifest = json.loads((run / 'scene-content-manifest.json').read_text())
-            valid_scene_manifest(manifest, scene)
+            valid_scene_manifest(manifest, scene, root)
             if scene_manifest is not None and scene_manifest != manifest:
                 raise RuntimeError('Scene inputs changed during the six captures; rebake from a stable scene')
             scene_manifest = manifest
@@ -295,14 +305,14 @@ def bake(args, output, sidecar):
             capture['provenance'] = current_provenance
             captures.append(capture)
             shutil.copyfile(report_path, job / (face + '.report.json'))
-        protect_source_assets(output, sidecar, scene, scene_manifest)
+        protect_source_assets(output, sidecar, scene, scene_manifest, root)
         output.parent.mkdir(parents=True, exist_ok=True)
         command = [str(packer), '--size', str(args.size), '--output', str(output)]
         for capture in captures:
             command += ['--face', capture['raw']]
-        subprocess.run(command, cwd=REPO, check=True)
+        subprocess.run(command, cwd=root, check=True)
         metadata = {'schema_version': 1, 'recipe_version': RECIPE_VERSION,
-                    'scene': scene.relative_to(REPO).as_posix(), 'position': args.position,
+                    'scene': scene.relative_to(root).as_posix(), 'position': args.position,
                     'size': args.size, 'near_plane': args.near_plane, 'far_plane': args.far_plane,
                     'lighting': 'direct + emissive + global environment; local probes disabled',
                     'source_channel': CHANNEL, 'capture_to_cube': 'flip each face vertically once',
@@ -322,6 +332,8 @@ def bake(args, output, sidecar):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scene')
+    parser.add_argument('--workspace-root', help='Explicit .vkreditor root for managed scene/capture inputs')
+    parser.add_argument('--profile', help='Profile to copy into the managed job')
     parser.add_argument('--position', type=float, nargs=3)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--near-plane', type=float, default=.1)
@@ -334,7 +346,8 @@ def main():
     try:
         output, sidecar = output_paths(args.output)
         if args.check:
-            current = check(output, sidecar)
+            root = Path(args.workspace_root).resolve(strict=True) if args.workspace_root else REPO
+            current = check(output, sidecar, root)
             print('current' if current else 'stale')
             return 0 if current else 1
         if not args.scene:

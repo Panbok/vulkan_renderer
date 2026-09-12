@@ -50,18 +50,24 @@ vkr_internal int vkr_harness_snapshot_spawn(
       {.name = "VKR_FXAA_DISABLED",
        .value = renderer->fxaa_enabled ? "0" : "1"},
   };
-  VkrPlatformEnvironmentVariable environment[ArrayCount(environment_defaults) + 1u] = {0};
+  VkrPlatformEnvironmentVariable
+      environment[ArrayCount(environment_defaults) + 1u] = {0};
   MemCopy(environment, environment_defaults, sizeof(environment_defaults));
   uint32_t environment_count = ArrayCount(environment_defaults);
   if (cache_path && cache_path[0]) {
     environment[environment_count++] = (VkrPlatformEnvironmentVariable){
         .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
   }
+  char renderer_directory[VKR_HARNESS_PATH_MAX];
+  if (!vkr_harness_renderer_directory(executable, repo_root,
+                                      renderer_directory)) {
+    return VKR_HARNESS_EXIT_ERROR;
+  }
   const VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
       .argument_count = argument_count,
-      .working_directory = repo_root,
+      .working_directory = renderer_directory,
       .stdout_path = stdout_path,
       .stderr_path = stderr_path,
       .environment = environment,
@@ -188,7 +194,9 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
   VkrHarnessCase case_manifest = {0};
   VkrHarnessProfile profile = {0};
   if (!vkr_harness_case_load(repo_root, case_path, &case_manifest, &error) ||
-      !vkr_harness_profile_load(repo_root, profile_path, &profile, &error)) {
+      !vkr_harness_profile_load_context(repo_root, profile_path,
+                                        case_manifest.asset_context, &profile,
+                                        &error)) {
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
@@ -282,9 +290,9 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
   char scene_manifest_path[VKR_HARNESS_PATH_MAX];
   string_format(scene_manifest_path, sizeof(scene_manifest_path),
                 "%s/scene-content-manifest.json", run_root);
-  if (!vkr_harness_scene_manifest_build(repo_root, case_manifest.scene,
-                                        summary_arena, &scene_manifest,
-                                        &error) ||
+  if (!vkr_harness_scene_manifest_build_context(
+          repo_root, case_manifest.scene, case_manifest.asset_context,
+          summary_arena, &scene_manifest, &error) ||
       !vkr_harness_scene_manifest_write(scene_manifest_path, &scene_manifest,
                                         &error) ||
       !vkr_harness_report_add_artifact(
@@ -537,9 +545,8 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     if (*cursor == '\\')
       *cursor = '/';
   uint64_t repo_root_length = string_length(repo_root);
-  while (repo_root_length > 0u &&
-         (repo_root[repo_root_length - 1u] == '/' ||
-          repo_root[repo_root_length - 1u] == '\\')) {
+  while (repo_root_length > 0u && (repo_root[repo_root_length - 1u] == '/' ||
+                                   repo_root[repo_root_length - 1u] == '\\')) {
     repo_root_length--;
   }
   const char *relative = final_report + repo_root_length;

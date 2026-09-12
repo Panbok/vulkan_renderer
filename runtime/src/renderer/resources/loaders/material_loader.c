@@ -1,7 +1,8 @@
-#include <math.h>
 #include "renderer/resources/loaders/material_loader.h"
 #include "containers/str.h"
+#include "filesystem/vkr_asset_path.h"
 #include "renderer/systems/vkr_material_system.h"
+#include <math.h>
 
 #define VKR_MATERIAL_EXTENSION "mt"
 
@@ -1751,8 +1752,7 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   String8 material_name = {0};
   vkr_get_stable_material_name(out_data->name, path, &material_name);
 
-  FilePath fp = file_path_create((const char *)path.str, allocator,
-                                 FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(allocator, path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle fh = {0};
@@ -2140,6 +2140,22 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
     return false_v;
   }
   out_data->pbr.anisotropy_rotation = remainderf(out_data->pbr.anisotropy_rotation, 6.283185307179586f);
+  for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    String8 raw = vkr_material_make_string8_from_path_buffer(
+        out_data->texture_paths[slot]);
+    if (!raw.length) {
+      continue;
+    }
+    String8 resolved = vkr_asset_path_resolve(allocator, path, raw);
+    if (!resolved.str || !vkr_material_copy_string8_to_path_buffer(
+                             resolved, out_data->texture_paths[slot])) {
+      log_error(
+          "Material '%.*s': texture dependency path is invalid or too long",
+          (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+  }
   out_data->parse_success = true_v;
   return true_v;
 }

@@ -138,7 +138,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
                                       application->frame_arena);
   if (!vkr_render_assets_initialize(
           &application->assets, &application->renderer.asset_publisher, &device,
-          &application->job_system, metrics_producers))
+          &application->job_system, metrics_producers,
+          application->config->bootstrap_font_directory))
     return false_v;
   VkrCameraSystemConfig camera_config = {.max_camera_count = 24u};
   if (!vkr_camera_registry_init(&camera_config, &application->camera_system) ||

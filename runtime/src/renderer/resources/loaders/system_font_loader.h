@@ -17,7 +17,10 @@
 #define VKR_SYSTEM_FONT_DEFAULT_ATLAS_SIZE 1024
 #define VKR_SYSTEM_FONT_MAX_ATLAS_SIZE 4096
 #define VKR_SYSTEM_FONT_FIRST_CODEPOINT 32
+/* Bounded UI coverage: Latin, Greek, and Cyrillic where the face provides them.
+ */
 #define VKR_SYSTEM_FONT_LAST_CODEPOINT 255
+#define VKR_SYSTEM_FONT_UI_LAST_CODEPOINT 0x052fu
 #define VKR_SYSTEM_FONT_GLYPH_COUNT                                            \
   (VKR_SYSTEM_FONT_LAST_CODEPOINT - VKR_SYSTEM_FONT_FIRST_CODEPOINT + 1)
 #define VKR_SYSTEM_FONT_ATLAS_PADDING 1

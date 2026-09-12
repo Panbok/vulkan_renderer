@@ -354,7 +354,8 @@ def bake(args, output, sidecar, manifest_destination):
     validate_recipe(args)
     scene = existing_path(args.scene, '--scene')
     baker = executable(args.baker)
-    job = REPO / 'build' / '_artifacts' / 'diffuse_volume_bake' / uuid.uuid4().hex
+    job = (Path(args.workspace_root).resolve() / 'jobs' / ('diffuse_' + uuid.uuid4().hex)
+           if args.workspace_root else REPO / 'build' / '_artifacts' / 'diffuse_volume_bake' / uuid.uuid4().hex)
     job.mkdir(parents=True)
     inspect_path = run_inspect(baker, args, job, 'inspect')
     inspect, dependencies = inspect_manifest(inspect_path, scene)
@@ -395,7 +396,8 @@ def inspect(args, manifest_destination):
     validate_recipe(args)
     scene = existing_path(args.scene, '--scene')
     baker = executable(args.baker)
-    job = REPO / 'build' / '_artifacts' / 'diffuse_volume_bake' / uuid.uuid4().hex
+    job = (Path(args.workspace_root).resolve() / 'jobs' / ('diffuse_' + uuid.uuid4().hex)
+           if args.workspace_root else REPO / 'build' / '_artifacts' / 'diffuse_volume_bake' / uuid.uuid4().hex)
     job.mkdir(parents=True)
     temporary_manifest = run_inspect(baker, args, job, 'inspect')
     manifest, dependencies = inspect_manifest(temporary_manifest, scene)
@@ -410,6 +412,7 @@ def inspect(args, manifest_destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scene')
+    parser.add_argument('--workspace-root', help='Keep managed bake evidence under this .vkreditor root')
     parser.add_argument('--output')
     parser.add_argument('--manifest')
     parser.add_argument('--baker')

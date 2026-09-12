@@ -593,8 +593,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   int32_t ibl_probe_limit_token = -1;
   int32_t motion_blur_entity_velocity_token = -1;
   if (!vkr_harness_manifest_string(doc, token, "display_output", false_v,
-                                    renderer->display_output,
-                                    sizeof(renderer->display_output), error) ||
+                                   renderer->display_output,
+                                   sizeof(renderer->display_output), error) ||
       !vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_u64(doc, token, "editor_stop_frame", false_v,
@@ -685,15 +685,16 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
                                  &renderer->dof_enabled, error) ||
       !vkr_harness_manifest_f64(doc, token, "dof_focus_distance", false_v,
                                 &dof_focus_distance, error) ||
-      !vkr_harness_manifest_f64(doc, token, "dof_f_stop", false_v,
-                                &dof_f_stop, error) ||
+      !vkr_harness_manifest_f64(doc, token, "dof_f_stop", false_v, &dof_f_stop,
+                                error) ||
       !vkr_harness_manifest_bool(doc, token, "motion_blur_enabled", false_v,
                                  &renderer->motion_blur_enabled, error) ||
-      !vkr_harness_manifest_f64(doc, token, "motion_blur_shutter_angle", false_v,
-                                &motion_blur_shutter_angle, error) ||
+      !vkr_harness_manifest_f64(doc, token, "motion_blur_shutter_angle",
+                                false_v, &motion_blur_shutter_angle, error) ||
       !vkr_harness_manifest_string(doc, token, "motion_blur_entity", false_v,
                                    renderer->motion_blur_entity,
-                                   sizeof(renderer->motion_blur_entity), error) ||
+                                   sizeof(renderer->motion_blur_entity),
+                                   error) ||
       !vkr_harness_manifest_field(doc, token, "motion_blur_entity_velocity",
                                   false_v, &motion_blur_entity_velocity_token,
                                   error) ||
@@ -717,10 +718,9 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   }
   if (motion_blur_entity_velocity_token >= 0) {
     Vec3 velocity = {0};
-    if (!vkr_harness_manifest_vec3(doc, motion_blur_entity_velocity_token,
-                                   &velocity,
-                                   "$.renderer.motion_blur_entity_velocity",
-                                   error)) {
+    if (!vkr_harness_manifest_vec3(
+            doc, motion_blur_entity_velocity_token, &velocity,
+            "$.renderer.motion_blur_entity_velocity", error)) {
       return false_v;
     }
     renderer->motion_blur_entity_velocity_x = velocity.x;
@@ -819,12 +819,11 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
        renderer->motion_blur_entity_velocity_y == 0.0f &&
        renderer->motion_blur_entity_velocity_z == 0.0f);
   if (!preset_valid || !mode_valid || !backend_valid || !upscaler_valid ||
-      !display_output_valid ||
-      cascades < 1u || cascades > 8u || !exposure_mode_valid ||
-      !display_transform_valid || !automatic_controls_valid ||
-      !bloom_controls_valid || !gtao_controls_valid || !dof_focus_valid ||
-      !dof_f_stop_valid || !motion_blur_controls_valid ||
-      !motion_blur_entity_valid ||
+      !display_output_valid || cascades < 1u || cascades > 8u ||
+      !exposure_mode_valid || !display_transform_valid ||
+      !automatic_controls_valid || !bloom_controls_valid ||
+      !gtao_controls_valid || !dof_focus_valid || !dof_f_stop_valid ||
+      !motion_blur_controls_valid || !motion_blur_entity_valid ||
       (ibl_probe_limit_token >= 0 &&
        ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
       !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
@@ -842,7 +841,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
         "Renderer backend, preset, render/exposure/display-transform mode, "
-        "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/image-sharpness controls, "
+        "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/"
+        "image-sharpness controls, "
         "probe limit, or cascade count is invalid");
     return false_v;
   }
@@ -1127,6 +1127,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
                                                    "suite",
                                                    "description",
                                                    "scene",
+                                                   "asset_context",
                                                    "seed",
                                                    "resolution",
                                                    "content_scale",
@@ -1178,6 +1179,21 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
   char target[32];
   char present[16];
   char cache[24];
+  char asset_context[32] = "legacy";
+  if (!vkr_harness_manifest_string(&doc, 0, "asset_context", false_v,
+                                   asset_context, sizeof(asset_context),
+                                   out_error)) {
+    return false_v;
+  }
+  if (string_equals(asset_context, "managed_workspace")) {
+    out_case->asset_context = VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
+  } else if (!string_equals(asset_context, "legacy") && asset_context[0]) {
+    vkr_harness_error_set(out_error, "case.asset_context", "$.asset_context",
+                          "Expected legacy or managed_workspace asset context");
+    return false_v;
+  }
+  const bool8_t managed =
+      out_case->asset_context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
   if (!vkr_harness_manifest_u64(&doc, 0, "schema_version", true_v, &schema,
                                 out_error) ||
       !vkr_harness_manifest_string(&doc, 0, "id", true_v, out_case->id,
@@ -1229,7 +1245,10 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       !vkr_harness_manifest_id_valid(out_case->id) ||
       !vkr_harness_manifest_component_valid(out_case->suite) ||
       !vkr_harness_path_is_safe_relative(out_case->scene) ||
-      !string_n_equals(out_case->scene, "assets/scenes/", 14u) ||
+      !(managed ? (string_n_equals(out_case->scene, "projects/", 9u) ||
+                   string_n_equals(out_case->scene, "jobs/", 5u) ||
+                   string_n_equals(out_case->scene, "staging/", 8u))
+                : string_n_equals(out_case->scene, "assets/scenes/", 14u)) ||
       !string_n_equals(out_case->id, out_case->suite,
                        string_length(out_case->suite)) ||
       out_case->id[string_length(out_case->suite)] != '.' ||
@@ -1781,6 +1800,19 @@ bool8_t vkr_harness_case_load(const char *repository_root,
                                          scene, out_error)) {
     return false_v;
   }
+  if (out_case->asset_context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE) {
+    char workspace[VKR_HARNESS_PATH_MAX];
+    if (!(string_n_equals(relative_manifest_path, "jobs/", 5u) ||
+          string_n_equals(relative_manifest_path, "staging/", 8u)) ||
+        !vkr_harness_resolve_existing_path(repository_root, "workspace.json",
+                                           workspace, out_error)) {
+      vkr_harness_error_set(out_error, "case.managed_root", "$.scene",
+                            "Managed cases require a workspace root and a "
+                            "jobs/ or staging/ case path");
+      return false_v;
+    }
+    return true_v;
+  }
   const char prefix[] = "tools/cases/";
   if (!string_n_equals(relative_manifest_path, prefix, sizeof(prefix) - 1u)) {
     vkr_harness_error_set(out_error, "case.root", "$.suite",
@@ -1798,10 +1830,11 @@ bool8_t vkr_harness_case_load(const char *repository_root,
   return true_v;
 }
 
-bool8_t vkr_harness_profile_load(const char *repository_root,
-                                 const char *relative_manifest_path,
-                                 VkrHarnessProfile *out_profile,
-                                 VkrHarnessError *out_error) {
+bool8_t vkr_harness_profile_load_context(const char *repository_root,
+                                         const char *relative_manifest_path,
+                                         VkrHarnessAssetContext context,
+                                         VkrHarnessProfile *out_profile,
+                                         VkrHarnessError *out_error) {
   char path[VKR_HARNESS_PATH_MAX];
   if (!vkr_harness_resolve_existing_path(
           repository_root, relative_manifest_path, path, out_error)) {
@@ -1821,6 +1854,19 @@ bool8_t vkr_harness_profile_load(const char *repository_root,
   if (!parsed) {
     return false_v;
   }
+  if (context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE) {
+    char workspace[VKR_HARNESS_PATH_MAX];
+    if ((string_n_equals(relative_manifest_path, "jobs/", 5u) ||
+         string_n_equals(relative_manifest_path, "staging/", 8u)) &&
+        vkr_harness_resolve_existing_path(repository_root, "workspace.json",
+                                          workspace, out_error)) {
+      return true_v;
+    }
+    vkr_harness_error_set(
+        out_error, "profile.managed_root", "$.id",
+        "Managed profiles require job-owned paths within a workspace");
+    return false_v;
+  }
   const char prefix[] = "tools/profiles/";
   if (!string_n_equals(relative_manifest_path, prefix, sizeof(prefix) - 1u)) {
     vkr_harness_error_set(out_error, "profile.root", "$.id",
@@ -1828,4 +1874,13 @@ bool8_t vkr_harness_profile_load(const char *repository_root,
     return false_v;
   }
   return true_v;
+}
+
+bool8_t vkr_harness_profile_load(const char *repository_root,
+                                 const char *relative_manifest_path,
+                                 VkrHarnessProfile *out_profile,
+                                 VkrHarnessError *out_error) {
+  return vkr_harness_profile_load_context(
+      repository_root, relative_manifest_path, VKR_HARNESS_ASSET_CONTEXT_LEGACY,
+      out_profile, out_error);
 }

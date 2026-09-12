@@ -1,3 +1,4 @@
+#include "core/vkr_json.h"
 #include "vkr_harness.h"
 
 #define VKR_HARNESS_FNV1A64_OFFSET_BASIS 0xcbf29ce484222325ull
@@ -11,15 +12,31 @@ static bool8_t vkr_harness_scene_path_below(const char *root,
           path[root_length] == '\\');
 }
 
-static bool8_t vkr_harness_scene_asset_extension(const char *path) {
+static bool8_t
+vkr_harness_scene_asset_extension(const char *path,
+                                  VkrHarnessAssetContext context) {
   static const char *extensions[] = {
-      ".json",    ".gltf", ".glb", ".bin", ".obj", ".mtl",  ".mt",   ".png",
-      ".jpg",     ".jpeg", ".bmp", ".tga", ".hdr", ".ktx",  ".ktx2", ".vkt",
-      ".fontcfg", ".ttf",  ".ttc", ".fnt", ".vkf", ".vkfa", ".vkdv",
+      ".json", ".gltf",    ".glb", ".bin", ".obj", ".mtl", ".mt",   ".png",
+      ".jpg",  ".jpeg",    ".bmp", ".tga", ".hdr", ".ktx", ".ktx2", ".vkt",
+      ".vkb",  ".fontcfg", ".ttf", ".ttc", ".fnt", ".vkf", ".vkfa", ".vkdv",
   };
   uint64_t length = 0u;
-  while (path[length] && path[length] != '?' && path[length] != '#') {
-    length++;
+  uint64_t filename = 0u;
+  while (path[length]) {
+    if (path[length] == '/' || path[length] == '\\') {
+      filename = length + 1u;
+    }
+    ++length;
+  }
+  // Managed workspace directories may contain query punctuation; sampler
+  // queries begin only after the final path component.
+  uint64_t query_begin =
+      context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE ? filename : 0u;
+  for (uint64_t i = query_begin; i < length; ++i) {
+    if (path[i] == '?' || path[i] == '#') {
+      length = i;
+      break;
+    }
   }
   for (uint32_t i = 0; i < ArrayCount(extensions); ++i) {
     const uint64_t suffix_length = string_length(extensions[i]);
@@ -100,21 +117,29 @@ static bool8_t vkr_harness_scene_generated_material_source(
 
 static bool8_t vkr_harness_scene_manifest_resolve(
     const char *resolved_root, const char *owner_relative,
-    const char *reference, char out_relative[VKR_HARNESS_PATH_MAX],
+    const char *reference, VkrHarnessAssetContext context,
+    char out_relative[VKR_HARNESS_PATH_MAX],
     char out_absolute[VKR_HARNESS_PATH_MAX]) {
   if (!reference || reference[0] == '\0' || string_find(reference, "://") ||
       string_n_equals(reference, "data:", 5u)) {
     return false_v;
   }
 
+  const bool8_t managed =
+      context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
+  const bool8_t managed_absolute =
+      managed && (reference[0] == '/' || (reference[0] && reference[1] == ':'));
   char clean[VKR_HARNESS_PATH_MAX];
   uint32_t clean_length = 0u;
   for (uint32_t i = 0;
-       reference[i] && reference[i] != '?' && reference[i] != '#'; ++i) {
+       reference[i] &&
+       (managed_absolute || (reference[i] != '?' && reference[i] != '#'));
+       ++i) {
     if (clean_length + 1u >= sizeof(clean)) {
       return false_v;
     }
-    if (reference[i] == '%' && reference[i + 1u] && reference[i + 2u]) {
+    if (!managed_absolute && reference[i] == '%' && reference[i + 1u] &&
+        reference[i + 2u]) {
       const char hi = reference[i + 1u];
       const char lo = reference[i + 2u];
       const int32_t hi_value = hi >= '0' && hi <= '9'   ? hi - '0'
@@ -126,6 +151,9 @@ static bool8_t vkr_harness_scene_manifest_resolve(
                                : lo >= 'A' && lo <= 'F' ? lo - 'A' + 10
                                                         : -1;
       if (hi_value >= 0 && lo_value >= 0) {
+        if (((hi_value << 4) | lo_value) == 0) {
+          return false_v;
+        }
         clean[clean_length++] = (char)((hi_value << 4) | lo_value);
         i += 2u;
         continue;
@@ -134,13 +162,19 @@ static bool8_t vkr_harness_scene_manifest_resolve(
     clean[clean_length++] = reference[i] == '\\' ? '/' : reference[i];
   }
   clean[clean_length] = '\0';
-  if (!vkr_harness_scene_asset_extension(clean)) {
+  if (!vkr_harness_scene_asset_extension(clean, context)) {
     return false_v;
   }
 
   char candidate[VKR_HARNESS_PATH_MAX];
-  if (string_n_equals(clean, "assets/", 7u) ||
-      string_n_equals(clean, "tests/", 6u)) {
+  if (managed && (clean[0] == '/' || (clean[0] && clean[1] == ':'))) {
+    string_format(candidate, sizeof(candidate), "%s", clean);
+  } else if ((managed && (string_n_equals(clean, "projects/", 9u) ||
+                          string_n_equals(clean, "jobs/", 5u) ||
+                          string_n_equals(clean, "staging/", 8u) ||
+                          string_n_equals(clean, "editor/", 7u))) ||
+             string_n_equals(clean, "assets/", 7u) ||
+             string_n_equals(clean, "tests/", 6u)) {
     if (string_format(candidate, sizeof(candidate), "%s/%s", resolved_root,
                       clean) <= 0) {
       return false_v;
@@ -159,6 +193,9 @@ static bool8_t vkr_harness_scene_manifest_resolve(
 
   if (!vkr_harness_realpath(candidate, out_absolute) ||
       !vkr_harness_scene_path_below(resolved_root, out_absolute)) {
+    if (managed) {
+      return false_v;
+    }
     const uint64_t owner_length = string_length(owner_relative);
     const bool8_t owner_is_mtl =
         owner_length >= 4u &&
@@ -271,7 +308,8 @@ static bool8_t vkr_harness_scene_manifest_add_reference(
   char relative[VKR_HARNESS_PATH_MAX];
   char absolute[VKR_HARNESS_PATH_MAX];
   if (!vkr_harness_scene_manifest_resolve(resolved_root, owner, reference,
-                                          relative, absolute)) {
+                                          manifest->asset_context, relative,
+                                          absolute)) {
     if (required) {
       char generated_source[VKR_HARNESS_PATH_MAX];
       if (vkr_harness_scene_generated_material_source(owner,
@@ -347,7 +385,8 @@ static bool8_t vkr_harness_scene_manifest_add_gltf_material_cache(
     char relative[VKR_HARNESS_PATH_MAX];
     char absolute[VKR_HARNESS_PATH_MAX];
     if (!vkr_harness_scene_manifest_resolve(resolved_root, gltf_relative,
-                                            reference, relative, absolute)) {
+                                            reference, manifest->asset_context,
+                                            relative, absolute)) {
       break;
     }
     if (!vkr_harness_scene_manifest_enqueue(manifest, relative, out_error)) {
@@ -464,14 +503,15 @@ vkr_harness_scene_manifest_digest(VkrHarnessSceneManifest *manifest) {
   vkr_harness_sha256_end(&hash, manifest->sha256);
 }
 
-bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
-                                         const char *scene, Arena *arena,
-                                         VkrHarnessSceneManifest *out_manifest,
-                                         VkrHarnessError *out_error) {
+bool8_t vkr_harness_scene_manifest_build_context(
+    const char *repo_root, const char *scene, VkrHarnessAssetContext context,
+    Arena *arena, VkrHarnessSceneManifest *out_manifest,
+    VkrHarnessError *out_error) {
   if (!repo_root || !scene || !arena || !out_manifest) {
     return false_v;
   }
   MemZero(out_manifest, sizeof(*out_manifest));
+  out_manifest->asset_context = context;
   out_manifest->assets = arena_alloc(
       arena, sizeof(VkrHarnessSceneAsset) * VKR_HARNESS_MAX_SCENE_ASSETS,
       ARENA_MEMORY_TAG_ARRAY);
@@ -495,6 +535,11 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
   if (!file_arena) {
     return false_v;
   }
+  VkrAllocator file_allocator = {.ctx = file_arena};
+  if (!vkr_allocator_arena(&file_allocator)) {
+    arena_destroy(file_arena);
+    return false_v;
+  }
   bool8_t ok = true_v;
   for (uint32_t asset_index = 0; ok && asset_index < out_manifest->asset_count;
        ++asset_index) {
@@ -510,7 +555,8 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
         vkr_harness_scene_path_ends_with(asset->path, ".mt") ||
         vkr_harness_scene_path_ends_with(asset->path, ".fontcfg") ||
         vkr_harness_scene_path_ends_with(asset->path, ".fnt");
-    if ((vkr_harness_scene_path_ends_with(asset->path, ".gltf") || is_glb) &&
+    if (context == VKR_HARNESS_ASSET_CONTEXT_LEGACY &&
+        (vkr_harness_scene_path_ends_with(asset->path, ".gltf") || is_glb) &&
         !vkr_harness_scene_manifest_add_gltf_material_cache(
             resolved_root, asset->path, out_manifest, out_error)) {
       ok = false_v;
@@ -524,6 +570,18 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
     }
 
     if (!is_json && !is_glb && !scan_lines) {
+      if (context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE &&
+          vkr_harness_scene_path_ends_with(asset->path, ".vkb")) {
+        char remap[VKR_HARNESS_PATH_MAX];
+        if (string_format(remap, sizeof(remap), "%s.remap.json", asset->path) <=
+                0 ||
+            !vkr_harness_scene_manifest_add_reference(
+                resolved_root, asset->path, out_manifest, remap, true_v,
+                out_error)) {
+          ok = false_v;
+          break;
+        }
+      }
       if (!vkr_harness_scene_path_ends_with(asset->path, ".vkt")) {
         char packed[VKR_HARNESS_PATH_MAX];
         if (string_format(packed, sizeof(packed), "%s.vkt", asset->path) > 0) {
@@ -584,18 +642,43 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
       if (parse_bytes[i] != '"') {
         continue;
       }
-      uint64_t end = i + 1u;
-      while (end < parse_size && parse_bytes[end] != '"' &&
-             parse_bytes[end] != '\n' && parse_bytes[end] != '\r') {
-        end++;
+      VkrJsonReader reader = vkr_json_reader_create(parse_bytes, parse_size);
+      reader.pos = i;
+      String8 raw = {0};
+      if (!vkr_json_parse_string(&reader, &raw)) {
+        ok = false_v;
+        vkr_harness_error_set(
+            out_error, "scene_manifest.json_string", "$.scene",
+            "Malformed JSON dependency string in %s", asset->path);
+        break;
       }
-      if (end >= parse_size || parse_bytes[end] != '"' || end - i - 1u == 0u ||
-          end - i - 1u >= VKR_HARNESS_PATH_MAX) {
+      uint64_t end = reader.pos - 1u;
+      if (!raw.length || raw.length >= VKR_HARNESS_PATH_MAX) {
+        i = end;
         continue;
       }
       char token[VKR_HARNESS_PATH_MAX];
-      MemCopy(token, parse_bytes + i + 1u, end - i - 1u);
-      token[end - i - 1u] = '\0';
+      VkrAllocatorScope token_scope =
+          vkr_allocator_begin_scope(&file_allocator);
+      String8 decoded = {0};
+      reader.pos = i;
+      bool8_t decoded_ok =
+          vkr_allocator_scope_is_valid(&token_scope) &&
+          vkr_json_parse_string_decoded(&reader, &file_allocator, &decoded);
+      if (decoded_ok) {
+        MemCopy(token, decoded.str, decoded.length);
+        token[decoded.length] = '\0';
+      }
+      if (vkr_allocator_scope_is_valid(&token_scope)) {
+        vkr_allocator_end_scope(&token_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      }
+      if (!decoded_ok) {
+        ok = false_v;
+        vkr_harness_error_set(
+            out_error, "scene_manifest.json_string", "$.scene",
+            "Invalid Unicode dependency string in %s", asset->path);
+        break;
+      }
       if (expect_cubemap_base) {
         string_format(cubemap_base, sizeof(cubemap_base), "%s", token);
         expect_cubemap_base = false_v;
@@ -622,7 +705,14 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
       } else if (cubemap_base[0] && string_equals(token, "extension")) {
         expect_cubemap_extension = true_v;
       }
-      if (vkr_harness_scene_asset_extension(token) &&
+      uint64_t after = end + 1;
+      while (after < parse_size &&
+             (parse_bytes[after] == ' ' || parse_bytes[after] == '\t' ||
+              parse_bytes[after] == '\r' || parse_bytes[after] == '\n')) {
+        ++after;
+      }
+      const bool8_t key = after < parse_size && parse_bytes[after] == ':';
+      if (!key && vkr_harness_scene_asset_extension(token, context) &&
           !vkr_harness_scene_manifest_add_reference(resolved_root, asset->path,
                                                     out_manifest, token, true_v,
                                                     out_error)) {
@@ -699,7 +789,8 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
                      (remaining >= 4u &&
                       MemCompare(parse_bytes + line_start, "bump", 4u) == 0));
         }
-        if (runtime_reference && vkr_harness_scene_asset_extension(token) &&
+        if (runtime_reference &&
+            vkr_harness_scene_asset_extension(token, context) &&
             !vkr_harness_scene_manifest_add_reference(
                 resolved_root, asset->path, out_manifest, token, true_v,
                 out_error)) {
@@ -794,4 +885,12 @@ bool8_t vkr_harness_scene_manifest_verify_file(const char *path,
                  string_equals(observed, expected_digest)
              ? true_v
              : false_v;
+}
+
+bool8_t vkr_harness_scene_manifest_build(const char *root, const char *scene,
+                                         Arena *arena,
+                                         VkrHarnessSceneManifest *manifest,
+                                         VkrHarnessError *error) {
+  return vkr_harness_scene_manifest_build_context(
+      root, scene, VKR_HARNESS_ASSET_CONTEXT_LEGACY, arena, manifest, error);
 }

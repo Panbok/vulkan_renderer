@@ -35,6 +35,14 @@ target_include_directories(vkr_image_write PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
 
 
 if(VKR_BUILD_HARNESS)
+add_executable(vkr_asset_preview vkr_asset_preview.c)
+vkr_configure_cooker_target(vkr_asset_preview)
+target_include_directories(vkr_asset_preview PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
+target_link_libraries(vkr_asset_preview PRIVATE vkr_foundation vkr_image_decode vkr_image_write vkr_ktx_read)
+if(NOT WIN32)
+    target_link_libraries(vkr_asset_preview PRIVATE m)
+endif()
+
 add_library(vkr_harness_core STATIC
     harness/vkr_harness_camera.c
     harness/vkr_harness_capture.c

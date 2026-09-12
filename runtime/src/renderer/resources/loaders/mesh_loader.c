@@ -1,4 +1,6 @@
 #include "renderer/resources/loaders/mesh_loader.h"
+#include "filesystem/vkr_asset_path.h"
+#include "core/vkr_json.h"
 
 #include "assets/vkr_mesh_cooked.h"
 #include "assets/vkr_mesh_decode.h"
@@ -198,13 +200,7 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
   if (!vkr_mesh_loader_create_result(context, &result, out_error)) {
     return false_v;
   }
-  const FilePathType path_type =
-      (name.length > 1u && name.str[1] == ':') ||
-              (name.length > 0u && (name.str[0] == '/' || name.str[0] == '\\'))
-          ? FILE_PATH_TYPE_ABSOLUTE
-          : FILE_PATH_TYPE_RELATIVE;
-  FilePath path =
-      file_path_create(string8_cstr(&name), scratch_allocator, path_type);
+  FilePath path = vkr_asset_path_file(scratch_allocator, name);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -224,6 +220,14 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
   VkrMeshCookedDecoded decoded = {0};
   if (!vkr_mesh_cooked_decode(&result->allocator, scratch_allocator, artifact,
                               artifact_size, &decoded)) {
+    vkr_mesh_loader_destroy_result(context, result);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (!vkr_mesh_cooked_apply_material_remap(scratch_allocator, name, &decoded)) {
+    log_error(
+        "Mesh '%.*s': material remap is unreadable, malformed or incomplete",
+        (int)name.length, name.str);
     vkr_mesh_loader_destroy_result(context, result);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
@@ -259,6 +263,20 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
       .decode_count = decoded.mesh_buffer.decode_count,
       .quantization = decoded.quantization,
   };
+  for (uint64_t index = 0; index < decoded.ranges.length; ++index) {
+    VkrGeometryUploadRange *range = &decoded.ranges.data[index];
+    if (!range->material_name.length) {
+      continue;
+    }
+    String8 resolved =
+        vkr_asset_path_resolve(&result->allocator, name, range->material_name);
+    if (!resolved.str) {
+      vkr_mesh_loader_destroy_result(context, result);
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    range->material_name = resolved;
+  }
   result->submeshes = decoded.ranges;
   result->load_metrics = (VkrMeshLoadMetrics){
       .source_bytes = decoded.source_bytes,

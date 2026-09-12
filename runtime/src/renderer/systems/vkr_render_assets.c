@@ -16,7 +16,8 @@
 bool8_t vkr_render_assets_initialize(
     VkrRenderAssets *assets, const VkrAssetPublisher *publisher,
     const VkrDeviceInformation *device_info, VkrJobSystem *job_system,
-    const VkrRendererMetricsProducerConfig *metrics_producers) {
+    const VkrRendererMetricsProducerConfig *metrics_producers,
+    const char *bootstrap_font_directory) {
   if (!assets || !publisher || !device_info)
     return false_v;
   MemZero(assets, sizeof(*assets));
@@ -175,6 +176,7 @@ bool8_t vkr_render_assets_initialize(
     return false_v;
 
   VkrFontSystemConfig font_config = {
+      .bootstrap_directory = bootstrap_font_directory,
       .max_system_font_count = 16,
       .max_bitmap_font_count = 16,
       .max_mtsdf_font_count = 16,

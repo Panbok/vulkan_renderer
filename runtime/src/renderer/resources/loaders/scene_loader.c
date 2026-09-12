@@ -1,3 +1,4 @@
+#include "filesystem/vkr_asset_path.h"
 /**
  * @file scene_loader.c
  * @brief Scene JSON loader implementation.
@@ -136,6 +137,8 @@ typedef struct SceneEntityImport {
   Vec3 position;
   VkrQuat rotation;
   Vec3 scale;
+  Mat4 matrix;
+  bool8_t has_matrix;
   bool8_t has_mesh;
   String8 mesh_path;
   String8 gltf_light_source;
@@ -200,6 +203,8 @@ typedef struct VkrSceneLoaderAsyncPayload {
   struct VkrRenderAssets *assets;
   char *json_storage;
   uint64_t json_length;
+  uint8_t *path_storage;
+  uint64_t path_storage_size;
   uint64_t scene_source_fingerprint;
   SceneEntityImport *imports;
   uint32_t imports_capacity;
@@ -671,7 +676,7 @@ vkr_internal Mat4 scene_loader_entity_import_world_matrix(
     Mat4 local = mat4_translate(import->position);
     local = mat4_mul(local, vkr_quat_to_mat4(import->rotation));
     local = mat4_mul(local, mat4_scale(import->scale));
-    world = mat4_mul(world, local);
+    world = mat4_mul(world, import->has_matrix ? import->matrix : local);
   }
   return world;
 }
@@ -1179,8 +1184,7 @@ scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
               (int)path.length, path.str);
     return false_v;
   }
-  FilePath file_path = file_path_create(string8_cstr(&terminated_path),
-                                        temp_alloc, FILE_PATH_TYPE_RELATIVE);
+  FilePath file_path = vkr_asset_path_file(temp_alloc, terminated_path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle handle = {0};
@@ -2099,19 +2103,47 @@ vkr_internal void scene_json_parse_parent(const VkrJsonReader *entity_reader,
   }
 }
 
-vkr_internal void scene_json_parse_transform(const VkrJsonReader *entity_reader,
-                                             uint32_t entity_index,
-                                             SceneEntityImport *out_entity) {
+vkr_internal bool8_t scene_json_parse_transform(
+    const VkrJsonReader *entity_reader, uint32_t entity_index,
+    SceneEntityImport *out_entity) {
   VkrJsonReader transform_reader = *entity_reader;
   if (!vkr_json_find_field(&transform_reader, "transform")) {
-    return;
+    return true_v;
   }
 
   VkrJsonReader transform_obj = {0};
   if (!vkr_json_enter_object(&transform_reader, &transform_obj)) {
     log_warn("Scene loader: entity %u transform is not an object",
              entity_index);
-    return;
+    return true_v;
+  }
+
+  VkrJsonReader matrix_reader = transform_obj;
+  if (vkr_json_find_field(&matrix_reader, "matrix")) {
+    const char *trs_fields[] = {"pos", "rot", "scale"};
+    for (uint32_t i = 0; i < ArrayCount(trs_fields); ++i) {
+      VkrJsonReader field = transform_obj;
+      if (vkr_json_find_field(&field, trs_fields[i])) {
+        return false_v;
+      }
+    }
+    matrix_reader = transform_obj;
+    if (!vkr_json_find_array(&matrix_reader, "matrix")) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < 16u; ++i) {
+      if (!vkr_json_next_array_element(&matrix_reader) ||
+          !vkr_json_parse_float(&matrix_reader,
+                                &out_entity->matrix.elements[i]) ||
+          !isfinite(out_entity->matrix.elements[i])) {
+        return false_v;
+      }
+    }
+    if (vkr_json_next_array_element(&matrix_reader)) {
+      return false_v;
+    }
+    out_entity->has_matrix = true_v;
+    return true_v;
   }
 
   VkrJsonReader pos_reader = transform_obj;
@@ -2145,6 +2177,7 @@ vkr_internal void scene_json_parse_transform(const VkrJsonReader *entity_reader,
       log_warn("Scene loader: entity %u has invalid scale array", entity_index);
     }
   }
+  return true_v;
 }
 
 vkr_internal void scene_json_parse_mesh(const VkrJsonReader *entity_reader,
@@ -2544,7 +2577,9 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
 
   scene_json_parse_name(entity_reader, out_entity);
   scene_json_parse_parent(entity_reader, entity_index, out_entity);
-  scene_json_parse_transform(entity_reader, entity_index, out_entity);
+  if (!scene_json_parse_transform(entity_reader, entity_index, out_entity)) {
+    return false_v;
+  }
   scene_json_parse_mesh(entity_reader, entity_index, out_entity);
   scene_json_parse_text3d(entity_reader, entity_index, out_entity);
   scene_json_parse_shape(entity_reader, entity_index, out_entity);
@@ -2556,11 +2591,29 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
                                             out_entity);
 }
 
-vkr_internal uint64_t scene_loader_source_fingerprint(String8 json) {
+vkr_internal bool8_t scene_loader_source_fingerprint(String8 json,
+                                                     uint64_t *out_hash) {
+  String8 source = json;
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  if (vkr_json_find_field(&reader, "source_identity")) {
+    if (!vkr_json_parse_string(&reader, &source) || source.length != 36u) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < 36u; ++i) {
+      const bool8_t separator = i == 8u || i == 13u || i == 18u || i == 23u;
+      const uint8_t c = source.str[i];
+      if ((separator && c != '-') ||
+          (!separator && !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))) {
+        return false_v;
+      }
+    }
+  }
   uint64_t hash = UINT64_C(14695981039346656037);
-  for (uint64_t i = 0; i < json.length; ++i)
-    hash = (hash ^ json.str[i]) * UINT64_C(1099511628211);
-  return hash;
+  for (uint64_t i = 0; i < source.length; ++i) {
+    hash = (hash ^ source.str[i]) * UINT64_C(1099511628211);
+  }
+  *out_hash = hash;
+  return true_v;
 }
 
 bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
@@ -2702,6 +2755,55 @@ vkr_internal bool8_t scene_loader_attach_source_mesh(
   return true_v;
 }
 
+static bool8_t scene_resolve_path(VkrAllocator *allocator, String8 owner,
+                                  String8 *path) {
+  if (!path->length) {
+    return true_v;
+  }
+  String8 resolved = vkr_asset_path_resolve(allocator, owner, *path);
+  if (!resolved.str) {
+    log_error("Scene dependency path is invalid or too long: '%.*s'",
+              (int)path->length, path->str);
+    return false_v;
+  }
+  *path = resolved;
+  return true_v;
+}
+
+static bool8_t
+scene_resolve_environment_paths(VkrAllocator *allocator, String8 owner,
+                                SceneEnvironmentImport *environment) {
+  return scene_resolve_path(allocator, owner, &environment->cubemap_path) &&
+         scene_resolve_path(allocator, owner,
+                            &environment->cubemap_base_path) &&
+         scene_resolve_path(allocator, owner, &environment->equirect_path);
+}
+
+static bool8_t scene_resolve_probe_paths(VkrAllocator *allocator, String8 owner,
+                                         SceneReflectionProbeImport *probes,
+                                         uint32_t count) {
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!scene_resolve_path(allocator, owner, &probes[i].cubemap_path) ||
+        !scene_resolve_path(allocator, owner, &probes[i].cubemap_base_path)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+static bool8_t scene_resolve_entity_paths(VkrAllocator *allocator,
+                                          String8 owner,
+                                          SceneEntityImport *entity) {
+  return scene_resolve_path(allocator, owner, &entity->mesh_path) &&
+         scene_resolve_path(allocator, owner, &entity->shape.material_path) &&
+         scene_resolve_path(allocator, owner, &entity->text3d.font_name);
+}
+
+static bool8_t
+scene_load_json_owned(VkrScene *scene, struct VkrRenderAssets *assets,
+                      String8 json, String8 owner, VkrAllocator *temp_alloc,
+                      VkrSceneLoadResult *out_result, VkrSceneError *out_error);
+
 bool8_t vkr_scene_load_from_file(VkrScene *scene,
                                  struct VkrRenderAssets *assets, String8 path,
                                  VkrAllocator *temp_alloc,
@@ -2716,8 +2818,7 @@ bool8_t vkr_scene_load_from_file(VkrScene *scene,
     return false_v;
   }
 
-  FilePath file_path = file_path_create((const char *)path.str, temp_alloc,
-                                        FILE_PATH_TYPE_RELATIVE);
+  FilePath file_path = vkr_asset_path_file(temp_alloc, path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle handle = {0};
@@ -2725,8 +2826,8 @@ bool8_t vkr_scene_load_from_file(VkrScene *scene,
   if (fe != FILE_ERROR_NONE) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_FILE_NOT_FOUND;
-    log_error("Scene loader: failed to open '%s': %s", (const char *)path.str,
-              file_get_error_string(fe).str);
+    log_error("Scene loader: failed to open '%.*s': %s", (int)path.length,
+              path.str, file_get_error_string(fe).str);
     return false_v;
   }
 
@@ -2736,13 +2837,13 @@ bool8_t vkr_scene_load_from_file(VkrScene *scene,
   if (fe != FILE_ERROR_NONE) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_FILE_READ_FAILED;
-    log_error("Scene loader: failed to read '%s': %s", (const char *)path.str,
-              file_get_error_string(fe).str);
+    log_error("Scene loader: failed to read '%.*s': %s", (int)path.length,
+              path.str, file_get_error_string(fe).str);
     return false_v;
   }
 
-  return vkr_scene_load_from_json(scene, assets, json, temp_alloc, out_result,
-                                  out_error);
+  return scene_load_json_owned(scene, assets, json, path, temp_alloc,
+                               out_result, out_error);
 }
 
 bool8_t vkr_scene_load_from_json(VkrScene *scene,
@@ -2750,6 +2851,16 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
                                  VkrAllocator *temp_alloc,
                                  VkrSceneLoadResult *out_result,
                                  VkrSceneError *out_error) {
+  return scene_load_json_owned(scene, assets, json, (String8){0}, temp_alloc,
+                               out_result, out_error);
+}
+
+static bool8_t scene_load_json_owned(VkrScene *scene,
+                                     struct VkrRenderAssets *assets,
+                                     String8 json, String8 owner,
+                                     VkrAllocator *temp_alloc,
+                                     VkrSceneLoadResult *out_result,
+                                     VkrSceneError *out_error) {
   if (out_result) {
     *out_result = (VkrSceneLoadResult){0};
   }
@@ -2770,6 +2881,13 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
     return false_v;
   }
 
+  uint64_t scene_source_fingerprint = 0;
+  if (!scene_loader_source_fingerprint(json, &scene_source_fingerprint)) {
+    if (out_error) {
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    }
+    return false_v;
+  }
   const SceneFogImport fog_import = scene_loader_parse_fog_import(json);
   if (!fog_import.valid) {
     if (out_error)
@@ -2811,6 +2929,13 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
   } else {
     SceneEnvironmentImport environment_import =
         scene_loader_parse_environment_import(json);
+    if (!scene_resolve_environment_paths(temp_alloc, owner,
+                                         &environment_import)) {
+      if (out_error) {
+        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+      }
+      return false_v;
+    }
     scene_loader_apply_environment_import(scene, assets, &environment_import,
                                           NULL);
   }
@@ -2822,6 +2947,12 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
 
   SceneDiffuseVolumeImport diffuse_volume_import =
       scene_loader_parse_diffuse_volume_import(json);
+  if (!scene_resolve_path(temp_alloc, owner, &diffuse_volume_import.path)) {
+    if (out_error) {
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    }
+    return false_v;
+  }
   VkrDiffuseVolumeBinding diffuse_volume_binding = {
       .texture = VKR_TEXTURE_HANDLE_INVALID,
   };
@@ -2853,6 +2984,13 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
   uint32_t reflection_probe_import_count =
       scene_loader_parse_reflection_probe_imports(json,
                                                   reflection_probe_imports);
+  if (!scene_resolve_probe_paths(temp_alloc, owner, reflection_probe_imports,
+                                 reflection_probe_import_count)) {
+    if (out_error) {
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    }
+    return false_v;
+  }
   scene_loader_apply_reflection_probe_imports(
       scene, assets, reflection_probe_imports, reflection_probe_import_count,
       NULL, NULL);
@@ -2912,6 +3050,12 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
         *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
       return false_v;
     }
+    if (!scene_resolve_entity_paths(temp_alloc, owner, &imports[parsed])) {
+      if (out_error) {
+        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+      }
+      return false_v;
+    }
     if (imports[parsed].has_rectangle_light &&
         ++rectangle_light_count > VKR_MAX_SCENE_RECTANGLE_LIGHTS) {
       if (out_error)
@@ -2949,8 +3093,12 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
       return false_v;
     }
 
-    if (!vkr_scene_set_transform(scene, entity, imports[i].position,
-                                 imports[i].rotation, imports[i].scale)) {
+    const bool8_t transformed =
+        imports[i].has_matrix
+            ? vkr_scene_set_local_matrix(scene, entity, imports[i].matrix)
+            : vkr_scene_set_transform(scene, entity, imports[i].position,
+                                      imports[i].rotation, imports[i].scale);
+    if (!transformed) {
       if (out_error)
         *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
       log_error("Scene loader: failed to set transform for entity %u", i);
@@ -2973,8 +3121,6 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
 
   uint32_t loaded_meshes = 0;
   uint32_t imported_nodes = 0;
-  const uint64_t scene_source_fingerprint =
-      scene_loader_source_fingerprint(json);
   for (uint32_t i = 0; i < entity_count; ++i) {
     SceneSourceIdentity identity = {.scene_entity_index = i,
                                     .gltf_node_index = UINT32_MAX,
@@ -3842,6 +3988,57 @@ vkr_internal bool8_t scene_loader_wait_mesh_dependencies(
   return true_v;
 }
 
+static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
+                                         String8 owner, VkrAllocator *scratch) {
+  uint64_t count = (uint64_t)payload->entity_count * 3 + 4 +
+                   (uint64_t)payload->reflection_probe_import_count * 2;
+  String8 **paths = vkr_allocator_alloc(scratch, count * sizeof(*paths),
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!paths) {
+    return false_v;
+  }
+  uint64_t cursor = 0;
+  paths[cursor++] = &payload->environment_import.cubemap_path;
+  paths[cursor++] = &payload->environment_import.cubemap_base_path;
+  paths[cursor++] = &payload->environment_import.equirect_path;
+  paths[cursor++] = &payload->diffuse_volume_import.path;
+  for (uint32_t i = 0; i < payload->entity_count; ++i) {
+    paths[cursor++] = &payload->imports[i].mesh_path;
+    paths[cursor++] = &payload->imports[i].shape.material_path;
+    paths[cursor++] = &payload->imports[i].text3d.font_name;
+  }
+  for (uint32_t i = 0; i < payload->reflection_probe_import_count; ++i) {
+    paths[cursor++] = &payload->reflection_probe_imports[i].cubemap_path;
+    paths[cursor++] = &payload->reflection_probe_imports[i].cubemap_base_path;
+  }
+  uint64_t bytes = 0;
+  for (uint64_t i = 0; i < count; ++i) {
+    if (!scene_resolve_path(scratch, owner, paths[i])) {
+      return false_v;
+    }
+    bytes += paths[i]->length ? paths[i]->length + 1 : 0;
+  }
+  if (!bytes) {
+    return true_v;
+  }
+  payload->path_storage = vkr_allocator_alloc_ts(
+      &payload->assets->scene_async_allocator, bytes,
+      VKR_ALLOCATOR_MEMORY_TAG_STRING, payload->assets->scene_async_mutex);
+  if (!payload->path_storage) {
+    return false_v;
+  }
+  payload->path_storage_size = bytes;
+  uint8_t *destination = payload->path_storage;
+  for (uint64_t i = 0; i < count; ++i) {
+    if (paths[i]->length) {
+      MemCopy(destination, paths[i]->str, paths[i]->length + 1);
+      paths[i]->str = destination;
+      destination += paths[i]->length + 1;
+    }
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_scene_loader_prepare_async(
     VkrResourceLoader *self, String8 name, VkrAllocator *temp_alloc,
     void **out_payload, VkrRendererError *out_error) {
@@ -3861,16 +4058,15 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     return false_v;
   }
 
-  FilePath file_path = file_path_create((const char *)name.str, temp_alloc,
-                                        FILE_PATH_TYPE_RELATIVE);
+  FilePath file_path = vkr_asset_path_file(temp_alloc, name);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle handle = {0};
   FileError file_error = file_open(&file_path, mode, &handle);
   if (file_error != FILE_ERROR_NONE) {
     *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    log_error("Scene loader: failed to open '%s': %s", (const char *)name.str,
-              file_get_error_string(file_error).str);
+    log_error("Scene loader: failed to open '%.*s': %s", (int)name.length,
+              name.str, file_get_error_string(file_error).str);
     return false_v;
   }
 
@@ -3879,8 +4075,8 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   file_close(&handle);
   if (file_error != FILE_ERROR_NONE) {
     *out_error = VKR_RENDERER_ERROR_UNKNOWN;
-    log_error("Scene loader: failed to read '%s': %s", (const char *)name.str,
-              file_get_error_string(file_error).str);
+    log_error("Scene loader: failed to read '%.*s': %s", (int)name.length,
+              name.str, file_get_error_string(file_error).str);
     return false_v;
   }
 
@@ -3914,8 +4110,11 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     return false_v;
   }
   payload->json_length = json_copy.length;
-  payload->scene_source_fingerprint =
-      scene_loader_source_fingerprint(json_copy);
+  if (!scene_loader_source_fingerprint(json_copy, &payload->scene_source_fingerprint)) {
+    scene_loader_destroy_async_payload(payload);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
 
   payload->fog_import = scene_loader_parse_fog_import(json_copy);
   payload->froxel_fog_import = scene_loader_parse_froxel_fog_import(json_copy);
@@ -3962,6 +4161,16 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
       payload->atmosphere_import.settings.enabled
           ? scene_environment_import_defaults()
           : scene_loader_parse_environment_import(json_copy);
+  payload->diffuse_volume_import =
+      scene_loader_parse_diffuse_volume_import(json_copy);
+  payload->reflection_probe_import_count =
+      scene_loader_parse_reflection_probe_imports(
+          json_copy, payload->reflection_probe_imports);
+  if (!scene_resolve_async_paths(payload, name, temp_alloc)) {
+    scene_loader_destroy_async_payload(payload);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
   const bool8_t direct_cubemap =
       payload->environment_import.source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP &&
       payload->environment_import.cubemap_path.length > 0u;
@@ -3987,8 +4196,6 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
                (int)environment_path.length, environment_path.str);
     }
   }
-  payload->diffuse_volume_import =
-      scene_loader_parse_diffuse_volume_import(json_copy);
   if (payload->diffuse_volume_import.has_block &&
       payload->diffuse_volume_import.valid) {
     payload->diffuse_volume_prepared_ready =
@@ -3999,9 +4206,6 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     if (!payload->diffuse_volume_prepared_ready)
       payload->diffuse_volume_import.valid = false_v;
   }
-  payload->reflection_probe_import_count =
-      scene_loader_parse_reflection_probe_imports(
-          json_copy, payload->reflection_probe_imports);
   for (uint32_t i = 0u; i < payload->reflection_probe_import_count; ++i) {
     SceneReflectionProbeImport *probe = &payload->reflection_probe_imports[i];
     if (!probe->enabled || !probe->has_cubemap ||
@@ -4227,10 +4431,13 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
         return false_v;
       }
 
-      if (!vkr_scene_set_transform(scene, entity,
-                                   async_payload->imports[i].position,
-                                   async_payload->imports[i].rotation,
-                                   async_payload->imports[i].scale)) {
+      const SceneEntityImport *import = &async_payload->imports[i];
+      const bool8_t transformed =
+          import->has_matrix
+              ? vkr_scene_set_local_matrix(scene, entity, import->matrix)
+              : vkr_scene_set_transform(scene, entity, import->position,
+                                        import->rotation, import->scale);
+      if (!transformed) {
         *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
         return false_v;
       }
@@ -4479,6 +4686,14 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
     payload->imports = NULL;
     payload->imports_capacity = 0;
+  }
+  if (payload->path_storage) {
+    vkr_allocator_free_ts(&payload->assets->scene_async_allocator,
+                          payload->path_storage, payload->path_storage_size,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRING,
+                          payload->assets->scene_async_mutex);
+    payload->path_storage = NULL;
+    payload->path_storage_size = 0;
   }
   if (payload->json_storage) {
     vkr_allocator_free_ts(&payload->assets->scene_async_allocator,

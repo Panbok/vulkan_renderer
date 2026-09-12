@@ -1,5 +1,6 @@
 #include "assets/mesh_loader_gltf.h"
 #include "assets/vkr_gltf_material_conversion.h"
+#include "assets/vkr_mesh_encode.h"
 #include "assets/vkr_meshoptimizer_bridge.h"
 #include "vkr_color_transfer.h"
 #include "vkr_geometry_data.h"
@@ -8,6 +9,7 @@
 #include <math.h>
 #include <stb_image.h>
 #include <stb_image_write.h>
+#include <string.h>
 
 #include "containers/str.h"
 #include "core/logger.h"
@@ -34,6 +36,17 @@ vkr_mesh_loader_gltf_set_error(const VkrMeshLoaderGltfParseInfo *info,
   if (info && info->out_error) {
     *info->out_error = error;
   }
+}
+
+/* Managed writes use explicit absolute paths; legacy callers keep their roots.
+ */
+vkr_internal String8 vkr_mesh_loader_gltf_output_path(
+    const VkrMeshLoaderGltfParseInfo *info, String8 legacy_path) {
+  if (!info->bundle_root.length) {
+    return legacy_path;
+  }
+  String8 suffix = string8_substring(&legacy_path, 7, legacy_path.length);
+  return file_path_join(info->load_allocator, info->bundle_root, suffix);
 }
 
 vkr_internal String8
@@ -297,6 +310,11 @@ vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(
 
   String8 source_candidate =
       file_path_join(info->load_allocator, info->source_dir, uri);
+  if (info->bundle_root.length) {
+    *out_found = vkr_mesh_loader_gltf_find_existing_texture_file(
+        info->load_allocator, source_candidate, out_existing_path);
+    return source_candidate;
+  }
   String8 assets_candidate =
       file_path_join(info->load_allocator, string8_lit("assets"), uri);
   String8 assets_textures_uri_candidate =
@@ -527,6 +545,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
       "factor_%08x.vkt",
       VKR_VKT_CUTOUT_POLICY_VERSION, (unsigned long long)source_hash,
       cutoff_bits, factor_bits);
+  variant_path = vkr_mesh_loader_gltf_output_path(info, variant_path);
   if (!variant_path.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
@@ -800,6 +819,7 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
                              VKR_VKT_NORMAL_ROUGHNESS_POLICY_VERSION,
                              (unsigned long long)normal_hash,
                              normal_scale_bits, roughness_factor_bits);
+  recipe = vkr_mesh_loader_gltf_output_path(info, recipe);
   if (!recipe.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
@@ -1002,10 +1022,14 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_png_atomic(
                                (int32_t)output_path.length, output_path.str);
   FilePath temp =
       file_path_create((const char *)temp_path.str, info->scratch_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+                       vkr_mesh_loader_gltf_path_is_absolute(temp_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
   FilePath output =
       file_path_create((const char *)output_path.str, info->scratch_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+                       vkr_mesh_loader_gltf_path_is_absolute(output_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_WRITE);
   bitset8_set(&mode, FILE_MODE_TRUNCATE);
@@ -1323,6 +1347,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
   String8 output_dir = string8_create_formatted(
       info->load_allocator, "assets/textures/generated/gltf_sg%u_%016llx",
       VKR_GLTF_SPEC_GLOSS_CACHE_VERSION, (unsigned long long)source_hash);
+  output_dir = vkr_mesh_loader_gltf_output_path(info, output_dir);
 
   VkrMeshLoaderGltfDecodedImage diffuse = {0};
   VkrMeshLoaderGltfDecodedImage spec_gloss = {0};
@@ -1471,7 +1496,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
   if (!base_uniform || !metal_rough_uniform) {
     FilePath output_dir_path =
         file_path_create((const char *)output_dir.str, info->load_allocator,
-                         FILE_PATH_TYPE_RELATIVE);
+                         vkr_mesh_loader_gltf_path_is_absolute(output_dir)
+                             ? FILE_PATH_TYPE_ABSOLUTE
+                             : FILE_PATH_TYPE_RELATIVE);
     ok = file_ensure_directory(info->load_allocator, &output_dir_path.path);
   }
   if (ok && !base_uniform) {
@@ -1865,13 +1892,17 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
 
   FilePath file_path =
       file_path_create((const char *)material_path.str, info->load_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+                       vkr_mesh_loader_gltf_path_is_absolute(material_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
   String8 temp_path = string8_create_formatted(info->load_allocator, "%.*s.tmp",
                                                (int32_t)material_path.length,
                                                material_path.str);
   FilePath temp_file_path =
       file_path_create((const char *)temp_path.str, info->load_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+                       vkr_mesh_loader_gltf_path_is_absolute(temp_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_WRITE);
   bitset8_set(&mode, FILE_MODE_TRUNCATE);
@@ -2049,9 +2080,15 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
   String8 material_dir = string8_create_formatted(
       info->load_allocator, "assets/materials/%.*s",
       (int32_t)info->source_stem.length, info->source_stem.str);
+  if (info->bundle_root.length) {
+    material_dir = file_path_join(info->load_allocator, info->bundle_root,
+                                  string8_lit("materials"));
+  }
   FilePath material_dir_path =
       file_path_create((const char *)material_dir.str, info->load_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+                       vkr_mesh_loader_gltf_path_is_absolute(material_dir)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
   if (!file_ensure_directory(info->load_allocator, &material_dir_path.path)) {
     log_error("MeshLoader(glTF): failed to create material directory '%s'",
               string8_cstr(&material_dir));
@@ -2059,8 +2096,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
     return false_v;
   }
 
-  uint64_t source_hash =
-      vkr_mesh_loader_gltf_hash_source_path(info->source_path);
+  uint64_t source_hash = vkr_mesh_loader_gltf_hash_source_path(
+      info->import_id.length ? info->import_id : info->source_path);
   for (uint32_t i = 0; i < (uint32_t)data->materials_count; ++i) {
     const cgltf_material *material = &data->materials[i];
     const bool8_t has_base_texture =
@@ -2985,6 +3022,100 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_decode_meshopt(
   return true_v;
 }
 
+/* cgltf owns replaced URIs through its allocator; image bytes are job scratch.
+ */
+vkr_internal bool8_t vkr_mesh_loader_gltf_extract_images(
+    const VkrMeshLoaderGltfParseInfo *info, cgltf_data *data) {
+  const uint64_t max_encoded = MB(64);
+  for (cgltf_size i = 0; i < data->images_count; ++i) {
+    cgltf_image *image = &data->images[i];
+    const uint8_t *bytes = NULL;
+    uint64_t size = 0;
+    void *decoded = NULL;
+    if (image->buffer_view) {
+      bytes = cgltf_buffer_view_data(image->buffer_view);
+      size = image->buffer_view->size;
+    } else if (image->uri && strncmp(image->uri, "data:", 5) == 0) {
+      const char *comma = strchr(image->uri, ',');
+      if (!comma || comma - image->uri < 7 ||
+          strncmp(comma - 7, ";base64", 7) != 0) {
+        return false_v;
+      }
+      const char *base64 = comma + 1;
+      uint64_t length = strlen(base64);
+      if (!length || length % 4 || length > (max_encoded / 3 + 1) * 4) {
+        return false_v;
+      }
+      size = length / 4 * 3;
+      if (base64[length - 1] == '=') {
+        --size;
+      }
+      if (base64[length - 2] == '=') {
+        --size;
+      }
+      cgltf_options options = {.memory = data->memory};
+      if (cgltf_load_buffer_base64(&options, size, base64, &decoded) !=
+          cgltf_result_success) {
+        return false_v;
+      }
+      bytes = decoded;
+    } else {
+      continue;
+    }
+    int32_t width = 0;
+    int32_t height = 0;
+    int32_t channels = 0;
+    bool8_t valid = bytes && size && size <= max_encoded &&
+                    stbi_info_from_memory(bytes, (int32_t)size, &width, &height,
+                                          &channels) &&
+                    width > 0 && height > 0 &&
+                    (uint64_t)width * height <= UINT64_C(67108864);
+    bool8_t png =
+        valid && size >= 8 && MemCompare(bytes, "\x89PNG\r\n\x1a\n", 8) == 0;
+    bool8_t jpeg = valid && size >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 &&
+                   bytes[2] == 0xff;
+    String8 path = {0};
+    if (png || jpeg) {
+      uint64_t hash = vkr_mesh_loader_gltf_hash_bytes(VKR_FNV1A64_OFFSET_BASIS,
+                                                      bytes, size);
+      path = string8_create_formatted(
+          info->load_allocator, "assets/textures/generated/embedded/%016llx.%s",
+          (unsigned long long)hash, png ? "png" : "jpg");
+      path = vkr_mesh_loader_gltf_output_path(info, path);
+      FilePath absolute =
+          file_path_create((const char *)path.str, info->load_allocator,
+                           vkr_mesh_loader_gltf_path_is_absolute(path)
+                               ? FILE_PATH_TYPE_ABSOLUTE
+                               : FILE_PATH_TYPE_RELATIVE);
+      path = absolute.path;
+      valid = vkr_mesh_cooked_write_atomic(info->scratch_allocator, path, bytes,
+                                           size);
+    } else {
+      valid = false_v;
+    }
+    if (decoded) {
+      data->memory.free_func(data->memory.user_data, decoded);
+    }
+    if (!valid) {
+      log_error("MeshLoader(glTF): invalid, oversized or unsupported embedded "
+                "image %llu",
+                (unsigned long long)i);
+      return false_v;
+    }
+    char *uri =
+        data->memory.alloc_func(data->memory.user_data, path.length + 1);
+    if (!uri) {
+      return false_v;
+    }
+    MemCopy(uri, path.str, path.length);
+    uri[path.length] = 0;
+    data->memory.free_func(data->memory.user_data, image->uri);
+    image->uri = uri;
+    image->buffer_view = NULL;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
     const VkrMeshLoaderGltfParseInfo *info, bool8_t emit_primitives) {
   if (!info || !info->load_allocator || !info->scratch_allocator ||
@@ -3039,6 +3170,12 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
       break;
     }
 
+    if (!vkr_mesh_loader_gltf_extract_images(info, data)) {
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      ok = false_v;
+      break;
+    }
     vkr_mesh_loader_gltf_collect_dependencies(info, data);
 
     VkrMeshLoaderGltfDecalOverrides decal_overrides = {0};

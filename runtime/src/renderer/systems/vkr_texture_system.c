@@ -1,4 +1,5 @@
 #include "renderer/systems/vkr_texture_system.h"
+#include "filesystem/vkr_asset_path.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
@@ -973,8 +974,7 @@ vkr_internal bool8_t vkr_texture_cache_write(
     return false_v;
   }
 
-  FilePath fp = file_path_create((const char *)normalized_cache_path.str,
-                                 allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(allocator, normalized_cache_path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_WRITE);
   bitset8_set(&mode, FILE_MODE_TRUNCATE);
@@ -1055,8 +1055,7 @@ vkr_internal bool8_t vkr_texture_cache_read(
     return false_v;
   }
 
-  FilePath fp = file_path_create((const char *)normalized_cache_path.str,
-                                 allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(allocator, normalized_cache_path);
 
   if (!file_exists(&fp)) {
     return false_v;
@@ -2281,7 +2280,9 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
     return false_v;
   }
 
-  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(
+      allocator,
+      string8_create_from_cstr((const uint8_t *)path_cstr, strlen(path_cstr)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -2684,7 +2685,9 @@ vkr_internal bool8_t vkr_texture_path_exists(VkrAllocator *allocator,
     return false_v;
   }
 
-  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(
+      allocator,
+      string8_create_from_cstr((const uint8_t *)path_cstr, strlen(path_cstr)));
   return file_exists(&fp);
 }
 
@@ -2698,7 +2701,9 @@ vkr_texture_probe_vkt_container(VkrAllocator *allocator, String8 vkt_path) {
     return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
   }
 
-  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(
+      allocator,
+      string8_create_from_cstr((const uint8_t *)path_cstr, strlen(path_cstr)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -2730,7 +2735,9 @@ vkr_internal bool8_t vkr_texture_probe_hdr_source(VkrAllocator *allocator,
     return false_v;
   }
 
-  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(
+      allocator,
+      string8_create_from_cstr((const uint8_t *)path_cstr, strlen(path_cstr)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -2958,8 +2965,9 @@ vkr_internal bool8_t vkr_texture_decode_from_source_image(
     return false_v;
   }
 
-  FilePath source_fp =
-      file_path_create(source_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath source_fp = vkr_asset_path_file(
+      allocator, string8_create_from_cstr((const uint8_t *)source_cstr,
+                                          strlen(source_cstr)));
   FileStats source_stats = {0};
   if (file_stats(&source_fp, &source_stats) != FILE_ERROR_NONE) {
     log_error("Failed to stat texture file: %s", source_cstr);
@@ -3163,8 +3171,10 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
       bool8_t validate_source_mtime = false_v;
       uint64_t source_mtime = 0;
       if (!selected_is_direct && source_cstr) {
-        FilePath source_fp = file_path_create(source_cstr, scratch_allocator,
-                                              FILE_PATH_TYPE_RELATIVE);
+        FilePath source_fp = vkr_asset_path_file(
+            scratch_allocator,
+            string8_create_from_cstr((const uint8_t *)source_cstr,
+                                     strlen(source_cstr)));
         FileStats source_stats = {0};
         if (file_stats(&source_fp, &source_stats) == FILE_ERROR_NONE) {
           validate_source_mtime = true_v;
@@ -3655,7 +3665,8 @@ vkr_internal uint8_t *vkr_texture_load_cube_face(VkrAllocator *allocator,
   assert_log(out_width != NULL, "Out width is NULL");
   assert_log(out_height != NULL, "Out height is NULL");
 
-  FilePath fp = file_path_create(path, allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = vkr_asset_path_file(
+      allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);

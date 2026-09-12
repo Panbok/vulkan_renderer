@@ -315,7 +315,8 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t ssgi_enabled;
   /** Requested presentation policy; offscreen targets remain SDR. */
   char display_output[24];
-  /** Opaque-depth depth of field. Disabled cases leave scene color unchanged. */
+  /** Opaque-depth depth of field. Disabled cases leave scene color unchanged.
+   */
   bool8_t dof_enabled;
   /** Focus plane distance in metres. */
   float32_t dof_focus_distance;
@@ -380,6 +381,11 @@ typedef struct VkrHarnessAssertion {
   float64_t tolerance;
 } VkrHarnessAssertion;
 
+typedef enum VkrHarnessAssetContext {
+  VKR_HARNESS_ASSET_CONTEXT_LEGACY,
+  VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE,
+} VkrHarnessAssetContext;
+
 typedef struct VkrHarnessCase {
   uint32_t schema_version;
   char manifest_path[VKR_HARNESS_PATH_MAX];
@@ -414,6 +420,7 @@ typedef struct VkrHarnessCase {
   VkrHarnessCompareConfig compare;
   /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
   float32_t content_scale;
+  VkrHarnessAssetContext asset_context;
 } VkrHarnessCase;
 
 typedef struct VkrHarnessProfile {
@@ -462,6 +469,7 @@ typedef struct VkrHarnessSceneAsset {
 } VkrHarnessSceneAsset;
 
 typedef struct VkrHarnessSceneManifest {
+  VkrHarnessAssetContext asset_context;
   VkrHarnessSceneAsset *assets;
   uint32_t asset_count;
   char scene[VKR_HARNESS_PATH_MAX];
@@ -981,3 +989,17 @@ bool8_t vkr_harness_json_emit_f64(VkrJsonWriter *writer, const char *name,
                                   float64_t value);
 bool8_t vkr_harness_json_emit_bool(VkrJsonWriter *writer, const char *name,
                                    bool8_t value);
+
+// Managed jobs use an explicit workspace root and job-owned manifests. Legacy
+// wrappers retain repository-only path rules.
+bool8_t vkr_harness_profile_load_context(const char *root, const char *path,
+                                         VkrHarnessAssetContext context,
+                                         VkrHarnessProfile *profile,
+                                         VkrHarnessError *error);
+bool8_t vkr_harness_scene_manifest_build_context(
+    const char *root, const char *scene, VkrHarnessAssetContext context,
+    Arena *arena, VkrHarnessSceneManifest *manifest, VkrHarnessError *error);
+
+/** Installed renderer bootstrap CWD, separate from managed workspace assets. */
+bool8_t vkr_harness_renderer_directory(const char *executable, const char *root,
+                                       char out[VKR_HARNESS_PATH_MAX]);

@@ -58,7 +58,8 @@ typedef struct VkrRenderAssets {
 bool8_t vkr_render_assets_initialize(
     VkrRenderAssets *assets, const VkrAssetPublisher *publisher,
     const VkrDeviceInformation *device_info, VkrJobSystem *job_system,
-    const VkrRendererMetricsProducerConfig *metrics_producers);
+    const VkrRendererMetricsProducerConfig *metrics_producers,
+    const char *bootstrap_font_directory);
 
 /* Join workers and wait for GPU completion before calling. Scene/UI users must
  * already have released their borrowed assets. Safe after partial

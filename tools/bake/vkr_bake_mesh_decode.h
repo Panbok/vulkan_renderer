@@ -50,6 +50,14 @@ bool8_t vkr_bake_mesh_decode(const uint8_t *data, uint64_t size,
                              const VkrBakeMeshDecodeCallbacks *callbacks,
                              void *user);
 
+/* File-aware decode also applies the immutable import remap and resolves
+ * explicit relative material references against source_path. */
+bool8_t vkr_bake_mesh_decode_file(String8 source_path, const uint8_t *data,
+                                  uint64_t size, Mat4 entity_world,
+                                  uint32_t *in_out_source_instance,
+                                  const VkrBakeMeshDecodeCallbacks *callbacks,
+                                  void *user);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,4 +1,5 @@
 #include "renderer/resources/loaders/bitmap_font_loader.h"
+#include "filesystem/vkr_asset_path.h"
 
 #include "containers/str.h"
 #include "core/logger.h"
@@ -201,8 +202,7 @@ vkr_internal bool8_t vkr_bitmap_font_cache_exists(VkrAllocator *allocator,
   if (!cache_path.str || cache_path.length == 0) {
     return false_v;
   }
-  FilePath cache_fp = file_path_create((const char *)cache_path.str, allocator,
-                                       FILE_PATH_TYPE_RELATIVE);
+  FilePath cache_fp = vkr_asset_path_file(allocator, cache_path);
   return file_exists(&cache_fp);
 }
 
@@ -214,9 +214,7 @@ vkr_internal bool8_t vkr_bitmap_font_cache_read(VkrBitmapFontParseState *state,
   }
 
   String8 cache_path_nt = string8_duplicate(state->temp_allocator, &cache_path);
-  FilePath cache_fp =
-      file_path_create((const char *)cache_path_nt.str, state->temp_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+  FilePath cache_fp = vkr_asset_path_file(state->temp_allocator, cache_path_nt);
 
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -418,8 +416,7 @@ vkr_bitmap_font_cache_write(VkrAllocator *allocator, String8 cache_path,
     return false_v;
   }
 
-  FilePath cache_fp = file_path_create((const char *)cache_path.str, allocator,
-                                       FILE_PATH_TYPE_RELATIVE);
+  FilePath cache_fp = vkr_asset_path_file(allocator, cache_path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_WRITE);
   bitset8_set(&mode, FILE_MODE_TRUNCATE);
@@ -827,9 +824,7 @@ vkr_internal bool8_t vkr_bitmap_font_parse_fnt(VkrBitmapFontParseState *state,
   assert_log(file_path.str != NULL, "File path is NULL");
   assert_log(file_path.length > 0, "File path is empty");
 
-  FilePath path =
-      file_path_create((const char *)file_path.str, state->temp_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
+  FilePath path = vkr_asset_path_file(state->temp_allocator, file_path);
 
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -954,16 +949,8 @@ vkr_bitmap_font_unload_pages(const Array_VkrBitmapFontPage *pages,
       continue;
     }
 
-    char path_buffer[512];
-    int32_t written = snprintf(path_buffer, sizeof(path_buffer),
-                               "assets/textures/%s", page->file);
-    if (written <= 0 || written >= (int32_t)sizeof(path_buffer)) {
-      log_warn("BitmapFontLoader: page path too long; skipping unload");
-      continue;
-    }
-
-    String8 path = string8_create_from_cstr((const uint8_t *)path_buffer,
-                                            (uint64_t)written);
+    String8 path = string8_create_from_cstr((const uint8_t *)page->file,
+                                            strlen(page->file));
     VkrResourceHandleInfo atlas_info = {
         .type = VKR_RESOURCE_TYPE_TEXTURE,
         .loader_id = VKR_INVALID_ID,
@@ -974,7 +961,7 @@ vkr_bitmap_font_unload_pages(const Array_VkrBitmapFontPage *pages,
 }
 
 vkr_internal bool8_t vkr_bitmap_font_load_atlas(
-    VkrBitmapFontParseState *state, VkrAllocator *temp_alloc,
+    VkrBitmapFontParseState *state, VkrAllocator *temp_alloc, String8 owner,
     Array_VkrBitmapFontPage *out_pages, Array_VkrTextureHandle *out_atlases,
     VkrTextureHandle *out_atlas) {
   assert_log(state != NULL, "State is NULL");
@@ -1028,7 +1015,26 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
       vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
       return false_v;
     }
+    String8 raw = string8_create_from_cstr((const uint8_t *)page->file,
+                                           strlen(page->file));
+    if (!(raw.length >= 2 && raw.str[0] == '.' && raw.str[1] == '/') &&
+        !(raw.length >= 3 && raw.str[0] == '.' && raw.str[1] == '.' &&
+          raw.str[2] == '/') &&
+        raw.str[0] != '/' && raw.str[0] != '\\' &&
+        !(raw.length > 1 && raw.str[1] == ':')) {
+      raw = string8_create_formatted(temp_alloc, "assets/textures/%s",
+                                     page->file);
+    }
+    String8 resolved = vkr_asset_path_resolve(temp_alloc, owner, raw);
+    if (!resolved.str ||
+        resolved.length >= sizeof(out_pages->data[page->id].file)) {
+      log_error("BitmapFontLoader: resolved atlas path is invalid or exceeds "
+                "page descriptor capacity");
+      vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      return false_v;
+    }
     out_pages->data[page->id] = *page;
+    MemCopy(out_pages->data[page->id].file, resolved.str, resolved.length + 1);
   }
 
   for (uint64_t i = 0; i < state->pages.length; ++i) {
@@ -1037,8 +1043,9 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
       continue;
     }
 
-    String8 atlas_path =
-        string8_create_formatted(temp_alloc, "assets/textures/%s", page->file);
+    const char *resolved_file = out_pages->data[page->id].file;
+    String8 atlas_path = string8_create_from_cstr(
+        (const uint8_t *)resolved_file, strlen(resolved_file));
 
     VkrResourceHandleInfo texture_info = {0};
     VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
@@ -1336,8 +1343,8 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
   Array_VkrBitmapFontPage pages = {0};
   Array_VkrTextureHandle atlas_pages = {0};
   VkrTextureHandle atlas = VKR_TEXTURE_HANDLE_INVALID;
-  if (!vkr_bitmap_font_load_atlas(&state, temp_alloc, &pages, &atlas_pages,
-                                  &atlas)) {
+  if (!vkr_bitmap_font_load_atlas(&state, temp_alloc, name, &pages,
+                                  &atlas_pages, &atlas)) {
     arena_destroy(result_arena);
     if (pool_chunk && context->arena_pool) {
       vkr_arena_pool_release(context->arena_pool, pool_chunk);
