@@ -128,7 +128,6 @@ struct VkrEditorProjects {
   char action_source[1024];
   char progress_stage[128];
   char progress_detail[512];
-  float32_t progress;
   float64_t next_progress_check;
   char runtime_path[1024];
   char scene_manifest_path[1024];
@@ -1020,7 +1019,6 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   projects->view = PROJECT_VIEW_PROGRESS;
   projects->dropdown = 0;
   (void)vkr_ui_keyboard_layer_set(frame->ui, 0);
-  projects->progress = 0;
   projects->progress_stage[0] = '\0';
   projects->progress_detail[0] = '\0';
   projects->waiting_activation = false_v;
@@ -1574,8 +1572,6 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
         (void)vkr_editor_project_json_string(
             progress_json, "detail", projects->progress_detail,
             sizeof(projects->progress_detail), NULL);
-        VkrJsonReader reader = vkr_json_reader_from_string(progress_json);
-        (void)vkr_json_get_float(&reader, "progress", &projects->progress);
       }
     }
     const VkrEditorProjectJobStatus status = vkr_editor_bakery_project_status(
@@ -2524,14 +2520,12 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
       VkrUiPanelConfig fill = bar;
       fill.placement.justify = VKR_UI_ALIGN_START;
       fill.placement.margin_pt.top = 0;
-      fill.style.min_size_pt.x =
-          bar_width * vkr_clamp_f32(projects->progress, 0.0f, 1.0f);
-      if (fill.style.min_size_pt.x <= 0) {
-        fill.style.min_size_pt.x = bar_width * .25f;
-        fill.placement.margin_pt.left =
-            (bar_width - fill.style.min_size_pt.x) *
-            (float32_t)(.5 - .5 * cos(vkr_platform_get_absolute_time() * 3));
-      }
+      /* Job percentages describe stage boundaries, not ongoing work. Keep
+       * the activity indicator moving throughout each preparation stage. */
+      fill.style.min_size_pt.x = bar_width * .25f;
+      fill.placement.margin_pt.left =
+          (bar_width - fill.style.min_size_pt.x) *
+          (float32_t)(.5 - .5 * cos(vkr_platform_get_absolute_time() * 3));
       fill.style.max_size_pt = fill.style.min_size_pt;
       fill.style.background_color = (Vec4){.22f, .68f, .78f, 1};
       if (vkr_ui_panel_begin(ui, string8_lit("scene.prepare.fill"), &fill)) {
@@ -2560,7 +2554,6 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
         projects->job_id = vkr_editor_bakery_project_start(
             editor->bakery, projects->request_path, projects->result_path);
         projects->message[0] = '\0';
-        projects->progress = 0;
         projects->progress_stage[0] = '\0';
       }
     }
