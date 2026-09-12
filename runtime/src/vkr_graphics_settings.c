@@ -135,6 +135,17 @@ bool8_t vkr_graphics_settings_load(const char *path,
   fclose(file);
   if (!read_ok)
     return false_v;
+  return vkr_graphics_settings_read_json(
+      string8_create(bytes, length), settings);
+}
+
+bool8_t vkr_graphics_settings_read_json(String8 json,
+                                      VkrGraphicsSettings *settings) {
+  if (!settings || !json.str || !json.length) {
+    return false_v;
+  }
+  const uint8_t *bytes = json.str;
+  const uint64_t length = json.length;
   VkrJsonReader reader = vkr_json_reader_create(bytes, length);
   VkrGraphicsSettings candidate = *settings;
   uint64_t seen = 0;
@@ -196,48 +207,57 @@ bool8_t vkr_graphics_settings_load(const char *path,
   return true_v;
 }
 
-bool8_t vkr_graphics_settings_save(const char *path,
-                                   const VkrGraphicsSettings *settings) {
-  if (!vkr_graphics_settings_valid(settings))
+bool8_t vkr_graphics_settings_write_json(VkrJsonWriter *writer,
+                                       const VkrGraphicsSettings *settings) {
+  if (!writer || !vkr_graphics_settings_valid(settings) ||
+      !vkr_json_writer_begin_object(writer) ||
+      !vkr_json_writer_name(writer, string8_lit("version")) ||
+      !vkr_json_writer_u64(writer, 1u)) {
     return false_v;
-  if (!path || !path[0])
-    return true_v;
-  char temporary[1100];
-  const int count = snprintf(temporary, sizeof(temporary), "%s.%u.tmp", path,
-                             vkr_platform_get_process_id());
-  if (count < 0 || count >= (int)sizeof(temporary))
-    return false_v;
-  FILE *file = fopen(temporary, "wb");
-  if (!file)
-    return false_v;
-  bool8_t ok = fprintf(file, "{\n  \"version\": 1") > 0;
+  }
   for (uint32_t i = 0; i < ArrayCount(s_fields); ++i) {
     const GraphicsField *field = &s_fields[i];
     const uint8_t *address = (const uint8_t *)settings + field->offset;
-    int result;
-    if (field->type == GRAPHICS_BOOL)
-      result = fprintf(file, ",\n  \"%s\": %s", field->name,
-                       *(const bool8_t *)address ? "true" : "false");
-    else if (field->type == GRAPHICS_UINT)
-      result = fprintf(file, ",\n  \"%s\": %u", field->name,
-                       *(const uint32_t *)address);
-    else
-      result = fprintf(file, ",\n  \"%s\": %.9g", field->name,
-                       (double)*(const float32_t *)address);
-    ok &= result > 0;
+    if (!vkr_json_writer_name(writer, string8_create_from_cstr(
+            (const uint8_t *)field->name, strlen(field->name)))) {
+      return false_v;
+    }
+    bool8_t ok = false_v;
+    switch (field->type) {
+    case GRAPHICS_BOOL:
+      ok = vkr_json_writer_bool(writer, *(const bool8_t *)address);
+      break;
+    case GRAPHICS_UINT:
+      ok = vkr_json_writer_u64(writer, *(const uint32_t *)address);
+      break;
+    case GRAPHICS_FLOAT:
+      ok = vkr_json_writer_f64(writer, *(const float32_t *)address);
+      break;
+    }
+    if (!ok) {
+      return false_v;
+    }
   }
-  ok &= fprintf(file, "\n}\n") > 0;
-  ok &= fclose(file) == 0;
-  if (ok) {
-    const FilePath source = {
-        .path = string8_create((uint8_t *)temporary, strlen(temporary)),
-        .type = FILE_PATH_TYPE_ABSOLUTE};
-    const FilePath destination = {
-        .path = string8_create((uint8_t *)path, strlen(path)),
-        .type = FILE_PATH_TYPE_ABSOLUTE};
-    ok = file_rename(&source, &destination, true_v) == FILE_ERROR_NONE;
+  return vkr_json_writer_end_object(writer);
+}
+
+bool8_t vkr_graphics_settings_save(const char *path,
+                                 const VkrGraphicsSettings *settings) {
+  if (!settings || !vkr_graphics_settings_valid(settings)) {
+    return false_v;
   }
-  if (!ok)
-    remove(temporary);
-  return ok;
+  if (!path || !path[0]) {
+    return true_v;
+  }
+  VkrJsonFileWriter writer = {0};
+  if (!vkr_json_file_writer_begin(&writer, string8_create_from_cstr(
+          (const uint8_t *)path, strlen(path)))) {
+    return false_v;
+  }
+  if (!vkr_graphics_settings_write_json(&writer.writer, settings) ||
+      !vkr_json_file_writer_commit(&writer)) {
+    vkr_json_file_writer_abort(&writer);
+    return false_v;
+  }
+  return true_v;
 }

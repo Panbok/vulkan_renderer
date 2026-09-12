@@ -1,4 +1,5 @@
 #include "vkr_sample_runtime.h"
+#include "core/vkr_json.h"
 #include "core/vkr_subsystem_plan.h"
 
 #include "application/vkr_standard_scene_runtime.h"
@@ -33,6 +34,14 @@
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 #define SCENE_PATH "assets/scenes/bistro.scene.json"
+
+static VkrSampleRuntimePreferences
+sample_preferences_snapshot(VkrStandardSceneRuntime *application);
+static VkrSampleSceneRecall
+sample_recall_snapshot(VkrStandardSceneRuntime *application);
+static void
+sample_editor_state_apply(VkrStandardSceneRuntime *application,
+                          const VkrSampleEditorStateRequest *request);
 
 typedef struct FilterModeEntry {
   VkrFilter min_filter;
@@ -123,7 +132,10 @@ typedef struct State {
   float64_t graphics_changed_at;
   VkrSceneEditState edits;
   String8 scene_path;
+  char scene_path_storage[1024];
   char sidecar_path[1024];
+  char scene_status[512];
+  bool8_t modal;
   VkrSceneEditValues gizmo_before;
   bool8_t gizmo_edit_pending;
   VkrClock fps_update_clock;
@@ -224,7 +236,8 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
       settings->shadow_quality == 0 || !settings->local_shadows;
   application->disable_soft_shadows = !settings->soft_shadows;
   application->disable_fog = !settings->fog;
-  application->disable_volumetric_fog = !settings->fog || !settings->volumetric_fog;
+  application->disable_volumetric_fog =
+      !settings->fog || !settings->volumetric_fog;
   application->disable_subsurface_scattering = !settings->subsurface_scattering;
   application->ibl_probe_limit = settings->reflection_probes ? UINT32_MAX : 0;
   application->shadow_system.config = settings->shadow_quality == 1
@@ -244,12 +257,6 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       request->reset_defaults
           ? vkr_graphics_settings_defaults(application->renderer.backend_type)
           : request->settings;
-  if (!state->graphics.temporal_upscaling_available) {
-    settings.temporal_upscaling = false_v;
-    settings.dynamic_resolution = false_v;
-  }
-  if (!state->graphics.dynamic_resolution_available)
-    settings.dynamic_resolution = false_v;
   if (!vkr_graphics_settings_valid(&settings)) {
     snprintf(state->graphics_message, sizeof(state->graphics_message),
              "These settings could not be applied.");
@@ -288,6 +295,7 @@ static void sample_graphics_save(void) {
     snprintf(state->graphics_message, sizeof(state->graphics_message),
              "Settings are applied, but could not be saved.");
     log_warn("Unable to save Graphics settings to %s", state->graphics_path);
+    return;
   }
   state->graphics_dirty = false_v;
 }
@@ -1589,6 +1597,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
       }
       log_error("Scene load failed for '%s': %s", string8_cstr(&scene_path),
                 string8_cstr(&err));
+      snprintf(state->scene_status, sizeof(state->scene_status),
+               "Scene load failed: %.*s", (int)err.length, err.str);
       state->scene_load_terminal_logged = true_v;
     }
     return false_v;
@@ -1645,9 +1655,11 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     vkr_scene_edit_reset(&state->edits,
                          &application->ui_system.retained_allocator,
                          application->scene_generation);
-    (void)vkr_scene_edit_load(&state->edits, scene,
-                              string8_create((uint8_t *)state->sidecar_path,
-                                             strlen(state->sidecar_path)));
+    if (state->sidecar_path[0]) {
+      (void)vkr_scene_edit_load(&state->edits, scene,
+                                string8_create((uint8_t *)state->sidecar_path,
+                                               strlen(state->sidecar_path)));
+    }
     /* A fit from the previous scene is framed by a camera and caster set that
        no longer exist, so it is not a previous value of the same quantity. The
        configuration stamps cannot catch this: they are all identical across a
@@ -3052,17 +3064,24 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     sample_graphics_save();
   /* No pending notice is the normal case, and the empty-tolerant constructor
      is the one that preserves it. */
-  state->graphics.message = string8_create_from_cstr(
-      (const uint8_t *)state->graphics_message,
-      strlen(state->graphics_message));
+  state->graphics.message =
+      string8_create_from_cstr((const uint8_t *)state->graphics_message,
+                               strlen(state->graphics_message));
   VkrGraphicsSettingsRequest graphics_request = {0};
   VkrSampleTransportAction transport_action = VKR_SAMPLE_TRANSPORT_NONE;
   VkrSceneEditRequest scene_edit = {0};
+  VkrSampleSceneRequest scene_request = {0};
+  VkrSampleEditorStateRequest editor_state_request = {0};
+  VkrSampleCloseResponse close_response = VKR_SAMPLE_CLOSE_NONE;
+  state->modal = false_v;
+  application->editor_viewport.scene_backdrop_blur = false_v;
   const VkrMaterialTextureStreamStats texture_streams =
       vkr_material_system_get_texture_stream_stats(
           &application->assets.material_system);
   VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
+      .window = &application->host.window,
+      .assets = &application->assets,
       .dock = &application->editor_viewport.dock,
       .input = state->input_state,
       .text =
@@ -3103,11 +3122,24 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       .graphics_request = &graphics_request,
       .transport_action = &transport_action,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
+      .scene_backdrop_blur = &application->editor_viewport.scene_backdrop_blur,
       .scene = application->active_scene,
       .selected_entity = state->selected_entity,
       .scene_generation = application->scene_generation,
       .edits = &state->edits,
       .scene_edit = &scene_edit,
+      .scene_request = &scene_request,
+      .runtime_preferences = sample_preferences_snapshot(application),
+      .scene_recall = sample_recall_snapshot(application),
+      .editor_state_request = &editor_state_request,
+      .close_requested = vkr_window_close_requested(&application->host.window),
+      .close_response = &close_response,
+      .scene_path = state->scene_path,
+      .scene_status = string8_create_from_cstr(
+          (const uint8_t *)state->scene_status, strlen(state->scene_status)),
+      .scene_loading =
+          state->scene_load_timer_active && !state->scene_load_terminal_logged,
+      .modal = &state->modal,
       .scene_only = application->editor_viewport.scene_only,
       .mouse_captured = vkr_window_is_mouse_captured(&application->host.window),
   };
@@ -3120,9 +3152,15 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       state->ui.build(state->ui.state, &frame);
   application->ui_capture = vkr_ui_end(&application->ui_system);
   sample_graphics_request(application, &graphics_request);
+  sample_editor_state_apply(application, &editor_state_request);
+  if (close_response != VKR_SAMPLE_CLOSE_NONE) {
+    vkr_window_resolve_close(&application->host.window,
+                             close_response == VKR_SAMPLE_CLOSE_CONFIRM);
+  }
   application->ui_capture.mouse |=
       application->editor_viewport.dock_capture.mouse;
-  if (application->editor_viewport.enabled && !application->ui_capture.text) {
+  if (application->editor_viewport.enabled && !application->ui_capture.text &&
+      !state->modal) {
     if (input_key_shortcut_modifier(state->input_state, KEY_S) &&
         input_key_just_pressed(state->input_state, KEY_S))
       scene_edit.action = VKR_SCENE_EDIT_SAVE;
@@ -3133,6 +3171,48 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
            VKR_INPUT_MOD_SHIFT)
               ? VKR_SCENE_EDIT_REDO
               : VKR_SCENE_EDIT_UNDO;
+  }
+  if (state->modal) {
+    state->scene_keyboard_focus = false_v;
+    application->ui_capture.mouse = true_v;
+    application->ui_capture.keyboard = true_v;
+    vkr_window_set_mouse_capture(&application->host.window, false_v);
+  }
+  if (scene_request.select || scene_request.unload) {
+    vkr_standard_scene_runtime_finish_gizmo_edit(application);
+    if (!scene_request.discard_edits &&
+        state->edits.revision != state->edits.saved_revision) {
+      snprintf(state->scene_status, sizeof(state->scene_status),
+               "Save or discard scene edits before switching.");
+    } else if (scene_request.path.length >= sizeof(state->scene_path_storage) ||
+               scene_request.sidecar_path.length >=
+                   sizeof(state->sidecar_path) ||
+               (scene_request.select && !scene_request.path.length)) {
+      snprintf(state->scene_status, sizeof(state->scene_status),
+               "Invalid scene selection or path is too long.");
+    } else {
+      /* Snapshot borrowed paths before unloading resets scene-owned storage. */
+      char next_path[1024] = {0};
+      char next_sidecar[1024] = {0};
+      if (scene_request.path.length) {
+        MemCopy(next_path, scene_request.path.str, scene_request.path.length);
+      }
+      if (scene_request.sidecar_path.length) {
+        MemCopy(next_sidecar, scene_request.sidecar_path.str,
+                scene_request.sidecar_path.length);
+      }
+      vkr_standard_scene_runtime_unload_scene_system(application);
+      MemCopy(state->scene_path_storage, next_path, sizeof(next_path));
+      MemCopy(state->sidecar_path, next_sidecar, sizeof(next_sidecar));
+      state->scene_path = string8_create_from_cstr(
+          (const uint8_t *)state->scene_path_storage, strlen(next_path));
+      state->scene_status[0] = '\0';
+      scene_edit.action = VKR_SCENE_EDIT_NONE;
+      if (scene_request.select) {
+        application->editor_viewport.scene_rendering_stopped = false_v;
+        vkr_standard_scene_runtime_init_scene_system(application);
+      }
+    }
   }
   if (state->gizmo_drag.active &&
       (scene_edit.action != VKR_SCENE_EDIT_NONE ||
@@ -3174,9 +3254,14 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                                 scene_edit.action == VKR_SCENE_EDIT_REDO);
       break;
     case VKR_SCENE_EDIT_SAVE:
-      (void)vkr_scene_edit_save(&state->edits, scene,
-                                string8_create((uint8_t *)state->sidecar_path,
-                                               strlen(state->sidecar_path)));
+      if (state->ui.save_scene_edits) {
+        (void)state->ui.save_scene_edits(state->ui.state, &state->edits, scene,
+                                         state->scene_path);
+      } else {
+        (void)vkr_scene_edit_save(&state->edits, scene,
+                                  string8_create((uint8_t *)state->sidecar_path,
+                                                 strlen(state->sidecar_path)));
+      }
       break;
     case VKR_SCENE_EDIT_FRAME: {
       const SceneTransform *tr = vkr_entity_get_component(
@@ -3299,7 +3384,9 @@ vkr_sample_runtime_update(void *state_ptr, VkrStandardSceneRuntime *application,
                           float64_t delta) {
   (void)state_ptr;
   vkr_standard_scene_runtime_update_ui(application, delta);
-  vkr_standard_scene_runtime_handle_input(application, delta);
+  if (!state->modal) {
+    vkr_standard_scene_runtime_handle_input(application, delta);
+  }
 
   if (!application->ui_capture.keyboard &&
       input_is_key_up(state->input_state, KEY_Q) &&
@@ -3415,6 +3502,22 @@ int vkr_sample_runtime_run(int argc, char **argv,
       vkr_standard_scene_runtime_env_flag("MTL_SHADER_VALIDATION", false_v);
 
   VkrStandardSceneRuntimeConfig vkr_standard_scene_runtime_config = {0};
+  char bootstrap_fonts[2048] = {0};
+  if (runtime_config->project_managed) {
+    if (!vkr_platform_executable_path(bootstrap_fonts,
+                                      sizeof(bootstrap_fonts))) {
+      fprintf(stderr, "Cannot locate installed editor resources\n");
+      return 2;
+    }
+    char *separator = strrchr(bootstrap_fonts, '/');
+    if (!separator || (uint64_t)(separator - bootstrap_fonts) + 32 >=
+                          sizeof(bootstrap_fonts)) {
+      return 2;
+    }
+    strcpy(separator + 1, "resources/editor/fonts");
+    vkr_standard_scene_runtime_config.bootstrap_font_directory =
+        bootstrap_fonts;
+  }
   vkr_standard_scene_runtime_config.title = runtime_config->title;
   vkr_standard_scene_runtime_config.x = 100;
   vkr_standard_scene_runtime_config.y = 100;
@@ -3425,7 +3528,9 @@ int vkr_sample_runtime_run(int argc, char **argv,
   vkr_standard_scene_runtime_config.app_arena_size = MB(1);
   vkr_standard_scene_runtime_config.target_frame_rate = 0;
   vkr_standard_scene_runtime_config.renderer_backend = renderer_backend;
-  const char *graphics_path = getenv("VKR_GRAPHICS_SETTINGS_PATH");
+  const char *graphics_path = runtime_config->project_managed
+                                  ? ""
+                                  : getenv("VKR_GRAPHICS_SETTINGS_PATH");
   if (!graphics_path)
     graphics_path = PROJECT_SOURCE_DIR ".vkr-graphics-settings.json";
   if (strlen(graphics_path) >= 1024) {
@@ -3493,6 +3598,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
     fprintf(stderr, "VkrStandardSceneRuntime creation failed\n");
     return 1;
   }
+  application.host.window.defer_close = runtime_config->project_managed;
   if (metal_validation_enabled &&
       renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
     log_info("Metal validation enabled; the Scene uses fixed-scale spatial "
@@ -3559,12 +3665,22 @@ int vkr_sample_runtime_run(int argc, char **argv,
     vkr_standard_scene_runtime_shutdown(&application);
     return 2;
   }
+  snprintf(state->scene_path_storage, sizeof(state->scene_path_storage), "%s",
+           runtime_config->project_managed ? "" : scene_path_arg);
   state->scene_path =
-      string8_create((uint8_t *)scene_path_arg, strlen(scene_path_arg));
-  /* Scene loader paths are project-relative. Direct sidecar I/O must use the
-     same root even when the editor is launched from another directory. */
-  snprintf(state->sidecar_path, sizeof(state->sidecar_path),
-           PROJECT_SOURCE_DIR "%s.editor.json", scene_path_arg);
+      string8_create_from_cstr((const uint8_t *)state->scene_path_storage,
+                               strlen(state->scene_path_storage));
+  state->sidecar_path[0] = '\0';
+  state->scene_status[0] = '\0';
+  state->modal = runtime_config->project_managed;
+  if (!runtime_config->project_managed) {
+    const bool8_t absolute =
+        scene_path_arg[0] == '/' || scene_path_arg[0] == '\\' ||
+        (strlen(scene_path_arg) > 1u && scene_path_arg[1] == ':');
+    snprintf(state->sidecar_path, sizeof(state->sidecar_path),
+             "%s%s.editor.json", absolute ? "" : PROJECT_SOURCE_DIR,
+             scene_path_arg);
+  }
   state->edits = (VkrSceneEditState){
       .allocator = &application.ui_system.retained_allocator};
   state->gizmo_edit_pending = false_v;
@@ -3648,8 +3764,9 @@ int vkr_sample_runtime_run(int argc, char **argv,
   // Headless metrics capture. Both knobs are opt-in so interactive runs are
   // unchanged; together with VKR_AUTOCLOSE_SECONDS they make a baseline
   // reproducible without a human driving the app.
-  if (scene_requested ||
-      vkr_standard_scene_runtime_env_flag("VKR_AUTOLOAD_SCENE", false_v)) {
+  if (!runtime_config->project_managed &&
+      (scene_requested ||
+       vkr_standard_scene_runtime_env_flag("VKR_AUTOLOAD_SCENE", false_v))) {
     log_info("Auto-loading scene '%s'", scene_path_arg);
     vkr_standard_scene_runtime_init_scene_system(&application);
   }
@@ -3792,4 +3909,368 @@ int vkr_sample_runtime_run(int argc, char **argv,
   vkr_standard_scene_runtime_shutdown(&application);
 
   return exit_code;
+}
+
+static bool8_t
+sample_preferences_valid(const VkrSampleRuntimePreferences *value) {
+  return value && value->filter_mode < ArrayCount(FILTER_MODES) &&
+         value->gizmo_mode <= VKR_GIZMO_MODE_SCALE &&
+         value->gizmo_space <= VKR_GIZMO_SPACE_VIEW &&
+         isfinite(value->gizmo_size) && value->gizmo_size >= 16 &&
+         value->gizmo_size <= 1024 && isfinite(value->camera_speed) &&
+         value->camera_speed > 0 && value->camera_speed <= 10000 &&
+         isfinite(value->camera_sensitivity) && value->camera_sensitivity > 0 &&
+         value->camera_sensitivity <= 100 && isfinite(value->move_multiplier) &&
+         value->move_multiplier > 0 && value->move_multiplier <= 10000 &&
+         isfinite(value->rotation_multiplier) &&
+         value->rotation_multiplier > 0 &&
+         value->rotation_multiplier <= 10000 && value->ibl_debug_mode < 4 &&
+         isfinite(value->ibl_debug_scalar) && value->ibl_debug_scalar >= 0 &&
+         value->ibl_debug_scalar <= 2;
+}
+
+static bool8_t sample_recall_valid(const VkrSampleSceneRecall *value) {
+  return value &&
+         (!value->camera_valid ||
+          (isfinite(value->position.x) && isfinite(value->position.y) &&
+           isfinite(value->position.z) && isfinite(value->yaw) &&
+           isfinite(value->pitch) && value->pitch >= -89 &&
+           value->pitch <= 89 && isfinite(value->field_of_view) &&
+           value->field_of_view > 0 && value->field_of_view < 180 &&
+           isfinite(value->near_plane) && isfinite(value->far_plane) &&
+           value->near_plane > 0 && value->far_plane > value->near_plane));
+}
+
+#define SAMPLE_JSON_FLOAT(name, member)                                        \
+  (vkr_json_writer_name(writer, string8_lit(name)) &&                          \
+   vkr_json_writer_f64(writer, value->member))
+#define SAMPLE_JSON_UINT(name, member)                                         \
+  (vkr_json_writer_name(writer, string8_lit(name)) &&                          \
+   vkr_json_writer_u64(writer, value->member))
+#define SAMPLE_JSON_BOOL(name, member)                                         \
+  (vkr_json_writer_name(writer, string8_lit(name)) &&                          \
+   vkr_json_writer_bool(writer, value->member))
+
+bool8_t vkr_sample_runtime_preferences_write_json(
+    const VkrSampleRuntimePreferences *value, VkrJsonWriter *writer) {
+  return sample_preferences_valid(value) &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_json_writer_name(writer, string8_lit("version")) &&
+         vkr_json_writer_u64(writer, 1) &&
+         SAMPLE_JSON_UINT("filter_mode", filter_mode) &&
+         SAMPLE_JSON_UINT("gizmo_mode", gizmo_mode) &&
+         SAMPLE_JSON_UINT("gizmo_space", gizmo_space) &&
+         SAMPLE_JSON_FLOAT("gizmo_size", gizmo_size) &&
+         SAMPLE_JSON_FLOAT("camera_speed", camera_speed) &&
+         SAMPLE_JSON_FLOAT("camera_sensitivity", camera_sensitivity) &&
+         SAMPLE_JSON_FLOAT("move_multiplier", move_multiplier) &&
+         SAMPLE_JSON_FLOAT("rotation_multiplier", rotation_multiplier) &&
+         SAMPLE_JSON_UINT("ibl_debug_mode", ibl_debug_mode) &&
+         SAMPLE_JSON_FLOAT("ibl_debug_scalar", ibl_debug_scalar) &&
+         SAMPLE_JSON_BOOL("pass_gpu_timings", pass_gpu_timings) &&
+         vkr_json_writer_end_object(writer);
+}
+
+static bool8_t sample_read_float(String8 json, const char *name,
+                                 float32_t *value) {
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  return vkr_json_get_float(&reader, name, value);
+}
+
+static bool8_t sample_read_uint(String8 json, const char *name,
+                                uint32_t *value) {
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  float64_t number;
+  if (!vkr_json_get_double(&reader, name, &number) || !isfinite(number) ||
+      number < 0 || number > UINT32_MAX || floor(number) != number) {
+    return false_v;
+  }
+  *value = (uint32_t)number;
+  return true_v;
+}
+
+static bool8_t sample_read_bool(String8 json, const char *name,
+                                bool8_t *value) {
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  return vkr_json_get_bool(&reader, name, value);
+}
+
+bool8_t
+vkr_sample_runtime_preferences_read_json(String8 json,
+                                         VkrSampleRuntimePreferences *value) {
+  if (!value) {
+    return false_v;
+  }
+  VkrSampleRuntimePreferences candidate = {0};
+  uint32_t version;
+  if (!sample_read_uint(json, "version", &version) || version != 1 ||
+      !sample_read_uint(json, "filter_mode", &candidate.filter_mode) ||
+      !sample_read_uint(json, "gizmo_mode", &candidate.gizmo_mode) ||
+      !sample_read_uint(json, "gizmo_space", &candidate.gizmo_space) ||
+      !sample_read_float(json, "gizmo_size", &candidate.gizmo_size) ||
+      !sample_read_float(json, "camera_speed", &candidate.camera_speed) ||
+      !sample_read_float(json, "camera_sensitivity",
+                         &candidate.camera_sensitivity) ||
+      !sample_read_float(json, "move_multiplier", &candidate.move_multiplier) ||
+      !sample_read_float(json, "rotation_multiplier",
+                         &candidate.rotation_multiplier) ||
+      !sample_read_uint(json, "ibl_debug_mode", &candidate.ibl_debug_mode) ||
+      !sample_read_float(json, "ibl_debug_scalar",
+                         &candidate.ibl_debug_scalar) ||
+      !sample_read_bool(json, "pass_gpu_timings",
+                        &candidate.pass_gpu_timings) ||
+      !sample_preferences_valid(&candidate)) {
+    return false_v;
+  }
+  *value = candidate;
+  return true_v;
+}
+
+bool8_t vkr_sample_entity_identity(const VkrScene *scene, VkrEntityId entity,
+                                   VkrSampleEntityIdentity *identity) {
+  if (!scene || !identity || !vkr_scene_entity_alive(scene, entity)) {
+    return false_v;
+  }
+  const SceneSourceIdentity *source = vkr_entity_get_component(
+      scene->world, entity, scene->comp_source_identity);
+  if (!source || !source->source_fingerprint) {
+    return false_v;
+  }
+  *identity = (VkrSampleEntityIdentity){
+      .scene_entity = source->scene_entity_index,
+      .gltf_node = source->gltf_node_index,
+      .source_fingerprint = source->source_fingerprint};
+  return true_v;
+}
+
+VkrEntityId vkr_sample_entity_find(const VkrScene *scene,
+                                   const VkrSampleEntityIdentity *identity) {
+  if (!scene || !identity || !identity->source_fingerprint) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  VkrEntityId result = VKR_ENTITY_ID_INVALID;
+  for (uint32_t i = 0; i < scene->world->dir.capacity; ++i) {
+    if (!scene->world->dir.records[i].chunk) {
+      continue;
+    }
+    VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    VkrSampleEntityIdentity candidate;
+    if (vkr_sample_entity_identity(scene, entity, &candidate) &&
+        candidate.scene_entity == identity->scene_entity &&
+        candidate.gltf_node == identity->gltf_node &&
+        candidate.source_fingerprint == identity->source_fingerprint) {
+      if (result.u64) {
+        return VKR_ENTITY_ID_INVALID;
+      }
+      result = entity;
+    }
+  }
+  return result;
+}
+
+bool8_t
+vkr_sample_entity_identity_write_json(const VkrSampleEntityIdentity *value,
+                                      VkrJsonWriter *writer) {
+  char fingerprint[17];
+  snprintf(fingerprint, sizeof(fingerprint), "%016llx",
+           (unsigned long long)value->source_fingerprint);
+  return vkr_json_writer_begin_object(writer) &&
+         SAMPLE_JSON_UINT("scene_entity", scene_entity) &&
+         SAMPLE_JSON_UINT("gltf_node", gltf_node) &&
+         vkr_json_writer_name(writer, string8_lit("source_fingerprint")) &&
+         vkr_json_writer_string(writer,
+                                string8_create((uint8_t *)fingerprint, 16)) &&
+         vkr_json_writer_end_object(writer);
+}
+
+bool8_t
+vkr_sample_entity_identity_read_json(String8 json,
+                                     VkrSampleEntityIdentity *identity) {
+  if (!identity) {
+    return false_v;
+  }
+  VkrSampleEntityIdentity candidate = {0};
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  String8 fingerprint;
+  if (!sample_read_uint(json, "scene_entity", &candidate.scene_entity) ||
+      !sample_read_uint(json, "gltf_node", &candidate.gltf_node) ||
+      !vkr_json_get_string(&reader, "source_fingerprint", &fingerprint) ||
+      fingerprint.length != 16) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < 16; ++i) {
+    uint8_t character = fingerprint.str[i];
+    uint32_t digit;
+    if (character >= '0' && character <= '9') {
+      digit = character - '0';
+    } else if (character >= 'a' && character <= 'f') {
+      digit = character - 'a' + 10;
+    } else {
+      return false_v;
+    }
+    candidate.source_fingerprint = (candidate.source_fingerprint << 4) | digit;
+  }
+  if (!candidate.source_fingerprint) {
+    return false_v;
+  }
+  *identity = candidate;
+  return true_v;
+}
+
+bool8_t vkr_sample_scene_recall_write_json(const VkrSampleSceneRecall *value,
+                                           VkrJsonWriter *writer) {
+  if (!sample_recall_valid(value) || !vkr_json_writer_begin_object(writer) ||
+      !vkr_json_writer_name(writer, string8_lit("version")) ||
+      !vkr_json_writer_u64(writer, 1) ||
+      !SAMPLE_JSON_BOOL("camera_valid", camera_valid) ||
+      !SAMPLE_JSON_BOOL("selection_valid", selection_valid)) {
+    return false_v;
+  }
+  if (value->camera_valid &&
+      !(SAMPLE_JSON_FLOAT("x", position.x) &&
+        SAMPLE_JSON_FLOAT("y", position.y) &&
+        SAMPLE_JSON_FLOAT("z", position.z) && SAMPLE_JSON_FLOAT("yaw", yaw) &&
+        SAMPLE_JSON_FLOAT("pitch", pitch) &&
+        SAMPLE_JSON_FLOAT("fov", field_of_view) &&
+        SAMPLE_JSON_FLOAT("near", near_plane) &&
+        SAMPLE_JSON_FLOAT("far", far_plane))) {
+    return false_v;
+  }
+  if (value->selection_valid &&
+      !(vkr_json_writer_name(writer, string8_lit("selection")) &&
+        vkr_sample_entity_identity_write_json(&value->selection, writer))) {
+    return false_v;
+  }
+  return vkr_json_writer_end_object(writer);
+}
+
+bool8_t vkr_sample_scene_recall_read_json(String8 json,
+                                          VkrSampleSceneRecall *value) {
+  if (!value) {
+    return false_v;
+  }
+  VkrSampleSceneRecall candidate = {0};
+  uint32_t version;
+  if (!sample_read_uint(json, "version", &version) || version != 1 ||
+      !sample_read_bool(json, "camera_valid", &candidate.camera_valid) ||
+      !sample_read_bool(json, "selection_valid", &candidate.selection_valid)) {
+    return false_v;
+  }
+  if (candidate.camera_valid &&
+      !(sample_read_float(json, "x", &candidate.position.x) &&
+        sample_read_float(json, "y", &candidate.position.y) &&
+        sample_read_float(json, "z", &candidate.position.z) &&
+        sample_read_float(json, "yaw", &candidate.yaw) &&
+        sample_read_float(json, "pitch", &candidate.pitch) &&
+        sample_read_float(json, "fov", &candidate.field_of_view) &&
+        sample_read_float(json, "near", &candidate.near_plane) &&
+        sample_read_float(json, "far", &candidate.far_plane))) {
+    return false_v;
+  }
+  if (candidate.selection_valid) {
+    VkrJsonReader reader = vkr_json_reader_from_string(json);
+    VkrJsonReader object;
+    if (!vkr_json_find_field(&reader, "selection") ||
+        !vkr_json_enter_object(&reader, &object) ||
+        !vkr_sample_entity_identity_read_json(
+            (String8){.str = (uint8_t *)object.data, .length = object.length},
+            &candidate.selection)) {
+      return false_v;
+    }
+  }
+  if (!sample_recall_valid(&candidate)) {
+    return false_v;
+  }
+  *value = candidate;
+  return true_v;
+}
+
+#undef SAMPLE_JSON_FLOAT
+#undef SAMPLE_JSON_UINT
+#undef SAMPLE_JSON_BOOL
+
+static VkrSampleRuntimePreferences
+sample_preferences_snapshot(VkrStandardSceneRuntime *application) {
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  return (VkrSampleRuntimePreferences){
+      .filter_mode = state->filter_mode_index,
+      .gizmo_mode = application->gizmo_system.mode,
+      .gizmo_space = application->gizmo_system.space,
+      .gizmo_size = application->gizmo_system.config.screen_size >= 16
+                        ? application->gizmo_system.config.screen_size
+                        : 150,
+      .camera_speed = camera ? camera->speed : 1,
+      .camera_sensitivity = camera ? camera->sensitivity : 1,
+      .move_multiplier = application->camera_controller.move_speed,
+      .rotation_multiplier = application->camera_controller.rotation_speed,
+      .ibl_debug_mode = state->ibl_validation_mode,
+      .ibl_debug_scalar = state->ibl_validation_scalar,
+      .pass_gpu_timings = application->metrics->config.pass_gpu_timings};
+}
+
+static VkrSampleSceneRecall
+sample_recall_snapshot(VkrStandardSceneRuntime *application) {
+  VkrSampleSceneRecall result = {0};
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (camera && camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
+    result.camera_valid = true_v;
+    result.position = camera->position;
+    result.yaw = camera->yaw;
+    result.pitch = camera->pitch;
+    result.field_of_view = camera->zoom;
+    result.near_plane = camera->near_clip;
+    result.far_plane = camera->far_clip;
+  }
+  result.selection_valid =
+      state->has_selection &&
+      vkr_sample_entity_identity(application->active_scene,
+                                 state->selected_entity, &result.selection);
+  return result;
+}
+
+static void
+sample_editor_state_apply(VkrStandardSceneRuntime *application,
+                          const VkrSampleEditorStateRequest *request) {
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (request->apply_preferences &&
+      sample_preferences_valid(&request->preferences)) {
+    const VkrSampleRuntimePreferences *value = &request->preferences;
+    vkr_standard_scene_runtime_apply_filter_mode(application,
+                                                 value->filter_mode);
+    application->gizmo_system.mode = (VkrGizmoMode)value->gizmo_mode;
+    application->gizmo_system.space = (VkrGizmoSpace)value->gizmo_space;
+    application->gizmo_system.config.screen_size = value->gizmo_size;
+    application->camera_controller.move_speed = value->move_multiplier;
+    application->camera_controller.rotation_speed = value->rotation_multiplier;
+    application->metrics->config.pass_gpu_timings = value->pass_gpu_timings;
+    state->ibl_validation_mode = value->ibl_debug_mode;
+    state->ibl_validation_scalar = value->ibl_debug_scalar;
+    if (camera) {
+      camera->speed = value->camera_speed;
+      camera->sensitivity = value->camera_sensitivity;
+    }
+  }
+  if (request->apply_recall && sample_recall_valid(&request->recall)) {
+    const VkrSampleSceneRecall *value = &request->recall;
+    if (camera && value->camera_valid) {
+      vkr_camera_set_pose(camera, value->position, value->yaw, value->pitch);
+      (void)vkr_camera_set_perspective_lens(
+          camera, value->field_of_view, value->near_plane, value->far_plane,
+          Max(camera->cached_window_width, 1u),
+          Max(camera->cached_window_height, 1u));
+      vkr_renderer_invalidate_temporal_history(&application->renderer);
+    }
+    vkr_standard_scene_runtime_clear_gizmo_selection(application);
+    if (value->selection_valid) {
+      VkrEntityId entity =
+          vkr_sample_entity_find(application->active_scene, &value->selection);
+      if (entity.u64) {
+        state->selected_entity = entity;
+        state->has_selection = true_v;
+      }
+    }
+  }
 }

@@ -1,4 +1,5 @@
 #include "test_main.h"
+#include "editor_project_store_test.h"
 
 bool32_t run_local_shadow_tests(void);
 
@@ -52,6 +53,7 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_resource_async_state_tests,
     run_scene_loader_tests,
     run_scene_edit_tests,
+    run_editor_project_store_tests,
     run_gltf_importer_tests,
     run_material_pbr_tests,
     run_mesh_cooked_tests,

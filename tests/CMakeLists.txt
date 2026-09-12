@@ -5,6 +5,7 @@ project(vulkan_renderer_tester)
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS src/*.c)
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
 target_sources(vulkan_renderer_tester PRIVATE
+    "${CMAKE_SOURCE_DIR}/editor/src/editor_project_store.c"
     "${CMAKE_SOURCE_DIR}/app/src/app_ui.c"
     "${CMAKE_SOURCE_DIR}/app/src/debug_overlay.c"
 )
@@ -26,7 +27,7 @@ endif()
 
 # The harness core exports renderer_lib transitively.
 find_package(Vulkan REQUIRED)
-target_link_libraries(vulkan_renderer_tester PRIVATE vkr_harness_core vkr_asset_cooking ktx Vulkan::Vulkan)
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_harness_core vkr_asset_cooking ktx Vulkan::Vulkan)
 
 target_include_directories(vulkan_renderer_tester
     PRIVATE

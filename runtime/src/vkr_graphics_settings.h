@@ -1,6 +1,7 @@
 #pragma once
 
 #include "containers/str.h"
+#include "core/vkr_json_writer.h"
 #include "vkr_renderer.h"
 
 /* Player preferences. Scene and material authoring values remain scene-owned.
@@ -46,3 +47,7 @@ bool8_t vkr_graphics_settings_load(const char *path,
                                    VkrGraphicsSettings *settings);
 bool8_t vkr_graphics_settings_save(const char *path,
                                    const VkrGraphicsSettings *settings);
+bool8_t vkr_graphics_settings_read_json(String8 json,
+                                      VkrGraphicsSettings *settings);
+bool8_t vkr_graphics_settings_write_json(VkrJsonWriter *writer,
+                                       const VkrGraphicsSettings *settings);
