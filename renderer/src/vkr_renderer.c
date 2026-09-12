@@ -692,15 +692,12 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->target_generation = 1u;
 
   /* The Vulkan implementation owns its persistent graph realization,
-
    * descriptor tables, and bounded pool metadata through this allocator in
-
-   * addition to the frontend graph. Keep enough committed-growth headroom for
-
-   * a new image-pool block to be admitted after the descriptor tables are
-
-   * resident. */
-  if (!vkr_dmemory_create(MB(2), MB(64), &renderer->render_graph_dmemory)) {
+   * addition to the frontend graph. A resize can retain the old graph while
+   * texture publication admits more 64 MiB image blocks; each block adds a
+   * fixed GPU-memory-core record. Reserve that cold-boundary overlap without
+   * increasing the initial physical commit. */
+  if (!vkr_dmemory_create(MB(2), MB(96), &renderer->render_graph_dmemory)) {
     log_error("Failed to create render graph allocator!");
     goto initialize_failure;
   }
