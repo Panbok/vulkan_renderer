@@ -1,0 +1,17 @@
+name=lsts_opaque
+type=pbr
+base_color=0.3,0.3,0.3,1
+metallic=0
+roughness=1
+dielectric_specular=0,0,0
+normal_scale=0
+transmission_factor=0
+ior=1
+thickness_factor=0
+attenuation_color=1,1,1
+attenuation_distance=0
+alpha_mode=opaque
+alpha_cutoff=0.5
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

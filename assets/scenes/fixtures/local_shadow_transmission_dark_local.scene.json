@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": false
+  },
+  "entities": [
+    {
+      "name": "Point",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          8
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "point_light": {
+        "enabled": false,
+        "casts_shadow": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 64,
+        "range": 40,
+        "kind": 1
+      }
+    },
+    {
+      "name": "Receiver and crossing matrix",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": "tests/fixtures/rendering/local_shadow_transmission/local_shadow_transmission_matrix.vkb",
+        "pipeline_domain": "world"
+      }
+    }
+  ]
+}

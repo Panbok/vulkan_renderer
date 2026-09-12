@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "id": "local.lantern_disappearance.approach",
+  "suite": "local",
+  "description": "Camera approaches the Bistro plaza lantern and logs shadow assignment.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    800,
+    600
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 8,
+    "measure": 33
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1.0,
+    "bloom_enabled": false,
+    "gtao_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "direct_diffuse",
+    "ssr_enabled": false,
+    "ssgi_enabled": false,
+    "fxaa_enabled": false
+  },
+  "camera": {
+    "mode": "keyframes",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "speed": "medium",
+    "interpolation": "linear",
+    "keys": [
+      {
+        "t": 0,
+        "position": [
+          -5,
+          3,
+          22
+        ],
+        "yaw": 19.2320728,
+        "pitch": -3.26702642
+      },
+      {
+        "t": 0.133333336,
+        "position": [
+          -5,
+          3,
+          22
+        ],
+        "yaw": 19.2320728,
+        "pitch": -3.26702642
+      },
+      {
+        "t": 0.66666668,
+        "position": [
+          10.0205421,
+          3,
+          27.8467007
+        ],
+        "yaw": 19.2320728,
+        "pitch": -3.26702642
+      }
+    ]
+  },
+  "captures": [],
+  "assertions": [
+    {
+      "metric": "lighting.point.selected",
+      "stat": "min",
+      "min": 72
+    },
+    {
+      "metric": "lighting.point.dropped",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

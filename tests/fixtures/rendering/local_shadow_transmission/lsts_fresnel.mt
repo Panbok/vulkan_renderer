@@ -1,0 +1,17 @@
+name=lsts_fresnel
+type=pbr
+base_color=1,1,1,1
+metallic=0
+roughness=0
+dielectric_specular=0.04,0.04,0.04
+normal_scale=0
+transmission_factor=1
+ior=1
+thickness_factor=0
+attenuation_color=1,1,1
+attenuation_distance=0
+alpha_mode=opaque
+alpha_cutoff=0.5
+double_sided=true
+shader=shader.pbr.world
+pipeline=world
