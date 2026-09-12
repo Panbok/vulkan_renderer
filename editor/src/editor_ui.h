@@ -2,8 +2,11 @@
 
 #include "editor_bakery.h"
 #include "editor_console.h"
+#include "editor_content.h"
 #include "editor_scene_panels.h"
 #include "vkr_sample_runtime.h"
+
+typedef struct VkrEditorProjects VkrEditorProjects;
 
 typedef enum VkrEditorMenu {
   VKR_EDITOR_MENU_NONE = 0,
@@ -42,8 +45,10 @@ typedef struct VkrEditorLabelAnchor {
 } VkrEditorLabelAnchor;
 
 typedef struct VkrEditorUi {
+  VkrEditorProjects *projects;
   VkrEditorConsole console;
   VkrEditorBakery *bakery;
+  VkrEditorContent *content;
   VkrEditorScenePanels *scene_panels;
   VkrEditorMenu menu;
   bool8_t labels_expanded;

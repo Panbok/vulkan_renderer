@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "editor_projects.h"
 
 #include "editor_graphics.h"
 
@@ -7,9 +8,8 @@
 
 #define EDITOR_COMMAND_LAYER (VKR_EDITOR_WINDOW_COUNT + 3u)
 
-static bool8_t editor_menu_button(VkrUiSystem *ui, String8 id, String8 content,
-                                  uint32_t column, bool8_t active,
-                                  VkrFontHandle heading_font) {
+VkrUiWidgetConfig vkr_editor_menu_button_config(uint32_t column, bool8_t active,
+                                                VkrFontHandle heading_font) {
   VkrUiWidgetConfig button = vkr_ui_widget_config_default();
   button.placement = (VkrUiPlacement){
       .column = column,
@@ -27,6 +27,14 @@ static bool8_t editor_menu_button(VkrUiSystem *ui, String8 id, String8 content,
                                          : (Vec4){0.07f, 0.09f, 0.13f, 0.30f};
   button.style.text_color = active ? (Vec4){0.82f, 0.94f, 1.0f, 1.0f}
                                    : (Vec4){0.72f, 0.77f, 0.84f, 1.0f};
+  return button;
+}
+
+static bool8_t editor_menu_button(VkrUiSystem *ui, String8 id, String8 content,
+                                  uint32_t column, bool8_t active,
+                                  VkrFontHandle heading_font) {
+  VkrUiWidgetConfig button =
+      vkr_editor_menu_button_config(column, active, heading_font);
   return vkr_ui_button(ui, id, content, &button);
 }
 
@@ -361,11 +369,12 @@ void vkr_editor_scene_toolbar_build(VkrEditorUi *editor,
       (Vec4){0.65f, 0.70f, 0.75f, 1}, false_v);
   if (editor_toolbar_button(ui, string8_lit("scene.load"),
                             VKR_UI_ICON_SCENE_LOAD, string8_lit("Load scene"),
-                            1, cols, green, frame->scene != NULL))
+                            1, cols, green, frame->scene_loading || frame->scene != NULL))
     *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_LOAD};
   if (editor_toolbar_button(
           ui, string8_lit("scene.unload"), VKR_UI_ICON_SCENE_UNLOAD,
-          string8_lit("Unload scene"), 2, cols, red, frame->scene == NULL))
+          string8_lit("Unload scene"), 2, cols, red,
+          frame->scene_loading || frame->scene == NULL))
     *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_UNLOAD};
   if (editor_toolbar_button(ui, string8_lit("simulation.start"),
                             VKR_UI_ICON_PLAY,
@@ -405,6 +414,8 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   const VkrUiTrack nav_columns[] = {
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
@@ -456,8 +467,10 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   };
   vkr_ui_label(ui, string8_lit("brand"), string8_lit("VKR / EDITOR"), &brand);
 
+  vkr_editor_projects_navigation(editor->projects, editor, frame);
+
   if (editor_menu_button(
-          ui, string8_lit("menu.metrics"), string8_lit("Metrics"), 1u,
+          ui, string8_lit("menu.metrics"), string8_lit("Metrics"), 3u,
           editor->menu == VKR_EDITOR_MENU_METRICS, editor->heading_font)) {
     editor->commands_open = false_v;
     editor->menu = editor->menu == VKR_EDITOR_MENU_METRICS
@@ -465,7 +478,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                        : VKR_EDITOR_MENU_METRICS;
   }
   if (editor_menu_button(ui, string8_lit("menu.debug"), string8_lit("Debug"),
-                         2u, editor->menu == VKR_EDITOR_MENU_DEBUG,
+                         4u, editor->menu == VKR_EDITOR_MENU_DEBUG,
                          editor->heading_font)) {
     editor->commands_open = false_v;
     editor->menu = editor->menu == VKR_EDITOR_MENU_DEBUG
@@ -473,7 +486,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                        : VKR_EDITOR_MENU_DEBUG;
   }
   if (editor_menu_button(ui, string8_lit("menu.settings"),
-                         string8_lit("Settings"), 3u,
+                         string8_lit("Settings"), 5u,
                          editor->menu == VKR_EDITOR_MENU_SETTINGS,
                          editor->heading_font)) {
     editor->commands_open = false_v;
@@ -481,7 +494,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                        ? VKR_EDITOR_MENU_NONE
                        : VKR_EDITOR_MENU_SETTINGS;
   }
-  if (editor_menu_button(ui, string8_lit("menu.help"), string8_lit("Help"), 4u,
+  if (editor_menu_button(ui, string8_lit("menu.help"), string8_lit("Help"), 6u,
                          editor->windows[VKR_EDITOR_WINDOW_HELP].visible,
                          editor->heading_font)) {
     editor->commands_open = false_v;
@@ -494,13 +507,13 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   const bool8_t bakery_visible =
       vkr_ui_dock_find_panel(frame->dock, VKR_UI_DOCK_PANEL_BAKERY, NULL, NULL);
   if (editor_menu_button(ui, string8_lit("menu.bakery"), string8_lit("Bakery"),
-                         5u, bakery_visible, editor->heading_font)) {
+                         7u, bakery_visible, editor->heading_font)) {
     editor->commands_open = false_v;
     editor->menu = VKR_EDITOR_MENU_NONE;
     vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_BAKERY);
   }
   if (editor_menu_button(ui, string8_lit("menu.commands"),
-                         string8_lit("Commands"), 6u, editor->commands_open,
+                         string8_lit("Commands"), 8u, editor->commands_open,
                          editor->heading_font)) {
     editor->commands_open = !editor->commands_open;
     editor->commands_focus_search = editor->commands_open;
@@ -517,7 +530,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   VkrUiWidgetConfig status =
       vkr_editor_text_config(11.0f, (Vec4){0.68f, 0.72f, 0.74f, 1.0f});
   status.placement = (VkrUiPlacement){
-      .column = 8u,
+      .column = 10u,
       .row = 0u,
       .column_span = 1u,
       .row_span = 1u,
@@ -953,6 +966,7 @@ typedef enum EditorCommand {
   CMD_INSPECTOR,
   CMD_CONSOLE,
   CMD_BAKERY,
+  CMD_CONTENT,
   CMD_RESET_LAYOUT,
   CMD_SIM_START,
   CMD_SIM_PAUSE,
@@ -972,6 +986,7 @@ static const char *s_command_names[CMD_COUNT] = {"Load scene",
                                                  "Show Inspector",
                                                  "Show Console",
                                                  "Show Bakery",
+                                                 "Show Content",
                                                  "Reset panel layout",
                                                  "Start / resume simulation",
                                                  "Pause simulation",
@@ -1031,6 +1046,9 @@ static void editor_command_execute(EditorCommand command,
   case CMD_BAKERY:
     vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_BAKERY);
     break;
+  case CMD_CONTENT:
+    vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
+    break;
   case CMD_RESET_LAYOUT:
     vkr_ui_dock_default_editor_layout(frame->dock);
     break;
@@ -1066,6 +1084,13 @@ void vkr_editor_commands_update(VkrEditorUi *editor,
       ui->focused_id = ui->active_id = VKR_UI_ID_NONE;
       (void)vkr_ui_keyboard_layer_set(ui, 0u);
     }
+  }
+  const uint8_t space_modifiers = input_key_press_modifiers(frame->input, KEY_SPACE);
+  if (!frame->mouse_captured && !editor->commands_open &&
+      input_key_just_pressed(frame->input, KEY_SPACE) &&
+      (space_modifiers & (VKR_INPUT_MOD_CONTROL | VKR_INPUT_MOD_ALT)) == VKR_INPUT_MOD_CONTROL) {
+    vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
+    frame->ui->capture.keyboard = true_v;
   }
   const bool8_t modifier = input_key_shortcut_modifier(frame->input, KEY_P);
   if (!frame->mouse_captured && modifier &&

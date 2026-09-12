@@ -84,6 +84,19 @@ typedef enum VkrUiIcon {
   VKR_UI_ICON_LOG_INFO,
   VKR_UI_ICON_LOG_DEBUG,
   VKR_UI_ICON_LOG_TRACE,
+  VKR_UI_ICON_PROJECT,
+  VKR_UI_ICON_FOLDER,
+  VKR_UI_ICON_CONTENT,
+  VKR_UI_ICON_TEXTURE,
+  VKR_UI_ICON_MATERIAL,
+  VKR_UI_ICON_MESH,
+  VKR_UI_ICON_FONT,
+  VKR_UI_ICON_LIGHT,
+  VKR_UI_ICON_ENVIRONMENT,
+  VKR_UI_ICON_PROBE,
+  VKR_UI_ICON_REFRESH,
+  VKR_UI_ICON_ADD,
+  VKR_UI_ICON_SEARCH,
   VKR_UI_ICON_COUNT,
 } VkrUiIcon;
 
@@ -190,6 +203,7 @@ typedef struct VkrUiSystem {
   bool8_t draw_cache_valid;
   bool8_t draw_capacity_warning_emitted;
   bool8_t tile_build_warning_emitted;
+  bool8_t layout_failure_warning_emitted;
   bool8_t initialized;
 } VkrUiSystem;
 
@@ -240,6 +254,12 @@ void vkr_ui_label(VkrUiSystem *system, String8 id_label, String8 content,
                   const VkrUiWidgetConfig *config);
 bool8_t vkr_ui_button(VkrUiSystem *system, String8 id_label, String8 content,
                       const VkrUiWidgetConfig *config);
+/** Frame-borrowed texture handle. The owner retains the resource until GPU
+ * completion through the ordinary texture resource system. Fits source aspect
+ * into the widget rectangle over an alpha checkerboard. */
+void vkr_ui_image(VkrUiSystem *system, String8 id_label,
+                  VkrUiTextureRef texture, Vec2 source_size,
+                  const VkrUiWidgetConfig *config);
 bool8_t vkr_ui_checkbox(VkrUiSystem *system, String8 id_label, String8 content,
                         bool8_t *value, const VkrUiWidgetConfig *config);
 bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,

@@ -9,6 +9,9 @@
 
 VkrUiStyle vkr_editor_glass_style(void);
 VkrUiWidgetConfig vkr_editor_text_config(float32_t size_pt, Vec4 color);
+VkrUiWidgetConfig vkr_editor_menu_button_config(uint32_t column, bool8_t active,
+                                                VkrFontHandle heading_font);
+
 void vkr_editor_field_style(VkrUiWidgetConfig *config);
 void vkr_editor_action_style(VkrUiWidgetConfig *config, VkrFontHandle heading);
 

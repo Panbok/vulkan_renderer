@@ -536,6 +536,8 @@ static void test_ui_dock_close_nested_sibling_focus(void) {
   printf("  Running test_ui_dock_close_nested_sibling_focus...\n");
   VkrUiDockTree tree = {0};
   vkr_ui_dock_default_editor_layout(&tree);
+  /* Exercise closing the last tab and collapsing its nested sibling. */
+  assert(vkr_ui_dock_close_tab(&tree, 4u, 0u));
   const uint64_t closed_id = tree.nodes[4u].as.leaf.tabs[0u].id;
   tree.focused_tab_id = closed_id;
 
@@ -558,6 +560,13 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   printf("  Running test_ui_dock_compact_tabs_and_stack_interaction...\n");
   VkrUiDockTree tree = {0};
   vkr_ui_dock_default_editor_layout(&tree);
+  assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
+                            3.0f, 28.0f));
+  /* The new default Content tab must have a visible, clickable rectangle. */
+  assert(tree.nodes[4u].as.leaf.tabs[0u].panel_kind == VKR_UI_DOCK_PANEL_CONTENT);
+  assert(ui_near(vkr_ui_dock_tab_rect(&tree, 4u, 0u).width, 102.0f));
+  /* Keep the following reorder oracle on its explicit three-panel fixture. */
+  assert(vkr_ui_dock_close_tab(&tree, 4u, 0u));
   assert(vkr_ui_dock_move_tab(&tree, 5u, 0u, 4u, 0u, VKR_UI_DOCK_DROP_CENTER));
   assert(vkr_ui_dock_move_tab(&tree, 8u, 0u, 4u, 1u, VKR_UI_DOCK_DROP_CENTER));
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
@@ -713,6 +722,8 @@ static void test_ui_dock_release_endpoint_and_coalesced_gesture(void) {
     assert(tree.interaction.resize_split == VKR_UI_DOCK_NODE_NONE);
 
     vkr_ui_dock_default_editor_layout(&tree);
+    /* This gesture oracle drags the Console-only source stack. */
+    assert(vkr_ui_dock_close_tab(&tree, 4u, 0u));
     assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0, 0, 1000, 800}, 3, 28));
     uint32_t console, inspector;
     assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_CONSOLE, &console,

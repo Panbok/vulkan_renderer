@@ -29,7 +29,7 @@ static Vec4 editor_dock_tab_color(VkrUiDockPanelKind kind, bool8_t selected) {
       {0.32f, 0.28f, 0.22f, 1.0f}, /* Inspector */
       {0.27f, 0.24f, 0.33f, 1.0f}, /* Console */
       {0.18f, 0.21f, 0.26f, 1.0f}, {0.22f, 0.25f, 0.30f, 1.0f},
-      {0.36f, 0.24f, 0.17f, 1.0f},
+      {0.36f, 0.24f, 0.17f, 1.0f}, {0.19f, 0.30f, 0.32f, 1.0f},
   };
   Vec4 color = colors[kind];
   if (!selected) {
@@ -44,7 +44,7 @@ static VkrUiIcon editor_dock_panel_icon(VkrUiDockPanelKind kind) {
   static const VkrUiIcon icons[VKR_UI_DOCK_PANEL_COUNT] = {
       VKR_UI_ICON_SCENE,   VKR_UI_ICON_HIERARCHY, VKR_UI_ICON_INSPECTOR,
       VKR_UI_ICON_CONSOLE, VKR_UI_ICON_NONE,      VKR_UI_ICON_NONE,
-      VKR_UI_ICON_BAKERY,
+      VKR_UI_ICON_BAKERY,  VKR_UI_ICON_CONTENT,
   };
   return icons[kind];
 }
@@ -207,6 +207,9 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
         break;
       case VKR_UI_DOCK_PANEL_CONSOLE:
         vkr_editor_console_build(&editor->console, ui, rect, heading_font);
+        break;
+      case VKR_UI_DOCK_PANEL_CONTENT:
+        vkr_editor_content_build(editor->content, ui, rect, heading_font);
         break;
       case VKR_UI_DOCK_PANEL_BAKERY:
         vkr_editor_bakery_build(editor->bakery, ui, rect, heading_font);

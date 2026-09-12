@@ -19,6 +19,7 @@ typedef enum VkrUiNodeKind {
   VKR_UI_NODE_SLIDER,
   VKR_UI_NODE_SCROLL,
   VKR_UI_NODE_TEXT_FIELD,
+  VKR_UI_NODE_IMAGE,
 } VkrUiNodeKind;
 
 struct VkrUiRetainedState {
@@ -56,6 +57,8 @@ struct VkrUiFrameNode {
   String8 content;
   String8 tooltip;
   VkrUiIcon icon;
+  VkrUiTextureRef image;
+  Vec2 image_size;
   float32_t icon_size_px;
   bool8_t disabled;
   bool8_t focusable;
@@ -865,6 +868,31 @@ bool8_t vkr_ui_button(VkrUiSystem *system, String8 id_label, String8 content,
   return vkr_ui_interact(system, &system->frame_nodes[index], true_v);
 }
 
+void vkr_ui_image(VkrUiSystem *system, String8 id_label,
+                  VkrUiTextureRef texture, Vec2 source_size,
+                  const VkrUiWidgetConfig *source_config) {
+  if (!system || !system->frame_open || !texture.id ||
+      !isfinite(source_size.x) || !isfinite(source_size.y) ||
+      source_size.x <= 0.0f || source_size.y <= 0.0f) {
+    return;
+  }
+  const VkrUiWidgetConfig fallback = vkr_ui_widget_config_default();
+  const VkrUiWidgetConfig *config = source_config ? source_config : &fallback;
+  const VkrUiId id = vkr_ui_id_stack_widget_label(&system->id_stack, id_label);
+  uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_IMAGE,
+                                   config->placement, &config->style);
+  if (index == VKR_UI_NODE_NONE) {
+    return;
+  }
+  VkrUiFrameNode *node = &system->frame_nodes[index];
+  node->image = texture;
+  node->image_size = source_size;
+  node->intrinsic_size =
+      vkr_ui_style_clamp_size((Vec2){source_size.x * system->content_scale,
+                                     source_size.y * system->content_scale},
+                              &node->style);
+}
+
 bool8_t vkr_ui_checkbox(VkrUiSystem *system, String8 id_label, String8 content,
                         bool8_t *value,
                         const VkrUiWidgetConfig *source_config) {
@@ -1432,6 +1460,8 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
   hash = vkr_ui_hash_bytes(hash, &node->id, sizeof(node->id));
   hash = vkr_ui_hash_bytes(hash, &node->placement, sizeof(node->placement));
   hash = vkr_ui_hash_bytes(hash, &node->style, sizeof(node->style));
+  hash = vkr_ui_hash_bytes(hash, &node->image, sizeof(node->image));
+  hash = vkr_ui_hash_bytes(hash, &node->image_size, sizeof(node->image_size));
   hash = vkr_ui_hash_bytes(hash, &node->intrinsic_size,
                            sizeof(node->intrinsic_size));
   hash = vkr_ui_hash_bytes(hash, &system->content_scale,
@@ -1526,6 +1556,31 @@ vkr_internal VkrUiGridItem vkr_ui_grid_item_from_node(VkrUiSystem *system,
   };
 }
 
+static bool8_t vkr_ui_grid_failure(VkrUiSystem *system,
+                                   const VkrUiFrameNode *node,
+                                   const char *stage) {
+  if (!system->layout_failure_warning_emitted) {
+    log_error("UI %s failed: node=%llu kind=%u grid=%ux%u size=%.1fx%.1f",
+              stage, (unsigned long long)node->id, (uint32_t)node->kind,
+              node->column_count, node->row_count, node->rect.width,
+              node->rect.height);
+    for (uint32_t child = node->first_child; child != VKR_UI_NODE_NONE;
+         child = system->frame_nodes[child].next_sibling) {
+      const VkrUiFrameNode *item = &system->frame_nodes[child];
+      log_error("UI child=%llu kind=%u cell=%u,%u span=%u,%u "
+                "intrinsic=%.1fx%.1f text='%.*s'",
+                (unsigned long long)item->id, (uint32_t)item->kind,
+                item->placement.column, item->placement.row,
+                item->placement.column_span, item->placement.row_span,
+                item->intrinsic_size.x, item->intrinsic_size.y,
+                (int)Min(item->content.length, 80u),
+                item->content.str ? item->content.str : (uint8_t *)"");
+    }
+    system->layout_failure_warning_emitted = true_v;
+  }
+  return false_v;
+}
+
 vkr_internal bool8_t vkr_ui_container_intrinsic(VkrUiSystem *system,
                                                 VkrUiFrameNode *node,
                                                 Vec2 *out_size) {
@@ -1567,7 +1622,7 @@ vkr_internal bool8_t vkr_ui_container_intrinsic(VkrUiSystem *system,
         system->frame_allocator, cell_count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!column_tracks || !row_tracks || !column_sizes || !row_sizes ||
         !items || !cells || !occupancy)
-      return false_v;
+      return vkr_ui_grid_failure(system, node, "intrinsic allocation");
 
     for (uint32_t i = 0u; i < columns; ++i)
       column_tracks[i] = vkr_ui_track_resolve_points(
@@ -1588,7 +1643,7 @@ vkr_internal bool8_t vkr_ui_container_intrinsic(VkrUiSystem *system,
     if (!vkr_ui_grid_resolve_placements(columns, rows, items, child_count,
                                         occupancy, (uint32_t)cell_count, cells,
                                         child_count))
-      return false_v;
+      return vkr_ui_grid_failure(system, node, "intrinsic placement");
     VkrUiGridIntrinsicOutput intrinsic = {0};
     if (!vkr_ui_grid_measure_intrinsic(column_tracks, columns, row_tracks, rows,
                                        node->style.gap_px, items, cells,
@@ -1720,7 +1775,7 @@ vkr_internal bool8_t vkr_ui_layout_node(VkrUiSystem *system,
   if (!vkr_ui_grid_resolve_placements(columns, rows, items, child_count,
                                       occupancy, (uint32_t)cell_count, cells,
                                       child_count))
-    return false_v;
+    return vkr_ui_grid_failure(system, node, "layout placement");
   for (uint32_t i = 0u; i < child_count; ++i) {
     const VkrUiGridItem *item = &items[i];
     const VkrUiGridCell cell = cells[i];
@@ -1745,7 +1800,7 @@ vkr_internal bool8_t vkr_ui_layout_node(VkrUiSystem *system,
                                   &column_output) ||
       !vkr_ui_grid_resolve_tracks(row_tracks, rows, content_rect.height,
                                   node->style.gap_px, row_auto, &row_output))
-    return false_v;
+    return vkr_ui_grid_failure(system, node, "track resolution");
   if (node->kind == VKR_UI_NODE_SCROLL) {
     const float32_t max_scroll =
         Max(0.0f, row_output.resolved_extent_px - content_rect.height);
@@ -1757,7 +1812,7 @@ vkr_internal bool8_t vkr_ui_layout_node(VkrUiSystem *system,
           (VkrUiGridAxisView){column_offsets, column_sizes, columns},
           (VkrUiGridAxisView){row_offsets, row_sizes, rows}, items, child_count,
           occupancy, (uint32_t)cell_count, rects, child_count))
-    return false_v;
+    return vkr_ui_grid_failure(system, node, "item arrangement");
 
   child_cursor = 0u;
   for (uint32_t child_index = node->first_child;
@@ -1865,9 +1920,106 @@ vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
   static const VkrUiIconLine log_trace[] = {{2, 3, 7, 3},    {7, 3, 7, 13},
                                             {7, 13, 14, 13}, {7, 8, 14, 8},
                                             {11, 5, 14, 8},  {14, 8, 11, 11}};
+  static const VkrUiIconLine folder[] = {{1, 4, 6, 4},    {6, 4, 8, 6},
+                                         {8, 6, 15, 6},   {15, 6, 14, 14},
+                                         {14, 14, 1, 14}, {1, 14, 1, 4}};
+  static const VkrUiIconLine project[] = {
+      {1, 3, 7, 3},    {7, 3, 9, 5},  {9, 5, 15, 5}, {15, 5, 15, 14},
+      {15, 14, 1, 14}, {1, 14, 1, 3}, {5, 9, 11, 9}, {8, 6, 8, 12}};
+  static const VkrUiIconLine content[] = {
+      {1, 1, 6, 1},     {6, 1, 6, 6},     {6, 6, 1, 6},     {1, 6, 1, 1},
+      {10, 1, 15, 1},   {15, 1, 15, 6},   {15, 6, 10, 6},   {10, 6, 10, 1},
+      {1, 10, 6, 10},   {6, 10, 6, 15},   {6, 15, 1, 15},   {1, 15, 1, 10},
+      {10, 10, 15, 10}, {15, 10, 15, 15}, {15, 15, 10, 15}, {10, 15, 10, 10}};
+  static const VkrUiIconLine texture[] = {
+      {1, 2, 15, 2},  {15, 2, 15, 14}, {15, 14, 1, 14},
+      {1, 14, 1, 2},  {2, 12, 6, 7},   {6, 7, 10, 12},
+      {8, 10, 12, 6}, {12, 6, 14, 9},  {4, 5, 5, 5}};
+  static const VkrUiIconLine material[] = {
+      {8, 1, 13, 3},  {13, 3, 15, 8}, {15, 8, 13, 13}, {13, 13, 8, 15},
+      {8, 15, 3, 13}, {3, 13, 1, 8},  {1, 8, 3, 3},    {3, 3, 8, 1},
+      {8, 1, 5, 5},   {5, 5, 5, 11},  {5, 11, 8, 15},  {1, 8, 15, 8}};
+  static const VkrUiIconLine font[] = {{2, 3, 14, 3},
+                                       {2, 3, 2, 6},
+                                       {14, 3, 14, 6},
+                                       {8, 3, 8, 14},
+                                       {5, 14, 11, 14}};
+  static const VkrUiIconLine light[] = {
+      {5, 10, 3, 6},   {3, 6, 5, 2},    {5, 2, 11, 2},   {11, 2, 13, 6},
+      {13, 6, 11, 10}, {11, 10, 5, 10}, {6, 13, 10, 13}, {7, 15, 9, 15},
+      {1, 1, 2, 2},    {14, 2, 15, 1}};
+  static const VkrUiIconLine environment[] = {
+      {1, 12, 15, 12}, {3, 10, 4, 7},   {4, 7, 7, 5}, {7, 5, 10, 5},
+      {10, 5, 13, 8},  {13, 8, 13, 10}, {8, 1, 8, 3}, {1, 5, 3, 6},
+      {13, 4, 15, 3},  {2, 15, 14, 15}};
+  static const VkrUiIconLine probe[] = {
+      {8, 1, 15, 8}, {15, 8, 8, 15},  {8, 15, 1, 8},   {1, 8, 8, 1},
+      {5, 5, 11, 5}, {11, 5, 11, 11}, {11, 11, 5, 11}, {5, 11, 5, 5},
+      {8, 3, 8, 13}, {3, 8, 13, 8}};
+  static const VkrUiIconLine refresh[] = {
+      {13, 6, 11, 3},  {11, 3, 5, 3},  {5, 3, 2, 7},
+      {2, 7, 3, 12},   {3, 12, 8, 14}, {8, 14, 13, 11},
+      {13, 11, 14, 9}, {10, 6, 14, 6}, {14, 6, 14, 2}};
+  static const VkrUiIconLine add[] = {{2, 8, 14, 8}, {8, 2, 8, 14}};
+  static const VkrUiIconLine search[] = {
+      {6, 1, 10, 3}, {10, 3, 11, 7}, {11, 7, 8, 10}, {8, 10, 4, 10},
+      {4, 10, 1, 7}, {1, 7, 2, 3},   {2, 3, 6, 1},   {10, 10, 15, 15}};
   const VkrUiIconLine *lines = NULL;
   uint32_t count = 0u;
   switch (icon) {
+  case VKR_UI_ICON_FOLDER:
+    lines = folder;
+    count = ArrayCount(folder);
+    break;
+  case VKR_UI_ICON_PROJECT:
+    lines = project;
+    count = ArrayCount(project);
+    break;
+  case VKR_UI_ICON_CONTENT:
+    lines = content;
+    count = ArrayCount(content);
+    break;
+  case VKR_UI_ICON_TEXTURE:
+    lines = texture;
+    count = ArrayCount(texture);
+    break;
+  case VKR_UI_ICON_MATERIAL:
+    lines = material;
+    count = ArrayCount(material);
+    break;
+  case VKR_UI_ICON_FONT:
+    lines = font;
+    count = ArrayCount(font);
+    break;
+  case VKR_UI_ICON_LIGHT:
+    lines = light;
+    count = ArrayCount(light);
+    break;
+  case VKR_UI_ICON_ENVIRONMENT:
+    lines = environment;
+    count = ArrayCount(environment);
+    break;
+  case VKR_UI_ICON_PROBE:
+    lines = probe;
+    count = ArrayCount(probe);
+    break;
+  case VKR_UI_ICON_REFRESH:
+    lines = refresh;
+    count = ArrayCount(refresh);
+    break;
+  case VKR_UI_ICON_ADD:
+    lines = add;
+    count = ArrayCount(add);
+    break;
+  case VKR_UI_ICON_SEARCH:
+    lines = search;
+    count = ArrayCount(search);
+    break;
+  case VKR_UI_ICON_MESH:
+    lines = scene;
+    count = ArrayCount(scene);
+    break;
+
   case VKR_UI_ICON_MONITOR_PLAY:
   case VKR_UI_ICON_MONITOR_STOP:
     lines = monitor;
@@ -2093,6 +2245,27 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   vkr_ui_emit_rect(buffer, background_rect, background, background_radii);
   const VkrUiRect content = vkr_ui_style_content_rect(node->rect, &node->style);
   switch (node->kind) {
+  case VKR_UI_NODE_IMAGE: {
+    const float32_t scale = Min(content.width / node->image_size.x,
+                                content.height / node->image_size.y);
+    VkrUiRect image = {
+        content.x + (content.width - node->image_size.x * scale) * 0.5f,
+        content.y + (content.height - node->image_size.y * scale) * 0.5f,
+        node->image_size.x * scale, node->image_size.y * scale};
+    for (uint32_t y = 0; y < 4; ++y) {
+      for (uint32_t x = 0; x < 4; ++x) {
+        float32_t shade = (x + y) % 2 ? 0.28f : 0.18f;
+        VkrUiRect tile = {image.x + image.width * (float32_t)x / 4,
+                          image.y + image.height * (float32_t)y / 4,
+                          image.width / 4, image.height / 4};
+        vkr_ui_emit_rect(buffer, tile, (Vec4){shade, shade, shade, 1},
+                         (Vec4){0});
+      }
+    }
+    (void)vkr_ui_draw_buffer_image(buffer, image, (Vec4){0, 0, 1, 1},
+                                   (Vec4){1, 1, 1, 1}, node->image);
+    break;
+  }
   case VKR_UI_NODE_LABEL:
   case VKR_UI_NODE_BUTTON: {
     const bool8_t centered = node->kind == VKR_UI_NODE_BUTTON;
@@ -2299,9 +2472,9 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
   uint64_t estimate = 0u;
   for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
     const VkrUiFrameNode *node = &system->frame_nodes[i];
-    estimate += 9u;
+    estimate += node->kind == VKR_UI_NODE_IMAGE ? 26u : 9u;
     if (node->icon != VKR_UI_ICON_NONE)
-      estimate += 10u;
+      estimate += 20u;
     if (node->retained->text_live) {
       estimate += node->retained->text.geometry.vertex_count / 4u;
       if (node->kind == VKR_UI_NODE_TEXT_FIELD)
@@ -2496,12 +2669,12 @@ vkr_internal bool8_t vkr_ui_resolve_draw_commands(VkrUiSystem *system) {
   }
   system->draw_cache_valid = false_v;
   if (!vkr_ui_container_intrinsic(system, root, &root->intrinsic_size)) {
-    return false_v;
+    return vkr_ui_grid_failure(system, root, "root intrinsic");
   }
   const VkrUiRect target = {0.0f, 0.0f, (float32_t)system->target_width,
                             (float32_t)system->target_height};
   if (!vkr_ui_layout_node(system, 0u, target, target)) {
-    return false_v;
+    return vkr_ui_grid_failure(system, root, "root layout");
   }
 
   if (tooltip != VKR_UI_NODE_NONE) {

@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "editor_projects.h"
 
 #include "renderer/systems/vkr_editor_viewport.h"
 
@@ -174,10 +175,18 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
   if (!frame->scene_only)
     vkr_editor_dock_build(editor, frame);
-  vkr_editor_labels_build(editor, frame);
+  vkr_editor_projects_build_scene_progress(editor->projects, editor, frame);
+  (void)vkr_ui_input_layer_set(frame->ui, 0u);
+  const bool8_t preparing_scene =
+      frame->scene_backdrop_blur && *frame->scene_backdrop_blur;
+  if (!preparing_scene) {
+    vkr_editor_labels_build(editor, frame);
+  }
   vkr_editor_windows_build_navigation(editor, frame);
-  vkr_editor_scene_toolbar_build(editor, frame);
-  if (frame->scene_only && frame->mapping.target_width > 0u)
+  if (!preparing_scene) {
+    vkr_editor_scene_toolbar_build(editor, frame);
+  }
+  if (!preparing_scene && frame->scene_only && frame->mapping.target_width > 0u)
     vkr_editor_ui_build_camera(frame->ui, frame->scene_only,
                                frame->scene_rendering_stopped, &frame->mapping,
                                &frame->text);

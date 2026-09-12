@@ -1,5 +1,7 @@
 #include "editor_scene_panels.h"
+#include "core/vkr_json.h"
 #include "editor_internal.h"
+#include "editor_project_store.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -269,6 +271,7 @@ void vkr_editor_hierarchy_build(VkrEditorScenePanels *p,
                  &c);
     c = widget_at(6, 80, w - 12, 28);
     vkr_editor_action_style(&c, heading);
+    c.disabled = frame->scene_loading;
     if (vkr_ui_button(ui, string8_lit("load.scene"), string8_lit("Load scene"),
                       &c))
       *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_LOAD};
@@ -630,8 +633,7 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
     if (numeric_changed[20])
       out->rectangle_light.size.y = v[20];
     if ((p->original_values.fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) &&
-        MemCompare(&out->rectangle_light,
-                   &p->original_values.rectangle_light,
+        MemCompare(&out->rectangle_light, &p->original_values.rectangle_light,
                    sizeof(out->rectangle_light)))
       out->fields |= VKR_SCENE_EDIT_RECTANGLE_LIGHT;
   }
@@ -851,9 +853,9 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
       c.text.font = heading;
       vkr_ui_label(ui, string8_lit("light.title"),
                    rectangle ? string8_lit("Rectangle light")
-                   : spot     ? string8_lit("Spot light")
-                   : point    ? string8_lit("Point light")
-                              : string8_lit("Directional light"),
+                   : spot    ? string8_lit("Spot light")
+                   : point   ? string8_lit("Point light")
+                             : string8_lit("Directional light"),
                    &c);
       y += 26;
       if (point) {
@@ -878,10 +880,10 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
       }
       if (rectangle) {
         c = widget_at(5, y, w - 10, 24);
-        p->changed |= vkr_ui_checkbox(
-            ui, string8_lit("light.rectangle.enabled"),
-            string8_lit("Rectangle light enabled"),
-            &p->values.rectangle_light.enabled, &c);
+        p->changed |=
+            vkr_ui_checkbox(ui, string8_lit("light.rectangle.enabled"),
+                            string8_lit("Rectangle light enabled"),
+                            &p->values.rectangle_light.enabled, &c);
         y += 27;
       }
     }
@@ -1042,4 +1044,144 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
   }
   (void)vkr_ui_pop_id(ui);
   (void)vkr_ui_scroll_area_end(ui);
+}
+
+bool8_t vkr_editor_scene_panels_write_json(const VkrEditorScenePanels *panels,
+                                           VkrJsonWriter *writer) {
+  return panels && vkr_json_writer_begin_object(writer) &&
+         vkr_json_writer_name(writer, string8_lit("version")) &&
+         vkr_json_writer_u64(writer, 1) &&
+         vkr_json_writer_name(writer, string8_lit("search")) &&
+         vkr_json_writer_string(writer,
+                                string8_create((uint8_t *)panels->search,
+                                               strlen(panels->search))) &&
+         vkr_json_writer_name(writer, string8_lit("inspector_scroll")) &&
+         vkr_json_writer_f64(writer, panels->inspector_scroll) &&
+         vkr_json_writer_end_object(writer);
+}
+
+bool8_t vkr_editor_scene_panels_read_json(VkrEditorScenePanels *panels,
+                                          String8 json) {
+  if (!panels) {
+    return false_v;
+  }
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  int32_t version;
+  float32_t scroll;
+  char search[sizeof(panels->search)];
+  if (!vkr_json_get_int(&reader, "version", &version) || version != 1 ||
+      !vkr_json_get_float(&reader, "inspector_scroll", &scroll) ||
+      !isfinite(scroll) || scroll < 0 ||
+      !vkr_editor_project_json_string(json, "search", search, sizeof(search),
+                                      NULL)) {
+    return false_v;
+  }
+  strcpy(panels->search, search);
+  panels->inspector_scroll = scroll;
+  panels->rebuild = true_v;
+  return true_v;
+}
+
+bool8_t
+vkr_editor_scene_panels_write_scene_json(const VkrEditorScenePanels *panels,
+                                         const VkrSampleUiFrame *frame,
+                                         VkrJsonWriter *writer) {
+  if (!panels || !frame || !frame->scene ||
+      panels->generation != frame->scene_generation ||
+      !vkr_json_writer_begin_object(writer) ||
+      !vkr_json_writer_name(writer, string8_lit("version")) ||
+      !vkr_json_writer_u64(writer, 1) ||
+      !vkr_json_writer_name(writer, string8_lit("hierarchy_scroll")) ||
+      !vkr_json_writer_f64(writer, panels->hierarchy_scroll) ||
+      !vkr_json_writer_name(writer, string8_lit("expanded")) ||
+      !vkr_json_writer_begin_array(writer)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < panels->capacity; ++i) {
+    const EditorTreeNode *node = &panels->nodes[i];
+    VkrSampleEntityIdentity identity;
+    if (node->expanded &&
+        vkr_sample_entity_identity(frame->scene, node->entity, &identity) &&
+        !vkr_sample_entity_identity_write_json(&identity, writer)) {
+      return false_v;
+    }
+  }
+  return vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_end_object(writer);
+}
+
+static bool8_t panels_restore_expansion(VkrEditorScenePanels *panels,
+                                        const VkrSampleUiFrame *frame,
+                                        String8 array, bool8_t apply) {
+  VkrJsonReader reader = vkr_json_reader_from_string(array);
+  vkr_json_skip_whitespace(&reader);
+  if (reader.pos >= reader.length || reader.data[reader.pos++] != '[') {
+    return false_v;
+  }
+  uint32_t count = 0;
+  for (;;) {
+    vkr_json_skip_whitespace(&reader);
+    if (reader.pos >= reader.length) {
+      return false_v;
+    }
+    if (reader.data[reader.pos] == ']') {
+      return true_v;
+    }
+    if (count++ >= panels->capacity) {
+      return false_v;
+    }
+    VkrJsonReader object;
+    VkrSampleEntityIdentity identity;
+    if (!vkr_json_enter_object(&reader, &object) ||
+        !vkr_sample_entity_identity_read_json(
+            (String8){.str = (uint8_t *)object.data, .length = object.length},
+            &identity)) {
+      return false_v;
+    }
+    if (apply) {
+      VkrEntityId entity = vkr_sample_entity_find(frame->scene, &identity);
+      if (entity.u64 && entity.parts.index < panels->capacity) {
+        panels->nodes[entity.parts.index].expanded = true_v;
+      }
+    }
+    vkr_json_skip_whitespace(&reader);
+    if (reader.pos >= reader.length) {
+      return false_v;
+    }
+    if (reader.data[reader.pos] == ']') {
+      return true_v;
+    }
+    if (reader.data[reader.pos++] != ',') {
+      return false_v;
+    }
+  }
+}
+
+bool8_t vkr_editor_scene_panels_read_scene_json(VkrEditorScenePanels *panels,
+                                                const VkrSampleUiFrame *frame,
+                                                String8 json) {
+  if (!panels || !frame || !frame->scene) {
+    return false_v;
+  }
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  int32_t version;
+  float32_t scroll;
+  String8 expanded;
+  if (!vkr_json_get_int(&reader, "version", &version) || version != 1 ||
+      !vkr_json_get_float(&reader, "hierarchy_scroll", &scroll) ||
+      !isfinite(scroll) || scroll < 0 ||
+      !vkr_editor_project_json_member(json, "expanded", &expanded, NULL) ||
+      !rebuild_tree(panels, frame) ||
+      !panels_restore_expansion(panels, frame, expanded, false_v)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < panels->capacity; ++i) {
+    panels->nodes[i].expanded = false_v;
+  }
+  if (!panels_restore_expansion(panels, frame, expanded, true_v)) {
+    return false_v;
+  }
+  panels->hierarchy_scroll = scroll;
+  panels->rebuild = true_v;
+  return true_v;
 }

@@ -61,7 +61,11 @@ void vkr_ui_dock_default_editor_layout(VkrUiDockTree *tree) {
   vkr_ui_dock_leaf(tree, 1u, 0u, VKR_UI_DOCK_PANEL_TOOLBAR);
   vkr_ui_dock_split(tree, 2u, 0u, VKR_UI_DOCK_SPLIT_Y, 0.74468085f, 3u, 4u);
   vkr_ui_dock_split(tree, 3u, 2u, VKR_UI_DOCK_SPLIT_X, 0.18f, 5u, 6u);
-  vkr_ui_dock_leaf(tree, 4u, 2u, VKR_UI_DOCK_PANEL_CONSOLE);
+  vkr_ui_dock_leaf(tree, 4u, 2u, VKR_UI_DOCK_PANEL_CONTENT);
+  tree->nodes[4u].as.leaf.tabs[1u] = (VkrUiDockTab){
+      .id = (uint64_t)VKR_UI_DOCK_PANEL_CONSOLE + 1u,
+      .panel_kind = VKR_UI_DOCK_PANEL_CONSOLE};
+  tree->nodes[4u].as.leaf.tab_count = 2u;
   vkr_ui_dock_leaf(tree, 5u, 3u, VKR_UI_DOCK_PANEL_HIERARCHY);
   vkr_ui_dock_split(tree, 6u, 3u, VKR_UI_DOCK_SPLIT_X, 0.7317073f, 7u, 8u);
   vkr_ui_dock_leaf(tree, 7u, 6u, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT);
@@ -277,6 +281,8 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
     return string8_lit("Console");
   case VKR_UI_DOCK_PANEL_TOOLBAR:
     return string8_lit("Toolbar");
+  case VKR_UI_DOCK_PANEL_CONTENT:
+    return string8_lit("Content");
   case VKR_UI_DOCK_PANEL_BAKERY:
     return string8_lit("Bakery");
   default:
@@ -510,7 +516,14 @@ VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
      divides available width proportionally; its clipped labels retain tooltips.
    */
   static const float32_t widths_pt[VKR_UI_DOCK_PANEL_COUNT] = {
-      88.0f, 116.0f, 116.0f, 102.0f, 98.0f, 88.0f, 104.0f,
+      [VKR_UI_DOCK_PANEL_SCENE_VIEWPORT] = 88.0f,
+      [VKR_UI_DOCK_PANEL_HIERARCHY] = 116.0f,
+      [VKR_UI_DOCK_PANEL_INSPECTOR] = 116.0f,
+      [VKR_UI_DOCK_PANEL_CONSOLE] = 102.0f,
+      [VKR_UI_DOCK_PANEL_TOOLBAR] = 98.0f,
+      [VKR_UI_DOCK_PANEL_CUSTOM] = 88.0f,
+      [VKR_UI_DOCK_PANEL_BAKERY] = 104.0f,
+      [VKR_UI_DOCK_PANEL_CONTENT] = 102.0f,
   };
   float32_t total = 0.0f;
   float32_t preceding = 0.0f;
@@ -784,7 +797,7 @@ static String8 vkr_ui_dock_kind_name(VkrUiDockNodeKind kind) {
 static String8 vkr_ui_dock_panel_name(VkrUiDockPanelKind kind) {
   static const char *const names[VKR_UI_DOCK_PANEL_COUNT] = {
       "scene_viewport", "hierarchy", "inspector", "console",
-      "toolbar",        "custom",    "bakery",
+      "toolbar",        "custom",    "bakery",    "content",
   };
   return string8_create_from_cstr((const uint8_t *)names[kind],
                                   string_length(names[kind]));

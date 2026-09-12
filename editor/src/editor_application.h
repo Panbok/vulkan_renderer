@@ -6,6 +6,9 @@
 typedef struct VkrEditorApplication {
   VkrEditorUi ui;
   const char *layout_path;
+  int argc;
+  char **argv;
+  bool8_t project_managed;
 } VkrEditorApplication;
 
 VkrSampleRuntimeConfig
