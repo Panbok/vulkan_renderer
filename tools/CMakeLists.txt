@@ -240,6 +240,22 @@ set(MSDFGEN_DISABLE_SVG ON CACHE BOOL "" FORCE)
 set(MSDFGEN_DISABLE_PNG ON CACHE BOOL "" FORCE)
 set(MSDFGEN_INSTALL OFF CACHE BOOL "" FORCE)
 find_package(Freetype REQUIRED)
+# vcpkg's FreeType export and compatibility wrapper embed raw Debug archive
+# paths in link-interface generator expressions. Imported-location mapping does
+# not rewrite those expressions, so select their Release branches explicitly.
+# The whole Windows graph uses the Release CRT, including Debug VKR consumers.
+if(WIN32)
+    foreach(target freetype Freetype::Freetype)
+        if(TARGET ${target})
+            get_target_property(links ${target} INTERFACE_LINK_LIBRARIES)
+            if(links)
+                string(REGEX REPLACE "\\$<CONFIG:[Dd][Ee][Bb][Uu][Gg]>"
+                    "$<BOOL:0>" links "${links}")
+                set_property(TARGET ${target} PROPERTY INTERFACE_LINK_LIBRARIES "${links}")
+            endif()
+        endif()
+    endforeach()
+endif()
 set(VKR_TOOLS_BUILD_SHARED_LIBS_WAS_DEFINED FALSE)
 if(DEFINED BUILD_SHARED_LIBS)
     set(VKR_TOOLS_BUILD_SHARED_LIBS_WAS_DEFINED TRUE)

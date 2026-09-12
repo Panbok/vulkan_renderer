@@ -13,13 +13,24 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE AND
     unset(VKR_VCPKG_ROOT)
 endif()
 
+# System packages may have one configuration-independent imported location.
+set(CMAKE_MAP_IMPORTED_CONFIG_DEBUG "Release;")
+set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO "Release;")
+set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL "Release;")
+
 project(vulkan_renderer)
 
 # Match the CRT used by the selected vcpkg Windows triplet. CMake otherwise
 # defaults to the DLL CRT, which cannot link static-CRT font dependencies.
-if(WIN32 AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY AND
-   VCPKG_TARGET_TRIPLET MATCHES "-windows-static$")
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+if(WIN32)
+    if(VCPKG_TARGET_TRIPLET MATCHES "-windows-static$")
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    else()
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+    endif()
+    # VKR Debug retains symbols and its own assertions, but shares the Release
+    # CRT and STL ABI with prebuilt dependencies in every configuration.
+    add_compile_definitions(_ITERATOR_DEBUG_LEVEL=0)
 endif()
 
 # Set explicit C standard
@@ -29,18 +40,6 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 add_compile_definitions(PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}/")
 
-option(VKR_ENABLE_SANITIZERS
-       "Enable ASan/UBSan in every configuration (Clang/GCC only)" OFF)
-set(_VKR_DEBUG_SANITIZERS_DEFAULT ON)
-if(WIN32)
-    # Clang ASan is incompatible with the Windows Debug CRT, and MSVC does not
-    # provide the requested ASan+UBSan pair.
-    set(_VKR_DEBUG_SANITIZERS_DEFAULT OFF)
-endif()
-option(VKR_ENABLE_DEBUG_SANITIZERS
-       "Enable ASan/UBSan in Debug configurations (Clang/GCC only)"
-       ${_VKR_DEBUG_SANITIZERS_DEFAULT})
-unset(_VKR_DEBUG_SANITIZERS_DEFAULT)
 option(VKR_EDITOR_LOGGING "Capture all editor log levels with runtime filtering" OFF)
 option(VKR_METRICS_ENABLED "Compile renderer metrics instrumentation" ON)
 
@@ -51,11 +50,18 @@ else()
 endif()
 
 if(MSVC)
+    # /RTC is incompatible with the optimized cookers and vendor libraries.
+    foreach(language C CXX)
+        string(REGEX REPLACE "/RTC[^ ]*" "" CMAKE_${language}_FLAGS_DEBUG
+               "${CMAKE_${language}_FLAGS_DEBUG}")
+    endforeach()
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Zi -W4 /FC")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /arch:AVX2")
 else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
 endif()
+
+include(cmake/vkr_build_policy.cmake)
 
 # An undeclared C function is an ABI bug, not a tolerable warning: the compiler
 # otherwise assumes a signature that can bind to an unrelated same-named symbol
@@ -80,8 +86,7 @@ endfunction()
 # this to every cooking target and to the third-party codecs those targets
 # drive, so one unoptimized library cannot dominate a Bakery job.
 #
-# Optimization level alone cannot change an IEEE result, so this leaves every
-# cooked artifact byte-identical to what an unoptimized tree produced.
+# Floating-point policy remains owned by each cooker and dependency.
 function(vkr_configure_cooker_target target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /O2)
@@ -137,41 +142,7 @@ function(vkr_set_main_stack_reserve target)
     endif()
 endfunction()
 
-if((VKR_ENABLE_SANITIZERS OR VKR_ENABLE_DEBUG_SANITIZERS) AND NOT MSVC)
-    set(_VKR_SAN_FLAGS "-fsanitize=address,undefined" "-fno-omit-frame-pointer")
-
-    if(VKR_ENABLE_SANITIZERS)
-        add_compile_options(${_VKR_SAN_FLAGS})
-        add_link_options(-fsanitize=address,undefined)
-        message(STATUS "ASan/UBSan enabled for every configuration")
-    else()
-        add_compile_options(
-            "$<$<CONFIG:Debug>:-fsanitize=address,undefined>"
-            "$<$<CONFIG:Debug>:-fno-omit-frame-pointer>"
-        )
-        add_link_options("$<$<CONFIG:Debug>:-fsanitize=address,undefined>")
-        if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug")
-            message(STATUS "ASan/UBSan enabled for Debug configurations")
-        else()
-            message(STATUS "ASan/UBSan inactive for ${CMAKE_BUILD_TYPE}; enabled by default for Debug")
-        endif()
-    endif()
-
-    # Windows note: ASan generally doesn't work with the MSVC *Debug* CRT.
-    # Use RelWithDebInfo (or Release) when VKR_ENABLE_SANITIZERS=ON.
-    if(WIN32 AND (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
-        if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug")
-            message(FATAL_ERROR "ASan/UBSan on Windows+Clang is not supported with the Debug CRT. Disable VKR_ENABLE_DEBUG_SANITIZERS or use VKR_ENABLE_SANITIZERS=ON with RelWithDebInfo.")
-        endif()
-        if(VCPKG_TARGET_TRIPLET MATCHES "-windows-static$")
-            message(FATAL_ERROR "Windows Clang sanitizers require the DLL CRT. Use a vcpkg triplet with the DLL CRT, such as x64-windows-static-md, and install FreeType for that triplet.")
-        endif()
-        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
-    endif()
-elseif((VKR_ENABLE_SANITIZERS OR VKR_ENABLE_DEBUG_SANITIZERS) AND MSVC)
-    message(WARNING "ASan/UBSan requested but this project only enables the pair with Clang/GCC")
-endif()
-unset(_VKR_SAN_FLAGS)
+include(cmake/vkr_sanitizers.cmake)
 
 # Applications and authoring tools are optional consumers of the libraries.
 option(VKR_BUILD_EXAMPLES "Build public library client examples" OFF)
@@ -216,3 +187,5 @@ endif()
 if(VKR_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+vkr_apply_build_policy("${CMAKE_SOURCE_DIR}")
