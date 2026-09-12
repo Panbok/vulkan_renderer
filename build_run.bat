@@ -28,6 +28,18 @@ if "%BUILD_DIR%"=="" (
     exit /b 1
 )
 
+if /I "%BUILD_TYPE%"=="Debug" set "BUILD_TYPE=Debug"
+if /I "%BUILD_TYPE%"=="Release" set "BUILD_TYPE=Release"
+if /I "%BUILD_TYPE%"=="RelWithDebInfo" set "BUILD_TYPE=RelWithDebInfo"
+if /I "%BUILD_TYPE%"=="MinSizeRel" set "BUILD_TYPE=MinSizeRel"
+if "%BUILD_TYPE%"=="Debug" (
+    for %%S in (address thread memory leak none) do if /I "%VKR_DEBUG_SANITIZER%"=="%%S" set "BUILD_DIR=build_debug_%%S"
+)
+if not "%VKR_BUILD_DIR%"=="" set "BUILD_DIR=%VKR_BUILD_DIR%"
+pushd "%SCRIPT_DIR%" || exit /b 1
+for %%D in ("%BUILD_DIR%") do set "BUILD_DIR=%%~fD"
+popd
+
 REM Call the build script
 call "%SCRIPT_DIR%build.bat" %BUILD_TYPE%
 if %errorlevel% neq 0 (
@@ -40,8 +52,8 @@ echo Build successful! Starting %VKR_RUN_LABEL%...
 echo.
 
 REM Execute the vulkan_renderer with working directory set to repo root
-set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\%VKR_RUN_SUBDIR%\%VKR_RUN_BINARY%.exe"
-if not exist "%APP_EXE%" set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\%VKR_RUN_SUBDIR%\%BUILD_TYPE%\%VKR_RUN_BINARY%.exe"
+set "APP_EXE=%BUILD_DIR%\%VKR_RUN_SUBDIR%\%VKR_RUN_BINARY%.exe"
+if not exist "%APP_EXE%" set "APP_EXE=%BUILD_DIR%\%VKR_RUN_SUBDIR%\%BUILD_TYPE%\%VKR_RUN_BINARY%.exe"
 if not exist "%APP_EXE%" (
     echo Error: executable not found at "%APP_EXE%"
     exit /b 1

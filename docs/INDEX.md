@@ -14,32 +14,69 @@ Clangd uses `build_release/compile_commands.json`. Run `./build_release.sh` or
 `./build_editor.sh Release` after source moves or build-definition changes to
 refresh its include paths and compiler settings.
 
-The reusable-library entry points build a public example without the sample
-application, editor, tools, harness, or tests:
+The build wrappers configure all application, editor, tool, test and example
+consumers in one tree per configuration: `build_debug`, `build_release`,
+`build_release_info`, or `build_min_size_rel`. They build only the selected target
+and its dependencies; app and editor wrappers also select `vkr_harness`.
+Switching targets reuses the existing library objects, shader outputs and CMake
+cache. Compiler, generator and toolchain selections remain attached to that
+cache. The Xcode wrapper also reconfigures its existing `build_xcode` tree.
 
 ```sh
+./build_release.sh
+./build_editor.sh Release
 ./build_lib.sh renderer
 ./build_lib.sh runtime
 ```
 
 `renderer` builds [examples/renderer/main.c](../examples/renderer/main.c) against
-`renderer_lib`. `runtime` builds [examples/host/main.c](../examples/host/main.c)
-against `vkr_runtime`. The script sets `VKR_BUILD_EXAMPLES=ON` and disables
-`VKR_BUILD_TOOLS`, `VKR_BUILD_APP`, `VKR_BUILD_EDITOR`, `VKR_BUILD_HARNESS`, and
-`VKR_BUILD_TESTS`; the renderer entry point also disables `VKR_BUILD_RUNTIME`.
-On Windows, use `build_lib.bat renderer` or `build_lib.bat runtime`. Native
-Vulkan execution for this split has not been run.
+`renderer_lib`; `runtime` builds [examples/host/main.c](../examples/host/main.c)
+against `vkr_runtime`. Both reuse `build_release` without building the other
+consumers. On Windows, use the matching `.bat` wrappers. Custom CMake builds may
+still disable optional consumers with `VKR_BUILD_APP`, `VKR_BUILD_EDITOR`,
+`VKR_BUILD_TOOLS`, `VKR_BUILD_HARNESS`, and `VKR_BUILD_TESTS`. Use a separate tree
+for that restricted graph; repository wrappers enable these options again.
+`VKR_BUILD_RUNTIME=OFF` also removes the runtime when its consumers are disabled.
 
 The app and editor are separate executables using `vkr_runtime` and
-`vkr_sample_runtime`.
-Build through the repository wrappers, which compile shaders and cooker tools
-without running cooking. Bakery owns mesh, font, texture, BRDF/table,
-reflection/probe, and diffuse-volume jobs:
+`vkr_sample_runtime`. Repository builds compile shaders and required cooker tools
+without running cooking. Explicit texture, font and mesh cooker wrappers build
+their tool in `build_release` before invoking it. `VKR_FONT_COOKER_BUILD_DIR`
+retains the font wrapper's custom-tree override. `build_test.sh` and
+`build_test.bat` build and run the CPU tester in `build_debug` by default.
+
+Set `VKR_DEBUG_SANITIZER` to `default`, `address`, `thread`, `memory`, `leak` or
+`none` before invoking a wrapper. Explicit profiles select
+`build_debug_<profile>` and require Debug; `default` or an unset value uses
+`build_debug`. App, editor, tool and test consumers reuse dependencies within
+the same profile. `VKR_BUILD_DIR` overrides the selected directory. The Xcode
+wrapper uses `build_xcode_<profile>` for explicit profiles, with instrumentation
+limited to its Debug configuration.
 
 ```sh
-./build_release.sh
-./build_editor.sh Release
+VKR_DEBUG_SANITIZER=thread ./build.sh Debug
+VKR_DEBUG_SANITIZER=thread ./build_editor.sh Debug
+VKR_DEBUG_SANITIZER=thread ./build_test.sh
+VKR_DEBUG_SANITIZER=leak ./build_test.sh
 ```
+
+Use these examples only on toolchains supporting the selected runtime; see the
+[profile and platform limits](ARCHITECTURE.md#build-policy) and
+[sanitizer validation procedure](../.codex/skills/vkr-validation/SKILL.md#cpu-sanitizers).
+For Windows wrappers, set the environment in PowerShell, for example
+`$env:VKR_DEBUG_SANITIZER = 'none'; .\build.bat Debug`. Windows wrappers
+normalize profile case; shell wrappers require the lowercase values above.
+
+Release logging is stripped to its configured level for both app and editor.
+Set `VKR_EDITOR_LOGGING=ON` in the environment before a build, or set the CMake
+option explicitly, to compile detailed editor logging. This changes shared
+library compilation and remains in the cache until explicitly set to `OFF`.
+Selecting app versus editor does not change it. The
+[build policy](ARCHITECTURE.md#build-policy) defines optimization and dependency
+configuration; these settings alone do not establish measured performance.
+
+Bakery owns mesh, font, texture, BRDF/table, reflection/probe and diffuse-volume
+jobs.
 
 When artifact regeneration is required, run Bakery or invoke the explicit
 cooker wrapper. The main Bistro artifact includes its scene-specific light
@@ -56,7 +93,9 @@ On Windows, use `build_release.bat` or `build_editor.bat Release`. Set
 ```
 
 CMake uses that checkout's toolchain and defaults to `x64-windows-static`,
-including its static C runtime. Explicit toolchain and triplet settings take
+including its static Release C runtime in every configuration. Debug VKR code
+retains its own assertions and debugging information; imported dependencies use
+their Release variants. Explicit toolchain and triplet settings take
 precedence. Use a fresh build directory when changing either setting.
 
 `build_run.sh` and `build_editor_run.sh` also launch their respective targets.

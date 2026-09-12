@@ -4,7 +4,7 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
-BUILD_DIR="${REPO_ROOT}/build_vkt_packer"
+BUILD_DIR="${REPO_ROOT}/build_release"
 TEXTURE_ROOT="${VKR_TEXTURE_PACK_INPUT_DIR:-${REPO_ROOT}/assets/textures}"
 STRICT_MODE="${VKR_VKT_PACK_STRICT:-0}"
 FORCE_MODE="${VKR_VKT_PACK_FORCE:-0}"
@@ -17,22 +17,8 @@ fi
 
 PACKER_BIN="${VKR_VKT_PACKER_BIN:-}"
 if [ -z "${PACKER_BIN}" ]; then
-  GENERATOR=""
-  if command -v ninja >/dev/null 2>&1; then
-    GENERATOR="-G Ninja"
-  fi
-
-  COMPILERS=""
-  if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
-    COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
-  fi
-
-  echo "Building the configuration-independent texture packer"
-  cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
-    -U CMAKE_TOOLCHAIN_FILE \
-    -DCMAKE_BUILD_TYPE:STRING=Release \
-    ${GENERATOR} ${COMPILERS}
-  cmake --build "${BUILD_DIR}" --target vkr_vkt_packer --config Release
+  VKR_BUILD_TARGET=vkr_vkt_packer VKR_BUILD_LABEL="VKR texture packer" \
+    VKR_BUILD_DIR="${BUILD_DIR}" "${REPO_ROOT}/build.sh" Release
 
   for candidate in \
     "${BUILD_DIR}/tools/vkr_vkt_packer" \

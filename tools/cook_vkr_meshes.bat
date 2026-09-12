@@ -4,9 +4,15 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0\.."
 set "REPO_ROOT=%CD%"
 if not "%VKR_MESH_COOKER_BIN%"=="" goto cooker_ready
-call "%REPO_ROOT%\build_release.bat"
-set "VKR_MESH_COOKER_BIN=%REPO_ROOT%\build_release\tools\Release\vkr_mesh_cooker.exe"
-if not exist "%VKR_MESH_COOKER_BIN%" set "VKR_MESH_COOKER_BIN=%REPO_ROOT%\build_release\tools\vkr_mesh_cooker.exe"
+set "VKR_BUILD_TARGET=vkr_mesh_cooker"
+set "VKR_BUILD_LABEL=VKR mesh cooker"
+call "%REPO_ROOT%\build.bat" Release
+if errorlevel 1 exit /b 1
+set "BUILD_DIR=build_release"
+if not "%VKR_BUILD_DIR%"=="" set "BUILD_DIR=%VKR_BUILD_DIR%"
+for %%D in ("%BUILD_DIR%") do set "BUILD_DIR=%%~fD"
+set "VKR_MESH_COOKER_BIN=%BUILD_DIR%\tools\Release\vkr_mesh_cooker.exe"
+if not exist "%VKR_MESH_COOKER_BIN%" set "VKR_MESH_COOKER_BIN=%BUILD_DIR%\tools\vkr_mesh_cooker.exe"
 
 :cooker_ready
 if not exist "%VKR_MESH_COOKER_BIN%" (

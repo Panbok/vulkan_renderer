@@ -7,21 +7,24 @@ cd "$PROJECT_ROOT"
 
 echo "--- Step 1: Generating Xcode Project ---"
 
-BUILD_DIR="build_xcode"
-
-# IMPORTANT: Remove the old build directory to clear the broken compiler cache
-if [ -d "$BUILD_DIR" ]; then
-  echo "Cleaning old cache..."
-  rm -rf "$BUILD_DIR"
+VKR_DEBUG_SANITIZER="${VKR_DEBUG_SANITIZER:-default}"
+case "${VKR_DEBUG_SANITIZER}" in
+  default|address|thread|memory|leak|none) ;;
+  *)
+    echo "Error: VKR_DEBUG_SANITIZER must be default, address, thread, memory, leak, or none." >&2
+    exit 1
+    ;;
+esac
+BUILD_DIR=build_xcode
+if [ "${VKR_DEBUG_SANITIZER}" != default ]; then
+  BUILD_DIR="build_xcode_${VKR_DEBUG_SANITIZER}"
 fi
-mkdir -p "$BUILD_DIR"
+BUILD_DIR="${VKR_BUILD_DIR:-${BUILD_DIR}}"
 
-# Note: We REMOVED CMAKE_C_COMPILER and CMAKE_CXX_COMPILER.
-# Xcode will automatically use its internal clang.
+# Reconfigure in place; Xcode owns incremental compilation.
 cmake -S . -B "$BUILD_DIR" \
-  --fresh \
-  -U CMAKE_TOOLCHAIN_FILE \
   -G Xcode \
+  -DVKR_DEBUG_SANITIZER:STRING="${VKR_DEBUG_SANITIZER}" \
   -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE
 
 echo "--- Step 2: Setup Complete ---"

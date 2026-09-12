@@ -2,24 +2,27 @@
 
 set -e # Exit early if any commands fail
 
-(
-  cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
-  # Configure step
-  GENERATOR=""
-  if command -v ninja >/dev/null 2>&1; then
-    GENERATOR="-G Ninja"
-  fi
-  COMPILERS=""
-  if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
-    COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
-  fi
-  cmake --fresh -B build_test -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=OFF ${GENERATOR} ${COMPILERS}
-  # Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
-  cmake --build ./build_test --target vulkan_renderer_tester --config Debug
-)
+# Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
+VKR_BUILD_TARGET=vulkan_renderer_tester VKR_BUILD_LABEL="VKR CPU tests" \
+  "$(dirname "$0")/build.sh" Debug
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+BUILD_DIR=build_debug
+if [ "${VKR_DEBUG_SANITIZER:-default}" != default ]; then
+  BUILD_DIR="build_debug_${VKR_DEBUG_SANITIZER}"
+fi
+BUILD_DIR="${VKR_BUILD_DIR:-${BUILD_DIR}}"
+case "${BUILD_DIR}" in
+  /*|[A-Za-z]:/*) ;;
+  *) BUILD_DIR="${SCRIPT_DIR}/${BUILD_DIR}" ;;
+esac
+TEST_BIN="${BUILD_DIR}/tests/vulkan_renderer_tester"
+if [ ! -x "${TEST_BIN}" ]; then
+  TEST_BIN="${BUILD_DIR}/tests/Debug/vulkan_renderer_tester"
+fi
 
 # Execute the test runner
 export VKR_TEXTURE_VKT_STRICT=0
 export VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1
 export VKR_TEXTURE_VKT_ALLOW_LEGACY=1
-exec "$(dirname "$0")/build_test/tests/vulkan_renderer_tester" "$@"
+exec "${TEST_BIN}" "$@"

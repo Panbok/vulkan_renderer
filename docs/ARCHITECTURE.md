@@ -54,6 +54,58 @@ native-resize validation. Bistro color/depth capture generation passes; its
 profile retains two unavailable manual-exposure telemetry assertions. Native
 Vulkan execution remains unrun. See ADR-004 for the evidence boundary.
 
+## Build policy
+
+[CMake build policy](../cmake/vkr_build_policy.cmake) applies optimization after
+upstream target options. Vendored and fetched dependencies, including the
+separate KTX reader and mesh codecs, compile with `NDEBUG` and `-O3` (`/O2` for
+MSVC) in every configuration. VKR-owned Release and RelWithDebInfo targets use
+`-O3` or `/O2` plus function/data sections and linker removal of unused code.
+Release additionally enables interprocedural optimization when CMake's compiler
+and linker check succeeds; `VKR_ENABLE_IPO=OFF` disables it. These settings do not
+enable fast-math or establish a frame-time improvement.
+
+[Root CMake configuration](../CMakeLists.txt) maps imported Debug,
+RelWithDebInfo and MinSizeRel dependencies to Release. Windows uses the Release
+CRT and `_ITERATOR_DEBUG_LEVEL=0` across configurations to match those libraries;
+the selected triplet determines static versus DLL CRT linkage. VKR Debug retains
+its own assertions and symbols. Release logging defaults to stripped levels for
+both application and editor; `VKR_EDITOR_LOGGING` is an explicit shared build
+option, so selecting a different executable leaves library compile settings
+unchanged. [Build wrappers](INDEX.md#build-and-run) reuse one dependency graph per
+configuration and request only each consumer's target closure.
+
+[Sanitizer policy](../cmake/vkr_sanitizers.cmake) selects one
+`VKR_DEBUG_SANITIZER` profile. `default` preserves the cached
+`VKR_ENABLE_DEBUG_SANITIZERS` and `VKR_ENABLE_SANITIZERS` switches: new
+non-Windows Debug trees enable ASan/UBSan, while native Windows defaults to no
+CPU sanitizers. The legacy `VKR_ENABLE_SANITIZERS=ON` applies ASan/UBSan across
+configurations and must be disabled before choosing an explicit profile.
+
+| Profile | Debug instrumentation |
+|---|---|
+| `address` | ASan + UBSan; also LSan on non-Windows when the combined runtime links |
+| `thread` | TSan + UBSan |
+| `memory` | MSan + UBSan, origin tracking and position-independent executable flags |
+| `leak` | Standalone LSan + UBSan |
+| `none` | No CPU sanitizers |
+
+ASan, TSan and MSan cannot share one executable. Configuration checks both C and
+C++ executable links with the selected sanitizer flags and rejects unavailable
+runtimes. Native Windows rejects `thread`, `memory` and `leak`; `address` also
+rejects the default static CRT and requires a DLL CRT with matching dependencies.
+These profiles require Clang or GCC drivers; MSan specifically requires Clang
+on Linux, FreeBSD or NetBSD. No Linux renderer support is added, and there is no
+full-renderer MSan gate on the current Windows/macOS execution paths.
+
+Dependencies remain optimized. `thread` and `memory` retain instrumentation in
+in-tree vendor code so synchronization and memory shadow state cross library
+calls. MSan additionally requires an instrumented C++ standard library and
+external dependencies supplied through the toolchain; normal prebuilt libraries
+do not provide valid coverage. Build and runtime instructions belong to
+[the validation skill](../.codex/skills/vkr-validation/SKILL.md#cpu-sanitizers).
+A successful configure or build does not establish sanitizer runtime coverage.
+
 ## Ownership and source map
 
 | Owner | Responsibilities | Source |

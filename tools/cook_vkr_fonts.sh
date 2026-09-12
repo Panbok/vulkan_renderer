@@ -6,17 +6,13 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 COOKER_BIN="${VKR_FONT_COOKER_BIN:-}"
 if [ -z "${COOKER_BIN}" ]; then
-  BUILD_DIR="${VKR_FONT_COOKER_BUILD_DIR:-${REPO_ROOT}/build_font_cooker}"
-  GENERATOR=""
-  if command -v ninja >/dev/null 2>&1; then GENERATOR="-G Ninja"; fi
-  COMPILERS=""
-  if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
-    COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
-  fi
-  echo "Building vkr_font_cooker in ${BUILD_DIR}"
-  cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" -U CMAKE_TOOLCHAIN_FILE \
-    -DCMAKE_BUILD_TYPE:STRING=Release ${GENERATOR} ${COMPILERS}
-  cmake --build "${BUILD_DIR}" --target vkr_font_cooker --config Release
+  BUILD_DIR="${VKR_FONT_COOKER_BUILD_DIR:-${REPO_ROOT}/build_release}"
+  case "${BUILD_DIR}" in
+    /*|[A-Za-z]:/*) ;;
+    *) BUILD_DIR="${REPO_ROOT}/${BUILD_DIR}" ;;
+  esac
+  VKR_BUILD_TARGET=vkr_font_cooker VKR_BUILD_LABEL="VKR font cooker" \
+    VKR_BUILD_DIR="${BUILD_DIR}" "${REPO_ROOT}/build.sh" Release
   for candidate in \
     "${BUILD_DIR}/tools/vkr_font_cooker" \
     "${BUILD_DIR}/tools/Release/vkr_font_cooker" \

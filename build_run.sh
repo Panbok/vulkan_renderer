@@ -26,12 +26,21 @@ case "${BUILD_TYPE}" in
     ;;
 esac
 
+if [ "${BUILD_TYPE}" = Debug ] && [ "${VKR_DEBUG_SANITIZER:-default}" != default ]; then
+  BUILD_DIR="build_debug_${VKR_DEBUG_SANITIZER}"
+fi
+BUILD_DIR="${VKR_BUILD_DIR:-${BUILD_DIR}}"
+case "${BUILD_DIR}" in
+  /*|[A-Za-z]:/*) ;;
+  *) BUILD_DIR="${SCRIPT_DIR}/${BUILD_DIR}" ;;
+esac
+
 "${SCRIPT_DIR}/build.sh" "${BUILD_TYPE}"
 
-BIN="${SCRIPT_DIR}/${BUILD_DIR}/${VKR_RUN_SUBDIR}/${VKR_RUN_BINARY}"
+BIN="${BUILD_DIR}/${VKR_RUN_SUBDIR}/${VKR_RUN_BINARY}"
 if [ ! -x "$BIN" ] &&
-  [ -x "${SCRIPT_DIR}/${BUILD_DIR}/${VKR_RUN_SUBDIR}/${BUILD_TYPE}/${VKR_RUN_BINARY}" ]; then
-  BIN="${SCRIPT_DIR}/${BUILD_DIR}/${VKR_RUN_SUBDIR}/${BUILD_TYPE}/${VKR_RUN_BINARY}"
+  [ -x "${BUILD_DIR}/${VKR_RUN_SUBDIR}/${BUILD_TYPE}/${VKR_RUN_BINARY}" ]; then
+  BIN="${BUILD_DIR}/${VKR_RUN_SUBDIR}/${BUILD_TYPE}/${VKR_RUN_BINARY}"
 fi
 if [ ! -x "$BIN" ]; then
   echo "Error: built binary not found or not executable at: $BIN" >&2

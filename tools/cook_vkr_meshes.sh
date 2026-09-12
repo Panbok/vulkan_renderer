@@ -6,8 +6,17 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 COOKER_BIN="${VKR_MESH_COOKER_BIN:-}"
 if [ -z "${COOKER_BIN}" ]; then
-  "${REPO_ROOT}/build_release.sh"
-  COOKER_BIN="${REPO_ROOT}/build_release/tools/vkr_mesh_cooker"
+  VKR_BUILD_TARGET=vkr_mesh_cooker VKR_BUILD_LABEL="VKR mesh cooker" \
+    "${REPO_ROOT}/build.sh" Release
+  BUILD_DIR="${VKR_BUILD_DIR:-build_release}"
+  case "${BUILD_DIR}" in
+    /*|[A-Za-z]:/*) ;;
+    *) BUILD_DIR="${REPO_ROOT}/${BUILD_DIR}" ;;
+  esac
+  COOKER_BIN="${BUILD_DIR}/tools/vkr_mesh_cooker"
+  if [ ! -x "${COOKER_BIN}" ]; then
+    COOKER_BIN="${BUILD_DIR}/tools/Release/vkr_mesh_cooker"
+  fi
 fi
 cd "${REPO_ROOT}"
 if [ ! -x "${COOKER_BIN}" ]; then

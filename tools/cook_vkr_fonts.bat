@@ -7,35 +7,11 @@ set "COOKER_BIN=%VKR_FONT_COOKER_BIN%"
 if not "%COOKER_BIN%"=="" goto :cooker_ready
 
 set "BUILD_DIR=%VKR_FONT_COOKER_BUILD_DIR%"
-if "%BUILD_DIR%"=="" set "BUILD_DIR=%REPO_ROOT%\build_font_cooker"
-set "GENERATOR="
-where ninja >nul 2>&1 && set "GENERATOR=-G Ninja"
-set "COMPILERS="
-where clang >nul 2>&1
-if !errorlevel! EQU 0 (
-    where clang++ >nul 2>&1
-    if !errorlevel! EQU 0 set "COMPILERS=-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
-)
-set "BASH_HINT="
-if "!BASH_HINT!"=="" if exist "%ProgramFiles%\Git\bin\bash.exe" set "BASH_HINT=%ProgramFiles%\Git\bin\bash.exe"
-if "!BASH_HINT!"=="" if exist "%ProgramFiles%\Git\usr\bin\bash.exe" set "BASH_HINT=%ProgramFiles%\Git\usr\bin\bash.exe"
-if "!BASH_HINT!"=="" if exist "%LocalAppData%\Programs\Git\bin\bash.exe" set "BASH_HINT=%LocalAppData%\Programs\Git\bin\bash.exe"
-if "!BASH_HINT!"=="" if exist "%LocalAppData%\Programs\Git\usr\bin\bash.exe" set "BASH_HINT=%LocalAppData%\Programs\Git\usr\bin\bash.exe"
-if "!BASH_HINT!"=="" if exist "C:\msys64\usr\bin\bash.exe" set "BASH_HINT=C:\msys64\usr\bin\bash.exe"
-if "!BASH_HINT!"=="" if exist "C:\msys64\bin\bash.exe" set "BASH_HINT=C:\msys64\bin\bash.exe"
-if "!BASH_HINT!"=="" if exist "C:\mingw64\usr\bin\bash.exe" set "BASH_HINT=C:\mingw64\usr\bin\bash.exe"
-if "!BASH_HINT!"=="" if exist "C:\mingw64\bin\bash.exe" set "BASH_HINT=C:\mingw64\bin\bash.exe"
-set "BASH_ARG="
-if not "!BASH_HINT!"=="" set "BASH_ARG=-DBASH_EXECUTABLE:FILEPATH=!BASH_HINT!"
-set "VKR_BASH_ENV_FILE=%REPO_ROOT%\tools\vkr_bash_env.sh"
-if not "!BASH_HINT!"=="" if exist "!VKR_BASH_ENV_FILE!" set "BASH_ENV=!VKR_BASH_ENV_FILE!"
-echo !BASH_HINT! | findstr /I /C:"C:\msys64\" /C:"C:\mingw64\" >nul 2>&1
-if !errorlevel! EQU 0 if exist "C:\msys64\usr\bin" set "PATH=C:\msys64\usr\bin;C:\msys64\bin;%PATH%"
-if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin;C:\mingw64\bin;%PATH%"
-echo Building vkr_font_cooker in %BUILD_DIR%
-cmake --fresh -S "%REPO_ROOT%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE:STRING=Release %GENERATOR% %COMPILERS% %BASH_ARG%
-if errorlevel 1 goto :configure_failed
-cmake --build "%BUILD_DIR%" --target vkr_font_cooker --config Release
+if "%BUILD_DIR%"=="" set "BUILD_DIR=%REPO_ROOT%\build_release"
+set "VKR_BUILD_TARGET=vkr_font_cooker"
+set "VKR_BUILD_LABEL=VKR font cooker"
+set "VKR_BUILD_DIR=%BUILD_DIR%"
+call "%REPO_ROOT%\build.bat" Release
 if errorlevel 1 goto :build_failed
 if exist "%BUILD_DIR%\tools\vkr_font_cooker.exe" set "COOKER_BIN=%BUILD_DIR%\tools\vkr_font_cooker.exe"
 if "%COOKER_BIN%"=="" if exist "%BUILD_DIR%\tools\Release\vkr_font_cooker.exe" set "COOKER_BIN=%BUILD_DIR%\tools\Release\vkr_font_cooker.exe"
@@ -62,10 +38,6 @@ if errorlevel 1 goto :cook_failed
 shift
 goto :cook_arguments
 
-:configure_failed
-echo CMake configure failed. 1>&2
-popd
-exit /b 1
 :build_failed
 echo vkr_font_cooker build failed. 1>&2
 popd
