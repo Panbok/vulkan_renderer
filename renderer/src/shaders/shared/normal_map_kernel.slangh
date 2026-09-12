@@ -11,7 +11,12 @@ float3 vkr_instance_transform_normal(float3 column0, float3 column1,
 float3 vkr_normal_map_decode(float3 encoded, float strength)
 {
     float2 xy = encoded.xy * 2.0f - 1.0f;
+    float z = sqrt(saturate(1.0f - dot(xy, xy)));
     xy *= strength;
     xy.y = -xy.y;
-    return float3(xy, sqrt(saturate(1.0f - dot(xy, xy))));
+    float3 normal = float3(xy, z);
+    float length_squared = dot(normal, normal);
+    return length_squared > 1e-12f
+        ? normal * rsqrt(length_squared)
+        : float3(0.0f, 0.0f, 1.0f);
 }

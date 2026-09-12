@@ -2008,41 +2008,41 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
       gltf_test_hash_file_bytes(metallic_roughness_path);
   char expected_pair_paths[8][1200] = {{0}};
   snprintf(expected_pair_paths[0], sizeof(expected_pair_paths[0]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f000000_factor_3e800000_normal.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[1], sizeof(expected_pair_paths[1]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f000000_factor_3e800000_metalrough.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[2], sizeof(expected_pair_paths[2]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f400000_factor_3e800000_normal.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[3], sizeof(expected_pair_paths[3]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f400000_factor_3e800000_metalrough.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[4], sizeof(expected_pair_paths[4]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f000000_factor_3f000000_normal.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[5], sizeof(expected_pair_paths[5]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f000000_factor_3f000000_metalrough.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[6], sizeof(expected_pair_paths[6]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_missing_scale_3f000000_factor_3e800000_normal.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
   snprintf(expected_pair_paths[7], sizeof(expected_pair_paths[7]),
-           "%sassets/textures/generated/normalrough_v1/normal_%016llx_"
+           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_missing_scale_3f000000_factor_3e800000_metalrough.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
   bool8_t pair_path_existed[ArrayCount(expected_pair_paths)] = {0};
@@ -2065,17 +2065,37 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
       json, sizeof(json),
       "{\"asset\":{\"version\":\"2.0\"},"
       "\"materials\":["
-      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
-      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
-      "{\"normalTexture\":{\"index\":0,\"scale\":0.75},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
-      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.5,\"metallicRoughnessTexture\":{\"index\":1}}},"
-      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25}},"
-      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":2}}},"
-      "{\"normalTexture\":{\"index\":0,\"texCoord\":1,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}},"
-      "{\"normalTexture\":{\"index\":3,\"scale\":0.5},\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,\"metallicRoughnessTexture\":{\"index\":1}}}],"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":"
+      "{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,"
+      "\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":"
+      "{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,"
+      "\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.75},"
+      "\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0."
+      "25,\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":"
+      "{\"metallicFactor\":0.7,\"roughnessFactor\":0.5,"
+      "\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":"
+      "{\"metallicFactor\":0.7,\"roughnessFactor\":0.25}},"
+      "{\"normalTexture\":{\"index\":0,\"scale\":0.5},\"pbrMetallicRoughness\":"
+      "{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,"
+      "\"metallicRoughnessTexture\":{\"index\":2}}},"
+      "{\"normalTexture\":{\"index\":0,\"texCoord\":1,\"scale\":0.5},"
+      "\"pbrMetallicRoughness\":{\"metallicFactor\":0.7,\"roughnessFactor\":0."
+      "25,\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":3,\"scale\":0.5},\"pbrMetallicRoughness\":"
+      "{\"metallicFactor\":0.7,\"roughnessFactor\":0.25,"
+      "\"metallicRoughnessTexture\":{\"index\":1}}},"
+      "{\"normalTexture\":{\"index\":3,\"scale\":0}},"
+      "{\"normalTexture\":{\"index\":3}}],"
       "\"samplers\":[{\"magFilter\":9728,\"minFilter\":9728}],"
-      "\"textures\":[{\"source\":0},{\"source\":1},{\"source\":2},{\"source\":0,\"sampler\":0}],"
-      "\"images\":[{\"uri\":\"objects/gltf_importer_normalrough/normal.png\"},{\"uri\":\"objects/gltf_importer_normalrough/mr.png\"},{\"uri\":\"objects/gltf_importer_normalrough/mr_small.png\"}],"
+      "\"textures\":[{\"source\":0},{\"source\":1},{\"source\":2},{\"source\":"
+      "0,\"sampler\":0}],"
+      "\"images\":[{\"uri\":\"objects/gltf_importer_normalrough/"
+      "normal.png\"},{\"uri\":\"objects/gltf_importer_normalrough/"
+      "mr.png\"},{\"uri\":\"objects/gltf_importer_normalrough/mr_small.png\"}],"
       "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":42}]}",
       stem);
   assert(gltf_test_write_file_text(gltf_path, json));
@@ -2103,7 +2123,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
     String8 *path = vector_get_String8(&generated_assets, i);
     assert(path != NULL);
-    assert(string8_contains_cstr(path, "normalrough_v1") == true_v);
+    assert(string8_contains_cstr(path, "normalrough_v2") == true_v);
     if (string8_contains_cstr(path, "scale_3f000000_factor_3e800000") &&
         string8_contains_cstr(path, "roughness_missing") &&
         string8_contains_cstr(path, "_metalrough.vkt")) {
@@ -2133,8 +2153,8 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   assert(!string8_equals(&shared_normal, &scaled_normal));
   assert(!string8_equals(&shared_normal, &rougher_normal));
 
-  char material_paths[8][1024] = {{0}};
-  String8 materials[8] = {0};
+  char material_paths[10][1024] = {{0}};
+  String8 materials[10] = {0};
   for (uint32_t i = 0; i < ArrayCount(material_paths); ++i) {
     gltf_test_make_material_paths(stem, gltf_path, i, material_paths[i],
                                   sizeof(material_paths[i]), NULL, 0, NULL, 0);
@@ -2187,6 +2207,11 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
     assert(strstr((const char *)materials[i].str, "roughness=0.250000"));
   }
 
+  assert(strstr((const char *)materials[8].str, "normal_scale=0.000000"));
+  assert(strstr((const char *)materials[9].str, "normal_scale=1.000000"));
+  assert(strstr((const char *)materials[8].str, normal_source_reference));
+  assert(strstr((const char *)materials[9].str, normal_source_reference));
+
   const String8 first_material = materials[0];
   String8 first_generated_assets[8] = {0};
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
@@ -2229,7 +2254,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   }
   char generated_dir[1024];
   snprintf(generated_dir, sizeof(generated_dir),
-           "%sassets/textures/generated/normalrough_v1", PROJECT_SOURCE_DIR);
+           "%sassets/textures/generated/normalrough_v2", PROJECT_SOURCE_DIR);
   if (!any_pair_path_existed) {
     gltf_test_remove_dir(generated_dir);
   }

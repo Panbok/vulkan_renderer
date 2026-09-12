@@ -3,7 +3,7 @@
 // Bump when a cutout bake changes filtering or fixed encoding settings. Both
 // material variant paths and packed metadata use this identity.
 #define VKR_VKT_CUTOUT_POLICY_VERSION 1u
-#define VKR_VKT_NORMAL_ROUGHNESS_POLICY_VERSION 1u
+#define VKR_VKT_NORMAL_ROUGHNESS_POLICY_VERSION 2u
 
 #ifdef __cplusplus
 extern "C" {

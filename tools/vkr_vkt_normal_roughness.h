@@ -13,15 +13,23 @@ typedef struct VkrVktMaterialMoment {
 static inline VkrVktMaterialMoment
 vkr_vkt_material_moment(const uint8_t *normal, uint8_t roughness,
                         float normal_scale, float roughness_factor) {
-  double x = ((double)normal[0] * (2.0 / 255.0) - 1.0) * normal_scale;
-  double y = ((double)normal[1] * (2.0 / 255.0) - 1.0) * normal_scale;
+  double x = (double)normal[0] * (2.0 / 255.0) - 1.0;
+  double y = (double)normal[1] * (2.0 / 255.0) - 1.0;
   const double z = sqrt(fmax(0.0, 1.0 - x * x - y * y));
-  const double inverse_length = 1.0 / sqrt(x * x + y * y + z * z);
+  x *= normal_scale;
+  y *= normal_scale;
+  const double length_squared = x * x + y * y + z * z;
+  const double inverse_length =
+      length_squared > 1e-12 ? 1.0 / sqrt(length_squared) : 0.0;
   const double r = (double)roughness / 255.0 * roughness_factor;
   // Reflection of tangent Y commutes with filtering, so keep source-image Y
   // here; both native shaders perform their existing Y flip at decode.
-  VkrVktMaterialMoment result = {x * inverse_length, y * inverse_length,
-                                 z * inverse_length, r * r * r * r};
+  VkrVktMaterialMoment result = {
+      x * inverse_length,
+      y * inverse_length,
+      length_squared > 1e-12 ? z * inverse_length : 1.0,
+      r * r * r * r,
+  };
   return result;
 }
 

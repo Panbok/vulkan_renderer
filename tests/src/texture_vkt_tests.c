@@ -375,20 +375,45 @@ static void assert_normal_rg_material_output(const uint8_t *normal) {
 static void test_normal_roughness_material_moments(void) {
   printf("  Running test_normal_roughness_material_moments...\n");
 
-  // With scale 0.5, source X 255 decodes to +0.5. Source Y 127 decodes to
-  // -1/255 before scaling; the reconstructed positive Z completes a unit
-  // normal. These values are chosen away from the center-byte ambiguity.
-  const uint8_t tilted[] = {255u, 127u, 0u, 0u};
-  const VkrVktMaterialMoment decoded =
-      vkr_vkt_material_moment(tilted, 0u, 0.5f, 1.0f);
-  assert(fabs(decoded.x - 0.5) < 1e-12);
-  assert(fabs(decoded.y + 1.0 / 510.0) < 1e-12);
-  assert(fabs(decoded.z - sqrt(1.0 - 0.25 - 1.0 / (510.0 * 510.0))) <
-         1e-12);
-  assert(fabs(decoded.x * decoded.x + decoded.y * decoded.y +
-                  decoded.z * decoded.z -
-              1.0) <
-         1e-12);
+  // Source bytes represent (0.6, 0.2, sqrt(0.6)). Independent analytic
+  // directions pin Z-before-strength; strength 1 alone cannot expose the bug.
+  const uint8_t tilted[] = {204u, 153u, 0u, 0u};
+  const struct {
+    float32_t strength;
+    float64_t x;
+    float64_t y;
+    float64_t z;
+  } cases[] = {
+      {0.0f, 0.0, 0.0, 1.0},
+      {0.5f, 0.35856858280031806, 0.11952286093343936, 0.9258200997725515},
+      {1.0f, 0.6, 0.2, 0.7745966692414834},
+      {2.0f, 0.8090398349558905, 0.26967994498529685, 0.5222329678670935},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
+    const VkrVktMaterialMoment decoded =
+        vkr_vkt_material_moment(tilted, 0u, cases[i].strength, 1.0f);
+    assert(fabs(decoded.x - cases[i].x) < 1e-12);
+    assert(fabs(decoded.y - cases[i].y) < 1e-12);
+    assert(fabs(decoded.z - cases[i].z) < 1e-12);
+    uint8_t encoded[4];
+    uint8_t roughness;
+    vkr_vkt_encode_material_moment(decoded, encoded, &roughness);
+    const VkrVktMaterialMoment recooked =
+        vkr_vkt_material_moment(encoded, 0u, 1.0f, 1.0f);
+    // Two-channel byte output introduces quantization, bounded here to 0.01
+    // in each component for these oblique directions.
+    assert(fabs(recooked.x - cases[i].x) < 0.01);
+    assert(fabs(recooked.y - cases[i].y) < 0.01);
+    assert(fabs(recooked.z - cases[i].z) < 0.01);
+    assert(roughness == 0u);
+  }
+
+  // Compression can put XY outside the unit disk. Zero strength must remain
+  // a finite flat normal even when the reconstructed source Z is zero.
+  const uint8_t outside_disk[] = {255u, 255u, 0u, 0u};
+  const VkrVktMaterialMoment flattened =
+      vkr_vkt_material_moment(outside_disk, 0u, 0.0f, 1.0f);
+  assert(flattened.x == 0.0 && flattened.y == 0.0 && flattened.z == 1.0);
 
   // A constant normal has zero directional variance, so every source
   // roughness byte survives the fourth-power moment conversion. Scale 0

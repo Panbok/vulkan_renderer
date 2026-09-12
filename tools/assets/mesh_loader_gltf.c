@@ -1723,7 +1723,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
     roughness = (float32_t)pbr->roughness_factor;
   }
 
-  float32_t normal_scale = material->normal_texture.scale != 0.0f
+  // cgltf defaults a present texture view to scale 1, preserving authored zero.
+  float32_t normal_scale = material->normal_texture.texture != NULL
                                ? (float32_t)material->normal_texture.scale
                                : 1.0f;
   float32_t occlusion_strength =
