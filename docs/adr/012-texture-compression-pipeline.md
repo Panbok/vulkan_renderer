@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-12
 authority: adr
 ---
 # ADR-012: KTX2/UASTC texture artifacts with capability-selected transcode
@@ -70,8 +70,10 @@ packed-only source inputs fail with a diagnostic. Changed material cutoffs or
 factors require recooking to update the bake.
 
 For compatible glTF normal/metallic-roughness inputs, cooking emits a paired
-`normal_rg` and `data_mask` recipe. It decodes scaled XY into a unit normal with
-positive tangent Z, retaining the full mean normal through area reductions.
+`normal_rg` and `data_mask` recipe. It reconstructs positive tangent Z from
+unscaled decoded XY, scales XY, then normalizes, with a flat-normal fallback
+when squared length is at most `1e-12`. It retains the full mean normal through
+area reductions.
 It also retains the mean fourth power of effective perceptual roughness
 `r = roughness_factor * texture.G`. The encoded direction is the normalized mean;
 the encoded roughness is
@@ -90,8 +92,8 @@ MR R/B/A keep ordinary area filtering. A material without an MR image receives a
 texture with neutral AO/metallic channels. Normal strength and roughness factor
 are folded into both base and lower mips, within byte/compression precision;
 generated materials set those two factors to one and retain the metallic factor.
-Changing the factors afterward requires recooking. The importer retains its
-existing authored-zero normal-scale defaulting behavior.
+Changing the factors afterward requires recooking. An authored zero normal scale
+flattens the normal; an omitted scale defaults to one.
 
 Pairing requires decodable external images with identical extents, untransformed
 UV0 and default or repeat/linear/trilinear samplers. Converted specular-glossiness
@@ -100,6 +102,10 @@ Mismatched extents, unsupported mappings/samplers, packed-only images and absent
 source files retain both ordinary texture references and factors with a diagnostic.
 Present but malformed source images fail the cook before material publication. This does
 not add runtime support for glTF UV transforms or authored sampler state.
+
+Policy version 2 corrects the order of normal-strength application. Version 1
+variants must be regenerated from source through the cooker; existing version 1
+files are not overwritten or reused by version 2 recipes.
 
 Both output paths and metadata include a shared policy version, both source
 identities (or absent MR), normal strength and roughness factor. Equal recipes

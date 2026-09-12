@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -78,7 +78,9 @@ The [CPU sampler](../../renderer/src/vkr_anisotropy_lut.c) and native shaders
 interpolate the same table coordinates.
 
 One per-image `R8G8B8A8_UNORM` G-buffer stores octahedral world-axis direction in
-RG, strength in B and zero in A. At 1280×720 this adds 10.546875 MiB for three
+RG, strength in B and zero in A. It exists only when the opaque/cutout material
+aggregate contains nonzero anisotropy. The coarse feature and absent-binding
+contract follows [ADR-062](062-layered-clearcoat.md). At 1280×720 this adds 10.546875 MiB for three
 images, or 28.125 MiB at the supported eight-image maximum. Resolve writes binding
 15; deferred lighting, SSGI composite and SSR composite read bindings 12, 10 and
 12 respectively. Images use the existing graph resize and completion lifetime.

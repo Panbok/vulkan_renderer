@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-09
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -30,6 +30,28 @@ positive-depth pyramid, full-resolution leaves and at most 48 hierarchy decision
 The pyramid begins at floor-half extent; its odd-extent reductions retain the final
 rows and columns independently of trace resolution. Zero depth means uncovered.
 Coated pixels trace the coat; uncoated pixels trace the base. Misses retain probes.
+
+The default `high` tracing preset preserves these settings. The opt-in
+`balanced` preset limits traversal to 24 hierarchy decisions and excludes
+receivers rougher than 0.35. Select it before renderer creation with
+`VKR_SSR_QUALITY=balanced`; `high` or an unset variable retains the reference.
+Unknown values fail initialization. Harness reports record the effective tier
+and workload fingerprints distinguish balanced from high when SSR is enabled.
+Use the same environment selection for every invocation in a comparison.
+Native API callers may initialize their cold controls through `vkr_ssr_config_for_quality()` and tighten them further.
+Quality selection requires renderer recreation, so a tier cannot reuse history
+produced with another tier. Both backends consume the same prepared controls.
+The balanced tier retains full-resolution resources, hit filtering, current-hit
+support, reflected-object identity validation and all history rejection rules.
+Excluded receivers and traversal misses use the existing probe fallback.
+Its reduced work bounds do not establish a measured speedup or reduced image
+memory: matched capture-free Release timing and Bistro output checks remain
+required on each native backend. The `ssr_tier_bistro` snapshot and
+`ssr_tier_bistro_cost` profile cases expose the same 640×360 Bistro workload
+under each environment selection; their prepared cases are not measured evidence.
+The existing harness fingerprint test independently requires unset/explicit high
+identity and a distinct balanced workload fingerprint.
+
 
 Traversal uses homogeneous interpolation, clipped screen bounds, absolute cell
 crossings and the earliest supported rear-depth slab. Thickness is a binary
@@ -295,3 +317,7 @@ surfaces that need reliable off-screen geometry.
 - [Shared traversal and filtering](../../renderer/src/shaders/shared/ssr_kernel.slangh)
 - [Authored graph](../../assets/render_graphs/main.rendergraph.json)
 - [Frame controls](../../renderer/src/vkr_frame_input.h)
+
+The [2026-09-12 local implementation evidence](../../assets/verification/renderer-features/renderer-features-perf.txt)
+records high/balanced coverage and pass-cost observations. These are different
+quality workloads on M1 Pro, without authoritative base-M1 budget acceptance.

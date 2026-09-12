@@ -196,7 +196,7 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 45 contains frame metadata, camera/lighting/settings and typed
+Frame-input version 46 contains frame metadata, camera/lighting/settings and typed
 world, shadow, skybox, baked diffuse-volume, rectangle-light, analytic-fog and
 froxel-fog, UI, editor, picking and debug payloads. Supplied world-text and UI
 streams are authoritative. `vkr_frame_input_validate()` checks structural input.
@@ -450,6 +450,16 @@ scalar-filter approximations; active anisotropy with refraction is rejected.
 [ADR-064](adr/064-anisotropic-ggx-reflection.md) owns the encoding, input subset,
 resource lifetime and measured fit limits.
 
+Scene extraction aggregates opaque/cutout clearcoat, sheen and anisotropy flags.
+The graph allocates each RGBA8 material plane only when its feature is present;
+unknown external packet aggregates conservatively retain all planes. Native
+consumers guard absent bindings and use zero-feature defaults. Previously
+realized images may remain in the bounded graph cache until normal retirement;
+disabling a feature does not imply immediate memory reclamation. Deferred
+punctual and rectangle loops evaluate active lobes in one traversal, retaining
+normal-specific coat visibility. Valid baked-volume cells skip environment
+diffuse evaluation while retaining environment specular.
+
 Thin-sheet diffuse transmission partitions residual base diffuse into front
 reflection and tinted direct backlighting. Material-wide strength/color use
 existing visible-draw/material tables in deferred lighting and SSGI composite;
@@ -460,8 +470,12 @@ runtime indirect-light approximation, shadow policy and evidence limits.
 
 Optional SSGI traces one cosine-weighted ray per nearest covered half-resolution
 receiver from a deterministic 256-phase Hammersley sequence. Its direct source
-contains punctual/rectangle radiance and emission, excluding environment, probes,
-baked diffuse, SSR, fog, and post effects. A 3×3 depth/normal bilateral raw
+contains layered punctual/rectangle diffuse radiance and emission, excluding
+camera-directed specular, clearcoat and sheen highlights, environment, probes,
+baked diffuse, SSR, fog, and post effects. Depth-base selection writes one
+half-resolution RG32UI receiver image containing bit-preserved positive depth
+and an exact local source offset. Trace, temporal neighbors and composite reuse
+that selection, including the nearest-covered odd trailing footprint policy. A 3×3 depth/normal bilateral raw
 filter includes valid misses as zero samples before temporal filtering. SSGI selects the color/depth/identity tuple only when it matches the
 motion-transform instance and submit/frame/scene tuple. Existing native queue
 dependencies admit that shared predecessor while in flight; no unrelated
@@ -638,6 +652,13 @@ Fog changes invalidate normal temporal and SSR content. [ADR-057](adr/057-analyt
 owns the constants, composition and Metal evidence; native Vulkan execution is
 unavailable.
 
+Fog's 5,000 working radiance cap applies to fog accumulation, not final scene
+composition. Empty media preserve finite scene HDR and nearly transparent media
+attenuate it without a subsystem clamp. Froxel positions extrapolate a ray from
+finite device-depth 0/0.5 points to the authored positive view depth, even beyond
+the raster far plane. The independent production-Slang arithmetic regression
+covers these changes; earlier native observations below predate the fixes.
+
 Froxel volumetric fog is implemented under
 [ADR-059](adr/059-froxel-volumetric-fog.md). The graph reserves frame-slot-count plus two
 completion-gated RGBA16F 3D local-scattering histories and one transient
@@ -718,6 +739,10 @@ operates on tone-mapped linear Scene RGB in the existing presentation draw, afte
 FXAA when enabled. FXAA reuses its samples and attenuates sharpening where its
 subpixel blend is strongest. UI, editor recomposition, diagnostic views and
 temporal histories are excluded. FSR's SDK sharpener remains disabled.
+`VKR_POST_TRANSFORM_CACHE=1` optionally prepares an output-size RGBA16F
+display-linear image before FXAA/sharpening. It changes nonlinear filtering and
+adds image storage; analytic transformation remains the default. The final draw
+applies the physical output scale once.
 Internal Scene pixels, Scene presentation pixels and physical target/UI pixels
 remain distinct. Picking and composition share viewport mapping.
 See [ADR-043](adr/043-presentation-dpi-and-color-transfer.md).

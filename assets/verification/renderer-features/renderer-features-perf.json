@@ -1,0 +1,2841 @@
+{
+  "date": "2026-09-12",
+  "base_revision": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+  "dirty": true,
+  "native_backend": "Metal 4",
+  "gpu": "Apple M1 Pro",
+  "authoritative": false,
+  "baseline_promoted": false,
+  "cost_observations": {
+    "source_sha256": "509c0d58f0eb40c40613c096e03ee62d202f68f26e322b3c063e936e2f37c419",
+    "data": {
+      "post-0-profile": {
+        "report": {
+          "status": "pass",
+          "exit_code": 0,
+          "report": "build/_artifacts/profile/20260912T141805.073Z-006103/report.json",
+          "sha256": "sha256:6fe9e7024ae92e927188ca5ba407551710e97561f848edbf3b9a08f3fe0b13d1"
+        },
+        "authority_reasons": [
+          "profile.local_only",
+          "provenance.dirty"
+        ],
+        "gpu": "Apple M1 Pro",
+        "resolution": [
+          1280,
+          720
+        ],
+        "workload": "sha256:8951a6d43206c20a3d7666fd810cc3998235078477e1c8ca51afc2eafce89cb2",
+        "passes": {
+          "Post.Tonemap.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 16,
+            "invalid_count": 0,
+            "mean": 1.3808229166666668,
+            "p50": 1.379125,
+            "p95": 1.396625,
+            "min": 1.36475,
+            "max": 1.396625,
+            "stddev": 0.00836652893520433,
+            "total": 22.09316666666667
+          }
+        },
+        "frame_wall": {
+          "unit": "ns",
+          "sample_count": 16,
+          "invalid_count": 0,
+          "mean": 20113400.5,
+          "p50": 19821416,
+          "p95": 26745166,
+          "min": 10779083,
+          "max": 26745166,
+          "stddev": 3452986.730517202,
+          "total": 321814408
+        }
+      },
+      "post-1-profile": {
+        "report": {
+          "status": "pass",
+          "exit_code": 0,
+          "report": "build/_artifacts/profile/20260912T141819.523Z-00637b/report.json",
+          "sha256": "sha256:0e56390d50708cb6ae267995a1a3e75cb450c56715e8ffa9959515b62493991e"
+        },
+        "authority_reasons": [
+          "profile.local_only",
+          "provenance.dirty"
+        ],
+        "gpu": "Apple M1 Pro",
+        "resolution": [
+          1280,
+          720
+        ],
+        "workload": "sha256:03f2eaf96a9e4e04345711daefe0df06462c870bfc560f7b77a53d4e9095ccae",
+        "passes": {
+          "Post.DisplayLinear.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 16,
+            "invalid_count": 0,
+            "mean": 0.12811979166666665,
+            "p50": 0.12791666666666665,
+            "p95": 0.13104166666666667,
+            "min": 0.12645833333333334,
+            "max": 0.13104166666666667,
+            "stddev": 0.0010893139206437853,
+            "total": 2.0499166666666664
+          },
+          "Post.Tonemap.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 16,
+            "invalid_count": 0,
+            "mean": 0.32639062500000005,
+            "p50": 0.32566666666666666,
+            "p95": 0.3305416666666667,
+            "min": 0.323125,
+            "max": 0.3305416666666667,
+            "stddev": 0.002346312256839911,
+            "total": 5.222250000000001
+          }
+        },
+        "frame_wall": {
+          "unit": "ns",
+          "sample_count": 16,
+          "invalid_count": 0,
+          "mean": 19082694.8125,
+          "p50": 18870500,
+          "p95": 20198374,
+          "min": 18280124,
+          "max": 20198374,
+          "stddev": 542277.218923958,
+          "total": 305323117
+        }
+      },
+      "ssr-high-profile": {
+        "report": {
+          "status": "pass",
+          "exit_code": 0,
+          "report": "build/_artifacts/profile/20260912T141834.366Z-0063fd/report.json",
+          "sha256": "sha256:89bc69ddbefe47ae4d7023de1040cd5a63d5ff9212442e6723bedf8f51f3dd54"
+        },
+        "authority_reasons": [
+          "profile.local_only",
+          "provenance.dirty"
+        ],
+        "gpu": "Apple M1 Pro",
+        "resolution": [
+          640,
+          360
+        ],
+        "workload": "sha256:a5fb76f647595cbb4967567cc8c1464ac9050988126e4f1010ec3cf72611efa6",
+        "passes": {
+          "SSR.DepthBase": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.02414192708333333,
+            "p50": 0.02395833333333333,
+            "p95": 0.025541666666666667,
+            "min": 0.02345833333333333,
+            "max": 0.026708333333333334,
+            "stddev": 0.0006605234021759179,
+            "total": 0.7725416666666666
+          },
+          "SSR.DepthMip.0": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.007283854166666666,
+            "p50": 0.0070416666666666666,
+            "p95": 0.009833333333333333,
+            "min": 0.006833333333333333,
+            "max": 0.010083333333333333,
+            "stddev": 0.0007265905012525395,
+            "total": 0.2330833333333333
+          },
+          "SSR.DepthMip.1": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006421875000000002,
+            "p50": 0.006208333333333333,
+            "p95": 0.009,
+            "min": 0.005958333333333333,
+            "max": 0.009416666666666667,
+            "stddev": 0.000738169864098968,
+            "total": 0.20550000000000007
+          },
+          "SSR.DepthMip.2": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006821614583333334,
+            "p50": 0.0065,
+            "p95": 0.009416666666666667,
+            "min": 0.006375,
+            "max": 0.009541666666666667,
+            "stddev": 0.0008254992685800609,
+            "total": 0.2182916666666667
+          },
+          "SSR.DepthMip.3": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006430989583333332,
+            "p50": 0.006208333333333333,
+            "p95": 0.009041666666666667,
+            "min": 0.006,
+            "max": 0.009458333333333332,
+            "stddev": 0.0007431406069493499,
+            "total": 0.20579166666666662
+          },
+          "SSR.DepthMip.4": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006434895833333334,
+            "p50": 0.006166666666666667,
+            "p95": 0.008875,
+            "min": 0.005958333333333333,
+            "max": 0.008958333333333334,
+            "stddev": 0.0007190471532477896,
+            "total": 0.2059166666666667
+          },
+          "SSR.DepthMip.5": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006855468750000001,
+            "p50": 0.006833333333333333,
+            "p95": 0.007458333333333333,
+            "min": 0.006291666666666667,
+            "max": 0.007458333333333333,
+            "stddev": 0.00031214986895737145,
+            "total": 0.21937500000000004
+          },
+          "SSR.DepthMip.6": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.007013020833333334,
+            "p50": 0.0070416666666666666,
+            "p95": 0.007541666666666666,
+            "min": 0.006375,
+            "max": 0.007625,
+            "stddev": 0.0003170566232453597,
+            "total": 0.22441666666666668
+          },
+          "SSR.DepthMip.7": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.005809895833333333,
+            "p50": 0.005666666666666666,
+            "p95": 0.006291666666666667,
+            "min": 0.005375,
+            "max": 0.006458333333333333,
+            "stddev": 0.0002779391349925676,
+            "total": 0.18591666666666665
+          },
+          "SSR.Trace.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 1.1482786458333334,
+            "p50": 1.1485416666666666,
+            "p95": 1.157625,
+            "min": 1.1315,
+            "max": 1.158,
+            "stddev": 0.005693482025610929,
+            "total": 36.74491666666667
+          },
+          "SSR.Temporal": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.6399218750000001,
+            "p50": 0.6325,
+            "p95": 0.6541666666666667,
+            "min": 0.614875,
+            "max": 0.8655833333333333,
+            "stddev": 0.04174902115192758,
+            "total": 20.477500000000003
+          },
+          "SSR.Composite.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.12354947916666664,
+            "p50": 0.12345833333333332,
+            "p95": 0.1275,
+            "min": 0.11866666666666666,
+            "max": 0.12816666666666665,
+            "stddev": 0.002227813975779189,
+            "total": 3.9535833333333326
+          },
+          "Post.Tonemap.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.34802994791666664,
+            "p50": 0.3475,
+            "p95": 0.3549583333333333,
+            "min": 0.336125,
+            "max": 0.36341666666666667,
+            "stddev": 0.005576850581688717,
+            "total": 11.136958333333332
+          }
+        },
+        "frame_wall": {
+          "unit": "ns",
+          "sample_count": 32,
+          "invalid_count": 0,
+          "mean": 11413728.6875,
+          "p50": 11283750,
+          "p95": 13335291,
+          "min": 9369708,
+          "max": 15134625,
+          "stddev": 1049772.4328715077,
+          "total": 365239318
+        }
+      },
+      "ssr-balanced-profile": {
+        "report": {
+          "status": "pass",
+          "exit_code": 0,
+          "report": "build/_artifacts/profile/20260912T141848.627Z-0061db/report.json",
+          "sha256": "sha256:fbbbf8d65e0574c43c6e3d0b6c1a0ea548351e5e9721023231edb7a460ff5ad6"
+        },
+        "authority_reasons": [
+          "profile.local_only",
+          "provenance.dirty"
+        ],
+        "gpu": "Apple M1 Pro",
+        "resolution": [
+          640,
+          360
+        ],
+        "workload": "sha256:4ce30517f1f842beb5ac8a60629b336a7efbe6bedc00f781cc579729b6cf2ea2",
+        "passes": {
+          "SSR.DepthBase": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.0237109375,
+            "p50": 0.02375,
+            "p95": 0.02425,
+            "min": 0.023,
+            "max": 0.024458333333333332,
+            "stddev": 0.0003260828481713317,
+            "total": 0.75875
+          },
+          "SSR.DepthMip.0": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.007069010416666665,
+            "p50": 0.0069166666666666664,
+            "p95": 0.007333333333333333,
+            "min": 0.0067083333333333335,
+            "max": 0.010125,
+            "stddev": 0.0005736367988325247,
+            "total": 0.2262083333333333
+          },
+          "SSR.DepthMip.1": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006378906249999997,
+            "p50": 0.006208333333333333,
+            "p95": 0.009291666666666667,
+            "min": 0.005791666666666666,
+            "max": 0.009708333333333333,
+            "stddev": 0.0008226106613937819,
+            "total": 0.20412499999999992
+          },
+          "SSR.DepthMip.2": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006377604166666667,
+            "p50": 0.006375,
+            "p95": 0.006583333333333333,
+            "min": 0.006124999999999999,
+            "max": 0.006583333333333333,
+            "stddev": 0.0001168977900388722,
+            "total": 0.20408333333333334
+          },
+          "SSR.DepthMip.3": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006359375,
+            "p50": 0.006124999999999999,
+            "p95": 0.008916666666666666,
+            "min": 0.005916666666666666,
+            "max": 0.008958333333333334,
+            "stddev": 0.0007361090638074256,
+            "total": 0.2035
+          },
+          "SSR.DepthMip.4": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006447916666666664,
+            "p50": 0.006291666666666667,
+            "p95": 0.008749999999999999,
+            "min": 0.005958333333333333,
+            "max": 0.009041666666666667,
+            "stddev": 0.0006503538032828319,
+            "total": 0.20633333333333326
+          },
+          "SSR.DepthMip.5": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006971354166666666,
+            "p50": 0.0069166666666666664,
+            "p95": 0.007416666666666666,
+            "min": 0.006583333333333333,
+            "max": 0.007458333333333333,
+            "stddev": 0.00023045035825862314,
+            "total": 0.2230833333333333
+          },
+          "SSR.DepthMip.6": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.007411458333333334,
+            "p50": 0.0069166666666666664,
+            "p95": 0.009708333333333333,
+            "min": 0.006416666666666667,
+            "max": 0.010041666666666666,
+            "stddev": 0.0010835211175389142,
+            "total": 0.2371666666666667
+          },
+          "SSR.DepthMip.7": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.006190104166666667,
+            "p50": 0.00575,
+            "p95": 0.008583333333333333,
+            "min": 0.005458333333333333,
+            "max": 0.008666666666666666,
+            "stddev": 0.0009907305575989954,
+            "total": 0.19808333333333333
+          },
+          "SSR.Trace.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.54350390625,
+            "p50": 0.5429583333333333,
+            "p95": 0.5527083333333334,
+            "min": 0.5350833333333334,
+            "max": 0.5555,
+            "stddev": 0.003994738827537884,
+            "total": 17.392125
+          },
+          "SSR.Temporal": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.4811341145833334,
+            "p50": 0.48,
+            "p95": 0.4907083333333333,
+            "min": 0.47220833333333334,
+            "max": 0.49366666666666664,
+            "stddev": 0.005881227624003582,
+            "total": 15.396291666666668
+          },
+          "SSR.Composite.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.09409114583333333,
+            "p50": 0.093875,
+            "p95": 0.09754166666666667,
+            "min": 0.09154166666666666,
+            "max": 0.09833333333333333,
+            "stddev": 0.0015813253955180822,
+            "total": 3.0109166666666667
+          },
+          "Post.Tonemap.Fullscreen": {
+            "unit": "ms",
+            "sample_count": 32,
+            "invalid_count": 0,
+            "mean": 0.3466380208333332,
+            "p50": 0.3456666666666667,
+            "p95": 0.35216666666666663,
+            "min": 0.340375,
+            "max": 0.35504166666666664,
+            "stddev": 0.003934928579171045,
+            "total": 11.092416666666663
+          }
+        },
+        "frame_wall": {
+          "unit": "ns",
+          "sample_count": 32,
+          "invalid_count": 0,
+          "mean": 10639319.84375,
+          "p50": 10495666,
+          "p95": 12542375,
+          "min": 8598624,
+          "max": 13125958,
+          "stddev": 871449.9819041217,
+          "total": 340458235
+        }
+      }
+    }
+  },
+  "fog_regression": {
+    "source_sha256": "6a1c564080846dcfee3b77d5e3eb5527f9f402bf9be32e5618f6bebf2251be2f",
+    "data": {
+      "command": [
+        "python3",
+        "tools/checks/check_froxel_bistro_regression.py",
+        "build/_artifacts/snapshot/20260912T141532.992Z-0053fa",
+        "build/_artifacts/snapshot/20260912T141547.097Z-005083",
+        "build/_artifacts/snapshot/20260912T140955.876Z-0029df",
+        "build/_artifacts/snapshot/20260912T141009.798Z-002ff6",
+        "build/_artifacts/snapshot/20260912T141022.656Z-002f91"
+      ],
+      "exit": 0,
+      "results": {
+        "status": "pass",
+        "witnesses": [
+          {
+            "row": "opaque",
+            "pixel": [
+              417,
+              132
+            ],
+            "off": 30000.0,
+            "empty": 30000.0,
+            "thin": 29984.0
+          },
+          {
+            "row": "blend",
+            "pixel": [
+              417,
+              180
+            ],
+            "off": 15000.0,
+            "empty": 15000.0,
+            "thin": 14992.0
+          },
+          {
+            "row": "transmission",
+            "pixel": [
+              417,
+              228
+            ],
+            "off": 30000.0,
+            "empty": 30000.0,
+            "thin": 29984.0
+          }
+        ],
+        "empty_max_relative": 0,
+        "identity_pixels_tested": 230398,
+        "full_frame_identity": false,
+        "changed_coplanar_geometry_inputs": [
+          {
+            "pixel": [
+              25,
+              202
+            ],
+            "off_primitive": 2119,
+            "empty_primitive": 15351,
+            "off_normal": [
+              22553,
+              99
+            ],
+            "empty_normal": [
+              -2068,
+              31926
+            ],
+            "equal_device_depth": 0.9982589483261108
+          },
+          {
+            "pixel": [
+              323,
+              209
+            ],
+            "off_primitive": 22,
+            "empty_primitive": 89,
+            "off_normal": [
+              -8750,
+              -436
+            ],
+            "empty_normal": [
+              -2309,
+              30490
+            ],
+            "equal_device_depth": 0.9970759153366089
+          }
+        ],
+        "sky_pixels": 92079,
+        "far_plane_max_sky_absolute": 3.0517578125e-05
+      },
+      "snapshot_reports": [
+        {
+          "path": "build/_artifacts/snapshot/20260912T141532.992Z-0053fa/report.json",
+          "sha256": "6c950f87b9d9a50edf0eb92487ec88fc9acb896df4672895a24f6a21997235e4"
+        },
+        {
+          "path": "build/_artifacts/snapshot/20260912T141547.097Z-005083/report.json",
+          "sha256": "32473b098bae7ab933ae1f187e64e599b50a33d7c0b130725681d6ceb3452a2d"
+        },
+        {
+          "path": "build/_artifacts/snapshot/20260912T140955.876Z-0029df/report.json",
+          "sha256": "d734285997ad9df4d5ef71561f12c175fd8b75fe2107d3aae91c2a42824eb0ad"
+        },
+        {
+          "path": "build/_artifacts/snapshot/20260912T141009.798Z-002ff6/report.json",
+          "sha256": "0aecb3e74b1deee3eb179d2cfcd531b23a1f062b6e4e373aa5577472c3bb6d76"
+        },
+        {
+          "path": "build/_artifacts/snapshot/20260912T141022.656Z-002f91/report.json",
+          "sha256": "b17509984564b9ec498e592b5a915414343034ebdc4d4ff95e21686e51c7e342"
+        }
+      ]
+    }
+  },
+  "ssr_coverage": {
+    "source_sha256": "10aa2de091ec1d7e25ffb74e344bb0f6daa2e116f79eea7fc0267f0b75bd47ba",
+    "data": {
+      "high": {
+        "run": "build/_artifacts/snapshot/20260912T141737.337Z-005d84",
+        "fingerprint": "sha256:cf923deb40703a07b51b38f244065677fa58aa850d10dbb5ee04b1d985b1d7e5",
+        "captures": {
+          "hdr_pre_bloom": {
+            "pixels": 230400,
+            "nonzero_alpha": 230400,
+            "finite": true,
+            "mean_rgb": 0.013486057990058153
+          },
+          "ssr_raw": {
+            "pixels": 230400,
+            "nonzero_alpha": 55592,
+            "finite": true,
+            "mean_rgb": 0.0024528340999623414
+          },
+          "ssr_reflection": {
+            "pixels": 230400,
+            "nonzero_alpha": 91309,
+            "finite": true,
+            "mean_rgb": 0.005169820758100185
+          }
+        }
+      },
+      "balanced": {
+        "run": "build/_artifacts/snapshot/20260912T141751.047Z-005d8f",
+        "fingerprint": "sha256:16824927171e37bf08783d74acac18ba8bf11eccaf48fe0500543c362a873212",
+        "captures": {
+          "hdr_pre_bloom": {
+            "pixels": 230400,
+            "nonzero_alpha": 230400,
+            "finite": true,
+            "mean_rgb": 0.013615637886234455
+          },
+          "ssr_raw": {
+            "pixels": 230400,
+            "nonzero_alpha": 25841,
+            "finite": true,
+            "mean_rgb": 0.0008330525172425917
+          },
+          "ssr_reflection": {
+            "pixels": 230400,
+            "nonzero_alpha": 45890,
+            "finite": true,
+            "mean_rgb": 0.001425916451477894
+          }
+        }
+      }
+    }
+  },
+  "spirv_validation": {
+    "source_sha256": "1ac92301a37a04d84c568ba3c287874b946300922df3ecdd750f0d0d177e23de",
+    "data": {
+      "status": "pass",
+      "module_count": 24,
+      "ssgi_roots": {
+        "base": 304,
+        "mip": 32,
+        "trace": 320,
+        "temporal": 368,
+        "composite": 448
+      },
+      "ssgi_receiver_offsets": {
+        "base": 300,
+        "trace": 316,
+        "temporal": 356,
+        "composite": 432
+      },
+      "receiver_format": "32-bit unsigned 2D Rg32ui sampled/storage images",
+      "froxel_root_sizes": [
+        48,
+        48,
+        48
+      ],
+      "native_execution": "unavailable on macOS; these are production binary validation and reflection checks",
+      "modules": [
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv",
+          "sha256": "d83b864730a75bdb76355b55fb751056a38c0dd94fb59e5584e893f56bb9d6ac",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssgi_depth_base.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsgiDepthBaseRoot_natural": 304
+          },
+          "image_types": [
+            "         %62 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "         %69 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "         %83 = OpTypeImage %uint 2D 2 0 0 2 Rg32ui",
+            "         %89 = OpTypeImage %float 2D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv",
+          "sha256": "b2be28613813f9c33f8ed7ac59cb39b37201fd811dda221ae486e63ced5fbf57",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssgi_depth_mip.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsgiDepthMipRoot_natural": 32
+          },
+          "image_types": [
+            "         %42 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "         %49 = OpTypeImage %float 2D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv",
+          "sha256": "9d2d8948308a376bbda883bf3b2ebe15fa762c0ae5329c726684ea3a94913111",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssgi_trace.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsgiTraceRoot_natural": 320
+          },
+          "image_types": [
+            "         %68 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "         %83 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "         %88 = OpTypeImage %float 2D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv",
+          "sha256": "63c750eb473a5213d2feaaaf316b4b749e5a186fda2e7f142ff29752cb50f2b8",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssgi_temporal.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsgiTemporalRoot_natural": 368
+          },
+          "image_types": [
+            "        %103 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "        %117 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %122 = OpTypeImage %uint 2D 2 0 0 2 Rg32ui",
+            "        %126 = OpTypeImage %float 2D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv",
+          "sha256": "ae561c27bab4d627b7ec5501ad184e2372f61ddde5799745be9332b0cfbc8f77",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssgi_composite.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsgiCompositeRoot_natural": 448,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %130 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "        %139 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %205 = OpTypeImage %float 2D 2 1 0 1 Unknown",
+            "        %216 = OpTypeImage %float 2D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv",
+          "sha256": "23b830070c5a4d95880d70d4018fe15325303a5342ddab2842e5f58edcf85abf",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.froxel_inject.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkFroxelInjectRoot_natural": 48,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %126 = OpTypeImage %float 2D 2 1 0 1 Unknown",
+            "        %169 = OpTypeImage %float 3D 2 0 0 1 Unknown",
+            "        %175 = OpTypeImage %float 3D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv",
+          "sha256": "b2f8871d6b354954636e62997fe78fd374126eb382cfc10e560b7a834612b63f",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.froxel_integrate.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkFroxelIntegrateRoot_natural": 48,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "         %96 = OpTypeImage %float 3D 2 0 0 1 Unknown",
+            "        %107 = OpTypeImage %float 3D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv",
+          "sha256": "872c45f6de4f649377c51357a637fa7f62f5c2f0e382552f0ca956658fad29fb",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.froxel_apply.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkFroxelApplyRoot_natural": 48,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "         %88 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "         %94 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %111 = OpTypeImage %float 3D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv",
+          "sha256": "535b997cf228bec9465d3b0b356ff7463ec70b7bf42bb25cec52999875b8b7e0",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssr_depth_base.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsrDepthBaseRoot_natural": 304
+          },
+          "image_types": [
+            "         %45 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "         %54 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "         %69 = OpTypeImage %float 2D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv",
+          "sha256": "1fd9b5a0010666ecf0b1239e491964b56cd08151bca7696d4423c7a147b67400",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssr_depth_mip.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsrDepthMipRoot_natural": 32
+          },
+          "image_types": [
+            "         %42 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "         %49 = OpTypeImage %float 2D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv",
+          "sha256": "2d6c05d22859ce7d107dce6b46b6d166c2b116986b1e8d121287a9a3f0e6e544",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssr_trace.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsrTraceRoot_natural": 336
+          },
+          "image_types": [
+            "         %60 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "         %68 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "         %81 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "         %87 = OpTypeImage %uint 2D 2 0 0 2 Rgba32ui"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv",
+          "sha256": "539da91646625f0030adaad68903fc40cc701b56ae5f0413b05a7bcb83e0b890",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssr_temporal.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsrTemporalRoot_natural": 512
+          },
+          "image_types": [
+            "        %100 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "        %107 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %115 = OpTypeImage %uint 2D 2 0 0 2 Rgba32ui",
+            "        %122 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %157 = OpTypeImage %uint 2D 2 0 0 1 Rgba32ui"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv",
+          "sha256": "d8e814020e0f94b28cc146958bf0837a40b27ca74005b61209e98f0b942d5b4d",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.ssr_composite.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkSsrCompositeRoot_natural": 416,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %106 = OpTypeImage %uint 2D 2 0 0 1 Rg32ui",
+            "        %115 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %178 = OpTypeImage %float Cube 2 0 0 1 Unknown",
+            "        %194 = OpTypeImage %float 2D 2 1 0 1 Unknown",
+            "        %201 = OpTypeImage %float 2D 2 0 0 2 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv",
+          "sha256": "b13b93e092f4724f8d8f06ce4e0859f14ee8720096c8d43c2a4bf7a9b20a9c2a",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.deferred_lighting.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkLightingRoot_natural": 192,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %130 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %140 = OpTypeImage %uint 2D 2 0 0 2 Rg32ui",
+            "        %162 = OpTypeImage %float Cube 2 0 0 1 Unknown",
+            "        %184 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %412 = OpTypeImage %float 2D 2 1 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv",
+          "sha256": "706380aa18269fdd15349a591058760e10b6c2c4ddcef264eaf660d676fe39e6",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.gbuffer_resolve.none.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkResolveRoot_natural": 416
+          },
+          "image_types": [
+            "        %146 = OpTypeImage %uint 2D 2 0 0 2 Rg32ui",
+            "        %154 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %207 = OpTypeImage %float 2D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv",
+          "sha256": "1ea5f6a561d0d553613578731a1d223f1c8af636505af7c54e834391d7e37dc9",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.gbuffer_resolve.emissive.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkResolveRoot_natural": 416
+          },
+          "image_types": [
+            "        %146 = OpTypeImage %uint 2D 2 0 0 2 Rg32ui",
+            "        %154 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %207 = OpTypeImage %float 2D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv",
+          "sha256": "45c291ae6cd9566a7ca8ab246ce070066f85a4f1a3a7fa2b50e75f381991179a",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.gbuffer_resolve.debug.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkResolveRoot_natural": 416
+          },
+          "image_types": [
+            "        %147 = OpTypeImage %uint 2D 2 0 0 2 Rg32ui",
+            "        %155 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %211 = OpTypeImage %float 2D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv",
+          "sha256": "70463b2ba4ca53509d8875c1eb65e9a1e3601dc89cdc54629488abf3415b477f",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.gbuffer_resolve.emissive_debug.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkResolveRoot_natural": 416
+          },
+          "image_types": [
+            "        %147 = OpTypeImage %uint 2D 2 0 0 2 Rg32ui",
+            "        %155 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %211 = OpTypeImage %float 2D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv",
+          "sha256": "a3ceefc0a8fa2197b921b0a956028b597e53314540d5054c0e286a74929e2704",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.transmission_shade_production.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkTransmissionRoot_natural": 464,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %199 = OpTypeImage %uint 2D 2 1 0 2 Rg32ui",
+            "        %207 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %212 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %270 = OpTypeImage %float 2D 2 1 0 1 Unknown",
+            "        %593 = OpTypeImage %float Cube 2 0 0 1 Unknown",
+            "        %616 = OpTypeImage %float 3D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv",
+          "sha256": "c69a1ee6e7117973bf5421dab4201b0ed7e484feec8144f513259b840323f017",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.transmission_shade_production_temporal.comp.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVkTransmissionRoot_natural": 464,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %201 = OpTypeImage %uint 2D 2 1 0 2 Rg32ui",
+            "        %209 = OpTypeImage %float 2D 2 0 0 2 Unknown",
+            "        %214 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %275 = OpTypeImage %float 2D 2 1 0 1 Unknown",
+            "        %598 = OpTypeImage %float Cube 2 0 0 1 Unknown",
+            "        %621 = OpTypeImage %float 3D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv",
+          "sha256": "772fed528de27cf71c15b2a1f248a106a39ea995ff6814825ea45e6ec67fa149",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.fullscreen.vert.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {},
+          "image_types": []
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv",
+          "sha256": "11368b02a68e299f9de9b3fa40a3929b729c86a24ddd0a8f481566847665dac9",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.fullscreen.frag.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVulkanPacketUtilityRoot_natural": 576
+          },
+          "image_types": [
+            "        %129 = OpTypeImage %float 2D 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.world.frag.spv",
+          "sha256": "f66c8ad8741dc1fdfb050a1c58b0cf2faf1f005782997aa5726fc3845b600602",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.frag.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.frag.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.world.frag.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVulkanPacketDrawRoot_natural": 48,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %163 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %421 = OpTypeImage %float 2D 2 1 0 1 Unknown",
+            "        %549 = OpTypeImage %float Cube 2 0 0 1 Unknown"
+          ]
+        },
+        {
+          "file": "build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv",
+          "sha256": "f3fdce16ff183b56246d48a16760f2f6b225fe33644de3d80d13aa31b3a61351",
+          "commands": [
+            {
+              "command": [
+                "spirv-val",
+                "--target-env",
+                "vulkan1.3",
+                "--scalar-block-layout",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "command": [
+                "spirv-dis",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv",
+                "-o",
+                "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/.scratch/renderer-features-perf-spirv/packet.world.temporal.frag.spv.spvasm"
+              ],
+              "exit": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          ],
+          "root_strides": {
+            "VkrVulkanPacketDrawRoot_natural": 48,
+            "VkrVulkanPacketFrameRoot_natural": 624
+          },
+          "image_types": [
+            "        %182 = OpTypeImage %float 2D 2 0 0 1 Unknown",
+            "        %436 = OpTypeImage %float 2D 2 1 0 1 Unknown",
+            "        %565 = OpTypeImage %float Cube 2 0 0 1 Unknown",
+            "        %590 = OpTypeImage %float 3D 2 0 0 1 Unknown"
+          ]
+        }
+      ]
+    }
+  },
+  "vulkan_host_syntax": {
+    "source_sha256": "daed7d30b9bf20b4cb49a7da52fcb96f5c376f458e72face3c7ee3e2f1b9527e",
+    "data": {
+      "checks": [
+        {
+          "file": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_deferred.c",
+          "directory": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release",
+          "command": [
+            "/usr/bin/clang",
+            "-DASSERT_LOG=0",
+            "-DLOG_LEVEL=1",
+            "-DPLATFORM_APPLE=1",
+            "-DPROJECT_SOURCE_DIR=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/\"",
+            "-DSPIRV_REFLECT_USE_SYSTEM_SPIRV_H",
+            "-DVKR_ALLOCATOR_DISABLE_STATS=1",
+            "-DVKR_ALLOCATOR_ENABLE_LOGGING=0",
+            "-DVKR_HAS_FSR3_UPSCALER=0",
+            "-DVKR_METAL_PACKET_ARCHIVE_PATH=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/vkr_application.mtlarchive\"",
+            "-DVKR_METAL_PACKET_FRAGMENT_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.metal\"",
+            "-DVKR_METAL_PACKET_SLANG_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.slang.metal\"",
+            "-DVKR_METRICS_ENABLED=1",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_multiple_scattering.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_source.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_sun.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_transmittance.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_combine.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_box4.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_tent13.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_upsample.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COC_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_coc.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_horizontal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_vertical.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_histogram.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fog_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.prepare.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.stabilize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_classify.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_encode.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_prefix.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_denoise.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_evaluate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.hzb_build.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_equirect.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_SH_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_sh.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission_overflow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_neighbor_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_reconstruct.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_tile_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.sdsm_reduce.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.subsurface_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_transform.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_finalize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_coverage.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_opaque.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_shadow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.vert.spv\"",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/vendor",
+            "-I/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/Include",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/lib/src",
+            "-F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks",
+            "-isystem",
+            "/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/include",
+            "-march=native",
+            "-O3",
+            "-DNDEBUG",
+            "-std=gnu11",
+            "-flto=thin",
+            "-arch",
+            "arm64",
+            "-isysroot",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+            "-Werror=implicit-function-declaration",
+            "-march=native",
+            "-O3",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-Winvalid-pch",
+            "-Xarch_arm64",
+            "-include/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/CMakeFiles/renderer_lib.dir/cmake_pch_arm64.h",
+            "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_deferred.c",
+            "-fsyntax-only"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": "",
+          "source_sha256": "61bca5dde681c08e45e47fd0fb2ac0afe133b981af94df4c32250aaccc900a37"
+        },
+        {
+          "file": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_pipelines.c",
+          "directory": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release",
+          "command": [
+            "/usr/bin/clang",
+            "-DASSERT_LOG=0",
+            "-DLOG_LEVEL=1",
+            "-DPLATFORM_APPLE=1",
+            "-DPROJECT_SOURCE_DIR=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/\"",
+            "-DSPIRV_REFLECT_USE_SYSTEM_SPIRV_H",
+            "-DVKR_ALLOCATOR_DISABLE_STATS=1",
+            "-DVKR_ALLOCATOR_ENABLE_LOGGING=0",
+            "-DVKR_HAS_FSR3_UPSCALER=0",
+            "-DVKR_METAL_PACKET_ARCHIVE_PATH=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/vkr_application.mtlarchive\"",
+            "-DVKR_METAL_PACKET_FRAGMENT_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.metal\"",
+            "-DVKR_METAL_PACKET_SLANG_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.slang.metal\"",
+            "-DVKR_METRICS_ENABLED=1",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_multiple_scattering.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_source.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_sun.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_transmittance.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_combine.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_box4.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_tent13.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_upsample.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COC_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_coc.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_horizontal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_vertical.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_histogram.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fog_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.prepare.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.stabilize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_classify.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_encode.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_prefix.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_denoise.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_evaluate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.hzb_build.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_equirect.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_SH_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_sh.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission_overflow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_neighbor_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_reconstruct.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_tile_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.sdsm_reduce.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.subsurface_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_transform.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_finalize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_coverage.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_opaque.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_shadow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.vert.spv\"",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/vendor",
+            "-I/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/Include",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/lib/src",
+            "-F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks",
+            "-isystem",
+            "/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/include",
+            "-march=native",
+            "-O3",
+            "-DNDEBUG",
+            "-std=gnu11",
+            "-flto=thin",
+            "-arch",
+            "arm64",
+            "-isysroot",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+            "-Werror=implicit-function-declaration",
+            "-march=native",
+            "-O3",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-Winvalid-pch",
+            "-Xarch_arm64",
+            "-include/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/CMakeFiles/renderer_lib.dir/cmake_pch_arm64.h",
+            "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_pipelines.c",
+            "-fsyntax-only"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": "",
+          "source_sha256": "e9cbaf65f87c3cc6e40174c37a88098d5bafa2d2279e05105c267ab4e5eb71d6"
+        },
+        {
+          "file": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_graph.c",
+          "directory": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release",
+          "command": [
+            "/usr/bin/clang",
+            "-DASSERT_LOG=0",
+            "-DLOG_LEVEL=1",
+            "-DPLATFORM_APPLE=1",
+            "-DPROJECT_SOURCE_DIR=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/\"",
+            "-DSPIRV_REFLECT_USE_SYSTEM_SPIRV_H",
+            "-DVKR_ALLOCATOR_DISABLE_STATS=1",
+            "-DVKR_ALLOCATOR_ENABLE_LOGGING=0",
+            "-DVKR_HAS_FSR3_UPSCALER=0",
+            "-DVKR_METAL_PACKET_ARCHIVE_PATH=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/vkr_application.mtlarchive\"",
+            "-DVKR_METAL_PACKET_FRAGMENT_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.metal\"",
+            "-DVKR_METAL_PACKET_SLANG_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.slang.metal\"",
+            "-DVKR_METRICS_ENABLED=1",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_multiple_scattering.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_source.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_sun.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_transmittance.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_combine.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_box4.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_tent13.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_upsample.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COC_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_coc.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_horizontal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_vertical.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_histogram.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fog_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.prepare.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.stabilize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_classify.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_encode.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_prefix.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_denoise.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_evaluate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.hzb_build.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_equirect.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_SH_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_sh.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission_overflow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_neighbor_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_reconstruct.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_tile_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.sdsm_reduce.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.subsurface_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_transform.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_finalize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_coverage.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_opaque.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_shadow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.vert.spv\"",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/vendor",
+            "-I/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/Include",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/lib/src",
+            "-F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks",
+            "-isystem",
+            "/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/include",
+            "-march=native",
+            "-O3",
+            "-DNDEBUG",
+            "-std=gnu11",
+            "-flto=thin",
+            "-arch",
+            "arm64",
+            "-isysroot",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+            "-Werror=implicit-function-declaration",
+            "-march=native",
+            "-O3",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-Winvalid-pch",
+            "-Xarch_arm64",
+            "-include/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/CMakeFiles/renderer_lib.dir/cmake_pch_arm64.h",
+            "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_graph.c",
+            "-fsyntax-only"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": "",
+          "source_sha256": "c0b28bdabc6a57fb87360888cf617a61e5c7ea5fd101667be123964c627381db"
+        },
+        {
+          "file": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_renderer.c",
+          "directory": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release",
+          "command": [
+            "/usr/bin/clang",
+            "-DASSERT_LOG=0",
+            "-DLOG_LEVEL=1",
+            "-DPLATFORM_APPLE=1",
+            "-DPROJECT_SOURCE_DIR=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/\"",
+            "-DSPIRV_REFLECT_USE_SYSTEM_SPIRV_H",
+            "-DVKR_ALLOCATOR_DISABLE_STATS=1",
+            "-DVKR_ALLOCATOR_ENABLE_LOGGING=0",
+            "-DVKR_HAS_FSR3_UPSCALER=0",
+            "-DVKR_METAL_PACKET_ARCHIVE_PATH=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/vkr_application.mtlarchive\"",
+            "-DVKR_METAL_PACKET_FRAGMENT_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.metal\"",
+            "-DVKR_METAL_PACKET_SLANG_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.slang.metal\"",
+            "-DVKR_METRICS_ENABLED=1",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_multiple_scattering.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_source.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_sun.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_transmittance.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_combine.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_box4.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_tent13.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_upsample.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COC_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_coc.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_horizontal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_vertical.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_histogram.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fog_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.prepare.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.stabilize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_classify.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_encode.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_prefix.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_denoise.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_evaluate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.hzb_build.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_equirect.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_SH_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_sh.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission_overflow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_neighbor_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_reconstruct.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_tile_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.sdsm_reduce.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.subsurface_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_transform.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_finalize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_coverage.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_opaque.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_shadow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.vert.spv\"",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/vendor",
+            "-I/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/Include",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/lib/src",
+            "-F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks",
+            "-isystem",
+            "/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/include",
+            "-march=native",
+            "-O3",
+            "-DNDEBUG",
+            "-std=gnu11",
+            "-flto=thin",
+            "-arch",
+            "arm64",
+            "-isysroot",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+            "-Werror=implicit-function-declaration",
+            "-march=native",
+            "-O3",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-Winvalid-pch",
+            "-Xarch_arm64",
+            "-include/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/CMakeFiles/renderer_lib.dir/cmake_pch_arm64.h",
+            "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_renderer.c",
+            "-fsyntax-only"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": "",
+          "source_sha256": "f16644273fae258103ef8d0748e941ea497ed8665219d2bfe3c8210e4ddc5b39"
+        },
+        {
+          "file": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_resources.c",
+          "directory": "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release",
+          "command": [
+            "/usr/bin/clang",
+            "-DASSERT_LOG=0",
+            "-DLOG_LEVEL=1",
+            "-DPLATFORM_APPLE=1",
+            "-DPROJECT_SOURCE_DIR=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/\"",
+            "-DSPIRV_REFLECT_USE_SYSTEM_SPIRV_H",
+            "-DVKR_ALLOCATOR_DISABLE_STATS=1",
+            "-DVKR_ALLOCATOR_ENABLE_LOGGING=0",
+            "-DVKR_HAS_FSR3_UPSCALER=0",
+            "-DVKR_METAL_PACKET_ARCHIVE_PATH=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/vkr_application.mtlarchive\"",
+            "-DVKR_METAL_PACKET_FRAGMENT_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.metal\"",
+            "-DVKR_METAL_PACKET_SLANG_MSL=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/metal/library.slang.metal\"",
+            "-DVKR_METRICS_ENABLED=1",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_multiple_scattering.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_source.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_sun.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.atmosphere_transmittance.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_combine.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_box4.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_downsample_tent13.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.bloom_upsample.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.deferred_lighting.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COC_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_coc.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_horizontal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_dilate_vertical.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.dof_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.editor_overlay.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_histogram.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.exposure_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fog_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_apply.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_inject.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.froxel_integrate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.prepare.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fsr31.stabilize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.fullscreen.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.emissive_debug.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gbuffer_resolve.none.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_classify.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_encode.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gpu_draw_prefix.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_denoise.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_depth_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.gtao_evaluate.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.hzb_build.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_equirect.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_prefilter.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_IBL_SH_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ibl_sh.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission_overflow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.local_shadow_transmission.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_neighbor_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_reconstruct.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.motion_blur_tile_max.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.picking_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.sdsm_reduce.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssgi_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_composite.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_base.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_depth_mip.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ssr_trace.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.subsurface_gather.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_resolve.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.temporal_transform.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text_picking.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_TEXT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.text.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_clear.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_compact_finalize.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_coverage.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_partitioned_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.transmission_shade_production_temporal.comp.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_RECT_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui_rect.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_UI_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.ui.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_opaque.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility_shadow.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_VISIBILITY_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.visibility.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.frag.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.temporal.vert.spv\"",
+            "-DVKR_VULKAN_PACKET_WORLD_VERT_SPV=\"/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/generated/vulkan/packet.world.vert.spv\"",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/vendor",
+            "-I/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/Include",
+            "-I/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/lib/src",
+            "-F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks",
+            "-isystem",
+            "/Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/include",
+            "-march=native",
+            "-O3",
+            "-DNDEBUG",
+            "-std=gnu11",
+            "-flto=thin",
+            "-arch",
+            "arm64",
+            "-isysroot",
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+            "-Werror=implicit-function-declaration",
+            "-march=native",
+            "-O3",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-Winvalid-pch",
+            "-Xarch_arm64",
+            "-include/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/build_release/renderer/CMakeFiles/renderer_lib.dir/cmake_pch_arm64.h",
+            "/Users/Yaroslav_Panok/Dev/c_projects/vulkan_renderer/renderer/src/vulkan/vkr_vulkan_resources.c",
+            "-fsyntax-only"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": "",
+          "source_sha256": "758c66ad4ad4df980921124265c772a98d01c191f3f3643656ad8a0f436109ab"
+        }
+      ],
+      "limits": "Current AppleClang/macOS compile database; proves visible Vulkan host C syntax and static ABI assertions only, not native Windows toolchain or Vulkan API execution.",
+      "shared_header": {
+        "file": "renderer/src/vulkan/vkr_vulkan_internal.h",
+        "sha256": "c03b1475aef92d06d328b8cc4f82472e44d11fbf3419dfe6d6703d895f7c5ffd"
+      }
+    }
+  },
+  "additional_reports": [
+    {
+      "path": "build/_artifacts/profile/20260912T140103.836Z-0006aa/report.json",
+      "sha256": "7e2bd0434b35946279464444aead3bc2090ffea901aec89bfddd765cc7b1521b",
+      "status": "pass",
+      "exit_code": 0,
+      "authority_reasons": [
+        "profile.local_only",
+        "provenance.dirty"
+      ],
+      "case": {
+        "id": "local.ssgi.bistro.on.profile",
+        "suite": "local",
+        "manifest_sha256": "sha256:04278702e73e8b41b5efcb1971cd21cfcc34fa479f6e971087b8152fe1e94d5f"
+      },
+      "profile": {
+        "id": "local.offscreen_gpu.single_observation",
+        "manifest_sha256": "sha256:d568ee93ae404c89443546518a6034ea9f80257c9036ccb2650601bf8211709b",
+        "compatible": true,
+        "incompatibility_reasons": []
+      },
+      "provenance": {
+        "started_at": "2026-09-12T14:01:03.658Z",
+        "ended_at": "2026-09-12T14:01:29.275Z",
+        "git_sha": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+        "dirty": true,
+        "binary_sha256": "sha256:d6a8fe2e93d32dc0a8495bf82b6eec220ad6bec64d9ee354e371b5c3c7e41f67",
+        "build_type": "Release",
+        "compiler": "AppleClang 21.0.0.21000101",
+        "os": "Darwin 25.6.0",
+        "cpu": "Apple M1 Pro",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4",
+        "world_renderer": "deferred",
+        "power_mode": "unknown",
+        "thermal_state_start": "unknown",
+        "thermal_state_end": "unknown",
+        "process_priority": 0
+      }
+    },
+    {
+      "path": "build/_artifacts/profile/20260912T141352.254Z-00457a/report.json",
+      "sha256": "8792d4765f3d901fc92b6e1d7f47f926c2a2f6e48be106a86400b1cf41d3e889",
+      "status": "pass",
+      "exit_code": 0,
+      "authority_reasons": [
+        "profile.local_only",
+        "provenance.dirty"
+      ],
+      "case": {
+        "id": "local.renderer_features.bistro.validation",
+        "suite": "local",
+        "manifest_sha256": "sha256:9721133a60d939dea9731085d58ad75275e8277823d6c12c68df3e933e1418dd"
+      },
+      "profile": {
+        "id": "local.metal.dual_validation_serial",
+        "manifest_sha256": "sha256:1a7b55b614f66088f2588b89f175331ef99a1e88cadbdc8fb4170a67f9af77cf",
+        "compatible": true,
+        "incompatibility_reasons": []
+      },
+      "provenance": {
+        "started_at": "2026-09-12T14:13:52.070Z",
+        "ended_at": "2026-09-12T14:14:13.663Z",
+        "git_sha": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+        "dirty": true,
+        "binary_sha256": "sha256:e4b91a9cd81bfa77a4aa764a729725432988a78715e6deb6b28de81adae9acbc",
+        "build_type": "Release",
+        "compiler": "AppleClang 21.0.0.21000101",
+        "os": "Darwin 25.6.0",
+        "cpu": "Apple M1 Pro",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4",
+        "world_renderer": "deferred",
+        "power_mode": "unknown",
+        "thermal_state_start": "unknown",
+        "thermal_state_end": "unknown",
+        "process_priority": 0
+      }
+    },
+    {
+      "path": "build/_artifacts/profile/20260912T141228.529Z-0038a1/report.json",
+      "sha256": "b137e1fb0a904f0773950fb32dabfee10760f43743806f88dc2287acc3f0e421",
+      "status": "unavailable",
+      "exit_code": 3,
+      "authority_reasons": [
+        "profile.local_only",
+        "provenance.dirty",
+        "execution.repetitions_incomplete",
+        "metrics.required_incomplete",
+        "assertions.evidence_incomplete",
+        "environment.present_mode"
+      ],
+      "case": {
+        "id": "local.renderer_features.bistro.validation",
+        "suite": "local",
+        "manifest_sha256": "sha256:9721133a60d939dea9731085d58ad75275e8277823d6c12c68df3e933e1418dd"
+      },
+      "profile": {
+        "id": "local.metal.dual_validation_serial",
+        "manifest_sha256": "sha256:1a7b55b614f66088f2588b89f175331ef99a1e88cadbdc8fb4170a67f9af77cf",
+        "compatible": false,
+        "incompatibility_reasons": [
+          "environment.present_mode"
+        ]
+      },
+      "provenance": {
+        "started_at": "2026-09-12T14:12:28.358Z",
+        "ended_at": "2026-09-12T14:13:17.590Z",
+        "git_sha": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+        "dirty": true,
+        "binary_sha256": "sha256:e4b91a9cd81bfa77a4aa764a729725432988a78715e6deb6b28de81adae9acbc",
+        "build_type": "Release",
+        "compiler": "AppleClang 21.0.0.21000101",
+        "os": "Darwin 25.6.0",
+        "cpu": "Apple M1 Pro",
+        "gpu": "unknown",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "unknown",
+        "world_renderer": "unknown",
+        "power_mode": "unknown",
+        "thermal_state_start": "unknown",
+        "thermal_state_end": "unknown",
+        "process_priority": 0
+      }
+    },
+    {
+      "path": "build/_artifacts/snapshot/20260912T141710.104Z-005adc/report.json",
+      "sha256": "00593b5276953ab5d0793df251e040b49acc4ba08d154b540ada269a5e7588cf",
+      "status": "pass",
+      "exit_code": 0,
+      "authority_reasons": [
+        "profile.local_only",
+        "provenance.dirty",
+        "baseline.missing"
+      ],
+      "case": {
+        "id": "local.post.transform.cache.bistro",
+        "suite": "local",
+        "manifest_sha256": "sha256:f862c02585eb8de5e3e76c97a68df2e26d0c9278e5bf59e1943c4d815349bac5"
+      },
+      "profile": {
+        "id": "local.brdf.display_validation",
+        "manifest_sha256": "sha256:810567b2e785c625e1b4677144b13e2445e387e2c0d70bbdbd3cffa5a4f3d057",
+        "compatible": true,
+        "incompatibility_reasons": []
+      },
+      "provenance": {
+        "started_at": "2026-09-12T14:17:10.105Z",
+        "ended_at": "2026-09-12T14:17:24.103Z",
+        "git_sha": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+        "dirty": true,
+        "binary_sha256": "sha256:e4b91a9cd81bfa77a4aa764a729725432988a78715e6deb6b28de81adae9acbc",
+        "build_type": "Release",
+        "compiler": "AppleClang 21.0.0.21000101",
+        "os": "Darwin 25.6.0",
+        "cpu": "Apple M1 Pro",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4",
+        "world_renderer": "deferred",
+        "power_mode": "unknown",
+        "thermal_state_start": "unknown",
+        "thermal_state_end": "unknown",
+        "process_priority": 0
+      }
+    },
+    {
+      "path": "build/_artifacts/snapshot/20260912T141724.202Z-005bb3/report.json",
+      "sha256": "a4f14032c6f0ad4917a00a0e0bfe12d01c1fae872d3caa2a855a736b41fed632",
+      "status": "pass",
+      "exit_code": 0,
+      "authority_reasons": [
+        "profile.local_only",
+        "provenance.dirty",
+        "baseline.missing"
+      ],
+      "case": {
+        "id": "local.post.transform.cache.bistro",
+        "suite": "local",
+        "manifest_sha256": "sha256:f862c02585eb8de5e3e76c97a68df2e26d0c9278e5bf59e1943c4d815349bac5"
+      },
+      "profile": {
+        "id": "local.brdf.display_validation",
+        "manifest_sha256": "sha256:810567b2e785c625e1b4677144b13e2445e387e2c0d70bbdbd3cffa5a4f3d057",
+        "compatible": true,
+        "incompatibility_reasons": []
+      },
+      "provenance": {
+        "started_at": "2026-09-12T14:17:24.203Z",
+        "ended_at": "2026-09-12T14:17:37.241Z",
+        "git_sha": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+        "dirty": true,
+        "binary_sha256": "sha256:e4b91a9cd81bfa77a4aa764a729725432988a78715e6deb6b28de81adae9acbc",
+        "build_type": "Release",
+        "compiler": "AppleClang 21.0.0.21000101",
+        "os": "Darwin 25.6.0",
+        "cpu": "Apple M1 Pro",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4",
+        "world_renderer": "deferred",
+        "power_mode": "unknown",
+        "thermal_state_start": "unknown",
+        "thermal_state_end": "unknown",
+        "process_priority": 0
+      }
+    },
+    {
+      "path": "build/_artifacts/snapshot/20260912T141737.337Z-005d84/report.json",
+      "sha256": "639da6a7f82bed43b7c21e49a74e969ee05549eacc555a73c3310e3ab7562e20",
+      "status": "pass",
+      "exit_code": 0,
+      "authority_reasons": [
+        "profile.local_only",
+        "provenance.dirty",
+        "baseline.missing"
+      ],
+      "case": {
+        "id": "local.ssr.tier.bistro",
+        "suite": "local",
+        "manifest_sha256": "sha256:744c6f99e554f23581b36677aed88c1534943c11f513a06242dea8dc960a9d92"
+      },
+      "profile": {
+        "id": "local.brdf.display_validation",
+        "manifest_sha256": "sha256:810567b2e785c625e1b4677144b13e2445e387e2c0d70bbdbd3cffa5a4f3d057",
+        "compatible": true,
+        "incompatibility_reasons": []
+      },
+      "provenance": {
+        "started_at": "2026-09-12T14:17:37.337Z",
+        "ended_at": "2026-09-12T14:17:51.004Z",
+        "git_sha": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+        "dirty": true,
+        "binary_sha256": "sha256:e4b91a9cd81bfa77a4aa764a729725432988a78715e6deb6b28de81adae9acbc",
+        "build_type": "Release",
+        "compiler": "AppleClang 21.0.0.21000101",
+        "os": "Darwin 25.6.0",
+        "cpu": "Apple M1 Pro",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4",
+        "world_renderer": "deferred",
+        "power_mode": "unknown",
+        "thermal_state_start": "unknown",
+        "thermal_state_end": "unknown",
+        "process_priority": 0
+      }
+    },
+    {
+      "path": "build/_artifacts/snapshot/20260912T141751.047Z-005d8f/report.json",
+      "sha256": "06f589e7942c7680c310d8863316abce8ceb9f7ee34a350aa7fa44c0276ba598",
+      "status": "pass",
+      "exit_code": 0,
+      "authority_reasons": [
+        "profile.local_only",
+        "provenance.dirty",
+        "baseline.missing"
+      ],
+      "case": {
+        "id": "local.ssr.tier.bistro",
+        "suite": "local",
+        "manifest_sha256": "sha256:744c6f99e554f23581b36677aed88c1534943c11f513a06242dea8dc960a9d92"
+      },
+      "profile": {
+        "id": "local.brdf.display_validation",
+        "manifest_sha256": "sha256:810567b2e785c625e1b4677144b13e2445e387e2c0d70bbdbd3cffa5a4f3d057",
+        "compatible": true,
+        "incompatibility_reasons": []
+      },
+      "provenance": {
+        "started_at": "2026-09-12T14:17:51.047Z",
+        "ended_at": "2026-09-12T14:18:04.809Z",
+        "git_sha": "b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e",
+        "dirty": true,
+        "binary_sha256": "sha256:e4b91a9cd81bfa77a4aa764a729725432988a78715e6deb6b28de81adae9acbc",
+        "build_type": "Release",
+        "compiler": "AppleClang 21.0.0.21000101",
+        "os": "Darwin 25.6.0",
+        "cpu": "Apple M1 Pro",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4",
+        "world_renderer": "deferred",
+        "power_mode": "unknown",
+        "thermal_state_start": "unknown",
+        "thermal_state_end": "unknown",
+        "process_priority": 0
+      }
+    }
+  ],
+  "post_evaluation": {
+    "source_sha256": "89853de04d67548ce3115f0b4f8a4e1113af1b9781b4f1ec83f533a7ca6aa3e7",
+    "data": {
+      "scope": "Native Metal post-transform-cache snapshot evaluation, 640x360, SDR, spatial presentation without TAA, AgX, contrast 1.1, saturation 1.2, FXAA enabled, image sharpness 0.4.",
+      "runs": {
+        "analytic": {
+          "report_path": "build/_artifacts/snapshot/20260912T141710.104Z-005adc/report.json",
+          "report_sha256": "00593b5276953ab5d0793df251e040b49acc4ba08d154b540ada269a5e7588cf",
+          "status": "pass",
+          "workload_fingerprint": "sha256:b3eae03fbebcb50384e1e006b94064760018388f4b1c38389df1cb204d0ba78c",
+          "captures": {
+            "final_color": {
+              "path": "build/_artifacts/snapshot/20260912T141710.104Z-005adc/captures/0/captures/frame_000000_final_color.png",
+              "sha256": "sha256:a876a3231b2f2801dfafb7bbb5cf5b7b559d38f0932e274de6eb702b19c88b2a"
+            },
+            "hdr_pre_bloom": {
+              "path": "build/_artifacts/snapshot/20260912T141710.104Z-005adc/captures/0/captures/frame_000000_hdr_pre_bloom.raw",
+              "sha256": "sha256:8850710071c125020f0563a80762cb1a346d93d03f40f7e3f80c5fd5f2549a1b"
+            }
+          },
+          "retained_png": "assets/verification/renderer-features/renderer-features-post-analytic.png",
+          "retained_png_sha256": "a876a3231b2f2801dfafb7bbb5cf5b7b559d38f0932e274de6eb702b19c88b2a"
+        },
+        "cached": {
+          "report_path": "build/_artifacts/snapshot/20260912T141724.202Z-005bb3/report.json",
+          "report_sha256": "a4f14032c6f0ad4917a00a0e0bfe12d01c1fae872d3caa2a855a736b41fed632",
+          "status": "pass",
+          "workload_fingerprint": "sha256:7eb46c849c847190aaa150d7167a312b22f8acc1651b12887cd5a15623c8ac7b",
+          "captures": {
+            "final_color": {
+              "path": "build/_artifacts/snapshot/20260912T141724.202Z-005bb3/captures/0/captures/frame_000000_final_color.png",
+              "sha256": "sha256:b7d611209932d591a88fb1ba604694bb83ebd27c7832d5c2d38fb34d91ed1201"
+            },
+            "hdr_pre_bloom": {
+              "path": "build/_artifacts/snapshot/20260912T141724.202Z-005bb3/captures/0/captures/frame_000000_hdr_pre_bloom.raw",
+              "sha256": "sha256:5cd8ddfd4207130990945e8689fa169946da2e66898f6323475a4e894c5baad7"
+            }
+          },
+          "retained_png": "assets/verification/renderer-features/renderer-features-post-cached.png",
+          "retained_png_sha256": "b7d611209932d591a88fb1ba604694bb83ebd27c7832d5c2d38fb34d91ed1201"
+        }
+      },
+      "commands": {
+        "analytic_snapshot": "env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS VKR_POST_TRANSFORM_CACHE=0 ./build_release/tools/vkr_harness snapshot --case tools/cases/local/post_transform_cache_bistro.case.json --profile tools/profiles/local-brdf-display-validation.json",
+        "cached_snapshot": "env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS VKR_POST_TRANSFORM_CACHE=1 ./build_release/tools/vkr_harness snapshot --case tools/cases/local/post_transform_cache_bistro.case.json --profile tools/profiles/local-brdf-display-validation.json",
+        "snapshot_command_provenance": "Reproduction commands reconstructed from the case/profile and effective configuration; parent executed the snapshots. See report case/profile provenance for exact invocation configuration.",
+        "analysis": "Python3 standard-library json/struct/math analysis; decoded canonical PNG with read_png_rgba8 from tools/checks/check_metalfx_accumulation.py; compared RGBA16_FLOAT_LE tuples and RGB byte differences. Visual inspection used view_image on both final-color PNGs."
+      },
+      "nondegeneracy": {
+        "analytic_display_linear_passes": 0,
+        "cached_display_linear_pass": "Post.DisplayLinear.Fullscreen",
+        "cached_pass_cpu_sample_count": 1,
+        "cached_pass_culled_count": 0,
+        "cached_pass_omitted_count": 0,
+        "both_hdr_finite": true,
+        "both_hdr_maximum": 30000.0,
+        "both_hdr_pixels_above_5000": 11021,
+        "different_workload_fingerprints": true
+      },
+      "upstream_hdr": {
+        "byte_identical": false,
+        "total_pixels": 230400,
+        "identical_pixels": 230398,
+        "different_pixels": 2,
+        "maximum_absolute_component_difference": 0.11283493041992188,
+        "differences": [
+          {
+            "pixel_xy": [
+              283,
+              183
+            ],
+            "analytic_rgba": [
+              0.091796875,
+              0.10675048828125,
+              0.11846923828125,
+              1.0
+            ],
+            "cached_rgba": [
+              0.01148223876953125,
+              0.00626373291015625,
+              0.005634307861328125,
+              1.0
+            ]
+          },
+          {
+            "pixel_xy": [
+              323,
+              209
+            ],
+            "analytic_rgba": [
+              0.06744384765625,
+              0.06512451171875,
+              0.06658935546875,
+              1.0
+            ],
+            "cached_rgba": [
+              0.0268096923828125,
+              0.032958984375,
+              0.039825439453125,
+              1.0
+            ]
+          }
+        ],
+        "interpretation": "Two candidate coplanar raster-winner differences match the type diagnosed independently by the fog work. This evaluation did not capture visibility/normal channels to independently prove that attribution; exact full-image upstream identity is not claimed."
+      },
+      "final_rgb": {
+        "units": "8-bit sRGB code values (divide by 255 for normalized values)",
+        "changed_pixels": 32064,
+        "changed_fraction": 0.13916666666666666,
+        "mean_absolute_error": 1.116199363425926,
+        "root_mean_square_error": 11.662826314854515,
+        "maximum_absolute_error": 201,
+        "per_pixel_max_delta_nearest_rank_quantiles": {
+          "p50": 0,
+          "p90": 1,
+          "p95": 1,
+          "p99": 14,
+          "p99_9": 186
+        },
+        "pixels_max_delta_over_2": 5760,
+        "pixels_max_delta_over_10": 2515,
+        "maximum_pixel": {
+          "xy": [
+            285,
+            180
+          ],
+          "analytic_rgb": [
+            201,
+            202,
+            203
+          ],
+          "cached_rgb": [
+            10,
+            3,
+            2
+          ]
+        }
+      },
+      "regions": {
+        "bright_interiors": [
+          {
+            "center_xy": [
+              417,
+              132
+            ],
+            "extent": [
+              5,
+              5
+            ],
+            "analytic_mean_rgb": [
+              251,
+              251,
+              251
+            ],
+            "cached_mean_rgb": [
+              251,
+              251,
+              251
+            ],
+            "max_delta": 0
+          },
+          {
+            "center_xy": [
+              417,
+              180
+            ],
+            "extent": [
+              5,
+              5
+            ],
+            "analytic_mean_rgb": [
+              251,
+              251,
+              251
+            ],
+            "cached_mean_rgb": [
+              251,
+              251,
+              251
+            ],
+            "max_delta": 0
+          },
+          {
+            "center_xy": [
+              417,
+              228
+            ],
+            "extent": [
+              5,
+              5
+            ],
+            "analytic_mean_rgb": [
+              251,
+              251,
+              251
+            ],
+            "cached_mean_rgb": [
+              251,
+              251,
+              251
+            ],
+            "max_delta": 0
+          }
+        ],
+        "reference_four_neighbor_contrast_at_least_32": {
+          "pixels": 20375,
+          "changed": 12275,
+          "rgb_mae": 12.006985685071575,
+          "max_delta": 201,
+          "p99_max_delta": 187
+        },
+        "reference_four_neighbor_contrast_at_most_1": {
+          "pixels": 106651,
+          "changed": 4604,
+          "rgb_mae": 0.014924066972336562,
+          "max_delta": 5,
+          "p99_max_delta": 1
+        },
+        "outside_chebyshev_radius_8_of_upstream_differences": {
+          "pixels": 229822,
+          "changed": 31973,
+          "rgb_mae": 1.0962832104846358,
+          "max_delta": 200,
+          "p99_max_delta": 13
+        }
+      },
+      "visual_observation": "Both final PNGs inspected. Cached output has smoother intense-card boundaries and reduces the broad bright fringes visible around some analytic-path card edges. Bistro background detail mostly matches. The large differences away from the two upstream pixels confirm a material nonlinear-filter-order quality change, not merely upstream noise.",
+      "limitations": [
+        "No pixel-equivalence claim: applying the nonlinear transform before fractional FXAA samples and FP16 storage intentionally changes edges.",
+        "Only static 640x360 SDR Metal snapshots evaluated; no native Vulkan, EDR/scRGB scaling, editor, MetalFX/FSR or moving-camera acceptance established by these captures.",
+        "Bright saturated SDR interiors cannot prove extended-linear physical scale is applied once.",
+        "No timing claim: parent owns capture-free measurements; snapshot timing is auxiliary.",
+        "Full HDR byte identity fails at two upstream pixels; no broad tolerance or silent exclusion converted that failure into an exact-identity pass."
+      ]
+    }
+  }
+}

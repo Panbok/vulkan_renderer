@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -47,8 +47,8 @@ controls share these validated ranges. A frame-owned 64-byte block holds the CAT
 white-balance matrix and grading controls; CPU preparation occurs once per frame.
 After exposure, apply white balance, luminance contrast about 0.18 and saturation,
 then the display transform. Metering, bloom and scene-linear temporal histories
-precede grading. Neutral grading bypasses the shader work. Each FXAA/sharpening tap
-uses the same transform. Editor composition and diagnostic modes bypass grading.
+precede grading. Neutral grading bypasses the shader work. The default analytic
+path transforms each FXAA/sharpening sample. Editor composition and diagnostic modes bypass grading.
 Capture summary version 9 preserves the controls; versions 2–8 migrate to neutral
 grading and ACES fitted to reproduce their historical presentation.
 
@@ -78,12 +78,51 @@ Without FXAA, a nonzero strength adds four samples; zero adds no samples or
 filter arithmetic. Sampling offsets use output pixels and clamp at image edges.
 This is bounded detail recovery, not FSR RCAS or a new antialiasing algorithm.
 
-No image, graph pass or temporal history is added. Editor.Resolve applies the
+The default path adds no image, graph pass or temporal history. Editor.Resolve applies the
 filter once before overlays; Editor.Composite bypasses it. UI and diagnostic
 render modes are excluded. The SDK's FSR sharpener stays disabled, avoiding two
 sharpening stages. Native roots and the outstanding Metal validation gate are
 recorded in ADR-044. Increased edge contrast can expose existing temporal
 variation, so quality and cost require matched static and moving captures.
+
+
+## Optional display-linear preparation
+
+`VKR_POST_TRANSFORM_CACHE=1` selects an output-resolution RGBA16F intermediate
+for default scene rendering. The unset, empty and `0` values retain the analytic
+path. A preparation draw applies exposure, grading, AgX or ACES, and the
+scene-relative extended-linear mapping once per output pixel. It omits FXAA,
+sharpening and the physical display scale. The final draw filters that image,
+then applies the physical output scale once. Editor.Resolve follows the same
+split; Editor.Composite continues sampling its already converted Scene image.
+Diagnostic render modes retain their existing path.
+
+The graph declares separate fullscreen and editor targets and activates only
+the current target. Each image uses `PER_IMAGE` storage with final-target
+extent, independent of the internal scene render scale. Native graph owners
+retain image storage through its final sampled use and completion, including
+resize and cancellation. The logical payload is eight bytes per output pixel
+per realized instance: 21.09 MiB for three 1280×720 instances or 47.46 MiB for
+three 1920×1080 instances, before allocator alignment and resize overlap.
+No temporal history or shader-root fields are added.
+
+This moves a nonlinear transform before fractional FXAA sampling and introduces
+FP16 storage; edges and saturated highlights can differ. It trades one full-image
+write and subsequent sampled reads for repeated analytic arithmetic. The default
+remains analytic until matched native measurements and image inspection justify
+a change. The harness normalizes the enabled option into the workload fingerprint
+and reports `effective_config.post_transform_cache_enabled`; disabled spellings
+preserve the previous workload identity. Different transform paths are separate
+quality/cost observations, not equivalent-work speedup evidence.
+
+[The Bistro comparison case](../../tools/cases/local/post_transform_cache_bistro.case.json)
+uses bright opaque, blended and transmitting surfaces with AgX, non-neutral
+grading, FXAA and sharpening. Its
+[capture-free counterpart](../../tools/cases/local/post_transform_cache_bistro_cost.case.json)
+retains that workload at 1280×720. The [local M1 Pro evaluation](../../assets/verification/renderer-features/renderer-features-perf.txt)
+records highlight-edge differences and capture-free pass costs. It supports
+keeping this path opt-in; native bilateral parity, EDR scaling and authoritative
+performance acceptance remain open.
 
 
 ## Consequences

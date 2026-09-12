@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-09
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -25,24 +25,30 @@ Offer SSGI as an optional mode, disabled by default and independent of SSR and
 final TAA. Trace at half resolution with one cosine-weighted ray per receiver
 and at most 24 hierarchy decisions. A separate current-frame R32F depth hierarchy
 provides visibility. Deferred lighting writes a full-resolution RGBA16F source
-containing direct punctual/rectangle light and emission, excluding environment,
+containing layered direct punctual/rectangle diffuse light and emission.
+Camera-directed base specular, coat and sheen highlights are excluded, as are environment,
 probe and baked-volume indirect light, SSR, fog and post-processing.
 
-The graph owns six image families: the direct source, half-resolution depth
-pyramid, half-resolution raw RGBA16F radiance, and a retained color/depth/identity
+The graph owns seven image families: the direct source, half-resolution depth
+pyramid, half-resolution RG32UI receiver metadata, half-resolution raw RGBA16F
+radiance, and a retained color/depth/identity
 tuple in RGBA16F, R32F and RG32UI. Current images have one instance per frame slot;
 each history member has frame-slot count plus two instances. Three frame slots
-require 24 images and 51.855 MiB at 1280×720, before allocator alignment.
-This corrects the earlier 29 MiB estimate, which undercounted both the full-size
-source and history instances. The user approved the corrected budget.
+require 27 images and 57.129 MiB at 1280×720, before allocator alignment.
+Receiver caching adds 5.273 MiB to the preceding 51.855 MiB three-slot budget.
+The graph owns its current-frame lifetime and orders depth-base writes before
+trace, temporal and composite reads; history ownership is unchanged.
 
-Reconstruct the nearest covered receiver within each half-resolution footprint;
-no additional receiver image is allocated. Each valid receiver traces one
+Select the nearest covered receiver once while building depth mip zero. Store
+positive view depth and the 0–8 local offset as bit-preserved float values in
+RG32UI. The offset identifies the exact source pixel even in the final 3×3
+odd-dimension footprint; zero depth denotes an uncovered cell. Later passes
+read this metadata instead of rescanning full-resolution depth/visibility. Each valid receiver traces one
 cosine-weighted direction from a deterministic 256-phase Hammersley sequence.
 A valid screen miss writes zero radiance and remains part of the estimator.
 
 The temporal pass applies a 3×3 raw spatial filter before history clamping. It
-reconstructs each nearest covered neighbor, rejects depth or normal discontinuities,
+loads each cached nearest covered neighbor, rejects depth or normal discontinuities,
 and uses compact bilateral weights; valid misses remain zero-valued samples in
 the normalized average. This preserves constant radiance on a locally continuous
 surface without mixing discontinuous receivers.
@@ -94,7 +100,13 @@ traversal costs are explicit and remain optional.
 
 ## Alternatives considered
 
-Requiring SSR and sharing its hierarchy saves storage but couples the two features.
+SSR and SSGI use matching minimum-positive-depth reduction and odd-tail
+coverage, so the hierarchy is mathematically shareable. The graph currently
+retains independent producers and feature conditions: caching receiver selection
+does not introduce an SSR prerequisite or change traversal policy. Sharing
+storage would also require conditional producer/resource routing when either
+feature runs alone; it remains a separate optimization. GTAO reduction differs
+and cannot substitute for this hierarchy.
 Tracing the final opaque HDR would bounce existing indirect light again. Lowering
 source precision or resolution could reduce storage, but those quality changes
 are outside the accepted first scope.
@@ -116,6 +128,12 @@ when SSGI is enabled.
 is `history_jitter_uv_x/y`; no root or image allocation changes. The Metal and
 Vulkan temporal shaders implement the same four-tap, confidence-weighted
 reconstruction and exact-predecessor contract.
+
+The receiver-cache and diffuse-only-source changes supersede the relevant source
+and storage statements in older observations below. Production-Slang arithmetic
+checks exercise nearest covered ties, uncovered samples and odd-tail offsets.
+Fresh native execution and bilateral comparison are required for these changes;
+prior feature runs do not establish their parity or speed.
 
 Earlier Release, reflection and Metal API records cover the preceding
 completed-history implementation. The current revision passes Release app/editor

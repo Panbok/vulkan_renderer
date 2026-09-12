@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -23,7 +23,10 @@ storage, and preserve the ordered transparency policy in
 
 Use 16-pixel XY cells and 64 logarithmic depth slices, giving 80×45×64 at a
 1280×720 internal extent. Depth integration begins at the camera near plane;
-samples beyond the authored maximum retain the terminal fog value. A scene authors one height medium and up to 16 density
+samples beyond the authored maximum retain the terminal fog value. The authored
+fog maximum may exceed the camera raster far plane. Injection, sky sampling and
+local-light selection establish rays at device depths 0 and 0.5 and extrapolate
+to the requested view depth. A scene authors one height medium and up to 16 density
 boxes. Boxes add nonnegative density multipliers; color and phase remain global.
 The initial phase is isotropic. Illumination comes from the directional sun and
 at most two local lights that have complete shadow-view groups. Rank eligible
@@ -48,7 +51,9 @@ then traverses each current-camera column front to back. Opaque fog resolves
 after SSR and before the opaque transmission pyramid, replacing analytic fog
 while enabled. Transparent local radiance uses `T * local + S * (1 - W)` over
 the already integrated feedback term `W * background`. Refraction retains the
-straight camera-segment approximation.
+straight camera-segment approximation. The 5,000-radiance working bound applies
+only to fog source and accumulation. Final scene-linear composition preserves
+underlying HDR radiance, including the empty-medium identity above that bound.
 
 The public frame carries scene settings; preparation validates and packs one
 928-byte parameter record per frame slot. Existing graph allocation, history
@@ -82,7 +87,43 @@ transport requires a different quality or storage policy.
 
 ## Verification
 
-Release and editor wrappers compile the production shaders and host contracts.
+The HDR and ray corrections have a retained arithmetic regression:
+`python3 tools/checks/check_froxel_regression.py`. It executes the production
+shared helpers through Slang CPU compilation and checks 36 values against
+independent radiative-transfer and geometric expectations. It covers 1,000,
+10,000 and 60,000 scene radiance with empty/thin fog, ordered local composition,
+50/500/infinite raster far planes at a fixed 200-unit fog range, a density box
+beyond the 50-unit far plane, and homogeneous absorption. The original helper
+returns 5,000 for the 60,000 identity and approximately -50 for the -200 sky
+position; the corrected helper passes. Native Vulkan high-HDR
+opaque/BLEND/transmission captures and fixed-medium far-plane comparisons
+remain required for these corrections. The shader contract remains **UNALIGNED**.
+
+The retained `froxel_bistro_regression_{off,empty,thin,range_50,range_500}`
+cases use Bistro and runtime material cards spanning opaque, BLEND and
+transmission at 1,000/10,000/30,000 emissive radiance. They require no cooked
+fixture payload. `tools/checks/check_froxel_bistro_regression.py` compares their
+raw HDR, requires bright witnesses in every material path, and compares common
+sky pixels with a density box beyond the short raster far plane. Native Metal
+Release captures preserve the bright opaque/BLEND/transmission
+patches at 30,000/15,000/30,000 with empty fog. Thin-density values are
+29,984/14,992/29,984. The 92,079 common sky pixels differ by at most
+0.000030517578125 between raster far planes 50 and 500.
+
+The empty-medium comparison has identical HDR on all 230,398 pixels with
+matching captured primitive and normal inputs. Two Bistro pixels, (25,202)
+and (323,209), choose different raster primitives at the same recorded depth:
+2,119 versus 15,351 and 22 versus 89, respectively. Their packed normals also
+change; depth is identical over the entire frame. Both pixels differ already
+before transmission, and neither has transmission visibility. Opaque visible-row
+indices permute between scene instances; one source row maps consistently over
+1,617 pixels and another over 473, with only these equal-depth winners selecting
+a different row. The checker reports those changed geometry inputs separately
+and retains the same HDR tolerance for matching inputs. Every bright witness
+requires matching geometry. These captures establish the bright-HDR identity,
+not whole-frame byte identity across differing raster winners.
+
+Earlier Release and editor wrappers compile the production shaders and host contracts.
 Native Metal reflection and API validation pass. The lifecycle fixture checks
 completed history selection, camera reprojection, medium/projection invalidation,
 disable/re-enable without image churn, and resize with subsequent history reuse.

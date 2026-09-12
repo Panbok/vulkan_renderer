@@ -326,7 +326,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 |---|---|---|---|
 | Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
-| Material/light math | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | Shadow receiver (UNALIGNED) | `shared/shadow_kernel.slangh`, `local_shadow.slangh`, `local_shadow_transmission.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
 | Baked diffuse volumes (UNALIGNED) | `shared/diffuse_volume_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
@@ -349,6 +349,21 @@ and build scripts for the exact entry-point inventory. This record replaces
 former ADR-005's deleted reflection-driven frontend.
 
 ## Portable edge contracts and remaining differences
+
+The renderer-features performance corrections reconstruct normal-map Z before
+strength, preserve explicit glTF zero strength, and version paired cooked recipes.
+Fog composition preserves scene HDR and ray reconstruction extrapolates beyond
+raster far depth. Material planes are conditionally declared from an opaque
+feature aggregate; both native paths guard absent texture bindings. Deferred
+lighting shares active lobe traversal and skips discarded environment diffuse;
+SSGI excludes camera-directed specular from its source.
+
+SSGI depth-base now writes current-frame RG32UI receiver metadata with bit-preserved
+32-bit depth and an exact local offset. Trace, temporal and composite reuse it.
+Native Metal root sizes are 320/352/416/512 bytes for depth-base/trace/temporal/
+composite; Vulkan sizes are 304/320/368/448 bytes. Shared parameters remain 288
+bytes. Source review and CPU arithmetic do not establish bilateral execution;
+these changed domains remain **UNALIGNED** until fresh native gates pass.
 
 Material normals transform through the explicit tangent/bitangent/normal basis;
 Slang row constructors must not transpose that basis. Native model-matrix

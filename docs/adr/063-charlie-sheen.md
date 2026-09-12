@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -68,7 +68,7 @@ Existing one-sided, unshadowed runtime rectangle policy remains in force.
 SSR continues tracing base GGX or clearcoat under its existing selection policy.
 Sheen has no SSR ray or history. For base SSR, sheen attenuates the replaced base
 specular; coat SSR retains the outer-layer policy. SSGI source lighting includes
-sheen and layered emission; the receiver attenuates base diffuse and adds no
+layered direct diffuse and emission, excluding camera-directed sheen highlights; the receiver attenuates base diffuse and adds no
 screen-space sheen lobe. Offline path and photon transport use the matching
 layered BSDF, with geometric normals governing real medium crossings.
 
@@ -80,7 +80,9 @@ rows are 224 bytes. The bake texture store owns decoded source texels for one
 bake. Input loaders validate scalar ranges and texture intent before publication.
 
 The graph owns a full-resolution `R8G8B8A8_UNORM` PER_IMAGE image containing
-linear sheen RGB and roughness. Resolve writes it; deferred lighting and SSGI/SSR
+linear sheen RGB and roughness only when the opaque/cutout material aggregate
+contains nonzero sheen color. The coarse feature and absent-binding contract
+follows [ADR-062](062-layered-clearcoat.md). Resolve writes it; deferred lighting and SSGI/SSR
 composites read it. No pass is added. At 1280×720 the additional payload is
 10.546875 MiB for three images or 28.125 MiB for eight, before native alignment.
 Generation retirement and frame completion govern reuse.

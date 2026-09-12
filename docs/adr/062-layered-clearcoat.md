@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -44,6 +44,16 @@ Opaque indirect coat lighting and SSR probe removal also use the coat normal for
 GTAO cone occlusion, decoding bent direction against that normal and using the
 packed coat roughness. SSR's incoming history uses filtered coat roughness.
 This keeps probe removal equal to the term deferred lighting actually added.
+Deferred punctual and rectangle lighting traverse each active list once for
+the base, coat and sheen. Punctual lights share row loads, geometry and
+attenuation; a coat whose receiver-bias normal differs from the base uses its
+own local-shadow query on both native backends. Sheen uses the front base normal;
+a backlit thin sheet retains its light-facing diffuse bias and zero front sheen
+response. Rectangle layers retain their own LTC frames and integrals, including
+the sheen frame when an anisotropic base rotates its axes. Directional lights
+retain the existing common base-normal shadow policy. These source changes do
+not establish measured savings or native parity.
+
 Runtime lights, LTC and probe/global IBL share this allocation. The offline
 path/photon BSDF uses the same layer and a corresponding mixture PDF. It tracks
 the geometric normal separately from both mapped normals so reflection and
@@ -72,13 +82,20 @@ complete. Native row layouts are independently pinned: Metal 240 bytes,
 Vulkan 192 bytes. CPU material loading resolves scalar and texture intent before
 publication. The bake texture store retains decoded images for the bake lifetime.
 
-The graph owns one additional full-resolution `R8G8B8A8_UNORM` PER_IMAGE image:
-factor, roughness and octahedral normal XY. Resolve writes it; deferred lighting,
+The graph owns a full-resolution `R8G8B8A8_UNORM` PER_IMAGE image only when
+the opaque/cutout source-material aggregate contains clearcoat: factor, roughness
+and octahedral normal XY. Resolve writes it; deferred lighting,
 SSGI composite, and SSR trace/temporal/composite read it. No extra pass is added.
 At 1280×720 this adds 3.515625 MiB per image, 10.546875 MiB for three images or
 28.125 MiB for eight, before native alignment. Vulkan uses one sampled and one
 storage descriptor per image within its existing graph descriptor pools.
-Graph generation retirement and frame completion govern image reuse.
+Graph generation retirement and frame completion govern image reuse. Extraction
+aggregates clearcoat, sheen and anisotropy from material scalar factors before
+recording; a texture cannot enable a zero scalar factor. External packet producers
+without a valid aggregate conservatively retain all planes. Disabled planes have
+no graph allocation or uses. Native null/slot-zero bindings return an explicit
+zero material value and skip writes; no full-resolution load targets a fallback
+image.
 
 ## Consequences
 

@@ -1,0 +1,92 @@
+Renderer feature/performance implementation evidence — 2026-09-12
+
+Source: dirty working tree based on b72475fd5b0b3a70b10a6cea8700dd7d7d284b8e.
+Native host: Apple M1 Pro, Metal 4, Darwin 25.6.0, AppleClang 21.0.0.
+All scene observations use Bistro. No assets or baselines were promoted.
+Machine-readable commands, report hashes, sample counts/spread and numeric fog
+results are in renderer-features-perf.json alongside this file.
+
+Implemented: normal-strength reconstruction and normalrough_v2 cooking; explicit
+glTF zero strength; HDR-preserving fog composition; fog rays beyond camera far;
+opt-in balanced SSR; optional material planes; opt-in display-linear post target;
+cached SSGI receivers; shared active layered-light traversal; volume-first diffuse
+selection; diffuse/emission-only SSGI source. Existing defaults remain high SSR
+and analytic post. Environment options: VKR_SSR_QUALITY=balanced and
+VKR_POST_TRANSFORM_CACHE=1. Both enter workload fingerprints.
+
+Verification commands and outcomes:
+  ./build.sh Release
+    PASS: production Metal shaders, renderer, cooker and harness.
+  ./build_test.sh
+    PASS: full existing CPU suite, cached Debug ASan/UBSan configuration;
+    includes importer/cooker and all eight optional-material graph masks.
+  python3 tools/checks/check_ssr_stability.py
+    PASS: 321 production-Slang CPU outputs, including independent normal-strength
+    and SSGI receiver tie/odd-edge/cache checks. Old normal decoder fails oracle.
+  python3 tools/checks/check_froxel_regression.py
+    PASS: 36 production-Slang outputs. Old source fails HDR and ray oracles.
+  SPIR-V compilation, reflection, spirv-val --target-env vulkan1.3 --scalar-block-layout
+    PASS: 24 affected production modules; exact per-module commands in JSON.
+  Vulkan host syntax/static assertions: five translation units PASS; commands in
+    JSON. Neither cross-compilation nor CPU execution proves native Vulkan use.
+
+Native harness executable: ./build_release/tools/vkr_harness
+For all normal snapshots/profiles, environment variables MTL_DEBUG_LAYER,
+MTL_SHADER_VALIDATION and VK_INSTANCE_LAYERS were unset. Exact command template:
+  env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
+    [OPTION=value] ./build_release/tools/vkr_harness COMMAND --case CASE --profile PROFILE
+CASE paths below are under tools/cases/local/; PROFILE paths under tools/profiles/.
+
+COMMAND=snapshot, PROFILE=local-brdf-display-validation.json:
+  froxel_bistro_regression_{off,empty,thin,range_50,range_500}.case.json
+  post_transform_cache_bistro.case.json with VKR_POST_TRANSFORM_CACHE=0 and 1
+  ssr_tier_bistro.case.json with VKR_SSR_QUALITY=high and balanced
+All completed successfully. Fog numerical checker exact argv is in JSON.
+Fog: 230398 equal-input pixels have exact empty-fog HDR identity; two pixels
+have differing captured primitive/normal at equal depth. Whole-frame identity
+is explicitly false. Bright opaque/BLEND/transmission witnesses retain
+30000/15000/30000, thin fog yields 29984/14992/29984. Common sky: 92079 pixels,
+maximum absolute RGB difference 0.000030517578125 between far planes 50 and 500.
+
+COMMAND=profile, PROFILE=local-offscreen-gpu-single.json:
+  ssgi_bistro_on_profile_local.case.json: PASS at 1280x720.
+  post_transform_cache_bistro_cost.case.json, VKR_POST_TRANSFORM_CACHE=0 and 1
+  ssr_tier_bistro_cost.case.json, VKR_SSR_QUALITY=high and balanced
+All PASS. These are local dirty single-process observations, NOT authoritative
+speedups or base-M1 frame-budget acceptance. Alternate workload fingerprints
+intentionally differ. Capture-free pass times in milliseconds (mean / p95 / SD):
+  Post analytic, 1280x720, 16 samples: 1.38082 / 1.39663 / 0.00837
+  Post cached prepare:                 0.12812 / 0.13104 / 0.00109
+  Post cached finish:                  0.32639 / 0.33054 / 0.00235
+  SSR high trace, 640x360, 32 samples: 1.14828 / 1.15763 / 0.00569
+  SSR balanced trace:                  0.54350 / 0.55271 / 0.00399
+All listed samples valid. Pass sums do not establish total-frame elapsed time.
+Balanced SSR raw supported pixels decrease from 55592 to 25841; history-supported
+pixels from 91309 to 45890. Fallback quality changes; histories remain full-size.
+Post cached output differs at highlight edges; final RGB MAE 1.1162/255,
+maximum 201/255, 13.92% of pixels change. Three bright 5x5 interiors match exactly.
+Upstream HDR differs at two pixels, so no whole-image input identity claim.
+Large edge differences persist excluding neighborhoods of those pixels. Both
+retained PNGs were visually inspected; cached highlights have reduced fringes.
+No pixel-equivalence, EDR scaling, long-term motion or bilateral claim is made.
+
+Focused API validation:
+  env -u MTL_SHADER_VALIDATION MTL_DEBUG_LAYER=1 \
+    ./build_release/tools/vkr_harness profile \
+    --case tools/cases/local/renderer_features_bistro_validation.case.json \
+    --profile tools/profiles/local-metal-dual-validation-serial.json
+PASS: layered opaque card, SSR+SSGI, odd 641x361 to 513x289 resize; stderr confirms
+Metal API Validation Enabled without errors. Combined API+shader validation
+(same command with MTL_SHADER_VALIDATION=1) unavailable: child assertion
+IOGPUMetalCommandBufferStorageAddResidencySets, residency set limit 32 exceeded.
+The failed diagnostic and passing API-only report hashes are retained in JSON.
+No broad shader-validation suite was run after this failure.
+
+Open acceptance: native Windows Vulkan/RX 6700 XT execution and bilateral pixels;
+base-M1 authoritative before/after performance and temporal-quality acceptance;
+Metal shader validation blocked by the platform assertion above. LUT transforms,
+reflective tiles, variable ray density, hierarchy sharing and volume repacking
+remain profiling candidates. SSR/SSGI min-depth reductions are compatible, but
+conditional producer routing is not implemented; GTAO's reduction is different.
+Final snapshots are retained locally for future native comparison; no baseline
+publication was authorized. Unrelated pending assets and vendor edits preserved.
