@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "id": "local.ssgi.vulkan_validation",
+  "suite": "local",
+  "description": "Focused native Vulkan SSGI history and submission validation.",
+  "scene": "assets/scenes/fixtures/ssgi_emission_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    384,
+    256
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 4,
+    "measure": 1
+  },
+  "renderer": {
+    "backend": "vulkan",
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "display_transform": "agx",
+    "gtao_enabled": false,
+    "ssr_enabled": false,
+    "image_sharpness": 0,
+    "bloom_enabled": false,
+    "ssgi_enabled": true
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      4,
+      3,
+      7
+    ],
+    "yaw": -115,
+    "pitch": -17,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 50
+  },
+  "assertions": [
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}
