@@ -14,6 +14,8 @@ static const uint VKR_FULLSCREEN_FXAA = 1u << 2u;
 static const uint VKR_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u;
 // The unset default is AgX. Bit 4 selects the retained ACES comparison path.
 static const uint VKR_FULLSCREEN_ACES_FITTED = 1u << 4u;
+static const uint VKR_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u;
+static const uint VKR_FULLSCREEN_PREPARE_DISPLAY_LINEAR = 1u << 6u;
 
 float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
                        bool tonemap, bool aces_fitted, float exposure,
@@ -25,8 +27,11 @@ float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
     // The editor Scene composite samples presentation-linear pixels from the
     // retained scene image. They already carry the physical-output scale, so a
     // second grade or SDR clamp would destroy extended-linear highlights.
-    if ((g_fullscreen_push.flags & VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED) != 0u)
+    if ((g_fullscreen_push.flags & (VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED |
+                                    VKR_FULLSCREEN_SOURCE_DISPLAY_LINEAR)) != 0u)
+    {
         return source;
+    }
     source.rgb = vkr_color_grade(max(source.rgb * exposure, 0.0f), grading);
     float3 display_linear = tonemap
                                 ? (aces_fitted ? vkr_aces_fitted(source.rgb)
@@ -43,8 +48,11 @@ float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
 float4 vkr_finish_output(float4 color, uint flags,
                          VkrDisplayOutputParams display_output)
 {
-    if ((flags & VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED) == 0u)
+    if ((flags & (VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED |
+                  VKR_FULLSCREEN_PREPARE_DISPLAY_LINEAR)) == 0u)
+    {
         color.rgb = vkr_display_output_scale(color.rgb, display_output);
+    }
     return color;
 }
 

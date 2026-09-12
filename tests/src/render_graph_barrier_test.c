@@ -1509,7 +1509,7 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
 
   VkrRenderGraph *graph = vkr_rg_create(&allocator);
   assert(graph);
-  const VkrRenderGraphFrameInfo frame = {
+  VkrRenderGraphFrameInfo frame = {
       .scene_rendering = true_v,
       .gpu_draw_candidate_capacity = 1u,
       .gpu_draw_visible_capacity = 8u,
@@ -1595,6 +1595,110 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
          resolve_index < composite_index && composite_index < ui_index);
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_end_frame(graph);
+
+  // Missing feature planes must remove both allocation and graph edges. Run
+  // every combination and return to no features to expose stale realization.
+  VkrWorldPassPayload world = {.opaque_material_features_valid = true_v};
+  VkrPreparedFrame packet = {
+      .input = {.world = &world},
+      .scene_rendering = true_v,
+  };
+  VkrRenderGraphFrameInfo prepared = {
+      .target_width = 300u,
+      .target_height = 200u,
+  };
+  VkrGtaoGpuParams gtao = {0};
+  for (uint32_t iteration = 0u; iteration <= 8u; ++iteration) {
+    const uint32_t mask = iteration & 7u;
+    world.opaque_material_features = mask;
+    vkr_render_graph_prepare_frame(&packet, NULL, NULL, &prepared, &gtao);
+    assert(prepared.clearcoat_enabled == ((mask & 1u) != 0u));
+    assert(prepared.sheen_enabled == ((mask & 2u) != 0u));
+    assert(prepared.anisotropy_enabled == ((mask & 4u) != 0u));
+    frame.clearcoat_enabled = prepared.clearcoat_enabled;
+    frame.sheen_enabled = prepared.sheen_enabled;
+    frame.anisotropy_enabled = prepared.anisotropy_enabled;
+    assert(vkr_rg_begin_frame(graph, &frame));
+    assert(vkr_rg_build_from_json(graph, &json, &frame));
+    const String8 plane_names[] = {
+        string8_lit("gbuffer_clearcoat"),
+        string8_lit("gbuffer_sheen"),
+        string8_lit("gbuffer_anisotropy"),
+    };
+    for (uint32_t plane = 0u; plane < ArrayCount(plane_names); ++plane) {
+      const VkrRgImageHandle image =
+          vkr_rg_find_image(graph, plane_names[plane]);
+      const bool8_t declared =
+          vkr_rg_image_handle_valid(image) &&
+          graph->images.data[image.id - 1u].declared_this_frame;
+      assert(declared == ((mask & (1u << plane)) != 0u));
+    }
+    assert(vkr_rg_compile_schedule(graph));
+    vkr_rg_end_frame(graph);
+  }
+  // Older external packet producers leave the aggregate unknown: preserve
+  // their feature behavior instead of silently dropping authored lobes.
+  world.opaque_material_features_valid = false_v;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &prepared, &gtao);
+  assert(prepared.clearcoat_enabled && prepared.sheen_enabled &&
+         prepared.anisotropy_enabled);
+  packet.scene_rendering = false_v;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &prepared, &gtao);
+  assert(!prepared.clearcoat_enabled && !prepared.sheen_enabled &&
+         !prepared.anisotropy_enabled);
+
+  // Cache transitions must allocate at the final target extent and preserve
+  // the producer-to-sampled-consumer dependency through schedule compilation.
+  for (uint32_t iteration = 0u; iteration < 5u; ++iteration) {
+    frame.editor_enabled = iteration < 3u;
+    frame.post_transform_cache_enabled = iteration == 1u || iteration == 3u;
+    assert(vkr_rg_begin_frame(graph, &frame));
+    assert(vkr_rg_build_from_json(graph, &json, &frame));
+    const VkrRgImageHandle editor_cache =
+        vkr_rg_find_image(graph, string8_lit("post_display_linear_editor"));
+    const VkrRgImageHandle fullscreen_cache =
+        vkr_rg_find_image(graph, string8_lit("post_display_linear_fullscreen"));
+    const bool8_t editor_declared =
+        vkr_rg_image_handle_valid(editor_cache) &&
+        graph->images.data[editor_cache.id - 1u].declared_this_frame;
+    const bool8_t fullscreen_declared =
+        vkr_rg_image_handle_valid(fullscreen_cache) &&
+        graph->images.data[fullscreen_cache.id - 1u].declared_this_frame;
+    assert(editor_declared ==
+           (frame.post_transform_cache_enabled && frame.editor_enabled));
+    assert(fullscreen_declared ==
+           (frame.post_transform_cache_enabled && !frame.editor_enabled));
+    assert(vkr_rg_compile_schedule(graph));
+    if (frame.post_transform_cache_enabled) {
+      const VkrRgImageHandle cache =
+          frame.editor_enabled ? editor_cache : fullscreen_cache;
+      const VkrRgImage *image = &graph->images.data[cache.id - 1u];
+      assert(image->desc.width == (frame.editor_enabled ? 600u : 1000u));
+      assert(image->desc.height == (frame.editor_enabled ? 400u : 800u));
+      assert(image->desc.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
+      assert(vkr_rg_resource_instance_domain(image->desc.flags) ==
+             VKR_RG_RESOURCE_INSTANCE_PER_IMAGE);
+      uint64_t producer = UINT64_MAX;
+      uint64_t consumer = UINT64_MAX;
+      for (uint64_t order = 0u; order < graph->execution_order.length;
+           ++order) {
+        const VkrRgPass *pass =
+            rg_barrier_test_pass(graph, graph->execution_order.data[order]);
+        if (pass->desc.color_attachments.length &&
+            pass->desc.color_attachments.data[0].image.id == cache.id) {
+          producer = order;
+        }
+        const VkrRgImageUse *source =
+            vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
+        if (source && source->image.id == cache.id) {
+          consumer = order;
+        }
+      }
+      assert(producer != UINT64_MAX && consumer != UINT64_MAX &&
+             producer < consumer);
+    }
+    vkr_rg_end_frame(graph);
+  }
 
   vkr_rg_destroy(graph);
   vkr_rg_executor_registry_destroy(&registry);

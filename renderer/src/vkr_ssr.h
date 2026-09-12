@@ -17,6 +17,13 @@
 #define VKR_SSR_DEFAULT_TEMPORAL_DEPTH_RELATIVE 0.05f
 #define VKR_SSR_DEFAULT_TEMPORAL_DEPTH_ABSOLUTE 0.02f
 
+/** Cold tracing presets; both retain full-resolution history and hit
+ * validation. */
+typedef enum VkrSsrQuality {
+  VKR_SSR_QUALITY_HIGH = 0,
+  VKR_SSR_QUALITY_BALANCED,
+} VkrSsrQuality;
+
 /**
  * Cold SSR quality controls. The renderer normalizes this record once before
  * it creates the graph, so native traversal loops consume only proven values.
@@ -99,6 +106,8 @@ _Static_assert((sizeof(VkrSsrGpuParams) % 16u) == 0u,
                "SSR parameter ABI must be a 16-byte multiple");
 
 VkrSsrConfig vkr_ssr_config_default(void);
+/** Start from this preset, then optionally tighten individual cold controls. */
+VkrSsrConfig vkr_ssr_config_for_quality(VkrSsrQuality quality);
 VkrSsrConfig vkr_ssr_config_normalize(const VkrSsrConfig *config);
 
 /**

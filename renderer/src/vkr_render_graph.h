@@ -534,6 +534,10 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t fsr31_enabled;
   bool8_t editor_enabled; /**< Whether editor is enabled */
   bool8_t scene_rendering;
+  bool8_t post_transform_cache_enabled;
+  bool8_t clearcoat_enabled;
+  bool8_t sheen_enabled;
+  bool8_t anisotropy_enabled;
   bool8_t editor_image_available;
   bool8_t editor_overlay_enabled;
   uint32_t editor_image_width;

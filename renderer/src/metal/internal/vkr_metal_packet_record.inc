@@ -221,11 +221,15 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
           pass->ui.count, pass->ui.width, pass->ui.height);
     break;
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE:
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR:
     [renderer->argument_table setAddress:pass->tonemap.root atIndex:1u];
     [encoder setViewport:pass->tonemap.viewport];
     [encoder setScissorRect:pass->tonemap.scissor];
-    [encoder setRenderPipelineState:renderer->tonemap_pipeline];
+    [encoder setRenderPipelineState:
+                 pass->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE
+                     ? renderer->display_linear_pipeline
+                     : renderer->tonemap_pipeline];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageFragment];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle

@@ -108,6 +108,18 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             # Identity/tap: the lamp moves among taps, then loses all support.
             # A black neighborhood selects the widest covered current trace.
             17, 1, 17, 0, 17, 2, 23, 0, 31, 1]
+expected.extend([7.25, 5, 6, 3, 7.25, 1, 0, 6, 4, 0])
+# Independent normalized tangent-space vectors for strengths 0, .5, 1, 2.
+# Unit strength cannot catch the former Z-after-strength reconstruction.
+expected.extend([
+    0, 0, 1,
+    .35856858280031806, -.11952286093343936, .9258200997725515,
+    .6, -.2, .7745966692414834,
+    .8090398349558905, -.26967994498529685, .5222329678670935,
+    0, 0, 1,
+    1/math.sqrt(2), -1/math.sqrt(2), 0,
+    .8090398349558905, -.26967994498529685, .5222329678670935,
+])
 assert len(actual) == len(expected), actual
 for i, (got, want) in enumerate(zip(actual, expected)):
     assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
@@ -169,3 +181,5 @@ print("Unequal current/previous raster jitter:", actual[262:268])
 print("Radiance contribution, coverage ties and missing samples:", actual[268:280])
 print("Representative identity/tap across lamp movement and disappearance:", actual[280:290])
 print(f"SSR production shared math: {len(actual)} outputs PASS")
+
+print("Normal-RG strength 0/.5/1/2, disk overflow, zero fallback and ignored blue: PASS")

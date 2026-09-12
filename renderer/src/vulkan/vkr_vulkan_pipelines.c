@@ -1547,7 +1547,7 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiDepthBaseRoot, vbuffer_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiDepthBaseRoot,
                                  destination_depth_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiDepthBaseRoot, reserved),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiDepthBaseRoot, receiver_texture),
   };
   static const VkrVulkanReflectedField ssgi_depth_mip_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiDepthMipRoot,
@@ -1567,7 +1567,7 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTraceRoot, depth_pyramid_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTraceRoot, direct_source_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTraceRoot, destination_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTraceRoot, reserved),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTraceRoot, receiver_texture),
   };
   static const VkrVulkanReflectedField ssgi_temporal_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot, params),
@@ -1593,6 +1593,7 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
                                  output_identity_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot, linear_sampler),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot, reserved),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot, receiver_texture),
   };
   static const VkrVulkanReflectedField ssgi_composite_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, params),
@@ -1612,14 +1613,17 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
                                  history_depth_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, specular_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, linear_sampler),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot,
-                                 clearcoat_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, clearcoat_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, sheen_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot,
                                  anisotropy_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, visible_rows),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, subsurface_source_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, subsurface_profile_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot,
+                                 subsurface_source_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot,
+                                 subsurface_profile_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, receiver_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, reserved),
   };
   static const VkrVulkanReflectedField fog_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, params),
@@ -2334,16 +2338,21 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
              false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(
-             renderer, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
+             renderer, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_DISPLAY_LINEAR,
              VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
              VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT,
-             presentation_format, VK_FORMAT_UNDEFINED, false_v, false_v,
-             false_v, false_v) &&
+             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_UNDEFINED, false_v,
+             false_v, false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
-             renderer, VKR_VULKAN_PACKET_PIPELINE_UI,
-             VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
-             VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT, presentation_format,
-             VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
+             renderer, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
+             VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT, presentation_format,
+             VK_FORMAT_UNDEFINED, false_v, false_v, false_v, false_v) &&
+         vkr_vk_create_packet_pipeline(renderer, VKR_VULKAN_PACKET_PIPELINE_UI,
+                                       VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
+                                       VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT,
+                                       presentation_format, VK_FORMAT_UNDEFINED,
+                                       false_v, false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
              VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,

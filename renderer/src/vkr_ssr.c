@@ -34,6 +34,15 @@ VkrSsrConfig vkr_ssr_config_default(void) {
   };
 }
 
+VkrSsrConfig vkr_ssr_config_for_quality(VkrSsrQuality quality) {
+  VkrSsrConfig config = vkr_ssr_config_default();
+  if (quality == VKR_SSR_QUALITY_BALANCED) {
+    config.max_steps = 24u;
+    config.roughness_cutoff = 0.35f;
+  }
+  return config;
+}
+
 VkrSsrConfig vkr_ssr_config_normalize(const VkrSsrConfig *config) {
   const VkrSsrConfig defaults = vkr_ssr_config_default();
   if (!config)

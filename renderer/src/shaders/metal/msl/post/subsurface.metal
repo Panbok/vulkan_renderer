@@ -51,16 +51,16 @@ vkr_metal_subsurface_receiver(constant VkrMetalPacketSubsurfaceRoot &root,
       root, pixel, visible, normal, clamp(specular.w, 0.04f, 1.0f));
   VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
       root.frame, normal, view, roughness, saturate(specular.rgb),
-      root.anisotropy.read(pixel));
+      (is_null_texture(root.anisotropy) ? float4(0.0f) : root.anisotropy.read(pixel)));
   float3 boundary = energy.diffuse_weight;
-  float4 coat = root.clearcoat.read(pixel);
+  float4 coat = (is_null_texture(root.clearcoat) ? float4(0.0f) : root.clearcoat.read(pixel));
   if (vkr_clearcoat_active(coat.x)) {
     VkrClearcoatLayer layer = vkr_metal_packet_prepare_clearcoat(
         root.frame, coat.x, coat.y, vkr_metal_packet_octahedral_decode(coat.zw),
         view);
     boundary *= layer.base_transmission;
   }
-  float4 sheen = root.sheen.read(pixel);
+  float4 sheen = (is_null_texture(root.sheen) ? float4(0.0f) : root.sheen.read(pixel));
   if (vkr_sheen_active(sheen.rgb)) {
     VkrSheenLayer layer = vkr_metal_packet_prepare_sheen(root.frame, sheen.rgb,
                                                          sheen.w, normal, view);

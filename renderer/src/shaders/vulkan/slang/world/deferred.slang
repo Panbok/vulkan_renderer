@@ -928,9 +928,18 @@ void vkr_vk_resolve_defaults(VkrVkResolveRoot *root, uint2 pixel, float marker)
     g_storage_2d[root.albedo_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_2d[root.specular_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_float2_2d[root.normal_texture][pixel] = 0.0f;
-    g_storage_2d[root.clearcoat_texture][pixel] = 0.0f;
-    g_storage_2d[root.sheen_texture][pixel] = 0.0f;
-    g_storage_2d[root.anisotropy_texture][pixel] = 0.0f;
+    if (root.clearcoat_texture != 0u)
+    {
+        g_storage_2d[root.clearcoat_texture][pixel] = 0.0f;
+    }
+    if (root.sheen_texture != 0u)
+    {
+        g_storage_2d[root.sheen_texture][pixel] = 0.0f;
+    }
+    if (root.anisotropy_texture != 0u)
+    {
+        g_storage_2d[root.anisotropy_texture][pixel] = 0.0f;
+    }
 #if VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
     g_storage_2d[root.emissive_texture][pixel] = 0.0f;
 #endif
@@ -1308,9 +1317,12 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
                                          surface.geometric_normal * sampled.z);
         }
     }
-    g_storage_2d[root.clearcoat_texture][thread_id.xy] =
+    if (root.clearcoat_texture != 0u)
+    {
+        g_storage_2d[root.clearcoat_texture][thread_id.xy] =
         float4(clearcoat_factor, clearcoat_roughness,
-               vkr_vk_octahedral_encode(clearcoat_normal));
+        vkr_vk_octahedral_encode(clearcoat_normal));
+    }
     float3 sheen_color = max(clearcoat_material.material_sheen.rgb, 0.0f);
     float sheen_roughness = 0.0f;
     if (vkr_sheen_active(sheen_color))
@@ -1340,8 +1352,11 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         else
             sheen_roughness = 0.0f;
     }
-    g_storage_2d[root.sheen_texture][thread_id.xy] =
+    if (root.sheen_texture != 0u)
+    {
+        g_storage_2d[root.sheen_texture][thread_id.xy] =
         float4(sheen_color, sheen_roughness);
+    }
   float anisotropy_strength = clearcoat_material.material_anisotropy.x;
   float3 anisotropy_axis = float3(0.0f);
   if (anisotropy_strength > 0.0f) {
@@ -1352,7 +1367,10 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
     anisotropy_axis = vkr_anisotropy_axis(surface.geometric_normal, surface.normal,
         float4(mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz, surface.object_tangent.w < 0.0f ? -1.0f : 1.0f), map.rg * 2.0f - 1.0f, clearcoat_material.material_anisotropy.yz);
   }
-  g_storage_2d[root.anisotropy_texture][thread_id.xy] = float4(anisotropy_strength > 0.0f ? vkr_anisotropy_encode_axis(anisotropy_axis) : float2(0.0f), anisotropy_strength, 0.0f);
+  if (root.anisotropy_texture != 0u)
+  {
+      g_storage_2d[root.anisotropy_texture][thread_id.xy] = float4(anisotropy_strength > 0.0f ? vkr_anisotropy_encode_axis(anisotropy_axis) : float2(0.0f), anisotropy_strength, 0.0f);
+  }
 #if VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
     g_storage_2d[root.emissive_texture][thread_id.xy] =
         float4(surface.emissive, 1.0f);
@@ -1491,21 +1509,34 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     float3 view = normalize(frame.view_position.xyz - world);
     // The G-buffer already folded metallic into diffuse albedo and F0, so the
     // shared helpers take a zero metallic factor here.
+    float4 anisotropy_packed = 0.0f;
+    if (root.anisotropy_texture != 0u)
+    {
+        anisotropy_packed = g_storage_2d[root.anisotropy_texture][thread_id.xy];
+    }
     VkrGgxMaterialEnergy energy = packet_prepare_gbuffer_brdf(
-        frame, normal, view, roughness, f0, g_storage_2d[root.anisotropy_texture][thread_id.xy]);
+        frame, normal, view, roughness, f0, anisotropy_packed);
     energy = vkr_ggx_diffuse_transmission(energy,
         frame.materials[root.visible_rows[encoded.x - 1u].material_index].material_diffuse_transmission);
-    float4 clearcoat_packed = g_storage_2d[root.clearcoat_texture][thread_id.xy];
+    float4 clearcoat_packed = 0.0f;
+    if (root.clearcoat_texture != 0u)
+    {
+        clearcoat_packed = g_storage_2d[root.clearcoat_texture][thread_id.xy];
+    }
     bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
-    VkrClearcoatLayer clearcoat;
+    VkrClearcoatLayer clearcoat = (VkrClearcoatLayer)0;
     if (clearcoat_active)
         clearcoat = packet_prepare_clearcoat(
             frame, clearcoat_packed.x, clearcoat_packed.y,
             vkr_vk_octahedral_decode(clearcoat_packed.zw), view);
-    float4 sheen_packed = g_storage_2d[root.sheen_texture][thread_id.xy];
+    float4 sheen_packed = 0.0f;
+    if (root.sheen_texture != 0u)
+    {
+        sheen_packed = g_storage_2d[root.sheen_texture][thread_id.xy];
+    }
     bool sheen_active = vkr_sheen_active(sheen_packed.rgb);
-    VkrSheenLayer sheen;
-    VkrSheenLtcSample sheen_ltc;
+    VkrSheenLayer sheen = (VkrSheenLayer)0;
+    VkrSheenLtcSample sheen_ltc = (VkrSheenLtcSample)0;
     if (sheen_active)
     {
         sheen_ltc = packet_sheen_ltc_sample(
@@ -1555,43 +1586,25 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
                     frame.directional_color_intensity.w * directional_shadow,
                 sheen, sheen_ltc.energy_normalization);
     }
-    VkrVulkanDirectResult punctual = packet_punctual(
-        frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy);
+    VkrVulkanDirectResult punctual = packet_punctual_layered(
+        frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy,
+        clearcoat_active, clearcoat, sheen_active, sheen,
+        sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct);
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
-    if (clearcoat_active)
-    {
-        VkrVulkanDirectResult coat_punctual = packet_punctual(
-            frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
-            clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy);
-        clearcoat_direct += coat_punctual.specular * clearcoat.factor;
-    }
-    if (sheen_active)
-        sheen_direct += packet_punctual_sheen(
-            frame, world, normal, view, sheen, sheen_ltc.energy_normalization);
-    VkrVulkanDirectResult rectangles = packet_rectangle_lights(
+    VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0,
-        energy, true);
+        energy, true, clearcoat_active, clearcoat, sheen_active, sheen,
+        sheen_ltc, clearcoat_direct, sheen_direct);
     diffuse_irradiance += rectangles.irradiance;
     analytic_diffuse += rectangles.diffuse;
     analytic_specular += rectangles.specular;
-    if (clearcoat_active)
-    {
-        VkrVulkanDirectResult coat_rectangles = packet_rectangle_lights(
-            frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
-            clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy, false);
-        clearcoat_direct += coat_rectangles.specular * clearcoat.factor;
-    }
-    if (sheen_active)
-        sheen_direct += packet_sheen_rectangle_lights(
-            frame, world, normal, view, sheen, sheen_ltc);
+    // Exclude camera-facing specular lobes from the diffuse bounce source.
     if (root.ssgi_enabled != 0u && frame.render_mode == 0u &&
         frame.shadow_debug_mode == 0u)
         g_storage_2d[root.direct_source_texture][thread_id.xy] =
-            float4((analytic_diffuse + analytic_specular) * base_transmission +
-                   clearcoat_direct + sheen_direct * sheen_transmission +
-                   seed.rgb * base_transmission, 1.0f);
+            float4((analytic_diffuse + seed.rgb) * base_transmission, 1.0f);
     if (frame.render_mode == 1u || frame.render_mode == 4u ||
         frame.render_mode == 5u)
     {
@@ -1619,6 +1632,10 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     // Mode 9 reports the selected pre-GTAO indirect diffuse response.
     float3 indirect_diffuse_normal =
         frame.render_mode == 9u ? normal : bent_normal;
+    float3 volume_irradiance;
+    float3 volume_diffuse;
+    bool volume_valid = packet_diffuse_volume_terms(
+        frame, world, normal, diffuse_albedo, 0.0f, ao, energy, volume_diffuse, volume_irradiance);
     float3 indirect_irradiance;
     float3 indirect_diffuse;
     float3 indirect_specular = 0.0f;
@@ -1627,13 +1644,23 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     bool environment_enabled = (frame.flags & 2u) != 0u;
     if ((frame.flags & 2u) != 0u)
     {
-        VkrVulkanEnvironmentResult environment =
-            packet_environment_terms_with_diffuse_normal(
-                frame, world, indirect_diffuse_normal, normal, normal, view,
-                diffuse_albedo, 0.0f, roughness, ao, energy);
-        indirect_irradiance = environment.irradiance;
-        indirect_diffuse = environment.diffuse;
-        indirect_specular = environment.specular * gtao_cone;
+        if (volume_valid)
+        {
+            indirect_irradiance = volume_irradiance;
+            indirect_diffuse = volume_diffuse;
+            indirect_specular = packet_environment_specular(
+                frame, world, normal, normal, view, roughness, ao, energy) * gtao_cone;
+        }
+        else
+        {
+            VkrVulkanEnvironmentResult environment =
+                packet_environment_terms_with_diffuse_normal(
+                    frame, world, indirect_diffuse_normal, normal, normal, view,
+                    diffuse_albedo, 0.0f, roughness, ao, energy);
+            indirect_irradiance = environment.irradiance;
+            indirect_diffuse = environment.diffuse;
+            indirect_specular = environment.specular * gtao_cone;
+        }
         if (clearcoat_active)
         {
             float clearcoat_gtao_cone = vkr_gtao_cone_specular(
@@ -1660,10 +1687,6 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
         indirect_diffuse = frame.ambient_color.rgb * diffuse_albedo * ao *
                            energy.diffuse_weight;
     }
-    float3 volume_irradiance;
-    float3 volume_diffuse;
-    bool volume_valid = packet_diffuse_volume_terms(
-        frame, world, normal, diffuse_albedo, 0.0f, ao, energy, volume_diffuse, volume_irradiance);
     if (volume_valid) {
         indirect_diffuse = volume_diffuse;
         indirect_irradiance = volume_irradiance;
@@ -2181,7 +2204,11 @@ void vk_ssr_depth_mip(uint3 thread_id : SV_DispatchThreadID)
 float3 vkr_vk_ssr_selected_normal(uint normal_texture, uint clearcoat_texture,
                                   uint2 pixel)
 {
-    float4 packed = g_textures[clearcoat_texture].Load(int3(pixel, 0));
+    float4 packed = 0.0f;
+    if (clearcoat_texture != 0u)
+    {
+        packed = g_textures[clearcoat_texture].Load(int3(pixel, 0));
+    }
     return vkr_clearcoat_active(packed.x)
         ? vkr_vk_octahedral_decode(packed.zw)
         : vkr_vk_octahedral_decode(g_textures[normal_texture].Load(int3(pixel, 0)).xy);
@@ -2190,7 +2217,11 @@ float3 vkr_vk_ssr_selected_normal(uint normal_texture, uint clearcoat_texture,
 float vkr_vk_ssr_selected_roughness(uint specular_texture, uint clearcoat_texture,
                                     uint2 pixel)
 {
-    float4 packed = g_textures[clearcoat_texture].Load(int3(pixel, 0));
+    float4 packed = 0.0f;
+    if (clearcoat_texture != 0u)
+    {
+        packed = g_textures[clearcoat_texture].Load(int3(pixel, 0));
+    }
     return vkr_clearcoat_active(packed.x) ? clamp(packed.y, 0.04f, 1.0f)
         : clamp(g_textures[specular_texture].Load(int3(pixel, 0)).a, 0.04f, 1.0f);
 }
@@ -2375,7 +2406,11 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float3 receiver_view = vkr_ssr_reconstruct_view_position(root.params, uv, device_depth);
     float positive_depth = -receiver_view.z;
-    float4 clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
+    float4 clearcoat_packed = 0.0f;
+    if (root.clearcoat_texture != 0u)
+    {
+        clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
+    }
     bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
     float roughness = clearcoat_active
         ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
@@ -2592,7 +2627,11 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     if (any(pixel >= extent)) return;
     uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel, 0)).x;
     if (visible == 0u) return;
-    float4 clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
+    float4 clearcoat_packed = 0.0f;
+    if (root.clearcoat_texture != 0u)
+    {
+        clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
+    }
     bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
     float4 specular = 0.0f;
     float3 normal;
@@ -2664,14 +2703,22 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
         float roughness = vkr_vk_ssr_base_filter_roughness(
             root.normal_texture, root.vbuffer_texture, extent, pixel, visible,
             normal, material_roughness);
+        float4 anisotropy_packed = 0.0f;
+        if (root.anisotropy_texture != 0u)
+        {
+            anisotropy_packed = g_textures[root.anisotropy_texture].Load(int3(pixel, 0));
+        }
         VkrGgxMaterialEnergy energy = packet_prepare_gbuffer_brdf(
-            root.frame, normal, view, roughness, saturate(specular.rgb),
-            g_textures[root.anisotropy_texture].Load(int3(pixel, 0)));
+            root.frame, normal, view, roughness, saturate(specular.rgb), anisotropy_packed);
         float gtao_cone = vkr_gtao_cone_specular(
             gtao_visibility, vkr_gtao_decode_bent_normal(gtao, normal),
             reflect(-view, normal), roughness);
         float sheen_base_transmission = 1.0f;
-        float4 sheen_packed = g_textures[root.sheen_texture].Load(int3(pixel, 0));
+        float4 sheen_packed = 0.0f;
+        if (root.sheen_texture != 0u)
+        {
+            sheen_packed = g_textures[root.sheen_texture].Load(int3(pixel, 0));
+        }
         if (vkr_sheen_active(sheen_packed.rgb))
         {
             sheen_base_transmission = packet_prepare_sheen(

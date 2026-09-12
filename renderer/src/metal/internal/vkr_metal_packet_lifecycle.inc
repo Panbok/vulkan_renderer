@@ -760,6 +760,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       [renderer->world_text_pipeline release];
       [renderer->picking_text_pipeline release];
       [renderer->tonemap_pipeline release];
+      [renderer->display_linear_pipeline release];
       [renderer->ibl_equirect_pipeline release];
       [renderer->ibl_prefilter_pipeline release];
       [renderer->ibl_sh_pipeline release];

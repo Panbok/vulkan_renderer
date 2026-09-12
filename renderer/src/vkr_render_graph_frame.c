@@ -20,6 +20,21 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->render_scale = packet->render_scale;
   frame->editor_enabled = packet->input.frame.editor_enabled;
   frame->scene_rendering = packet->scene_rendering;
+  frame->post_transform_cache_enabled = packet->post_transform_cache_enabled;
+  const VkrWorldPassPayload *world = packet->input.world;
+  const uint32_t material_features = !world ? 0u
+                                     : world->opaque_material_features_valid
+                                         ? world->opaque_material_features
+                                         : VKR_WORLD_MATERIAL_FEATURE_ALL;
+  frame->clearcoat_enabled =
+      packet->scene_rendering &&
+      (material_features & VKR_WORLD_MATERIAL_FEATURE_CLEARCOAT) != 0u;
+  frame->sheen_enabled =
+      packet->scene_rendering &&
+      (material_features & VKR_WORLD_MATERIAL_FEATURE_SHEEN) != 0u;
+  frame->anisotropy_enabled =
+      packet->scene_rendering &&
+      (material_features & VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY) != 0u;
   frame->editor_image_available = packet->editor_image_available;
   frame->editor_overlay_enabled = packet->scene_rendering &&
                                   packet->input.editor &&

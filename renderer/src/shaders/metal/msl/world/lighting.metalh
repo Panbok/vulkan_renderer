@@ -202,14 +202,38 @@ float3 vkr_metal_packet_sheen_direct(float3 normal, float3 view, float3 light,
                           energy_normalization);
 }
 
+VkrSheenLtcSample vkr_metal_packet_prepare_sheen_rectangle(
+    constant VkrMetalPacketFrameRoot *frame, float3 normal, float3 view,
+    VkrSheenLayer sheen) {
+  VkrSheenLtcSample sample = vkr_metal_packet_sheen_ltc_sample(
+      frame, max(dot(normal, view), 0.0f), sheen.roughness);
+  constexpr sampler sheen_sampler(coord::normalized, address::clamp_to_edge,
+                                  filter::linear, mip_filter::none);
+  float2 sheen_uv = vkr_sheen_ltc_lut_uv(max(dot(normal, view), 0.0f),
+                                          sheen.roughness);
+  VkrSheenLtcTransform transform_b = vkr_sheen_ltc_decode_transform(
+      frame->sheen->ltc_matrix_texture_b.sample(sheen_sampler, sheen_uv,
+                                                 level(0.0f)));
+  sample.inverse_matrix_b = transform_b.inverse_matrix;
+  sample.clipped_mass_b = transform_b.clipped_mass;
+  sample.table_weight_b = frame->sheen->ltc_amplitude_texture_b
+                              .sample(sheen_sampler, sheen_uv, level(0.0f))
+                              .r;
+  sample = vkr_sheen_ltc_prepare_sample(sample, sheen.directional_albedo);
+  return sample;
+}
+
 // Rectangle rows are one-sided, unshadowed radiance emitters. The texture
 // samples and receiver frame are shared by all eight rows, so lookup cost is
 // independent of rectangle count. The cosine integral already contains /pi.
 template <bool EvaluateDiffuse>
-VkrMetalPacketDirectResult vkr_metal_packet_rectangle_lights(
+VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
     float3 normal, float3 view, float3 diffuse_albedo, float metallic,
-    float roughness, float3 f0, VkrGgxMaterialEnergy energy) {
+    float roughness, float3 f0, VkrGgxMaterialEnergy energy,
+    bool coat_active, VkrClearcoatLayer coat,
+    bool sheen_active, VkrSheenLayer sheen,
+    thread float3 &coat_result, thread float3 &sheen_result) {
   VkrMetalPacketDirectResult result = {float3(0.0f), float3(0.0f), float3(0.0f)};
   if (frame->ltc->light_count == 0u)
     return result;
@@ -240,6 +264,29 @@ VkrMetalPacketDirectResult vkr_metal_packet_rectangle_lights(
         ltc_frame.tangent = energy.anisotropy_tangent;
         ltc_frame.bitangent = energy.anisotropy_bitangent;
     }
+  VkrLtcSample coat_sample = {};
+  VkrLtcFrame coat_frame = {};
+  float3 coat_amplitude = 0.0f;
+  if (coat_active) {
+    float2 coat_uv = vkr_ltc_lut_uv(coat.energy.no_v, coat.roughness);
+    coat_sample.inverse_matrix = ltc.matrix_texture.sample(
+        ltc_sampler, coat_uv, level(0.0f));
+    coat_sample.amplitude_fresnel = ltc.amplitude_texture.sample(
+        ltc_sampler, coat_uv, level(0.0f)).rg;
+    coat_frame = vkr_ltc_make_frame(coat.normal, view);
+    coat_amplitude = vkr_ltc_specular_amplitude(
+        coat_sample, coat.energy.no_v, float3(VKR_CLEARCOAT_F0),
+        saturate(VKR_CLEARCOAT_F0 * 25.0f), coat.energy.specular_scale);
+  }
+  VkrSheenLtcSample sheen_sample = {};
+  VkrLtcFrame sheen_frame = {};
+  if (sheen_active) {
+    sheen_sample = vkr_metal_packet_prepare_sheen_rectangle(
+        frame, normal, view, sheen);
+    sheen_frame = vkr_ltc_make_frame(normal, view);
+  }
+  float3 coat_sum = 0.0f;
+  float3 sheen_sum = 0.0f;
   uint light_count = min(ltc.light_count, 8u);
   for (uint index = 0u; index < light_count; ++index) {
     const device VkrGpuRectangleLightRow &row = ltc.lights[index];
@@ -259,6 +306,19 @@ VkrMetalPacketDirectResult vkr_metal_packet_rectangle_lights(
                 local_rectangle, sample.inverse_matrix, specular_amplitude);
     float3 radiance = row.color.rgb * row.up_radiance.w;
     result.specular += radiance * specular;
+    if (coat_active) {
+      VkrLtcRectangle coat_rectangle = vkr_ltc_project_rectangle_in_frame(
+          center - world_position, right, up, coat_frame);
+      coat_sum += radiance * vkr_ltc_evaluate_specular_rectangle(
+          coat_rectangle, coat_sample.inverse_matrix, coat_amplitude);
+    }
+    if (sheen_active) {
+      // An anisotropic base rotates its LTC frame; sheen retains its own.
+      VkrLtcRectangle sheen_rectangle = vkr_ltc_project_rectangle_in_frame(
+          center - world_position, right, up, sheen_frame);
+      sheen_sum += radiance * sheen.color *
+          vkr_sheen_ltc_rectangle(sheen_rectangle, sheen_sample);
+    }
     if (EvaluateDiffuse) {
       float diffuse_integral = vkr_ltc_integrate_transformed_rectangle(
           local_rectangle.vertex0, local_rectangle.vertex1,
@@ -277,7 +337,26 @@ VkrMetalPacketDirectResult vkr_metal_packet_rectangle_lights(
       }
     }
   }
+  if (coat_active) {
+    coat_result += coat_sum * coat.factor;
+  }
+  if (sheen_active) {
+    sheen_result += sheen_sum;
+  }
   return result;
+}
+
+template <bool EvaluateDiffuse>
+VkrMetalPacketDirectResult vkr_metal_packet_rectangle_lights(
+    constant VkrMetalPacketFrameRoot *frame, float3 world_position,
+    float3 normal, float3 view, float3 diffuse_albedo, float metallic,
+    float roughness, float3 f0, VkrGgxMaterialEnergy energy) {
+  float3 coat_result = 0.0f;
+  float3 sheen_result = 0.0f;
+  return vkr_metal_packet_layered_rectangle_lights<EvaluateDiffuse>(
+      frame, world_position, normal, view, diffuse_albedo, metallic,
+      roughness, f0, energy, false, VkrClearcoatLayer{}, false,
+      VkrSheenLayer{}, coat_result, sheen_result);
 }
 
 float3 vkr_metal_packet_clearcoat_rectangle_lights(
@@ -295,21 +374,8 @@ float3 vkr_metal_packet_sheen_rectangle_lights(
     float3 normal, float3 view, VkrSheenLayer sheen) {
   if (frame->ltc->light_count == 0u)
     return 0.0f;
-  VkrSheenLtcSample sample = vkr_metal_packet_sheen_ltc_sample(
-      frame, max(dot(normal, view), 0.0f), sheen.roughness);
-  constexpr sampler sheen_sampler(coord::normalized, address::clamp_to_edge,
-                                  filter::linear, mip_filter::none);
-  float2 sheen_uv = vkr_sheen_ltc_lut_uv(max(dot(normal, view), 0.0f),
-                                          sheen.roughness);
-  VkrSheenLtcTransform transform_b = vkr_sheen_ltc_decode_transform(
-      frame->sheen->ltc_matrix_texture_b.sample(sheen_sampler, sheen_uv,
-                                                 level(0.0f)));
-  sample.inverse_matrix_b = transform_b.inverse_matrix;
-  sample.clipped_mass_b = transform_b.clipped_mass;
-  sample.table_weight_b = frame->sheen->ltc_amplitude_texture_b
-                              .sample(sheen_sampler, sheen_uv, level(0.0f))
-                              .r;
-  sample = vkr_sheen_ltc_prepare_sample(sample, sheen.directional_albedo);
+  VkrSheenLtcSample sample = vkr_metal_packet_prepare_sheen_rectangle(
+      frame, normal, view, sheen);
   VkrLtcFrame ltc_frame = vkr_ltc_make_frame(normal, view);
   float3 result = 0.0f;
   uint light_count = min(frame->ltc->light_count, 8u);

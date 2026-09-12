@@ -74,6 +74,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_GTAO_EVALUATE,
   VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DENOISE,
   VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP,
+  VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY,
@@ -188,6 +189,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.gtao.evaluate", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gtao.denoise", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.tonemap.prepare", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor.clear", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -1367,7 +1369,8 @@ vkr_internal bool8_t vkr_vk_graph_fullscreen_source(VkrVulkanRenderer *renderer,
                                                     const VkrRgPass *pass,
                                                     uint32_t *out_index) {
   const uint32_t binding =
-      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u)   ? 2u
+      vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u)   ? 5u
+      : vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) ? 2u
       : vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u) ? 3u
       : vkr_rg_pass_find_image_use(&pass->desc, 4u, 0u) ? 4u
                                                         : 0u;
@@ -1498,7 +1501,12 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
       return false_v;
     return true_v;
   }
+  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
   case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP: {
+    const bool8_t prepare_display_linear =
+        kind == VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE;
+    const bool8_t source_display_linear =
+        vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u) != NULL;
     uint32_t texture_index = 0u;
     const VkrRgBufferUse *exposure_use =
         vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
@@ -1511,10 +1519,16 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     }
     const bool8_t recorded = vkr_vk_prepare_packet_fullscreen(
         renderer, &prepared->fullscreen,
-        VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index,
-        exposure_state ? exposure_state->buffer.address : 0u,
-        (renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP
-                                          : 0u) |
+        prepare_display_linear
+            ? VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_DISPLAY_LINEAR
+            : VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
+        texture_index, exposure_state ? exposure_state->buffer.address : 0u,
+        (prepare_display_linear ? VKR_VULKAN_FULLSCREEN_PREPARE_DISPLAY_LINEAR
+                                : 0u) |
+            (source_display_linear ? VKR_VULKAN_FULLSCREEN_SOURCE_DISPLAY_LINEAR
+                                   : 0u) |
+            (renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP
+                                              : 0u) |
             (packet->input.globals.display_transform ==
                      VKR_DISPLAY_TRANSFORM_ACES_FITTED
                  ? VKR_VULKAN_FULLSCREEN_ACES_FITTED
@@ -1799,6 +1813,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
   case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
   case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
+  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
   case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
@@ -2105,6 +2120,7 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
     vkr_vk_record_editor_overlay(renderer, command, &prepared->overlay);
     break;
+  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
   case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
     vkr_vk_record_fullscreen(renderer, command, &prepared->fullscreen);
@@ -2153,6 +2169,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
     case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
     case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
+    case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
     case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
     case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
     case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:

@@ -13,6 +13,8 @@ struct alignas(16) VkrMetalPacketTonemapRoot {
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED =
     1u << 3u;
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u;
+static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR = 1u << 5u;
+static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR = 1u << 6u;
 
 static float3 vkr_metal_packet_aces_fitted(float3 color) {
   const float a = 2.51;
@@ -33,8 +35,10 @@ vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
   // The editor Scene composite samples presentation-linear pixels from the
   // retained scene image. They already carry the physical-output scale, so a
   // second grade or SDR clamp would destroy extended-linear highlights.
-  if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED) != 0u)
+  if ((flags & (VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED |
+                VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR)) != 0u) {
     return hdr;
+  }
   float3 color = vkr_color_grade(max(hdr.rgb * exposure, 0.0), grading);
   float3 display_linear =
       (flags & 1u) != 0u
@@ -50,8 +54,10 @@ vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
 
 static float4 vkr_metal_packet_finish_output(
     float4 color, uint flags, VkrDisplayOutputParams display_output) {
-  if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED) == 0u)
+  if ((flags & (VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED |
+                VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR)) == 0u) {
     color.rgb = vkr_display_output_scale(color.rgb, display_output);
+  }
   // Post-MetalFX alpha carries private history age, never scene opacity.
   if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA) != 0u)
     color.a = 1.0f;

@@ -344,6 +344,12 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
+    if (world->opaque_material_features_valid > true_v ||
+        (world->opaque_material_features & ~VKR_WORLD_MATERIAL_FEATURE_ALL)) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.opaque_material_features",
+                        "must contain only supported material feature bits");
+    }
     VkrRendererError error = vkr_renderer_validate_packet_array(
         world->gpu_candidates, world->gpu_candidate_count,
         VKR_GPU_DRAW_CANDIDATE_CAPACITY, "packet.world.gpu_candidates",

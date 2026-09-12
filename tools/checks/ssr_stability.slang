@@ -1,6 +1,7 @@
 // Execute production SSR filtering and cell traversal with analytic inputs.
 #include "ssr_kernel.slangh"
 #include "ssgi_kernel.slangh"
+#include "normal_map_kernel.slangh"
 RWStructuredBuffer<float> g_results;
 [shader("compute")]
 [numthreads(1, 1, 1)]
@@ -672,4 +673,47 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         g_results[280u + phase * 2u] = float(winner_identity);
         g_results[281u + phase * 2u] = float(winner_tap);
     }
+    // The last 3x3 cell of a 7x5 source contains an uncovered foreground
+    // candidate and two equal nearest depths. Stable top-left ownership wins.
+    VkrSsgiReceiver selected = vkr_ssgi_empty_receiver();
+    selected = vkr_ssgi_consider_receiver(selected, uint2(4, 2), 1.0f, 0u);
+    selected = vkr_ssgi_consider_receiver(selected, uint2(6, 3), 7.25f, 1u);
+    selected = vkr_ssgi_consider_receiver(selected, uint2(4, 4), 7.25f, 1u);
+    float2 packed_receiver = vkr_ssgi_pack_receiver(selected, uint2(2, 1));
+    VkrSsgiReceiver cached = vkr_ssgi_unpack_receiver(packed_receiver, uint2(2, 1));
+    g_results[290] = packed_receiver.x;
+    g_results[291] = packed_receiver.y;
+    g_results[292] = float(cached.pixel.x);
+    g_results[293] = float(cached.pixel.y);
+    g_results[294] = cached.positive_depth;
+    g_results[295] = float(cached.valid);
+    VkrSsgiReceiver uncovered = vkr_ssgi_unpack_receiver(float2(0), uint2(2, 1));
+    g_results[296] = float(uncovered.valid);
+    // Largest odd-tail offset and single-pixel source preserve exact pixels.
+    selected.pixel = uint2(6, 4);
+    cached = vkr_ssgi_unpack_receiver(vkr_ssgi_pack_receiver(selected, uint2(2, 1)), uint2(2, 1));
+    g_results[297] = float(cached.pixel.x);
+    g_results[298] = float(cached.pixel.y);
+    selected.pixel = uint2(0);
+    cached = vkr_ssgi_unpack_receiver(vkr_ssgi_pack_receiver(selected, uint2(0)), uint2(0));
+    g_results[299] = float(cached.pixel.x + cached.pixel.y);
+    // A two-channel sample (0.8, 0.6) decodes to (0.6, 0.2, sqrt(0.6)).
+    // Reconstruct source Z before strength, preserve tangent Y reflection,
+    // and ignore blue as required for BC5/EAC normal-RG samples.
+    float strengths[4] = {0.0f, 0.5f, 1.0f, 2.0f};
+    for (uint i = 0u; i < 4u; ++i) {
+        float3 normal = vkr_normal_map_decode(float3(0.8f, 0.6f, 0.0f), strengths[i]);
+        for (uint component = 0u; component < 3u; ++component) {
+            g_results[300u + i * 3u + component] = normal[component];
+        }
+    }
+    float3 flat_outside = vkr_normal_map_decode(float3(1.0f, 1.0f, 0.0f), 0.0f);
+    float3 tilted_outside = vkr_normal_map_decode(float3(1.0f, 1.0f, 0.0f), 2.0f);
+    float3 widened = vkr_normal_map_decode(float3(0.8f, 0.6f, 0.37f), 2.0f);
+    for (uint component = 0u; component < 3u; ++component) {
+        g_results[312u + component] = flat_outside[component];
+        g_results[315u + component] = tilted_outside[component];
+        g_results[318u + component] = widened[component];
+    }
+
 }

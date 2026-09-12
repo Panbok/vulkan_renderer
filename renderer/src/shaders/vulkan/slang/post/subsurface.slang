@@ -71,18 +71,18 @@ float3 vkr_vk_subsurface_receiver(VkrVkSubsurfaceRoot *root, uint2 pixel,
                                                 clamp(specular.w, 0.04f, 1.0f));
   VkrGgxMaterialEnergy energy = packet_prepare_gbuffer_brdf(
       root.frame, normal, view, roughness, saturate(specular.rgb),
-      g_textures[NonUniformResourceIndex(root.anisotropy)].Load(
-          int3(pixel, 0)));
+      (root.anisotropy == 0u ? float4(0.0f) : g_textures[NonUniformResourceIndex(root.anisotropy)].Load(
+          int3(pixel, 0))));
   float3 boundary = energy.diffuse_weight;
   float4 coat =
-      g_textures[NonUniformResourceIndex(root.clearcoat)].Load(int3(pixel, 0));
+      (root.clearcoat == 0u ? float4(0.0f) : g_textures[NonUniformResourceIndex(root.clearcoat)].Load(int3(pixel, 0)));
   if (vkr_clearcoat_active(coat.x)) {
     VkrClearcoatLayer layer = packet_prepare_clearcoat(
         root.frame, coat.x, coat.y, vkr_vk_octahedral_decode(coat.zw), view);
     boundary *= layer.base_transmission;
   }
   float4 sheen =
-      g_textures[NonUniformResourceIndex(root.sheen)].Load(int3(pixel, 0));
+      (root.sheen == 0u ? float4(0.0f) : g_textures[NonUniformResourceIndex(root.sheen)].Load(int3(pixel, 0)));
   if (vkr_sheen_active(sheen.rgb)) {
     VkrSheenLayer layer =
         packet_prepare_sheen(root.frame, sheen.rgb, sheen.w, normal, view,

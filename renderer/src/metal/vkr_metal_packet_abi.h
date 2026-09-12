@@ -397,6 +397,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiDepthBaseRoot {
   uint64_t depth_texture_id;
   uint64_t vbuffer_texture_id;
   uint64_t pyramid_texture_id;
+  uint64_t receiver_texture_id;
 } VkrMetalPacketSsgiDepthBaseRoot;
 
 _Static_assert(sizeof(VkrMetalPacketSsgiDepthBaseRoot) == 320u,
@@ -422,6 +423,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiTraceRoot {
   uint64_t pyramid_texture_id;
   uint64_t direct_source_texture_id;
   uint64_t raw_texture_id;
+  uint64_t receiver_texture_id;
 } VkrMetalPacketSsgiTraceRoot;
 
 _Static_assert(sizeof(VkrMetalPacketSsgiTraceRoot) == 352u,
@@ -443,10 +445,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiTemporalRoot {
   uint64_t output_identity_texture_id;
   uint64_t visible_rows;
   uint64_t instances;
+  uint64_t receiver_texture_id;
 } VkrMetalPacketSsgiTemporalRoot;
 
-_Static_assert(sizeof(VkrMetalPacketSsgiTemporalRoot) == 400u,
-               "Metal SSGI temporal root ABI must remain 400 bytes");
+_Static_assert(sizeof(VkrMetalPacketSsgiTemporalRoot) == 416u,
+               "Metal SSGI temporal root ABI must remain 416 bytes");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiCompositeRoot {
   uint64_t frame;
@@ -469,13 +472,14 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiCompositeRoot {
   uint32_t visible_rows_padding[2];
   uint64_t visible_rows;
   uint64_t subsurface_source_texture_id;
+  uint64_t receiver_texture_id;
 } VkrMetalPacketSsgiCompositeRoot;
 _Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot, subsurface_source_texture_id) == 488u &&
                    offsetof(VkrMetalPacketSsgiCompositeRoot, subsurface_profile_count) == 440u,
                "Subsurface source producer ABI drift");
 
-_Static_assert(sizeof(VkrMetalPacketSsgiCompositeRoot) == 496u,
-               "Metal SSGI composite root ABI must remain 496 bytes");
+_Static_assert(sizeof(VkrMetalPacketSsgiCompositeRoot) == 512u,
+               "Metal SSGI composite root ABI must remain 512 bytes");
 _Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot,
                         clearcoat_texture_id) == 448u,
                "Metal SSGI clearcoat ABI offset drift");
@@ -1023,7 +1027,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowCascade {
   Vec4 origin_inv_size_sun;
 } VkrMetalPacketShadowCascade;
 
-enum { VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u };
+enum {
+  VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u,
+  VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR = 1u << 5u,
+  VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR = 1u << 6u,
+};
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
   uint64_t source_texture_id;

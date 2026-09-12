@@ -1221,6 +1221,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_bloom_upsample",
       VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
       @"VKR Metal packet bloom upsample");
+  renderer->display_linear_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_tonemap_vertex", fragment,
+      "vkr_metal_packet_tonemap_fragment", MTLPixelFormatRGBA16Float, false_v,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
+      false_v, @"VKR Metal display-linear preparation");
   renderer->bloom_combine_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_bloom_combine",
       VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
@@ -1319,6 +1324,8 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->ui_pipeline, "UI stream pipeline"},
       {renderer->picking_pipeline, "picking pipeline"},
       {renderer->tonemap_pipeline, "tonemap pipeline"},
+      {renderer->display_linear_pipeline,
+       "display-linear preparation pipeline"},
       {renderer->editor_overlay_pipeline, "editor overlay pipeline"},
       {renderer->editor_overlay_picking_pipeline,
        "editor overlay picking pipeline"},

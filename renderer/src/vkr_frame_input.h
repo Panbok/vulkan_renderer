@@ -24,7 +24,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 45u
+#define VKR_FRAME_INPUT_VERSION 46u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -257,10 +257,20 @@ typedef struct VkrPreparedUiDrawList {
   uint32_t batch_count;
 } VkrPreparedUiDrawList;
 
+#define VKR_WORLD_MATERIAL_FEATURE_CLEARCOAT 0x1u
+#define VKR_WORLD_MATERIAL_FEATURE_SHEEN 0x2u
+#define VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY 0x4u
+#define VKR_WORLD_MATERIAL_FEATURE_ALL 0x7u
+
 /**
  * @brief Payload for GPU-driven world stages and retained ordinary blend.
  */
 typedef struct VkrWorldPassPayload {
+  /** Conservative aggregate over opaque/cutout source materials. Unknown
+   * aggregates retain all planes for packet producers that do not extract it.
+   */
+  uint32_t opaque_material_features;
+  bool8_t opaque_material_features_valid;
   const VkrWorldDrawCandidate *gpu_candidates;
   uint32_t gpu_candidate_count;
   /** Rows in gpu_candidates eligible for the camera opaque/cutout view. */

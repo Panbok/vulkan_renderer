@@ -140,6 +140,7 @@ struct VkrRenderer {
   bool8_t gtao_forced_disabled;
   bool8_t ssr_forced_disabled;
   bool8_t ssgi_forced_disabled;
+  bool8_t post_transform_cache_enabled;
   bool8_t submitted_ssgi_enabled;
 
   // Per-frame render statistics for UI/debug use.

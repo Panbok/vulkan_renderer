@@ -304,6 +304,20 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
     uint32_t height, VkrDeviceRequirements *device_requirements,
     const VkrRendererBackendConfig *backend_config,
     VkrRendererError *out_error) {
+  VkrSsrQuality ssr_quality = VKR_SSR_QUALITY_HIGH;
+  const char *ssr_quality_env = getenv("VKR_SSR_QUALITY");
+  if (ssr_quality_env && ssr_quality_env[0] != '\0') {
+    if (strcmp(ssr_quality_env, "balanced") == 0) {
+      ssr_quality = VKR_SSR_QUALITY_BALANCED;
+    } else if (strcmp(ssr_quality_env, "high") != 0) {
+      log_error("VKR_SSR_QUALITY must be high or balanced");
+      if (out_error) {
+        *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      }
+      return false_v;
+    }
+  }
+  const VkrSsrConfig ssr_config = vkr_ssr_config_for_quality(ssr_quality);
 #if defined(PLATFORM_APPLE)
   (void)device_requirements;
   /* Two completion-protected slots; backing heaps grow only at resource
@@ -329,7 +343,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   if (!pipeline_archive_path || pipeline_archive_path[0] == '\0')
     pipeline_archive_path = VKR_METAL_PACKET_ARCHIVE_PATH;
   VkrMetalPacketRendererConfig metal_config = {
-      .ssr = vkr_ssr_config_default(),
+      .ssr = ssr_config,
       .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
       .graph_path = "assets/render_graphs/main.rendergraph.json",
@@ -348,7 +362,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .metal_layer = surface ? surface->metal_layer : NULL,
       .display_output_mode = backend_config->display_output_mode,
       .display_output_context = surface ? surface->context : NULL,
-      .display_output_snapshot = surface ? surface->display_output_snapshot : NULL,
+      .display_output_snapshot =
+          surface ? surface->display_output_snapshot : NULL,
       .requested_present_mode = backend_config->requested_present_mode,
       .managed_budget_size = managed_budget_mb * MB(1),
       .heap_chunk_size = MB(64),
@@ -397,7 +412,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
 #else
   (void)device_requirements;
   VkrVulkanRendererConfig config = {
-      .ssr = vkr_ssr_config_default(),
+      .ssr = ssr_config,
       .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
       .graph_path = "assets/render_graphs/main.rendergraph.json",
@@ -684,6 +699,8 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
       vkr_renderer_env_enabled("VKR_BLOOM_DISABLED");
   renderer->ssr_forced_disabled = vkr_renderer_env_enabled("VKR_SSR_DISABLED");
   renderer->ssgi_forced_disabled = vkr_renderer_env_enabled("VKR_SSGI_DISABLED");
+  renderer->post_transform_cache_enabled =
+      vkr_renderer_env_enabled("VKR_POST_TRANSFORM_CACHE");
   renderer->gtao_forced_disabled =
       vkr_renderer_env_enabled("VKR_GTAO_DISABLED");
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
@@ -788,6 +805,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.input = *packet;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
+  prepared->frame.post_transform_cache_enabled =
+      rf->post_transform_cache_enabled && prepared->frame.scene_rendering &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.editor_image_available = false_v;
   prepared->frame.editor_image_width = 1u;
   prepared->frame.editor_image_height = 1u;

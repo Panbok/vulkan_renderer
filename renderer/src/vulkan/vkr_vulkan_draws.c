@@ -1471,13 +1471,17 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
   };
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
-  const float32_t image_sharpness =
+  const bool8_t prepare_display_linear =
+      (flags & VKR_VULKAN_FULLSCREEN_PREPARE_DISPLAY_LINEAR) != 0u;
+  const float32_t requested_sharpness =
       !composite && renderer->graph->packet->input.globals.render_mode ==
                         VKR_RENDER_MODE_DEFAULT
           ? renderer->graph->packet->input.globals.image_sharpness
           : 0.0f;
+  const float32_t image_sharpness =
+      prepare_display_linear ? 0.0f : requested_sharpness;
   root->transmission_sampler =
-      (composite || renderer->config.fxaa_enabled || image_sharpness > 0.0f)
+      (composite || renderer->config.fxaa_enabled || requested_sharpness > 0.0f)
           ? renderer->transmission_sampler_slot
           : 0u;
   root->exposure_state = exposure_state ? exposure_state : manual_state_address;
@@ -1486,7 +1490,8 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,
-      .flags = flags | (!composite && renderer->config.fxaa_enabled
+      .flags = flags | (!composite && !prepare_display_linear &&
+                                renderer->config.fxaa_enabled
                             ? VKR_VULKAN_FULLSCREEN_FXAA
                             : 0u),
   };

@@ -281,6 +281,14 @@ bool8_t vkr_harness_report_write(const char *path,
   if (!path || !report) {
     return false_v;
   }
+  const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
+  const bool8_t post_transform_cache_enabled =
+      post_cache && post_cache[0] != '\0' && !string_equals(post_cache, "0") &&
+      string_equals(report->case_manifest.renderer.render_mode, "default");
+  const char *ssr_quality = getenv("VKR_SSR_QUALITY");
+  if (!ssr_quality || ssr_quality[0] == '\0') {
+    ssr_quality = "high";
+  }
   VkrJsonFileWriter file_writer = {0};
   if (!vkr_json_file_writer_begin(&file_writer, vkr_harness_string(path))) {
     vkr_harness_error_set(out_error, "report.open", "$",
@@ -555,12 +563,16 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_f64(
           writer, "bloom_intensity",
           report->case_manifest.renderer.bloom_intensity) &&
-      vkr_harness_json_emit_string(writer, "display_output",
-                                   report->case_manifest.renderer.display_output) &&
+      vkr_harness_json_emit_string(
+          writer, "display_output",
+          report->case_manifest.renderer.display_output) &&
       vkr_harness_json_emit_bool(writer, "ssgi_enabled",
                                  report->case_manifest.renderer.ssgi_enabled) &&
       vkr_harness_json_emit_bool(writer, "ssr_enabled",
                                  report->case_manifest.renderer.ssr_enabled) &&
+      vkr_harness_json_emit_string(writer, "ssr_quality", ssr_quality) &&
+      vkr_harness_json_emit_bool(writer, "post_transform_cache_enabled",
+                                 post_transform_cache_enabled) &&
       vkr_harness_json_emit_bool(writer, "dof_enabled",
                                  report->case_manifest.renderer.dof_enabled) &&
       vkr_harness_json_emit_f64(
@@ -580,11 +592,14 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_name(writer, "motion_blur_entity_velocity") &&
       vkr_json_writer_begin_array(writer) &&
       vkr_json_writer_f64(
-          writer, report->case_manifest.renderer.motion_blur_entity_velocity_x) &&
+          writer,
+          report->case_manifest.renderer.motion_blur_entity_velocity_x) &&
       vkr_json_writer_f64(
-          writer, report->case_manifest.renderer.motion_blur_entity_velocity_y) &&
+          writer,
+          report->case_manifest.renderer.motion_blur_entity_velocity_y) &&
       vkr_json_writer_f64(
-          writer, report->case_manifest.renderer.motion_blur_entity_velocity_z) &&
+          writer,
+          report->case_manifest.renderer.motion_blur_entity_velocity_z) &&
       vkr_json_writer_end_array(writer) &&
       vkr_harness_json_emit_bool(writer, "gtao_enabled",
                                  report->case_manifest.renderer.gtao_enabled) &&

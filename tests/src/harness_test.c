@@ -814,6 +814,102 @@ vkr_internal void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
+  /* A cold quality selection changes measured work. Missing and explicit high
+     must compare equally; balanced must not accidentally match that workload.
+   */
+  const char *previous_ssr_quality = getenv("VKR_SSR_QUALITY");
+  char saved_ssr_quality[4096] = {0};
+  const bool8_t had_ssr_quality = previous_ssr_quality != NULL;
+  if (had_ssr_quality) {
+    assert(strlen(previous_ssr_quality) < sizeof(saved_ssr_quality));
+    string_copy(saved_ssr_quality, previous_ssr_quality);
+  }
+  const bool8_t previous_ssr_enabled = case_manifest.renderer.ssr_enabled;
+  case_manifest.renderer.ssr_enabled = true_v;
+#if defined(_WIN32)
+#define SET_SSR_QUALITY(value) assert(_putenv_s("VKR_SSR_QUALITY", value) == 0)
+#else
+#define SET_SSR_QUALITY(value) assert(setenv("VKR_SSR_QUALITY", value, 1) == 0)
+#endif
+#define SSR_FINGERPRINT(output)                                                \
+  assert(vkr_harness_case_fingerprints_with_scene_digest(                      \
+      VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,                      \
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,                                    \
+      "sha256:"                                                                \
+      "0000000000000000000000000000000000000000000000000000000000000000",      \
+      environment, output, policy, &error))
+  char high_workload[VKR_HARNESS_DIGEST_MAX];
+  SET_SSR_QUALITY("high");
+  SSR_FINGERPRINT(high_workload);
+#if defined(_WIN32)
+  SET_SSR_QUALITY("");
+#else
+  assert(unsetenv("VKR_SSR_QUALITY") == 0);
+#endif
+  SSR_FINGERPRINT(workload);
+  assert(strcmp(high_workload, workload) == 0);
+  SET_SSR_QUALITY("balanced");
+  SSR_FINGERPRINT(workload);
+  assert(strcmp(high_workload, workload) != 0);
+  case_manifest.renderer.ssr_enabled = previous_ssr_enabled;
+  if (had_ssr_quality) {
+    SET_SSR_QUALITY(saved_ssr_quality);
+  } else {
+#if defined(_WIN32)
+    SET_SSR_QUALITY("");
+#else
+    assert(unsetenv("VKR_SSR_QUALITY") == 0);
+#endif
+  }
+#undef SSR_FINGERPRINT
+#undef SET_SSR_QUALITY
+  // The opt-in nonlinear filtering path must not share an analytic workload
+  // fingerprint; equivalent boolean spellings must normalize identically.
+  const char *previous_post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
+  char saved_post_cache[4096] = {0};
+  const bool8_t had_post_cache = previous_post_cache != NULL;
+  if (had_post_cache) {
+    assert(strlen(previous_post_cache) < sizeof(saved_post_cache));
+    string_copy(saved_post_cache, previous_post_cache);
+  }
+#if defined(_WIN32)
+#define SET_POST_CACHE(value)                                                  \
+  assert(_putenv_s("VKR_POST_TRANSFORM_CACHE", value) == 0)
+#else
+#define SET_POST_CACHE(value)                                                  \
+  assert(setenv("VKR_POST_TRANSFORM_CACHE", value, 1) == 0)
+#endif
+#define POST_FINGERPRINT(output)                                               \
+  assert(vkr_harness_case_fingerprints_with_scene_digest(                      \
+      VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,                      \
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,                                    \
+      "sha256:"                                                                \
+      "0000000000000000000000000000000000000000000000000000000000000000",      \
+      environment, output, policy, &error))
+  char analytic_workload[VKR_HARNESS_DIGEST_MAX];
+  char cached_workload[VKR_HARNESS_DIGEST_MAX];
+  SET_POST_CACHE("");
+  POST_FINGERPRINT(analytic_workload);
+  SET_POST_CACHE("0");
+  POST_FINGERPRINT(workload);
+  assert(strcmp(analytic_workload, workload) == 0);
+  SET_POST_CACHE("1");
+  POST_FINGERPRINT(cached_workload);
+  assert(strcmp(analytic_workload, cached_workload) != 0);
+  SET_POST_CACHE("true");
+  POST_FINGERPRINT(workload);
+  assert(strcmp(cached_workload, workload) == 0);
+  if (had_post_cache) {
+    SET_POST_CACHE(saved_post_cache);
+  } else {
+#if defined(_WIN32)
+    SET_POST_CACHE("");
+#else
+    assert(unsetenv("VKR_POST_TRANSFORM_CACHE") == 0);
+#endif
+  }
+#undef POST_FINGERPRINT
+#undef SET_POST_CACHE
   printf("  test_harness_fingerprints PASSED\n");
 }
 

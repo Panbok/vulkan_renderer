@@ -573,7 +573,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
     VkrMetalPacketFrameUpload *upload, uint32_t target_width,
     uint32_t target_height, const Vec4 *editor_rect)
     API_AVAILABLE(macos(26.0)) {
-  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
+  const bool8_t prepare_display_linear =
+      prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE;
+  const VkrRgImageUse *cached = vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
+  const VkrRgImageUse *read = cached;
+  if (!read) {
+    read = vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
+  }
   if (!read)
     read = vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u);
   if (!read)
@@ -611,21 +617,28 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       .source_texture_id = source.gpuResourceID._impl,
       .flags =
           (!editor_rect && renderer->tonemap_enabled ? 1u : 0u) |
-          (!editor_rect && renderer->fxaa_enabled && !renderer->metalfx_enabled
+          (!editor_rect && !prepare_display_linear && renderer->fxaa_enabled &&
+                   !renderer->metalfx_enabled
                ? 2u
                : 0u) |
           (packet->input.globals.display_transform ==
                    VKR_DISPLAY_TRANSFORM_ACES_FITTED
                ? 4u
                : 0u) |
+          (prepare_display_linear
+               ? VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR
+               : 0u) |
+          (cached ? VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR : 0u) |
           (editor_rect ? VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED
                        : 0u) |
-          (renderer->metalfx_enabled ? VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA
-                                     : 0u),
-      .image_sharpness = !editor_rect && packet->input.globals.render_mode ==
-                                             VKR_RENDER_MODE_DEFAULT
-                             ? packet->input.globals.image_sharpness
-                             : 0.0f,
+          (renderer->metalfx_enabled
+               ? VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA
+               : 0u),
+      .image_sharpness =
+          !editor_rect && !prepare_display_linear &&
+                  packet->input.globals.render_mode == VKR_RENDER_MODE_DEFAULT
+              ? packet->input.globals.image_sharpness
+              : 0.0f,
       .exposure_state = manual_state_gpu,
       .output_extent = {output_width, output_height},
       .color_grading = color_grading_gpu,
@@ -1186,14 +1199,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
           (float32_t)(packet->motion_blur_delta_seconds / elapsed);
   }
   const bool8_t resolve_debug_capture = debug != nil;
-  if (!vbuffer || !albedo || !specular || !normal || !clearcoat || !sheen ||
-      !anisotropy ||
-      !hdr_seed ||
-      !motion || !validity || !visible || !state ||
+  if (!vbuffer || !albedo || !specular || !normal ||
+      (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 13u, 0u)) ||
+      (!sheen && vkr_rg_pass_find_image_use(&pass->desc, 14u, 0u)) ||
+      (!anisotropy && vkr_rg_pass_find_image_use(&pass->desc, 15u, 0u)) ||
+      !hdr_seed || !motion || !validity || !visible || !state ||
       !vkr_metal_packet_pass_buffer(renderer, pass, 10u) ||
       vbuffer.width == 0u || vbuffer.height == 0u ||
-      vbuffer.width > UINT32_MAX || vbuffer.height > UINT32_MAX)
+      vbuffer.width > UINT32_MAX || vbuffer.height > UINT32_MAX) {
     return false_v;
+  }
   uint64_t root_gpu = 0u;
   VkrMetalPacketGBufferResolveRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -1419,11 +1434,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
         pyramid.height == 0u)
       return false_v;
     uint64_t root_gpu = 0u;
+    id<MTLTexture> receiver = vkr_metal_packet_pass_texture(renderer, pass, 3u);
+    if (!receiver) {
+      return false_v;
+    }
     VkrMetalPacketSsgiDepthBaseRoot *root =
         vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
     if (!root)
       return false_v;
     *root = (VkrMetalPacketSsgiDepthBaseRoot){
+        .receiver_texture_id = receiver.gpuResourceID._impl,
         .params = renderer->ssgi_params,
         .depth_texture_id = depth.gpuResourceID._impl,
         .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
@@ -1494,11 +1514,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
         raw.width == 0u || raw.height == 0u)
       return false_v;
     uint64_t root_gpu = 0u;
+    id<MTLTexture> receiver = vkr_metal_packet_pass_texture(renderer, pass, 7u);
+    if (!receiver) {
+      return false_v;
+    }
     VkrMetalPacketSsgiTraceRoot *root =
         vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
     if (!root)
       return false_v;
     *root = (VkrMetalPacketSsgiTraceRoot){
+        .receiver_texture_id = receiver.gpuResourceID._impl,
         .params = renderer->ssgi_params,
         .depth_texture_id = depth.gpuResourceID._impl,
         .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
@@ -1566,11 +1591,17 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
                             .resource.metal_texture
                       : output_identity;
     uint64_t root_gpu = 0u;
+    id<MTLTexture> receiver =
+        vkr_metal_packet_pass_texture(renderer, pass, 14u);
+    if (!receiver) {
+      return false_v;
+    }
     VkrMetalPacketSsgiTemporalRoot *root =
         vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
     if (!root)
       return false_v;
     *root = (VkrMetalPacketSsgiTemporalRoot){
+        .receiver_texture_id = receiver.gpuResourceID._impl,
         .params = renderer->ssgi_params,
         .raw_texture_id = raw.gpuResourceID._impl,
         .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
@@ -1617,11 +1648,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
   VkrMetalPacketGraphBufferInstance *visible =
       vkr_metal_packet_pass_buffer(renderer, pass, 11u);
   if (!hdr || !history || !vbuffer || !depth || !albedo || !normal ||
-      !history_depth || !specular || !clearcoat || !sheen || !anisotropy ||
-      !visible || !renderer->ssgi_composite_pipeline ||
-      hdr.width == 0u || hdr.height == 0u || hdr.width > UINT32_MAX ||
-      hdr.height > UINT32_MAX)
+      !history_depth || !specular ||
+      (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u)) ||
+      (!sheen && vkr_rg_pass_find_image_use(&pass->desc, 9u, 0u)) ||
+      (!anisotropy && vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u)) ||
+      !visible || !renderer->ssgi_composite_pipeline || hdr.width == 0u ||
+      hdr.height == 0u || hdr.width > UINT32_MAX || hdr.height > UINT32_MAX) {
     return false_v;
+  }
   id<MTLTexture> subsurface_source = hdr;
   if (packet->subsurface_enabled) {
     subsurface_source = vkr_metal_packet_pass_texture(renderer, pass, 12u);
@@ -1639,11 +1673,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
           false_v, &frame_gpu, &frame_flags))
     return false_v;
   uint64_t root_gpu = 0u;
+  id<MTLTexture> receiver = vkr_metal_packet_pass_texture(renderer, pass, 13u);
+  if (!receiver) {
+    return false_v;
+  }
   VkrMetalPacketSsgiCompositeRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
   if (!root)
     return false_v;
   *root = (VkrMetalPacketSsgiCompositeRoot){
+      .receiver_texture_id = receiver.gpuResourceID._impl,
       .frame = frame_gpu,
       .params = renderer->ssgi_params,
       .hdr_texture_id = hdr.gpuResourceID._impl,
@@ -1659,7 +1698,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
       .anisotropy_texture_id = anisotropy.gpuResourceID._impl,
       .visible_rows = visible->resource.gpu_address,
       .subsurface_source_texture_id = subsurface_source.gpuResourceID._impl,
-      .subsurface_profile_count = packet->subsurface_enabled ? packet->subsurface.dimensions[2] : 0u,
+      .subsurface_profile_count =
+          packet->subsurface_enabled ? packet->subsurface.dimensions[2] : 0u,
       .inverse_view_projection = mat4_inverse(view_projection),
       .extent = {(uint32_t)hdr.width, (uint32_t)hdr.height},
   };
@@ -1767,10 +1807,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     id<MTLTexture> clearcoat =
         vkr_metal_packet_pass_texture(renderer, pass, 8u);
     id<MTLTexture> hit = vkr_metal_packet_pass_texture(renderer, pass, 9u);
-    if (!depth || !vbuffer || !normal || !specular || !pyramid ||
-        !hdr || !raw || !clearcoat || !hit || !renderer->ssr_trace_pipeline ||
-        raw.width == 0u || raw.height == 0u)
+    if (!depth || !vbuffer || !normal || !specular || !pyramid || !hdr ||
+        !raw ||
+        (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u)) ||
+        !hit || !renderer->ssr_trace_pipeline || raw.width == 0u ||
+        raw.height == 0u) {
       return false_v;
+    }
     uint64_t root_gpu = 0u;
     VkrMetalPacketSsrTraceRoot *root =
         vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -1823,13 +1866,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
         vkr_rg_pass_find_buffer_use(&pass->desc, 18u, 0u);
     if (!raw || !vbuffer || !depth || !normal || !output_color ||
         !output_depth || !output_identity || !visible || !instances ||
-        !specular || !clearcoat || !hit || !transform_use ||
+        !specular ||
+        (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u)) ||
+        !hit || !transform_use ||
         transform_use->buffer.id !=
             renderer->temporal_transform_history_handle.id ||
         transform_use->buffer.generation !=
             renderer->temporal_transform_history_handle.generation ||
-        !renderer->ssr_temporal_pipeline)
+        !renderer->ssr_temporal_pipeline) {
       return false_v;
+    }
     const uint32_t selected = renderer->selected_ssr_history_instance;
     VkrMetalPacketImage *color_slot =
         vkr_metal_packet_named_image_slot(renderer, "ssr_history_color");
@@ -1937,11 +1983,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
   id<MTLTexture> anisotropy =
       vkr_metal_packet_pass_texture(renderer, pass, 12u);
   if (!hdr || !history || !vbuffer || !depth || !albedo || !specular ||
-      !normal || !gtao_visibility || !clearcoat ||
-      !sheen || !anisotropy ||
-      !renderer->gtao_white_live || !renderer->ssr_composite_pipeline || hdr.width == 0u ||
-      hdr.height == 0u || hdr.width > UINT32_MAX || hdr.height > UINT32_MAX)
+      !normal || !gtao_visibility ||
+      (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u)) ||
+      (!sheen && vkr_rg_pass_find_image_use(&pass->desc, 11u, 0u)) ||
+      (!anisotropy && vkr_rg_pass_find_image_use(&pass->desc, 12u, 0u)) ||
+      !renderer->gtao_white_live || !renderer->ssr_composite_pipeline ||
+      hdr.width == 0u || hdr.height == 0u || hdr.width > UINT32_MAX ||
+      hdr.height > UINT32_MAX) {
     return false_v;
+  }
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       mat4_mul(packet->temporal.jittered_projection, packet->input.globals.view));
@@ -2189,13 +2239,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
       vkr_metal_packet_pass_texture(renderer, pass, 12u);
   VkrMetalPacketGraphBufferInstance *visible =
       vkr_metal_packet_pass_buffer(renderer, pass, 13u);
-  if (!vbuffer || !depth || !albedo || !specular || !normal || !clearcoat ||
-      !sheen || !anisotropy || !hdr ||
-      !visible || !gtao_visibility || (ssgi_enabled && !direct_source) ||
-      !renderer->gtao_white_live || vbuffer.width == 0u ||
-      vbuffer.height == 0u || vbuffer.width > UINT32_MAX ||
-      vbuffer.height > UINT32_MAX)
+  if (!vbuffer || !depth || !albedo || !specular || !normal ||
+      (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u)) ||
+      (!sheen && vkr_rg_pass_find_image_use(&pass->desc, 11u, 0u)) ||
+      (!anisotropy && vkr_rg_pass_find_image_use(&pass->desc, 12u, 0u)) ||
+      !hdr || !visible || !gtao_visibility ||
+      (ssgi_enabled && !direct_source) || !renderer->gtao_white_live ||
+      vbuffer.width == 0u || vbuffer.height == 0u ||
+      vbuffer.width > UINT32_MAX || vbuffer.height > UINT32_MAX) {
     return false_v;
+  }
   id<MTLTexture> subsurface_source = hdr;
   if (packet->subsurface_enabled) {
     subsurface_source = vkr_metal_packet_pass_texture(renderer, pass, 14u);
@@ -3083,8 +3136,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_subsurface(
   uint64_t textures[ArrayCount(bindings)] = {0};
   for (uint32_t i = 0u; i < ArrayCount(bindings); ++i) {
     id<MTLTexture> texture = vkr_metal_packet_pass_texture(renderer, pass, bindings[i]);
-    if (!texture)
+    if (!texture &&
+        (i < 7u || vkr_rg_pass_find_image_use(&pass->desc, bindings[i], 0u))) {
       return false_v;
+    }
     textures[i] = texture.gpuResourceID._impl;
   }
   id<MTLTexture> destination = vkr_metal_packet_pass_texture(renderer, pass, 8u);
@@ -3561,10 +3616,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     result->indexed_draw_count += upload->overlay_draw_count;
     return true_v;
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP)
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP ||
+      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE) {
     return vkr_metal_packet_prepare_tonemap(renderer, pass, packet, prepared,
                                             upload, (uint32_t)target.width,
                                             (uint32_t)target.height, NULL);
+  }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR)
     return vkr_metal_packet_prepare_tonemap(
         renderer, pass, packet, prepared, upload, (uint32_t)target.width,

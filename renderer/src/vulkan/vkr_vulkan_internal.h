@@ -420,6 +420,7 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_PICKING = 0,
   VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND,
   VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
+  VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_DISPLAY_LINEAR,
   VKR_VULKAN_PACKET_PIPELINE_UI,
   VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
   VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
@@ -441,6 +442,8 @@ typedef enum VkrVulkanFullscreenFlag {
   VKR_VULKAN_FULLSCREEN_TONEMAP = 1u << 1u,
   VKR_VULKAN_FULLSCREEN_FXAA = 1u << 2u,
   VKR_VULKAN_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u,
+  VKR_VULKAN_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u,
+  VKR_VULKAN_FULLSCREEN_PREPARE_DISPLAY_LINEAR = 1u << 6u,
 } VkrVulkanFullscreenFlag;
 
 typedef enum VkrVulkanPacketShader {
@@ -917,7 +920,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiDepthBaseRoot {
   uint32_t depth_texture;
   uint32_t vbuffer_texture;
   uint32_t destination_depth_texture;
-  uint32_t reserved;
+  uint32_t receiver_texture;
 } VkrVulkanSsgiDepthBaseRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiDepthMipRoot {
@@ -937,7 +940,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiTraceRoot {
   uint32_t depth_pyramid_texture;
   uint32_t direct_source_texture;
   uint32_t destination_texture;
-  uint32_t reserved;
+  uint32_t receiver_texture;
 } VkrVulkanSsgiTraceRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiTemporalRoot {
@@ -957,7 +960,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiTemporalRoot {
   uint32_t output_depth_texture;
   uint32_t output_identity_texture;
   uint32_t linear_sampler;
-  uint32_t reserved[3];
+  uint32_t receiver_texture;
+  uint32_t reserved[2];
 } VkrVulkanSsgiTemporalRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiCompositeRoot {
@@ -980,6 +984,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiCompositeRoot {
   uint64_t visible_rows;
   uint32_t subsurface_source_texture;
   uint32_t subsurface_profile_count;
+  uint32_t receiver_texture;
+  uint32_t reserved[3];
 } VkrVulkanSsgiCompositeRoot;
 _Static_assert(offsetof(VkrVulkanSsgiCompositeRoot, subsurface_source_texture) == 424u &&
                    offsetof(VkrVulkanSsgiCompositeRoot, subsurface_profile_count) == 428u,
@@ -1719,14 +1725,13 @@ _Static_assert(sizeof(VkrVulkanSsgiTraceRoot) == 320u,
                "SSGI trace root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsgiTemporalRoot) == 368u,
                "SSGI temporal root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsgiCompositeRoot) == 432u &&
-                   offsetof(VkrVulkanSsgiCompositeRoot, clearcoat_texture) ==
-                       404u &&
-                   offsetof(VkrVulkanSsgiCompositeRoot, sheen_texture) == 408u &&
-                   offsetof(VkrVulkanSsgiCompositeRoot, anisotropy_texture) ==
-                       412u &&
-                   offsetof(VkrVulkanSsgiCompositeRoot, visible_rows) == 416u,
-               "SSGI composite root ABI size drift");
+_Static_assert(
+    sizeof(VkrVulkanSsgiCompositeRoot) == 448u &&
+        offsetof(VkrVulkanSsgiCompositeRoot, clearcoat_texture) == 404u &&
+        offsetof(VkrVulkanSsgiCompositeRoot, sheen_texture) == 408u &&
+        offsetof(VkrVulkanSsgiCompositeRoot, anisotropy_texture) == 412u &&
+        offsetof(VkrVulkanSsgiCompositeRoot, visible_rows) == 416u,
+    "SSGI composite root ABI size drift");
 _Static_assert(sizeof(VkrVulkanFogRoot) == 128u,
                "Vulkan fog root ABI size drift");
 _Static_assert(offsetof(VkrVulkanFogRoot, params) == 0u &&

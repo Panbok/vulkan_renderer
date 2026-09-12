@@ -106,12 +106,33 @@ float3 packet_direct_specular(float3 normal, float3 view, float3 light,
     return specular * scale;
 }
 
+VkrSheenLtcSample packet_prepare_sheen_rectangle(
+    VkrVulkanPacketFrameRoot *frame, float3 normal, float3 view,
+    VkrSheenLayer sheen, VkrSheenLtcSample sample)
+{
+    VkrVulkanSheen tables = frame.sheen[0];
+    float2 uv = vkr_sheen_ltc_lut_uv(max(dot(normal, view), 0.0f),
+                                      sheen.roughness);
+    VkrSheenLtcTransform transform_b = vkr_sheen_ltc_decode_transform(
+        g_textures[tables.ltc_matrix_texture_b]
+            .SampleLevel(g_samplers[tables.sampler], uv, 0.0f));
+    sample.inverse_matrix_b = transform_b.inverse_matrix;
+    sample.clipped_mass_b = transform_b.clipped_mass;
+    sample.table_weight_b = g_textures[tables.ltc_amplitude_texture_b]
+        .SampleLevel(g_samplers[tables.sampler], uv, 0.0f).r;
+    sample = vkr_sheen_ltc_prepare_sample(sample, sheen.directional_albedo);
+    return sample;
+}
+
 // Rectangle rows are one-sided, unshadowed radiance emitters. One LUT sample
 // and one receiver frame serve every row; the cosine integral already has /pi.
-VkrVulkanDirectResult packet_rectangle_lights(
+VkrVulkanDirectResult packet_layered_rectangle_lights(
     VkrVulkanPacketFrameRoot *frame, float3 world_position, float3 normal,
     float3 view, float3 diffuse_albedo, float metallic, float roughness,
-    float3 f0, VkrGgxMaterialEnergy energy, bool diffuse_enabled)
+    float3 f0, VkrGgxMaterialEnergy energy, bool diffuse_enabled,
+    bool coat_active, VkrClearcoatLayer coat,
+    bool sheen_active, VkrSheenLayer sheen, VkrSheenLtcSample sheen_sample,
+    inout float3 coat_result, inout float3 sheen_result)
 {
     VkrVulkanDirectResult result = (VkrVulkanDirectResult)0;
     VkrVulkanLtc ltc = frame.ltc[0];
@@ -143,6 +164,30 @@ VkrVulkanDirectResult packet_rectangle_lights(
         ltc_frame.tangent = energy.anisotropy_tangent;
         ltc_frame.bitangent = energy.anisotropy_bitangent;
     }
+    VkrLtcSample coat_sample = (VkrLtcSample)0;
+    VkrLtcFrame coat_frame = (VkrLtcFrame)0;
+    float3 coat_amplitude = 0.0f;
+    if (coat_active)
+    {
+        float2 coat_uv = vkr_ltc_lut_uv(coat.energy.no_v, coat.roughness);
+        coat_sample.inverse_matrix = g_textures[ltc.matrix_texture]
+            .SampleLevel(g_samplers[ltc.sampler], coat_uv, 0.0f);
+        coat_sample.amplitude_fresnel = g_textures[ltc.amplitude_texture]
+            .SampleLevel(g_samplers[ltc.sampler], coat_uv, 0.0f).rg;
+        coat_frame = vkr_ltc_make_frame(coat.normal, view);
+        coat_amplitude = vkr_ltc_specular_amplitude(
+            coat_sample, coat.energy.no_v, float3(VKR_CLEARCOAT_F0),
+            saturate(VKR_CLEARCOAT_F0 * 25.0f), coat.energy.specular_scale);
+    }
+    VkrLtcFrame sheen_frame = (VkrLtcFrame)0;
+    if (sheen_active)
+    {
+        sheen_sample = packet_prepare_sheen_rectangle(
+            frame, normal, view, sheen, sheen_sample);
+        sheen_frame = vkr_ltc_make_frame(normal, view);
+    }
+    float3 coat_sum = 0.0f;
+    float3 sheen_sum = 0.0f;
     uint light_count = min(ltc.count, 8u);
     for (uint index = 0u; index < light_count; ++index)
     {
@@ -162,6 +207,21 @@ VkrVulkanDirectResult packet_rectangle_lights(
                 local_rectangle, sample.inverse_matrix, specular_amplitude);
         float3 radiance = row.color.rgb * row.up_radiance.w;
         result.specular += radiance * specular;
+        if (coat_active)
+        {
+            VkrLtcRectangle coat_rectangle = vkr_ltc_project_rectangle_in_frame(
+                center - world_position, right, up, coat_frame);
+            coat_sum += radiance * vkr_ltc_evaluate_specular_rectangle(
+                coat_rectangle, coat_sample.inverse_matrix, coat_amplitude);
+        }
+        if (sheen_active)
+        {
+            // An anisotropic base rotates its LTC frame; sheen retains its own.
+            VkrLtcRectangle sheen_rectangle = vkr_ltc_project_rectangle_in_frame(
+                center - world_position, right, up, sheen_frame);
+            sheen_sum += radiance * sheen.color *
+                vkr_sheen_ltc_rectangle(sheen_rectangle, sheen_sample);
+        }
         if (diffuse_enabled)
         {
             float diffuse_integral = vkr_ltc_integrate_transformed_rectangle(
@@ -180,7 +240,28 @@ VkrVulkanDirectResult packet_rectangle_lights(
       }
         }
     }
+    if (coat_active)
+    {
+        coat_result += coat_sum * coat.factor;
+    }
+    if (sheen_active)
+    {
+        sheen_result += sheen_sum;
+    }
     return result;
+}
+
+VkrVulkanDirectResult packet_rectangle_lights(
+    VkrVulkanPacketFrameRoot *frame, float3 world_position, float3 normal,
+    float3 view, float3 diffuse_albedo, float metallic, float roughness,
+    float3 f0, VkrGgxMaterialEnergy energy, bool diffuse_enabled)
+{
+    float3 coat_result = 0.0f;
+    float3 sheen_result = 0.0f;
+    return packet_layered_rectangle_lights(
+        frame, world_position, normal, view, diffuse_albedo, metallic,
+        roughness, f0, energy, diffuse_enabled, false, (VkrClearcoatLayer)0,
+        false, (VkrSheenLayer)0, (VkrSheenLtcSample)0, coat_result, sheen_result);
 }
 
 float3 packet_sheen_rectangle_lights(VkrVulkanPacketFrameRoot *frame,
@@ -191,17 +272,7 @@ float3 packet_sheen_rectangle_lights(VkrVulkanPacketFrameRoot *frame,
     VkrVulkanLtc ltc = frame.ltc[0];
     if (ltc.count == 0u)
         return 0.0f;
-    VkrVulkanSheen tables = frame.sheen[0];
-    float2 uv = vkr_sheen_ltc_lut_uv(max(dot(normal, view), 0.0f),
-                                      sheen.roughness);
-    VkrSheenLtcTransform transform_b = vkr_sheen_ltc_decode_transform(
-        g_textures[tables.ltc_matrix_texture_b]
-            .SampleLevel(g_samplers[tables.sampler], uv, 0.0f));
-    sample.inverse_matrix_b = transform_b.inverse_matrix;
-    sample.clipped_mass_b = transform_b.clipped_mass;
-    sample.table_weight_b = g_textures[tables.ltc_amplitude_texture_b]
-        .SampleLevel(g_samplers[tables.sampler], uv, 0.0f).r;
-    sample = vkr_sheen_ltc_prepare_sample(sample, sheen.directional_albedo);
+    sample = packet_prepare_sheen_rectangle(frame, normal, view, sheen, sample);
     VkrLtcFrame ltc_frame = vkr_ltc_make_frame(normal, view);
     float3 result = 0.0f;
     uint light_count = min(ltc.count, 8u);
@@ -894,16 +965,22 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
 // follow packet_direct: the forward path passes base color with its metallic
 // factor, the deferred path passes G-buffer diffuse albedo and zero. Both
 // spell the same product, so the two paths shade identically.
-VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
+VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
                                       float3 world_position, float3 normal,
                                       float3 view, float3 albedo,
                                       float metallic, float roughness,
-                                      float3 f0, VkrGgxMaterialEnergy energy)
+                                      float3 f0, VkrGgxMaterialEnergy energy,
+                                      bool coat_active, VkrClearcoatLayer coat,
+                                      bool sheen_active, VkrSheenLayer sheen,
+                                      float sheen_normalization,
+                                      inout float3 coat_result, inout float3 sheen_result)
 {
     VkrVulkanDirectResult result;
     result.irradiance = 0.0f;
     result.diffuse = 0.0f;
     result.specular = 0.0f;
+    float3 coat_sum = 0.0f;
+    float3 sheen_sum = 0.0f;
     uint4 point_mask = packet_point_light_mask(frame, world_position);
     uint point_count = min(frame.point_light_count, 128u);
     for (uint word = 0u; word < 4u; ++word)
@@ -972,9 +1049,54 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
             result.irradiance += direct.irradiance;
             result.diffuse += direct.diffuse;
             result.specular += direct.specular;
+            // Sheen shares the front base normal. Backlit sheet visibility is
+            // irrelevant to its zero response; an independent coat keeps its bias.
+            if (coat_active)
+            {
+                float3 coat_visibility = visibility;
+                if (any(coat.normal != vkr_ggx_diffuse_shadow_normal(
+                        normal, light_direction, energy)))
+                {
+                    coat_visibility = packet_local_shadow(
+                        frame, light, kind, world_position, coat.normal);
+                }
+                coat_sum += packet_direct_specular(
+                    coat.normal, view, light_direction,
+                    p1.rgb * p2.x * attenuation * coat_visibility,
+                    coat.roughness, float3(VKR_CLEARCOAT_F0), coat.energy);
+            }
+            if (sheen_active)
+            {
+                sheen_sum += packet_sheen_direct(
+                    normal, view, light_direction,
+                    p1.rgb * p2.x * attenuation * visibility,
+                    sheen, sheen_normalization);
+            }
         }
     }
+    if (coat_active)
+    {
+        coat_result += coat_sum * coat.factor;
+    }
+    if (sheen_active)
+    {
+        sheen_result += sheen_sum;
+    }
     return result;
+}
+
+VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
+                                      float3 world_position, float3 normal,
+                                      float3 view, float3 albedo,
+                                      float metallic, float roughness,
+                                      float3 f0, VkrGgxMaterialEnergy energy)
+{
+    float3 coat_result = 0.0f;
+    float3 sheen_result = 0.0f;
+    return packet_punctual_layered(
+        frame, world_position, normal, view, albedo, metallic, roughness, f0,
+        energy, false, (VkrClearcoatLayer)0, false, (VkrSheenLayer)0, 0.0f,
+        coat_result, sheen_result);
 }
 
 float3 packet_punctual_specular(VkrVulkanPacketFrameRoot *frame,

@@ -7,6 +7,25 @@
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_ids.h"
 
+vkr_internal uint32_t vkr_scene_material_features(const VkrMaterial *material) {
+  if (!material || material->material_type != VKR_MATERIAL_TYPE_PBR) {
+    return 0u;
+  }
+  uint32_t features = 0u;
+  if (material->pbr.clearcoat_factor > 0.0f) {
+    features |= VKR_WORLD_MATERIAL_FEATURE_CLEARCOAT;
+  }
+  if (material->pbr.sheen_color.x > 0.0f ||
+      material->pbr.sheen_color.y > 0.0f ||
+      material->pbr.sheen_color.z > 0.0f) {
+    features |= VKR_WORLD_MATERIAL_FEATURE_SHEEN;
+  }
+  if (material->pbr.anisotropy_strength > 0.0f) {
+    features |= VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY;
+  }
+  return features;
+}
+
 vkr_internal float32_t vkr_scene_transparent_depth(Mat4 view, Mat4 model,
                                                    Vec3 local_center) {
   Vec3 world_center = mat4_mul_vec3(model, local_center);
@@ -250,6 +269,7 @@ VkrRendererError vkr_scene_build_world_draws(
     MemZero(transparent_visible, gpu_candidate_count);
   }
 
+  uint32_t opaque_material_features = 0u;
   uint32_t gpu_camera_opaque_candidate_count = 0u;
   uint32_t transmission_gpu_candidate_count = 0u;
   uint32_t transparent_draw_count = 0u;
@@ -270,6 +290,9 @@ VkrRendererError vkr_scene_build_world_draws(
           vkr_material_system_material_alpha_mode(materials, material));
       const bool8_t transmissive =
           vkr_material_system_material_is_transmissive(material);
+      if (!transmissive && !alpha.world_transparent) {
+        opaque_material_features |= vkr_scene_material_features(material);
+      }
       stats.objects_tested++;
       stats.objects_without_bounds += mesh->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=
@@ -311,6 +334,9 @@ VkrRendererError vkr_scene_build_world_draws(
           vkr_material_system_material_alpha_mode(materials, material));
       const bool8_t transmissive =
           vkr_material_system_material_is_transmissive(material);
+      if (!transmissive && !alpha.world_transparent) {
+        opaque_material_features |= vkr_scene_material_features(material);
+      }
       stats.objects_tested++;
       stats.objects_without_bounds += instance->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=
@@ -485,6 +511,8 @@ VkrRendererError vkr_scene_build_world_draws(
                             transparent_draws, transparent_instances);
 
   *out_payload = (VkrWorldPassPayload){
+      .opaque_material_features = opaque_material_features,
+      .opaque_material_features_valid = true_v,
       .gpu_candidates = gpu_candidates,
       .gpu_candidate_count = gpu_candidate_count,
       .gpu_camera_opaque_candidate_count = gpu_camera_opaque_candidate_count,

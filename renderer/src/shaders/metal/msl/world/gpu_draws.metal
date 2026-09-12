@@ -648,9 +648,15 @@ static void vkr_metal_packet_resolve_defaults(
   root.albedo.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
   root.specular.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
   root.normal.write(float4(0.0), pixel);
-  root.clearcoat.write(float4(0.0), pixel);
-  root.sheen.write(float4(0.0), pixel);
-  root.anisotropy.write(float4(0.0), pixel);
+  if (!is_null_texture(root.clearcoat)) {
+    root.clearcoat.write(float4(0.0), pixel);
+  }
+  if (!is_null_texture(root.sheen)) {
+    root.sheen.write(float4(0.0), pixel);
+  }
+  if (!is_null_texture(root.anisotropy)) {
+    root.anisotropy.write(float4(0.0), pixel);
+  }
   if (WriteEmissive)
     root.emissive.write(float4(0.0), pixel);
   root.hdr_seed.write(float4(0.0), pixel);
@@ -1001,10 +1007,12 @@ static void vkr_metal_packet_gbuffer_resolve(
   root.specular.write(float4(f0, roughness), pixel);
   root.normal.write(
       float4(vkr_metal_packet_octahedral_encode(normal), 0.0, 0.0), pixel);
-  root.clearcoat.write(
-      float4(clearcoat_factor, clearcoat_roughness,
-             vkr_metal_packet_octahedral_encode(clearcoat_normal)),
-      pixel);
+  if (!is_null_texture(root.clearcoat)) {
+    root.clearcoat.write(
+    float4(clearcoat_factor, clearcoat_roughness,
+    vkr_metal_packet_octahedral_encode(clearcoat_normal)),
+    pixel);
+  }
   float3 sheen_color = max(material.material_sheen.rgb, float3(0.0f));
   float sheen_roughness = 0.0f;
   if (vkr_sheen_active(sheen_color)) {
@@ -1026,7 +1034,9 @@ static void vkr_metal_packet_gbuffer_resolve(
       sheen_roughness = 0.0f;
     }
   }
-  root.sheen.write(float4(sheen_color, sheen_roughness), pixel);
+  if (!is_null_texture(root.sheen)) {
+    root.sheen.write(float4(sheen_color, sheen_roughness), pixel);
+  }
   float anisotropy_strength = material.material_anisotropy.x;
   float3 anisotropy_axis = float3(0.0f);
   if (anisotropy_strength > 0.0f) {
@@ -1037,7 +1047,9 @@ static void vkr_metal_packet_gbuffer_resolve(
     anisotropy_axis = vkr_anisotropy_axis(geometric_normal, normal,
         float4((instance.model * float4(object_tangent.xyz, 0.0f)).xyz, sign(object_tangent.w) * instance.normal_column0.w), map.rg * 2.0f - 1.0f, material.material_anisotropy.yz);
   }
-  root.anisotropy.write(float4(anisotropy_strength > 0.0f ? vkr_anisotropy_encode_axis(anisotropy_axis) : float2(0.0f), anisotropy_strength, 0.0f), pixel);
+  if (!is_null_texture(root.anisotropy)) {
+    root.anisotropy.write(float4(anisotropy_strength > 0.0f ? vkr_anisotropy_encode_axis(anisotropy_axis) : float2(0.0f), anisotropy_strength, 0.0f), pixel);
+  }
   if (WriteEmissive)
     root.emissive.write(float4(emissive, 1.0), pixel);
   float3 hdr_seed = root.render_mode == 3u ? base.rgb + emissive : emissive;
@@ -1211,20 +1223,30 @@ kernel void vkr_metal_packet_deferred_lighting(
   }
   float3 view = normalize(frame->view_position.xyz - world_position);
   float no_v = max(dot(normal, view), 0.0);
+  float4 anisotropy_packed = 0.0f;
+  if (!is_null_texture(root.anisotropy)) {
+    anisotropy_packed = root.anisotropy.read(pixel);
+  }
   VkrGgxMaterialEnergy energy =
-      vkr_metal_prepare_gbuffer_brdf(frame, normal, view, roughness, f0, root.anisotropy.read(pixel));
+      vkr_metal_prepare_gbuffer_brdf(frame, normal, view, roughness, f0, anisotropy_packed);
     energy = vkr_ggx_diffuse_transmission(energy,
         frame->materials[root.visible_rows[visible_index - 1u].material_index].material_diffuse_transmission);
-  float4 clearcoat_packed = root.clearcoat.read(pixel);
+  float4 clearcoat_packed = 0.0f;
+  if (!is_null_texture(root.clearcoat)) {
+    clearcoat_packed = root.clearcoat.read(pixel);
+  }
   bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
-  VkrClearcoatLayer clearcoat;
+  VkrClearcoatLayer clearcoat = {};
   if (clearcoat_active)
     clearcoat = vkr_metal_packet_prepare_clearcoat(
         frame, clearcoat_packed.x, clearcoat_packed.y,
         vkr_metal_packet_octahedral_decode(clearcoat_packed.zw), view);
-  float4 sheen_packed = root.sheen.read(pixel);
+  float4 sheen_packed = 0.0f;
+  if (!is_null_texture(root.sheen)) {
+    sheen_packed = root.sheen.read(pixel);
+  }
   bool sheen_active = vkr_sheen_active(sheen_packed.rgb);
-  VkrSheenLayer sheen;
+  VkrSheenLayer sheen = {};
   float sheen_normalization = 0.0f;
   if (sheen_active) {
     sheen = vkr_metal_packet_prepare_sheen(frame, sheen_packed.rgb,
@@ -1333,13 +1355,13 @@ kernel void vkr_metal_packet_deferred_lighting(
           attenuation * vkr_metal_packet_local_shadow_sample(
                             frame, uint(p3.w), kind, world_position,
                             back_lit ? -normal : normal);
-      float3 layer_attenuation;
-      if (back_lit && clearcoat_active)
-        layer_attenuation =
+      float3 coat_attenuation = base_attenuation;
+      if (clearcoat_active &&
+          any(clearcoat.normal != (back_lit ? -normal : normal))) {
+        coat_attenuation =
             attenuation * vkr_metal_packet_local_shadow_sample(
-                              frame, uint(p3.w), kind, world_position, normal);
-      else
-        layer_attenuation = base_attenuation;
+                frame, uint(p3.w), kind, world_position, clearcoat.normal);
+      }
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct_deferred(
           normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
           diffuse_albedo, roughness, f0, energy);
@@ -1348,27 +1370,22 @@ kernel void vkr_metal_packet_deferred_lighting(
       analytic_specular += direct.specular;
       if (clearcoat_active)
         clearcoat_direct += vkr_metal_packet_clearcoat_direct(
-            view, light_direction, p1.rgb * p2.x * layer_attenuation,
+            view, light_direction, p1.rgb * p2.x * coat_attenuation,
             clearcoat);
       if (sheen_active)
         sheen_direct += vkr_metal_packet_sheen_direct(
-            normal, view, light_direction, p1.rgb * p2.x * layer_attenuation,
+            normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
             sheen, sheen_normalization);
     }
   }
   VkrMetalPacketDirectResult rectangles =
-      vkr_metal_packet_rectangle_lights<true>(
+      vkr_metal_packet_layered_rectangle_lights<true>(
           frame, world_position, normal, view, diffuse_albedo, 0.0f,
-          roughness, f0, energy);
+          roughness, f0, energy, clearcoat_active, clearcoat,
+          sheen_active, sheen, clearcoat_direct, sheen_direct);
   diffuse_irradiance += rectangles.irradiance;
   analytic_diffuse += rectangles.diffuse;
   analytic_specular += rectangles.specular;
-  if (clearcoat_active)
-    clearcoat_direct += vkr_metal_packet_clearcoat_rectangle_lights(
-        frame, world_position, view, clearcoat);
-  if (sheen_active)
-    sheen_direct += vkr_metal_packet_sheen_rectangle_lights(
-        frame, world_position, normal, view, sheen);
   if (sheen_active) {
     analytic_diffuse *= sheen.base_transmission;
     analytic_specular *= sheen.base_transmission;
@@ -1378,11 +1395,11 @@ kernel void vkr_metal_packet_deferred_lighting(
     analytic_specular *= clearcoat.base_transmission;
     sheen_direct *= clearcoat.base_transmission;
   }
+  // Exclude camera-facing specular lobes from the diffuse bounce source.
   if (root.ssgi_enabled != 0u && frame->render_mode == 0u &&
       frame->shadow_debug_mode == 0u)
     root.direct_source.write(
-        float4(analytic_diffuse + analytic_specular + clearcoat_direct + sheen_direct +
-                   hdr_seed.rgb * base_transmission,
+        float4(analytic_diffuse + hdr_seed.rgb * base_transmission,
                1.0f),
         pixel);
   if (frame->render_mode == 1u) {

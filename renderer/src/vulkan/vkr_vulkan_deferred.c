@@ -1263,10 +1263,14 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
   if (!visible || !state || !vkr_vk_deferred_buffer(renderer, pass, 10u))
     return false_v;
   const uint32_t bindings[] = {0u, 2u, 3u, 4u, 8u, 11u, 12u, 13u, 14u, 15u};
-  for (uint32_t i = 0u; i < ArrayCount(bindings); ++i)
+  for (uint32_t i = 0u; i < ArrayCount(bindings); ++i) {
+    if (i >= 7u && !vkr_rg_pass_find_image_use(&pass->desc, bindings[i], 0u)) {
+      continue;
+    }
     if (!vkr_vk_deferred_storage_index(renderer, pass, bindings[i],
                                        &indices[i]))
       return false_v;
+  }
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const bool8_t emissive_capture =
       packet->input.debug &&
@@ -1382,11 +1386,15 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_storage_index(renderer, pass, 3u, &specular) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 6u, &scene) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 10u, &clearcoat) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 11u, &sheen) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 12u, &anisotropy) ||
-      !visible)
+      (vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u) &&
+       !vkr_vk_deferred_storage_index(renderer, pass, 10u, &clearcoat)) ||
+      (vkr_rg_pass_find_image_use(&pass->desc, 11u, 0u) &&
+       !vkr_vk_deferred_storage_index(renderer, pass, 11u, &sheen)) ||
+      (vkr_rg_pass_find_image_use(&pass->desc, 12u, 0u) &&
+       !vkr_vk_deferred_storage_index(renderer, pass, 12u, &anisotropy)) ||
+      !visible) {
     return false_v;
+  }
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
                                         packet->input.globals.view);
@@ -1796,10 +1804,12 @@ bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
                                      &root.source_texture) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 7u,
                                      &root.destination_texture) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 8u,
-                                     &root.clearcoat_texture) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 9u, &root.hit_texture))
+      (vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 8u,
+                                      &root.clearcoat_texture)) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 9u, &root.hit_texture)) {
     return false_v;
+  }
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrTraceRoot),
                                  &prepared->root_address))
@@ -1989,9 +1999,11 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_storage_index(renderer, pass, 11u, &output_depth) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 12u, &output_identity) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 15u, &specular) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 16u, &clearcoat) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 17u, &hit))
+      (vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 16u, &clearcoat)) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 17u, &hit)) {
     return false_v;
+  }
   VkrVulkanGraphBufferInstance *visible =
       vkr_vk_deferred_buffer(renderer, pass, 13u);
   VkrVulkanGraphBufferInstance *instances =
@@ -2075,10 +2087,14 @@ bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_sampled_index(renderer, pass, 4u, &albedo) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &specular) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &normal) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 10u, &clearcoat) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 11u, &sheen) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 12u, &anisotropy))
+      (vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 10u, &clearcoat)) ||
+      (vkr_rg_pass_find_image_use(&pass->desc, 11u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 11u, &sheen)) ||
+      (vkr_rg_pass_find_image_use(&pass->desc, 12u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 12u, &anisotropy))) {
     return false_v;
+  }
   uint32_t gtao = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (vkr_rg_pass_find_image_use(&pass->desc, 7u, 0u) &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &gtao))
@@ -2587,7 +2603,12 @@ bool8_t vkr_vk_prepare_ssgi_depth_base(VkrVulkanRenderer *renderer,
       renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
   if (!params.trace_width || !params.trace_height)
     return false_v;
+  uint32_t receiver = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 3u, &receiver)) {
+    return false_v;
+  }
   const VkrVulkanSsgiDepthBaseRoot root = {
+      .receiver_texture = receiver,
       .params = params,
       .depth_texture = depth,
       .vbuffer_texture = vbuffer,
@@ -2665,7 +2686,12 @@ bool8_t vkr_vk_prepare_ssgi_trace(VkrVulkanRenderer *renderer,
       renderer, false_v, renderer->graph->packet->temporal.jittered_projection);
   if (params.depth_mip_count != renderer->prepared_frame.ssgi_depth_mip_count)
     return false_v;
+  uint32_t receiver = 0u;
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 7u, &receiver)) {
+    return false_v;
+  }
   const VkrVulkanSsgiTraceRoot root = {
+      .receiver_texture = receiver,
       .params = params,
       .depth_texture = textures[0],
       .vbuffer_texture = textures[1],
@@ -2911,7 +2937,12 @@ bool8_t vkr_vk_prepare_ssgi_temporal(VkrVulkanRenderer *renderer,
                                : slot->ssgi_identity_output->storage_slot.index;
   const VkrSsgiGpuParams params = vkr_vk_ssgi_params(
       renderer, slot->ssgi_history_valid, previous_projection);
+  uint32_t receiver = 0u;
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 14u, &receiver)) {
+    return false_v;
+  }
   const VkrVulkanSsgiTemporalRoot root = {
+      .receiver_texture = receiver,
       .params = params,
       .visible_rows = visible->buffer.address,
       .instances = instances->buffer.address,
@@ -2958,11 +2989,15 @@ bool8_t vkr_vk_prepare_ssgi_composite(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &normal) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &history_depth) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &specular) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 8u, &clearcoat) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 9u, &sheen) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 10u, &anisotropy) ||
-      !visible)
+      (vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 8u, &clearcoat)) ||
+      (vkr_rg_pass_find_image_use(&pass->desc, 9u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 9u, &sheen)) ||
+      (vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u) &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 10u, &anisotropy)) ||
+      !visible) {
     return false_v;
+  }
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t frame_address = 0u;
@@ -2986,7 +3021,12 @@ bool8_t vkr_vk_prepare_ssgi_composite(VkrVulkanRenderer *renderer,
   if (renderer->prepared_frame.subsurface_enabled &&
       !vkr_vk_deferred_storage_index(renderer, pass, 12u, &subsurface_source))
     return false_v;
+  uint32_t receiver = 0u;
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 13u, &receiver)) {
+    return false_v;
+  }
   const VkrVulkanSsgiCompositeRoot root = {
+      .receiver_texture = receiver,
       .params = params,
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -3307,10 +3347,14 @@ bool8_t vkr_vk_prepare_subsurface(VkrVulkanRenderer *renderer,
   static const uint32_t bindings[] = {0u, 1u, 2u,  3u,  4u,
                                       7u, 9u, 10u, 11u, 12u};
   uint32_t textures[ArrayCount(bindings)] = {0};
-  for (uint32_t i = 0u; i < ArrayCount(bindings); ++i)
+  for (uint32_t i = 0u; i < ArrayCount(bindings); ++i) {
+    if (i >= 7u && !vkr_rg_pass_find_image_use(&pass->desc, bindings[i], 0u)) {
+      continue;
+    }
     if (!vkr_vk_deferred_sampled_index(renderer, pass, bindings[i],
                                        &textures[i]))
       return false_v;
+  }
   uint32_t destination = 0u;
   VkrVulkanGraphBufferInstance *visible =
       vkr_vk_deferred_buffer(renderer, pass, 6u);

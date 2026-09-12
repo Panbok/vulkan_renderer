@@ -145,6 +145,29 @@ VkrSsgiReceiver vkr_ssgi_empty_receiver()
 
 // Native base/trace/temporal/composite loops visit children in top-left order.
 // Strict comparison retains that first child when depths tie.
+// One current-frame selection per reduction cell. The final odd footprint is
+// at most 3x3; the local offset and depth are bit-preserved in an RG32UI image.
+float2 vkr_ssgi_pack_receiver(VkrSsgiReceiver receiver, uint2 trace_pixel)
+{
+    uint2 offset = receiver.pixel - trace_pixel * 2u;
+    return receiver.valid != 0u
+        ? float2(receiver.positive_depth, float(offset.y * 3u + offset.x))
+        : float2(0.0f);
+}
+
+VkrSsgiReceiver vkr_ssgi_unpack_receiver(float2 metadata, uint2 trace_pixel)
+{
+    VkrSsgiReceiver receiver = vkr_ssgi_empty_receiver();
+    if (vkr_ssr_valid_depth(metadata.x))
+    {
+        uint offset = uint(metadata.y);
+        receiver.pixel = trace_pixel * 2u + uint2(offset % 3u, offset / 3u);
+        receiver.positive_depth = metadata.x;
+        receiver.valid = 1u;
+    }
+    return receiver;
+}
+
 VkrSsgiReceiver vkr_ssgi_consider_receiver(VkrSsgiReceiver result,
                                            uint2 pixel, float positive_depth,
                                            uint covered)

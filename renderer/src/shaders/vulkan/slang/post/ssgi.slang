@@ -7,7 +7,7 @@ struct VkrVkSsgiDepthBaseRoot
     uint depth_texture;
     uint vbuffer_texture;
     uint destination_depth_texture;
-    uint reserved;
+    uint receiver_texture;
 };
 
 struct VkrVkSsgiDepthMipRoot
@@ -29,7 +29,7 @@ struct VkrVkSsgiTraceRoot
     uint depth_pyramid_texture;
     uint direct_source_texture;
     uint destination_texture;
-    uint reserved;
+    uint receiver_texture;
 };
 
 struct VkrVkSsgiTemporalRoot
@@ -50,7 +50,8 @@ struct VkrVkSsgiTemporalRoot
     uint output_depth_texture;
     uint output_identity_texture;
     uint linear_sampler;
-    uint3 reserved;
+    uint receiver_texture;
+    uint2 reserved;
 };
 
 struct VkrVkSsgiCompositeRoot
@@ -74,6 +75,8 @@ struct VkrVkSsgiCompositeRoot
     VkrGpuVisibleDrawRow* visible_rows;
     uint subsurface_source_texture;
     uint subsurface_profile_count;
+    uint receiver_texture;
+    uint3 reserved;
 };
 
 struct VkrVkSsgiDepthBasePush { VkrVkSsgiDepthBaseRoot* root; uint2 reserved; };
@@ -94,31 +97,6 @@ float vkr_vk_ssgi_positive_depth(VkrSsrParams screen, uint2 pixel,
     float2 uv = (float2(pixel) + 0.5f) / float2(extent);
     float3 view = vkr_ssr_reconstruct_view_position(screen, uv, device_depth);
     return vkr_ssr_valid_depth(-view.z) ? -view.z : 0.0f;
-}
-
-VkrSsgiReceiver vkr_vk_ssgi_receiver(VkrSsrParams screen, uint2 trace_pixel,
-                                      uint2 trace_extent, uint2 source_extent,
-                                      uint vbuffer_texture, uint depth_texture)
-{
-    VkrSsgiReceiver receiver = vkr_ssgi_empty_receiver();
-    uint begin_x = vkr_ssr_reduction_child_begin(trace_pixel.x);
-    uint begin_y = vkr_ssr_reduction_child_begin(trace_pixel.y);
-    uint end_x = vkr_ssr_reduction_child_end(trace_pixel.x, trace_extent.x,
-                                              source_extent.x);
-    uint end_y = vkr_ssr_reduction_child_end(trace_pixel.y, trace_extent.y,
-                                              source_extent.y);
-    for (uint y = begin_y; y < end_y; ++y)
-        for (uint x = begin_x; x < end_x; ++x)
-        {
-            uint2 child = uint2(x, y);
-            uint covered = g_uint2_textures[vbuffer_texture].Load(int3(child, 0)).x != 0u ? 1u : 0u;
-            float depth = covered != 0u
-                ? vkr_vk_ssgi_positive_depth(screen, child,
-                    g_depth_textures[depth_texture].Load(int3(child, 0)), source_extent)
-                : 0.0f;
-            receiver = vkr_ssgi_consider_receiver(receiver, child, depth, covered);
-        }
-    return receiver;
 }
 
 uint2 vkr_vk_ssgi_identity(VkrVkSsgiTemporalRoot* root, uint2 receiver_pixel)
@@ -158,6 +136,7 @@ void ssgi_depth_base_compute(uint3 thread_id : SV_DispatchThreadID)
     uint end_y = vkr_ssr_reduction_child_end(pixel.y, trace_extent.y, source_extent.y);
     float values[9] = {0.0f};
     uint count = 0u;
+    VkrSsgiReceiver receiver = vkr_ssgi_empty_receiver();
     for (uint y = begin_y; y < end_y; ++y)
         for (uint x = begin_x; x < end_x; ++x)
         {
@@ -166,8 +145,11 @@ void ssgi_depth_base_compute(uint3 thread_id : SV_DispatchThreadID)
                 values[count] = vkr_vk_ssgi_positive_depth(
                     screen, child, g_depth_textures[root.depth_texture].Load(int3(child, 0)),
                     source_extent);
+            receiver = vkr_ssgi_consider_receiver(receiver, child, values[count],
+                vkr_ssr_valid_depth(values[count]) ? 1u : 0u);
             ++count;
         }
+    g_storage_uint2_2d[root.receiver_texture][pixel] = asuint(vkr_ssgi_pack_receiver(receiver, pixel));
     g_storage_2d[root.destination_depth_texture][pixel] =
         float4(vkr_ssr_depth_reduce(values[0], values[1], values[2], values[3],
                                     values[4], values[5], values[6], values[7],
@@ -210,8 +192,7 @@ void ssgi_trace_compute(uint3 thread_id : SV_DispatchThreadID)
         return;
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
     VkrSsrParams screen = vkr_ssgi_screen_trace_params(root.params);
-    VkrSsgiReceiver receiver = vkr_vk_ssgi_receiver(
-        screen, pixel, trace_extent, source_extent, root.vbuffer_texture, root.depth_texture);
+    VkrSsgiReceiver receiver = vkr_ssgi_unpack_receiver(asfloat(g_uint2_textures[root.receiver_texture].Load(int3(pixel, 0))), pixel);
     if (receiver.valid == 0u ||
         saturate(g_textures[root.albedo_texture].Load(int3(receiver.pixel, 0)).a) <= 0.0f)
     {
@@ -284,8 +265,7 @@ void ssgi_temporal_compute(uint3 thread_id : SV_DispatchThreadID)
         return;
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
     VkrSsrParams screen = vkr_ssgi_screen_trace_params(root.params);
-    VkrSsgiReceiver receiver = vkr_vk_ssgi_receiver(
-        screen, pixel, trace_extent, source_extent, root.vbuffer_texture, root.depth_texture);
+    VkrSsgiReceiver receiver = vkr_ssgi_unpack_receiver(asfloat(g_uint2_textures[root.receiver_texture].Load(int3(pixel, 0))), pixel);
     if (receiver.valid == 0u)
     {
         g_storage_2d[root.output_color_texture][pixel] = float4(0.0f);
@@ -312,9 +292,7 @@ void ssgi_temporal_compute(uint3 thread_id : SV_DispatchThreadID)
             if (all(neighbor >= 0) && all(uint2(neighbor) < trace_extent))
             {
                 uint2 neighbor_pixel = uint2(neighbor);
-                VkrSsgiReceiver neighbor_receiver = vkr_vk_ssgi_receiver(
-                    screen, neighbor_pixel, trace_extent, source_extent,
-                    root.vbuffer_texture, root.depth_texture);
+                VkrSsgiReceiver neighbor_receiver = vkr_ssgi_unpack_receiver(asfloat(g_uint2_textures[root.receiver_texture].Load(int3(neighbor_pixel, 0))), neighbor_pixel);
                 if (neighbor_receiver.valid == 0u)
                     continue;
                 float4 sample =
@@ -472,9 +450,7 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
             if (any(signed_trace < 0) || any(uint2(signed_trace) >= trace_extent))
                 continue;
             uint2 trace_pixel = uint2(signed_trace);
-            VkrSsgiReceiver receiver = vkr_vk_ssgi_receiver(
-                screen, trace_pixel, trace_extent, source_extent,
-                root.vbuffer_texture, root.depth_texture);
+            VkrSsgiReceiver receiver = vkr_ssgi_unpack_receiver(asfloat(g_uint2_textures[root.receiver_texture].Load(int3(trace_pixel, 0))), trace_pixel);
             if (receiver.valid == 0u)
                 continue;
             float3 receiver_normal = vkr_vk_octahedral_decode(
@@ -506,14 +482,14 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
                                                       source_extent);
     float3 view = normalize(root.frame.view_position.xyz - world);
     VkrGgxMaterialEnergy energy = packet_prepare_gbuffer_brdf(
-        root.frame, normal, view, roughness, saturate(specular.rgb), g_textures[root.anisotropy_texture].Load(int3(pixel, 0)));
+        root.frame, normal, view, roughness, saturate(specular.rgb), (root.anisotropy_texture == 0u ? float4(0.0f) : g_textures[root.anisotropy_texture].Load(int3(pixel, 0))));
     VkrGpuVisibleDrawRow visible_row = root.visible_rows[visible - 1u];
     VkrVulkanMaterial material =
         root.frame.materials[visible_row.material_index];
     energy = vkr_ggx_diffuse_transmission(
         energy, material.material_diffuse_transmission);
     float3 diffuse_weight = energy.diffuse_weight;
-    float4 sheen_packed = g_textures[root.sheen_texture].Load(int3(pixel, 0));
+    float4 sheen_packed = (root.sheen_texture == 0u ? float4(0.0f) : g_textures[root.sheen_texture].Load(int3(pixel, 0)));
     if (vkr_sheen_active(sheen_packed.rgb))
     {
         VkrSheenLayer sheen = packet_prepare_sheen(
@@ -522,7 +498,7 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
                 root.frame, max(dot(normal, view), 0.0f), sheen_packed.a));
         diffuse_weight *= sheen.base_transmission;
     }
-    float4 clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
+    float4 clearcoat_packed = (root.clearcoat_texture == 0u ? float4(0.0f) : g_textures[root.clearcoat_texture].Load(int3(pixel, 0)));
     if (vkr_clearcoat_active(clearcoat_packed.x))
     {
         VkrClearcoatLayer clearcoat = packet_prepare_clearcoat(

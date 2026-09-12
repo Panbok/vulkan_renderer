@@ -10,6 +10,7 @@ struct alignas(16) VkrMetalPacketSsgiDepthBaseRoot {
   texture2d<float, access::read> depth;
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::write> pyramid;
+  texture2d<uint, access::write> receiver;
 };
 struct alignas(16) VkrMetalPacketSsgiDepthMipRoot {
   VkrSsgiParams params;
@@ -27,6 +28,7 @@ struct alignas(16) VkrMetalPacketSsgiTraceRoot {
   texture2d<float, access::read> pyramid;
   texture2d<float, access::read> direct_source;
   texture2d<float, access::write> raw;
+  texture2d<uint, access::read> receiver;
 };
 struct alignas(16) VkrMetalPacketSsgiTemporalRoot {
   VkrSsgiParams params;
@@ -44,6 +46,7 @@ struct alignas(16) VkrMetalPacketSsgiTemporalRoot {
   texture2d<uint, access::write> output_identity;
   device VkrGpuVisibleDrawRow *visible_rows;
   device VkrMetalPacketInstance *instances;
+  texture2d<uint, access::read> receiver;
 };
 struct alignas(16) VkrMetalPacketSsgiCompositeRoot {
   constant VkrMetalPacketFrameRoot *frame;
@@ -66,6 +69,7 @@ struct alignas(16) VkrMetalPacketSsgiCompositeRoot {
   uint2 visible_rows_reserved;
   device VkrGpuVisibleDrawRow *visible_rows;
   texture2d<float, access::read_write> subsurface_source;
+  texture2d<uint, access::read> receiver;
 };
 
 static float vkr_metal_ssgi_positive_depth(VkrSsrParams screen, uint2 pixel,
@@ -73,30 +77,6 @@ static float vkr_metal_ssgi_positive_depth(VkrSsrParams screen, uint2 pixel,
   float3 view = vkr_ssr_reconstruct_view_position(
       screen, vkr_ssr_uv_from_pixel(pixel, extent), device_depth);
   return vkr_ssr_valid_depth(-view.z) ? -view.z : 0.0f;
-}
-
-static VkrSsgiReceiver vkr_metal_ssgi_receiver(
-    VkrSsrParams screen, uint2 trace_pixel, uint2 trace_extent,
-    uint2 source_extent, texture2d<uint, access::read> vbuffer,
-    texture2d<float, access::read> depth) {
-  VkrSsgiReceiver result = vkr_ssgi_empty_receiver();
-  uint begin_x = vkr_ssr_reduction_child_begin(trace_pixel.x);
-  uint begin_y = vkr_ssr_reduction_child_begin(trace_pixel.y);
-  uint end_x = vkr_ssr_reduction_child_end(trace_pixel.x, trace_extent.x,
-                                            source_extent.x);
-  uint end_y = vkr_ssr_reduction_child_end(trace_pixel.y, trace_extent.y,
-                                            source_extent.y);
-  for (uint y = begin_y; y < end_y; ++y)
-    for (uint x = begin_x; x < end_x; ++x) {
-      uint2 child(x, y);
-      uint covered = vbuffer.read(child).x != 0u ? 1u : 0u;
-      float value = covered != 0u
-          ? vkr_metal_ssgi_positive_depth(screen, child, depth.read(child).x,
-                                           source_extent)
-          : 0.0f;
-      result = vkr_ssgi_consider_receiver(result, child, value, covered);
-    }
-  return result;
 }
 
 static uint2 vkr_metal_ssgi_identity(
@@ -132,6 +112,7 @@ kernel void vkr_metal_packet_ssgi_depth_base(
   uint end_y = vkr_ssr_reduction_child_end(pixel.y, trace_extent.y, source_extent.y);
   float values[9] = {0.0f};
   uint count = 0u;
+  VkrSsgiReceiver receiver = vkr_ssgi_empty_receiver();
   for (uint y = begin_y; y < end_y; ++y)
     for (uint x = begin_x; x < end_x; ++x) {
       uint2 child(x, y);
@@ -139,8 +120,11 @@ kernel void vkr_metal_packet_ssgi_depth_base(
         values[count] = vkr_metal_ssgi_positive_depth(screen, child,
                                                        root.depth.read(child).x,
                                                        source_extent);
+      receiver = vkr_ssgi_consider_receiver(receiver, child, values[count],
+          vkr_ssr_valid_depth(values[count]) ? 1u : 0u);
       ++count;
     }
+  root.receiver.write(uint4(as_type<uint2>(vkr_ssgi_pack_receiver(receiver, pixel)), 0u, 0u), pixel);
   root.pyramid.write(float4(vkr_ssr_depth_reduce(
                          values[0], values[1], values[2], values[3], values[4],
                          values[5], values[6], values[7], values[8], count),
@@ -177,8 +161,7 @@ kernel void vkr_metal_packet_ssgi_trace(
     return;
   uint2 source_extent(root.params.source_width, root.params.source_height);
   VkrSsrParams screen = vkr_ssgi_screen_trace_params(root.params);
-  VkrSsgiReceiver receiver = vkr_metal_ssgi_receiver(
-      screen, pixel, trace_extent, source_extent, root.vbuffer, root.depth);
+  VkrSsgiReceiver receiver = vkr_ssgi_unpack_receiver(as_type<float2>(root.receiver.read(pixel).xy), pixel);
   if (receiver.valid == 0u || saturate(root.albedo.read(receiver.pixel).a) <= 0.0f) {
     root.raw.write(float4(0.0f), pixel);
     return;
@@ -238,8 +221,7 @@ kernel void vkr_metal_packet_ssgi_temporal(
     return;
   uint2 source_extent(root.params.source_width, root.params.source_height);
   VkrSsrParams screen = vkr_ssgi_screen_trace_params(root.params);
-  VkrSsgiReceiver receiver = vkr_metal_ssgi_receiver(
-      screen, pixel, trace_extent, source_extent, root.vbuffer, root.depth);
+  VkrSsgiReceiver receiver = vkr_ssgi_unpack_receiver(as_type<float2>(root.receiver.read(pixel).xy), pixel);
   if (receiver.valid == 0u) {
     root.output_color.write(float4(0.0f), pixel);
     root.output_depth.write(float4(0.0f), pixel);
@@ -262,9 +244,7 @@ kernel void vkr_metal_packet_ssgi_temporal(
       int2 neighbor = int2(pixel) + int2(x, y);
       if (all(neighbor >= 0) && all(uint2(neighbor) < trace_extent)) {
         uint2 neighbor_pixel = uint2(neighbor);
-        VkrSsgiReceiver neighbor_receiver = vkr_metal_ssgi_receiver(
-            screen, neighbor_pixel, trace_extent, source_extent, root.vbuffer,
-            root.depth);
+        VkrSsgiReceiver neighbor_receiver = vkr_ssgi_unpack_receiver(as_type<float2>(root.receiver.read(neighbor_pixel).xy), neighbor_pixel);
         if (neighbor_receiver.valid == 0u)
           continue;
         float4 sample = root.raw.read(neighbor_pixel);
@@ -397,8 +377,7 @@ kernel void vkr_metal_packet_ssgi_composite(
       if (any(signed_trace < 0) || any(uint2(signed_trace) >= trace_extent))
         continue;
       uint2 trace_pixel = uint2(signed_trace);
-      VkrSsgiReceiver receiver = vkr_metal_ssgi_receiver(
-          screen, trace_pixel, trace_extent, root.extent, root.vbuffer, root.depth);
+      VkrSsgiReceiver receiver = vkr_ssgi_unpack_receiver(as_type<float2>(root.receiver.read(trace_pixel).xy), trace_pixel);
       if (receiver.valid == 0u)
         continue;
       float3 receiver_normal = vkr_metal_packet_octahedral_decode(
@@ -427,17 +406,17 @@ kernel void vkr_metal_packet_ssgi_composite(
       root, pixel, visible, normal, clamp(specular.w, 0.04f, 1.0f));
   float3 view = normalize(root.frame->view_position.xyz - world);
   VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
-      root.frame, normal, view, roughness, saturate(specular.rgb), root.anisotropy.read(pixel));
+      root.frame, normal, view, roughness, saturate(specular.rgb), (is_null_texture(root.anisotropy) ? float4(0.0f) : root.anisotropy.read(pixel)));
     energy = vkr_ggx_diffuse_transmission(energy,
         root.frame->materials[root.visible_rows[visible - 1u].material_index].material_diffuse_transmission);
   float3 diffuse_weight = energy.diffuse_weight;
-  float4 sheen_packed = root.sheen.read(pixel);
+  float4 sheen_packed = (is_null_texture(root.sheen) ? float4(0.0f) : root.sheen.read(pixel));
   if (vkr_sheen_active(sheen_packed.rgb)) {
     VkrSheenLayer sheen = vkr_metal_packet_prepare_sheen(
         root.frame, sheen_packed.rgb, sheen_packed.a, normal, view);
     diffuse_weight *= sheen.base_transmission;
   }
-  float4 clearcoat_packed = root.clearcoat.read(pixel);
+  float4 clearcoat_packed = (is_null_texture(root.clearcoat) ? float4(0.0f) : root.clearcoat.read(pixel));
   if (vkr_clearcoat_active(clearcoat_packed.x)) {
     VkrClearcoatLayer clearcoat = vkr_metal_packet_prepare_clearcoat(
         root.frame, clearcoat_packed.x, clearcoat_packed.y,

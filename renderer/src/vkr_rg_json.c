@@ -23,6 +23,15 @@ typedef struct VkrRgJsonConditionSpec {
 vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_ENABLED},
     {"scene_rendering", VKR_RG_JSON_CONDITION_SCENE_RENDERING},
+    {"post_transform_cache_enabled",
+     VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE},
+    {"post_transform_cache_enabled && editor_enabled",
+     VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_EDITOR},
+    {"post_transform_cache_enabled && !editor_enabled",
+     VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN},
+    {"clearcoat_enabled", VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED},
+    {"sheen_enabled", VKR_RG_JSON_CONDITION_SHEEN_ENABLED},
+    {"anisotropy_enabled", VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED},
     {"editor_overlay_enabled", VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED},
     {"editor_overlay_enabled && picking_pending",
      VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_PICKING},
@@ -70,11 +79,12 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"dof_enabled", VKR_RG_JSON_CONDITION_DOF_ENABLED},
     {"subsurface_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_ENABLED},
     {"!subsurface_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED},
-    {"!subsurface_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_ENABLED},
-    {"!subsurface_enabled && !editor_enabled", VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_DISABLED},
+    {"!subsurface_enabled && editor_enabled",
+     VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_ENABLED},
+    {"!subsurface_enabled && !editor_enabled",
+     VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_DISABLED},
 
-    {"motion_blur_enabled",
-     VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED},
+    {"motion_blur_enabled", VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED},
     {"!motion_blur_enabled && metalfx_enabled",
      VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_ENABLED},
     {"!motion_blur_enabled && fsr31_enabled",
@@ -87,11 +97,13 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_ENABLED},
     {"!dof_enabled && !motion_blur_enabled && fsr31_enabled",
      VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED},
-    {"!dof_enabled && !motion_blur_enabled && !metalfx_enabled && !fsr31_enabled",
+    {"!dof_enabled && !motion_blur_enabled && !metalfx_enabled && "
+     "!fsr31_enabled",
      VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED},
     {"gtao_enabled", VKR_RG_JSON_CONDITION_GTAO_ENABLED},
     {"fog_enabled && editor_enabled", VKR_RG_JSON_CONDITION_FOG_EDITOR_ENABLED},
-    {"fog_enabled && !editor_enabled", VKR_RG_JSON_CONDITION_FOG_EDITOR_DISABLED},
+    {"fog_enabled && !editor_enabled",
+     VKR_RG_JSON_CONDITION_FOG_EDITOR_DISABLED},
     {"froxel_fog_enabled", VKR_RG_JSON_CONDITION_FROXEL_FOG_ENABLED},
     {"froxel_fog_enabled && editor_enabled",
      VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_ENABLED},
@@ -99,7 +111,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_DISABLED},
     {"ssr_enabled", VKR_RG_JSON_CONDITION_SSR_ENABLED},
     {"ssgi_enabled", VKR_RG_JSON_CONDITION_SSGI_ENABLED},
-    {"ssgi_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SSGI_EDITOR_ENABLED},
+    {"ssgi_enabled && editor_enabled",
+     VKR_RG_JSON_CONDITION_SSGI_EDITOR_ENABLED},
     {"ssgi_enabled && !editor_enabled",
      VKR_RG_JSON_CONDITION_SSGI_FULLSCREEN_ENABLED},
     {"ssr_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SSR_EDITOR_ENABLED},
@@ -1995,6 +2008,18 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   switch (condition->kind) {
   case VKR_RG_JSON_CONDITION_SCENE_RENDERING:
     return frame->scene_rendering;
+  case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE:
+    return frame->post_transform_cache_enabled;
+  case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_EDITOR:
+    return frame->post_transform_cache_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN:
+    return frame->post_transform_cache_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED:
+    return frame->clearcoat_enabled;
+  case VKR_RG_JSON_CONDITION_SHEEN_ENABLED:
+    return frame->sheen_enabled;
+  case VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED:
+    return frame->anisotropy_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED:
     return frame->editor_overlay_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_PICKING:

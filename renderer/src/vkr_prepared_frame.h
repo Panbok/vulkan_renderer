@@ -9,6 +9,7 @@
 typedef struct VkrPreparedFrame {
   VkrFrameInput input;
   bool8_t scene_rendering;
+  bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   uint32_t editor_image_width;
   uint32_t editor_image_height;

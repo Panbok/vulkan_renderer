@@ -84,7 +84,8 @@ static float vkr_metal_ssr_positive_depth(VkrSsrParams params, uint2 pixel,
 static float3 vkr_metal_ssr_selected_normal(
     texture2d<float, access::read> normal,
     texture2d<float, access::read> clearcoat, uint2 pixel) {
-  float4 packed = clearcoat.read(pixel);
+  float4 packed = is_null_texture(clearcoat) ? float4(0.0f)
+                                            : clearcoat.read(pixel);
   return vkr_clearcoat_active(packed.x)
              ? vkr_metal_packet_octahedral_decode(packed.zw)
              : vkr_metal_packet_octahedral_decode(normal.read(pixel).xy);
@@ -93,7 +94,8 @@ static float3 vkr_metal_ssr_selected_normal(
 static float vkr_metal_ssr_selected_roughness(
     texture2d<float, access::read> specular,
     texture2d<float, access::read> clearcoat, uint2 pixel) {
-  float4 packed = clearcoat.read(pixel);
+  float4 packed = is_null_texture(clearcoat) ? float4(0.0f)
+                                            : clearcoat.read(pixel);
   return vkr_clearcoat_active(packed.x)
              ? clamp(packed.y, 0.04f, 1.0f)
              : clamp(specular.read(pixel).w, 0.04f, 1.0f);
@@ -313,7 +315,8 @@ kernel void vkr_metal_packet_ssr_temporal(
   float3 receiver_view = vkr_ssr_reconstruct_view_position(
       root.params, current_uv, root.depth.read(pixel).x);
   float center_depth = -receiver_view.z;
-  float4 coat = root.clearcoat.read(pixel);
+  float4 coat = is_null_texture(root.clearcoat)
+      ? float4(0.0f) : root.clearcoat.read(pixel);
   bool coat_active = vkr_clearcoat_active(coat.x);
   float roughness =
       clamp(coat_active ? coat.y : root.specular.read(pixel).w, 0.04f, 1.0f);
@@ -563,7 +566,8 @@ kernel void vkr_metal_packet_ssr_composite(
   float3 base_normal =
       vkr_metal_packet_octahedral_decode(root.normal.read(pixel).xy);
   float4 specular = root.specular.read(pixel);
-  float4 clearcoat_packed = root.clearcoat.read(pixel);
+  float4 clearcoat_packed = is_null_texture(root.clearcoat)
+      ? float4(0.0f) : root.clearcoat.read(pixel);
   bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
   float3 normal = clearcoat_active
                       ? vkr_metal_packet_octahedral_decode(clearcoat_packed.zw)
@@ -604,13 +608,15 @@ kernel void vkr_metal_packet_ssr_composite(
         gtao_visibility, gtao_bent_normal, reflect(-view, base_normal), roughness);
     VkrGgxMaterialEnergy energy = vkr_metal_prepare_gbuffer_brdf(
         root.frame, normal, view, roughness,
-        saturate(specular.rgb), root.anisotropy.read(pixel));
+        saturate(specular.rgb), is_null_texture(root.anisotropy)
+            ? float4(0.0f) : root.anisotropy.read(pixel));
     VkrMetalPacketEnvironmentLighting environment =
         vkr_metal_packet_environment_lighting(
             root.frame, world_position, normal, normal, view, roughness,
             occlusion, gtao_specular_cone, energy, false);
     float sheen_base_transmission = 1.0f;
-    float4 sheen_packed = root.sheen.read(pixel);
+    float4 sheen_packed = is_null_texture(root.sheen)
+      ? float4(0.0f) : root.sheen.read(pixel);
     if (vkr_sheen_active(sheen_packed.rgb))
       sheen_base_transmission = vkr_metal_packet_prepare_sheen(
           root.frame, sheen_packed.rgb, sheen_packed.a, normal, view)

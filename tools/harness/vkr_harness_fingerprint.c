@@ -230,7 +230,21 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.bloom_threshold,
       case_manifest->renderer.bloom_knee,
       case_manifest->renderer.bloom_intensity);
+  // Cache changes the placement of a nonlinear transform across filtering.
+  // Disabled spellings retain the analytic reference workload identity.
+  const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
+  if (post_cache && post_cache[0] != '\0' && !string_equals(post_cache, "0") &&
+      string_equals(case_manifest->renderer.render_mode, "default")) {
+    ADD("renderer.post_transform_cache", "%u", 1u);
+  }
   ADD("renderer.ssr", "%u", case_manifest->renderer.ssr_enabled);
+  /* The tier is a cold process option inherited by every capture/profile child.
+     Keep explicit high equivalent to the unset reference configuration. */
+  const char *ssr_quality = getenv("VKR_SSR_QUALITY");
+  if (case_manifest->renderer.ssr_enabled && ssr_quality &&
+      ssr_quality[0] != '\0' && !string_equals(ssr_quality, "high")) {
+    ADD("renderer.ssr_quality", "%s", ssr_quality);
+  }
   if (case_manifest->renderer.ssgi_enabled)
     ADD("renderer.ssgi", "%u", case_manifest->renderer.ssgi_enabled);
   /* Disabled DoF has no output or workload effect, preserving legacy identity. */
