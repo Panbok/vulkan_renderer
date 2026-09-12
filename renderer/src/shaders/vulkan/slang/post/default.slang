@@ -16,6 +16,7 @@ static const uint VKR_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u;
 static const uint VKR_FULLSCREEN_ACES_FITTED = 1u << 4u;
 static const uint VKR_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u;
 static const uint VKR_FULLSCREEN_PREPARE_DISPLAY_LINEAR = 1u << 6u;
+static const uint VKR_FULLSCREEN_SCENE_BLUR = 1u << 7u;
 
 float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
                        bool tonemap, bool aces_fitted, float exposure,
@@ -198,6 +199,21 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
     VkrDisplayOutputParams display_output = root.display_output[0];
     uint2 extent = uint2(root.point_light_grid_origin_cell_size.xy);
     float sharpness = root.point_light_grid_origin_cell_size.z;
+    if ((g_fullscreen_push.flags & VKR_FULLSCREEN_SCENE_BLUR) != 0u)
+    {
+        float4 blurred = float4(0.0f);
+        for (int y = -2; y <= 2; ++y)
+        {
+            for (int x = -2; x <= 2; ++x)
+            {
+                blurred += g_textures[texture_index].SampleLevel(
+                    g_samplers[sampler_index],
+                    input.uv + vkr_scene_blur_offset(x, y, extent), 0.0f) *
+                    vkr_scene_blur_weight(x) * vkr_scene_blur_weight(y);
+            }
+        }
+        return vkr_finish_output(blurred, g_fullscreen_push.flags, display_output);
+    }
     float4 result;
     if ((g_fullscreen_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
     {

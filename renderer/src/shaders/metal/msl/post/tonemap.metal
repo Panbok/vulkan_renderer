@@ -15,6 +15,7 @@ static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED =
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u;
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR = 1u << 5u;
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR = 1u << 6u;
+static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR = 1u << 7u;
 
 static float3 vkr_metal_packet_aces_fitted(float3 color) {
   const float a = 2.51;
@@ -212,6 +213,17 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
   uint flags = root->flags;
   float sharpness = root->image_sharpness;
   VkrDisplayOutputParams display_output = *root->display_output;
+  if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR) != 0u) {
+    float4 blurred = float4(0.0);
+    for (int y = -2; y <= 2; ++y) {
+      for (int x = -2; x <= 2; ++x) {
+        blurred += root->source.sample(source_sampler,
+            uv + vkr_scene_blur_offset(x, y, root->output_extent)) *
+            vkr_scene_blur_weight(x) * vkr_scene_blur_weight(y);
+      }
+    }
+    return vkr_metal_packet_finish_output(blurred, flags, display_output);
+  }
   if ((root->flags & 2u) == 0u) {
     float4 result = vkr_metal_packet_post_sample(root->source, source_sampler, uv,
                                                 exposure, flags, *root->color_grading,

@@ -444,6 +444,8 @@ typedef struct VkrEditorPassPayload {
   Vec4 image_rect_px;
   /** Keep the last submitted Scene image while the editor UI continues. */
   bool8_t scene_rendering_stopped;
+  /** Blur only the retained Scene composite; UI is drawn afterward. */
+  bool8_t scene_backdrop_blur;
   const VkrEditorOverlayDraw *overlay_draws;
   uint32_t overlay_draw_count;
 } VkrEditorPassPayload;

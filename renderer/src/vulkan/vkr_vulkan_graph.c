@@ -1496,7 +1496,9 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     if (!vkr_vk_prepare_packet_fullscreen(
             renderer, &prepared->fullscreen,
             VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index, 0u,
-            VKR_VULKAN_FULLSCREEN_ALREADY_OUTPUT_ENCODED, true_v,
+            VKR_VULKAN_FULLSCREEN_ALREADY_OUTPUT_ENCODED |
+                (packet->input.editor->scene_backdrop_blur
+                     ? VKR_VULKAN_FULLSCREEN_SCENE_BLUR : 0u), true_v,
             (uint32_t)image_rect.z, (uint32_t)image_rect.w))
       return false_v;
     return true_v;

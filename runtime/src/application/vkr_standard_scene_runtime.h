@@ -40,6 +40,7 @@ typedef struct VkrStandardSceneRuntimeEditorViewport {
   bool8_t scene_only;
   bool8_t simulation_running;
   bool8_t scene_rendering_stopped;
+  bool8_t scene_backdrop_blur;
   VkrRendererError scene_error;
   float64_t simulation_time;
   VkrViewportFitMode fit_mode;

@@ -636,6 +636,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                             "must be finite");
       }
     }
+    if (editor->scene_backdrop_blur > true_v) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.scene_backdrop_blur",
+                        "must be zero or one");
+    }
     if (editor->scene_rendering_stopped > true_v)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.scene_rendering_stopped",

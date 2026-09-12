@@ -631,6 +631,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
           (cached ? VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR : 0u) |
           (editor_rect ? VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED
                        : 0u) |
+          (editor_rect && packet->input.editor->scene_backdrop_blur
+               ? VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR : 0u) |
           (renderer->metalfx_enabled
                ? VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA
                : 0u),

@@ -714,7 +714,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   VkrAllocator *scratch = &application->frame_allocator;
 
   const bool8_t scene_stopped =
-      vkr_standard_scene_runtime_editor_scene_rendering_stopped(application);
+      vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
+      application->editor_viewport.scene_backdrop_blur;
   VkrShadowFrameData shadow_frame = {0};
   uint32_t shadow_cascade_count = 0;
 
@@ -875,6 +876,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
             &editor_mapping) &&
         vkr_editor_viewport_build_payload(&editor_mapping, &editor_payload)) {
       editor_payload.scene_rendering_stopped = scene_stopped;
+      editor_payload.scene_backdrop_blur =
+          application->editor_viewport.scene_backdrop_blur;
       viewport_width = editor_mapping.target_width;
       viewport_height = editor_mapping.target_height;
       has_editor = true_v;

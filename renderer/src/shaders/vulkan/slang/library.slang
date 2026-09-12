@@ -20,6 +20,7 @@
 #include "../../shared/froxel_fog_kernel.slangh"
 #include "../../shared/atmosphere_kernel.slangh"
 #include "../../shared/sharpen_kernel.slangh"
+#include "../../shared/scene_blur_kernel.slangh"
 #include "../../shared/agx_kernel.slangh"
 #include "../../shared/display_output_kernel.slangh"
 #include "../../shared/color_grading_kernel.slangh"

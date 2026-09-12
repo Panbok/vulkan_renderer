@@ -191,9 +191,19 @@ remain open.
 The editor retained-image path reuses the existing Tonemap pipeline for resolve
 and composite. Resolve performs output processing once into a swapchain-format
 image; composite samples that image with exposure 1, tonemap disabled and FXAA
-disabled. Both backend host paths implement the same lowering without changing
-shader roots or source. Same-revision native Vulkan/Metal image comparison remains
-unavailable for this change.
+disabled. Scene preparation optionally freezes this retained image and selects
+bit 7 in each backend's existing post flags for backdrop blur. The shared
+`scene_blur_kernel.slangh` defines normalized binomial weights and offsets:
+25 bilinear taps over a 5×5 grid, four output pixels apart, clamped at source
+edges. The compositor averages presentation-linear values, preserving output
+scale; UI draws afterward and remains sharp. No shader root layout, binding,
+intermediate image or GPU retirement contract changes. Normal frames retain
+the original sampling path. Both native shader paths compile; native Vulkan
+execution and matched bilateral image comparison remain unavailable, so this
+contract remains **UNALIGNED**. A focused Bistro editor reload and cancellation
+passes Metal API validation with visible backdrop blur. Combined API/GPU
+validation aborts on the driver assertion that command-buffer residency sets
+exceed 32, so shader-validation evidence remains unavailable.
 
 Metal command-buffer demand growth uses the existing candidate count as its
 per-view ICB command stride. Graph draw-table storage now follows scene demand

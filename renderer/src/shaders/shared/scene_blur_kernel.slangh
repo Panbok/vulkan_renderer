@@ -1,0 +1,12 @@
+// Separable binomial weights [1, 4, 6, 4, 1]/16, evaluated as a 5x5
+// compositor kernel. Four output pixels between taps yields an eight-pixel
+// radius. Native sampling clamps to the retained Scene image edges.
+float vkr_scene_blur_weight(int offset)
+{
+    return offset == 0 ? 0.375f : (abs(offset) == 1 ? 0.25f : 0.0625f);
+}
+
+float2 vkr_scene_blur_offset(int x, int y, uint2 output_extent)
+{
+    return float2(x, y) * 4.0f / float2(output_extent);
+}

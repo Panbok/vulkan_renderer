@@ -444,6 +444,7 @@ typedef enum VkrVulkanFullscreenFlag {
   VKR_VULKAN_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u,
   VKR_VULKAN_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u,
   VKR_VULKAN_FULLSCREEN_PREPARE_DISPLAY_LINEAR = 1u << 6u,
+  VKR_VULKAN_FULLSCREEN_SCENE_BLUR = 1u << 7u,
 } VkrVulkanFullscreenFlag;
 
 typedef enum VkrVulkanPacketShader {

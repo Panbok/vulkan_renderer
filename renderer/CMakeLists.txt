@@ -325,6 +325,7 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/anisotropy_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/clearcoat_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/sharpen_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/scene_blur_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/agx_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/display_output_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/color_grading_kernel.slangh"
@@ -416,6 +417,14 @@ if(APPLE)
 elseif(WIN32)
     target_compile_definitions(renderer_lib PRIVATE PLATFORM_WINDOWS=1)
 endif()
+
+# Renderer resource, independent of editor workspaces and process CWD. Keep its
+# installed build location beside the already configured native shader inputs.
+set(VKR_RENDER_GRAPH_PATH "${CMAKE_CURRENT_BINARY_DIR}/resources/main.rendergraph.json")
+configure_file("${CMAKE_SOURCE_DIR}/assets/render_graphs/main.rendergraph.json"
+               "${VKR_RENDER_GRAPH_PATH}" COPYONLY)
+target_compile_definitions(renderer_lib PRIVATE
+    VKR_RENDER_GRAPH_PATH="${VKR_RENDER_GRAPH_PATH}")
 
 # Set compile definitions for logging based on build type
 target_compile_definitions(renderer_lib PRIVATE
