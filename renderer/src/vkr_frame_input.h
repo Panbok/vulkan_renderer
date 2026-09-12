@@ -24,7 +24,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 44u
+#define VKR_FRAME_INPUT_VERSION 45u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -197,8 +197,10 @@ typedef struct VkrDrawItem {
 #define VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID 0x1u
 /** The candidate participates in the camera opaque/cutout view. */
 #define VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE 0x2u
-/** The candidate participates in shadow-cascade views. */
+/** The candidate participates in directional and local shadow views. */
 #define VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER 0x4u
+/** Local shadows route this caster through ordered refractive transmission. */
+#define VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION 0x8u
 
 /**
  * @brief Unculled multi-view draw source row borrowed for one packet

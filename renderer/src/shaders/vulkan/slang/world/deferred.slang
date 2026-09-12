@@ -63,6 +63,11 @@ struct VkrVkCullRoot
     float hzb_depth_epsilon;
     uint camera_required_flags;
     uint shadow_required_flags;
+    uint local_shadow_first_view;
+    uint transmission_first_view;
+    uint transmission_required_flags;
+    uint local_shadow_excluded_flags;
+    uint reserved;
 };
 
 struct VkrVkRasterRoot
@@ -599,8 +604,14 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     uint required_flags = view_index == 0u ? root.camera_required_flags
                                            : root.shadow_required_flags;
     uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
+    uint excluded_flags = 0u;
+    if (view_index >= root.transmission_first_view)
+        required_flags = root.transmission_required_flags;
+    else if (view_index >= root.local_shadow_first_view)
+        excluded_flags = root.local_shadow_excluded_flags;
     uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
-    if ((candidate_flags & required_flags) != required_flags)
+    if ((candidate_flags & required_flags) != required_flags ||
+        (candidate_flags & excluded_flags) != 0u)
     {
         root.classifications[view_index * root.candidate_capacity +
                              candidate_index] = 0xffffffffu;

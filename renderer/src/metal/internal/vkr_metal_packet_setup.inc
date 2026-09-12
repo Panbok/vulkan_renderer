@@ -299,22 +299,27 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, root.bufferStructType, "vertices",
             VKR_GPU_ABI_PACKED_STATIC_VERTEX) ||
-        !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                              root.bufferStructType, "frame",
-                                              VKR_METAL_PACKET_ABI_FRAME_ROOT))
+        !vkr_metal_packet_validate_nested_abi(
+            pipeline_label, root.bufferStructType, "frame",
+            VKR_METAL_PACKET_ABI_FRAME_ROOT) ||
+        !vkr_metal_packet_validate_nested_abi(
+            pipeline_label, root.bufferStructType, "local_shadow_transmission",
+            VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION_DRAW))
       return false_v;
     MTLStructType *frame_type =
         vkr_metal_packet_nested_struct(root.bufferStructType, "frame");
     if (!frame_type ||
         !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "diffuse_volume_params", VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME) ||
+            pipeline_label, frame_type, "diffuse_volume_params",
+            VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME) ||
         !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "fog", VKR_METAL_PACKET_ABI_FOG_PARAMS) ||
+            pipeline_label, frame_type, "fog",
+            VKR_METAL_PACKET_ABI_FOG_PARAMS) ||
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "froxel_fog",
             VKR_METAL_PACKET_ABI_FROXEL_PARAMS) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "ltc", VKR_METAL_PACKET_ABI_LTC) ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type, "ltc",
+                                              VKR_METAL_PACKET_ABI_LTC) ||
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "sheen", VKR_METAL_PACKET_ABI_SHEEN) ||
         !vkr_metal_packet_validate_nested_abi(
@@ -326,6 +331,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, frame_type, "point_light_data",
             VKR_GPU_ABI_POINT_LIGHT_ROW) ||
+        !vkr_metal_packet_validate_nested_abi(
+            pipeline_label, frame_type, "local_shadow_transmission",
+            VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION) ||
         !vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, frame_type, "local_shadow_views",
             VKR_GPU_ABI_LOCAL_SHADOW_VIEW) ||
@@ -358,7 +366,10 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
                                             VKR_METAL_PACKET_ABI_TEXT_VERTEX))
     return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT &&
-      (!vkr_metal_packet_validate_nested_gpu_abi(
+      (!vkr_metal_packet_validate_nested_abi(
+           pipeline_label, root.bufferStructType, "views",
+           VKR_METAL_PACKET_ABI_GPU_DRAW_VIEW) ||
+       !vkr_metal_packet_validate_nested_gpu_abi(
            pipeline_label, root.bufferStructType, "candidates",
            VKR_GPU_ABI_CANDIDATE_DRAW_ROW) ||
        !vkr_metal_packet_validate_nested_gpu_abi(
@@ -469,6 +480,16 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
                                             VKR_METAL_PACKET_ABI_FRAME_ROOT))
     return false_v;
   if ((record_id == VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT) &&
+      !vkr_metal_packet_validate_nested_abi(
+          pipeline_label,
+          vkr_metal_packet_nested_struct(root.bufferStructType, "frame"),
+          "local_shadow_transmission",
+          VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION))
+    return false_v;
+  if ((record_id == VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_FROXEL_APPLY_ROOT) &&
       (!vkr_metal_packet_validate_nested_abi(
@@ -495,14 +516,16 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
             pipeline_label, root.bufferStructType, "frame",
             VKR_METAL_PACKET_ABI_FRAME_ROOT) ||
         !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "diffuse_volume_params", VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME) ||
+            pipeline_label, frame_type, "diffuse_volume_params",
+            VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME) ||
         !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "fog", VKR_METAL_PACKET_ABI_FOG_PARAMS) ||
+            pipeline_label, frame_type, "fog",
+            VKR_METAL_PACKET_ABI_FOG_PARAMS) ||
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "froxel_fog",
             VKR_METAL_PACKET_ABI_FROXEL_PARAMS) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "ltc", VKR_METAL_PACKET_ABI_LTC) ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type, "ltc",
+                                              VKR_METAL_PACKET_ABI_LTC) ||
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "sheen", VKR_METAL_PACKET_ABI_SHEEN) ||
         !vkr_metal_packet_validate_nested_abi(
@@ -514,6 +537,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, frame_type, "point_light_data",
             VKR_GPU_ABI_POINT_LIGHT_ROW) ||
+        !vkr_metal_packet_validate_nested_abi(
+            pipeline_label, frame_type, "local_shadow_transmission",
+            VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION) ||
         !vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, frame_type, "local_shadow_views",
             VKR_GPU_ABI_LOCAL_SHADOW_VIEW))
@@ -780,6 +806,23 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid, false_v,
       VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
       true_v, @"VKR Metal packet GPU shadow");
+  const char *local_transmission_fragments[] = {
+      "vkr_metal_packet_local_shadow_transmission0_fragment",
+      "vkr_metal_packet_local_shadow_transmission1_fragment",
+      "vkr_metal_packet_local_shadow_transmission_overflow_fragment"};
+  for (uint32_t layer = 0u; layer < ArrayCount(local_transmission_fragments);
+       ++layer) {
+    renderer->local_shadow_transmission_pipelines[layer] =
+        vkr_metal_packet_create_pipeline(
+            renderer, fragment,
+            "vkr_metal_packet_local_shadow_transmission_vertex", fragment,
+            local_transmission_fragments[layer],
+            layer < 2u ? MTLPixelFormatRGBA16Float : MTLPixelFormatInvalid,
+            false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+            [NSString
+                stringWithFormat:@"VKR local shadow transmission %u", layer]);
+  }
   // Opaque cascade geometry never alpha-tests, so it needs no fragment stage.
   renderer->gpu_shadow_opaque_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", nil, NULL,
@@ -1198,19 +1241,21 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->gbuffer_resolve_pipelines[3] ||
       !renderer->gtao_depth_prefilter_pipeline ||
       !renderer->gtao_depth_mip_pipeline || !renderer->gtao_evaluate_pipeline ||
-      !renderer->gtao_denoise_pipeline ||
-      !renderer->ssr_depth_base_pipeline || !renderer->ssr_depth_mip_pipeline ||
-      !renderer->ssr_trace_pipeline || !renderer->ssr_temporal_pipeline ||
-      !renderer->ssr_composite_pipeline || !renderer->ssgi_depth_base_pipeline ||
+      !renderer->gtao_denoise_pipeline || !renderer->ssr_depth_base_pipeline ||
+      !renderer->ssr_depth_mip_pipeline || !renderer->ssr_trace_pipeline ||
+      !renderer->ssr_temporal_pipeline || !renderer->ssr_composite_pipeline ||
+      !renderer->ssgi_depth_base_pipeline ||
       !renderer->ssgi_depth_mip_pipeline || !renderer->ssgi_trace_pipeline ||
       !renderer->ssgi_temporal_pipeline || !renderer->ssgi_composite_pipeline ||
-      !renderer->fog_pipeline ||
-      !renderer->froxel_inject_pipeline || !renderer->froxel_integrate_pipeline ||
-      !renderer->froxel_apply_pipeline || !renderer->deferred_lighting_pipeline || !renderer->sh_coefficients ||
+      !renderer->fog_pipeline || !renderer->froxel_inject_pipeline ||
+      !renderer->froxel_integrate_pipeline ||
+      !renderer->froxel_apply_pipeline ||
+      !renderer->deferred_lighting_pipeline || !renderer->sh_coefficients ||
       renderer->sh_coefficients.gpuAddress == 0 || !renderer->ibl_sh_pipeline ||
       !renderer->atmosphere_transmittance_pipeline ||
       !renderer->atmosphere_multiple_scattering_pipeline ||
-      !renderer->atmosphere_source_pipeline || !renderer->atmosphere_sun_pipeline ||
+      !renderer->atmosphere_source_pipeline ||
+      !renderer->atmosphere_sun_pipeline ||
       !renderer->temporal_resolve_pipeline ||
       !renderer->metalfx_stabilize_pipeline ||
       !renderer->transmission_shade_pipeline ||
@@ -1232,6 +1277,9 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->bloom_downsample_box4_pipeline ||
       !renderer->bloom_upsample_pipeline || !renderer->bloom_combine_pipeline ||
       !renderer->gpu_shadow_pipeline || !renderer->gpu_shadow_opaque_pipeline ||
+      !renderer->local_shadow_transmission_pipelines[0] ||
+      !renderer->local_shadow_transmission_pipelines[1] ||
+      !renderer->local_shadow_transmission_pipelines[2] ||
       !renderer->vbuffer_pipeline || !renderer->vbuffer_opaque_pipeline ||
       !renderer->transmission_vbuffer_pipeline ||
       !renderer->gpu_draw_icb_argument_encoder) {
@@ -1281,6 +1329,12 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},
       {renderer->ibl_sh_pipeline, "IBL SH projection pipeline"},
       {renderer->gpu_shadow_pipeline, "GPU shadow pipeline"},
+      {renderer->local_shadow_transmission_pipelines[0],
+       "local shadow transmission 0 pipeline"},
+      {renderer->local_shadow_transmission_pipelines[1],
+       "local shadow transmission 1 pipeline"},
+      {renderer->local_shadow_transmission_pipelines[2],
+       "local shadow transmission overflow pipeline"},
       {renderer->gpu_shadow_opaque_pipeline, "opaque GPU shadow pipeline"},
       {renderer->vbuffer_pipeline, "visibility-buffer pipeline"},
       {renderer->vbuffer_opaque_pipeline, "opaque visibility-buffer pipeline"},

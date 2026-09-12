@@ -8,15 +8,13 @@
 #include "core/logger.h"
 #include "core/vkr_metrics.h"
 #include "filesystem/filesystem.h"
-#include "vkr_atmosphere.h"
 #include "vkr_anisotropy_lut.h"
+#include "vkr_atmosphere.h"
 #include "vkr_bloom.h"
-#include "vkr_dof.h"
-#include "vkr_subsurface.h"
-#include "vkr_motion_blur.h"
 #include "vkr_candidate_residency.h"
 #include "vkr_capture_ring.h"
 #include "vkr_display_output.h"
+#include "vkr_dof.h"
 #include "vkr_fog.h"
 #include "vkr_froxel_fog.h"
 #include "vkr_geometry_ranges.h"
@@ -28,12 +26,14 @@
 #include "vkr_ibl_math.h"
 #include "vkr_ibl_sh_pool.h"
 #include "vkr_ltc_lut.h"
-#include "vkr_sheen_lut.h"
+#include "vkr_motion_blur.h"
 #include "vkr_packet_constants.h"
 #include "vkr_render_graph_internal.h"
 #include "vkr_rg_json.h"
+#include "vkr_sheen_lut.h"
 #include "vkr_ssgi.h"
 #include "vkr_ssr.h"
+#include "vkr_subsurface.h"
 #include "vkr_temporal.h"
 #include "vulkan/vkr_vulkan_dependency.h"
 #include "vulkan/vkr_vulkan_memory.h"
@@ -140,6 +140,18 @@
 #ifndef VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV
 #define VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV                           \
   "packet.visibility_opaque.frag.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
+  "packet.local_shadow_transmission.vert.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV                   \
+  "packet.local_shadow_transmission.frag.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV          \
+  "packet.local_shadow_transmission_overflow.frag.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV
 #define VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV                           \
@@ -384,7 +396,7 @@ enum {
 
 enum {
   VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX =
-      1 + VKR_SHADOW_CASCADE_COUNT_MAX + VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      1 + VKR_SHADOW_CASCADE_COUNT_MAX + 2 * VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
   /* The final target can be RGBA8 or RGBA16F. A tightly packed 1x1 image
    * copy therefore occupies eight bytes in the extended-linear case. */
   VKR_VULKAN_READBACK_COLOR_SIZE = 8,
@@ -416,6 +428,8 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE,
+  VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION,
+  VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING,
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
@@ -448,6 +462,9 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
   VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_PICKING_FRAGMENT,
@@ -635,6 +652,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   float32_t hzb_depth_epsilon;
   uint32_t camera_required_flags;
   uint32_t shadow_required_flags;
+  uint32_t local_shadow_first_view;
+  uint32_t transmission_first_view;
+  uint32_t transmission_required_flags;
+  uint32_t local_shadow_excluded_flags;
+  uint32_t reserved;
 } VkrVulkanCullRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
@@ -647,6 +669,27 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
   uint32_t previous_depth_texture;
   uint32_t previous_depth_layer;
 } VkrVulkanRasterRoot;
+
+/** One refreshed face borrows the main transmitting view for all three peels.
+ */
+typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowTransmissionRoot {
+  VkrVulkanRasterRoot raster;
+  uint64_t transmission_materials;
+  uint32_t previous_color_texture;
+  uint32_t reserved;
+  Vec4 light_position;
+} VkrVulkanLocalShadowTransmissionRoot;
+
+/** Completion-protected frame upload; graph resources own the five images. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowTransmission {
+  uint32_t depth0_texture;
+  uint32_t color0_texture;
+  uint32_t depth1_texture;
+  uint32_t color1_texture;
+  uint32_t overflow_texture;
+  uint32_t extent;
+  uint32_t reserved[2];
+} VkrVulkanLocalShadowTransmission;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalTransformRoot {
   uint64_t instances;
@@ -1389,6 +1432,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint32_t froxel_sampler;
   uint64_t sheen;
   uint64_t anisotropy;
+  uint64_t local_shadow_transmission;
+  uint64_t local_shadow_transmission_reserved;
 } VkrVulkanPacketFrameRoot;
 
 /** The only record written per indexed packet draw. */
@@ -1573,7 +1618,7 @@ _Static_assert(offsetof(VkrVulkanTransmissionMaterialGpuRow,
                "Vulkan transmission material sampler ABI drift");
 _Static_assert(sizeof(VkrVulkanPushConstants) == 16u,
                "Push-constant ABI drift");
-_Static_assert(sizeof(VkrVulkanCullRoot) == 176u,
+_Static_assert(sizeof(VkrVulkanCullRoot) == 192u,
                "Deferred cull-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, view_projections) == 48u,
                "Deferred cull-root address ABI drift");
@@ -1581,6 +1626,23 @@ _Static_assert(offsetof(VkrVulkanCullRoot, hzb_textures) == 80u,
                "Deferred cull-root HZB ABI drift");
 _Static_assert(sizeof(VkrVulkanRasterRoot) == 48u,
                "Deferred raster-root ABI size drift");
+_Static_assert(sizeof(VkrVulkanLocalShadowTransmissionRoot) == 80u &&
+                   offsetof(VkrVulkanLocalShadowTransmissionRoot,
+                            transmission_materials) == 48u &&
+                   offsetof(VkrVulkanLocalShadowTransmissionRoot,
+                            previous_color_texture) == 56u &&
+                   offsetof(VkrVulkanLocalShadowTransmissionRoot,
+                            light_position) == 64u,
+               "Local shadow transmission raster ABI drift");
+_Static_assert(
+    sizeof(VkrVulkanLocalShadowTransmission) == 32u &&
+        offsetof(VkrVulkanLocalShadowTransmission, depth0_texture) == 0u &&
+        offsetof(VkrVulkanLocalShadowTransmission, color0_texture) == 4u &&
+        offsetof(VkrVulkanLocalShadowTransmission, depth1_texture) == 8u &&
+        offsetof(VkrVulkanLocalShadowTransmission, color1_texture) == 12u &&
+        offsetof(VkrVulkanLocalShadowTransmission, overflow_texture) == 16u &&
+        offsetof(VkrVulkanLocalShadowTransmission, extent) == 20u,
+    "Local shadow transmission sampling ABI drift");
 _Static_assert(sizeof(VkrVulkanTemporalTransformRoot) == 32u,
                "Temporal transform-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanResolveRoot) == 416u,
@@ -1845,7 +1907,10 @@ _Static_assert(offsetof(VkrVulkanPacketFrameRoot, sheen) == 592u,
                "Vulkan sheen address ABI offset drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, anisotropy) == 600u,
                "Vulkan anisotropy address ABI offset drift");
-_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 608u,
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, local_shadow_transmission) ==
+                   608u,
+               "Vulkan local shadow transmission address ABI drift");
+_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 624u,
                "Packet frame-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, sh_coefficients) == 88u,
                "Packet frame-root SH-buffer ABI offset drift");
@@ -2170,8 +2235,10 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t point_light_masks;
   uint64_t shadow_cascades;
   uint64_t local_shadow_views;
+  uint64_t local_shadow_transmission;
   uint32_t shadow_cascade_count;
   uint32_t local_shadow_view_count;
+  uint32_t local_shadow_transmission_view_count;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t prefilter_texture;
@@ -2203,7 +2270,8 @@ typedef struct VkrVulkanFrameSlot {
   /** True only while this slot's command buffer owns the immutable LTC upload.
    */
   bool8_t ltc_upload_recorded;
-  /** True only while this slot's command buffer owns the immutable sheen upload. */
+  /** True only while this slot's command buffer owns the immutable sheen
+   * upload. */
   bool8_t sheen_upload_recorded;
   /** True only while this slot's command buffer owns the anisotropy upload. */
   bool8_t anisotropy_upload_recorded;
@@ -2529,6 +2597,9 @@ typedef struct VkrVulkanFroxelHistory {
   uint32_t local_shadow_generation;
   uint32_t shadow_valid_layer_mask;
   uint32_t local_shadow_valid_layer_mask;
+  uint64_t local_shadow_transmission_generations
+      [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
+  uint32_t local_shadow_transmission_valid_layer_mask;
   bool8_t valid;
 } VkrVulkanFroxelHistory;
 
@@ -2541,6 +2612,9 @@ typedef struct VkrVulkanSsgiHistory {
   uint32_t local_shadow_generation;
   uint32_t shadow_valid_layer_mask;
   uint32_t local_shadow_valid_layer_mask;
+  uint64_t local_shadow_transmission_generations
+      [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
+  uint32_t local_shadow_transmission_valid_layer_mask;
   bool8_t valid;
 } VkrVulkanSsgiHistory;
 
@@ -2939,6 +3013,9 @@ bool8_t vkr_vk_prepare_deferred_cull(VkrVulkanRenderer *renderer,
                                      const VkrRgPass *pass,
                                      VkrVulkanDeferredPipeline pipeline,
                                      bool8_t transmission);
+bool8_t vkr_vk_prepare_local_shadow_transmission(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedRaster *prepared,
+    const VkrRgPass *pass, bool8_t overflow);
 bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedRaster *prepared,
                                        const VkrRgPass *pass, bool8_t shadow,

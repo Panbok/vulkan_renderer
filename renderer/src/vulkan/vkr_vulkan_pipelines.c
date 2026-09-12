@@ -233,6 +233,7 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     SpvReflectBlockVariable *instances = NULL;
     SpvReflectBlockVariable *point_light_data = NULL;
     SpvReflectBlockVariable *local_shadow_views = NULL;
+    SpvReflectBlockVariable *local_shadow_transmission = NULL;
     SpvReflectBlockVariable *ltc = NULL;
     SpvReflectBlockVariable *sheen = NULL;
     SpvReflectBlockVariable *anisotropy = NULL;
@@ -308,6 +309,31 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     valid &= vkr_vk_reflect_member_offset(
         frame, "local_shadow_texture",
         offsetof(VkrVulkanPacketFrameRoot, local_shadow_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "local_shadow_transmission",
+        offsetof(VkrVulkanPacketFrameRoot, local_shadow_transmission),
+        &local_shadow_transmission);
+    valid &= local_shadow_transmission &&
+             vkr_vk_reflected_struct_size(local_shadow_transmission) ==
+                 sizeof(VkrVulkanLocalShadowTransmission);
+    valid &= vkr_vk_reflect_member_offset(
+        local_shadow_transmission, "depth0_texture",
+        offsetof(VkrVulkanLocalShadowTransmission, depth0_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        local_shadow_transmission, "color0_texture",
+        offsetof(VkrVulkanLocalShadowTransmission, color0_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        local_shadow_transmission, "depth1_texture",
+        offsetof(VkrVulkanLocalShadowTransmission, depth1_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        local_shadow_transmission, "color1_texture",
+        offsetof(VkrVulkanLocalShadowTransmission, color1_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        local_shadow_transmission, "overflow_texture",
+        offsetof(VkrVulkanLocalShadowTransmission, overflow_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        local_shadow_transmission, "extent",
+        offsetof(VkrVulkanLocalShadowTransmission, extent), NULL);
     valid &= vkr_vk_reflect_member_offset(
         frame, "dfg_texture", offsetof(VkrVulkanPacketFrameRoot, dfg_texture),
         NULL);
@@ -1262,6 +1288,24 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_depth_epsilon),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, camera_required_flags),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, shadow_required_flags),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, local_shadow_first_view),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, transmission_first_view),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot,
+                                 transmission_required_flags),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot,
+                                 local_shadow_excluded_flags),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, reserved),
+  };
+  static const VkrVulkanReflectedField local_transmission_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowTransmissionRoot, raster),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowTransmissionRoot,
+                                 transmission_materials),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowTransmissionRoot,
+                                 previous_color_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowTransmissionRoot,
+                                 reserved),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowTransmissionRoot,
+                                 light_position),
   };
   static const VkrVulkanReflectedField resolve_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, geometry_rows),
@@ -1678,6 +1722,21 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
         renderer, cull_shaders[i], cull_entries[i], cull_fields,
         ArrayCount(cull_fields), sizeof(VkrVulkanCullRoot), "candidates",
         VKR_GPU_ABI_CANDIDATE_DRAW_ROW);
+  static const char *const local_transmission_shaders[] = {
+      VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV,
+      VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV,
+      VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV,
+  };
+  static const char *const local_transmission_entries[] = {
+      "vk_local_shadow_transmission_vertex",
+      "vk_local_shadow_transmission_fragment",
+      "vk_local_shadow_transmission_overflow_fragment",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(local_transmission_shaders); ++i)
+    valid &= vkr_vk_validate_root_abi(
+        renderer, local_transmission_shaders[i], local_transmission_entries[i],
+        local_transmission_fields, ArrayCount(local_transmission_fields),
+        sizeof(VkrVulkanLocalShadowTransmissionRoot));
   static const char *const resolve_shaders[] = {
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV,
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV,
@@ -1982,6 +2041,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "ui_rect_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX
                   ? "vk_visibility_vertex"
+              : vertex_shader ==
+                      VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_VERTEX
+                  ? "vk_local_shadow_transmission_vertex"
                   : "fullscreen_vertex",
       },
       {
@@ -2021,6 +2083,12 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
               : fragment_shader ==
                       VKR_VULKAN_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT
                   ? "vk_visibility_shadow_fragment"
+              : fragment_shader ==
+                      VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_FRAGMENT
+                  ? "vk_local_shadow_transmission_fragment"
+              : fragment_shader ==
+                      VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAGMENT
+                  ? "vk_local_shadow_transmission_overflow_fragment"
                   : "fullscreen_fragment",
       },
   };
@@ -2226,6 +2294,9 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV,
+      VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV,
+      VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV,
+      VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV,
       VKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV,
       VKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV,
       VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV,
@@ -2311,7 +2382,20 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE,
              VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
              VKR_VULKAN_PACKET_SHADER_COUNT, VK_FORMAT_UNDEFINED,
-             VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, true_v);
+             VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, true_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION,
+             VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_FRAGMENT,
+             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
+             true_v, false_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer,
+             VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
+             VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAGMENT,
+             VK_FORMAT_UNDEFINED, VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v,
+             false_v);
 }
 
 vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer) {

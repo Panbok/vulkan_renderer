@@ -80,11 +80,19 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     : 0u;
   frame->local_shadow_view_count =
       packet->input.local_shadow ? packet->input.local_shadow->view_count : 0u;
+  frame->local_shadow_transmission_view_count =
+      packet->input.world &&
+              packet->input.world->transmission_gpu_candidate_count > 0u
+          ? frame->local_shadow_view_count
+          : 0u;
   frame->local_shadow_render_mask =
       packet->input.local_shadow ? packet->input.local_shadow->render_mask : 0u;
   frame->local_shadow_map_size = packet->input.local_shadow
                                      ? packet->input.local_shadow->map_size
                                      : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
+  frame->local_shadow_transmission_map_size =
+      Min(frame->local_shadow_map_size,
+          VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
   frame->local_shadow_map_layer_count =
       packet->input.local_shadow ? packet->input.local_shadow->face_budget : 1u;
   frame->shadow_cascade_render_mask =

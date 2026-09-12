@@ -830,6 +830,9 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       [renderer->vbuffer_pipeline release];
       [renderer->transmission_vbuffer_pipeline release];
       [renderer->gpu_shadow_pipeline release];
+      for (uint32_t i = 0u;
+           i < ArrayCount(renderer->local_shadow_transmission_pipelines); ++i)
+        [renderer->local_shadow_transmission_pipelines[i] release];
       [renderer->gpu_shadow_opaque_pipeline release];
       [renderer->vbuffer_opaque_pipeline release];
       [renderer->blend_pipeline release];

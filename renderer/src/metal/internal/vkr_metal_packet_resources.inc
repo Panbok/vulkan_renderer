@@ -2520,7 +2520,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (!vkr_metal_packet_prepare_gpu_draw_icbs(
           renderer, source_gpu_draw_count, source_transmission_gpu_draw_count,
           1u + renderer->prepared_frame.shadow_cascade_count +
-              renderer->prepared_frame.local_shadow_view_count,
+              renderer->prepared_frame.local_shadow_view_count +
+              renderer->prepared_frame.local_shadow_transmission_view_count,
           out_error))
     return false_v;
   const uint64_t direct_run_count =
@@ -2529,7 +2530,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     return false_v;
   const uint32_t direct_draw_count = (uint32_t)direct_run_count;
   uint64_t direct_pass_count = 0u;
-  uint64_t direct_frame_root_count = 0u;
+  uint64_t direct_auxiliary_root_cells = 0u;
   for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
        ++order) {
     const VkrRgPass *pass =
@@ -2540,12 +2541,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     if (vkr_metal_packet_graph_pass_is(
             pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND)) {
       direct_pass_count++;
-      direct_frame_root_count += 2u;
+      /* One frame root and one temporal draw-state record. */
+      direct_auxiliary_root_cells += 2u;
     } else if (packet->input.picking && packet->input.picking->pending &&
                vkr_metal_packet_graph_pass_is(
                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING)) {
       direct_pass_count++;
-      direct_frame_root_count++;
+      direct_auxiliary_root_cells++;
     }
   }
   uint64_t root_count = 1u + overlay_count;
@@ -2554,10 +2556,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   root_count +=
       direct_pass_count * ((uint64_t)direct_draw_count + world_text_count);
   if (direct_draw_count > 0u)
-    root_count += direct_frame_root_count;
+    root_count += direct_auxiliary_root_cells;
   const uint32_t frame_root_gpu_draw_view_count =
       1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_view_count;
+      renderer->prepared_frame.local_shadow_view_count +
+      renderer->prepared_frame.local_shadow_transmission_view_count;
   {
     const uint32_t gpu_draw_icb_group_count =
         (frame_root_gpu_draw_view_count +
@@ -2581,8 +2584,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                  !renderer->prepared_frame.transmission_compact_enabled
              ? 4u
              : 0u);
-  root_count += renderer->prepared_frame.shadow_cascade_count +
-                renderer->prepared_frame.local_shadow_view_count;
+  root_count +=
+      renderer->prepared_frame.shadow_cascade_count +
+      renderer->prepared_frame.local_shadow_view_count +
+      2u * renderer->prepared_frame.local_shadow_transmission_view_count;
   if (packet->input.picking && packet->input.picking->pending)
     root_count += 1u;
   root_count += ui_batch_count;
@@ -2595,15 +2600,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (renderer->graph->execution_order.length > UINT64_MAX - root_count)
     return false_v;
   root_count += renderer->graph->execution_order.length;
-  /* Gather has its ordinary pass root plus a complete frame root. */
+  /* Gather has its ordinary pass root, a complete frame root and anisotropy. */
   if (packet->subsurface_enabled)
-    root_count += VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT;
+    root_count += VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT + 1u;
 
-  /* Every frame root had one cell in the pre-sheen budget. FrameRoot now has
-   * an explicit two-cell span; add exactly its extra cell for each pass that
-   * can create one. Draw-root cells remain fixed at 512 B. */
+  /* The base budget includes one cell per frame root. Each creator also needs
+   * the rest of its frame-root span and a separate anisotropy record. */
   uint64_t frame_root_count =
-      direct_draw_count > 0u ? direct_frame_root_count : 0u;
+      direct_draw_count > 0u ? direct_pass_count : 0u;
   for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
        ++order) {
     const VkrRgPass *pass =
@@ -2653,7 +2657,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     }
   }
   const uint64_t frame_root_extra_cells =
-      (uint64_t)VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT - 1u;
+      (uint64_t)VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT - 1u + 1u;
   if (frame_root_count >
       (UINT64_MAX - root_count) / frame_root_extra_cells)
     return false_v;
@@ -2710,10 +2714,19 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                 AlignOf(VkrLocalShadowView));
   const uint64_t local_shadow_views_bytes =
       (uint64_t)local_shadow_view_count * sizeof(VkrLocalShadowView);
+  const uint32_t local_shadow_transmission_view_count =
+      renderer->prepared_frame.local_shadow_transmission_view_count;
+  const uint64_t local_shadow_transmission_offset = vkr_metal_packet_align_up(
+      local_shadow_views_offset + local_shadow_views_bytes,
+      AlignOf(VkrMetalPacketLocalShadowTransmission));
+  const uint64_t local_shadow_transmission_bytes =
+      local_shadow_transmission_view_count > 0u
+          ? sizeof(VkrMetalPacketLocalShadowTransmission)
+          : 0u;
   const uint32_t ibl_probe_count =
       packet->input.lighting ? packet->input.lighting->ibl_probe_count : 0;
   const uint64_t ibl_probes_offset = vkr_metal_packet_align_up(
-      local_shadow_views_offset + local_shadow_views_bytes,
+      local_shadow_transmission_offset + local_shadow_transmission_bytes,
       AlignOf(VkrMetalPacketIblProbe));
   const uint64_t ibl_probes_bytes =
       (uint64_t)ibl_probe_count * sizeof(VkrMetalPacketIblProbe);
@@ -2740,7 +2753,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       fog_offset + sizeof(VkrFogGpuParams), AlignOf(VkrFroxelFogGpuParams));
   const uint32_t gpu_draw_view_count =
       1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_view_count;
+      renderer->prepared_frame.local_shadow_view_count +
+      renderer->prepared_frame.local_shadow_transmission_view_count;
   const uint32_t gpu_draw_icb_group_count =
       gpu_draw_view_count > 0u ? (gpu_draw_view_count +
                                   renderer->gpu_draw_icb_view_group_size - 1u) /
@@ -3136,6 +3150,30 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     upload->local_shadow_views_gpu = gpu + local_shadow_views_offset;
     upload->local_shadow_texture_id = local_shadow_texture.gpuResourceID._impl;
   }
+  if (local_shadow_transmission_view_count > 0u) {
+    VkrMetalPacketLocalShadowTransmission *maps =
+        (VkrMetalPacketLocalShadowTransmission
+             *)(cpu + local_shadow_transmission_offset);
+    const char *names[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT] = {
+        "local_shadow_transmission_depth0", "local_shadow_transmission_color0",
+        "local_shadow_transmission_depth1", "local_shadow_transmission_color1",
+        "local_shadow_transmission_overflow"};
+    uint64_t ids[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
+    for (uint32_t i = 0u; i < ArrayCount(names); ++i) {
+      id<MTLTexture> texture =
+          vkr_metal_packet_named_texture(renderer, names[i]);
+      if (!texture)
+        return false_v;
+      ids[i] = texture.gpuResourceID._impl;
+    }
+    *maps = (VkrMetalPacketLocalShadowTransmission){.depth0 = ids[0],
+                                                    .color0 = ids[1],
+                                                    .depth1 = ids[2],
+                                                    .color1 = ids[3],
+                                                    .overflow = ids[4]};
+    upload->local_shadow_transmission_gpu =
+        gpu + local_shadow_transmission_offset;
+  }
   VkrMetalPacketLtc *ltc = (VkrMetalPacketLtc *)(cpu + ltc_offset);
   *ltc = (VkrMetalPacketLtc){
       .lights = gpu + rectangle_lights_offset,
@@ -3291,6 +3329,18 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
           &views[1u + renderer->prepared_frame.shadow_cascade_count + face],
           &frustum, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER, false_v,
           renderer->frustum_enabled);
+      if (local_shadow_transmission_view_count > 0u) {
+        views[1u + renderer->prepared_frame.shadow_cascade_count + face]
+            .excluded_candidate_flags =
+            VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION;
+        vkr_metal_packet_pack_gpu_draw_view(
+            &views[1u + renderer->prepared_frame.shadow_cascade_count +
+                   local_shadow_view_count + face],
+            &frustum,
+            VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
+                VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION,
+            false_v, renderer->frustum_enabled);
+      }
     }
     upload->gpu_draw_views_gpu = gpu + gpu_draw_views_offset;
   }

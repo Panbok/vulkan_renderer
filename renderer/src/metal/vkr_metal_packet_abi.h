@@ -83,6 +83,27 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketAnisotropy {
 _Static_assert(sizeof(VkrMetalPacketAnisotropy) == 32u,
                "Metal anisotropy ABI drift");
 
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketLocalShadowTransmission {
+  uint64_t depth0;
+  uint64_t color0;
+  uint64_t depth1;
+  uint64_t color1;
+  uint64_t overflow;
+  uint64_t reserved;
+} VkrMetalPacketLocalShadowTransmission;
+_Static_assert(sizeof(VkrMetalPacketLocalShadowTransmission) == 48u,
+               "Metal local shadow transmission sampling ABI drift");
+
+/** One light-facing material record shared by all three raster crossings. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketLocalShadowTransmissionDraw {
+  uint64_t transmission_materials;
+  uint32_t face;
+  uint32_t reserved;
+  Vec4 light_position;
+} VkrMetalPacketLocalShadowTransmissionDraw;
+_Static_assert(sizeof(VkrMetalPacketLocalShadowTransmissionDraw) == 32u,
+               "Metal local shadow transmission draw ABI drift");
+
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t instances;
   uint32_t instance_address_padding[2];
@@ -143,6 +164,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t fog;
   uint64_t sheen;
   uint64_t anisotropy;
+  uint64_t local_shadow_transmission;
 } VkrMetalPacketFrameRoot;
 
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, dfg_texture_id) == 472u,
@@ -162,7 +184,10 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot, froxel_fog) == 136u,
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, froxel_integrated_texture_id) ==
                    216u,
                "Metal froxel integrated texture ABI offset drift");
-_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 528u,
+_Static_assert(offsetof(VkrMetalPacketFrameRoot, local_shadow_transmission) ==
+                   528u,
+               "Metal local shadow transmission sampling offset drift");
+_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 544u,
                "Metal frame root ABI size drift");
 
 /* Frame records are cold, shared records. They may span the fixed draw-root
@@ -204,13 +229,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t frame;
   uint32_t visible_row_index;
   uint32_t flags;
-  uint32_t reserved[2];
+  uint64_t local_shadow_transmission;
 } VkrMetalPacketDrawRoot;
 
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
 enum {
-  VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX = 25u,
+  VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX = 41u,
 };
 
 /** One frustum and routing policy in the bounded multi-view cull set. */
@@ -218,7 +243,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawView {
   Vec4 frustum_planes[6];
   uint32_t required_candidate_flags;
   uint32_t hzb_enabled;
-  uint32_t reserved[2];
+  uint32_t excluded_candidate_flags;
+  uint32_t reserved;
 } VkrMetalPacketGpuDrawView;
 
 _Static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
@@ -1127,6 +1153,8 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_LTC,
   VKR_METAL_PACKET_ABI_SHEEN,
   VKR_METAL_PACKET_ABI_ANISOTROPY,
+  VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION,
+  VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION_DRAW,
   VKR_METAL_PACKET_ABI_SHADOW_CASCADE,
   VKR_METAL_PACKET_ABI_DISPLAY_OUTPUT_PARAMS,
   VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
@@ -1138,6 +1166,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_UI_ROOT,
   VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
+  VKR_METAL_PACKET_ABI_GPU_DRAW_VIEW,
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,

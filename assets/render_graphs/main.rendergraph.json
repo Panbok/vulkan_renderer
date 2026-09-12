@@ -51,6 +51,111 @@
       ]
     },
     {
+      "name": "local_shadow_transmission_depth0",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "local_shadow_transmission_map_size"
+      },
+      "layers_source": "local_shadow_map_layer_count",
+      "format": "D32_SFLOAT",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "local_shadow_transmission_color0",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "local_shadow_transmission_map_size"
+      },
+      "layers_source": "local_shadow_map_layer_count",
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "local_shadow_transmission_depth1",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "local_shadow_transmission_map_size"
+      },
+      "layers_source": "local_shadow_map_layer_count",
+      "format": "D32_SFLOAT",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "local_shadow_transmission_color1",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "local_shadow_transmission_map_size"
+      },
+      "layers_source": "local_shadow_map_layer_count",
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "local_shadow_transmission_overflow",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "local_shadow_transmission_map_size"
+      },
+      "layers_source": "local_shadow_map_layer_count",
+      "format": "D32_SFLOAT",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "shadow_map",
       "condition": "scene_rendering",
       "type": "image",
@@ -2074,6 +2179,215 @@
       "execute": "pass.local_shadow"
     },
     {
+      "name": "Shadow.Local.Transmission0.${i}",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "local_shadow_transmission_view_count",
+        "condition_mask_source": "local_shadow_render_mask"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "local_shadow_transmission_depth0",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          },
+          "slice": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        "color": [
+          {
+            "image": "local_shadow_transmission_color0",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            "slice": {
+              "base_layer": "${i}",
+              "layer_count": 1
+            }
+          }
+        ]
+      },
+      "execute": "pass.local_shadow.transmission0"
+    },
+    {
+      "name": "Shadow.Local.Transmission1.${i}",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "local_shadow_transmission_view_count",
+        "condition_mask_source": "local_shadow_render_mask"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 10,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 11,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "local_shadow_transmission_depth1",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          },
+          "slice": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        "color": [
+          {
+            "image": "local_shadow_transmission_color1",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            "slice": {
+              "base_layer": "${i}",
+              "layer_count": 1
+            }
+          }
+        ]
+      },
+      "execute": "pass.local_shadow.transmission1"
+    },
+    {
+      "name": "Shadow.Local.TransmissionOverflow.${i}",
+      "condition": "scene_rendering && local_shadow_transmission_active",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "local_shadow_transmission_view_count",
+        "condition_mask_source": "local_shadow_render_mask"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 10,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "local_shadow_transmission_overflow",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          },
+          "slice": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.local_shadow.transmission_overflow"
+    },
+    {
       "name": "Transmission.Cull.Upload",
       "type": "transfer",
       "condition": "scene_rendering && transmission_pending",
@@ -3204,6 +3518,71 @@
           "buffer": "gpu_visible_draws",
           "access": "STORAGE_READ",
           "binding": 13
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -3309,6 +3688,71 @@
           "buffer": "gpu_visible_draws",
           "access": "STORAGE_READ",
           "binding": 13
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -4250,6 +4694,71 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -4828,6 +5337,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -4936,6 +5510,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -5141,6 +5780,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -5242,6 +5946,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -5447,6 +6216,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -5548,6 +6382,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -5758,6 +6657,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -5874,6 +6838,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -5982,6 +7011,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -6068,6 +7162,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -6154,6 +7313,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -6245,6 +7469,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -6348,6 +7637,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -6434,6 +7788,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -6520,6 +7939,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -6611,6 +8095,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "writes": [
@@ -7020,6 +8569,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "attachments": {
@@ -7088,6 +8702,71 @@
           "access": "SAMPLED",
           "binding": 30,
           "when": "froxel_fog_enabled"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
         }
       ],
       "attachments": {

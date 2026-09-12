@@ -3,6 +3,9 @@
 typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW = 0,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_RESOLVE,
@@ -92,6 +95,9 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
     s_metal_packet_graph_executors[] = {
         {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.local_shadow", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.local_shadow.transmission0", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.local_shadow.transmission1", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.local_shadow.transmission_overflow", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
@@ -136,7 +142,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.subsurface.gather", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.motion_blur.tile_max", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.motion_blur.tile_max", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.motion_blur.neighbor_max", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.motion_blur.reconstruct", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.dof.coc", VKR_RG_PASS_TYPE_COMPUTE},
@@ -1187,8 +1193,12 @@ vkr_internal void vkr_metal_packet_current_shadow_tokens(
    * state still describes the image before this command buffer commits. */
   if (packet->input.shadow)
     out_shadow->valid_layer_mask |= packet->input.shadow->cascade_render_mask;
-  if (packet->input.local_shadow)
+  if (packet->input.local_shadow) {
     out_local_shadow->valid_layer_mask |= packet->input.local_shadow->render_mask;
+    if (renderer->prepared_frame.local_shadow_transmission_view_count > 0u)
+      out_local_shadow->transmission_valid_layer_mask |=
+          packet->input.local_shadow->render_mask;
+  }
 }
 
 vkr_internal bool8_t
@@ -1243,8 +1253,14 @@ vkr_metal_packet_select_froxel_history(VkrMetalPacketRenderer *renderer) {
             local_shadow.resource_generation ||
         candidate->local_shadow.valid_layer_mask !=
             local_shadow.valid_layer_mask ||
-        MemCompare(candidate->dimensions, dimensions, sizeof(candidate->dimensions)) !=
-            0)
+        candidate->local_shadow.transmission_valid_layer_mask !=
+            local_shadow.transmission_valid_layer_mask ||
+        MemCompare(candidate->local_shadow.transmission_resource_generations,
+                   local_shadow.transmission_resource_generations,
+                   sizeof(local_shadow.transmission_resource_generations)) !=
+            0 ||
+        MemCompare(candidate->dimensions, dimensions,
+                   sizeof(candidate->dimensions)) != 0)
       continue;
     if (renderer->selected_froxel_history_instance == UINT32_MAX ||
         candidate->producer_submit_value > newest_submit) {
@@ -1433,8 +1449,7 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
     if ((renderer->selected_ssr_history_instance != UINT32_MAX &&
          renderer->selected_ssr_history_instance != i) ||
         i == current || !candidate->valid || !color->live || !depth->live ||
-        !identity->live ||
-        !color->history_valid || !depth->history_valid ||
+        !identity->live || !color->history_valid || !depth->history_valid ||
         !identity->history_valid || !source_age_in_ring ||
         (color->history_producer_submit_value > completed &&
          renderer->selected_temporal_history_instance != i) ||
@@ -1447,6 +1462,12 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
             local_shadow.resource_generation ||
         candidate->local_shadow.valid_layer_mask !=
             local_shadow.valid_layer_mask ||
+        candidate->local_shadow.transmission_valid_layer_mask !=
+            local_shadow.transmission_valid_layer_mask ||
+        MemCompare(candidate->local_shadow.transmission_resource_generations,
+                   local_shadow.transmission_resource_generations,
+                   sizeof(local_shadow.transmission_resource_generations)) !=
+            0 ||
         depth->history_producer_submit_value !=
             color->history_producer_submit_value ||
         identity->history_producer_submit_value !=
@@ -1474,10 +1495,14 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
         !color->history_scene.signature.eligible ||
         color->history_scene.signature.hash[0] != content.hash[0] ||
         color->history_scene.signature.hash[1] != content.hash[1] ||
-        depth->history_scene.signature.hash[0] != color->history_scene.signature.hash[0] ||
-        depth->history_scene.signature.hash[1] != color->history_scene.signature.hash[1] ||
-        identity->history_scene.signature.hash[0] != color->history_scene.signature.hash[0] ||
-        identity->history_scene.signature.hash[1] != color->history_scene.signature.hash[1] ||
+        depth->history_scene.signature.hash[0] !=
+            color->history_scene.signature.hash[0] ||
+        depth->history_scene.signature.hash[1] !=
+            color->history_scene.signature.hash[1] ||
+        identity->history_scene.signature.hash[0] !=
+            color->history_scene.signature.hash[0] ||
+        identity->history_scene.signature.hash[1] !=
+            color->history_scene.signature.hash[1] ||
         color->history_scene.radiance_revision != renderer->radiance_revision ||
         color->history_scene.publication_generation !=
             renderer->candidate_publication_generation ||
@@ -1486,17 +1511,20 @@ vkr_metal_packet_select_ssgi_history(VkrMetalPacketRenderer *renderer) {
             color->history_scene.radiance_revision ||
         depth->history_scene.publication_generation !=
             color->history_scene.publication_generation ||
-        depth->history_scene.graph_revision != color->history_scene.graph_revision ||
+        depth->history_scene.graph_revision !=
+            color->history_scene.graph_revision ||
         identity->history_scene.radiance_revision !=
             color->history_scene.radiance_revision ||
         identity->history_scene.publication_generation !=
             color->history_scene.publication_generation ||
-        identity->history_scene.graph_revision != color->history_scene.graph_revision ||
+        identity->history_scene.graph_revision !=
+            color->history_scene.graph_revision ||
         !transform || !transform->history_valid ||
         transform->history_producer_submit_value !=
             color->history_producer_submit_value ||
         transform->history_frame_index != color->history_frame_index ||
-        transform->history_scene_generation != color->history_scene_generation ||
+        transform->history_scene_generation !=
+            color->history_scene_generation ||
         transform->history_width != renderer->prepared_frame.viewport_width ||
         transform->history_height != renderer->prepared_frame.viewport_height ||
         (packet->temporal.enabled &&
@@ -1830,33 +1858,61 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedLocalShadowToken *out_token) {
   *out_token = (VkrRetainedLocalShadowToken){0};
-  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
-    if (!image || !vkr_string8_equals_cstr(&image->name, "local_shadow_map"))
-      continue;
-    VkrMetalPacketImage *slot = &renderer->images[i];
-    if (!slot->live || slot->graph_generation != image->generation ||
+  const char *names[] = {"local_shadow_map",
+                         "local_shadow_transmission_depth0",
+                         "local_shadow_transmission_color0",
+                         "local_shadow_transmission_depth1",
+                         "local_shadow_transmission_color1",
+                         "local_shadow_transmission_overflow"};
+  uint64_t generations[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT] = {0};
+  uint32_t transmission_valid = UINT32_MAX;
+  for (uint32_t resource = 0u; resource < ArrayCount(names); ++resource) {
+    VkrMetalPacketImage *slot = NULL;
+    for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+      const VkrRgImage *image =
+          vector_get_VkrRgImage(&renderer->graph->images, i);
+      if (vkr_string8_equals_cstr(&image->name, names[resource])) {
+        VkrMetalPacketImage *candidate = &renderer->images[i];
+        if (candidate->graph_generation == image->generation)
+          slot = candidate;
+        break;
+      }
+    }
+    const uint32_t extent =
+        resource == 0u ? renderer->prepared_frame.local_shadow_map_size
+                       : MIN(renderer->prepared_frame.local_shadow_map_size,
+                             VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
+    const VkrTextureFormat format = resource == 2u || resource == 4u
+                                        ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
+                                        : VKR_TEXTURE_FORMAT_D32_SFLOAT;
+    if (!slot || !slot->live || slot->graph_generation == 0u ||
         slot->instance_count != renderer->command_slot_count ||
         image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
         slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
-        slot->desc.type != VKR_TEXTURE_TYPE_2D ||
-        slot->desc.width != renderer->prepared_frame.local_shadow_map_size ||
-        slot->desc.height != renderer->prepared_frame.local_shadow_map_size ||
-        slot->desc.format != renderer->prepared_frame.shadow_depth_format ||
-        slot->desc.layers != renderer->prepared_frame.local_shadow_map_layer_count)
+        slot->desc.type != VKR_TEXTURE_TYPE_2D || slot->desc.width != extent ||
+        slot->desc.height != extent || slot->desc.format != format ||
+        slot->desc.layers !=
+            renderer->prepared_frame.local_shadow_map_layer_count)
       return;
     const VkrMetalPacketImageInstance *instance = &slot->instances[image_index];
-    if (!instance->live)
+    if (!instance->live || !instance->resource.metal_texture)
       return;
-    out_token->resource_generation = slot->graph_generation;
-    const uint32_t layer_count = MIN(slot->desc.layers, 32u);
-    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+    uint32_t valid_layers = 0u;
+    for (uint32_t layer = 0u; layer < MIN(slot->desc.layers, 32u); ++layer) {
       if (instance->retained_states[layer].content_valid)
-        out_token->valid_layer_mask |= UINT32_C(1) << layer;
+        valid_layers |= UINT32_C(1) << layer;
     }
-    return;
+    if (resource == 0u) {
+      out_token->resource_generation = slot->graph_generation;
+      out_token->valid_layer_mask = valid_layers;
+    } else {
+      generations[resource - 1u] = slot->graph_generation;
+      transmission_valid &= valid_layers;
+    }
   }
+  MemCopy(out_token->transmission_resource_generations, generations,
+          sizeof(generations));
+  out_token->transmission_valid_layer_mask = transmission_valid;
 }
 
 vkr_internal void
@@ -2491,7 +2547,8 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
 
 vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
     VkrMetalPacketResult *result, const uint8_t *camera_and_shadow_readback,
-    uint32_t shadow_cascade_count, const uint8_t *transmission_readback) {
+    uint32_t shadow_cascade_count, uint32_t gpu_draw_view_count,
+    const uint8_t *transmission_readback) {
   if (!result || !camera_and_shadow_readback)
     return;
   const VkrGpuDrawCompactionState *camera =
@@ -2511,6 +2568,14 @@ vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
             sizeof(result->shadow_gpu_bucket_counts[cascade]));
     result->shadow_gpu_overflow_count[cascade] = shadow->overflow_count;
     result->shadow_draw_count += shadow->visible_count;
+  }
+  // Camera and directional counters retain their existing per-view meaning;
+  // the aggregate failure counters also cover every opaque/transmitting local
+  // view.
+  for (uint32_t view = 1u + shadow_cascade_count; view < gpu_draw_view_count;
+       ++view) {
+    result->gpu_overflow_count += camera[view].overflow_count;
+    result->gpu_resolve_invalid_count += camera[view].resolve_invalid_count;
   }
   if (transmission_readback) {
     const VkrMetalPacketTransmissionDiagnostics *transmission =
@@ -2877,7 +2942,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
         transmission
             ? sizeof(VkrMetalPacketTransmissionDiagnostics)
             : (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
-                         renderer->prepared_frame.local_shadow_view_count) *
+                         renderer->prepared_frame.local_shadow_view_count +
+                         renderer->prepared_frame
+                             .local_shadow_transmission_view_count) *
                   sizeof(VkrGpuDrawCompactionState);
     if (!candidates || !instances || !state || (sdsm_enabled && !sdsm) ||
         state_bytes > state->resource.length)

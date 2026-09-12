@@ -1,0 +1,33 @@
+#ifndef VKR_LOCAL_SHADOW_TRANSMISSION_SHARED
+#define VKR_LOCAL_SHADOW_TRANSMISSION_SHARED
+
+// The caller resolves the material along the light ray. Layered reflectance
+// includes the same base, sheen and clearcoat allocation as camera transmission.
+// Path length is the authored thickness after the instance's directional scale.
+float3 vkr_local_shadow_transmission_weight(
+    float3 base_color, float metallic, float transmission,
+    float3 layered_reflectance, float3 attenuation_color,
+    float attenuation_distance, float path_length) {
+    float3 weight = saturate(transmission) * (1.0f - saturate(metallic)) *
+                    base_color * (1.0f - saturate(layered_reflectance));
+    if (attenuation_distance > 1e-4f) {
+        weight *= pow(clamp(attenuation_color, 1e-4f, 1.0f),
+                      path_length / attenuation_distance);
+    }
+    return weight;
+}
+
+// Depths use one face's projection, with 1 for an empty layer. The receiver has
+// passed projection clipping. Select before fetching RGB so only the needed
+// cumulative prefix is read: 0 = white, 1/2 = stored prefix, 3 = opaque overflow.
+// Filter the resulting visibility, not the layer depths or unselected prefixes.
+uint vkr_local_shadow_transmission_prefix_index(
+    float receiver_depth, float2 crossing_depths, float overflow_depth) {
+    if (receiver_depth > overflow_depth)
+        return 3u;
+    if (receiver_depth > crossing_depths.y)
+        return 2u;
+    return receiver_depth > crossing_depths.x ? 1u : 0u;
+}
+
+#endif

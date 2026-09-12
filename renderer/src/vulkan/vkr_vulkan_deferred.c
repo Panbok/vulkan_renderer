@@ -11,9 +11,6 @@ _Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT == 8u,
                "Vulkan deferred shaders require eight draw-state buckets");
 _Static_assert(VKR_FRUSTUM_PLANE_COUNT == 6u,
                "Vulkan deferred shaders require six frustum planes");
-_Static_assert(VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX <=
-                   5u * VKR_VULKAN_DEFERRED_PREFIX_GROUP_SIZE,
-               "Vulkan cull prefix group coverage is incomplete");
 _Static_assert(VKR_VULKAN_TEXTURE_MIP_MAX == 16u,
                "Vulkan deferred shaders require sixteen HZB mip slots");
 
@@ -334,6 +331,7 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
   prepared->count = 0u;
   slot->shadow_cascade_count = 0u;
   slot->local_shadow_view_count = 0u;
+  slot->local_shadow_transmission_view_count = 0u;
   // UI-only frames have no Scene producers. Clear prior slot readbacks before
   // returning so reused slots cannot copy stale Scene statistics.
   if (!renderer->graph->packet->scene_rendering)
@@ -352,10 +350,13 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
   slot->shadow_cascade_count = renderer->prepared_frame.shadow_cascade_count;
   slot->local_shadow_view_count =
       renderer->prepared_frame.local_shadow_view_count;
+  slot->local_shadow_transmission_view_count =
+      renderer->prepared_frame.local_shadow_transmission_view_count;
   const VkBufferCopy copies[] = {
       {.dstOffset = VKR_VULKAN_READBACK_DRAW_STATE_OFFSET,
        .size = (1u + renderer->prepared_frame.shadow_cascade_count +
-                renderer->prepared_frame.local_shadow_view_count) *
+                renderer->prepared_frame.local_shadow_view_count +
+                renderer->prepared_frame.local_shadow_transmission_view_count) *
                sizeof(VkrGpuDrawCompactionState)},
       {.dstOffset = VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET,
        .size = sizeof(VkrGpuTransmissionDiagnostics)},
@@ -467,9 +468,11 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
        (!candidates || !classifications || !visible || !commands)))
     return false_v;
   const uint32_t view_count =
-      transmission ? 1u
-                   : 1u + renderer->prepared_frame.shadow_cascade_count +
-                         renderer->prepared_frame.local_shadow_view_count;
+      transmission
+          ? 1u
+          : 1u + renderer->prepared_frame.shadow_cascade_count +
+                renderer->prepared_frame.local_shadow_view_count +
+                renderer->prepared_frame.local_shadow_transmission_view_count;
   uint64_t views_address = 0u;
   uint64_t planes_address = 0u;
   Mat4 *views = NULL;
@@ -498,7 +501,9 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       views[i] =
           i <= cascade_count
               ? packet->input.shadow->cascades[i - 1u].light_view_projection
-              : packet->input.local_shadow->views[i - 1u - cascade_count]
+              : packet->input.local_shadow
+                    ->views[(i - 1u - cascade_count) %
+                            renderer->prepared_frame.local_shadow_view_count]
                     .light_view_projection;
       const VkrFrustum shadow = vkr_frustum_from_matrix(views[i]);
       for (uint32_t plane = 0u; plane < VKR_FRUSTUM_PLANE_COUNT; ++plane) {
@@ -535,6 +540,18 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       .camera_required_flags =
           transmission ? 0u : VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE,
       .shadow_required_flags = VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
+      .local_shadow_first_view =
+          1u + renderer->prepared_frame.shadow_cascade_count,
+      .transmission_first_view =
+          1u + renderer->prepared_frame.shadow_cascade_count +
+          renderer->prepared_frame.local_shadow_view_count,
+      .transmission_required_flags =
+          VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
+          VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION,
+      .local_shadow_excluded_flags =
+          renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+              ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
+              : 0u,
   };
   for (uint32_t mip = 0u; mip < VKR_VULKAN_TEXTURE_MIP_MAX; ++mip)
     out_root->hzb_textures[mip] = UINT32_MAX;
@@ -1126,6 +1143,105 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
         bucket * sizeof(uint32_t);
     prepared->argument_offsets[bucket] = argument_offset;
     prepared->count_offsets[bucket] = count_offset;
+  }
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_local_shadow_transmission(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedRaster *prepared,
+    const VkrRgPass *pass, bool8_t overflow) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 1u);
+  VkrVulkanGraphBufferInstance *states =
+      vkr_vk_deferred_buffer(renderer, pass, 2u);
+  VkrVulkanGraphBufferInstance *commands =
+      vkr_vk_deferred_buffer(renderer, pass, 3u);
+  VkrVulkanGraphBufferInstance *instances =
+      vkr_vk_deferred_buffer(renderer, pass, 9u);
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const uint32_t layer = pass->desc.depth_attachment.desc.slice.base_layer;
+  if (!visible || !states || !commands || !instances ||
+      !packet->input.local_shadow ||
+      layer >= renderer->prepared_frame.local_shadow_transmission_view_count)
+    return false_v;
+  const uint32_t view_index =
+      1u + renderer->prepared_frame.shadow_cascade_count +
+      renderer->prepared_frame.local_shadow_view_count + layer;
+  const VkrLocalShadowView *view = &packet->input.local_shadow->views[layer];
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  uint64_t frame_address = 0u;
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, &frame_address);
+  if (!frame_root)
+    return false_v;
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, instances->buffer.address,
+      view->light_view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, false_v);
+  const uint32_t visible_capacity =
+      renderer->prepared_frame.gpu_draw_visible_capacity;
+  VkrVulkanLocalShadowTransmissionRoot root = {
+      .raster =
+          {
+              .geometry_rows = slot->gpu_geometry_rows,
+              .visible_rows = visible->buffer.address,
+              .states = states->buffer.address,
+              .frame = frame_address,
+              .view_index = view_index,
+              .visible_capacity = visible_capacity,
+              .previous_depth_texture = UINT32_MAX,
+              .previous_depth_layer = layer,
+          },
+      .transmission_materials =
+          renderer->materials.address + renderer->transmission_material_offset,
+      .previous_color_texture = UINT32_MAX,
+      .light_position = view->light_position_near,
+  };
+  const VkrRgImageUse *previous_depth =
+      vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u);
+  if (previous_depth &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 10u,
+                                     &root.raster.previous_depth_texture))
+    return false_v;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 11u, 0u) &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 11u,
+                                     &root.previous_color_texture))
+    return false_v;
+  if (overflow && !previous_depth)
+    return false_v;
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanLocalShadowTransmissionRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->indices = renderer->geometry_megabuffer.indices.handle;
+  prepared->arguments = commands->buffer.handle;
+  prepared->counts = states->buffer.handle;
+  prepared->command_partition_capacity =
+      visible_capacity / VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+  const VkrVulkanPacketPipeline pipeline =
+      overflow ? VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION_OVERFLOW
+               : VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION;
+  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+       ++bucket) {
+    prepared->pipelines[bucket] = renderer->packet_pipelines[pipeline];
+    prepared->cull_modes[bucket] =
+        (bucket & 1u) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+    prepared->front_faces[bucket] = (bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                        ? VK_FRONT_FACE_CLOCKWISE
+                                        : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    prepared->argument_offsets[bucket] =
+        ((VkDeviceSize)view_index * VKR_WORLD_DRAW_STATE_BUCKET_COUNT +
+         bucket) *
+        prepared->command_partition_capacity *
+        sizeof(VkDrawIndexedIndirectCommand);
+    prepared->count_offsets[bucket] =
+        (VkDeviceSize)view_index * sizeof(VkrGpuDrawCompactionState) +
+        offsetof(VkrGpuDrawCompactionState, bucket_counts) +
+        bucket * sizeof(uint32_t);
   }
   return true_v;
 }
@@ -2123,6 +2239,11 @@ vkr_internal bool8_t vkr_vk_prepare_froxel_history(
   const uint32_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
+  const uint32_t transmission_valid_mask =
+      renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+          ? vkr_vk_froxel_local_shadow_valid_mask(
+                packet, local_shadow_token.transmission_valid_layer_mask)
+          : 0u;
   VkrVulkanGraphImageInstance *selected = NULL;
   uint32_t selected_index = UINT32_MAX;
   if (packet->temporal.reset_reasons == VKR_TEMPORAL_RESET_NONE) {
@@ -2140,6 +2261,12 @@ vkr_internal bool8_t vkr_vk_prepare_froxel_history(
           candidate->local_shadow_generation != local_shadow_generation ||
           candidate->shadow_valid_layer_mask != shadow_valid_mask ||
           candidate->local_shadow_valid_layer_mask != local_shadow_valid_mask ||
+          candidate->local_shadow_transmission_valid_layer_mask !=
+              transmission_valid_mask ||
+          MemCompare(
+              candidate->local_shadow_transmission_generations,
+              local_shadow_token.transmission_resource_generations,
+              sizeof(candidate->local_shadow_transmission_generations)) != 0 ||
           MemCompare(candidate->dimensions, dimensions, sizeof(dimensions)) !=
               0 ||
           !image->has_sampled_slot)
@@ -2330,6 +2457,11 @@ void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
   const uint32_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
+  const uint32_t transmission_valid_mask =
+      renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+          ? vkr_vk_froxel_local_shadow_valid_mask(
+                packet, local_shadow_token.transmission_valid_layer_mask)
+          : 0u;
   VkrVulkanFroxelHistory *history = &renderer->froxel_histories[current];
   *history = (VkrVulkanFroxelHistory){
       .view_projection = packet->temporal.current_view_projection,
@@ -2346,8 +2478,12 @@ void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
           vkr_vk_froxel_image_generation(renderer, "local_shadow_map"),
       .shadow_valid_layer_mask = shadow_valid_mask,
       .local_shadow_valid_layer_mask = local_shadow_valid_mask,
+      .local_shadow_transmission_valid_layer_mask = transmission_valid_mask,
       .valid = true_v,
   };
+  MemCopy(history->local_shadow_transmission_generations,
+          local_shadow_token.transmission_resource_generations,
+          sizeof(history->local_shadow_transmission_generations));
   slot->froxel_history_output->history_producer_submit_value = submit_value;
   slot->froxel_history_output->history_valid = true_v;
 }
@@ -2581,6 +2717,11 @@ vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
   const uint32_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
+  const uint32_t transmission_valid_mask =
+      renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+          ? vkr_vk_froxel_local_shadow_valid_mask(
+                packet, local_shadow_token.transmission_valid_layer_mask)
+          : 0u;
   if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE ||
       !scene.signature.eligible)
     goto selected;
@@ -2616,6 +2757,12 @@ vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
         metadata->local_shadow_generation != local_shadow_generation ||
         metadata->shadow_valid_layer_mask != shadow_valid_mask ||
         metadata->local_shadow_valid_layer_mask != local_shadow_valid_mask ||
+        metadata->local_shadow_transmission_valid_layer_mask !=
+            transmission_valid_mask ||
+        MemCompare(metadata->local_shadow_transmission_generations,
+                   local_shadow_token.transmission_resource_generations,
+                   sizeof(metadata->local_shadow_transmission_generations)) !=
+            0 ||
         !vkr_vk_ssr_history_scene_equal(&scene, &candidate->history_scene))
       continue;
     VkrVulkanGraphImageInstance *depth = &depths->instances[i];
@@ -2895,8 +3042,18 @@ void vkr_vk_mark_ssgi_submitted(VkrVulkanRenderer *renderer,
           packet, shadow_token.valid_layer_mask),
       .local_shadow_valid_layer_mask = vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask),
+      .local_shadow_transmission_valid_layer_mask =
+          renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+              ? vkr_vk_froxel_local_shadow_valid_mask(
+                    packet, local_shadow_token.transmission_valid_layer_mask)
+              : 0u,
       .valid = true_v,
   };
+  MemCopy(
+      renderer->ssgi_histories[current].local_shadow_transmission_generations,
+      local_shadow_token.transmission_resource_generations,
+      sizeof(renderer->ssgi_histories[current]
+                 .local_shadow_transmission_generations));
 }
 
 bool8_t vkr_vk_prepare_deferred_sdsm(VkrVulkanRenderer *renderer,

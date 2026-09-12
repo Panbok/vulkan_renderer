@@ -93,9 +93,9 @@ float3 vkr_vk_froxel_local_radiance(VkrVulkanPacketFrameRoot* frame,
             attenuation *= smoothstep(p1.w, p0.w, cone);
         }
     }
-    attenuation *= packet_local_shadow_one_tap(frame, light, kind,
-                                                world_position);
-    return max(p1.rgb * p2.x * attenuation, float3(0.0f));
+    float3 visibility = packet_local_shadow_one_tap(frame, light, kind,
+                                                    world_position);
+    return max(p1.rgb * p2.x * attenuation * visibility, float3(0.0f));
 }
 
 float3 vkr_vk_froxel_incident_radiance(VkrVulkanPacketFrameRoot* frame,

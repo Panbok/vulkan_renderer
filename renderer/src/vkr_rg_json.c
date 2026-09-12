@@ -35,6 +35,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
     {"hzb_build_enabled", VKR_RG_JSON_CONDITION_HZB_BUILD_ENABLED},
     {"local_shadows_active", VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE},
+    {"local_shadow_transmission_active",
+     VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
@@ -2013,6 +2015,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->hzb_build_enabled;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE:
     return frame->local_shadow_view_count > 0u;
+  case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE:
+    return frame->local_shadow_transmission_view_count > 0u;
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
     return frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
@@ -2165,6 +2169,11 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "local_shadow_transmission_view_count")) {
+    *out_count = frame->local_shadow_transmission_view_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "shadow_cascade_count")) {
     *out_count = frame->shadow_cascade_count;
     return true_v;
@@ -2308,6 +2317,12 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
     *out_height = extent->height;
     return true_v;
   case VKR_RG_JSON_EXTENT_SQUARE:
+    if (vkr_string8_equals_cstr_i(&extent->size_source,
+                                  "local_shadow_transmission_map_size")) {
+      *out_width = frame->local_shadow_transmission_map_size;
+      *out_height = frame->local_shadow_transmission_map_size;
+      return true_v;
+    }
     if (vkr_string8_equals_cstr_i(&extent->size_source,
                                   "local_shadow_map_size")) {
       *out_width = frame->local_shadow_map_size;
@@ -2773,7 +2788,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             break;
           case VKR_RG_JSON_DRAW_COUNT_VIEWS:
             count = 1u + frame->shadow_cascade_count +
-                    frame->local_shadow_view_count;
+                    frame->local_shadow_view_count +
+                    frame->local_shadow_transmission_view_count;
             break;
           case VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS:
           case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
@@ -2798,7 +2814,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           if (resource->buffer.draw_count_source ==
               VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS)
             desc.size *= 1u + frame->shadow_cascade_count +
-                         frame->local_shadow_view_count;
+                         frame->local_shadow_view_count +
+                         frame->local_shadow_transmission_view_count;
         } else {
           desc.size = resource->buffer.size;
         }

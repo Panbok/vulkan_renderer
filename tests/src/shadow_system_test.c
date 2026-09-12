@@ -709,6 +709,74 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+vkr_internal void test_local_shadow_transmission_cache_is_atomic(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.local_shadow_face_budget = 6u;
+  assert(vkr_shadow_system_init(&system, &config));
+
+  VkrWorldPassPayload payload = retained_static_payload();
+  payload.transmission_gpu_candidate_count = 1u;
+  VkrPointLight light = local_shadow_test_light(
+      10u, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f, vec3_zero());
+  VkrLocalShadowPassPayload local = {0};
+  const VkrRetainedLocalShadowToken valid = {
+      .resource_generation = 9u,
+      .valid_layer_mask = UINT32_C(0x3f),
+      .transmission_resource_generations = {11u, 12u, 13u, 14u, 15u},
+      .transmission_valid_layer_mask = UINT32_C(0x3f),
+  };
+
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                         1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(0x3f));
+  vkr_shadow_system_commit_frame(&system, 31u);
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                         1u, vec3_zero(), &local);
+  assert(local.render_mask == 0u);
+
+  /* Losing any prefix image invalidates the complete point-light group. */
+  for (uint32_t i = 0u;
+       i < ArrayCount(valid.transmission_resource_generations); ++i) {
+    VkrRetainedLocalShadowToken changed = valid;
+    changed.transmission_resource_generations[i]++;
+    vkr_shadow_system_resolve_local_shadows(&system, 0u, changed, &payload,
+                                           &light, 1u, vec3_zero(), &local);
+    assert(local.render_mask == UINT32_C(0x3f));
+    vkr_shadow_system_discard_frame(&system);
+  }
+  for (uint32_t face = 0u; face < 6u; ++face) {
+    VkrRetainedLocalShadowToken incomplete = valid;
+    incomplete.transmission_valid_layer_mask &= ~(UINT32_C(1) << face);
+    vkr_shadow_system_resolve_local_shadows(&system, 0u, incomplete, &payload,
+                                           &light, 1u, vec3_zero(), &local);
+    assert(local.render_mask == UINT32_C(0x3f));
+    vkr_shadow_system_discard_frame(&system);
+  }
+
+  /* Cancelled replacements leave the last submitted pool reusable. */
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                         1u, vec3_zero(), &local);
+  assert(local.render_mask == 0u);
+  payload.publication_generation++;
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                         1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(0x3f));
+  vkr_shadow_system_discard_frame(&system);
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                         1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(0x3f));
+  vkr_shadow_system_commit_frame(&system, 32u);
+  vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
+                                         1u, vec3_zero(), &local);
+  assert(local.render_mask == 0u);
+  vkr_shadow_system_resolve_local_shadows(&system, 1u, valid, &payload, &light,
+                                         1u, vec3_zero(), &local);
+  assert(local.render_mask == UINT32_C(0x3f));
+  vkr_shadow_system_discard_frame(&system);
+  vkr_shadow_system_shutdown(&system);
+}
+
 vkr_internal uint32_t cascade_mask(const VkrShadowSystem *system) {
   return (UINT32_C(1) << system->config.cascade_count) - 1u;
 }
@@ -1390,6 +1458,7 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running retained cascade reuse tests...\n");
   test_local_shadow_selection_hysteresis_and_point_groups();
   test_local_shadow_cache_lifecycle_and_invalidation();
+  test_local_shadow_transmission_cache_is_atomic();
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();
   test_dynamic_overlap_and_publication_fail_closed();

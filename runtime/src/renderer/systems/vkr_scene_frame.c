@@ -83,7 +83,10 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
           (!source->transmissive && !source->alpha.world_transparent
                ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
                : 0u) |
-          VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
+          VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
+          (source->transmissive
+               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
+               : 0u),
   };
   const uint32_t gpu_index =
       source->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC

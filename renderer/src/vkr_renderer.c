@@ -1827,6 +1827,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
       .shadow_depth_format = renderer->impl.caps.shadow_depth_format,
       .shadow_map_size = config->shadow_map_size,
       .local_shadow_map_size = config->local_shadow_map_size,
+      .local_shadow_transmission_map_size =
+          Min(config->local_shadow_map_size,
+              VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX),
       .local_shadow_map_layer_count = config->local_shadow_face_budget,
       .shadow_map_layer_count = config->shadow_cascade_count,
       .shadow_cascade_count = config->shadow_cascade_count,

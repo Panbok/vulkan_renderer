@@ -147,6 +147,22 @@ struct alignas(16) VkrMetalPacketAnisotropy {
   uint2 reserved;
 };
 
+struct alignas(16) VkrMetalPacketLocalShadowTransmission {
+  depth2d_array<float, access::sample> depth0;
+  texture2d_array<float, access::read> color0;
+  depth2d_array<float, access::sample> depth1;
+  texture2d_array<float, access::read> color1;
+  depth2d_array<float, access::sample> overflow;
+  ulong reserved;
+};
+
+struct alignas(16) VkrMetalPacketLocalShadowTransmissionDraw {
+  device VkrMetalPacketTransmissionMaterial *transmission_materials;
+  uint face;
+  uint reserved;
+  float4 light_position;
+};
+
 struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketInstance *instances;
   uint2 instance_address_padding;
@@ -211,6 +227,7 @@ struct VkrMetalPacketFrameRoot {
   constant VkrFogParams *fog;
   constant VkrMetalPacketSheen *sheen;
   constant VkrMetalPacketAnisotropy *anisotropy;
+  constant VkrMetalPacketLocalShadowTransmission *local_shadow_transmission;
 };
 
 struct VkrGpuGeometryRow {
@@ -319,7 +336,7 @@ struct VkrMetalPacketDrawRoot {
   constant VkrMetalPacketFrameRoot *frame;
   uint visible_row_index;
   uint flags;
-  uint2 reserved;
+  constant VkrMetalPacketLocalShadowTransmissionDraw *local_shadow_transmission;
 };
 
 struct VkrMetalPacketShadowCascade {
@@ -368,8 +385,8 @@ static_assert(sizeof(VkrMetalPacketMaterial) == 352,
               "Metal material row ABI must remain 352 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 528,
-              "Metal packet frame root ABI must remain 528 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 544,
+              "Metal packet frame root ABI must remain 544 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
@@ -378,3 +395,8 @@ static_assert(sizeof(VkrLocalShadowView) == 112,
               "Local shadow view Metal ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketShadowCascade) == 96,
               "Metal packet shadow cascade ABI must remain 96 bytes");
+
+static_assert(sizeof(VkrMetalPacketLocalShadowTransmission) == 48,
+              "Local shadow transmission sampling ABI must remain 48 bytes");
+static_assert(sizeof(VkrMetalPacketLocalShadowTransmissionDraw) == 32,
+              "Local shadow transmission draw ABI must remain 32 bytes");

@@ -282,13 +282,33 @@ float3 vkr_metal_packet_shadow_debug_color(uint mode,
   return float3(0.0);
 }
 
+// Depth and cumulative color are read from the same discrete texel. Filtering
+// happens only after the receiver has selected its crossing prefix.
+static float3 vkr_metal_local_shadow_transmission_tap(
+    constant VkrMetalPacketLocalShadowTransmission &maps, uint face, float2 uv,
+    float receiver_depth) {
+  uint2 extent(maps.depth0.get_width(), maps.depth0.get_height());
+  uint2 pixel = min(uint2(saturate(uv) * float2(extent)), extent - 1u);
+  float2 depths(maps.depth0.read(pixel, face), maps.depth1.read(pixel, face));
+  uint prefix = vkr_local_shadow_transmission_prefix_index(
+      receiver_depth, depths, maps.overflow.read(pixel, face));
+  if (prefix == 0u)
+    return float3(1.0f);
+  if (prefix == 1u)
+    return maps.color0.read(pixel, face).rgb;
+  if (prefix == 2u)
+    return maps.color1.read(pixel, face).rgb;
+  return float3(0.0f);
+}
+
 // The point kernel reprojects each displaced ray into its owning cube face.
 // Its comparison depth follows the biased receiver's radial distance.
-float vkr_metal_packet_local_shadow_sample(
-    constant VkrMetalPacketFrameRoot *root, uint first_view_encoded, uint kind,
-    float3 world_position, float3 normal) {
+float3
+vkr_metal_packet_local_shadow_sample(constant VkrMetalPacketFrameRoot *root,
+                                     uint first_view_encoded, uint kind,
+                                     float3 world_position, float3 normal) {
   if (first_view_encoded == 0u)
-    return 1.0;
+    return float3(1.0);
   uint first_view = first_view_encoded - 1u;
   bool point = kind != 2u;
   float3 light_position =
@@ -300,7 +320,7 @@ float vkr_metal_packet_local_shadow_sample(
   float forward_depth = dot(from_light, source.light_direction_far.xyz);
   if (forward_depth <= source.light_position_near.w ||
       forward_depth >= source.light_direction_far.w)
-    return 1.0;
+    return float3(1.0);
   float footprint = 2.0 * forward_depth * source.projection_params.x *
                     source.projection_params.y;
   float3 receiver =
@@ -312,13 +332,13 @@ float vkr_metal_packet_local_shadow_sample(
       root->local_shadow_views[first_view + face];
   float4 clip = view.light_view_projection * float4(receiver, 1.0);
   if (clip.w <= 0.0 || clip.z < 0.0 || clip.z > clip.w)
-    return 1.0;
+    return float3(1.0);
   float3 projected = clip.xyz / clip.w;
   float2 uv = projected.xy * 0.5 + 0.5;
   if (!point && (any(uv < 0.0) || any(uv > 1.0)))
-    return 1.0;
+    return float3(1.0);
   float radial_distance = length(from_light);
-  float sum = 0.0;
+  float3 sum = 0.0;
   for (uint i = 0u; i < 9u; ++i) {
     float2 tap_uv =
         uv + vkr_shadow_poisson[i] * (1.5 * view.projection_params.y);
@@ -341,20 +361,27 @@ float vkr_metal_packet_local_shadow_sample(
       sum += 1.0;
       continue;
     }
-    sum += root->local_shadow_map.sample_compare(
+    float opaque = root->local_shadow_map.sample_compare(
         vkr_metal_shadow_compare_sampler, tap_uv, first_view + tap_face,
         reference);
+    float3 transmission = root->local_shadow_transmission
+                              ? vkr_metal_local_shadow_transmission_tap(
+                                    *root->local_shadow_transmission,
+                                    first_view + tap_face, tap_uv, reference)
+                              : float3(1.0f);
+    sum += opaque * transmission;
   }
   return sum * (1.0 / 9.0);
 }
 
 // Same local-shadow projection and receiver bias as the surface path, with a
 // single centre comparison for volumetric injection.
-float vkr_metal_packet_local_shadow_one_tap(
-    constant VkrMetalPacketFrameRoot *root, uint first_view_encoded, uint kind,
-    float3 world_position) {
+float3
+vkr_metal_packet_local_shadow_one_tap(constant VkrMetalPacketFrameRoot *root,
+                                      uint first_view_encoded, uint kind,
+                                      float3 world_position) {
   if (first_view_encoded == 0u)
-    return 1.0f;
+    return float3(1.0f);
   uint first_view = first_view_encoded - 1u;
   bool point = kind != 2u;
   float3 light_position = root->local_shadow_views[first_view].light_position_near.xyz;
@@ -364,7 +391,7 @@ float vkr_metal_packet_local_shadow_one_tap(
   float forward_depth = dot(from_light, source.light_direction_far.xyz);
   if (forward_depth <= source.light_position_near.w ||
       forward_depth >= source.light_direction_far.w)
-    return 1.0f;
+    return float3(1.0f);
   float footprint = 2.0f * forward_depth * source.projection_params.x *
                     source.projection_params.y;
   float3 receiver = world_position - normalize(from_light) *
@@ -374,12 +401,17 @@ float vkr_metal_packet_local_shadow_one_tap(
   const device VkrLocalShadowView &view = root->local_shadow_views[first_view + face];
   float4 clip = view.light_view_projection * float4(receiver, 1.0f);
   if (clip.w <= 0.0f || clip.z < 0.0f || clip.z > clip.w)
-    return 1.0f;
+    return float3(1.0f);
   float3 projected = clip.xyz / clip.w;
   float2 uv = projected.xy * 0.5f + 0.5f;
   if (!point && (any(uv < 0.0f) || any(uv > 1.0f)))
-    return 1.0f;
-  return root->local_shadow_map.sample_compare(vkr_metal_shadow_compare_sampler,
-                                                uv, first_view + face,
-                                                projected.z);
+    return float3(1.0f);
+  float opaque = root->local_shadow_map.sample_compare(
+      vkr_metal_shadow_compare_sampler, uv, first_view + face, projected.z);
+  float3 transmission = root->local_shadow_transmission
+                            ? vkr_metal_local_shadow_transmission_tap(
+                                  *root->local_shadow_transmission,
+                                  first_view + face, uv, projected.z)
+                            : float3(1.0f);
+  return opaque * transmission;
 }

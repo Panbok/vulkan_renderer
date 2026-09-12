@@ -133,6 +133,7 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .shadow_cascades = upload->shadow_cascades_gpu,
       .local_shadow_texture_id = upload->local_shadow_texture_id,
       .local_shadow_views = upload->local_shadow_views_gpu,
+      .local_shadow_transmission = upload->local_shadow_transmission_gpu,
       .dfg_texture_id = renderer->dfg_lut.resource_id,
       .view = frame_constants.view,
       .shadow_cascade_count = frame_constants.shadow_cascade_count,
@@ -836,9 +837,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
       transmission ? upload->transmission_gpu_draw_instances_gpu
                    : upload->gpu_draw_instances_gpu;
   const uint32_t view_count =
-      transmission ? 1u
-                   : 1u + renderer->prepared_frame.shadow_cascade_count +
-                         renderer->prepared_frame.local_shadow_view_count;
+      transmission
+          ? 1u
+          : 1u + renderer->prepared_frame.shadow_cascade_count +
+                renderer->prepared_frame.local_shadow_view_count +
+                renderer->prepared_frame.local_shadow_transmission_view_count;
   if (candidate_count == 0u)
     return true_v;
   uint64_t root_gpu = 0u;
@@ -946,25 +949,31 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   uint32_t frame_flags = 0u;
   for (uint32_t view = 0u; view < view_count; ++view) {
     const bool8_t camera_view = view == 0u;
-    const bool8_t local_view =
-        view > renderer->prepared_frame.shadow_cascade_count;
+    const uint32_t first_local_view =
+        1u + renderer->prepared_frame.shadow_cascade_count;
+    const uint32_t first_transmission_view =
+        first_local_view + renderer->prepared_frame.local_shadow_view_count;
+    const bool8_t local_view = view >= first_local_view;
+    const bool8_t transmission_view = view >= first_transmission_view;
+    const uint32_t local_face =
+        view - (transmission_view ? first_transmission_view : first_local_view);
     const uint32_t shadow_map_size =
-        local_view ? renderer->prepared_frame.local_shadow_map_size
-                   : renderer->prepared_frame.shadow_map_size;
+        transmission_view
+            ? renderer->prepared_frame.local_shadow_transmission_map_size
+        : local_view ? renderer->prepared_frame.local_shadow_map_size
+                     : renderer->prepared_frame.shadow_map_size;
     const Mat4 view_projection =
-        camera_view ? vkr_metal_packet_clip_matrix(
-                          renderer->convert_vulkan_clip_y,
-                          mat4_mul(packet->temporal.jittered_projection,
-                                   packet->input.globals.view))
-                    : vkr_metal_packet_clip_matrix(
-                          renderer->convert_vulkan_clip_y,
-                          local_view ? packet->input.local_shadow
-                                           ->views[view - 1u -
-                                                   renderer->prepared_frame
-                                                       .shadow_cascade_count]
-                                           .light_view_projection
-                                     : packet->input.shadow->cascades[view - 1u]
-                                           .light_view_projection);
+        camera_view
+            ? vkr_metal_packet_clip_matrix(
+                  renderer->convert_vulkan_clip_y,
+                  mat4_mul(packet->temporal.jittered_projection,
+                           packet->input.globals.view))
+            : vkr_metal_packet_clip_matrix(
+                  renderer->convert_vulkan_clip_y,
+                  local_view ? packet->input.local_shadow->views[local_face]
+                                   .light_view_projection
+                             : packet->input.shadow->cascades[view - 1u]
+                                   .light_view_projection);
     uint64_t frame_root_gpu = 0u;
     uint32_t view_frame_flags = 0u;
     if (!vkr_metal_packet_create_frame_root(
@@ -977,6 +986,22 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
             &view_frame_flags))
       return false_v;
     frame_flags |= view_frame_flags;
+    uint64_t transmission_draw_gpu = 0u;
+    if (transmission_view) {
+      VkrMetalPacketLocalShadowTransmissionDraw *draw =
+          vkr_metal_packet_next_root(upload, sizeof(*draw),
+                                     &transmission_draw_gpu);
+      if (!draw)
+        return false_v;
+      *draw = (VkrMetalPacketLocalShadowTransmissionDraw){
+          .transmission_materials =
+              vkr_metal_material_table_device_transmission_gpu_address(
+                  renderer->materials),
+          .face = local_face,
+          .light_position =
+              packet->input.local_shadow->views[local_face].light_position_near,
+      };
+    }
     draw_roots[view] = (VkrMetalPacketDrawRoot){
         .geometry_rows = upload->gpu_draw_geometry_rows_gpu,
         .visible_rows = visible->resource.gpu_address +
@@ -985,6 +1010,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
         .vertices = renderer->geometry_megabuffer.vertices.gpu_address,
         .frame = frame_root_gpu,
         .flags = 1u,
+        .local_shadow_transmission = transmission_draw_gpu,
     };
   }
   root->candidates = candidates->resource.gpu_address;
@@ -2726,8 +2752,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transmission_compact(
       source.width != visibility.width || source.height != visibility.height ||
       destination.width != visibility.width ||
       destination.height != visibility.height ||
-      indirect_arguments->resource.length < 8u * sizeof(uint32_t))
+      indirect_arguments->resource.length < 8u * sizeof(uint32_t)) {
+    log_error("Metal transmission compact inputs: visibility=%lux%lu "
+              "source=%lux%lu destination=%lux%lu capacity=%llu layer=%u",
+              (unsigned long)visibility.width, (unsigned long)visibility.height,
+              (unsigned long)source.width, (unsigned long)source.height,
+              (unsigned long)destination.width,
+              (unsigned long)destination.height,
+              (unsigned long long)capacity, layer);
     return false_v;
+  }
   uint64_t root_gpu = 0u;
   VkrMetalPacketTransmissionCompactRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -3433,6 +3467,26 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         1u + renderer->prepared_frame.shadow_cascade_count + face, NULL,
         (uint32_t)target.width, (uint32_t)target.height, result);
   }
+  if (kind >= VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0 &&
+      kind <=
+          VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW) {
+    if (!packet->input.world || renderer->gpu_draw_count == 0u)
+      return true_v;
+    const uint32_t layer =
+        (uint32_t)kind -
+        VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0;
+    const uint32_t view = 1u + renderer->prepared_frame.shadow_cascade_count +
+                          renderer->prepared_frame.local_shadow_view_count +
+                          pass->desc.repeat_index;
+    if (!vkr_metal_packet_prepare_gpu_shadow(renderer, pass, packet, prepared,
+                                             view, NULL, (uint32_t)target.width,
+                                             (uint32_t)target.height, result))
+      return false_v;
+    prepared->indirect.pipeline =
+        renderer->local_shadow_transmission_pipelines[layer];
+    prepared->indirect.opaque_pipeline = nil;
+    return true_v;
+  }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE)
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, packet, prepared, renderer->vbuffer_pipeline,
@@ -4071,10 +4125,13 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
          renderer->prepared_frame.transmission_depth_diagnostic_enabled);
     const VkrMetalPacketReadbackLayout readback_layout =
         vkr_metal_packet_readback_layout(
-            ibl, deferred_diagnostics, renderer->prepared_frame.transmission_pending,
+            ibl, deferred_diagnostics,
+            renderer->prepared_frame.transmission_pending,
             renderer->prepared_frame.sdsm_enabled,
             renderer->prepared_frame.exposure_automatic,
-            renderer->prepared_frame.shadow_cascade_count);
+            1u + renderer->prepared_frame.shadow_cascade_count +
+                renderer->prepared_frame.local_shadow_view_count +
+                renderer->prepared_frame.local_shadow_transmission_view_count);
     VkrMetalPacketCapturePlan capture_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
     VkrCaptureBackendItemPlan capture_ring_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
     uint32_t capture_count = 0;
@@ -4331,9 +4388,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
               (exposure_histogram && exposure_state));
     if (!passed) {
       if (failed_pass) {
-        log_error("Metal frame preparation failed at pass '%.*s'",
+        log_error("Metal frame preparation failed at pass '%.*s' "
+                  "(root cells %u/%u)",
                   (int)failed_pass->desc.name.length,
-                  failed_pass->desc.name.str);
+                  failed_pass->desc.name.str, frame_upload.root_cursor,
+                  frame_upload.root_capacity);
       } else {
         log_error("Metal frame preparation failed for capture resources or "
                   "native dependencies");
@@ -4703,6 +4762,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     command_slot->exposure_requested = readback_layout.exposure_size > 0u;
     command_slot->shadow_cascade_count =
         renderer->prepared_frame.shadow_cascade_count;
+    command_slot->gpu_draw_view_count =
+        1u + renderer->prepared_frame.shadow_cascade_count +
+        renderer->prepared_frame.local_shadow_view_count +
+        renderer->prepared_frame.local_shadow_transmission_view_count;
     if (deferred_diagnostics) {
       command_slot->gpu_draw_diagnostics_readback =
           (const uint8_t *)readback.cpu_address +
@@ -4944,6 +5007,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             (const uint8_t *)readback.cpu_address +
                 readback_layout.deferred_diagnostics,
             renderer->prepared_frame.shadow_cascade_count,
+            command_slot->gpu_draw_view_count,
             renderer->prepared_frame.transmission_pending
                 ? (const uint8_t *)readback.cpu_address +
                       readback_layout.transmission_diagnostics

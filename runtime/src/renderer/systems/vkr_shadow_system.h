@@ -441,6 +441,8 @@ typedef struct VkrLocalShadowFaceHistory {
   uint64_t static_generation;
   uint64_t publication_generation;
   uint64_t resource_generation;
+  uint64_t transmission_resource_generations
+      [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
   uint64_t layout_generation;
   uint64_t last_submit_value;
   uint32_t render_id;

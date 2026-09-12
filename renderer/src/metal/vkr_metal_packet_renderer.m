@@ -363,6 +363,7 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t shadow_texture_id;
   uint64_t local_shadow_texture_id;
   uint64_t local_shadow_views_gpu;
+  uint64_t local_shadow_transmission_gpu;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
   uint64_t subsurface_texture_id;
@@ -414,8 +415,7 @@ typedef struct VkrMetalPacketReadbackLayout {
 
 vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
     bool8_t ibl, bool8_t deferred_diagnostics, bool8_t transmission_diagnostics,
-    bool8_t sdsm, bool8_t exposure,
-    uint32_t shadow_cascade_count) {
+    bool8_t sdsm, bool8_t exposure, uint32_t gpu_draw_view_count) {
   /* The final target can be RGBA8 or RGBA16F. Reserve an eight-byte pixel
      before the fixed diagnostic fields so the transfer stays valid across an
      extended-linear target transition. */
@@ -426,10 +426,10 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
       ibl ? ibl_prefilter_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u
           : ibl_prefilter_offset;
   const uint64_t deferred_offset = vkr_metal_packet_align_up(probe_size, 16u);
-  const uint64_t deferred_bytes = deferred_diagnostics
-                                      ? (uint64_t)(1u + shadow_cascade_count) *
-                                            sizeof(VkrGpuDrawCompactionState)
-                                      : 0u;
+  const uint64_t deferred_bytes =
+      deferred_diagnostics
+          ? (uint64_t)gpu_draw_view_count * sizeof(VkrGpuDrawCompactionState)
+          : 0u;
   const uint64_t transmission_offset = deferred_offset + deferred_bytes;
   const uint64_t transmission_bytes =
       deferred_diagnostics && transmission_diagnostics
@@ -507,6 +507,7 @@ typedef struct VkrMetalPacketCommandSlot {
   const uint8_t *exposure_readback;
   const uint8_t *transmission_coverage_readback;
   uint32_t shadow_cascade_count;
+  uint32_t gpu_draw_view_count;
   uint32_t transmission_coverage_extent[2];
   bool8_t gpu_draw_diagnostics_requested;
   bool8_t sdsm_requested;
@@ -632,6 +633,7 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketTextureUploadBatch texture_upload_batch;
   uint64_t timestamp_frequency;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
+  id<MTLRenderPipelineState> local_shadow_transmission_pipelines[3];
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_pipeline;

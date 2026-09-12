@@ -590,6 +590,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_map_size = shadow_map_size,
       .local_shadow_map_size = local_shadow_map_size,
+      .local_shadow_transmission_map_size =
+          Min(local_shadow_map_size, VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX),
       .local_shadow_map_layer_count = local_shadow_face_budget,
       .shadow_map_layer_count = shadow_cascade_count,
       .shadow_cascade_count = shadow_cascade_count,
@@ -1431,6 +1433,14 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
         &opaque[1u + best->shadow_cascade_count + view];
     out_result->local_shadow_gpu_visible_count[view] = state->visible_count;
     out_result->local_shadow_gpu_overflow_count[view] = state->overflow_count;
+  }
+  const uint32_t local_view_count = best->local_shadow_view_count +
+                                    best->local_shadow_transmission_view_count;
+  for (uint32_t view = 0u; view < local_view_count; ++view) {
+    const VkrGpuDrawCompactionState *state =
+        &opaque[1u + best->shadow_cascade_count + view];
+    out_result->gpu_overflow_count += state->overflow_count;
+    out_result->gpu_resolve_invalid_count += state->resolve_invalid_count;
   }
   MemCopy(out_result->pass_timings, best->pass_timings,
           (uint64_t)best->pass_timing_count *

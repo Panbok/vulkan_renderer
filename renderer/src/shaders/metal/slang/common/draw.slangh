@@ -105,6 +105,22 @@ struct VkrMetalPacketAnisotropy {
     uint2 reserved;
 };
 
+struct VkrMetalPacketLocalShadowTransmission {
+    uint64_t depth0;
+    uint64_t color0;
+    uint64_t depth1;
+    uint64_t color1;
+    uint64_t overflow;
+    uint64_t reserved;
+};
+
+struct VkrMetalPacketLocalShadowTransmissionDraw {
+    uint64_t transmission_materials;
+    uint face;
+    uint reserved;
+    float4 light_position;
+};
+
 struct VkrMetalPacketFrameRoot
 {
     StructuredBuffer<VkrMetalPacketInstance> instances;
@@ -167,6 +183,7 @@ struct VkrMetalPacketFrameRoot
     VkrFogParams* fog;
     VkrMetalPacketSheen* sheen;
     VkrMetalPacketAnisotropy* anisotropy;
+    VkrMetalPacketLocalShadowTransmission* local_shadow_transmission;
 };
 
 #include "../../../shared/gpu_draw.slangh"
@@ -179,7 +196,7 @@ struct VkrMetalPacketDrawRoot
     ParameterBlock<VkrMetalPacketFrameRoot> frame;
     uint visible_row_index;
     uint flags;
-    uint2 reserved;
+    VkrMetalPacketLocalShadowTransmissionDraw* local_shadow_transmission;
 };
 
 struct VkrMetalPacketVertexOutput

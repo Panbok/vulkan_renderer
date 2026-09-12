@@ -1001,9 +1001,16 @@ typedef struct VkrRetainedShadowToken {
 } VkrRetainedShadowToken;
 
 /** Proven retained state for the selected physical local-shadow-map image. */
+#define VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT 5u
+
 typedef struct VkrRetainedLocalShadowToken {
   uint64_t resource_generation;
   uint32_t valid_layer_mask;
+  /** depth0, color0, depth1, color1, and first-overflow depth, respectively. */
+  uint64_t transmission_resource_generations
+      [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
+  /** Content valid in every transmission attachment for this physical image. */
+  uint32_t transmission_valid_layer_mask;
 } VkrRetainedLocalShadowToken;
 
 /* Acquired target and command-slot context. Do not copy or modify it.

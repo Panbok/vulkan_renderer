@@ -116,6 +116,9 @@ vkr_add_vulkan_packet_shader("packet.visibility.vert" vk_visibility_vertex verte
 vkr_add_vulkan_packet_shader("packet.visibility.frag" vk_visibility_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.visibility_opaque.frag" vk_visibility_opaque_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.visibility_shadow.frag" vk_visibility_shadow_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.local_shadow_transmission.vert" vk_local_shadow_transmission_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.local_shadow_transmission.frag" vk_local_shadow_transmission_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.local_shadow_transmission_overflow.frag" vk_local_shadow_transmission_overflow_fragment fragment)
 vkr_add_vulkan_packet_shader(
     "packet.gbuffer_resolve.none.comp" vk_gbuffer_resolve compute
     -DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=0 -DVKR_VULKAN_GBUFFER_WRITE_DEBUG=0)
@@ -333,6 +336,7 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/sh_l2_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/diffuse_volume_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/local_shadow.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/local_shadow_transmission.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/editor/overlay.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"

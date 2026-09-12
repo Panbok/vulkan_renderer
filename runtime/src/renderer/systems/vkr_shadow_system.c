@@ -1574,6 +1574,11 @@ vkr_internal bool8_t vkr_shadow_local_face_reusable(
   const uint32_t bit = UINT32_C(1) << face_index;
   return selection->valid && (retained_token.valid_layer_mask & bit) != 0u &&
          retained_token.resource_generation != 0u &&
+         (candidates->transmission_gpu_candidate_count == 0u ||
+          ((retained_token.transmission_valid_layer_mask & bit) != 0u &&
+           MemCompare(history->transmission_resource_generations,
+                      retained_token.transmission_resource_generations,
+                      sizeof(history->transmission_resource_generations)) == 0)) &&
          history->last_submit_value != 0u && history->static_only_contents &&
          history->static_generation == candidates->static_generation &&
          history->publication_generation ==
@@ -1678,6 +1683,9 @@ void vkr_shadow_system_resolve_local_shadows(
           .static_only_contents =
               !publication_pending && !dynamic_scan_failed && !dynamic_overlap,
       };
+      MemCopy(pending->faces[view_index].transmission_resource_generations,
+              retained_token.transmission_resource_generations,
+              sizeof(retained_token.transmission_resource_generations));
     }
   }
   pending->active = pending->render_mask != 0u;

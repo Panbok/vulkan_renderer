@@ -179,6 +179,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->point_light_masks = 0u;
   slot->shadow_cascades = 0u;
   slot->local_shadow_views = 0u;
+  slot->local_shadow_transmission = 0u;
   slot->ibl_probes = 0u;
   slot->ibl_probe_count = 0u;
   slot->prefilter_texture = 0u;
@@ -472,6 +473,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       geometry_table_bytes + sizeof(VkrFogGpuParams) +
       sizeof(VkrDisplayOutputParams) + sizeof(VkrVulkanLtc) +
       sizeof(VkrVulkanSheen) + sizeof(VkrVulkanAnisotropy) +
+      sizeof(VkrVulkanLocalShadowTransmission) +
       (uint64_t)VKR_MAX_SCENE_RECTANGLE_LIGHTS *
           sizeof(VkrGpuRectangleLightRow) +
       256u; // Alignment between the fixed packet tables below.
@@ -935,6 +937,7 @@ void vkr_vk_fill_packet_frame_root(
   root->shadow_cascades = slot->shadow_cascades;
   root->local_shadow_views = slot->local_shadow_views;
   root->local_shadow_texture = local_shadow_texture;
+  root->local_shadow_transmission = slot->local_shadow_transmission;
   root->ibl_probes = slot->ibl_probes;
   root->ibl_probe_count = slot->ibl_probe_count;
 

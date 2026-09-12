@@ -754,8 +754,31 @@ float3 packet_box_project(float3 direction, float3 world_position,
     return normalize(world_position + safe_direction * t_hit - center);
 }
 
+// Gate discrete crossing depths before selecting their cumulative RGB prefix.
+float3 packet_local_shadow_transmission(VkrVulkanPacketFrameRoot *frame,
+                                        float2 uv, uint layer, float receiver_depth)
+{
+    if (frame.local_shadow_transmission == nullptr)
+        return 1.0f;
+    VkrVulkanLocalShadowTransmission maps = frame.local_shadow_transmission[0];
+    uint2 pixel = min(uint2(saturate(uv) * float(maps.extent)), maps.extent - 1u);
+    int4 address = int4(pixel, layer, 0u);
+    float depth0 = g_depth_array_textures[maps.depth0_texture].Load(address);
+    float depth1 = g_depth_array_textures[maps.depth1_texture].Load(address);
+    float overflow = g_depth_array_textures[maps.overflow_texture].Load(address);
+    uint prefix = vkr_local_shadow_transmission_prefix_index(
+        receiver_depth, float2(depth0, depth1), overflow);
+    if (prefix == 3u)
+        return 0.0f;
+    if (prefix == 2u)
+        return g_array_textures[maps.color1_texture].Load(address).rgb;
+    if (prefix == 1u)
+        return g_array_textures[maps.color0_texture].Load(address).rgb;
+    return 1.0f;
+}
+
 // Local perspective depth arrays share the directional comparison sampler.
-float packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
+float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                           VkrGpuPointLightRow light, uint kind,
                           float3 world_position, float3 normal)
 {
@@ -787,7 +810,7 @@ float packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
     if (kind == 2u && (any(uv < 0.0f) || any(uv > 1.0f)))
         return 1.0f;
     float radial_distance = length(receiver - light.p0.xyz);
-    float visibility = 0.0f;
+    float3 visibility = 0.0f;
     [unroll] for (uint tap = 0u; tap < 9u; ++tap)
     {
         float2 tap_uv = uv + vkr_shadow_poisson[tap] *
@@ -818,15 +841,17 @@ float packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                 continue;
             }
         }
-        visibility += g_depth_array_textures[frame.local_shadow_texture]
+        float opaque = g_depth_array_textures[frame.local_shadow_texture]
             .SampleCmpLevelZero(
                 g_comparison_samplers[frame.shadow_comparison_sampler],
                 float3(tap_uv, float(tap_view)), reference);
+        visibility += opaque * packet_local_shadow_transmission(
+            frame, tap_uv, tap_view, reference);
     }
     return visibility / 9.0f;
 }
 
-float packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
+float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
                                   VkrGpuPointLightRow light, uint kind,
                                   float3 world_position)
 {
@@ -858,9 +883,11 @@ float packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
     float2 uv = projected.xy * 0.5f + 0.5f;
     if (!point && (any(uv < 0.0f) || any(uv > 1.0f)))
         return 1.0f;
-    return g_depth_array_textures[frame.local_shadow_texture].SampleCmpLevelZero(
+    float opaque = g_depth_array_textures[frame.local_shadow_texture].SampleCmpLevelZero(
         g_comparison_samplers[frame.shadow_comparison_sampler],
         float3(uv, float(first_view + face)), projected.z);
+    return opaque * packet_local_shadow_transmission(
+        frame, uv, first_view + face, projected.z);
 }
 
 // Every enabled punctual light for one shaded point. `albedo` and `metallic`
@@ -937,10 +964,10 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
                     attenuation *= cone_attenuation;
                 }
             }
-            attenuation *= packet_local_shadow(frame, light, kind, world_position,
+            float3 visibility = packet_local_shadow(frame, light, kind, world_position,
                 vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy));
             VkrVulkanDirectResult direct = packet_direct(
-                normal, view, light_direction, p1.rgb * p2.x * attenuation,
+                normal, view, light_direction, p1.rgb * p2.x * attenuation * visibility,
                 albedo, metallic, roughness, f0, energy);
             result.irradiance += direct.irradiance;
             result.diffuse += direct.diffuse;
@@ -1009,9 +1036,9 @@ float3 packet_punctual_specular(VkrVulkanPacketFrameRoot *frame,
                     attenuation *= cone_attenuation;
                 }
             }
-            attenuation *= packet_local_shadow(frame, light, kind, world_position, normal);
+            float3 visibility = packet_local_shadow(frame, light, kind, world_position, normal);
             result += packet_direct_specular(
-                normal, view, light_direction, p1.rgb * p2.x * attenuation,
+                normal, view, light_direction, p1.rgb * p2.x * attenuation * visibility,
                 roughness, f0, energy);
         }
     }
@@ -1077,10 +1104,10 @@ float3 packet_punctual_sheen(VkrVulkanPacketFrameRoot *frame,
                     attenuation *= cone_attenuation;
                 }
             }
-            attenuation *= packet_local_shadow(frame, light, kind,
+            float3 visibility = packet_local_shadow(frame, light, kind,
                                                 world_position, normal);
             result += packet_sheen_direct(
-                normal, view, light_direction, p1.rgb * p2.x * attenuation,
+                normal, view, light_direction, p1.rgb * p2.x * attenuation * visibility,
                 sheen, energy_normalization);
         }
     }

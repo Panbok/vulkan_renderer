@@ -4,6 +4,9 @@
 typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_SHADOW = 0,
   VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW,
+  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0,
+  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1,
+  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
   VKR_VULKAN_GRAPH_EXECUTOR_PICKING,
   VKR_VULKAN_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
   VKR_VULKAN_GRAPH_EXECUTOR_PICKING_RESOLVE,
@@ -115,6 +118,9 @@ typedef struct VkrVulkanGraphExecutorSpec {
 vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.local_shadow", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.local_shadow.transmission0", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.local_shadow.transmission1", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.local_shadow.transmission_overflow", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
@@ -745,36 +751,126 @@ void vkr_vulkan_renderer_retained_shadow_token(
   }
 }
 
+vkr_global const char *const s_vk_local_shadow_transmission_names
+    [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT] = {
+        "local_shadow_transmission_depth0",
+        "local_shadow_transmission_color0",
+        "local_shadow_transmission_depth1",
+        "local_shadow_transmission_color1",
+        "local_shadow_transmission_overflow",
+};
+
+vkr_internal VkrVulkanGraphImage *
+vkr_vk_retained_local_shadow_image(VkrVulkanRenderer *renderer,
+                                   uint32_t image_index, const char *name,
+                                   uint32_t extent, VkrTextureFormat format) {
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, name))
+      continue;
+    VkrVulkanGraphImage *slot = &renderer->graph_images[i];
+    if (!slot->live || slot->graph_generation == 0u ||
+        slot->graph_generation != image->generation ||
+        slot->instance_count != renderer->targets.image_count ||
+        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
+        slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
+        slot->desc.type != VKR_TEXTURE_TYPE_2D || slot->desc.width != extent ||
+        slot->desc.height != extent || slot->desc.format != format ||
+        slot->desc.layers !=
+            renderer->prepared_frame.local_shadow_map_layer_count ||
+        !slot->instances[image_index].image.handle)
+      return NULL;
+    const VkrVulkanImage *physical = &slot->instances[image_index].image;
+    if (physical->width != extent || physical->height != extent ||
+        physical->depth != 1u || physical->mip_levels != 1u ||
+        physical->array_layers != slot->desc.layers ||
+        physical->format != vkr_vk_texture_format(format))
+      return NULL;
+    return slot;
+  }
+  return NULL;
+}
+
+vkr_internal uint32_t vkr_vk_retained_local_shadow_valid_mask(
+    const VkrVulkanGraphImage *image, uint32_t image_index) {
+  uint32_t mask = 0u;
+  const VkrVulkanGraphImageInstance *instance = &image->instances[image_index];
+  for (uint32_t layer = 0u; layer < image->desc.layers; ++layer) {
+    if (instance->retained_states[layer].content_valid)
+      mask |= UINT32_C(1) << layer;
+  }
+  return mask;
+}
+
 void vkr_vulkan_renderer_retained_local_shadow_token(
     VkrVulkanRenderer *renderer, uint32_t image_index,
     VkrRetainedLocalShadowToken *out_token) {
   *out_token = (VkrRetainedLocalShadowToken){0};
-  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
-    if (!image || !vkr_string8_equals_cstr(&image->name, "local_shadow_map"))
-      continue;
-    VkrVulkanGraphImage *slot = &renderer->graph_images[i];
-    if (!slot->live || slot->graph_generation != image->generation ||
-        slot->instance_count != renderer->targets.image_count ||
-        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
-        slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
-        slot->desc.type != VKR_TEXTURE_TYPE_2D ||
-        slot->desc.width != renderer->prepared_frame.local_shadow_map_size ||
-        slot->desc.height != renderer->prepared_frame.local_shadow_map_size ||
-        slot->desc.format != renderer->prepared_frame.shadow_depth_format ||
-        slot->desc.layers !=
-            renderer->prepared_frame.local_shadow_map_layer_count)
-      return;
-    const VkrVulkanGraphImageInstance *instance = &slot->instances[image_index];
-    out_token->resource_generation = slot->graph_generation;
-    const uint32_t layer_count = Min(slot->desc.layers, 32u);
-    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
-      if (instance->retained_states[layer].content_valid)
-        out_token->valid_layer_mask |= UINT32_C(1) << layer;
-    }
-    return;
+  VkrVulkanGraphImage *opaque = vkr_vk_retained_local_shadow_image(
+      renderer, image_index, "local_shadow_map",
+      renderer->prepared_frame.local_shadow_map_size,
+      renderer->prepared_frame.shadow_depth_format);
+  if (opaque) {
+    out_token->resource_generation = opaque->graph_generation;
+    out_token->valid_layer_mask =
+        vkr_vk_retained_local_shadow_valid_mask(opaque, image_index);
   }
+  const uint32_t extent = Min(renderer->prepared_frame.local_shadow_map_size,
+                              VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
+  uint64_t generations[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
+  uint32_t valid_mask = UINT32_MAX;
+  for (uint32_t i = 0u; i < VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT; ++i) {
+    VkrVulkanGraphImage *image = vkr_vk_retained_local_shadow_image(
+        renderer, image_index, s_vk_local_shadow_transmission_names[i], extent,
+        i == 1u || i == 3u ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
+                           : VKR_TEXTURE_FORMAT_D32_SFLOAT);
+    if (!image)
+      return;
+    generations[i] = image->graph_generation;
+    valid_mask &= vkr_vk_retained_local_shadow_valid_mask(image, image_index);
+  }
+  MemCopy(out_token->transmission_resource_generations, generations,
+          sizeof(generations));
+  out_token->transmission_valid_layer_mask = valid_mask;
+}
+
+vkr_internal bool8_t
+vkr_vk_prepare_local_shadow_transmission_sampling(VkrVulkanRenderer *renderer) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  slot->local_shadow_transmission = 0u;
+  if (renderer->prepared_frame.local_shadow_transmission_view_count == 0u)
+    return true_v;
+  const uint32_t extent =
+      renderer->prepared_frame.local_shadow_transmission_map_size;
+  uint32_t indices[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
+  for (uint32_t i = 0u; i < VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT; ++i) {
+    VkrVulkanGraphImage *image = vkr_vk_retained_local_shadow_image(
+        renderer, renderer->prepared_frame.image_index,
+        s_vk_local_shadow_transmission_names[i], extent,
+        i == 1u || i == 3u ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
+                           : VKR_TEXTURE_FORMAT_D32_SFLOAT);
+    if (!image || !image->instances[renderer->prepared_frame.image_index]
+                       .has_sampled_slot)
+      return false_v;
+    indices[i] = image->instances[renderer->prepared_frame.image_index]
+                     .sampled_slot.index;
+  }
+  VkrVulkanLocalShadowTransmission *maps = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*maps), _Alignof(VkrVulkanLocalShadowTransmission),
+      &slot->local_shadow_transmission, NULL);
+  if (!maps)
+    return false_v;
+  *maps = (VkrVulkanLocalShadowTransmission){
+      .depth0_texture = indices[0],
+      .color0_texture = indices[1],
+      .depth1_texture = indices[2],
+      .color1_texture = indices[3],
+      .overflow_texture = indices[4],
+      .extent = extent,
+  };
+  return true_v;
 }
 
 VkrVulkanGraphImageInstance *vkr_vk_graph_image(VkrVulkanRenderer *renderer,
@@ -1287,6 +1383,12 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   if (!packet)
     return false_v;
   switch (kind) {
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
+    return vkr_vk_prepare_local_shadow_transmission(
+        renderer, &prepared->raster, pass,
+        kind == VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW);
   case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW: {
     if (kind == VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW) {
@@ -1594,7 +1696,9 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
     switch (kind) {
     case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY:
       bytes += (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
-                          renderer->prepared_frame.local_shadow_view_count) *
+                          renderer->prepared_frame.local_shadow_view_count +
+                          renderer->prepared_frame
+                              .local_shadow_transmission_view_count) *
                (sizeof(Mat4) + VKR_FRUSTUM_PLANE_COUNT * sizeof(Vec4));
       break;
     case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
@@ -1685,6 +1789,9 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
 
   prepared->kind = kind;
   switch (kind) {
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
@@ -1907,6 +2014,8 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   if (count > VKR_RENDERER_IMPL_MAX_GRAPH_PASSES)
     return false_v;
   renderer->prepared_graph_passes = NULL;
+  if (!vkr_vk_prepare_local_shadow_transmission_sampling(renderer))
+    return false_v;
   if (count) {
     renderer->prepared_graph_passes =
         vkr_allocator_alloc(&renderer->graph_frame_allocator,
@@ -1958,6 +2067,9 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
   vkCmdSetFrontFace(command, VK_FRONT_FACE_COUNTER_CLOCKWISE);
   switch (prepared->kind) {
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
     vkCmdSetDepthBias(command, prepared->depth_bias.depth_bias_constant,
@@ -2018,6 +2130,9 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
         prepared->dependencies.bufferMemoryBarrierCount)
       vkCmdPipelineBarrier2(command, &prepared->dependencies);
     switch (prepared->kind) {
+    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
     case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
     case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
     case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:

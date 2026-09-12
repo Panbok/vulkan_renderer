@@ -202,6 +202,7 @@ typedef struct VkrGpuVisibleDrawRow {
 
 #define VKR_LOCAL_SHADOW_FACE_COUNT_MAX 16u
 #define VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT 1024u
+#define VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX 512u
 
 /** Perspective shadow view. CPU stores canonical column-major matrices;
  * native upload applies the same lowering as its directional shadow views. */

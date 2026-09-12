@@ -62,9 +62,9 @@ static float3 vkr_metal_froxel_local_radiance(
       attenuation *= smoothstep(p1.w, p0.w, cone);
     }
   }
-  attenuation *= vkr_metal_packet_local_shadow_one_tap(
+  float3 visibility = vkr_metal_packet_local_shadow_one_tap(
       frame, uint(p3.w + 0.5f), kind, world_position);
-  return max(p1.rgb * p2.x * attenuation, float3(0.0f));
+  return max(p1.rgb * p2.x * attenuation * visibility, float3(0.0f));
 }
 
 static float3 vkr_metal_froxel_incident_radiance(

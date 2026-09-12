@@ -222,13 +222,17 @@ static float4 vkr_metal_packet_shade(
       }
       bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                       dot(normal, light_direction) < 0.0f;
-      float base_attenuation = attenuation * vkr_metal_packet_local_shadow_sample(
-          frame, uint(p3.w), kind, input.world_position, back_lit ? -normal : normal);
+      float3 base_attenuation =
+          attenuation * vkr_metal_packet_local_shadow_sample(
+                            frame, uint(p3.w), kind, input.world_position,
+                            back_lit ? -normal : normal);
+      float3 layer_attenuation;
       if (back_lit && clearcoat_active)
-        attenuation *= vkr_metal_packet_local_shadow_sample(
-            frame, uint(p3.w), kind, input.world_position, normal);
+        layer_attenuation = attenuation * vkr_metal_packet_local_shadow_sample(
+                                              frame, uint(p3.w), kind,
+                                              input.world_position, normal);
       else
-        attenuation = base_attenuation;
+        layer_attenuation = base_attenuation;
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
           normal, view, light_direction, p1.rgb * p2.x * base_attenuation, base.rgb,
           metallic, roughness, f0, energy);
@@ -236,10 +240,11 @@ static float4 vkr_metal_packet_shade(
       analytic_specular += direct.specular;
       if (clearcoat_active)
         clearcoat_direct += vkr_metal_packet_clearcoat_direct(
-            view, light_direction, p1.rgb * p2.x * attenuation, clearcoat);
+            view, light_direction, p1.rgb * p2.x * layer_attenuation,
+            clearcoat);
       if (sheen_active)
         sheen_direct += vkr_metal_packet_sheen_direct(
-            normal, view, light_direction, p1.rgb * p2.x * attenuation,
+            normal, view, light_direction, p1.rgb * p2.x * layer_attenuation,
             sheen, sheen_normalization);
     }
   }

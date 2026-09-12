@@ -38,6 +38,7 @@
 #include "ibl/atmosphere.slang"
 #include "world/default.slang"
 #include "world/deferred.slang"
+#include "world/local_shadow_transmission.slang"
 #include "picking/default.slang"
 #include "common/fullscreen.slang"
 #include "post/exposure.slang"
