@@ -7,6 +7,9 @@ description: Investigate frame cost or hitches, optimize renderer hot paths, ins
 
 Performance is correctness. Preserve ownership, lifetime, GPU completion,
 visible output, and required work while reducing measured cost.
+Use Bistro for every scene-based measurement or trace. Never select Sponza; if
+no compatible Bistro workload exists, report the measurement unavailable or add
+a scoped Bistro case without weakening the evidence profile.
 
 ## Measurement loop
 
@@ -31,11 +34,11 @@ Build with `./build_release.sh` when needed. Use `vkr-harness` to run and inspec
 
 ```sh
 ./build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/sponza_orbit.case.json \
+  --case tools/cases/performance/bistro_shadow_orbit.case.json \
   --profile tools/profiles/performance-windowed.json
 
 ./build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/sponza_orbit.case.json \
+  --case tools/cases/performance/bistro_shadow_orbit.case.json \
   --profile tools/profiles/performance-windowed-gpu.json
 ```
 
@@ -78,14 +81,14 @@ new work.
 | CPU/GPU resident memory | Harness memory rows and `memory.gpu.live_totals_exact`; use `vkr-memory` to distinguish allocator accounting from live ownership |
 | GPU limiter or occupancy | Instruments trace on Metal; counters suggest a cause and do not establish a speed claim |
 
-For full/automation boot comparison, use
-`tools/cases/performance/sponza_boot_full.case.json` and
-`tools/cases/performance/sponza_boot_automation.case.json` with
-`tools/profiles/performance-windowed-boot.json`. Boot and subsystem masks are
-intentional workload-fingerprint differences. Require all other inputs and
-deterministic work rows to match. Compare boot/residency metrics, record both
-masks and memory exactness, and do not present steady-state timing across those
-masks as an ordinary matched frame comparison.
+For a full/automation boot comparison, select or add matched Bistro cases that
+satisfy `tools/profiles/performance-windowed-boot.json`. If no compatible Bistro
+pair exists, report the boot comparison unavailable; never substitute Sponza or
+weaken the profile. Boot and subsystem masks are intentional workload-fingerprint
+differences. Require all other inputs and deterministic work rows to match.
+Compare boot/residency metrics, record both masks and memory exactness, and do
+not present steady-state timing across those masks as an ordinary matched frame
+comparison.
 
 ## Reporting template
 

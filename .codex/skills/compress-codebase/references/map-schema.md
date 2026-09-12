@@ -59,12 +59,13 @@ remains sufficient.
 
 Include:
 
-1. Scope, commit, exclusions, baseline metrics, and target band.
+1. Scope, commit, exclusions, baseline metrics, and targeted duplicate work or
+   ownership obligations. LOC bands may guide inventory but are not acceptance.
 2. Non-negotiable behavior, ownership, concurrency, lifetime, and performance
    invariants.
 3. One-fact/one-owner target shape, and the check/comment policy.
-4. Compression budget by vertical slice, expressed as planning bands rather than
-   independent per-file quotas.
+4. Expected removed representations, forwarding layers, caller obligations, and
+   duplicated policy by vertical slice.
 5. Ordered implementation program with migration and deletion boundaries.
 6. Validation contract assigning each invariant to the correct evidence surface.
 7. The complete file disposition ledger, or a link to the TSV.
@@ -81,7 +82,8 @@ Before each implementation slice, record:
 - allocation, lock, string, indirection, and wait effects in hot paths;
 - borrowed views, storage stability, handle acquire/release symmetry, and
   completion-gated retirement where applicable;
-- expected net LOC and file delta;
+- expected removed representation or obligation; record estimated LOC and file
+  delta only as inventory context;
 - the smallest complete validation, and any baseline limitations.
 
 After the slice, record actual totals and any newly created files. Reject

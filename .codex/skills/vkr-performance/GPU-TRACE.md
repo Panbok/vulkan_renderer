@@ -21,8 +21,8 @@ representative case, check available disk space, and use a new output path.
 xcrun xctrace record --template 'Metal System Trace' \
   --instrument 'Metal GPU Counters' --no-prompt --output /tmp/vkr-audit.trace \
   --launch -- ./build_release/tools/vkr_harness profile \
-  --case tools/cases/smoke/sponza_offscreen.case.json \
-  --profile tools/profiles/local-offscreen.json
+  --case tools/cases/local/bistro_native_perf_audit.case.json \
+  --profile tools/profiles/local-offscreen-perf-audit-gpu.json
 ```
 
 The template supplies encoder intervals; the instrument requests counters.

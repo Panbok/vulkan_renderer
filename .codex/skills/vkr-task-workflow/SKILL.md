@@ -46,21 +46,12 @@ serialize builds sharing an output tree and all measured/validation runs.
 Children return findings, changed paths, exact checks and unresolved decisions.
 The parent inspects their diff and evidence before integrating the result.
 
-Select a model from the active tool's advertised models. This is a project
-routing preference, not a permanent capability or pricing claim:
-
-| Subtask | Selection |
-| --- | --- |
-| Bounded lookup, inventory, mechanical edits with deterministic checks | Small/fast model; `gpt-5.6-luna` when available |
-| Multi-file implementation or independent review with established architecture | Balanced coding model; `gpt-5.6-terra` when available |
-| Ownership, synchronization, shader math, architecture or unexplained performance | Parent's strongest available reasoning model; inherit when appropriate |
-
-Use the lowest reasoning effort that covers the uncertainty. Escalate when the
-child fails its evidence check or cannot resolve a concrete dependency, carrying
-its findings forward. Respect a user-selected model. If overrides or named
-models are unavailable, use the available default; do not install roles or
-change persistent configuration to satisfy this table. Keep the root's model
-unchanged unless the user requests it.
+Match delegated capability and reasoning effort to uncertainty. Mechanical
+inventory work can use a fast available model; multi-file implementation needs
+a coding-capable model; ownership, synchronization, shader math, architecture,
+and unexplained performance need the strongest available reasoning. Respect a
+user-selected model. If overrides are unavailable, use the current default; do
+not install roles or change persistent configuration for delegation.
 
 ## Implement and verify
 
@@ -74,8 +65,9 @@ unchanged unless the user requests it.
    expensive run. Preserve existing edits, including staged changes.
 4. Run the selected check and inspect its actual evidence. On failure, locate
    the cause, fix the smallest responsible change and rerun the affected check.
-   Broaden only for a specific uncovered invariant. A unit test needs the
-   justification required by `vkr-validation` before it is added or run.
+   Broaden only for a specific uncovered invariant. Use an existing CPU test
+   when it is the cheapest independent falsifier; `vkr-validation` owns test
+   selection and the requirements for adding a new test.
 5. Record decisive numbers, report digest, exact command, configuration and
    result. An unavailable check needs a concrete reason and uncovered claim.
    Ask immediately if missing evidence requires the user's machine or decision;

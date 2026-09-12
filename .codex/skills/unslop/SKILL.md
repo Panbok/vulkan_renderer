@@ -1,6 +1,6 @@
 ---
 name: unslop
-description: Apply to all written responses and edited prose. Remove filler and ambiguity while preserving technical meaning.
+description: Edit project prose for concrete actions, evidence, and unambiguous technical meaning. Use for substantial documentation or requested prose cleanup, not as a mandatory preamble to every response.
 ---
 
 # Unslop

@@ -36,10 +36,11 @@ Choose SoA, indirection, specialization, or batching from actual access patterns
 measure throughput claims. Keep one authoritative value and lower it once.
 
 Validate and normalize at creation, publication, packet validation, or graph
-compilation. Recording loops trust those producer guarantees. Per draw,
-instance, and dispatch, permit no validation, recovery, null-guard, or assertion
-branches. Partition optional work or provide valid sentinel records before the
-loop. Algorithmic choices still need a data and cost justification.
+compilation. Recording loops trust those producer guarantees. Move repeated
+defensive validation and optional-work selection out of per-draw, instance, and
+dispatch loops. Retain a loop check when it owns a numerical, capacity,
+generation, dispatch-tail, or completion invariant that no earlier boundary can
+prove. Algorithmic choices still need a data and cost justification.
 
 Those loops also permit no heap allocation, arena growth or page commitment,
 blocking wait, mutex acquisition, string formatting, name lookup, handle
@@ -70,8 +71,8 @@ the resolved description changes; do not infer per-frame destruction or aliasing
 ## Verification
 
 Choose the smallest evidence loop that exercises the changed invariant through
-`vkr-validation` and `vkr-harness`. Add a unit test only when an independent CPU
-oracle detects a named failure more directly than the renderer case. A CPU
+`vkr-validation` and `vkr-harness`. Use an independent CPU oracle when it
+detects a named failure more directly than the renderer case. A CPU
 suite, shader compile, or source review alone cannot prove GPU correctness.
 Use matched Release measurements for hot-path changes. Report unavailable
 native evidence as unavailable; do not claim bilateral compatibility from one

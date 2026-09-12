@@ -32,13 +32,12 @@ that decision with the user before dependent implementation.
 
 ## CPU tests
 
-Default to no unit-test work. Before adding or running a test or suite, name
-the concrete failure, an expected result independent of the implementation,
-and why a build, harness run, or existing check cannot detect it as directly
-or cheaply. Use a test only when it detects that failure deterministically
-at the responsible boundary. Pure algorithms, decoding, stale handles, and acquire/release
-contracts can qualify. A test that copies implementation logic or asserts a
-registration constant does not.
+Use an existing deterministic CPU test when its independent expected result is
+the cheapest way to expose the named failure. Pure algorithms, decoding, stale
+handles, and acquire/release contracts often qualify. Before adding a new test,
+name the concrete failure, its independent oracle, and why existing build,
+harness, or test coverage cannot detect it as directly. A test that copies
+implementation logic or asserts a registration constant does not qualify.
 
 ```sh
 ./build_test.sh

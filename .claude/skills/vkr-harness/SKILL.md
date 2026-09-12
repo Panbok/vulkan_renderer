@@ -5,6 +5,10 @@ description: Run renderer profiles, snapshots, comparisons, autotests, and basel
 
 # VKR harness
 
+Use Bistro for every scene-based harness workflow. Never select a Sponza case,
+capture, or baseline. If no compatible Bistro case exists, report the workflow
+unavailable or add a scoped Bistro case without weakening the chosen profile.
+
 ## Select and run the observation
 
 1. State the invariant or measurement the run must establish. Select the
@@ -24,7 +28,7 @@ Small Release execution check, with no timing authority:
 ```sh
 env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
   ./build_release/tools/vkr_harness profile \
-  --case tools/cases/smoke/sponza_offscreen.case.json \
+  --case tools/cases/smoke/bistro_shading_diagnostics.case.json \
   --profile tools/profiles/local-offscreen.json
 ```
 
@@ -53,8 +57,8 @@ Concrete capture check:
 
 ```sh
 ./build_release/tools/vkr_harness snapshot \
-  --case tools/cases/smoke/sponza_offscreen_snapshot.case.json \
-  --profile tools/profiles/local-offscreen.json
+  --case tools/cases/smoke/bistro_windowed_snapshot.case.json \
+  --profile tools/profiles/local-windowed.json
 ```
 
 Snapshots run isolated replay children. Channels with the same checkpoint and

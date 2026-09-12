@@ -41,7 +41,7 @@ the owner requires an unresolved architecture decision.
 | File, config, OS, driver, public API | Validate fallible input once and produce normalized data. |
 | Creation or compilation | Reject invalid combinations and size storage before use. |
 | Internal helper | Consume caller-proven types and state. |
-| Per-draw and other hot loops | No validation, recovery, null-guard, or assertion branches. Establish capacity and invariants before entry. |
+| Per-draw and other hot loops | Establish repeated defensive validation and optional work before entry. Retain numerical, capacity, generation, dispatch-tail, or completion checks whose proof belongs in the loop. |
 | Async completion and retirement | Keep generation, last-use serial, fence, and state checks needed to prove reuse is safe. |
 
 Capacity, generation, concurrency, and retirement checks may protect real
@@ -80,7 +80,8 @@ compression.
 Count the entire scope after each change, including new files and helpers.
 Moving code between files is not net deletion. Use `vkr-validation` for the
 smallest evidence of the changed behavior and `vkr-harness` for renderer cases.
-A new unit test needs a specific failure it detects and a reason existing
-harness/build evidence is insufficient. Use `vkr-performance` for Release
+Use an existing CPU test when it is the cheapest independent falsifier. A new
+unit test needs a specific failure, independent oracle, and reason existing
+harness/build/test evidence is insufficient. Use `vkr-performance` for Release
 measurements and `vkr-shaders` for native Metal/Vulkan parity. Repair behavioral,
 visual, lifetime, or measured performance regressions before the next change.

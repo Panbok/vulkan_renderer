@@ -25,11 +25,26 @@ units, coordinate conventions, ranges, edge behavior, and output meaning. Native
 root sizes may differ: Metal resource references and Vulkan bindless indices
 have different representations. Pin each native layout independently.
 
+Keep wire-ABI fields packed when the validated layout requires it, but expose
+their algorithmic meaning in pass-local names or a narrow internal record. Name
+resource roles and units instead of propagating numbered slots or vector lanes
+through shader logic. Use pass-specific aliases; do not create a generic texture
+framework merely to hide native bindings. Name policy-dependent tolerances and
+quality limits, not conventional constants such as texel-center `0.5`.
+
 Select data shape, workgroup size, resource access, and algorithm from the work
 actually executed. Avoid repeated loads, redundant math, excess live values,
 and unnecessary synchronization. Hoist draw/pass constants into their owning
 producer when that reduces measured cost. Reduce bandwidth and register pressure
 without weakening numerical precision or lifetime requirements.
+
+Before calling expensive shader work efficient or proposing an optimization,
+record its dispatch extent, iteration bounds, nominal texture/buffer accesses,
+filtered samples, formats, temporary storage lifetime, and preserved quality
+invariant. These source-level counts identify review targets; they are not GPU
+timings or cache-miss measurements. Inspect compiled output and matched hardware
+measurements before trading an intermediate pass, bandwidth, or storage for
+repeated reconstruction.
 
 Validate shader inputs and select optional feature variants before dispatch
 where practical. Keep guards required by real work distribution, such as edge

@@ -1,9 +1,9 @@
 ---
 name: compress-codebase
-description: Audit source for redundant state, code, checks, and abstractions; map files and implement scoped compression passes.
+description: Simplify source by removing redundant state, work, checks, and abstractions; map broad scopes and implement bounded passes without minifying code.
 ---
 
-# Compress codebase
+# Simplify codebase
 
 Remove redundant representations and work. Preserve behavior, ownership,
 concurrency, GPU lifetime, and measured performance. Keep conventional C layout
@@ -18,8 +18,8 @@ and format touched C code with `clang-format` using the repository
 3. Define included paths and exclusions. Record the commit and initial inventory.
 4. Name the behavior, ownership, lifetime, and performance invariants affected.
    Use `vkr-validation` to choose the smallest evidence that checks those
-   invariants. A CPU suite is not a mandatory baseline. Add a unit test only
-   when a specific failure and its detection value justify it.
+   invariants. Use an existing CPU test when it is the cheapest independent
+   falsifier; add one only when a named failure and independent oracle justify it.
 5. Ask the user immediately if the surviving owner, public contract, allocator
    lifetime, or backend behavior requires an unresolved architecture decision.
    State the concrete choice and recommendation. Continue independent work.
@@ -59,7 +59,8 @@ For each independently verifiable change:
    required invariants, and the verification command.
 2. Migrate the fact end to end and delete the old representation and adapters.
 3. Validate external input at its boundary. Give internal hot paths normalized
-   records with no validation or assertion branches.
+   records; retain checks that own numerical, capacity, generation, dispatch-tail,
+   or completion invariants that no earlier boundary proves.
 4. Run the affected evidence, inspect the formatted diff, and recount the full
    scope including new files. Repair regressions before continuing.
 
@@ -70,7 +71,9 @@ Metal/Vulkan behavior; backend-specific optimizations need measured evidence.
 
 ## Complete
 
-Reconcile all original and new files. Report net LOC, removed representations,
-verification commands and results, and any unavailable evidence. A map-only
+Reconcile all original and new files. Report removed representations, caller
+obligations, forwarding layers, and duplicated policy. Include file and LOC
+deltas as inventory facts, not success metrics. Report verification commands,
+results, and unavailable evidence. A map-only
 result states that source and runtime behavior were not changed or validated.
 Architecture questions must be asked when discovered, not left in this report.
