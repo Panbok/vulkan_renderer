@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-09
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -243,6 +243,49 @@ so shader validation is incomplete. Native Vulkan execution and cross-backend
 pixel comparison remain unavailable on this host. Local reports, exact commands,
 and retained capture paths are recorded in `.scratch/implement-local-shadows.md`.
 
+## Local transmitting-shadow evidence
+
+Local point/spot shadows now retain two 512² D32/RGBA16F crossing prefixes and a
+third blocking depth, under [ADR-019](019-bounded-forward-spatial-lighting.md).
+The shared coefficient and prefix selector live in
+[`local_shadow_transmission.slangh`](../../renderer/src/shaders/shared/local_shadow_transmission.slangh).
+Metal and Vulkan apply the same RGB visibility per opaque PCF tap and in froxel
+injection. Opaque/cutout and refractive local casters occupy separate cull views;
+directional caster semantics are unchanged. Public frame-input version is 45.
+
+The Metal frame root is 544 bytes with a 48-byte sampling record and a 32-byte
+per-view material record; its draw root remains 48 bytes. Vulkan's frame root is
+624 bytes, with the sampling pointer at byte 608, a 32-byte sampling record,
+an 80-byte shadow raster root and a 192-byte cull root. The shared local-view
+record remains 112 bytes. Native assertions and reflection pin these layouts.
+The dedicated MSL shadow vertex consumes buffer 0 and the frame root's existing
+row-vector matrix convention; instance matrices remain column-major.
+
+2026-09-12 Metal Release captures on Apple M1 Pro pass all 18 independent
+receiver ratios: ordered prefixes, before/after overflow, tint, absorption,
+Fresnel, zero-transmission texels, cutout holes, opaque and thin-sheet blockers,
+mirrored sidedness and point-face seams. Maximum RGB ratio error is 0.000405
+against tolerance 0.006. The receiver checker is
+[`check_local_shadow_transmission_fixture.py`](../../tools/checks/check_local_shadow_transmission_fixture.py);
+fixture preparation is
+[`prepare.py`](../../tests/fixtures/rendering/local_shadow_transmission/prepare.py).
+Bistro housing, near-camera and approach captures restore glass-transmitted
+illumination with byte-identical camera depth. Serial Metal API validation
+passes with sixteen local faces, eight cascades, froxel fog and three target
+images across a 770×770 → 514×386 → 770×770 resize round trip (report SHA-256
+`f1189bd96846df82c7eb98fc135ff008efbf554e2ed45bac7ed8f63ba831b555`).
+That maximum-view case exposed missing anisotropy upload cells; preparation now
+counts each frame-root creator and its auxiliary records. The CPU cache check
+covers generation replacement, incomplete point faces and cancelled publication.
+Exact runs and digests are retained in
+`.scratch/fix-lantern-light-disappearance.md` and its evidence manifest.
+
+Production builds and SPIR-V validation/reflection pass for the affected raster,
+cull, deferred and froxel entry points. Native Vulkan execution and same-revision
+bilateral pixel comparison are unavailable on this macOS host; shadow and
+material/light entries remain **UNALIGNED**. Metal GPU shader validation retains
+the unresolved Apple MetalTools limitation recorded above.
+
 ## Consequences
 
 Editor overlay color and picking share packed geometry and an unjittered MVP.
@@ -285,7 +328,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
 | Material/light math | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
-| Shadow receiver (UNALIGNED) | `shared/shadow_kernel.slangh`, `local_shadow.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
+| Shadow receiver (UNALIGNED) | `shared/shadow_kernel.slangh`, `local_shadow.slangh`, `local_shadow_transmission.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
 | Baked diffuse volumes (UNALIGNED) | `shared/diffuse_volume_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Rectangle LTC (UNALIGNED) | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Analytic fog (UNALIGNED) | `shared/fog_kernel.slangh` | `metal/msl/post/fog.metal` | `vulkan/slang/post/fog.slang` |

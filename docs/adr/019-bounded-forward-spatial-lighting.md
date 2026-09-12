@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-12
 authority: adr
 ---
 
@@ -41,8 +41,9 @@ valid glTF imports without inventing a range or changing the authored cone.
 Saved editor overrides can disable shadows; scene-authored JSON lights remain
 opt-in. The default budget is 16 faces at
 1024 squared: a spot uses one perspective view and a point uses six in
-+X, -X, +Y, -Y, +Z, -Z order. Stable scene-light order allocates complete light
-groups; requests that do not fit remain unshadowed. The budget and map size can
++X, -X, +Y, -Y, +Z, -Z order. Brightness/coverage importance selects complete
+light groups, with a 15% preference for incumbents to limit selection churn;
+requests that do not fit remain unshadowed. The budget and map size can
 be reduced through `VkrShadowConfig`. Shadowed lights require a finite positive
 range, and shadowed spot outer half angles must be below 90 degrees.
 
@@ -51,7 +52,9 @@ target image owns its local depth array through the existing graph resource and
 GPU-completion lifecycle. Local-shadow selection remains bounded by the configured
 face budget: a spot owns one view and a point owns six contiguous views. Graph
 reads name only the selected layers. GPU culling tables size storage from the
-current camera, directional and local view count and retain grown capacity.
+current camera, directional, opaque local and transmitting local view count
+and retain grown capacity. Opaque local views exclude refractive casters while
+transmitting views select them; directional caster classification is unchanged.
 
 Static local-shadow reuse is accepted per physical target image and depth-array
 layer. The renderer supplies a retained-resource generation and valid-layer mask
@@ -66,6 +69,29 @@ published only after submission succeeds and is discarded when the frame is
 cancelled or fails. Replacing the retained graph image clears its valid contents,
 so the next selected group renders before it can be reused. Local shadows do not
 use directional fit retention or SDSM.
+
+Local transmitting shadows retain two ordered surface crossings at 512², capped
+by the configured opaque-map extent. Each crossing stores D32 depth and RGBA16F
+cumulative RGB transmission. A third depth-only crossing blocks receivers beyond
+capacity. Receivers before a crossing do not inherit its attenuation. Each PCF
+tap selects its depth-gated prefix, multiplies it by opaque visibility, then
+contributes to the average. Point taps retain cross-face reprojection; volumetric
+injection uses the same RGB visibility with its existing single tap.
+
+The crossing coefficient uses authored transmission, base color, metallic,
+layered GGX/sheen/clearcoat reflection loss and volume absorption along the light
+ray. Material textures and cutout coverage are evaluated in the shadow raster;
+a zero-transmission texel blocks light. Authored thickness supplies absorption
+length after directional instance scaling. Rays remain straight and do not
+produce refracted caustics. Thin-sheet diffuse transmission remains an opaque
+shadow caster. This local-light model does not change directional shadows.
+
+The five transmission arrays share the opaque pool's per-image graph owner,
+retirement and submission lifecycle. A group refreshes all six resources
+together. Reuse requires matching generations for all five transmission images
+and valid contents for every required face. An incomplete or replaced prefix
+pool forces a complete group redraw; cancelled work never promotes history.
+Scenes with no refractive candidates allocate no transmission pool or views.
 
 A scene reflection probe may name one saved source cubemap with
 `reflection_probes[].cubemap.path`. The direct path and legacy
@@ -118,7 +144,11 @@ Lighting is bounded and independent of draw partitioning. Unshadowed lights and 
 A full 16-face D32 pool uses 64 MiB per physical target image, before culling
 and upload buffers. A selected local group redraws whenever its retained content
 or reuse predicates are invalid; rendering cost scales with those groups and
-caster overlap. There is no accepted timing claim.
+caster overlap. With refractive casters, the full 16-face transmission pool adds
+112 MiB per physical image, or 336 MiB across three images, excluding allocation
+alignment and culling buffers. Each refreshed face adds two material/depth passes
+and one overflow-depth pass. Static reuse avoids those raster passes while the
+pool remains valid. These are storage and pass budgets, not a timing claim.
 
 Saved probes consume a source cubemap plus a runtime prefilter cubemap and SH
 slot. Their offline artifact is valid only with its matching sidecar provenance;
@@ -131,13 +161,17 @@ contract.
 
 A first-N global list makes visibility depend on source order. Per-draw probe
 selection fails on large meshes. Hard light influence boxes produced discontinuous
-slabs without solving diffuse occlusion.
+slabs without solving diffuse occlusion. Excluding glass from depth-only shadows
+would restore light but discard tint and attenuation. Four transmitting crossings
+would add 624 MiB across three full-pool target images and five passes per
+refreshed face; the accepted budget is two crossings and an opaque overflow
+boundary to prevent leaks.
 
 ## Revisit when
 
 Scene scale exceeds these capacities, stored probe source requirements change,
-or geometric local-light visibility is required beyond the accepted local-shadow
-pool.
+or local-light transport requires more crossings, refracted caustics, or a
+different memory or raster budget.
 
 ## Implementation
 

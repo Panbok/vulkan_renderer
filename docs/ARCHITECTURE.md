@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-09
+updated: 2026-09-12
 authority: architecture
 ---
 
@@ -144,7 +144,7 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 40 contains frame metadata, camera/lighting/settings and typed
+Frame-input version 45 contains frame metadata, camera/lighting/settings and typed
 world, shadow, skybox, baked diffuse-volume, rectangle-light, analytic-fog and
 froxel-fog, UI, editor, picking and debug payloads. Supplied world-text and UI
 streams are authoritative. `vkr_frame_input_validate()` checks structural input.
@@ -308,8 +308,10 @@ with explicit native barriers and completion ownership. See [ADR-002](adr/002-re
 The active graph conditions select direct or editor presentation, optional picking,
 post controls and the temporal consumer. The main dataflow is:
 
-1. Publish transforms/candidate tables, classify camera and cascade views, compact
-   visible rows, and encode Metal ICB or Vulkan indirect-count commands.
+1. Publish transforms/candidate tables, classify camera, cascade and local-shadow
+   views, compact visible rows, and encode Metal ICB or Vulkan indirect-count
+   commands. Local shadows raster opaque depth and, when refractive casters
+   exist, two RGB transmission crossings plus a blocking overflow depth.
 2. Raster opaque/cutout visibility and depth, build HZB, and peel four ordered
    transmission visibility layers.
 3. Resolve the G-buffer, evaluate GTAO, and compute HDR lighting. When enabled,
@@ -440,8 +442,15 @@ fragment-space AABB weights. Directional lighting samples CSM. Point/spot shadow
 16-face, 1024-squared depth pool per physical target image, with one face per
 spot and six per point. Importance selection retains complete groups; excess
 lights remain unshadowed. Static maps retain valid contents across frames, with
-nine-tap PCF and point taps remapped across faces. Scene `casts_shadow` and the
-editor's Cast shadows checkbox require a finite range. Imported glTF point/spot
+nine-tap PCF and point taps remapped across faces. Refractive casters use two
+512² depth/RGB prefix layers and a blocking third-crossing depth. Per-tap
+visibility combines opaque depth with receiver-gated RGB transmission, layered
+reflection loss and material absorption. All five transmission images follow the
+same complete-group reuse and submission proof as opaque depth. A full pool adds
+336 MiB across three target images and three raster passes per refreshed face;
+straight rays do not model caustics. Directional glass-shadow behavior is unchanged.
+Scene `casts_shadow` and the editor's Cast shadows checkbox require a finite
+range. Imported glTF point/spot
 lights default to casting shadows when their range is finite and positive and
 their spot outer half-angle is below 90 degrees. Other imported local lights
 remain unshadowed; saved editor overrides can disable shadows. Scene-authored
