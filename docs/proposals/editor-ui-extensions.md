@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-05
+updated: 2026-09-12
 authority: proposal
 ---
 # Editor UI extensions
@@ -14,6 +14,11 @@ layout. The editor also has three application-specific draggable floating
 metric/help windows; they are not dock-tree panels and are not persisted.
 
 ## Decision boundary: advanced components and accessibility
+
+[Editor Projects](editor-projects.md) specifies the project chooser, scene wizard,
+creation progress and content grid, including their keyboard and focus behavior.
+This proposal retains the broader accessibility and floating-panel decisions;
+Projects does not depend on native detachable windows or a general widget layer.
 
 Choose a specific missing interaction before adding a generic component layer.
 The first accepted component must use the immediate API and retained-ID state,

@@ -135,8 +135,8 @@ light texture icons. The editor identifies ECS light components and projects
 Scene mapping. Inspector exposes light enable, color/intensity, local direction
 angles, punctual range and spotlight cone controls through the edit journal.
 RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
-Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
-nine recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
+Console snapshots bounded structured logger history with a checkbox filter dropdown. In
+legacy scene mode, Bakery runs nine recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
 anisotropy, diffuse volume, and reflection probe—in one cancellable child
 process at a time. Its setup, jobs and output views use labeled controls and
 adapt to dock width; cancellation terminates the complete child process tree.
@@ -147,9 +147,9 @@ and Color and a clipped, scrollable right content area. The editor emits typed
 `VkrGraphicsSettingsRequest` values; the sample runtime validates and owns their
 application. Vsync, HDR, temporal upscaling, dynamic resolution, and render
 scale changes show a restart-required notice. Other controls apply live and
-invalidate the affected histories. Settings load from `VKR_GRAPHICS_SETTINGS_PATH`
-or `.vkr-graphics-settings.json`, save after 0.25 seconds without another edit,
-and flush on exit. Render Stop retains the last Scene image while UI continues;
+invalidate the affected histories. Legacy app/scene settings load from
+`VKR_GRAPHICS_SETTINGS_PATH` or `.vkr-graphics-settings.json`, debounce saves, and
+flush on exit. Managed editor preferences use the project writer described below. Render Stop retains the last Scene image while UI continues;
 Vulkan UI-only frames reset Scene readback copies before skipping absent producers.
 Scene allocation failures trigger bounded output-resolution reductions while UI
 resolution stays unchanged; an error at the minimum stops Scene retries.
@@ -157,6 +157,60 @@ The first Metal GPU completion timeout flushes diagnostics and terminates the
 process without GPU teardown, because completion is unproven;
 see [ADR-046](adr/046-editor-viewport-mapping-and-picking.md).
 Editor details are in [ADR-027](adr/027-immediate-mode-grid-ui.md).
+
+The normal editor starts at a Projects chooser without a world scene. A selected
+workspace directory contains `.vkreditor`, including UUID-named projects, managed
+scene manifests, copied imports, versioned editor font bundles and generated
+artifacts. The project writer owns durable editor preferences and per-scene
+viewport/hierarchy recall. Authored environment, lights, probes and overrides
+remain scene data. Explicit `--scene` retains legacy startup.
+
+[Projects](../editor/src/editor_projects.c) coordinates native selection, creation,
+import, dirty-state prompts, scene activation and progress. Preparation progress
+and errors stay inside Scene; runtime streaming displays without a loading
+overlay while other editor panels remain usable. Its
+[job process](../tools/editor_project_jobs.py) validates scene version 3 and lowers
+inventory references to explicit runtime paths. Imports preserve cooked geometry
+identity, copy material/texture dependencies and publish fresh artifact revisions
+before changing manifest references. Scene saves use immutable overlay revisions
+and manifest fingerprint checks. Workspace writer leases cover asynchronous
+writers through shutdown. The runtime keeps one world scene resident and retains
+its existing GPU-completion-based resource retirement.
+
+The dockable [Content browser](../editor/src/editor_content.c) refreshes managed
+inventories and owns a bounded thumbnail cache. A left source tree groups Scene,
+Project and Editor assets by type; breadcrumbs navigate upward above the search
+and filter controls. Virtualized cards show names, states and type-color strips.
+The right Details panel contains selection actions; narrow docks hide side panels.
+This follows Epic's [Content Browser organization](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine)
+without exposing generated build directories as content folders.
+Texture previews run in a CPU tool; material spheres run through a separate
+harness job. Meshes and fonts use vector icons. `Commands > Show Content` adds the
+panel to older saved layouts; Ctrl+Space toggles it, and new layouts place it
+beside Console. Native
+macOS/Windows dialogs use UI-thread calls and owned UTF-8 result paths. Windows
+filesystem and JSON publication use Unicode APIs; native Windows verification is
+still unavailable. [ADR-069](adr/069-editor-projects-and-workspaces.md) records
+ownership, publication decisions and selected native Metal evidence. Native
+Windows/Vulkan parity, long-session stability and frame-budget acceptance remain
+separate gates.
+
+Managed JSON documents remain bounded to 1 MiB and nesting depth 32. The
+[project store](../editor/src/editor_project_store.c) sizes temporary token storage
+from input bytes rather than imposing a smaller asset-count ceiling. Settings
+updates merge owned fields into prior objects, retaining unknown nested fields;
+arrays remain whole values owned by their serializer. UTF-8 names persist
+independently of font coverage. Managed UI uses the Ubuntu Mono system face with
+available glyphs from U+0020 through U+052F (Latin, Greek and Cyrillic); other
+characters retain the existing missing-glyph fallback. This is fixed atlas
+coverage, not an on-demand Unicode glyph service or an IME implementation.
+
+The renderer loads its build-copied render graph through an explicit configured
+path, alongside its compiled shader resources. Managed harness processes keep
+workspace scene paths separate from the installation's bootstrap working
+directory. A focused Metal material-preview run produced and validated a 256×256
+sphere PNG; this establishes that preview path, not Vulkan pixel parity.
+
 Transform editing is available through Inspector and world-axis gizmos. Gizmo
 gestures use normalized displayed-image coordinates so internal resolution
 changes preserve active edits and delayed releases. The application submits a

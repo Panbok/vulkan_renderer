@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-12
 authority: context
 ---
 # Project vocabulary
@@ -89,8 +89,12 @@ below are starting points for checking a definition, not alternate API specs.
 
 Editor workflow terms:
 
-- **Bakery:** editor-owned queue for font and texture cooker processes. Mesh cooking
-  and scene caches remain separate. See [ADR-027](adr/027-immediate-mode-grid-ui.md).
-- **Scene override sidecar:** `<scene>.editor.json`, written by Save and applied by
-  the shared app/editor runtime after validating source fingerprints and node identities.
-  See [scene edit owner](../runtime/src/renderer/systems/vkr_scene_edit.c).
+| Term | Meaning in VKR | Owner |
+|---|---|---|
+| Workspace | User-selected directory whose `.vkreditor` child contains managed projects, editor bundles and caches. | [Project store](../editor/src/editor_project_store.h) |
+| Project | Version 1 JSON owner of a name, scene membership, default font, asset inventory and editor preferences. | [ADR-069](adr/069-editor-projects-and-workspaces.md) |
+| Managed scene | Version 3 authored scene document with stable ID, typed inventory references and separate build revisions; jobs lower it to runtime inputs. | [Project jobs](../tools/editor_project_jobs.py) |
+| Source identity | Stable managed-scene or cooked source-node identity used to bind authored edits independently of imported file location. | [Scene loader](../runtime/src/renderer/resources/loaders/scene_loader.c) |
+| Bakery | Editor queue for cooker, renderer-table and scene-bake processes; managed project jobs publish into an explicit workspace. | [Bakery](../editor/src/editor_bakery.c) |
+| Content | Manifest-indexed asset browser with virtualized cards, texture/material previews and icons for other asset types. | [Content browser](../editor/src/editor_content.c) |
+| Scene edit overlay | Authored overrides validated against source identities. Legacy saves use `<scene>.editor.json`; managed saves publish immutable overlay revisions referenced by the scene manifest. | [Scene edit owner](../runtime/src/renderer/systems/vkr_scene_edit.c), [project store](../editor/src/editor_project_store.c) |
