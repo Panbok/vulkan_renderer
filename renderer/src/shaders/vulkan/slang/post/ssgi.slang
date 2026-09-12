@@ -111,7 +111,7 @@ VkrSsgiReceiver vkr_vk_ssgi_receiver(VkrSsrParams screen, uint2 trace_pixel,
         for (uint x = begin_x; x < end_x; ++x)
         {
             uint2 child = uint2(x, y);
-            uint covered = g_storage_uint2_2d[vbuffer_texture][child].x != 0u ? 1u : 0u;
+            uint covered = g_uint2_textures[vbuffer_texture].Load(int3(child, 0)).x != 0u ? 1u : 0u;
             float depth = covered != 0u
                 ? vkr_vk_ssgi_positive_depth(screen, child,
                     g_depth_textures[depth_texture].Load(int3(child, 0)), source_extent)
@@ -123,7 +123,8 @@ VkrSsgiReceiver vkr_vk_ssgi_receiver(VkrSsrParams screen, uint2 trace_pixel,
 
 uint2 vkr_vk_ssgi_identity(VkrVkSsgiTemporalRoot* root, uint2 receiver_pixel)
 {
-    uint encoded = g_storage_uint2_2d[root.vbuffer_texture][receiver_pixel].x;
+    uint encoded = g_uint2_textures[root.vbuffer_texture]
+                       .Load(int3(receiver_pixel, 0)).x;
     if (encoded == 0u)
         return uint2(0u);
     VkrGpuVisibleDrawRow visible = root.visible_rows[encoded - 1u];
@@ -135,7 +136,7 @@ float3 vkr_vk_ssgi_view_normal(VkrSsgiParams params, uint normal_texture,
                                uint2 pixel, float3 origin)
 {
     float3 world_normal = vkr_vk_octahedral_decode(
-        g_storage_float2_2d[normal_texture][pixel]);
+        g_textures[normal_texture].Load(int3(pixel, 0)).xy);
     float3 view_normal = normalize(mul(params.view, float4(world_normal, 0.0f)).xyz);
     return vkr_ssgi_faceforward_view_normal(view_normal, origin);
 }
@@ -161,7 +162,7 @@ void ssgi_depth_base_compute(uint3 thread_id : SV_DispatchThreadID)
         for (uint x = begin_x; x < end_x; ++x)
         {
             uint2 child = uint2(x, y);
-            if (g_storage_uint2_2d[root.vbuffer_texture][child].x != 0u)
+            if (g_uint2_textures[root.vbuffer_texture].Load(int3(child, 0)).x != 0u)
                 values[count] = vkr_vk_ssgi_positive_depth(
                     screen, child, g_depth_textures[root.depth_texture].Load(int3(child, 0)),
                     source_extent);
@@ -229,6 +230,7 @@ void ssgi_trace_compute(uint3 thread_id : SV_DispatchThreadID)
         max(root.params.depth_mip_count, 1u) - 1u);
     float3 estimate = 0.0f;
     float confidence = 1.0f; // A screen miss is a valid zero Monte-Carlo sample.
+    [loop]
     for (uint step = 0u; step < root.params.max_steps && trace.active != 0u; ++step)
     {
         uint2 mip_extent = max(trace_extent >> trace.mip, uint2(1u));
@@ -256,7 +258,8 @@ void ssgi_trace_compute(uint3 thread_id : SV_DispatchThreadID)
             g_depth_textures[root.depth_texture].Load(int3(hit_pixel, 0)));
         float3 hit_normal = vkr_vk_ssgi_view_normal(root.params, root.normal_texture,
                                                      hit_pixel, hit_view);
-        uint covered = g_storage_uint2_2d[root.vbuffer_texture][hit_pixel].x != 0u ? 1u : 0u;
+        uint covered = g_uint2_textures[root.vbuffer_texture]
+                           .Load(int3(hit_pixel, 0)).x != 0u ? 1u : 0u;
         if (vkr_ssgi_hit_valid(covered, hit_depth, ray_depth, hit_normal,
                                direction, root.params))
         {
@@ -422,10 +425,12 @@ float vkr_vk_ssgi_filtered_roughness(VkrVkSsgiCompositeRoot* root, uint2 pixel,
     uint2 limit = extent - 1u;
     uint2 pixel_x = min(pixel + uint2(1u, 0u), limit);
     uint2 pixel_y = min(pixel + uint2(0u, 1u), limit);
-    float3 normal_x = vkr_vk_octahedral_decode(g_storage_float2_2d[root.normal_texture][pixel_x]);
-    float3 normal_y = vkr_vk_octahedral_decode(g_storage_float2_2d[root.normal_texture][pixel_y]);
-    float same_x = g_storage_uint2_2d[root.vbuffer_texture][pixel_x].x == visible ? 1.0f : 0.0f;
-    float same_y = g_storage_uint2_2d[root.vbuffer_texture][pixel_y].x == visible ? 1.0f : 0.0f;
+    float3 normal_x = vkr_vk_octahedral_decode(
+        g_textures[root.normal_texture].Load(int3(pixel_x, 0)).xy);
+    float3 normal_y = vkr_vk_octahedral_decode(
+        g_textures[root.normal_texture].Load(int3(pixel_y, 0)).xy);
+    float same_x = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel_x, 0)).x == visible ? 1.0f : 0.0f;
+    float same_y = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel_y, 0)).x == visible ? 1.0f : 0.0f;
     float3 dx = (normal_x - normal) * same_x;
     float3 dy = (normal_y - normal) * same_y;
     return vkr_ggx_filter_roughness(roughness, 0.25f * (dot(dx, dx) + dot(dy, dy)));
@@ -438,7 +443,8 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
     VkrVkSsgiCompositeRoot* root = g_ssgi_composite_push.root;
     uint2 pixel = thread_id.xy;
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
-    if (any(pixel >= source_extent) || g_storage_uint2_2d[root.vbuffer_texture][pixel].x == 0u)
+    if (any(pixel >= source_extent) ||
+        g_uint2_textures[root.vbuffer_texture].Load(int3(pixel, 0)).x == 0u)
         return;
     float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float2 ndc = (float2(pixel) + 0.5f) / float2(source_extent) * 2.0f - 1.0f;
@@ -450,7 +456,8 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
     float current_depth = vkr_vk_ssgi_positive_depth(screen, pixel, device_depth, source_extent);
     if (!vkr_ssr_valid_depth(current_depth))
         return;
-    float3 normal = vkr_vk_octahedral_decode(g_storage_float2_2d[root.normal_texture][pixel]);
+    float3 normal = vkr_vk_octahedral_decode(
+        g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
     float2 trace_coordinate = (float2(pixel) + 0.5f) / float2(source_extent) *
                               float2(root.params.trace_width, root.params.trace_height) - 0.5f;
     int2 first = int2(floor(trace_coordinate));
@@ -471,7 +478,8 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
             if (receiver.valid == 0u)
                 continue;
             float3 receiver_normal = vkr_vk_octahedral_decode(
-                g_storage_float2_2d[root.normal_texture][receiver.pixel]);
+                g_textures[root.normal_texture]
+                    .Load(int3(receiver.pixel, 0)).xy);
             float2 offset = float2(trace_pixel) - trace_coordinate;
             float bilinear = max(1.0f - abs(offset.x), 0.0f) *
                               max(1.0f - abs(offset.y), 0.0f);
@@ -490,17 +498,20 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
         return;
     radiance /= accepted_weight;
     float confidence = saturate(accepted_weight / support_weight);
-    uint visible = g_storage_uint2_2d[root.vbuffer_texture][pixel].x;
-    float4 albedo = g_storage_2d[root.albedo_texture][pixel];
-    float4 specular = g_storage_2d[root.specular_texture][pixel];
+    uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(pixel, 0)).x;
+    float4 albedo = g_textures[root.albedo_texture].Load(int3(pixel, 0));
+    float4 specular = g_textures[root.specular_texture].Load(int3(pixel, 0));
     float roughness = vkr_vk_ssgi_filtered_roughness(root, pixel, visible, normal,
                                                       clamp(specular.w, 0.04f, 1.0f),
                                                       source_extent);
     float3 view = normalize(root.frame.view_position.xyz - world);
     VkrGgxMaterialEnergy energy = packet_prepare_gbuffer_brdf(
         root.frame, normal, view, roughness, saturate(specular.rgb), g_textures[root.anisotropy_texture].Load(int3(pixel, 0)));
-    energy = vkr_ggx_diffuse_transmission(energy,
-        root.frame.materials[root.visible_rows[visible - 1u].material_index].material_diffuse_transmission);
+    VkrGpuVisibleDrawRow visible_row = root.visible_rows[visible - 1u];
+    VkrVulkanMaterial material =
+        root.frame.materials[visible_row.material_index];
+    energy = vkr_ggx_diffuse_transmission(
+        energy, material.material_diffuse_transmission);
     float3 diffuse_weight = energy.diffuse_weight;
     float4 sheen_packed = g_textures[root.sheen_texture].Load(int3(pixel, 0));
     if (vkr_sheen_active(sheen_packed.rgb))

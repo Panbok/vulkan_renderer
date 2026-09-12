@@ -2924,6 +2924,8 @@ bool8_t vkr_vk_prepare_direct_draws(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot,
                                       const VkrPreparedFrame *packet);
+bool8_t vkr_vk_packet_subsurface_ready(VkrVulkanRenderer *renderer,
+                                       const VkrPreparedFrame *packet);
 VkrVulkanPacketFrameRoot *vkr_vk_packet_frame_root(VkrVulkanFrameSlot *slot,
                                                    uint64_t *out_address);
 void vkr_vk_fill_packet_frame_root(

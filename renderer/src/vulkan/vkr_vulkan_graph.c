@@ -1367,9 +1367,10 @@ vkr_internal bool8_t vkr_vk_graph_fullscreen_source(VkrVulkanRenderer *renderer,
                                                     const VkrRgPass *pass,
                                                     uint32_t *out_index) {
   const uint32_t binding =
-      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) ? 2u :
-      vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u) ? 3u :
-      vkr_rg_pass_find_image_use(&pass->desc, 4u, 0u) ? 4u : 0u;
+      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u)   ? 2u
+      : vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u) ? 3u
+      : vkr_rg_pass_find_image_use(&pass->desc, 4u, 0u) ? 4u
+                                                        : 0u;
   return vkr_vk_graph_sampled_index(renderer, pass, binding, out_index);
 }
 
@@ -1492,8 +1493,8 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     if (!vkr_vk_prepare_packet_fullscreen(
             renderer, &prepared->fullscreen,
             VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index, 0u,
-            VKR_VULKAN_FULLSCREEN_ALREADY_OUTPUT_ENCODED,
-            true_v, (uint32_t)image_rect.z, (uint32_t)image_rect.w))
+            VKR_VULKAN_FULLSCREEN_ALREADY_OUTPUT_ENCODED, true_v,
+            (uint32_t)image_rect.z, (uint32_t)image_rect.w))
       return false_v;
     return true_v;
   }
@@ -1892,32 +1893,36 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_VULKAN_GRAPH_EXECUTOR_SUBSURFACE_GATHER:
     return vkr_vk_prepare_subsurface(renderer, &prepared->compute, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX:
-    return vkr_vk_prepare_motion_blur(renderer, &prepared->compute, pass,
-                                       VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_TILE_MAX);
+    return vkr_vk_prepare_motion_blur(
+        renderer, &prepared->compute, pass,
+        VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_TILE_MAX);
   case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX:
-    return vkr_vk_prepare_motion_blur(renderer, &prepared->compute, pass,
-                                       VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_NEIGHBOR_MAX);
+    return vkr_vk_prepare_motion_blur(
+        renderer, &prepared->compute, pass,
+        VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_NEIGHBOR_MAX);
   case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT:
-    return vkr_vk_prepare_motion_blur(renderer, &prepared->compute, pass,
-                                       VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_RECONSTRUCT);
+    return vkr_vk_prepare_motion_blur(
+        renderer, &prepared->compute, pass,
+        VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_RECONSTRUCT);
   case VKR_VULKAN_GRAPH_EXECUTOR_DOF_COC:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
-                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_COC);
+                              VKR_VULKAN_DEFERRED_PIPELINE_DOF_COC);
   case VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL:
-    return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
-                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_HORIZONTAL);
+    return vkr_vk_prepare_dof(
+        renderer, &prepared->compute, pass,
+        VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_HORIZONTAL);
   case VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
-                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_VERTICAL);
+                              VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_VERTICAL);
   case VKR_VULKAN_GRAPH_EXECUTOR_DOF_PREFILTER:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
-                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_PREFILTER);
+                              VKR_VULKAN_DEFERRED_PIPELINE_DOF_PREFILTER);
   case VKR_VULKAN_GRAPH_EXECUTOR_DOF_GATHER:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
-                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_GATHER);
+                              VKR_VULKAN_DEFERRED_PIPELINE_DOF_GATHER);
   case VKR_VULKAN_GRAPH_EXECUTOR_DOF_COMPOSITE:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
-                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_COMPOSITE);
+                              VKR_VULKAN_DEFERRED_PIPELINE_DOF_COMPOSITE);
   case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_PREFILTER:
     return vkr_vk_prepare_bloom_prefilter(renderer, &prepared->compute, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE:
@@ -2011,18 +2016,27 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   slot->exposure_state_input = NULL;
   slot->exposure_state_output = NULL;
   const uint64_t count = renderer->graph->execution_order.length;
-  if (count > VKR_RENDERER_IMPL_MAX_GRAPH_PASSES)
+  if (count > VKR_RENDERER_IMPL_MAX_GRAPH_PASSES) {
+    log_error(
+        "Vulkan execution schedule exceeds native pass capacity (%llu/%u)",
+        (unsigned long long)count, VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
     return false_v;
+  }
   renderer->prepared_graph_passes = NULL;
-  if (!vkr_vk_prepare_local_shadow_transmission_sampling(renderer))
+  if (!vkr_vk_prepare_local_shadow_transmission_sampling(renderer)) {
+    log_error("Vulkan failed to prepare local-shadow transmission sampling");
     return false_v;
+  }
   if (count) {
     renderer->prepared_graph_passes =
         vkr_allocator_alloc(&renderer->graph_frame_allocator,
                             count * sizeof(*renderer->prepared_graph_passes),
                             VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    if (!renderer->prepared_graph_passes)
+    if (!renderer->prepared_graph_passes) {
+      log_error("Vulkan failed to allocate %llu prepared graph passes",
+                (unsigned long long)count);
       return false_v;
+    }
     MemZero(renderer->prepared_graph_passes,
             count * sizeof(*renderer->prepared_graph_passes));
   }

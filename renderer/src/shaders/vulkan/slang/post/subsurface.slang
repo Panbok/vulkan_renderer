@@ -102,6 +102,10 @@ vk_subsurface_gather(uint3 thread_id : SV_DispatchThreadID) {
     return;
   float4 original =
       g_textures[NonUniformResourceIndex(root.hdr)].Load(int3(pixel, 0));
+  if (root.profile_bank == 0u) {
+    g_storage_2d[NonUniformResourceIndex(root.destination)][pixel] = original;
+    return;
+  }
   uint visible = g_uint2_textures[NonUniformResourceIndex(root.vbuffer)]
                      .Load(int3(pixel, 0))
                      .x;

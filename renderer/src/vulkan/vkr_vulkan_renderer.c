@@ -3,8 +3,7 @@
 #include "vulkan/vkr_vulkan_internal.h"
 #include <math.h>
 
-vkr_internal VkrTextureFormat
-vkr_vk_present_texture_format(VkFormat format) {
+vkr_internal VkrTextureFormat vkr_vk_present_texture_format(VkFormat format) {
   if (format == VK_FORMAT_R16G16B16A16_SFLOAT)
     return VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
   if (format == VK_FORMAT_B8G8R8A8_SRGB)
@@ -12,9 +11,8 @@ vkr_vk_present_texture_format(VkFormat format) {
   return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
 }
 
-vkr_internal VkrDisplayOutputParams
-vkr_vk_requested_display_output(VkrVulkanRenderer *renderer,
-                                uint64_t *out_revision) {
+vkr_internal VkrDisplayOutputParams vkr_vk_requested_display_output(
+    VkrVulkanRenderer *renderer, uint64_t *out_revision) {
   VkrDisplayOutputSnapshot snapshot = {0};
   if (renderer->config.display_output_mode ==
           VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR &&
@@ -30,8 +28,7 @@ vkr_vk_requested_display_output(VkrVulkanRenderer *renderer,
       renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN);
 }
 
-vkr_internal void
-vkr_vk_commit_display_output(VkrVulkanRenderer *renderer) {
+vkr_internal void vkr_vk_commit_display_output(VkrVulkanRenderer *renderer) {
   const bool8_t extended_linear =
       renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN &&
       renderer->window_target.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
@@ -148,9 +145,8 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   MemZero(renderer, sizeof(*renderer));
   renderer->allocator = config->allocator;
   renderer->config = *config;
-  renderer->display_output_requested =
-      vkr_vk_requested_display_output(renderer,
-                                      &renderer->display_output_snapshot_revision);
+  renderer->display_output_requested = vkr_vk_requested_display_output(
+      renderer, &renderer->display_output_snapshot_revision);
   renderer->display_output_params = (VkrDisplayOutputParams){
       .headroom = 1.0f,
       .output_scale = 1.0f,
@@ -649,10 +645,22 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
     vkr_vk_report_upload_exhaustion(renderer, slot);
     return false_v;
   }
-  if (!vkr_vk_prepare_initializations(renderer) ||
-      !vkr_vk_prepare_graph(renderer) ||
-      !vkr_vk_prepare_capture(renderer, slot) ||
-      !vkr_vk_prepare_deferred_readback(renderer)) {
+  if (!vkr_vk_prepare_initializations(renderer)) {
+    log_error("Vulkan failed to prepare pending resource initializations");
+    vkr_vk_report_upload_exhaustion(renderer, slot);
+    return false_v;
+  }
+  if (!vkr_vk_prepare_graph(renderer)) {
+    vkr_vk_report_upload_exhaustion(renderer, slot);
+    return false_v;
+  }
+  if (!vkr_vk_prepare_capture(renderer, slot)) {
+    log_error("Vulkan failed to prepare capture commands");
+    vkr_vk_report_upload_exhaustion(renderer, slot);
+    return false_v;
+  }
+  if (!vkr_vk_prepare_deferred_readback(renderer)) {
+    log_error("Vulkan failed to prepare deferred readback commands");
     vkr_vk_report_upload_exhaustion(renderer, slot);
     return false_v;
   }
@@ -887,6 +895,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   vkr_render_graph_prepare_frame(
       packet, &renderer->bloom_config, &renderer->gtao_config,
       &renderer->prepared_frame, &renderer->gtao_params);
+  // A queued subsurface profile bank becomes graph-visible only after its
+  // initialization submission completes. Earlier frames still advance
+  // publication without scheduling the feature.
+  renderer->prepared_frame.subsurface_enabled &=
+      vkr_vk_packet_subsurface_ready(renderer, packet);
   renderer->prepared_frame.hzb_build_enabled &= renderer->config.hzb_enabled;
   renderer->prepared_frame.transmission_compact_enabled =
       renderer->config.transmission_compact_enabled &&
@@ -1831,10 +1844,9 @@ void vkr_vulkan_renderer_target_information(
   if (out_depth_format)
     *out_depth_format = VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT;
   if (out_color_space)
-    *out_color_space =
-        renderer->display_output_params.extended_linear
-            ? VKR_SURFACE_COLOR_SPACE_EXTENDED_SRGB_LINEAR
-            : VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR;
+    *out_color_space = renderer->display_output_params.extended_linear
+                           ? VKR_SURFACE_COLOR_SPACE_EXTENDED_SRGB_LINEAR
+                           : VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR;
   if (out_max_anisotropy) {
     *out_max_anisotropy = vkr_vulkan_device_max_anisotropy(renderer->device);
   }
@@ -1842,9 +1854,9 @@ void vkr_vulkan_renderer_target_information(
 
 VkrDisplayOutputParams
 vkr_vulkan_renderer_display_output(const VkrVulkanRenderer *renderer) {
-  return renderer ? renderer->display_output_params
-                  : (VkrDisplayOutputParams){.headroom = 1.0f,
-                                              .output_scale = 1.0f};
+  return renderer
+             ? renderer->display_output_params
+             : (VkrDisplayOutputParams){.headroom = 1.0f, .output_scale = 1.0f};
 }
 
 vkr_internal void vkr_vk_drain_asset_publications(VkrVulkanRenderer *renderer) {

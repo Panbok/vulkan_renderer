@@ -153,6 +153,15 @@ vkr_internal bool8_t vkr_vk_upload_ui_draw_list(
   return true_v;
 }
 
+bool8_t vkr_vk_packet_subsurface_ready(VkrVulkanRenderer *renderer,
+                                       const VkrPreparedFrame *packet) {
+  if (!packet->subsurface_enabled || !packet->input.lighting)
+    return false_v;
+  VkrVulkanPublishedTexture *texture = vkr_vk_published_texture(
+      renderer, packet->input.lighting->subsurface.texture, NULL);
+  return !texture || !texture->initialization_pending;
+}
+
 vkr_internal bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
                                                  VkrTextureHandle handle,
                                                  uint32_t *out_texture,
@@ -334,22 +343,34 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     MemCopy(views, packet->input.local_shadow->views, bytes);
   }
 
-  if (packet->subsurface_enabled) {
+  if (renderer->prepared_frame.subsurface_enabled) {
     const VkrSubsurfaceBinding *binding = &lighting->subsurface;
     VkrVulkanPublishedTexture *texture =
         vkr_vk_published_texture(renderer, binding->texture, NULL);
-    if (!texture || texture->initialization_pending ||
-        binding->profile_count == 0u || binding->profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
+    if (!texture || binding->profile_count == 0u ||
+        binding->profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
         texture->image.format != VK_FORMAT_R32G32B32A32_SFLOAT ||
         texture->image.width != VKR_SUBSURFACE_TABLE_WIDTH ||
         texture->image.height != VKR_SUBSURFACE_TABLE_HEIGHT ||
         texture->image.depth != 1u || texture->image.mip_levels != 1u ||
-        texture->image.array_layers != 1u)
+        texture->image.array_layers != 1u) {
+      log_error("Vulkan subsurface profile bank is unavailable or invalid "
+                "(texture=%u:%u, resolved=%u, pending=%u, profiles=%u)",
+                binding->texture.id, binding->texture.generation,
+                texture != NULL, texture ? texture->initialization_pending : 0u,
+                binding->profile_count);
       return false_v;
+    }
     uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
     if (!vkr_vk_resolve_sampled_pair(renderer, binding->texture,
-                                     &slot->subsurface_texture, &ignored_sampler))
+                                     &slot->subsurface_texture,
+                                     &ignored_sampler)) {
+      log_error("Vulkan failed to resolve the subsurface profile bank "
+                "(pending=%u, sampler=%u, sampler_capacity=%u)",
+                texture->initialization_pending, texture->sampler_record_index,
+                renderer->config.sampler_capacity);
       return false_v;
+    }
   }
   if (lighting && lighting->diffuse_volume.texture.id != 0u) {
     const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
@@ -573,17 +594,26 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
      */
     slot->geometry_table_generation = 0u;
   }
-  const bool8_t common_uploads =
-      vkr_vk_prepare_direct_draws(renderer, slot, packet->input.world) &&
-      vkr_vk_upload_packet_tables(renderer, slot, packet) &&
-      (!packet->input.world ||
-       vkr_vk_upload_instances(slot, packet->input.world->instances,
-                               packet->input.world->instance_count,
-                               &slot->world_instances)) &&
-      (!packet->input.ui ||
-       vkr_vk_upload_ui_draw_list(slot, &packet->input.ui->draw_list));
-  if (!common_uploads)
+  if (!vkr_vk_prepare_direct_draws(renderer, slot, packet->input.world)) {
+    log_error("Vulkan failed to prepare direct draws");
     return false_v;
+  }
+  if (!vkr_vk_upload_packet_tables(renderer, slot, packet)) {
+    log_error("Vulkan failed to upload packet tables");
+    return false_v;
+  }
+  if (packet->input.world &&
+      !vkr_vk_upload_instances(slot, packet->input.world->instances,
+                               packet->input.world->instance_count,
+                               &slot->world_instances)) {
+    log_error("Vulkan failed to upload world instances");
+    return false_v;
+  }
+  if (packet->input.ui &&
+      !vkr_vk_upload_ui_draw_list(slot, &packet->input.ui->draw_list)) {
+    log_error("Vulkan failed to upload the UI draw list");
+    return false_v;
+  }
   if (!packet->scene_rendering) {
     slot->packet_build.valid = true_v;
     return true_v;
