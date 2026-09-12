@@ -1,0 +1,13 @@
+name=froxel_hdr_blend_10000
+type=pbr
+base_color=0.1,0.1,0.1,.5
+metallic=0
+roughness=0.5
+emissive_factor=10000,10000,10000
+transmission_factor=0
+ior=1
+thickness_factor=0
+alpha_mode=blend
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

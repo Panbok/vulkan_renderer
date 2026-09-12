@@ -150,10 +150,10 @@ kernel void vkr_metal_packet_froxel_integrate(
   float2 ndc = uv * 2.0f - 1.0f;
   float3 near_world = vkr_froxel_homogeneous(
       root.params->inverse_view_projection * float4(ndc, 0.0f, 1.0f));
-  float3 far_world = vkr_froxel_homogeneous(
-      root.params->inverse_view_projection * float4(ndc, 1.0f, 1.0f));
+  float3 ray_world = vkr_froxel_homogeneous(
+      root.params->inverse_view_projection * float4(ndc, 0.5f, 1.0f));
   float ray_scale = vkr_froxel_ray_length_scale(root.frame->view, near_world,
-                                                 far_world);
+                                                 ray_world);
   VkrFroxelSample accumulated = {float3(0.0f), 1.0f};
   for (uint z = 0u; z < extent.z; ++z) {
     VkrFroxelSliceInterval interval = vkr_froxel_slice_interval(*root.params, z);

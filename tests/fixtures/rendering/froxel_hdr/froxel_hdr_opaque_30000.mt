@@ -1,0 +1,13 @@
+name=froxel_hdr_opaque_30000
+type=pbr
+base_color=0.1,0.1,0.1,1
+metallic=0
+roughness=0.5
+emissive_factor=30000,30000,30000
+transmission_factor=0
+ior=1
+thickness_factor=0
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

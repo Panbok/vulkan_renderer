@@ -44,6 +44,8 @@ bool8_t vkr_froxel_fog_projection_valid(const VkrFroxelFogSettings *settings,
                                        Mat4 projection) {
   if (!settings->enabled)
     return true_v;
+  /* The volume extrapolates beyond the raster far plane; only its near
+     boundary constrains the authored fog range. */
   const float32_t near_distance = projection.m23 / projection.m22;
   const float32_t ratio = settings->max_distance / near_distance;
   return isfinite(near_distance) && near_distance > 0.0f &&

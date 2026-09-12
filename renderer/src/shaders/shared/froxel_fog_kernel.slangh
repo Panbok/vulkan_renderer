@@ -178,41 +178,34 @@ float3 vkr_froxel_homogeneous(float4 value)
     return value.xyz * reciprocal;
 }
 
-float3 vkr_froxel_world_center(VkrFroxelFogParams params, float4x4 current_view,
-                               uint3 cell)
-{
-    uint2 extent = params.grid_dimensions_cell_pixels.xy;
-    float2 uv = (float2(cell.xy) + 0.5f) / float2(max(extent, uint2(1u)));
-    float2 ndc = uv * 2.0f - 1.0f;
-    float3 near_world = vkr_froxel_homogeneous(
-        VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 0.0f, 1.0f)));
-    float3 far_world = vkr_froxel_homogeneous(
-        VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
-    float near_depth = -VKR_FROXEL_MUL(current_view, float4(near_world, 1.0f)).z;
-    float far_depth = -VKR_FROXEL_MUL(current_view, float4(far_world, 1.0f)).z;
-    float centre_depth = vkr_froxel_slice_center_distance(params, cell.z);
-    float denominator = far_depth - near_depth;
-    float t = abs(denominator) > VKR_FROXEL_EPSILON
-                  ? (centre_depth - near_depth) / denominator
-                  : 0.0f;
-    return VKR_FROXEL_LERP(near_world, far_world, clamp(t, 0.0f, 1.0f));
-}
-
+// Two finite points establish the ray even for an infinite raster far plane.
+// Extrapolation keeps injection and sky sampling at the authored fog distance,
+// matching the CPU local-light selection bounds.
 float3 vkr_froxel_world_at_view_depth(VkrFroxelFogParams params,
                                       float4x4 current_view, float2 ndc,
                                       float positive_depth)
 {
     float3 near_world = vkr_froxel_homogeneous(
         VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 0.0f, 1.0f)));
-    float3 far_world = vkr_froxel_homogeneous(
-        VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
+    float3 ray_world = vkr_froxel_homogeneous(
+        VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 0.5f, 1.0f)));
     float near_depth = -VKR_FROXEL_MUL(current_view, float4(near_world, 1.0f)).z;
-    float far_depth = -VKR_FROXEL_MUL(current_view, float4(far_world, 1.0f)).z;
-    float denominator = far_depth - near_depth;
+    float ray_depth = -VKR_FROXEL_MUL(current_view, float4(ray_world, 1.0f)).z;
+    float denominator = ray_depth - near_depth;
     float t = abs(denominator) > VKR_FROXEL_EPSILON
                   ? (positive_depth - near_depth) / denominator
                   : 0.0f;
-    return VKR_FROXEL_LERP(near_world, far_world, clamp(t, 0.0f, 1.0f));
+    return near_world + (ray_world - near_world) * t;
+}
+
+float3 vkr_froxel_world_center(VkrFroxelFogParams params, float4x4 current_view,
+                               uint3 cell)
+{
+    uint2 extent = params.grid_dimensions_cell_pixels.xy;
+    float2 uv = (float2(cell.xy) + 0.5f) / float2(max(extent, uint2(1u)));
+    float2 ndc = uv * 2.0f - 1.0f;
+    return vkr_froxel_world_at_view_depth(
+        params, current_view, ndc, vkr_froxel_slice_center_distance(params, cell.z));
 }
 
 float vkr_froxel_ray_length_scale(float4x4 current_view,
@@ -400,8 +393,8 @@ VkrFroxelSample vkr_froxel_apply_integrated(float3 radiance,
                                              VkrFroxelSample sample)
 {
     VkrFroxelSample result;
-    result.inscatter = vkr_froxel_cap_radiance(radiance * sample.transmittance +
-                                                sample.inscatter);
+    // The working cap belongs to fog-generated radiance, never the HDR scene.
+    result.inscatter = radiance * sample.transmittance + sample.inscatter;
     result.transmittance = sample.transmittance;
     return result;
 }
@@ -410,9 +403,8 @@ float3 vkr_froxel_apply_local_over_feedback(float3 local_radiance,
                                              float3 feedback_weight,
                                              VkrFroxelSample sample)
 {
-    return vkr_froxel_cap_radiance(
-        local_radiance * sample.transmittance +
-        sample.inscatter * (1.0f - saturate(feedback_weight)));
+    return local_radiance * sample.transmittance +
+           sample.inscatter * (1.0f - saturate(feedback_weight));
 }
 
 #undef VKR_FROXEL_MUL

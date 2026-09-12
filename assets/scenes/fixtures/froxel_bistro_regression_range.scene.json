@@ -1,0 +1,732 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 0.4,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 0.35,
+    "equirect": "assets/textures/citrus_orchard_puresky_4k.hdr"
+  },
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [
+        -7.5,
+        2.2,
+        9.0
+      ],
+      "extents": [
+        5.5,
+        2.5,
+        8.0
+      ],
+      "blend_distance": 0.75,
+      "intensity": 1.0,
+      "diffuse_intensity": 1.0,
+      "specular_intensity": 0.0,
+      "cubemap": {
+        "base_path": "assets/textures/bistro_indoor_probe",
+        "extension": "png"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "SceneRoot",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          -0.57735,
+          -0.57735,
+          -0.57735
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "intensity": 0.75,
+        "direction_local": [
+          -0.37735,
+          -0.37735,
+          -0.37735
+        ]
+      }
+    },
+    {
+      "name": "Bistro Lights",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/models/bistro-lights-main.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Ceiling rectangle0",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -7,
+          8,
+          9
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "Ceiling rectangle1",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -4,
+          8,
+          9
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "Ceiling rectangle2",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -1,
+          8,
+          9
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "Ceiling rectangle3",
+      "parent": null,
+      "transform": {
+        "pos": [
+          2,
+          8,
+          9
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "Ceiling rectangle4",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -7,
+          8,
+          17
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "Ceiling rectangle5",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -4,
+          8,
+          17
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "Ceiling rectangle6",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -1,
+          8,
+          17
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "Ceiling rectangle7",
+      "parent": null,
+      "transform": {
+        "pos": [
+          2,
+          8,
+          17
+        ],
+        "rot": [
+          -0.7071067811865476,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "rectangle_light": {
+        "enabled": false,
+        "color": [
+          1,
+          0.85,
+          0.65
+        ],
+        "radiance": 4,
+        "size": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "froxel_hdr_opaque_1000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -2,
+          28.203531474180558,
+          32.14043889038706
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_opaque_1000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_opaque_1000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_opaque_10000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          28.203531474180558,
+          32.14043889038706
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_opaque_10000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_opaque_10000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_opaque_30000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          2,
+          28.203531474180558,
+          32.14043889038706
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_opaque_30000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_opaque_30000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_blend_1000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -2,
+          27.26383885339465,
+          32.48245903371273
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_blend_1000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_blend_1000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_blend_10000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          27.26383885339465,
+          32.48245903371273
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_blend_10000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_blend_10000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_blend_30000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          2,
+          27.26383885339465,
+          32.48245903371273
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_blend_30000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_blend_30000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_transmission_1000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -2,
+          26.32414623260874,
+          32.8244791770384
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_transmission_1000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_transmission_1000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_transmission_10000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          26.32414623260874,
+          32.8244791770384
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_transmission_10000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_transmission_10000.mt"
+        }
+      }
+    },
+    {
+      "name": "froxel_hdr_transmission_30000",
+      "parent": null,
+      "transform": {
+        "pos": [
+          2,
+          26.32414623260874,
+          32.8244791770384
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          1.4,
+          0.7,
+          0.05
+        ],
+        "material": {
+          "name": "froxel_hdr_transmission_30000",
+          "path": "tests/fixtures/rendering/froxel_hdr/froxel_hdr_transmission_30000.mt"
+        }
+      }
+    }
+  ],
+  "volumetric_fog": {
+    "enabled": true,
+    "color": [
+      0,
+      0,
+      0
+    ],
+    "density": 0.01,
+    "base_height": 0,
+    "height_falloff": 0,
+    "max_distance": 200,
+    "density_boxes": [
+      {
+        "minimum": [
+          -500,
+          -500,
+          -160
+        ],
+        "maximum": [
+          500,
+          500,
+          -60
+        ],
+        "density_multiplier": 2
+      }
+    ]
+  }
+}

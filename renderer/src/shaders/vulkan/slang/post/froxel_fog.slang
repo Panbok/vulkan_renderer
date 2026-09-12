@@ -190,10 +190,10 @@ void froxel_integrate_compute(uint3 thread_id : SV_DispatchThreadID)
     float2 ndc = uv * 2.0f - 1.0f;
     float3 near_world = vkr_froxel_homogeneous(
         mul(params.inverse_view_projection, float4(ndc, 0.0f, 1.0f)));
-    float3 far_world = vkr_froxel_homogeneous(
-        mul(params.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
+    float3 ray_world = vkr_froxel_homogeneous(
+        mul(params.inverse_view_projection, float4(ndc, 0.5f, 1.0f)));
     float ray_scale = vkr_froxel_ray_length_scale(root.frame.view, near_world,
-                                                  far_world);
+                                                  ray_world);
     VkrFroxelSample accumulated = {float3(0.0f), 1.0f};
     for (uint z = 0u; z < root.extent.z; ++z)
     {
