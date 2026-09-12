@@ -164,6 +164,9 @@ scene manifests, copied imports, versioned editor font bundles and generated
 artifacts. The project writer owns durable editor preferences and per-scene
 viewport/hierarchy recall. Authored environment, lights, probes and overrides
 remain scene data. Explicit `--scene` retains legacy startup.
+Creating or opening a project with no scenes enters the editor with no world
+scene. Project resource preparation does not mark a scene as loading, and scene
+selection remains an explicit action.
 
 [Projects](../editor/src/editor_projects.c) coordinates native selection, creation,
 import, dirty-state prompts, scene activation and progress. Preparation progress

@@ -1053,8 +1053,9 @@ bool8_t vkr_editor_scene_panels_write_json(const VkrEditorScenePanels *panels,
          vkr_json_writer_u64(writer, 1) &&
          vkr_json_writer_name(writer, string8_lit("search")) &&
          vkr_json_writer_string(writer,
-                                string8_create((uint8_t *)panels->search,
-                                               strlen(panels->search))) &&
+                                string8_create_from_cstr(
+                                    (const uint8_t *)panels->search,
+                                    strlen(panels->search))) &&
          vkr_json_writer_name(writer, string8_lit("inspector_scroll")) &&
          vkr_json_writer_f64(writer, panels->inspector_scroll) &&
          vkr_json_writer_end_object(writer);

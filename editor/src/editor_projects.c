@@ -612,7 +612,8 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
   *frame->scene_request = (VkrSampleSceneRequest){
       .unload = true_v, .discard_edits = projects->discard_edits};
   projects->discard_edits = false_v;
-  projects->view = PROJECT_VIEW_SCENES;
+  projects->view = candidate->scene_count ? PROJECT_VIEW_SCENES
+                                        : PROJECT_VIEW_EDITOR;
   projects->content_scene[0] = '\0';
   vkr_editor_content_set_project(editor->content, projects->workspace.root,
                                  candidate->id, "");
@@ -1013,7 +1014,7 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   }
   *frame->scene_request = (VkrSampleSceneRequest){
       .unload = true_v, .discard_edits = projects->discard_edits};
-  if (frame->scene_backdrop_blur) {
+  if (!projects->job_creates_project && frame->scene_backdrop_blur) {
     *frame->scene_backdrop_blur = true_v;
   }
   projects->view = PROJECT_VIEW_PROGRESS;
@@ -1194,9 +1195,10 @@ static void project_job_complete(VkrEditorProjects *projects,
     }
     projects->unpublished_project = false_v;
     project_restore_settings(projects, editor, frame);
-    projects->view = PROJECT_VIEW_SCENES;
+    projects->view = PROJECT_VIEW_EDITOR;
     projects->job_id = 0;
     project_refresh(projects);
+    projects->content_scene[0] = '\0';
     vkr_editor_content_set_project(editor->content, projects->workspace.root,
                                    projects->project->id, "");
     return;
@@ -1467,7 +1469,8 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
 }
 
 bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects) {
-  return projects && (projects->job_id || projects->waiting_activation);
+  return projects && ((projects->job_id && !projects->job_creates_project) ||
+                      projects->waiting_activation);
 }
 
 bool8_t vkr_editor_projects_modal(const VkrEditorProjects *projects) {
@@ -2446,7 +2449,7 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   if (viewport.z <= 0 || viewport.w <= 0) {
     return;
   }
-  if (frame->scene_backdrop_blur) {
+  if (!projects->job_creates_project && frame->scene_backdrop_blur) {
     *frame->scene_backdrop_blur = true_v;
   }
   const VkrUiRect bounds = {viewport.x, viewport.y, viewport.z, viewport.w};
@@ -2494,8 +2497,9 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   label.tooltip = project_string(
       projects->message[0] ? projects->message : projects->progress_detail);
   const char *stage =
-      running ? projects->progress_stage[0] ? projects->progress_stage
-                                            : "Preparing scene..."
+      running ? projects->progress_stage[0]   ? projects->progress_stage
+                : projects->job_creates_project ? "Creating project..."
+                                               : "Preparing scene..."
       : status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Preparation cancelled"
                                                    : "Preparation failed";
   vkr_ui_label(ui, string8_lit("scene.prepare.stage"), project_string(stage),
@@ -2601,7 +2605,8 @@ void vkr_editor_projects_scene_action(VkrEditorProjects *projects,
     return;
   }
   const VkrSceneEditAction action = frame->scene_edit->action;
-  if ((frame->scene_loading || vkr_editor_projects_loading(projects)) &&
+  if ((frame->scene_loading || projects->job_id ||
+       projects->waiting_activation) &&
       (action == VKR_SCENE_EDIT_LOAD || action == VKR_SCENE_EDIT_RELOAD ||
        action == VKR_SCENE_EDIT_UNLOAD)) {
     frame->scene_edit->action = VKR_SCENE_EDIT_NONE;

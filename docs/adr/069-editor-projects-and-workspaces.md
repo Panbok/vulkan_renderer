@@ -9,8 +9,9 @@ authority: adr
 ## Status
 
 Accepted. The managed editor uses the workspace, project and scene owners below.
-Native Windows interaction and filesystem verification remain unavailable in this
-implementation session. Selected native Metal workflows passed as recorded below;
+Windows empty-project creation, reopening and Back navigation have been checked;
+broader Windows interaction and filesystem verification remain outstanding.
+Selected native Metal workflows passed as recorded below;
 this does not establish backend parity, long-session stability or performance.
 
 ## Context
@@ -26,6 +27,10 @@ The normal [editor application](../../editor/src/editor_application.c) starts
 with a Projects chooser and no world scene. The user selects a workspace directory;
 its `.vkreditor` child owns managed data. A machine-local locator remembers the
 chosen directory. Explicit `--scene` remains the legacy scene entry point.
+Creating or opening an empty project enters the editor without loading a scene
+or automatically opening the Scenes modal. Creating project resources is a
+project job, not scene loading. Default and cleared hierarchy search text remain
+valid empty strings when project settings are saved.
 
 [Project storage](../../editor/src/editor_project_store.c) owns a versioned
 workspace manifest and UUID-named project directories. Each project has a
