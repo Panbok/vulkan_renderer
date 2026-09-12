@@ -51,7 +51,9 @@ String8 string8_create_formatted_v(VkrAllocator *allocator, const char *fmt,
 
   vsnprintf((char *)buffer, buffer_size, fmt, args);
 
-  return string8_create(buffer, (uint64_t)required_size);
+  // A format that renders empty is ordinary runtime text, not a caller error,
+  // and the buffer is already a valid one-byte allocation.
+  return string8_create_from_cstr(buffer, (uint64_t)required_size);
 }
 
 String8 string8_create_formatted(VkrAllocator *allocator, const char *fmt,

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-09
+updated: 2026-09-11
 authority: proposal
 ---
 
@@ -13,23 +13,50 @@ behavior, or Metal/Vulkan pixel parity.
 
 ## Build and shader gates
 
-- [ ] Set `VCPKG_ROOT`, install `freetype:x64-windows-static`, and run
+- [x] Set `VCPKG_ROOT`, install `freetype:x64-windows-static`, and run
   `build_release.bat`; inspect the Release output and confirm the Vulkan 1.4
   capability profile from [ADR-023](../adr/023-vulkan-1-4-bindless-capability-profile.md).
-- [ ] Run `build_editor.bat Release` and confirm the editor Vulkan target starts
-  with the same cooked assets and shader set.
-- [ ] Run `build.bat Debug` for the diagnostic build. Confirm that
+  `vkr_vk_select_device` now emits the selected candidate's profile at INFO and
+  every unmet requirement of every rejected candidate at ERROR; before this the
+  report was only a pass/fail predicate, so no build could show it. Stock
+  `build_release.bat` keeps `LOG_LEVEL=1`, so the INFO report needs a Release
+  configure with `VKR_EDITOR_LOGGING=ON`. Recorded for an AMD Radeon RX 6700 XT
+  on driver 26.6.3, api 1.4.315, 62 entries, every required entry present:
+  [capability profile](../../assets/verification/renderer-features/windows-vulkan-capability-profile.txt).
+  Target-device coverage beyond this one adapter is unmeasured.
+- [x] Run `build_editor.bat Release` and confirm the editor Vulkan target starts
+  with the same cooked assets and shader set. The Release editor reaches the
+  frame loop and creates its FSR 3.1.4 context at 866x555 with no error or
+  validation output. Startup only; no editor UI interaction was exercised.
+- [x] Run `build.bat Debug` for the diagnostic build. Confirm that
   `VK_LAYER_KHRONOS_validation` is initialized by the child, then inspect
   stderr/stdout for validation errors; a Debug build without the layer is not
-  a validation result.
-- [ ] Confirm that the Release wrappers compile every production Slang/native
+  a validation result. Both witnesses below report
+  `Vulkan validation enabled: VK_LAYER_KHRONOS_validation (synchronization=1,
+  GPU-assisted=0)` in child stdout with empty child stderr. Debug application
+  targets need the 8 MiB main-stack reserve set in the root list file: an
+  unoptimized FidelityFX dispatch overflows the Windows 1 MiB default about
+  five seconds in, at the first FSR dispatch, with `0xC00000FD` and no log
+  output. Release is unaffected, so a passing Release run does not cover it.
+- [x] Confirm that the Release wrappers compile every production Slang/native
   entry point and that Vulkan reflection validates the generated SPIR-V roots,
   bindings, push constants, and dispatch sizes under
   [ADR-044](../adr/044-shader-cross-backend-contract.md). Record module and
-  reflection output; this remains a compiled-contract gate.
-- [ ] Confirm build wrappers compile cooker tools without invoking cooking; run
-  cooker jobs only through Bakery or an explicit cooker wrapper.
-- [ ] Run the focused synchronization witness after the Debug build:
+  reflection output; this remains a compiled-contract gate. The startup gate in
+  `vkr_vulkan_pipelines.c` had never passed on Vulkan: the UI root's bindless
+  slot names, the SSGI push blocks' declared size, the froxel push block's
+  untyped root address, and the SSR/SSGI composite address-padding names all
+  disagreed with the host records. All roots now reflect and match. Reflection
+  failures name their module, so a mismatch identifies its shader.
+- [x] Confirm build wrappers compile cooker tools without invoking cooking; run
+  cooker jobs only through Bakery or an explicit cooker wrapper. The Debug,
+  Release and editor wrappers link every cooker executable and invoke none.
+- [x] Build and run the CPU suite with `build_test.bat`. It had never compiled
+  on Windows: `far`, `near` (minwindef.h) and `small` (rpcndr.h) are Windows SDK
+  macros that captured local variables in four test files. These cannot be
+  undefined, because the SDK's own `FAR`/`NEAR` expand to them and
+  `DEFINE_GUID` then fails, so the locals were renamed. 537 cases pass.
+- [x] Run the focused synchronization witness after the Debug build:
 
   ```powershell
   .\build_debug\tools\vkr_harness.exe profile `
@@ -45,6 +72,16 @@ behavior, or Metal/Vulkan pixel parity.
   report. Repeat with
   `deferred_state_matrix_vulkan_validation.case.json` for cutout and four-layer
   transmission coverage.
+
+  Both pass on an AMD Radeon RX 6700 XT, driver 26.6.3. The state-matrix run
+  reports `target_image_count: 3`, `present_mode: fifo`, empty child stderr, and
+  passing `visibility.gpu_visible.overflow`,
+  `visibility.transmission.gpu_visible.overflow` and
+  `visibility.gbuffer.resolve_invalid` assertions; the deferred run reports
+  `status: pass` with empty child stderr. Both carry `profile.local_only` and
+  `provenance.dirty` diagnostics, so neither is authoritative: they ran against
+  an uncommitted tree and must be repeated on a committed revision before the
+  reports are cited as acceptance evidence.
 
 ## Native Vulkan feature matrix
 
@@ -149,6 +186,20 @@ insufficient.
   directory, GGX DFG, Charlie, anisotropy, diffuse volume, and reflection
   probe. Verify each job records source identity, output path, status, and
   failure text, and that a failed job does not publish a partial artifact.
+  Every recipe failed on the first Windows run, for four separate reasons now
+  fixed: `write_file_atomic` reported nothing, so a cooker failure reached the
+  UI as an exit code with an empty log; the table cookers held the destination
+  open across their own atomic rename, which Windows refuses; the Charlie fit
+  pruned a mixture lobe without handing its weight to the survivor, failing its
+  own sum-to-one check; and `CreateProcessA` decoded the UTF-8 Python path with
+  the system code page, so the two Python recipes never launched on a host whose
+  profile directory is not ASCII. Cookers now build optimized in every
+  configuration with unfused floating point, so a Debug-configured and a
+  Release-configured cooker emit byte-identical tables; the Charlie fit still
+  takes about 32 minutes. Table reproducibility is per-toolchain only: libm
+  differences remain, and the Charlie fit in particular lands on a different
+  mixture pruning decision per platform, which moves real coefficients rather
+  than only rounding.
 - [ ] Run a Windows Bakery job for an actual glass scene with multi-bounce
   transport and photon caustics. Verify valid-probe/cell counts, finite SH,
   nonzero caustic deposits, dependency manifest, CRCs, and `--check` freshness

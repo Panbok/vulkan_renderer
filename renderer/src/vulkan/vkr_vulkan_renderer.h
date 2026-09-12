@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vkr_anisotropy_lut.h"
 #include "vkr_asset_publisher.h"
 #include "vkr_bloom.h"
 #include "vkr_gpu_abi.h"
@@ -7,9 +8,11 @@
 #include "vkr_gpu_slot_table.h"
 #include "vkr_gtao.h"
 #include "vkr_ibl_math.h"
+#include "vkr_ltc_lut.h"
 #include "vkr_prepared_frame.h"
 #include "vkr_render_graph.h"
 #include "vkr_renderer_impl.h"
+#include "vkr_sheen_lut.h"
 #include "vkr_ssgi.h"
 #include "vkr_ssr.h"
 #include "vulkan/vkr_vulkan_device.h"
@@ -20,6 +23,14 @@ enum {
   // instances; the recording frame still needs one completion-safe output.
   VKR_VULKAN_HISTORY_INSTANCE_COUNT = 2 * VKR_VULKAN_FRAME_SLOT_COUNT - 1,
   VKR_VULKAN_TARGET_IMAGE_MAX = 8,
+  /* Sampled-image heap rows the renderer holds for its own device lifetime, so
+     they are never available to published textures. Derived from the tables
+     that occupy them, so adding a table moves the configuration bound and the
+     creation check together instead of letting them drift apart. */
+  VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS =
+      1 /* black sentinel */ + 1 /* DFG */ + VKR_LTC_LUT_TABLE_COUNT +
+      1 /* Charlie directional albedo */ + VKR_SHEEN_LTC_LUT_TABLE_COUNT +
+      VKR_ANISOTROPY_LUT_TABLE_COUNT + 2 /* atmosphere LUTs */,
 };
 
 typedef struct VkrVulkanRenderer VkrVulkanRenderer;
@@ -56,9 +67,9 @@ typedef struct VkrVulkanRendererConfig {
   /**
    * Logical texture IDs admitted by the asset publisher. Must cover the texture
    * system's whole ID space for the same reason. The sampled-image heap also
-   * reserves its sentinel, immutable DFG row, two immutable LTC rows, two
-   * atmosphere LUT rows and five immutable sheen rows, so this must fit
-   * within `sampled_image_capacity - 9`.
+   * reserves VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS for its own tables, so
+   * this must fit within
+   * `sampled_image_capacity - VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS`.
    */
   uint32_t texture_capacity;
   /** Maximum logical material IDs admitted by the asset publisher. */

@@ -128,6 +128,11 @@ void vkr_vk_pipeline_cache_shutdown(VkrVulkanRenderer *renderer) {
   renderer->pipeline_cache = VK_NULL_HANDLE;
 }
 
+/* Reflection walks one module at a time during single-threaded renderer
+   creation. Naming that module turns a bare member name into an actionable
+   shader/host mismatch. */
+vkr_global const char *vkr_vk_reflect_shader = "?";
+
 vkr_internal SpvReflectBlockVariable *
 vkr_vk_reflect_member(SpvReflectBlockVariable *parent, const char *name) {
   if (!parent || !name)
@@ -147,9 +152,8 @@ vkr_internal bool8_t vkr_vk_reflect_member_offset(
   if (out_member)
     *out_member = member;
   if (!member || member->offset != offset) {
-    log_error("Vulkan shader ABI member %s is %s (offset %u, "
-              "expected %u)",
-              name, member ? "misaligned" : "missing",
+    log_error("%s: shader ABI member %s is %s (offset %u, expected %u)",
+              vkr_vk_reflect_shader, name, member ? "misaligned" : "missing",
               member ? member->offset : UINT32_MAX, offset);
     return false_v;
   }
@@ -192,6 +196,8 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
                        renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -549,6 +555,8 @@ vkr_internal bool8_t vkr_vk_validate_root_abi_with_gpu_record(
       file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -609,6 +617,8 @@ vkr_internal bool8_t vkr_vk_validate_froxel_root_abi(
       file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -630,10 +640,8 @@ vkr_internal bool8_t vkr_vk_validate_froxel_root_abi(
       spvReflectEnumerateEntryPointPushConstantBlocks(
           &module, entry, &count, blocks) == SPV_REFLECT_RESULT_SUCCESS;
   valid &= blocks[0] && blocks[0]->size == sizeof(VkrVulkanPushConstants);
-  SpvReflectBlockVariable *root_address =
-      valid ? vkr_vk_reflect_member(blocks[0], "root_address") : NULL;
   SpvReflectBlockVariable *root =
-      root_address ? vkr_vk_reflect_member(root_address, "frame") : NULL;
+      valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
   for (uint32_t i = 0u; i < field_count; ++i)
     valid &= vkr_vk_reflect_member_offset(root, fields[i].name,
                                           fields[i].offset, NULL);
@@ -687,6 +695,8 @@ vkr_vk_validate_transmission_material_abi(VkrVulkanRenderer *renderer) {
                        renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -877,6 +887,8 @@ vkr_vk_validate_gtao_root_abi(VkrVulkanRenderer *renderer) {
                        renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -988,6 +1000,8 @@ vkr_internal bool8_t vkr_vk_validate_motion_blur_root_abi(
       file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -1047,6 +1061,8 @@ vkr_internal bool8_t vkr_vk_validate_subsurface_root_abi(VkrVulkanRenderer *rend
       file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -1112,6 +1128,8 @@ vkr_internal bool8_t vkr_vk_validate_dof_root_abi(VkrVulkanRenderer *renderer,
       file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -1168,6 +1186,8 @@ vkr_vk_validate_ssr_reprojection_abi(VkrVulkanRenderer *renderer) {
                        renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
                              &size) != FILE_ERROR_NONE ||
       size == 0u)
@@ -1457,7 +1477,8 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
   static const VkrVulkanReflectedField ssr_composite_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, params),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, frame),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, frame_padding),
+      {"frame_address_padding",
+       (uint32_t)offsetof(VkrVulkanSsrCompositeRoot, frame_padding)},
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot,
                                  inverse_view_projection),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, scene_texture),
@@ -1532,7 +1553,8 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
   static const VkrVulkanReflectedField ssgi_composite_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, params),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, frame),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, frame_padding),
+      {"frame_address_padding",
+       (uint32_t)offsetof(VkrVulkanSsgiCompositeRoot, frame_padding)},
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot,
                                  inverse_view_projection),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, scene_texture),

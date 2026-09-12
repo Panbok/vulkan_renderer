@@ -80,6 +80,26 @@ static void test_str8_create_formatted(void) {
   printf("  test_str8_create_formatted PASSED\n");
 }
 
+static void test_str8_create_formatted_empty(void) {
+  printf("  Running test_str8_create_formatted_empty...\n");
+  setup_suite();
+
+  // Runtime text that renders empty is ordinary, not a caller error: the
+  // editor's Bakery reaches this with recipes that have no output path.
+  String8 str = string8_create_formatted(&allocator, "%s", "");
+  assert(str.length == 0 && "Empty format should produce a zero length");
+  assert(str.str != NULL && "Empty format should still own its buffer");
+
+  String8 from_v = invoke_test_string8_create_formatted_v(&allocator, "%s", "");
+  assert(from_v.length == 0 && "Empty v-format should produce a zero length");
+  assert(from_v.str != NULL && "Empty v-format should still own its buffer");
+
+  string8_destroy(&from_v);
+  string8_destroy(&str);
+  teardown_suite();
+  printf("  test_str8_create_formatted_empty PASSED\n");
+}
+
 static void test_str8_create_formatted_v(void) {
   printf("  Running test_str8_create_formatted_v...\n");
   setup_suite();
@@ -432,10 +452,10 @@ static void test_cstring_format(void) {
   assert(strcmp(buf, "Hello 42") == 0);
   assert(r == 8);
 
-  char small[6]; // Can hold at most 5 chars + NUL
-  int r2 = string_format(small, sizeof(small), "%s", "abcdefg");
+  char small_buffer[6]; // Can hold at most 5 chars + NUL
+  int r2 = string_format(small_buffer, sizeof(small_buffer), "%s", "abcdefg");
   assert(r2 == 7); // would-have-written length
-  assert(strcmp(small, "abcde") == 0);
+  assert(strcmp(small_buffer, "abcde") == 0);
   printf("  test_cstring_format PASSED\n");
 }
 
@@ -602,6 +622,7 @@ bool32_t run_string_tests(void) {
   test_str8_create_from_cstr_empty();
   test_str8_create_literal();
   test_str8_create_formatted();
+  test_str8_create_formatted_empty();
   test_str8_create_formatted_v();
   test_str8_cstr();
   test_str8_concat();

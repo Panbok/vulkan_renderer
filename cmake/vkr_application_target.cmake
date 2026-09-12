@@ -1,5 +1,6 @@
 function(vkr_configure_application_target target)
     vkr_require_declared_c_functions(${target})
+    vkr_set_main_stack_reserve(${target})
 
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         set_property(TARGET ${target} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY

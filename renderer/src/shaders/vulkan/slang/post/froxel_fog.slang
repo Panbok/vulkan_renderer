@@ -33,13 +33,28 @@ struct VkrVkFroxelApplyRoot
     uint2 reserved;
 };
 
-struct VkrVkFroxelPush
+struct VkrVkFroxelInjectPush
 {
-    uint64_t root_address;
+    VkrVkFroxelInjectRoot* root;
     uint2 reserved;
 };
 
-[[vk::push_constant]] ConstantBuffer<VkrVkFroxelPush> g_froxel_push;
+struct VkrVkFroxelIntegratePush
+{
+    VkrVkFroxelIntegrateRoot* root;
+    uint2 reserved;
+};
+
+struct VkrVkFroxelApplyPush
+{
+    VkrVkFroxelApplyRoot* root;
+    uint2 reserved;
+};
+
+[[vk::push_constant]] ConstantBuffer<VkrVkFroxelInjectPush> g_froxel_inject_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkFroxelIntegratePush>
+    g_froxel_integrate_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkFroxelApplyPush> g_froxel_apply_push;
 
 float3 vkr_vk_froxel_local_radiance(VkrVulkanPacketFrameRoot* frame,
                                     VkrGpuPointLightRow light,
@@ -141,8 +156,7 @@ VkrFroxelSample vkr_vk_froxel_sample_integrated(
 [numthreads(8, 8, 4)]
 void froxel_inject_compute(uint3 cell : SV_DispatchThreadID)
 {
-    VkrVkFroxelInjectRoot* root =
-        (VkrVkFroxelInjectRoot*)g_froxel_push.root_address;
+    VkrVkFroxelInjectRoot* root = g_froxel_inject_push.root;
     VkrFroxelFogParams params = root.params[0];
     if (any(cell >= root.extent) || !vkr_froxel_enabled(params))
         return;
@@ -167,8 +181,7 @@ void froxel_inject_compute(uint3 cell : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void froxel_integrate_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkFroxelIntegrateRoot* root =
-        (VkrVkFroxelIntegrateRoot*)g_froxel_push.root_address;
+    VkrVkFroxelIntegrateRoot* root = g_froxel_integrate_push.root;
     VkrFroxelFogParams params = root.params[0];
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.extent.xy) || !vkr_froxel_enabled(params))
@@ -199,8 +212,7 @@ void froxel_integrate_compute(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void froxel_apply_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkFroxelApplyRoot* root =
-        (VkrVkFroxelApplyRoot*)g_froxel_push.root_address;
+    VkrVkFroxelApplyRoot* root = g_froxel_apply_push.root;
     VkrFroxelFogParams params = root.params[0];
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.extent) || !vkr_froxel_enabled(params))

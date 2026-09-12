@@ -3050,8 +3050,11 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   if (state->graphics_dirty &&
       vkr_platform_get_absolute_time() - state->graphics_changed_at >= .25)
     sample_graphics_save();
-  state->graphics.message = string8_create((uint8_t *)state->graphics_message,
-                                           strlen(state->graphics_message));
+  /* No pending notice is the normal case, and the empty-tolerant constructor
+     is the one that preserves it. */
+  state->graphics.message = string8_create_from_cstr(
+      (const uint8_t *)state->graphics_message,
+      strlen(state->graphics_message));
   VkrGraphicsSettingsRequest graphics_request = {0};
   VkrSampleTransportAction transport_action = VKR_SAMPLE_TRANSPORT_NONE;
   VkrSceneEditRequest scene_edit = {0};

@@ -190,6 +190,12 @@ uint16_t half(double value) {
     double m = std::frexp(value, &e);
     h = (uint16_t)(((e + 14) << 10) + even((2 * m - 1) * 1024));
   }
+  /* A magnitude that rounds to zero carries no sign, and emitting -0 for a
+     tiny negative fit residual makes the table depend on which side of zero
+     the optimizer happened to land. Canonicalize both zeroes to +0 so the
+     encoding is reproducible across hosts. */
+  if (h == 0u)
+    return 0u;
   return h | (negative ? 0x8000u : 0u);
 }
 double unhalf(uint16_t h) {
@@ -242,8 +248,9 @@ int main(int argc, char **argv) {
   std::vector<Record> records(count);
   std::atomic<uint32_t> next_layer{0};
   std::vector<std::thread> workers;
-  const uint32_t threads =
-      std::min(8u, std::max(1u, std::thread::hardware_concurrency()));
+  /* The 64 layers are independent and each writes its own records, so the
+     table is identical at any worker count; use every hardware thread. */
+  const uint32_t threads = std::max(1u, std::thread::hardware_concurrency());
   for (uint32_t thread = 0; thread < threads; ++thread)
     workers.emplace_back([&]() {
       for (;;) {
@@ -355,8 +362,14 @@ int main(int argc, char **argv) {
     out << (table == 2 ? "}\n" : "},\n");
   }
   const std::string contents = out.str();
-  std::ifstream old(argv[1], std::ios::binary);
-  const std::string previous((std::istreambuf_iterator<char>(old)), {});
+  std::string previous;
+  {
+    // Windows refuses to replace a file this process still holds open, so the
+    // comparison read must be closed before the atomic rename.
+    std::ifstream old(argv[1], std::ios::binary);
+    previous.assign((std::istreambuf_iterator<char>(old)),
+                    std::istreambuf_iterator<char>());
+  }
   if (previous == contents)
     std::cout << "Anisotropy LUT unchanged\n";
   else {

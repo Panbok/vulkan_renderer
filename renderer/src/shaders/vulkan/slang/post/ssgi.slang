@@ -76,11 +76,11 @@ struct VkrVkSsgiCompositeRoot
     uint subsurface_profile_count;
 };
 
-struct VkrVkSsgiDepthBasePush { VkrVkSsgiDepthBaseRoot* root; };
-struct VkrVkSsgiDepthMipPush { VkrVkSsgiDepthMipRoot* root; };
-struct VkrVkSsgiTracePush { VkrVkSsgiTraceRoot* root; };
-struct VkrVkSsgiTemporalPush { VkrVkSsgiTemporalRoot* root; };
-struct VkrVkSsgiCompositePush { VkrVkSsgiCompositeRoot* root; };
+struct VkrVkSsgiDepthBasePush { VkrVkSsgiDepthBaseRoot* root; uint2 reserved; };
+struct VkrVkSsgiDepthMipPush { VkrVkSsgiDepthMipRoot* root; uint2 reserved; };
+struct VkrVkSsgiTracePush { VkrVkSsgiTraceRoot* root; uint2 reserved; };
+struct VkrVkSsgiTemporalPush { VkrVkSsgiTemporalRoot* root; uint2 reserved; };
+struct VkrVkSsgiCompositePush { VkrVkSsgiCompositeRoot* root; uint2 reserved; };
 
 [[vk::push_constant]] VkrVkSsgiDepthBasePush g_ssgi_depth_base_push;
 [[vk::push_constant]] VkrVkSsgiDepthMipPush g_ssgi_depth_mip_push;

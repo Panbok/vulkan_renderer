@@ -41,8 +41,8 @@ float4 ui_fragment(VkrVulkanUiOutput input) : SV_Target0
                                                      root.display_output[0]);
             return input.color;
         }
-        uint texture_index = NonUniformResourceIndex(root.texture_index);
-        uint sampler_index = NonUniformResourceIndex(root.sampler_index);
+        uint texture_index = NonUniformResourceIndex(root.texture);
+        uint sampler_index = NonUniformResourceIndex(root.sampler);
         float4 color = input.color *
                        g_textures[texture_index].Sample(g_samplers[sampler_index],
                                                         input.uv);
@@ -50,8 +50,8 @@ float4 ui_fragment(VkrVulkanUiOutput input) : SV_Target0
         return color;
     }
 
-    uint texture_index = NonUniformResourceIndex(root.texture_index);
-    uint sampler_index = NonUniformResourceIndex(root.sampler_index);
+    uint texture_index = NonUniformResourceIndex(root.texture);
+    uint sampler_index = NonUniformResourceIndex(root.sampler);
     float4 atlas =
         g_textures[texture_index].Sample(g_samplers[sampler_index], input.uv);
     float alpha = atlas.a;

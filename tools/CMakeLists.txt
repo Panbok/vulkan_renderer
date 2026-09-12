@@ -11,22 +11,26 @@ endif()
 # must never rewrite its static table sources.
 add_executable(vkr_dfg_cooker vkr_dfg_cooker.cpp)
 target_compile_features(vkr_dfg_cooker PRIVATE cxx_std_17)
+vkr_configure_table_cooker_target(vkr_dfg_cooker)
 target_include_directories(vkr_dfg_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
 # Charlie energy and rectangle fits share one immutable payload in both backends.
 add_executable(vkr_sheen_cooker vkr_sheen_cooker.cpp)
 target_compile_features(vkr_sheen_cooker PRIVATE cxx_std_17)
+vkr_configure_table_cooker_target(vkr_sheen_cooker)
 target_include_directories(vkr_sheen_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
 add_executable(vkr_anisotropy_cooker vkr_anisotropy_cooker.cpp
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_ltc_lut.c")
 target_compile_features(vkr_anisotropy_cooker PRIVATE cxx_std_17)
+vkr_configure_table_cooker_target(vkr_anisotropy_cooker)
 target_include_directories(vkr_anisotropy_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
 find_package(Vulkan REQUIRED)
 
 # Capture/export consumers and asset importers share one image writer object.
 add_library(vkr_image_write STATIC assets/stb_image_write_impl.c)
+vkr_configure_cooker_target(vkr_image_write)
 target_include_directories(vkr_image_write PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
 
 
@@ -76,6 +80,8 @@ add_executable(vkr_harness
     harness/vkr_harness_snapshot.c
 )
 vkr_require_declared_c_functions(vkr_harness)
+# The child opens a renderer target and reaches the same unoptimized dispatch.
+vkr_set_main_stack_reserve(vkr_harness)
 
 target_link_libraries(vkr_harness PRIVATE vkr_harness_core)
 target_compile_definitions(vkr_harness PRIVATE
@@ -103,6 +109,7 @@ add_library(vkr_asset_cooking STATIC
     assets/vkr_gltf_material_conversion.c
     assets/cgltf_impl.c)
 vkr_configure_library(vkr_asset_cooking)
+vkr_configure_cooker_target(vkr_asset_cooking)
 target_include_directories(vkr_asset_cooking PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
 target_link_libraries(vkr_asset_cooking PUBLIC vkr_asset_formats PRIVATE meshoptimizer vkr_image_decode vkr_image_write)
@@ -111,6 +118,7 @@ target_compile_features(vkr_asset_cooking PRIVATE cxx_std_11)
 add_library(vkr_vkt_cooking STATIC
     vkr_vkt_packer.cpp
 )
+vkr_configure_cooker_target(vkr_vkt_cooking)
 target_compile_features(vkr_vkt_cooking PRIVATE cxx_std_17)
 
 target_include_directories(vkr_vkt_cooking
@@ -131,10 +139,12 @@ add_executable(vkr_vkt_packer
     vkr_vkt_packer_main.cpp
 )
 vkr_require_declared_c_functions(vkr_vkt_packer)
+vkr_configure_cooker_target(vkr_vkt_packer)
 target_compile_features(vkr_vkt_packer PRIVATE cxx_std_17)
 target_link_libraries(vkr_vkt_packer PRIVATE vkr_vkt_cooking)
 
 add_executable(vkr_hdr_cube_packer vkr_hdr_cube_packer.cpp)
+vkr_configure_cooker_target(vkr_hdr_cube_packer)
 target_compile_features(vkr_hdr_cube_packer PRIVATE cxx_std_17)
 target_include_directories(vkr_hdr_cube_packer PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(vkr_hdr_cube_packer PRIVATE ktx)
@@ -154,11 +164,13 @@ add_library(vkr_bake_core STATIC
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_sheen_lut.c"
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_anisotropy_lut.c"
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_atmosphere.c")
+vkr_configure_cooker_target(vkr_bake_core)
 target_compile_features(vkr_bake_core PRIVATE cxx_std_17)
 target_include_directories(vkr_bake_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src" "${CMAKE_SOURCE_DIR}/vendor" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(vkr_bake_core PUBLIC vkr_asset_formats PRIVATE ktx vkr_image_decode)
 add_executable(vkr_diffuse_baker vkr_diffuse_baker.cpp)
+vkr_configure_cooker_target(vkr_diffuse_baker)
 target_compile_features(vkr_diffuse_baker PRIVATE cxx_std_17)
 target_link_libraries(vkr_diffuse_baker PRIVATE vkr_bake_core)
 
@@ -166,6 +178,7 @@ add_executable(vkr_mesh_cooker
     vkr_mesh_cooker.c
 )
 vkr_require_declared_c_functions(vkr_mesh_cooker)
+vkr_configure_cooker_target(vkr_mesh_cooker)
 target_link_libraries(vkr_mesh_cooker PRIVATE vkr_asset_cooking)
 
 set(VKR_MSDF_ATLAS_DIR "${CMAKE_SOURCE_DIR}/vendor/msdf-atlas-gen")
@@ -243,9 +256,12 @@ endif()
 unset(VKR_TOOLS_BUILD_SHARED_LIBS_WAS_DEFINED)
 unset(VKR_TOOLS_BUILD_SHARED_LIBS_SAVED)
 
+vkr_configure_cooker_dependencies(msdf-atlas-gen msdfgen-core msdfgen-ext)
+
 add_executable(vkr_font_cooker
     vkr_font_cooker.cpp
 )
+vkr_configure_cooker_target(vkr_font_cooker)
 target_compile_features(vkr_font_cooker PRIVATE cxx_std_17)
 target_compile_definitions(vkr_font_cooker PRIVATE
     VKR_FONT_COOKER_MSDF_ATLAS_COMMIT="${VKR_MSDF_ATLAS_COMMIT}"

@@ -408,7 +408,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .width = width,
       .height = height,
       .image_count = renderer->present_target.image_count,
-      .sampled_image_capacity = 16390u,
+      .sampled_image_capacity =
+          16384u + VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS,
       .storage_image_capacity = 1024u,
       .sampler_capacity = 2048u,
       // Publication records are indexed directly by logical handle id, so these

@@ -1,10 +1,12 @@
 #pragma once
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <system_error>
 
@@ -39,19 +41,33 @@ atomic_temporary_path(const std::filesystem::path &destination) {
       "." + std::to_string(sequence.fetch_add(1u, std::memory_order_relaxed)));
 }
 
+/* Every caller turns a false into a bare `return 1`, so a failure that says
+   nothing reaches the Bakery as an exit code with an empty log. Name the step
+   and the OS error instead. */
 inline bool write_file_atomic(const char *path, const std::string &contents) {
-  if (!path || !path[0])
+  if (!path || !path[0]) {
+    std::cerr << "write_file_atomic: empty destination path\n";
     return false;
+  }
   const std::filesystem::path destination(path);
   const std::filesystem::path temporary = atomic_temporary_path(destination);
   std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-  if (!file)
+  if (!file) {
+    std::cerr << "write_file_atomic: cannot open " << temporary.string()
+              << " for writing: "
+              << std::error_code(errno, std::generic_category()).message()
+              << "\n";
     return false;
+  }
   file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
   file.close();
   if (file.fail()) {
-    std::error_code error;
-    std::filesystem::remove(temporary, error);
+    std::cerr << "write_file_atomic: failed writing " << contents.size()
+              << " bytes to " << temporary.string() << ": "
+              << std::error_code(errno, std::generic_category()).message()
+              << "\n";
+    std::error_code remove_error;
+    std::filesystem::remove(temporary, remove_error);
     return false;
   }
   std::error_code error;
@@ -63,7 +79,11 @@ inline bool write_file_atomic(const char *path, const std::string &contents) {
   std::filesystem::rename(temporary, destination, error);
 #endif
   if (error) {
-    std::filesystem::remove(temporary, error);
+    std::cerr << "write_file_atomic: cannot replace " << destination.string()
+              << " with " << temporary.string() << ": " << error.message()
+              << "\n";
+    std::error_code remove_error;
+    std::filesystem::remove(temporary, remove_error);
     return false;
   }
   return true;

@@ -51,6 +51,8 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # installed runtime import library. Keep vendored BasisU self-contained.
     target_compile_definitions(ktx PRIVATE _USE_STD_VECTOR_ALGORITHMS=0)
 endif()
+vkr_configure_cooker_dependencies(ktx astcenc-avx2-static astcenc-sse4.1-static
+    astcenc-sse2-static astcenc-neon-static astcenc-native-static)
 set(BUILD_SHARED_LIBS "${_VKR_BUILD_SHARED_LIBS_PREV}" CACHE BOOL "Restore shared library default after KTX setup." FORCE)
 include("${CMAKE_SOURCE_DIR}/cmake/vkr_ktx_read.cmake")
 
@@ -64,6 +66,7 @@ set(MESHOPT_INSTALL OFF CACHE BOOL "" FORCE)
 if(VKR_BUILD_TOOLS)
     add_subdirectory("${CMAKE_SOURCE_DIR}/vendor/meshoptimizer"
                      "${CMAKE_BINARY_DIR}/vendor/meshoptimizer" EXCLUDE_FROM_ALL)
+    vkr_configure_cooker_dependencies(meshoptimizer)
 endif()
 add_library(vkr_mesh_codecs STATIC
     "${CMAKE_SOURCE_DIR}/vendor/meshoptimizer/src/indexcodec.cpp"
@@ -89,4 +92,5 @@ target_compile_features(vkr_asset_formats PRIVATE cxx_std_11)
 
 add_library(vkr_image_decode STATIC "${CMAKE_SOURCE_DIR}/runtime/src/assets/stb_image_impl.c")
 vkr_configure_library(vkr_image_decode)
+vkr_configure_cooker_target(vkr_image_decode)
 target_include_directories(vkr_image_decode PRIVATE "${CMAKE_SOURCE_DIR}/vendor")

@@ -461,6 +461,19 @@ vkr_internal bool8_t vkr_platform_command_append_argument(
   return vkr_platform_command_append(command, capacity, cursor, '"');
 }
 
+/* Win32 "A" entry points decode their arguments with the system code page,
+   but every path this process handles is UTF-8: tool paths are baked in by
+   CMake and user profile directories are routinely non-ASCII. Decoding UTF-8
+   bytes as CP1251 turns such a path into one that does not exist, so widen at
+   the boundary and call the "W" entry points instead. */
+vkr_internal bool8_t vkr_platform_widen(const char *utf8, wchar_t *out,
+                                        int32_t out_count) {
+  if (!utf8 || !out || out_count <= 0)
+    return false_v;
+  return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, out,
+                             out_count) > 0;
+}
+
 vkr_internal bool8_t vkr_platform_build_command(const char *executable,
                                                 const char *const *arguments,
                                                 uint32_t argument_count,
@@ -575,6 +588,14 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                   sizeof(command))) {
     return false_v;
   }
+  wchar_t wide_command[ArrayCount(command)];
+  wchar_t wide_directory[1024];
+  if (!vkr_platform_widen(command, wide_command, ArrayCount(wide_command)) ||
+      (config->working_directory &&
+       !vkr_platform_widen(config->working_directory, wide_directory,
+                           ArrayCount(wide_directory)))) {
+    return false_v;
+  }
   SECURITY_ATTRIBUTES security = {.nLength = sizeof(security),
                                   .bInheritHandle = TRUE};
   HANDLE output[2] = {GetStdHandle(STD_OUTPUT_HANDLE),
@@ -582,9 +603,13 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   const char *paths[2] = {config->stdout_path, config->stderr_path};
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
     if (paths[i]) {
+      wchar_t wide_path[1024];
       output[i] =
-          CreateFileA(paths[i], GENERIC_WRITE, FILE_SHARE_READ, &security,
-                      CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+          vkr_platform_widen(paths[i], wide_path, ArrayCount(wide_path))
+              ? CreateFileW(wide_path, GENERIC_WRITE, FILE_SHARE_READ,
+                            &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                            NULL)
+              : INVALID_HANDLE_VALUE;
       if (output[i] == INVALID_HANDLE_VALUE) {
         for (uint32_t close_index = 0; close_index < i; ++close_index) {
           if (paths[close_index]) {
@@ -595,7 +620,7 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       }
     }
   }
-  STARTUPINFOA startup = {
+  STARTUPINFOW startup = {
       .cb = sizeof(startup),
       .dwFlags = STARTF_USESTDHANDLES,
       .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
@@ -631,9 +656,9 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     if (config->terminate_process_tree) {
       creation_flags |= CREATE_SUSPENDED;
     }
-    created =
-        CreateProcessA(NULL, command, NULL, NULL, TRUE, creation_flags, NULL,
-                       config->working_directory, &startup, &process);
+    created = CreateProcessW(
+        NULL, wide_command, NULL, NULL, TRUE, creation_flags, NULL,
+        config->working_directory ? wide_directory : NULL, &startup, &process);
     vkr_platform_environment_restore(saved, config->environment_count);
   }
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
@@ -720,6 +745,14 @@ bool8_t vkr_platform_process_capture(const char *executable,
                                   command, sizeof(command))) {
     return false_v;
   }
+  wchar_t wide_command[ArrayCount(command)];
+  wchar_t wide_directory[1024];
+  if (!vkr_platform_widen(command, wide_command, ArrayCount(wide_command)) ||
+      (working_directory && !vkr_platform_widen(working_directory,
+                                                wide_directory,
+                                                ArrayCount(wide_directory)))) {
+    return false_v;
+  }
   SECURITY_ATTRIBUTES security = {.nLength = sizeof(security),
                                   .bInheritHandle = TRUE};
   HANDLE read_handle = NULL;
@@ -734,7 +767,7 @@ bool8_t vkr_platform_process_capture(const char *executable,
     }
     return false_v;
   }
-  STARTUPINFOA startup = {
+  STARTUPINFOW startup = {
       .cb = sizeof(startup),
       .dwFlags = STARTF_USESTDHANDLES,
       .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
@@ -742,9 +775,9 @@ bool8_t vkr_platform_process_capture(const char *executable,
       .hStdError = GetStdHandle(STD_ERROR_HANDLE),
   };
   PROCESS_INFORMATION process = {0};
-  const BOOL created =
-      CreateProcessA(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL,
-                     working_directory, &startup, &process);
+  const BOOL created = CreateProcessW(
+      NULL, wide_command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL,
+      working_directory ? wide_directory : NULL, &startup, &process);
   CloseHandle(write_handle);
   if (!created) {
     CloseHandle(read_handle);

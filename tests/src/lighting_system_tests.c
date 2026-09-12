@@ -126,10 +126,10 @@ static bool32_t test_unbounded_point_lights_are_global(void) {
       make_gltf_point(2u, vec3_new(20.0f, 0.0f, 0.0f), 5.0f);
   vkr_lighting_system_build_point_light_grid(&system);
 
-  const VkrPointLightMask far = vkr_lighting_system_point_light_mask_at(
+  const VkrPointLightMask far_mask = vkr_lighting_system_point_light_mask_at(
       &system, vec3_new(-1000.0f, 1000.0f, -1000.0f));
-  assert(vkr_lighting_system_point_light_mask_contains(&far, 0u));
-  assert(!vkr_lighting_system_point_light_mask_contains(&far, 1u));
+  assert(vkr_lighting_system_point_light_mask_contains(&far_mask, 0u));
+  assert(!vkr_lighting_system_point_light_mask_contains(&far_mask, 1u));
   printf("  test_unbounded_point_lights_are_global PASSED\n");
   return true_v;
 }

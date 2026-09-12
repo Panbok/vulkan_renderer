@@ -85,8 +85,12 @@ struct VkrEditorBakery {
   char message[192];
 };
 
+/* Bakery text is UI labels and path fragments, and both are legitimately
+   empty: a recipe without an explicit output has no path, and a path without a
+   dot has no extension. Both call sites below pass "" for exactly that case,
+   so this needs the empty-tolerant constructor. */
 static String8 editor_bakery_string(const char *text) {
-  return string8_create((uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
 }
 
 static const char *editor_bakery_status(EditorBakeStatus status) {
@@ -165,8 +169,11 @@ static void *editor_bakery_worker(void *argument) {
       arguments[count++] = "--layer";
       arguments[count++] = job->input;
     }
+    /* Basis encoding is the whole cost of a texture job and scales with
+       cores. Two threads left most of this host idle; "auto" asks the packer
+       for one worker per hardware thread. */
     arguments[count++] = "--basis-threads";
-    arguments[count++] = "2";
+    arguments[count++] = "auto";
   } else if (job->kind == EDITOR_BAKE_DFG_TABLE) {
     executable = VKR_EDITOR_DFG_COOKER_PATH;
     arguments[count++] = job->output;

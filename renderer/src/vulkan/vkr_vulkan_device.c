@@ -180,6 +180,76 @@ vkr_internal void vkr_vk_report_record_limit(VkrVulkanCandidateReport *report,
                     detail);
 }
 
+vkr_internal const char *vkr_vk_report_kind_name(VkrVulkanReportKind kind) {
+  switch (kind) {
+  case VKR_VULKAN_REPORT_API_VERSION:
+    return "api";
+  case VKR_VULKAN_REPORT_INSTANCE_EXTENSION:
+    return "instance-extension";
+  case VKR_VULKAN_REPORT_DEVICE_EXTENSION:
+    return "device-extension";
+  case VKR_VULKAN_REPORT_FEATURE:
+    return "feature";
+  case VKR_VULKAN_REPORT_LIMIT:
+    return "limit";
+  case VKR_VULKAN_REPORT_QUEUE:
+    return "queue";
+  case VKR_VULKAN_REPORT_FORMAT:
+    return "format";
+  case VKR_VULKAN_REPORT_DEVICE_CREATE:
+    return "device-create";
+  case VKR_VULKAN_REPORT_LAYOUT:
+    return "layout";
+  }
+  return "unknown";
+}
+
+/* ADR-023 requires the capability profile to be reported, not only enforced.
+   A selected device whose optional features went unstated, and a rejected
+   device that never said which requirement it missed, are both unusable as
+   evidence that the floor was met. */
+vkr_internal void
+vkr_vk_report_log_selected(const VkrVulkanCandidateReport *report) {
+  log_info("Vulkan capability profile: %s driver=%s (%s) api=%u.%u.%u "
+           "queue_family=%u entries=%u",
+           report->device_name, report->driver_name, report->driver_info,
+           VK_API_VERSION_MAJOR(report->api_version),
+           VK_API_VERSION_MINOR(report->api_version),
+           VK_API_VERSION_PATCH(report->api_version),
+           report->queue_family_index, report->entry_count);
+  for (uint32_t i = 0; i < report->entry_count; ++i) {
+    const VkrVulkanReportEntry *entry = &report->entries[i];
+    log_info("Vulkan capability %s %s: %s%s%s%s",
+             vkr_vk_report_kind_name(entry->kind), entry->name,
+             entry->present ? "present" : "absent",
+             entry->required ? " (required)" : " (optional)",
+             entry->detail[0] ? " " : "", entry->detail);
+  }
+}
+
+/* Only the unmet requirements: a rejected candidate's satisfied entries do not
+   explain the rejection, and this path runs at ERROR level in every build. */
+vkr_internal void
+vkr_vk_report_log_rejected(const VkrVulkanCandidateReport *report) {
+  log_error("Vulkan device rejected: %s driver=%s api=%u.%u.%u",
+            report->device_name, report->driver_name,
+            VK_API_VERSION_MAJOR(report->api_version),
+            VK_API_VERSION_MINOR(report->api_version),
+            VK_API_VERSION_PATCH(report->api_version));
+  if (report->overflowed)
+    log_error("Vulkan capability report overflowed %u entries; the profile is "
+              "incomplete and cannot be accepted",
+              (uint32_t)VKR_VULKAN_MAX_REPORT_ENTRIES);
+  for (uint32_t i = 0; i < report->entry_count; ++i) {
+    const VkrVulkanReportEntry *entry = &report->entries[i];
+    if (!entry->required || entry->present)
+      continue;
+    log_error("Vulkan capability %s %s is unsupported%s%s",
+              vkr_vk_report_kind_name(entry->kind), entry->name,
+              entry->detail[0] ? ": " : "", entry->detail);
+  }
+}
+
 vkr_internal bool8_t
 vkr_vk_report_passes(const VkrVulkanCandidateReport *report) {
   if (report->overflowed) {
@@ -1137,10 +1207,18 @@ vkr_internal bool8_t vkr_vk_select_device(VkrVulkanDevice *device) {
       device->profile.selected_candidate_index = best;
       device->selected = &device->candidates[best];
       device->ready = true_v;
+      vkr_vk_report_log_selected(&device->profile.candidates[best]);
       return true_v;
     }
     vkr_vk_destroy_logical_device(device);
   }
+  /* Every candidate either failed its profile or failed device creation. State
+     what each one missed; an initialization failure with no capability
+     diagnostic is indistinguishable from a driver problem. */
+  if (device->candidate_count == 0u)
+    log_error("Vulkan found no physical device");
+  for (uint32_t i = 0; i < device->candidate_count; ++i)
+    vkr_vk_report_log_rejected(&device->profile.candidates[i]);
   return false_v;
 }
 

@@ -390,8 +390,8 @@ struct VkrVulkanTextOutput
 struct VkrVulkanUiRoot
 {
     uint64_t vertices;
-    uint texture_index;
-    uint sampler_index;
+    uint texture;
+    uint sampler;
     float4 target_unit_range;
     float2 rect_extent;
     uint mode;

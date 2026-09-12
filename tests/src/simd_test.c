@@ -447,8 +447,8 @@ static void test_simd_compare(void) {
 
   VKR_SIMD_F32X4 base = vkr_simd_set_f32x4(1.0f, 2.0f, 3.0f, 4.0f);
   VKR_SIMD_F32X4 identical = vkr_simd_set_f32x4(1.0f, 2.0f, 3.0f, 4.0f);
-  VKR_SIMD_F32X4 far = vkr_simd_set_f32x4(2.0f, 3.0f, 4.0f, 5.0f);
-  VKR_SIMD_F32X4 near = vkr_simd_set_f32x4(1.0005f, 1.9994f, 3.0f, 4.0003f);
+  VKR_SIMD_F32X4 far_lanes = vkr_simd_set_f32x4(2.0f, 3.0f, 4.0f, 5.0f);
+  VKR_SIMD_F32X4 near_lanes = vkr_simd_set_f32x4(1.0005f, 1.9994f, 3.0f, 4.0003f);
   const float32_t loose_epsilon = 0.001f;
   const float32_t tight_epsilon = 0.0001f;
 
@@ -456,32 +456,32 @@ static void test_simd_compare(void) {
                                 0.0f) &&
          "Exact equality failed");
   assert(
-      !vkr_simd_compare_f32x4(base, far, VKR_SIMD_COMPARE_MODE_EQUAL, 0.0f) &&
+      !vkr_simd_compare_f32x4(base, far_lanes, VKR_SIMD_COMPARE_MODE_EQUAL, 0.0f) &&
       "Equality should fail for different vectors");
 
-  assert(vkr_simd_compare_f32x4(base, far, VKR_SIMD_COMPARE_MODE_NOT_EQUAL,
+  assert(vkr_simd_compare_f32x4(base, far_lanes, VKR_SIMD_COMPARE_MODE_NOT_EQUAL,
                                 0.0f) &&
          "Not-equal should detect differences");
   assert(!vkr_simd_compare_f32x4(base, identical,
                                  VKR_SIMD_COMPARE_MODE_NOT_EQUAL, 0.0f) &&
          "Not-equal should return for identical inputs");
 
-  assert(vkr_simd_compare_f32x4(base, near, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON,
+  assert(vkr_simd_compare_f32x4(base, near_lanes, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON,
                                 loose_epsilon) &&
          "Equal-epsilon should allow small variations");
   assert(!vkr_simd_compare_f32x4(
-             base, near, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON, tight_epsilon) &&
+             base, near_lanes, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON, tight_epsilon) &&
          "Equal-epsilon should respect tighter tolerances");
 
-  assert(!vkr_simd_compare_f32x4(base, near,
+  assert(!vkr_simd_compare_f32x4(base, near_lanes,
                                  VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
                                  loose_epsilon) &&
          "Not-equal-epsilon should ignore small errors");
-  assert(vkr_simd_compare_f32x4(base, near,
+  assert(vkr_simd_compare_f32x4(base, near_lanes,
                                 VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
                                 tight_epsilon) &&
          "Not-equal-epsilon should detect larger errors");
-  assert(vkr_simd_compare_f32x4(base, far,
+  assert(vkr_simd_compare_f32x4(base, far_lanes,
                                 VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
                                 loose_epsilon) &&
          "Not-equal-epsilon should be true for large differences");

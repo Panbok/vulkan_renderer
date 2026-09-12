@@ -115,10 +115,10 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
        */
       config->sampler_capacity < 4u || !config->geometry_capacity ||
       !config->texture_capacity ||
-      /* Sentinel, DFG, two LTC tables, two atmosphere LUTs, five sheen and
-         three anisotropy tables use permanent sampled-image rows. */
-      config->sampled_image_capacity < 14u ||
-      config->texture_capacity > config->sampled_image_capacity - 14u ||
+      config->sampled_image_capacity <
+          VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS ||
+      config->texture_capacity > config->sampled_image_capacity -
+                                     VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS ||
       !config->material_record_capacity || !config->device_buffer_block_size ||
       !config->device_image_block_size || !config->upload_buffer_block_size ||
       !config->readback_buffer_block_size || !config->memory_block_capacity ||

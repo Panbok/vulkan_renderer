@@ -73,6 +73,70 @@ function(vkr_require_declared_c_functions target)
     endif()
 endfunction()
 
+# Cooking is batch work that produces an artifact; it is diagnosed from that
+# artifact, not by single-stepping an encoder, so a Debug tree loses nothing by
+# optimizing it, and an unoptimized cooker is unusable -- an unoptimized Charlie
+# fit runs for tens of minutes and an unoptimized Basis encode costs 5x. Apply
+# this to every cooking target and to the third-party codecs those targets
+# drive, so one unoptimized library cannot dominate a Bakery job.
+#
+# Optimization level alone cannot change an IEEE result, so this leaves every
+# cooked artifact byte-identical to what an unoptimized tree produced.
+function(vkr_configure_cooker_target target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /O2)
+    else()
+        target_compile_options(${target} PRIVATE -O2)
+    endif()
+endfunction()
+
+# The immutable BRDF tables are checked into the tree and read by both backends,
+# so their cookers additionally pin floating point to unfused, source-order
+# evaluation: no optimization level may move a rounding boundary in a committed
+# table. Asset cooking deliberately does not take this -- suppressing FMA there
+# would rewrite every cooked mesh and generated texture without making the
+# result more correct.
+function(vkr_configure_table_cooker_target target)
+    vkr_configure_cooker_target(${target})
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /fp:precise)
+    else()
+        target_compile_options(${target} PRIVATE -ffp-contract=off)
+    endif()
+endfunction()
+
+# Same policy for third-party cooking dependencies, which own their warning and
+# language settings and must not inherit VKR's.
+function(vkr_configure_cooker_dependencies)
+    foreach(target ${ARGV})
+        if(TARGET ${target})
+            get_target_property(imported ${target} IMPORTED)
+            get_target_property(aliased ${target} ALIASED_TARGET)
+            if(NOT imported AND NOT aliased)
+                vkr_configure_cooker_target(${target})
+            endif()
+        endif()
+    endforeach()
+endfunction()
+
+# Windows reserves 1 MiB of main-thread stack by default. An unoptimized
+# FidelityFX dispatch alone needs over 300 KiB in two frames
+# (fsr3upscalerDispatch reserves 232 KiB for its by-value job state and
+# scheduleDispatch a further 77 KiB), which overflows that default once the
+# renderer's own Debug frames sit below it. Reserve the 8 MiB the macOS main
+# thread already provides, so Debug stack headroom does not depend on the host.
+# This reserves address space; pages still commit on demand.
+function(vkr_set_main_stack_reserve target)
+    if(NOT WIN32)
+        return()
+    endif()
+    if(MSVC)
+        target_link_options(${target} PRIVATE "/STACK:8388608")
+    else()
+        target_link_options(${target} PRIVATE "-Xlinker" "/STACK:8388608")
+    endif()
+endfunction()
+
 if((VKR_ENABLE_SANITIZERS OR VKR_ENABLE_DEBUG_SANITIZERS) AND NOT MSVC)
     set(_VKR_SAN_FLAGS "-fsanitize=address,undefined" "-fno-omit-frame-pointer")
 
