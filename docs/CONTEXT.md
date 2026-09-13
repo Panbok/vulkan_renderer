@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-13
 authority: context
 ---
 # Project vocabulary
@@ -92,6 +92,9 @@ Editor workflow terms:
 | Term | Meaning in VKR | Owner |
 |---|---|---|
 | Workspace | User-selected directory whose `.vkreditor` child contains managed projects, editor bundles and caches. | [Project store](../editor/src/editor_project_store.h) |
+| Host path | Filesystem location represented as UTF-8 at C interfaces and converted to native syntax at I/O. | [ADR-070](adr/070-portable-path-boundaries.md) |
+| Managed reference | Owner-relative serialized path with `/` separators and validated raw segments, resolved with physical containment checks. | [ADR-070](adr/070-portable-path-boundaries.md) |
+| Resource reference | Runtime asset reference with explicit owner-relative or legacy repository-root semantics, separate from a source format URI. | [Asset resolver](../lib/src/filesystem/vkr_asset_path.h) |
 | Project | Version 1 JSON owner of a name, scene membership, default font, asset inventory and editor preferences. | [ADR-069](adr/069-editor-projects-and-workspaces.md) |
 | Managed scene | Version 3 authored scene document with stable ID, typed inventory references and separate build revisions; jobs lower it to runtime inputs. | [Project jobs](../tools/editor_project_jobs.py) |
 | Source identity | Stable managed-scene or cooked source-node identity used to bind authored edits independently of imported file location. | [Scene loader](../runtime/src/renderer/resources/loaders/scene_loader.c) |

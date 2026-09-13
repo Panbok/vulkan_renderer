@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-12
+updated: 2026-09-13
 authority: architecture
 ---
 
@@ -162,11 +162,18 @@ The normal editor starts at a Projects chooser without a world scene. A selected
 workspace directory contains `.vkreditor`, including UUID-named projects, managed
 scene manifests, copied imports, versioned editor font bundles and generated
 artifacts. The project writer owns durable editor preferences and per-scene
-viewport/hierarchy recall. Authored environment, lights, probes and overrides
+viewport/hierarchy recall. Periodic preference saves publish an owned snapshot
+on one background worker; newer recall remains pending until the next save.
+Explicit saves and project transitions drain that worker before publication or
+workspace release, preserving durable writes and manifest conflict detection.
+Authored environment, lights, probes and overrides
 remain scene data. Explicit `--scene` retains legacy startup.
 Creating or opening a project with no scenes enters the editor with no world
 scene. Project resource preparation does not mark a scene as loading, and scene
 selection remains an explicit action.
+Confirmed scene deletion atomically removes project membership and recall, then
+uses a background job to erase scene-owned files. Active scenes unload before
+deletion; project-shared assets remain. Incomplete file removal offers Retry.
 
 [Projects](../editor/src/editor_projects.c) coordinates native selection, creation,
 import, dirty-state prompts, scene activation and progress. Preparation progress
@@ -180,6 +187,14 @@ and manifest fingerprint checks. Workspace writer leases cover asynchronous
 writers through shutdown. The runtime keeps one world scene resident and retains
 its existing GPU-completion-based resource retirement.
 
+Hierarchy's Add entity form appends a model or directional, point, spot or
+rectangle light to the loaded writable managed scene. Model sources use the
+existing import/cooking job. Add publishes the scene and reloads it, preserving
+existing entity indices and saved overlays, then selects the added entity.
+Unsaved edits use Save/Discard/Cancel before the job starts. Creation is a
+manifest publication rather than an undo-journal entry; later Inspector edits
+use the normal journal. Failed additions return to the form for correction.
+
 The dockable [Content browser](../editor/src/editor_content.c) refreshes managed
 inventories and owns a bounded thumbnail cache. A left source tree groups Scene,
 Project and Editor assets by type; breadcrumbs navigate upward above the search
@@ -192,8 +207,12 @@ harness job. Meshes and fonts use vector icons. `Commands > Show Content` adds t
 panel to older saved layouts; Ctrl+Space toggles it, and new layouts place it
 beside Console. Native
 macOS/Windows dialogs use UI-thread calls and owned UTF-8 result paths. Windows
-filesystem and JSON publication use Unicode APIs; native Windows verification is
-still unavailable. [ADR-069](adr/069-editor-projects-and-workspaces.md) records
+filesystem, startup arguments, importer reads, settings and logs share UTF-8
+and extended native path boundaries. Managed references use a shared raw grammar
+and checked serializer, separate from glTF URI and OBJ filename interpretation.
+[ADR-070](adr/070-portable-path-boundaries.md) records these boundaries and their
+regression gates; the [path proposal](proposals/portable-path-contract.md) retains
+unavailable native evidence checks. [ADR-069](adr/069-editor-projects-and-workspaces.md) records
 ownership, publication decisions and selected native Metal evidence. Native
 Windows/Vulkan parity, long-session stability and frame-budget acceptance remain
 separate gates.

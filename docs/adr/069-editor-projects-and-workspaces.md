@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-13
 authority: adr
 ---
 
@@ -42,6 +42,20 @@ the declared owner; imports copy their dependency closure into the workspace.
 The editor holds an OS-backed workspace write lease. A second editor can inspect
 the workspace without publishing changes or previews into it.
 
+The Scenes list offers confirmed permanent deletion in writable, idle projects.
+Deleting the active scene discards its edits and waits for the runtime unload
+before publication; deleting another scene preserves the active scene. The
+project store atomically removes membership and scene recall with stale-write
+rollback. A background `delete_scene` job then erases only the unreferenced
+`scenes/<id>` directory, preserving project-shared assets. It refuses links and
+Windows reparse points. File-removal failure or cancellation leaves membership
+removed and offers Retry to finish cleanup; it does not claim the files survived
+unchanged. An interrupted editor retains the job request in the workspace jobs
+directory, but automatic cleanup resumption after restart is not implemented.
+CPU storage tests cover ordering, recall removal, conflicts and empty projects;
+isolated filesystem checks cover deletion, retries and Windows junction refusal.
+Native interaction and active-scene retirement through this dialog remain unverified.
+
 [Projects UI](../../editor/src/editor_projects.c) owns project selection, scene
 creation/import, progress, Save/Discard/Cancel decisions and preference saves.
 Preparation, validation and resolution use a compact centered Scene loader:
@@ -61,6 +75,16 @@ Viewport and hierarchy recall are keyed by scene within the project. Lights,
 environment, probes, fog, authored cameras and edit overrides remain scene data.
 Native window/display placement and the workspace locator remain machine-local.
 
+Hierarchy offers Add entity for the loaded writable managed scene. Its form
+reuses the scene-creation light controls and native model picker, accepting
+GLTF, GLB, OBJ and cooked VKB models plus directional, point, spot and rectangle
+lights. The `add_entities` job appends source entities, preserving existing
+indices and overlay bindings, and publishes through the asset import owner.
+Unsaved edits resolve through Save/Discard/Cancel before the job starts. The
+runtime reloads the published scene and the editor selects the first added
+entity. Adding is durable publication, outside Inspector undo history. Failed
+jobs return to the draft for correction; Cancel reloads the original scene.
+
 The [job process](../../tools/editor_project_jobs.py) validates managed scene
 version 3 and lowers typed asset references into explicit runtime scene and font
 inputs. Runtime loaders do not discover workspaces. New source imports use
@@ -78,6 +102,13 @@ publication precedes the manifest reference. Cancellation cleans uncommitted
 staging; a revision transferred to publication ownership may remain unreferenced
 rather than risk deleting committed data. Scene Save writes an immutable overlay
 revision and atomically updates its manifest reference with conflict detection.
+Periodic preference and viewport recall saves use one background worker with an
+immutable copy of the project and all borrowed JSON views. The UI thread retains
+and reuses snapshot capacity, adopts the completed publication fingerprint, and
+keeps changes made during the write pending for the next snapshot. Durable file
+synchronization and conflict checks remain in the project store. Explicit saves,
+project mutations and teardown drain the worker before changing its owner or
+releasing the workspace write lease.
 The editor stops and joins workspace writers before releasing the write lease.
 Scene transitions pass explicit paths to the sample runtime, which unloads the
 current world before loading another through existing resource retirement.
@@ -127,6 +158,14 @@ retirement owners; the browser retains at most 64 texture requests and prunes it
 generated disk cache through a bounded worker operation.
 
 ## Verification and limits
+
+Entity addition passes the Release editor build and
+`tools/checks/check_editor_add_entities.py --mesh-cooker <built cooker>`.
+The CPU publication check covers four light kinds, source/cooked model instances,
+reopening, unchanged existing entities and overlay identity, and rejected-request
+preservation. Native Add-form interaction and screenshots remain unverified:
+the isolated full Bistro import exceeded the existing 1 MiB managed-document
+limit before a scene could open. No asset or baseline changes were published.
 
 Native window allocation initializes pending-close state before the first frame.
 Mouse capture requests are idempotent: modal frames can request release repeatedly
