@@ -15,6 +15,7 @@
 #include "math/vkr_quat.h"
 #include "math/vkr_transform.h"
 #include "renderer/systems/vkr_mesh_manager.h"
+#include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_world_resources.h"
 
@@ -141,6 +142,9 @@ typedef struct SceneEntityImport {
   bool8_t has_matrix;
   bool8_t has_mesh;
   String8 mesh_path;
+  bool8_t has_animation;
+  String8 animation_path;
+  VkrSceneAnimationConfig animation;
   String8 gltf_light_source;
   String8 gltf_light_range_overrides;
   bool8_t has_gltf_light_range_overrides;
@@ -192,6 +196,7 @@ typedef struct SceneMeshAsyncState {
   bool8_t attached;
   bool8_t completed;
   VkrResourceHandleInfo request_info;
+  VkrResourceHandleInfo animation_request;
 } SceneMeshAsyncState;
 
 typedef struct SceneShapeMaterialAsyncState {
@@ -2257,6 +2262,100 @@ vkr_internal void scene_json_parse_mesh(const VkrJsonReader *entity_reader,
   }
 }
 
+/* This optional block is strict: reject unknown/duplicate fields and malformed
+ * values before any resource request or scene mutation. */
+static bool8_t scene_json_parse_animation(const VkrJsonReader *entity_reader,
+                                          SceneEntityImport *out_entity) {
+  VkrJsonReader reader = *entity_reader;
+  if (!vkr_json_find_field(&reader, "animation")) {
+    return true_v;
+  }
+  VkrJsonReader object = {0};
+  if (!out_entity->has_mesh || !vkr_json_enter_object(&reader, &object)) {
+    return false_v;
+  }
+  object.pos = 1;
+  uint32_t seen = 0;
+  out_entity->animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT;
+  for (;;) {
+    vkr_json_skip_whitespace(&object);
+    if (object.pos >= object.length) {
+      return false_v;
+    }
+    if (object.data[object.pos] == '}') {
+      break;
+    }
+    String8 key = {0};
+    if (!vkr_json_parse_string(&object, &key)) {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&object);
+    if (object.pos >= object.length || object.data[object.pos++] != ':') {
+      return false_v;
+    }
+    uint32_t bit = 0;
+    bool8_t valid = false_v;
+    if (key.length == 4 && MemCompare(key.str, "path", 4) == 0) {
+      bit = 1;
+      valid = vkr_json_parse_string(&object, &out_entity->animation_path) &&
+              out_entity->animation_path.length > 0;
+    } else if (key.length == 4 && MemCompare(key.str, "clip", 4) == 0) {
+      bit = 2;
+      vkr_json_skip_whitespace(&object);
+      uint64_t value = 0;
+      uint64_t start = object.pos;
+      while (object.pos < object.length && object.data[object.pos] >= '0' &&
+             object.data[object.pos] <= '9') {
+        value = value * 10 + object.data[object.pos++] - '0';
+        if (value > UINT32_MAX) {
+          return false_v;
+        }
+      }
+      valid = object.pos > start &&
+              (object.pos == start + 1 || object.data[start] != '0');
+      out_entity->animation.clip = (uint32_t)value;
+    } else if (key.length == 4 && MemCompare(key.str, "rate", 4) == 0) {
+      bit = 4;
+      valid = vkr_json_parse_double(&object, &out_entity->animation.rate) &&
+              isfinite(out_entity->animation.rate);
+    } else if (key.length == 4 && MemCompare(key.str, "loop", 4) == 0) {
+      bit = 8;
+      valid = vkr_json_parse_bool(&object, &out_entity->animation.loop);
+    } else if (key.length == 10 && MemCompare(key.str, "controller", 10) == 0) {
+      bit = 32;
+      VkrJsonReader controller = {0};
+      valid = vkr_json_enter_object(&object, &controller);
+      if (valid) {
+        out_entity->animation.controller_json =
+            string8_create((uint8_t *)controller.data, controller.length);
+      }
+    } else if (key.length == 7 && MemCompare(key.str, "playing", 7) == 0) {
+      bit = 16;
+      valid = vkr_json_parse_bool(&object, &out_entity->animation.playing);
+    }
+    if (!valid || (seen & bit)) {
+      return false_v;
+    }
+    seen |= bit;
+    vkr_json_skip_whitespace(&object);
+    if (object.pos >= object.length) {
+      return false_v;
+    }
+    if (object.data[object.pos] == '}') {
+      break;
+    }
+    if (object.data[object.pos++] != ',') {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&object);
+    if (object.pos >= object.length || object.data[object.pos] == '}') {
+      return false_v;
+    }
+  }
+  out_entity->has_animation = (seen & 1) != 0;
+  return out_entity->has_animation;
+}
+
 vkr_internal void scene_json_parse_text3d(const VkrJsonReader *entity_reader,
                                           uint32_t entity_index,
                                           SceneEntityImport *out_entity) {
@@ -2581,6 +2680,10 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
     return false_v;
   }
   scene_json_parse_mesh(entity_reader, entity_index, out_entity);
+  if (!scene_json_parse_animation(entity_reader, out_entity)) {
+    log_error("Scene loader: entity %u has invalid animation", entity_index);
+    return false_v;
+  }
   scene_json_parse_text3d(entity_reader, entity_index, out_entity);
   scene_json_parse_shape(entity_reader, entity_index, out_entity);
   scene_json_parse_point_light(entity_reader, entity_index, out_entity);
@@ -2795,6 +2898,7 @@ static bool8_t scene_resolve_entity_paths(VkrAllocator *allocator,
                                           String8 owner,
                                           SceneEntityImport *entity) {
   return scene_resolve_path(allocator, owner, &entity->mesh_path) &&
+         scene_resolve_path(allocator, owner, &entity->animation_path) &&
          scene_resolve_path(allocator, owner, &entity->shape.material_path) &&
          scene_resolve_path(allocator, owner, &entity->text3d.font_name);
 }
@@ -3130,27 +3234,44 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
                                     .gltf_light_index = UINT32_MAX,
                                     .source_fingerprint =
                                         scene_source_fingerprint};
-    if (!vkr_scene_set_source_identity(scene, entity_ids[i], &identity))
-      return false_v;
+    if (!vkr_scene_set_source_identity(scene, entity_ids[i], &identity)) {
+      goto animation_failure;
+    }
     if (!imports[i].has_mesh)
       continue;
     VkrResourceHandleInfo resource = {0}, resolved = {0};
+    VkrResourceHandleInfo animation = {0};
+    VkrEntityId *nodes = NULL;
+    uint32_t node_count = 0;
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
     if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, imports[i].mesh_path,
-                                  temp_alloc, &resource, &error))
-      return false_v;
+                                  temp_alloc, &resource, &error)) {
+      if (resource.request_id || resource.as.mesh) {
+        vkr_resource_system_unload(&resource, imports[i].mesh_path);
+      }
+      if (out_error) {
+        *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
+      }
+      goto animation_failure;
+    }
     resolved = resource;
     bool8_t success = resource.as.mesh || vkr_resource_system_try_get_resolved(
                                               &resource, &resolved);
+    if (success && imports[i].has_animation) {
+      success = vkr_resource_system_load(VKR_RESOURCE_TYPE_ANIMATION,
+                                         imports[i].animation_path, temp_alloc,
+                                         &animation, &error);
+    }
     VkrMeshLoadDesc desc = {.mesh_path = imports[i].mesh_path,
                             .pipeline_domain = imports[i].pipeline_domain,
                             .shader_override = imports[i].shader_override,
                             .transform = vkr_transform_identity()};
     if (success && resolved.as.mesh->source.nodes.length) {
       const VkrMeshSource *source = &resolved.as.mesh->source;
-      VkrEntityId *nodes = vkr_allocator_alloc(
-          temp_alloc, source->nodes.length * sizeof(VkrEntityId),
-          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      node_count = (uint32_t)source->nodes.length;
+      nodes = vkr_allocator_alloc(temp_alloc,
+                                  source->nodes.length * sizeof(VkrEntityId),
+                                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       success = nodes && vkr_scene_instantiate_source_nodes(
                              scene, source, entity_ids[i], i, nodes, out_error);
       for (uint32_t n = 0; success && n < source->nodes.length; ++n) {
@@ -3173,11 +3294,26 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
           imports[i].shadow_caster_static, &error);
       loaded_meshes += success;
     }
-    vkr_resource_system_unload(&resource, imports[i].mesh_path);
+    if (success && imports[i].has_animation) {
+      const char *animation_error = NULL;
+      success = vkr_scene_animation_attach(
+          scene, entity_ids[i], &resource, &animation, nodes, node_count,
+          &imports[i].animation, temp_alloc, &animation_error);
+      if (!success) {
+        log_error("Scene loader: animation attach failed: %s",
+                  animation_error ? animation_error : "unknown error");
+      }
+    }
+    if (resource.request_id || resource.as.mesh) {
+      vkr_resource_system_unload(&resource, imports[i].mesh_path);
+    }
+    if (animation.request_id || animation.as.animation) {
+      vkr_resource_system_unload(&animation, imports[i].animation_path);
+    }
     if (!success) {
       if (out_error)
         *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
-      return false_v;
+      goto animation_failure;
     }
   }
 
@@ -3303,7 +3439,7 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
       if (out_error)
         *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
       log_error("Scene loader: failed to set rectangle light for entity %u", i);
-      return false_v;
+      goto animation_failure;
     }
   }
 
@@ -3354,6 +3490,14 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
   return true_v;
+
+animation_failure:
+  for (uint32_t i = 0; i < entity_count; ++i) {
+    if (imports[i].has_animation) {
+      vkr_scene_animation_detach(scene, entity_ids[i]);
+    }
+  }
+  return false_v;
 }
 
 vkr_internal bool8_t scene_loader_alloc_copy_string(VkrAllocator *allocator,
@@ -3820,6 +3964,26 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
     *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
     return false_v;
   }
+  if (entity_import->has_animation) {
+    if (load_state != VKR_RESOURCE_LOAD_STATE_READY) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+      return false_v;
+    }
+    VkrRendererError animation_error = VKR_RENDERER_ERROR_NONE;
+    VkrResourceLoadState animation_state = vkr_resource_system_get_state(
+        &mesh_state->animation_request, &animation_error);
+    if (animation_state != VKR_RESOURCE_LOAD_STATE_READY) {
+      *out_error =
+          (animation_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
+           animation_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU ||
+           animation_state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES)
+              ? VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED
+              : (animation_error != VKR_RENDERER_ERROR_NONE
+                     ? animation_error
+                     : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED);
+      return false_v;
+    }
+  }
   const VkrMeshSource *source = &resolved.as.mesh->source;
   if (source->nodes.length) {
     VkrScene *scene = vkr_scene_handle_get_scene(payload->scene_handle);
@@ -3866,10 +4030,30 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
         return false_v;
       payload->load_result.mesh_count++;
     }
+    if (end == mesh_state->source_node_count && entity_import->has_animation) {
+      const char *animation_error = NULL;
+      if (!vkr_scene_animation_attach(
+              scene, payload->entity_ids[entity_index],
+              &mesh_state->request_info, &mesh_state->animation_request,
+              mesh_state->source_nodes, mesh_state->source_node_count,
+              &entity_import->animation, &payload->assets->scratch_allocator,
+              &animation_error)) {
+        log_error("Scene loader: animation attach failed: %s",
+                  animation_error ? animation_error : "unknown error");
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
+      mesh_state->completed = true_v;
+    }
     mesh_state->attached = end == mesh_state->source_node_count;
     *out_error = mesh_state->attached ? VKR_RENDERER_ERROR_NONE
                                       : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
     return mesh_state->attached;
+  }
+
+  if (entity_import->has_animation) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
   }
 
   VkrMeshLoadDesc mesh_desc = {
@@ -3990,7 +4174,7 @@ vkr_internal bool8_t scene_loader_wait_mesh_dependencies(
 
 static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
                                          String8 owner, VkrAllocator *scratch) {
-  uint64_t count = (uint64_t)payload->entity_count * 3 + 4 +
+  uint64_t count = (uint64_t)payload->entity_count * 4 + 4 +
                    (uint64_t)payload->reflection_probe_import_count * 2;
   String8 **paths = vkr_allocator_alloc(scratch, count * sizeof(*paths),
                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -4004,6 +4188,7 @@ static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
   paths[cursor++] = &payload->diffuse_volume_import.path;
   for (uint32_t i = 0; i < payload->entity_count; ++i) {
     paths[cursor++] = &payload->imports[i].mesh_path;
+    paths[cursor++] = &payload->imports[i].animation_path;
     paths[cursor++] = &payload->imports[i].shape.material_path;
     paths[cursor++] = &payload->imports[i].text3d.font_name;
   }
@@ -4268,6 +4453,8 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     for (uint32_t i = 0; i < payload->entity_count; ++i) {
       scene_loader_init_request_info(&payload->mesh_states[i].request_info,
                                      VKR_RESOURCE_TYPE_MESH);
+      scene_loader_init_request_info(&payload->mesh_states[i].animation_request,
+                                     VKR_RESOURCE_TYPE_ANIMATION);
       scene_loader_init_request_info(
           &payload->shape_material_states[i].request_info,
           VKR_RESOURCE_TYPE_MATERIAL);
@@ -4279,6 +4466,18 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
             VKR_RESOURCE_TYPE_MESH, payload->imports[i].mesh_path, temp_alloc,
             &payload->mesh_states[i].request_info, &dependency_error);
         payload->mesh_states[i].requested = true_v;
+      }
+
+      if (payload->imports[i].has_animation) {
+        VkrRendererError dependency_error = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_resource_system_load(
+                VKR_RESOURCE_TYPE_ANIMATION, payload->imports[i].animation_path,
+                temp_alloc, &payload->mesh_states[i].animation_request,
+                &dependency_error)) {
+          scene_loader_destroy_async_payload(payload);
+          *out_error = dependency_error;
+          return false_v;
+        }
       }
 
       if (payload->imports[i].has_shape &&
@@ -4621,6 +4820,11 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
     if (payload->mesh_states) {
       for (uint32_t i = 0; i < payload->entity_count; ++i) {
         SceneMeshAsyncState *mesh_state = &payload->mesh_states[i];
+        if (mesh_state->animation_request.request_id ||
+            mesh_state->animation_request.as.animation) {
+          vkr_resource_system_unload(&mesh_state->animation_request,
+                                     payload->imports[i].animation_path);
+        }
         if (mesh_state->source_nodes) {
           vkr_allocator_free_ts(
               &payload->assets->scene_async_allocator, mesh_state->source_nodes,
@@ -4630,7 +4834,8 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
           mesh_state->source_nodes = NULL;
         }
 
-        if (mesh_state->request_info.request_id != 0 &&
+        if ((mesh_state->request_info.request_id != 0 ||
+             mesh_state->request_info.as.mesh) &&
             payload->imports[i].mesh_path.str &&
             payload->imports[i].mesh_path.length > 0) {
           vkr_resource_system_unload(&mesh_state->request_info,

@@ -96,6 +96,11 @@ typedef struct VkrMetalPacketPreparedPass {
   union {
     VkrMetalPacketDispatch dispatch;
     struct {
+      uint64_t roots[VKR_SKINNING_BINDING_CAPACITY];
+      uint32_t vertices[VKR_SKINNING_BINDING_CAPACITY];
+      uint32_t count;
+    } skinning;
+    struct {
       id<MTLComputePipelineState> pipeline;
       uint64_t root;
       uint64_t arguments;

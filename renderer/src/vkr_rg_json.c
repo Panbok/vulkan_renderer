@@ -23,6 +23,8 @@ typedef struct VkrRgJsonConditionSpec {
 vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_ENABLED},
     {"scene_rendering", VKR_RG_JSON_CONDITION_SCENE_RENDERING},
+    {"skinning_enabled", VKR_RG_JSON_CONDITION_SKINNING_ENABLED},
+    {"animation_preview_enabled", VKR_RG_JSON_CONDITION_ANIMATION_PREVIEW_ENABLED},
     {"post_transform_cache_enabled",
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE},
     {"post_transform_cache_enabled && editor_enabled",
@@ -935,6 +937,8 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_desc(
                    &source, "transmission_gpu_draw_visible_capacity"))
         out_desc->draw_count_source =
             VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE;
+      else if (vkr_string8_equals_cstr_i(&source, "skinning_vertex_capacity"))
+        out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_SKINNING_VERTICES;
       else
         return vkr_rg_json_error(ctx, field_path,
                                  "unknown draw-table count source");
@@ -2008,6 +2012,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   switch (condition->kind) {
   case VKR_RG_JSON_CONDITION_SCENE_RENDERING:
     return frame->scene_rendering;
+  case VKR_RG_JSON_CONDITION_SKINNING_ENABLED:
+    return frame->skinning_enabled;
+  case VKR_RG_JSON_CONDITION_ANIMATION_PREVIEW_ENABLED:
+    return frame->animation_preview_enabled;
   case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE:
     return frame->post_transform_cache_enabled;
   case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_EDITOR:
@@ -2808,6 +2816,10 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           uint32_t count = 0u;
           uint32_t max_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
           switch (resource->buffer.draw_count_source) {
+          case VKR_RG_JSON_DRAW_COUNT_SKINNING_VERTICES:
+            count = frame->skinning_vertex_capacity;
+            max_count = VKR_SKINNING_VERTEX_CAPACITY;
+            break;
           case VKR_RG_JSON_DRAW_COUNT_CANDIDATES:
             count = frame->gpu_draw_candidate_capacity;
             break;

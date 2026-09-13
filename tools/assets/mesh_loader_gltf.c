@@ -2394,10 +2394,121 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_read_decal_overrides(
   return true_v;
 }
 
+/* The source mesh can be bound by multiple nodes to different skin palettes.
+ * Keep joint indices palette-relative and prove every binding can address them.
+ */
+vkr_internal bool8_t vkr_mesh_loader_gltf_read_skin(
+    const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
+    const cgltf_mesh *mesh, const cgltf_primitive *primitive,
+    uint32_t vertex_count, VkrMeshSkinVertex **out_vertices) {
+  *out_vertices = NULL;
+  const cgltf_accessor *joints = NULL;
+  const cgltf_accessor *weights = NULL;
+  for (cgltf_size i = 0; i < primitive->attributes_count; ++i) {
+    const cgltf_attribute *attribute = &primitive->attributes[i];
+    if (attribute->type != cgltf_attribute_type_joints &&
+        attribute->type != cgltf_attribute_type_weights) {
+      continue;
+    }
+    if (attribute->index != 0) {
+      log_error("MeshLoader(glTF): only JOINTS_0/WEIGHTS_0 are supported");
+      return false_v;
+    }
+    const cgltf_accessor **target =
+        attribute->type == cgltf_attribute_type_joints ? &joints : &weights;
+    if (*target || !attribute->data) {
+      return false_v;
+    }
+    *target = attribute->data;
+  }
+  uint32_t joint_limit = UINT32_MAX;
+  bool8_t skinned = false_v;
+  for (cgltf_size i = 0; i < data->nodes_count; ++i) {
+    const cgltf_node *node = &data->nodes[i];
+    if (node->mesh == mesh && node->skin) {
+      if (!node->skin->joints_count || node->skin->joints_count > UINT32_MAX) {
+        return false_v;
+      }
+      skinned = true_v;
+      joint_limit = Min(joint_limit, (uint32_t)node->skin->joints_count);
+    }
+  }
+  if (!joints && !weights) {
+    if (skinned) {
+      log_error("MeshLoader(glTF): skinned primitive has no joint influences");
+    }
+    return !skinned;
+  }
+  if (!data->skins_count) {
+    log_error("MeshLoader(glTF): influences require a source skin definition");
+    return false_v;
+  }
+  if (!joints || !weights || joints->type != cgltf_type_vec4 ||
+      weights->type != cgltf_type_vec4 || joints->count != vertex_count ||
+      weights->count != vertex_count || joints->normalized ||
+      (joints->component_type != cgltf_component_type_r_8u &&
+       joints->component_type != cgltf_component_type_r_16u) ||
+      !((weights->component_type == cgltf_component_type_r_32f &&
+         !weights->normalized) ||
+        ((weights->component_type == cgltf_component_type_r_8u ||
+          weights->component_type == cgltf_component_type_r_16u) &&
+         weights->normalized))) {
+    log_error("MeshLoader(glTF): invalid joint/weight accessor pair");
+    return false_v;
+  }
+  const uint64_t element_count = (uint64_t)vertex_count * 4u;
+  float32_t *joint_values = vkr_allocator_alloc(
+      info->scratch_allocator, element_count * sizeof(float32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  float32_t *weight_values = vkr_allocator_alloc(
+      info->scratch_allocator, element_count * sizeof(float32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrMeshSkinVertex *vertices = vkr_allocator_alloc(
+      info->scratch_allocator, (uint64_t)vertex_count * sizeof(*vertices),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!joint_values || !weight_values || !vertices) {
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return false_v;
+  }
+  if (cgltf_accessor_unpack_floats(joints, joint_values, element_count) !=
+          element_count ||
+      cgltf_accessor_unpack_floats(weights, weight_values, element_count) !=
+          element_count) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < vertex_count; ++i) {
+    float64_t sum = 0.0;
+    for (uint32_t lane = 0; lane < 4u; ++lane) {
+      const float32_t weight = weight_values[(uint64_t)i * 4u + lane];
+      const float32_t joint = joint_values[(uint64_t)i * 4u + lane];
+      if (!isfinite(weight) || weight < 0.0f || !isfinite(joint) ||
+          joint < 0.0f || joint > 65535.0f || floorf(joint) != joint ||
+          (weight > 0.0f && (uint32_t)joint >= joint_limit)) {
+        log_error("MeshLoader(glTF): invalid vertex joint or weight");
+        return false_v;
+      }
+      sum += weight;
+    }
+    if (!(sum > 0.0) || !isfinite(sum)) {
+      log_error("MeshLoader(glTF): vertex has no positive skin weight");
+      return false_v;
+    }
+    for (uint32_t lane = 0; lane < 4u; ++lane) {
+      const uint64_t index = (uint64_t)i * 4u + lane;
+      const float32_t weight = (float32_t)(weight_values[index] / sum);
+      vertices[i].weights[lane] = weight > 0.0f ? weight : 0.0f;
+      vertices[i].joints[lane] =
+          weight > 0.0f ? (uint32_t)joint_values[index] : 0u;
+    }
+  }
+  *out_vertices = vertices;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
-    const cgltf_primitive *primitive, Mat4 world, Mat4 normal_matrix,
-    Mat4 decal_world, const String8 *material_paths,
+    const cgltf_mesh *mesh, const cgltf_primitive *primitive, Mat4 world,
+    Mat4 normal_matrix, Mat4 decal_world, const String8 *material_paths,
     const VkrMeshLoaderGltfDecalOverrides *decal_overrides,
     uint32_t *in_out_primitive_count) {
   if (!info || !data || !primitive || !in_out_primitive_count) {
@@ -2508,6 +2619,17 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
   if (!vertices || !indices) {
     vkr_allocator_end_scope(&primitive_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return false_v;
+  }
+
+  VkrMeshSkinVertex *skin_vertices = NULL;
+  if (!vkr_mesh_loader_gltf_read_skin(info, data, mesh, primitive, vertex_count,
+                                      &skin_vertices)) {
+    vkr_allocator_end_scope(&primitive_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!info->out_error || *info->out_error == VKR_RENDERER_ERROR_NONE) {
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    }
     return false_v;
   }
 
@@ -2630,7 +2752,13 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
          the tangent basis so neighboring faces cannot average their normals. */
       VkrVertex3d *flat_vertices = vkr_allocator_alloc(info->scratch_allocator,
           (uint64_t)index_count * sizeof(VkrVertex3d), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      if (!flat_vertices) {
+      VkrMeshSkinVertex *flat_skin =
+          skin_vertices
+              ? vkr_allocator_alloc(info->scratch_allocator,
+                                    (uint64_t)index_count * sizeof(*flat_skin),
+                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+              : NULL;
+      if (!flat_vertices || (skin_vertices && !flat_skin)) {
         vkr_allocator_end_scope(&primitive_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
         vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
         return false_v;
@@ -2642,11 +2770,15 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
         const Vec3 n = vec3_normalize(vec3_cross(vec3_sub(p1,p0), vec3_sub(p2,p0)));
         for (uint32_t c = 0; c < 3u; ++c) {
           flat_vertices[i+c] = vertices[indices[i+c]];
+          if (flat_skin) {
+            flat_skin[i + c] = skin_vertices[indices[i + c]];
+          }
           flat_vertices[i+c].normal = vkr_vertex_pack_vec3(n);
           indices[i+c] = i+c;
         }
       }
       vertices = flat_vertices;
+      skin_vertices = flat_skin;
       vertex_count = index_count;
     }
     if (!tangent_accessor)
@@ -2670,6 +2802,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
 
   VkrMeshLoaderGltfPrimitive out_primitive = {
       .vertices = vertices,
+      .skin_vertices = skin_vertices,
       .vertex_count = vertex_count,
       .indices = indices,
       .index_count = index_count,
@@ -2756,6 +2889,35 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_scene(
   for (cgltf_size i = 0; i < data->buffers_count; ++i)
     source->fingerprint = vkr_mesh_source_hash(
         source->fingerprint, data->buffers[i].data, data->buffers[i].size);
+  if (data->skins_count > 65536u) {
+    return false_v;
+  }
+  for (cgltf_size i = 0; i < data->skins_count; ++i) {
+    if (!data->skins[i].joints_count ||
+        data->skins[i].joints_count > data->nodes_count) {
+      return false_v;
+    }
+  }
+  if (info->out_skin) {
+    *info->out_skin = (VkrMeshSkinData){
+        .animation_fingerprint = data->skins_count ? source->fingerprint : 0u,
+        .skin_count = (uint32_t)data->skins_count,
+    };
+    if (data->skins_count) {
+      info->out_skin->joint_counts = vkr_allocator_alloc(
+          info->load_allocator, data->skins_count * sizeof(uint32_t),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      if (!info->out_skin->joint_counts) {
+        vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+        return false_v;
+      }
+    }
+  }
+  for (cgltf_size i = 0; i < data->skins_count; ++i) {
+    if (info->out_skin) {
+      info->out_skin->joint_counts[i] = (uint32_t)data->skins[i].joints_count;
+    }
+  }
   source->fingerprint =
       vkr_mesh_source_hash(source->fingerprint, decal_overrides->offsets,
                            decal_overrides->count * sizeof(float32_t));
@@ -2901,7 +3063,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_scene(
     const cgltf_mesh *input = &data->meshes[mesh->source_mesh_index];
     for (cgltf_size p = 0; p < input->primitives_count; ++p) {
       if (!vkr_mesh_loader_gltf_emit_primitive(
-              info, data, &input->primitives[p], mat4_identity(),
+              info, data, input, &input->primitives[p], mat4_identity(),
               mat4_identity(), variant_worlds[m], material_paths,
               decal_overrides, primitive_count))
         return false_v;

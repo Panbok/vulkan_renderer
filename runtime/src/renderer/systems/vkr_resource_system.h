@@ -11,6 +11,7 @@
 // =============================================================================
 
 typedef struct VkrMeshLoaderResult VkrMeshLoaderResult;
+typedef struct VkrAnimationLoaderResult VkrAnimationLoaderResult;
 typedef struct VkrRendererMetricsProducerConfig
     VkrRendererMetricsProducerConfig;
 
@@ -24,6 +25,7 @@ typedef enum VkrResourceType {
   VKR_RESOURCE_TYPE_BITMAP_FONT,
   VKR_RESOURCE_TYPE_SYSTEM_FONT,
   VKR_RESOURCE_TYPE_MTSDF_FONT,
+  VKR_RESOURCE_TYPE_ANIMATION,
   VKR_RESOURCE_TYPE_CUSTOM,
 } VkrResourceType;
 
@@ -42,6 +44,7 @@ typedef struct VkrResourceHandleInfo {
     VkrMaterialHandle material;
     VkrGeometryHandle geometry;
     VkrMeshLoaderResult *mesh;
+    VkrAnimationLoaderResult *animation;
     VkrSceneHandle scene;
     VkrFont font;
     void *custom; // VKR_RESOURCE_TYPE_CUSTOM

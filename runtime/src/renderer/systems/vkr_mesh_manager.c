@@ -1,3 +1,4 @@
+#include "vkr_frame_input.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "vkr_geometry_upload.h"
 
@@ -3743,4 +3744,39 @@ uint32_t vkr_mesh_manager_instance_count(const VkrMeshManager *manager) {
 uint32_t vkr_mesh_manager_instance_capacity(const VkrMeshManager *manager) {
   assert_log(manager != NULL, "Manager is NULL");
   return (uint32_t)manager->mesh_instances.length;
+}
+
+void vkr_mesh_manager_instance_set_skinning(VkrMeshManager *manager,
+    VkrMeshInstanceHandle handle, const VkrSkinningInput *input,
+    Mat4 model, Vec3 min_extents, Vec3 max_extents) {
+  VkrMeshInstance *instance = vkr_mesh_manager_get_instance(manager, handle);
+  if (!instance) {
+    return;
+  }
+  const uint64_t generation = input ? input->pose_generation : 0;
+  bool8_t changed = instance->skinning != input ||
+      instance->skinning_generation != generation ||
+      MemCompare(&instance->model, &model, sizeof(model)) != 0;
+  instance->skinning = input;
+  instance->skinning_generation = generation;
+  instance->model = model;
+  if (input) {
+    instance->skinning_min = min_extents;
+    instance->skinning_max = max_extents;
+    const Vec3 center = vec3_scale(vec3_add(min_extents, max_extents), 0.5f);
+    instance->bounds_valid = true_v;
+    instance->bounds_world_center = mat4_mul_vec3(model, center);
+    instance->bounds_world_radius = vec3_length(vec3_sub(max_extents, center)) *
+        mat4_affine_sphere_scale(model);
+    if (instance->shadow_mobility != VKR_SHADOW_CASTER_MOBILITY_DYNAMIC) {
+      instance->shadow_mobility = VKR_SHADOW_CASTER_MOBILITY_DYNAMIC;
+      vkr_mesh_manager_note_topology_change(manager);
+    }
+  } else {
+    VkrMeshAsset *asset = vkr_mesh_manager_get_live_asset(manager, instance->asset);
+    vkr_mesh_manager_update_instance_bounds(instance, asset, model);
+  }
+  if (changed) {
+    vkr_mesh_manager_note_content_change(manager, instance->shadow_mobility, true_v);
+  }
 }

@@ -654,6 +654,9 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
     vkr_vk_report_upload_exhaustion(renderer, slot);
     return false_v;
   }
+  if (!vkr_vk_finalize_skinning_instances(renderer, slot)) {
+    return false_v;
+  }
   if (!vkr_vk_prepare_capture(renderer, slot)) {
     log_error("Vulkan failed to prepare capture commands");
     vkr_vk_report_upload_exhaustion(renderer, slot);
@@ -978,7 +981,9 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
-  if (packet->scene_rendering && !vkr_vk_select_history_output(renderer)) {
+  if ((packet->scene_rendering ||
+       (packet->input.world && packet->input.world->skinning_count)) &&
+      !vkr_vk_select_history_output(renderer)) {
     log_error("Vulkan failed to select a completion-safe history output");
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
@@ -1140,6 +1145,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     vkr_vk_mark_froxel_submitted(renderer, signal_value);
     vkr_vk_mark_exposure_submitted(renderer, signal_value);
   }
+  vkr_vk_mark_skinning_submitted(renderer, signal_value);
   vkr_vk_mark_graph_images_submitted(renderer, signal_value);
   vkr_vk_mark_graph_buffers_submitted(renderer, signal_value);
   slot->retire_value = signal_value;

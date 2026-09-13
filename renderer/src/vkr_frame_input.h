@@ -24,7 +24,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 46u
+#define VKR_FRAME_INPUT_VERSION 47u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -262,10 +262,30 @@ typedef struct VkrPreparedUiDrawList {
 #define VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY 0x4u
 #define VKR_WORLD_MATERIAL_FEATURE_ALL 0x7u
 
+/** Immutable source arrays and current pose borrowed through render_frame.
+ * Vertices use the complete geometry-local order. Unreferenced vertices may
+ * carry joints from other skins; kernels must guard joint_count before reads.
+ * A matching temporal identity and discontinuity is required for motion reuse.
+ */
+typedef struct VkrSkinningInput {
+  VkrGeometryHandle geometry;
+  uint32_t temporal_index;
+  uint32_t temporal_generation;
+  uint64_t pose_generation;
+  uint64_t discontinuity;
+  const VkrVertex3d *vertices;
+  const VkrSkinningInfluence *influences;
+  const Mat4 *palette;
+  uint32_t vertex_count;
+  uint32_t joint_count;
+} VkrSkinningInput;
+
 /**
  * @brief Payload for GPU-driven world stages and retained ordinary blend.
  */
 typedef struct VkrWorldPassPayload {
+  const VkrSkinningInput *skinning;
+  uint32_t skinning_count;
   /** Conservative aggregate over opaque/cutout source materials. Unknown
    * aggregates retain all planes for packet producers that do not extract it.
    */
@@ -487,7 +507,22 @@ typedef struct VkrGpuDebugPayload {
  * assets. Non-NULL pass payloads enable their corresponding render-graph
  * passes.
  */
+typedef struct VkrAnimationPreviewDraw {
+  VkrGeometryHandle geometry;
+  uint32_t submesh_index;
+  uint32_t skinning_index;
+  Mat4 model;
+} VkrAnimationPreviewDraw;
+
+/** Independent, fixed 512-square editor view. No main-view history is reused. */
+typedef struct VkrAnimationPreviewInput {
+  Mat4 view_projection;
+  const VkrAnimationPreviewDraw *draws;
+  uint32_t draw_count;
+} VkrAnimationPreviewInput;
+
 typedef struct VkrFrameInput {
+  const VkrAnimationPreviewInput *animation_preview;
   uint32_t version;
   VkrFrameInfo frame;
   VkrFrameGlobals globals;
@@ -516,3 +551,24 @@ typedef struct VkrValidationError {
 /** Validate caller-owned data before allocating or recording frame work. */
 VkrRendererError vkr_frame_input_validate(const VkrFrameInput *packet,
                                           VkrValidationError *out_error);
+
+/** CPU metadata committed only with the history buffer's successful submit. */
+typedef struct VkrSkinningHistoryRecord {
+  VkrGeometryHandle geometry;
+  uint32_t temporal_index;
+  uint32_t temporal_generation;
+  uint32_t vertex_count;
+  uint64_t discontinuity;
+  uint64_t offset_bytes;
+} VkrSkinningHistoryRecord;
+
+typedef struct VkrSkinningHistory {
+  uint64_t producer_submit;
+  uint32_t count;
+  VkrSkinningHistoryRecord records[VKR_SKINNING_BINDING_CAPACITY];
+} VkrSkinningHistory;
+
+bool8_t vkr_skinning_history_prepare(const VkrWorldPassPayload *world,
+                                     VkrSkinningHistory *history);
+uint64_t vkr_skinning_history_find(const VkrSkinningHistory *history,
+                                  const VkrSkinningInput *input);

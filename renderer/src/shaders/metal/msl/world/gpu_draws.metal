@@ -136,6 +136,7 @@ vkr_metal_packet_local_shadow_transmission_vertex(
       vertices[geometry.first_vertex + vertex_id], decode[visible.decode_index]);
   const device VkrMetalPacketInstance &instance =
       root->frame->instances[visible.instance_index];
+  data = vkr_apply_deformation(data, instance.deformation_address, vertex_id);
   float4 world = instance.model * float4(data.position, 1.0f);
   VkrMetalPacketVertexOutput output;
   // Frame roots store the transposed matrix used by Slang's row-vector lowering.
@@ -795,6 +796,7 @@ static void vkr_metal_packet_gbuffer_resolve(
   device const uint *indices = reinterpret_cast<device const uint *>(
       geometry.index_address + ulong(visible.first_index) * sizeof(uint));
   VkrGpuDecodedVertex vertices[3];
+  float3 previous_positions[3];
   float4 clip[3];
   device const VkrPackedStaticVertex *vertex_rows =
       reinterpret_cast<device const VkrPackedStaticVertex *>(
@@ -816,6 +818,11 @@ static void vkr_metal_packet_gbuffer_resolve(
     }
     vertices[corner] = vkr_decode_packed_vertex(
         vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
+    vertices[corner] = vkr_apply_deformation(
+        vertices[corner], instance.deformation_address, uint(vertex_index));
+    previous_positions[corner] = vkr_previous_deformed_position(
+        vertices[corner].position, instance.previous_deformation_address,
+        uint(vertex_index));
     float3 position = vertices[corner].position;
     clip[corner] =
         root.view_projection * (instance.model * float4(position, 1.0));
@@ -871,6 +878,9 @@ static void vkr_metal_packet_gbuffer_resolve(
   float3 object_normal = vertices[0].normal * barycentric.x +
                          vertices[1].normal * barycentric.y +
                          vertices[2].normal * barycentric.z;
+  float3 previous_object_position = previous_positions[0] * barycentric.x +
+                                    previous_positions[1] * barycentric.y +
+                                    previous_positions[2] * barycentric.z;
   float3 object_position = vertices[0].position * barycentric.x +
                            vertices[1].position * barycentric.y +
                            vertices[2].position * barycentric.z;
@@ -981,13 +991,15 @@ static void vkr_metal_packet_gbuffer_resolve(
       instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY) {
     const device VkrTemporalTransform &previous =
         root.previous_transforms[instance.temporal_index];
-    if (previous.valid != 0u &&
+    if ((instance.deformation_address == 0 ||
+         instance.previous_deformation_address != 0) &&
+        previous.valid != 0u &&
         previous.generation == instance.temporal_generation &&
         previous.frame_index == root.previous_frame_index) {
       float4 current_clip = root.current_view_projection *
                             (instance.model * float4(object_position, 1.0));
       float4 previous_clip = root.previous_view_projection *
-                             (previous.model * float4(object_position, 1.0));
+                             (previous.model * float4(previous_object_position, 1.0));
       if (current_clip.w > 1e-6 && previous_clip.w > 1e-6) {
         float2 current_ndc = current_clip.xy / current_clip.w;
         float2 previous_ndc = previous_clip.xy / previous_clip.w;
@@ -1959,6 +1971,7 @@ struct VkrMetalPacketTransmissionSurface {
   float thickness;
   uint material_index;
   float3 object_position;
+  float3 previous_object_position;
   uint instance_index;
   uint primitive_id;
 };
@@ -1999,6 +2012,7 @@ static bool vkr_metal_packet_resolve_transmission_surface(
       reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
           geometry.decode_address)[visible.decode_index];
   VkrGpuDecodedVertex vertices[3];
+  float3 previous_positions[3];
   float4 clip[3];
   const device VkrMetalPacketInstance &instance =
       root.instances[visible.instance_index];
@@ -2012,6 +2026,11 @@ static bool vkr_metal_packet_resolve_transmission_surface(
     }
     vertices[corner] = vkr_decode_packed_vertex(
         vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
+    vertices[corner] = vkr_apply_deformation(
+        vertices[corner], instance.deformation_address, uint(vertex_index));
+    previous_positions[corner] = vkr_previous_deformed_position(
+        vertices[corner].position, instance.previous_deformation_address,
+        uint(vertex_index));
     float3 position = vertices[corner].position;
     clip[corner] =
         root.view_projection * (instance.model * float4(position, 1.0));
@@ -2189,6 +2208,9 @@ static bool vkr_metal_packet_resolve_transmission_surface(
                              gradients)
                      .g;
   }
+  float3 previous_object_position = previous_positions[0] * barycentric.x +
+                                    previous_positions[1] * barycentric.y +
+                                    previous_positions[2] * barycentric.z;
   float3 object_position = vertices[0].position * barycentric.x +
                            vertices[1].position * barycentric.y +
                            vertices[2].position * barycentric.z;
@@ -2221,6 +2243,7 @@ static bool vkr_metal_packet_resolve_transmission_surface(
              max(thickness, 0.0),
              visible.material_index,
              object_position,
+             previous_object_position,
              visible.instance_index,
              visibility.y};
   return true;
@@ -2528,7 +2551,9 @@ static void vkr_metal_packet_write_transmission_temporal(
       instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY) {
     const device VkrTemporalTransform &previous =
         root.previous_transforms[instance.temporal_index];
-    if (previous.valid != 0u &&
+    if ((instance.deformation_address == 0 ||
+         instance.previous_deformation_address != 0) &&
+        previous.valid != 0u &&
         previous.generation == instance.temporal_generation &&
         previous.frame_index == root.previous_frame_index) {
       float4 current_clip =
@@ -2536,7 +2561,7 @@ static void vkr_metal_packet_write_transmission_temporal(
           (instance.model * float4(surface.object_position, 1.0));
       float4 previous_clip =
           root.previous_view_projection *
-          (previous.model * float4(surface.object_position, 1.0));
+          (previous.model * float4(surface.previous_object_position, 1.0));
       if (current_clip.w > 1e-6 && previous_clip.w > 1e-6) {
         float2 current_ndc = current_clip.xy / current_clip.w;
         float2 previous_ndc = previous_clip.xy / previous_clip.w;

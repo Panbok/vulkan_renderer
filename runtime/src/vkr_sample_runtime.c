@@ -3073,8 +3073,10 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   VkrSampleSceneRequest scene_request = {0};
   VkrSampleEditorStateRequest editor_state_request = {0};
   VkrSampleCloseResponse close_response = VKR_SAMPLE_CLOSE_NONE;
+  bool8_t scene_shortcuts_blocked = false_v;
   state->modal = false_v;
   application->editor_viewport.scene_backdrop_blur = false_v;
+  application->animation_preview = (VkrAnimationPreviewRequest){0};
   const VkrMaterialTextureStreamStats texture_streams =
       vkr_material_system_get_texture_stream_stats(
           &application->assets.material_system);
@@ -3123,6 +3125,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       .transport_action = &transport_action,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
       .scene_backdrop_blur = &application->editor_viewport.scene_backdrop_blur,
+      .animation_preview = &application->animation_preview,
+      .scene_shortcuts_blocked = &scene_shortcuts_blocked,
       .scene = application->active_scene,
       .selected_entity = state->selected_entity,
       .scene_generation = application->scene_generation,
@@ -3160,7 +3164,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   application->ui_capture.mouse |=
       application->editor_viewport.dock_capture.mouse;
   if (application->editor_viewport.enabled && !application->ui_capture.text &&
-      !state->modal) {
+      !state->modal && !scene_shortcuts_blocked) {
     if (input_key_shortcut_modifier(state->input_state, KEY_S) &&
         input_key_just_pressed(state->input_state, KEY_S))
       scene_edit.action = VKR_SCENE_EDIT_SAVE;

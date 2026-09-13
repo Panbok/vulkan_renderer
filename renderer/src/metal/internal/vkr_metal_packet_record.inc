@@ -13,6 +13,17 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SKINNING:
+    for (uint32_t i = 0u; i < pass->skinning.count; ++i) {
+      const VkrMetalPacketDispatch dispatch = {
+          .pipeline = renderer->skinning_pipeline,
+          .root = pass->skinning.roots[i],
+          .threads = MTLSizeMake(pass->skinning.vertices[i], 1u, 1u),
+          .group_size = MTLSizeMake(64u, 1u, 1u),
+      };
+      vkr_metal_packet_record_dispatch(renderer, encoder, &dispatch);
+    }
+    break;
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE:
     // MetalFX owns its encoders; its final write is published through this
     // fence.
@@ -205,6 +216,7 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
           text->root_gpu, text->count, text->width, text->height);
     break;
   }
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY:
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING: {
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;

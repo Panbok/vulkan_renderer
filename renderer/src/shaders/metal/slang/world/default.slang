@@ -32,6 +32,7 @@ vkr_metal_packet_vertex_data(uint vertex_id, uint instance_id,
         decode[visible.decode_index]);
     VkrMetalPacketInstance instance =
         frame.instances[visible.instance_index + (gpu_draw ? 0u : instance_id)];
+    vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_id);
     VkrMetalPacketVertexData output;
     float4 world_position = mul(instance.model, float4(vertex.position, 1.0));
     output.position = mul(frame.view_projection, world_position);
@@ -47,10 +48,13 @@ vkr_metal_packet_vertex_data(uint vertex_id, uint instance_id,
                              float4(vertex.tangent.xyz, 0.0)).xyz),
                vertex.tangent.w * instance.normal_column0.w);
     output.visible_row_index = visible_row_index;
-    output.object_position = vertex.position;
+    // This varying supplies previous-frame object space to the motion fragment.
+    output.object_position = vkr_previous_deformed_position(
+        vertex.position, instance.previous_deformation_address, vertex_id);
     output.temporal_index = instance.temporal_index;
     output.temporal_generation = instance.temporal_generation;
-    output.temporal_flags = instance.temporal_flags;
+    output.temporal_flags = instance.deformation_address != 0 &&
+        instance.previous_deformation_address == 0 ? 0u : instance.temporal_flags;
     return output;
 }
 

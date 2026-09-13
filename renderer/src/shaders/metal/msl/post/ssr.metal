@@ -422,6 +422,8 @@ kernel void vkr_metal_packet_ssr_temporal(
     const device VkrMetalPacketInstance &traced_instance =
         root.instances[root.visible_rows[traced_visible - 1u].instance_index];
     current_correspondence =
+        receiver_instance.deformation_address == 0 &&
+        hit_instance.deformation_address == 0 &&
         traced_instance.temporal_index == receiver_instance.temporal_index &&
         traced_instance.temporal_generation ==
             receiver_instance.temporal_generation &&

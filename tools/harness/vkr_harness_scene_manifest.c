@@ -18,7 +18,7 @@ vkr_harness_scene_asset_extension(const char *path,
   static const char *extensions[] = {
       ".json", ".gltf",    ".glb", ".bin", ".obj", ".mtl", ".mt",   ".png",
       ".jpg",  ".jpeg",    ".bmp", ".tga", ".hdr", ".ktx", ".ktx2", ".vkt",
-      ".vkb",  ".fontcfg", ".ttf", ".ttc", ".fnt", ".vkf", ".vkfa", ".vkdv",
+      ".vka", ".vkb",  ".fontcfg", ".ttf", ".ttc", ".fnt", ".vkf", ".vkfa", ".vkdv",
   };
   uint64_t length = 0u;
   uint64_t filename = 0u;
@@ -570,14 +570,13 @@ bool8_t vkr_harness_scene_manifest_build_context(
     }
 
     if (!is_json && !is_glb && !scan_lines) {
-      if (context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE &&
-          vkr_harness_scene_path_ends_with(asset->path, ".vkb")) {
+      if (vkr_harness_scene_path_ends_with(asset->path, ".vkb")) {
         char remap[VKR_HARNESS_PATH_MAX];
         if (string_format(remap, sizeof(remap), "%s.remap.json", asset->path) <=
                 0 ||
             !vkr_harness_scene_manifest_add_reference(
-                resolved_root, asset->path, out_manifest, remap, true_v,
-                out_error)) {
+                resolved_root, asset->path, out_manifest, remap,
+                context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE, out_error)) {
           ok = false_v;
           break;
         }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "assets/vkr_mesh_skin.h"
 #include "assets/vkr_mesh_source.h"
 #include "containers/array.h"
 #include "containers/str.h"
@@ -58,6 +59,8 @@ typedef struct VkrMeshLoaderResult {
   String8 source_path;
   VkrTransform root_transform;
   VkrMeshSource source;
+  /** CPU influences share the result arena; no GPU upload is implied. */
+  VkrMeshSkinData skin;
   bool8_t
       has_mesh_buffer; /**< True when mesh_buffer/submeshes are populated. */
   VkrMeshLoaderBuffer mesh_buffer; /**< Merged vertex/index payload. */

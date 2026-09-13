@@ -105,6 +105,10 @@ vkr_global const VkrGpuAbiField vkr_gpu_instance_fields[] = {
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column0, "normal_column0", 80),
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column1, "normal_column1", 96),
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column2, "normal_column2", 112),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, deformation_address,
+                      "deformation_address", 128),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, previous_deformation_address,
+                      "previous_deformation_address", 136),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_text_vertex_fields[] = {
@@ -201,7 +205,7 @@ vkr_global const VkrGpuAbiRecord
             vkr_gpu_geometry_decode_record_fields),
         [VKR_GPU_ABI_INSTANCE] =
             VKR_GPU_ABI_RECORD(VkrPreparedInstanceGPU, "VkrMetalPacketInstance",
-                               128, 16, vkr_gpu_instance_fields),
+                               144, 16, vkr_gpu_instance_fields),
         [VKR_GPU_ABI_TEXT_VERTEX] =
             VKR_GPU_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32,
                                16, vkr_gpu_text_vertex_fields),

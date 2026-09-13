@@ -43,6 +43,7 @@ VkrVkLocalShadowTransmissionOutput vk_local_shadow_transmission_vertex(
         geometry.vertices[geometry.first_vertex + vertex_id],
         geometry.decode[visible.decode_index]);
     VkrVulkanInstance instance = raster.frame.instances[visible.instance_index];
+    vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_id);
     VkrVkLocalShadowTransmissionOutput output;
     output.world = mul(instance.model, float4(vertex.position, 1.0f)).xyz;
     output.position = mul(raster.frame.view_projection, float4(output.world, 1.0f));

@@ -361,7 +361,10 @@ typedef struct VkrSceneAtmosphere {
 /**
  * @brief Scene containing ECS world and renderer integration state.
  */
+typedef struct s_VkrSceneAnimation VkrSceneAnimation;
+
 typedef struct VkrScene {
+  VkrSceneAnimation *animations;  // Independently owned per-wrapper pose state.
   VkrWorld *world;                // ECS storage (authoritative scene state)
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets

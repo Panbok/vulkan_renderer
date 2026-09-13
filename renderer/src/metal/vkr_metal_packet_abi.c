@@ -986,6 +986,39 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_transform_fields[] = {
     VKR_ABI_FIELD(VkrTemporalTransformGPU, reserved, "reserved", 76),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_animation_preview_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, model, "model", 0),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, view_projection,
+                  "view_projection", 64),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, vertices, "vertices",
+                  128),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, decode, "decode", 136),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, deformation_address,
+                  "deformation_address", 144),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, reserved, "reserved",
+                  152),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, tint, "tint", 160),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, first_vertex,
+                  "first_vertex", 176),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, decode_index,
+                  "decode_index", 180),
+    VKR_ABI_FIELD(VkrMetalPacketAnimationPreviewRoot, reserved_tail,
+                  "reserved_tail", 184),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_skinning_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, bind_vertices, "bind_vertices",
+                  0),
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, influences, "influences", 8),
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, palette, "palette", 16),
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, output, "output", 24),
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, vertex_count, "vertex_count", 32),
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, palette_count, "palette_count",
+                  36),
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, reserved0, "reserved0", 40),
+    VKR_ABI_FIELD(VkrMetalPacketSkinningRoot, reserved1, "reserved1", 44),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_temporal_transform_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, instances, "instances",
                   0),
@@ -1451,6 +1484,13 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM] =
             VKR_ABI_RECORD(VkrTemporalTransformGPU, "VkrTemporalTransform", 80,
                            16, vkr_temporal_transform_fields),
+        [VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketAnimationPreviewRoot,
+                           "VkrMetalPacketAnimationPreviewRoot", 192, 16,
+                           vkr_animation_preview_root_fields),
+        [VKR_METAL_PACKET_ABI_SKINNING_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketSkinningRoot, "VkrMetalPacketSkinningRoot", 48, 16,
+            vkr_skinning_root_fields),
         [VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTemporalTransformRoot,
                            "VkrMetalPacketTemporalTransformRoot", 32, 16,

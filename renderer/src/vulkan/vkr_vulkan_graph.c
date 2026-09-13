@@ -16,6 +16,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
   VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
   VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
+  VKR_VULKAN_GRAPH_EXECUTOR_SKINNING,
   VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY,
@@ -79,6 +80,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING,
+  VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW,
   VKR_VULKAN_GRAPH_EXECUTOR_UI,
   VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STAGE,
   VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL,
@@ -104,6 +106,8 @@ struct VkrVulkanPreparedGraphPass {
   VkrVulkanPreparedFullscreen fullscreen;
   VkrVulkanPreparedRaster raster;
   VkrVulkanPreparedCompute compute;
+  VkrVulkanPreparedPreview preview;
+  uint32_t skinning_count;
   VkrVulkanPreparedUpload upload;
   VkrVulkanPreparedIbl ibl;
   VkrVulkanFsrSdkDispatch fsr31;
@@ -131,6 +135,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.animation.skinning", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.temporal.transform_history", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
@@ -194,6 +199,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.editor.clear", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor.overlay.picking", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.animation.preview", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
     // Bind the shared graph before its conditions are evaluated. These names
     // are recognized, but active MetalFX passes are rejected by validation.
@@ -973,6 +979,7 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
   renderer->transmission_gpu_candidate_instance_buffer_handle =
       VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->temporal_transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->skinning_output_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
@@ -992,6 +999,8 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
     else if (vkr_string8_equals_cstr(&buffer->name,
                                      "temporal_transform_history"))
       renderer->temporal_transform_history_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name, "skinning_output"))
+      renderer->skinning_output_handle = handle;
     if (buffer->imported ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
       log_error("Vulkan graph buffer '%.*s' has no imported native "
@@ -1547,6 +1556,8 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
     return true_v;
+  case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
+    return vkr_vk_prepare_animation_preview(renderer, &prepared->preview);
   case VKR_VULKAN_GRAPH_EXECUTOR_UI: {
     if (!packet->input.ui)
       return true_v;
@@ -1727,6 +1738,14 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
     case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
       bytes += direct_draw_bytes + text_bytes;
       break;
+    case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
+      if (renderer->graph->packet->input.animation_preview) {
+        bytes +=
+            (uint64_t)
+                renderer->graph->packet->input.animation_preview->draw_count *
+            256u;
+      }
+      break;
     case VKR_VULKAN_GRAPH_EXECUTOR_UI:
       bytes += ui_root_bytes;
       break;
@@ -1821,6 +1840,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
+  case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_VULKAN_GRAPH_EXECUTOR_UI:
     return vkr_vk_prepare_graph_graphics_pass(renderer, prepared, pass, kind);
   case VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE:
@@ -1843,6 +1863,29 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_deferred_cull(renderer, &prepared->compute, pass,
                                         VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
                                         false_v);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SKINNING: {
+    VkrVulkanFrameSlot *slot =
+        &renderer->frame_slots[renderer->active_frame_slot];
+    const VkrWorldPassPayload *world = renderer->graph->packet->input.world;
+    prepared->skinning_count = world ? world->skinning_count : 0u;
+    for (uint32_t i = 0u; i < prepared->skinning_count; ++i) {
+      VkrVulkanPreparedCompute *dispatch = &slot->skinning_dispatches[i];
+      *dispatch = (VkrVulkanPreparedCompute){0};
+      VkrVulkanSkinningRoot *root = vkr_vk_frame_upload_allocate(
+          slot, sizeof(*root), 16u, &dispatch->root_address, NULL);
+      if (!root) {
+        return false_v;
+      }
+      *root = slot->skinning_roots[i];
+      dispatch->pipelines[0] =
+          renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SKINNING];
+      dispatch->groups[0][0] = (root->vertex_count + 63u) / 64u;
+      dispatch->groups[0][1] = 1u;
+      dispatch->groups[0][2] = 1u;
+      dispatch->dispatch_count = 1u;
+    }
+    return true_v;
+  }
   case VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM:
     return vkr_vk_prepare_temporal_transform(renderer, &prepared->compute,
                                              pass);
@@ -2127,6 +2170,9 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
     vkr_vk_record_fullscreen(renderer, command, &prepared->fullscreen);
     break;
+  case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
+    vkr_vk_record_animation_preview(renderer, command, &prepared->preview);
+    break;
   case VKR_VULKAN_GRAPH_EXECUTOR_UI:
     vkr_vk_record_ui(renderer, command, &prepared->ui);
     break;
@@ -2177,6 +2223,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
     case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
     case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
+    case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
     case VKR_VULKAN_GRAPH_EXECUTOR_UI:
       vkr_vk_record_graph_graphics_pass(renderer, command, prepared);
       break;
@@ -2220,6 +2267,12 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       return false_v;
 #endif
     }
+    case VKR_VULKAN_GRAPH_EXECUTOR_SKINNING:
+      for (uint32_t skin = 0u; skin < prepared->skinning_count; ++skin) {
+        vkr_vk_record_prepared_compute(renderer, command,
+                                       &slot->skinning_dispatches[skin]);
+      }
+      break;
     default:
       vkr_vk_record_prepared_compute(renderer, command, &prepared->compute);
       break;

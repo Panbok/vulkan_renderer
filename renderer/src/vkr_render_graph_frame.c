@@ -22,6 +22,13 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->scene_rendering = packet->scene_rendering;
   frame->post_transform_cache_enabled = packet->post_transform_cache_enabled;
   const VkrWorldPassPayload *world = packet->input.world;
+  frame->skinning_enabled = world && world->skinning_count;
+  uint32_t skinning_vertices = 0;
+  for (uint32_t i = 0; world && i < world->skinning_count; ++i) {
+    skinning_vertices += world->skinning[i].vertex_count;
+  }
+  frame->skinning_vertex_capacity = vkr_render_graph_draw_capacity(skinning_vertices);
+  frame->animation_preview_enabled = packet->input.animation_preview != NULL;
   const uint32_t material_features = !world ? 0u
                                      : world->opaque_material_features_valid
                                          ? world->opaque_material_features

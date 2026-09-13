@@ -204,8 +204,13 @@ static bool8_t vkr_mesh_cooker_inspect(const char *input, const char *output,
     goto cleanup;
   }
   if (fprintf(destination,
-              "{\"version\":1,\"fingerprint\":\"%016llx\",\"materials\":[",
-              (unsigned long long)decoded.source.fingerprint) < 0) {
+              "{\"version\":1,\"fingerprint\":\"%016llx\","
+              "\"animation_fingerprint\":\"%016llx\",\"skin_count\":%u,"
+              "\"skin_vertex_count\":%u,\"animation_count\":%u,\"materials\":[",
+              (unsigned long long)decoded.source.fingerprint,
+              (unsigned long long)decoded.skin.animation_fingerprint,
+              decoded.skin.skin_count, decoded.skin.vertex_count,
+              decoded.source.animation_count) < 0) {
     goto cleanup;
   }
   bool8_t comma = false_v;

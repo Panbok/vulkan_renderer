@@ -4,6 +4,7 @@
  */
 
 #include "vkr_scene_system.h"
+#include "vkr_scene_animation.h"
 #include <math.h>
 
 #include "core/logger.h"
@@ -1191,6 +1192,8 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   if (!scene)
     return;
 
+  vkr_scene_animation_shutdown(scene);
+
   // Send destroy messages for all text3d entities to world resources.
   // Must happen before ECS world destruction since we need to query components.
   if (assets && scene->assets && scene->world) {
@@ -1342,8 +1345,6 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
 }
 
 void vkr_scene_update(VkrScene *scene, float64_t dt) {
-  (void)dt; // Reserved for future animation
-
   // Compile queries if needed
   if (!scene->queries_valid) {
     if (!scene_compile_queries(scene)) {
@@ -1424,6 +1425,7 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
     // Mark for render sync
     scene_mark_render_dirty(scene, entity);
   }
+  vkr_scene_animation_update(scene, dt);
 }
 
 // ============================================================================
@@ -1457,6 +1459,8 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
       vkr_entity_has_component(scene->world, entity, scene->comp_mesh_renderer);
   bool8_t had_rectangle_light = vkr_entity_has_component(
       scene->world, entity, scene->comp_rectangle_light);
+
+  vkr_scene_animation_entity_destroying(scene, entity);
 
   VkrEntityId old_parent = VKR_ENTITY_ID_INVALID;
   const SceneTransform *t = (const SceneTransform *)vkr_entity_get_component(
@@ -2507,6 +2511,7 @@ void vkr_scene_handle_sync(VkrSceneHandle handle,
     return;
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
   scene_render_bridge_sync(&runtime->bridge, assets, &runtime->scene);
+  vkr_scene_animation_sync_render(&runtime->scene, assets);
 }
 
 void vkr_scene_handle_full_sync(VkrSceneHandle handle,
@@ -2515,6 +2520,7 @@ void vkr_scene_handle_full_sync(VkrSceneHandle handle,
     return;
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
   scene_render_bridge_full_sync(&runtime->bridge, assets, &runtime->scene);
+  vkr_scene_animation_sync_render(&runtime->scene, assets);
 }
 
 void vkr_scene_handle_update_and_sync(VkrSceneHandle handle,
@@ -2523,6 +2529,7 @@ void vkr_scene_handle_update_and_sync(VkrSceneHandle handle,
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
   vkr_scene_update(&runtime->scene, dt);
   scene_render_bridge_sync(&runtime->bridge, assets, &runtime->scene);
+  vkr_scene_animation_sync_render(&runtime->scene, assets);
 }
 
 VkrEntityId vkr_scene_handle_entity_from_picking_id(VkrSceneHandle handle,

@@ -22,6 +22,8 @@ struct VkrMetalPacketInstance {
   float4 normal_column0;
   float4 normal_column1; // w: conservative affine sphere stretch.
   float4 normal_column2;
+  ulong deformation_address;
+  ulong previous_deformation_address;
 };
 
 struct VkrTemporalTransform {
@@ -298,6 +300,41 @@ inline VkrGpuDecodedVertex vkr_decode_packed_vertex(
   return result;
 }
 
+
+struct VkrGpuDeformedVertex
+{
+    packed_float3 position;
+    uint normal_packed;
+    uint tangent_packed;
+    float tangent_sign;
+    uint reserved0;
+    uint reserved1;
+};
+
+VkrGpuDecodedVertex vkr_apply_deformation(VkrGpuDecodedVertex decoded,
+                                         ulong address, uint vertex_index)
+{
+    if (address != 0)
+    {
+        VkrGpuDeformedVertex deformed = ((device const VkrGpuDeformedVertex*)address)[vertex_index];
+        decoded.position = float3(deformed.position);
+        decoded.normal = vkr_packed_oct_decode(deformed.normal_packed);
+        decoded.tangent = float4(vkr_packed_oct_decode(deformed.tangent_packed),
+                                deformed.tangent_sign);
+    }
+    return decoded;
+}
+
+float3 vkr_previous_deformed_position(float3 fallback, ulong address,
+                                      uint vertex_index)
+{
+    if (address == 0)
+    {
+        return fallback;
+    }
+    return float3(((device const VkrGpuDeformedVertex*)address)[vertex_index].position);
+}
+
 struct VkrGpuCandidateDrawRow {
   uint geometry_index;
   uint material_index;
@@ -379,8 +416,8 @@ static_assert(sizeof(VkrPackedStaticVertex) == 32,
               "Packed static vertex ABI must remain 32 bytes");
 static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
               "Geometry decode record ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketInstance) == 128,
-              "Prepared instance Metal ABI must remain 128 bytes");
+static_assert(sizeof(VkrMetalPacketInstance) == 144,
+              "Prepared instance Metal ABI must remain 144 bytes");
 static_assert(sizeof(VkrMetalPacketMaterial) == 352,
               "Metal material row ABI must remain 352 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,

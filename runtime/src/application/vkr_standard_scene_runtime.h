@@ -27,6 +27,7 @@
 #include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "vkr_frame_input.h"
+#include "vkr_sample_runtime.h"
 #include "vkr_renderer.h"
 #include "vkr_renderer_internal.h"
 #include "vkr_renderer_metrics.h"
@@ -147,6 +148,7 @@ typedef struct VkrStandardSceneRuntimeCallbacks {
  * frame storage and the host are owned here and released in dependency order.
  */
 typedef struct VkrStandardSceneRuntime {
+  VkrAnimationPreviewRequest animation_preview;
   Arena *app_arena; /**< Main memory arena for general application use (e.g.,
                        game entities, state). */
   Arena *log_arena; /**< Memory arena dedicated to the logging system. */

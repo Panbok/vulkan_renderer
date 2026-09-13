@@ -326,6 +326,7 @@ vkr_resource_system_is_async_default_type(VkrResourceType type) {
   case VKR_RESOURCE_TYPE_MATERIAL:
   case VKR_RESOURCE_TYPE_MESH:
   case VKR_RESOURCE_TYPE_SCENE:
+  case VKR_RESOURCE_TYPE_ANIMATION:
     return true_v;
   default:
     return false_v;

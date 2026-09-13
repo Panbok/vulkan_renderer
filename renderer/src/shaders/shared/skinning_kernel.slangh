@@ -1,0 +1,66 @@
+// Portable deformation arithmetic. Native roots own storage and matrix loads.
+struct VkrSkinningFrame
+{
+    float3 position;
+    float3 normal;
+    float4 tangent;
+};
+
+float3 vkr_skinning_normalize(float3 value, float3 fallback)
+{
+    float length_squared = dot(value, value);
+    return all(isfinite(value)) && length_squared > 1e-20f &&
+                   isfinite(length_squared)
+               ? value * rsqrt(length_squared)
+               : fallback;
+}
+
+uint vkr_skinning_oct_encode(float3 normal)
+{
+    float3 oct = normal / (abs(normal.x) + abs(normal.y) + abs(normal.z));
+    float2 projected = oct.xy;
+    if (oct.z < 0.0f)
+    {
+        projected = float2((1.0f - abs(oct.y)) * (oct.x >= 0.0f ? 1.0f : -1.0f),
+                           (1.0f - abs(oct.x)) * (oct.y >= 0.0f ? 1.0f : -1.0f));
+    }
+    int x = int(round(clamp(projected.x, -1.0f, 1.0f) * 32767.0f));
+    int y = int(round(clamp(projected.y, -1.0f, 1.0f) * 32767.0f));
+    return (uint(x) & 0xffffu) | ((uint(y) & 0xffffu) << 16u);
+}
+
+VkrSkinningFrame vkr_skinning_frame(float3 bind_position, float3 bind_normal,
+                                   float4 bind_tangent, float3 column0,
+                                   float3 column1, float3 column2,
+                                   float3 translation)
+{
+    VkrSkinningFrame result;
+    result.position = column0 * bind_position.x + column1 * bind_position.y +
+                      column2 * bind_position.z + translation;
+    if (!all(isfinite(result.position)))
+    {
+        result.position = bind_position;
+    }
+    float3 normal = vkr_skinning_normalize(bind_normal, float3(0.0f, 0.0f, 1.0f));
+    float3 cofactor0 = cross(column1, column2);
+    float3 cofactor1 = cross(column2, column0);
+    float3 cofactor2 = cross(column0, column1);
+    float determinant = dot(column0, cofactor0);
+    // Singular blends retain the bind normal; never publish NaNs to oct packing.
+    if (isfinite(determinant) && abs(determinant) > 1e-12f)
+    {
+        normal = vkr_skinning_normalize(
+            (cofactor0 * bind_normal.x + cofactor1 * bind_normal.y +
+             cofactor2 * bind_normal.z) / determinant, normal);
+    }
+    result.normal = normal;
+    float3 tangent = column0 * bind_tangent.x + column1 * bind_tangent.y +
+                     column2 * bind_tangent.z;
+    tangent -= normal * dot(normal, tangent);
+    float3 fallback_axis = abs(normal.z) < 0.9f ? float3(0.0f, 0.0f, 1.0f)
+                                               : float3(0.0f, 1.0f, 0.0f);
+    float3 fallback = normalize(cross(fallback_axis, normal));
+    result.tangent = float4(vkr_skinning_normalize(tangent, fallback),
+                            bind_tangent.w * (determinant < 0.0f ? -1.0f : 1.0f));
+    return result;
+}

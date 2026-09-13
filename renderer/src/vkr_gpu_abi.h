@@ -12,6 +12,11 @@ typedef VkrUiVertex VkrTextVertex;
 /** Fixed P3 candidate/visible capacity; growth publishes a later generation. */
 #define VKR_GPU_DRAW_CANDIDATE_CAPACITY 262144u
 #define VKR_TEMPORAL_TRANSFORM_CAPACITY 32768u
+/** Bounded per-view deformation capacity. Overflow rejects the packet. */
+#define VKR_SKINNING_BINDING_CAPACITY 64u
+#define VKR_SKINNING_JOINT_CAPACITY 65536u
+#define VKR_SKINNING_VERTEX_CAPACITY 2097152u
+
 /** Stable mesh-local submesh token occupies bits above transform-writer bit. */
 #define VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT 1u
 
@@ -85,10 +90,13 @@ typedef struct VkrInstanceDataGPU {
   /** OWNER bit zero; remaining bits carry stable mesh-local submesh + 1.
       Ordinary blend history requires a token in [1, 0x1ffff]. */
   uint32_t temporal_flags;
+  /** Zero is static; otherwise indexes world.skinning[index - 1]. */
+  uint32_t skinning_index;
+  uint32_t reserved[3];
 } VkrInstanceDataGPU;
 
-_Static_assert(sizeof(VkrInstanceDataGPU) == 80,
-               "VkrInstanceDataGPU must be 80 bytes");
+_Static_assert(sizeof(VkrInstanceDataGPU) == 96,
+               "VkrInstanceDataGPU must be 96 bytes");
 _Static_assert(sizeof(VkrInstanceDataGPU) % 16 == 0,
                "VkrInstanceDataGPU must be 16-byte aligned");
 
@@ -106,10 +114,12 @@ typedef struct VkrPreparedInstanceGPU {
   Vec4 normal_column0;
   Vec4 normal_column1;
   Vec4 normal_column2;
+  uint64_t deformation_address;
+  uint64_t previous_deformation_address;
 } VkrPreparedInstanceGPU;
 
-_Static_assert(sizeof(VkrPreparedInstanceGPU) == 128,
-               "Native prepared instance must be 128 bytes");
+_Static_assert(sizeof(VkrPreparedInstanceGPU) == 144,
+               "Native prepared instance must be 144 bytes");
 
 /** Computes normal transport and bounds once at native publication/upload. */
 VkrPreparedInstanceGPU vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source);
@@ -148,6 +158,24 @@ _Static_assert(sizeof(VkrPackedStaticVertex) == 32,
                "Packed static vertex ABI must be 32 bytes");
 _Static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
                "Geometry decode record ABI must be 32 bytes");
+
+/** Compute output indexed in geometry-local vertex order. */
+typedef struct VkrDeformedVertex {
+  float32_t position[3];
+  uint32_t normal_packed;
+  uint32_t tangent_packed;
+  float32_t tangent_sign;
+  uint32_t reserved[2];
+} VkrDeformedVertex;
+
+/** Four normalized linear-blend influences; zero weights mean no skinning. */
+typedef struct VkrSkinningInfluence {
+  uint32_t joints[4];
+  float32_t weights[4];
+} VkrSkinningInfluence;
+
+_Static_assert(sizeof(VkrDeformedVertex) == 32, "Deformation ABI drift");
+_Static_assert(sizeof(VkrSkinningInfluence) == 32, "Influence ABI drift");
 
 /**
  * Immutable geometry-table row for one publication generation.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "assets/vkr_mesh_skin.h"
 #include "assets/vkr_mesh_source.h"
 #include "containers/str.h"
 #include "containers/vector.h"
@@ -17,6 +18,7 @@
  */
 typedef struct VkrMeshLoaderGltfPrimitive {
   const VkrVertex3d *vertices;
+  const VkrMeshSkinVertex *skin_vertices; // Borrowed, NULL without influences.
   uint32_t vertex_count;
   const uint32_t *indices;
   uint32_t index_count;
@@ -58,6 +60,7 @@ typedef struct VkrMeshLoaderGltfParseInfo {
       on_primitive;          // The callback to use for the primitives.
   void *user_data;           // User-defined data to pass to the callback.
   VkrMeshSource *out_source; // Required for local-space node-preserving import.
+  VkrMeshSkinData *out_skin; // Optional result-arena metadata; no vertex array.
   Vector_String8 *out_dependency_paths; // The paths to the dependency files.
   Vector_String8 *out_generated_material_paths; // The paths to the generated
                                                 // material files.

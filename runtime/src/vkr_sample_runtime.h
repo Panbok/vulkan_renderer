@@ -1,5 +1,6 @@
 #pragma once
 
+#include "animation/vkr_animation_player.h"
 #include "core/input.h"
 #include "core/ui/vkr_ui_dock.h"
 #include "core/vkr_json_writer.h"
@@ -102,6 +103,18 @@ typedef enum VkrSampleCloseResponse {
   VKR_SAMPLE_CLOSE_CONFIRM,
 } VkrSampleCloseResponse;
 
+/* UI borrows a scene bank through its independent player. Runtime consumes only
+ * while scene_generation still matches; it copies pose data before submission.
+ * Distance is a multiplier of the preview model's bounding radius. */
+typedef struct VkrAnimationPreviewRequest {
+  VkrEntityId wrapper;
+  const VkrAnimationPlayer *player;
+  uint64_t scene_generation;
+  float32_t yaw;
+  float32_t pitch;
+  float32_t distance;
+} VkrAnimationPreviewRequest;
+
 typedef struct VkrSampleUiFrame {
   VkrUiSystem *ui;
   VkrWindow *window;
@@ -115,6 +128,10 @@ typedef struct VkrSampleUiFrame {
   const VkrGraphicsSettingsState *graphics;
   VkrGraphicsSettingsRequest *graphics_request;
   const VkrScene *scene; /* Borrowed until build returns; edits are requests. */
+  VkrAnimationPreviewRequest *animation_preview;
+  /* Floating document editors can consume undo/save without editing the scene.
+   */
+  bool8_t *scene_shortcuts_blocked;
   VkrEntityId selected_entity;
   uint64_t scene_generation;
   const VkrSceneEditState *edits;

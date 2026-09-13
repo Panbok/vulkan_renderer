@@ -56,6 +56,9 @@ typedef struct VkrUiDrawOutput {
   uint32_t batch_capacity;
 } VkrUiDrawOutput;
 
+/** Graph-owned animation preview, resolved by the current frame's backend. */
+#define VKR_UI_TEXTURE_REF_ANIMATION_PREVIEW ((VkrUiTextureRef){UINT32_MAX, 0u})
+
 #define VKR_UI_TEXTURE_REF_NONE ((VkrUiTextureRef){0})
 
 _Static_assert(sizeof(VkrUiVertex) == 32u,

@@ -750,6 +750,7 @@ VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
         geometry.vertices[geometry.first_vertex + vertex_id],
         geometry.decode[visible.decode_index]);
     VkrVulkanInstance instance = root.frame.instances[visible.instance_index];
+    vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_id);
     VkrVkVisibilityOutput output;
     output.position = mul(root.frame.view_projection,
                           mul(instance.model, float4(vertex.position, 1.0f)));
@@ -985,6 +986,7 @@ struct VkrVkSurface
     float3 normal;
     float3 geometric_normal;
     float3 object_position;
+    float3 previous_object_position;
     float3 object_normal;
     float4 object_tangent;
     float3 tangent_normal;
@@ -1037,6 +1039,9 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     VkrGpuDecodedVertex c = vkr_decode_packed_vertex(
         source.vertices[geometry.first_vertex + uint(ic)], decode);
     VkrVulkanInstance instance = source.instances[visible.instance_index];
+    a = vkr_apply_deformation(a, instance.deformation_address, uint(ia));
+    b = vkr_apply_deformation(b, instance.deformation_address, uint(ib));
+    c = vkr_apply_deformation(c, instance.deformation_address, uint(ic));
     float4 wa = mul(instance.model, float4(a.position, 1.0f));
     float4 wb = mul(instance.model, float4(b.position, 1.0f));
     float4 wc = mul(instance.model, float4(c.position, 1.0f));
@@ -1119,6 +1124,10 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
         max(length(uv_dx * texture_extent), length(uv_dy * texture_extent));
     surface.base = base;
     surface.object_position = object_position;
+    surface.previous_object_position =
+        vkr_previous_deformed_position(a.position, instance.previous_deformation_address, uint(ia)) * perspective.x +
+        vkr_previous_deformed_position(b.position, instance.previous_deformation_address, uint(ib)) * perspective.y +
+        vkr_previous_deformed_position(c.position, instance.previous_deformation_address, uint(ic)) * perspective.z;
     surface.object_normal = object_normal;
     surface.object_tangent = object_tangent;
     surface.emissive = emissive;
@@ -1233,7 +1242,9 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
     {
         VkrTemporalTransform previous =
             root.previous_transforms[instance.temporal_index];
-        if (previous.valid != 0u &&
+        if ((instance.deformation_address == 0 ||
+         instance.previous_deformation_address != 0) &&
+            previous.valid != 0u &&
             previous.generation == instance.temporal_generation &&
             previous.frame_index == root.previous_frame_index)
         {
@@ -1242,7 +1253,7 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
                 mul(instance.model, float4(surface.object_position, 1.0f)));
             float4 previous_clip = mul(
                 root.previous_view_projection,
-                mul(previous.model, float4(surface.object_position, 1.0f)));
+                mul(previous.model, float4(surface.previous_object_position, 1.0f)));
             if (current_clip.w > 1e-6f && previous_clip.w > 1e-6f)
             {
                 float2 current_ndc = current_clip.xy / current_clip.w;
@@ -2517,7 +2528,8 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
                 root.params.view, float4(traced_world_normal, 0.0f)).xyz);
             current_virtual_depth = vkr_ssr_virtual_hit_depth(
                 traced_receiver, traced_normal_view, hit_view);
-            current_correspondence = all(traced_identity == identity.xy) &&
+            current_correspondence = receiver_instance.deformation_address == 0 &&
+                hit_instance.deformation_address == 0 && all(traced_identity == identity.xy) &&
                 receiver_instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
                 hit_instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
                 receiver_instance.temporal_generation != 0u &&
@@ -3002,7 +3014,9 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
     {
         VkrTemporalTransform previous =
             root.previous_transforms[instance.temporal_index];
-        if (previous.valid != 0u &&
+        if ((instance.deformation_address == 0 ||
+         instance.previous_deformation_address != 0) &&
+            previous.valid != 0u &&
             previous.generation == instance.temporal_generation &&
             previous.frame_index == root.previous_frame_index)
         {
@@ -3011,7 +3025,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                 mul(instance.model, float4(surface.object_position, 1.0f)));
             float4 previous_clip = mul(
                 root.previous_view_projection,
-                mul(previous.model, float4(surface.object_position, 1.0f)));
+                mul(previous.model, float4(surface.previous_object_position, 1.0f)));
             if (current_clip.w > 1e-6f && previous_clip.w > 1e-6f)
             {
                 float2 current_uv =

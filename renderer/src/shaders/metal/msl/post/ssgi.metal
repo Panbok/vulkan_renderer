@@ -87,7 +87,9 @@ static uint2 vkr_metal_ssgi_identity(
   const device VkrGpuVisibleDrawRow &visible = root.visible_rows[encoded - 1u];
   const device VkrMetalPacketInstance &instance =
       root.instances[visible.instance_index];
-  return uint2(instance.temporal_index + 1u, instance.temporal_generation);
+  return instance.deformation_address == 0
+      ? uint2(instance.temporal_index + 1u, instance.temporal_generation)
+      : uint2(0u);
 }
 
 static float3 vkr_metal_ssgi_view_normal(VkrSsgiParams params,

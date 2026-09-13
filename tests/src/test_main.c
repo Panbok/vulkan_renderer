@@ -3,8 +3,11 @@
 #include "animation_tests.h"
 #include "animation_cooked_tests.h"
 #include "animation_import_tests.h"
+#include "mesh_skin_tests.h"
 #include "animation_player_tests.h"
 #include "animation_graph_tests.h"
+#include "animation_loader_tests.h"
+#include "scene_animation_tests.h"
 
 bool32_t run_path_io_tests(void);
 bool32_t run_process_path_tests(void);
@@ -67,8 +70,11 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_animation_tests,
     run_animation_cooked_tests,
     run_animation_import_tests,
+    run_mesh_skin_tests,
     run_animation_player_tests,
     run_animation_graph_tests,
+    run_animation_loader_tests,
+    run_scene_animation_tests,
     run_material_pbr_tests,
     run_mesh_cooked_tests,
     run_filesystem_tests,

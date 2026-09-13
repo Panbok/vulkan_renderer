@@ -185,6 +185,10 @@
 #define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV              \
   "packet.gbuffer_resolve.emissive_debug.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_SKINNING_COMP_SPV
+#define VKR_VULKAN_PACKET_SKINNING_COMP_SPV "packet.skinning.comp.spv"
+#endif
+
 #ifndef VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV
 #define VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV                          \
   "packet.temporal_transform.comp.spv"
@@ -433,6 +437,7 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING,
+  VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW,
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
 } VkrVulkanPacketPipeline;
 
@@ -472,6 +477,8 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
   VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_PICKING_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_COUNT,
 } VkrVulkanPacketShader;
 
@@ -495,6 +502,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY = 0,
   VKR_VULKAN_DEFERRED_PIPELINE_PREFIX,
   VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
+  VKR_VULKAN_DEFERRED_PIPELINE_SKINNING,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_TRANSFORM,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE,
@@ -2085,6 +2093,40 @@ typedef struct VkrVulkanRetiredTargetSet {
 
 typedef struct VkrVulkanPreparedDirectDraw VkrVulkanPreparedDirectDraw;
 
+typedef struct VkrVulkanSkinningRoot {
+  uint64_t bind_vertices;
+  uint64_t influences;
+  uint64_t palette;
+  uint64_t output;
+  uint32_t vertex_count;
+  uint32_t palette_count;
+  uint32_t reserved0;
+  uint32_t reserved1;
+} VkrVulkanSkinningRoot;
+
+_Static_assert(sizeof(VkrVulkanSkinningRoot) == 48u, "Skinning root ABI");
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanAnimationPreviewRoot {
+  Mat4 model;
+  Mat4 view_projection;
+  uint64_t vertices;
+  uint64_t decode;
+  uint64_t deformation_address;
+  uint64_t reserved;
+  Vec4 tint;
+  uint32_t first_vertex;
+  uint32_t decode_index;
+  uint64_t reserved_tail;
+} VkrVulkanAnimationPreviewRoot;
+_Static_assert(sizeof(VkrVulkanAnimationPreviewRoot) == 192u,
+               "Preview root ABI");
+
+typedef struct VkrVulkanPreparedPreview {
+  const void *draws;
+  uint64_t roots_address;
+  uint32_t count;
+} VkrVulkanPreparedPreview;
+
 typedef struct VkrVulkanPreparedCompute {
   uint64_t root_address;
   VkPipeline pipelines[3];
@@ -2208,6 +2250,11 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t frame_upload_cursor;
   uint64_t candidate_upload_cursor;
   VkrVulkanTemporalSceneState temporal_scene;
+  VkrVulkanSkinningRoot skinning_roots[VKR_SKINNING_BINDING_CAPACITY];
+  VkrVulkanPreparedCompute skinning_dispatches[VKR_SKINNING_BINDING_CAPACITY];
+  uint64_t skinning_addresses[VKR_SKINNING_BINDING_CAPACITY];
+  VkrSkinningHistory pending_skinning_history;
+  VkrVulkanGraphBufferInstance *previous_skinning_output;
   /** Frame-upload allocation failures this frame. Non-zero means the frame was
    *  rejected for want of upload bytes, not for a malformed packet. */
   uint32_t frame_upload_exhaustions;
@@ -2666,6 +2713,8 @@ struct VkrVulkanRenderer {
   VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle temporal_transform_history_handle;
+  VkrRgBufferHandle skinning_output_handle;
+  VkrSkinningHistory skinning_history[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   VkrVulkanPreparedGraphPass *prepared_graph_passes;
   VkrVulkanPreparedTextureInitialization *prepared_texture_initializations;
   const VkrVulkanPendingBufferInitialization **prepared_buffer_initializations;
@@ -3220,13 +3269,25 @@ void vkr_vk_destroy_target_set(VkrVulkanRenderer *renderer,
 void vkr_vk_destroy_window_target(VkrVulkanRenderer *renderer,
                                   VkrVulkanWindowTarget *target);
 void vkr_vk_pipeline_cache_shutdown(VkrVulkanRenderer *renderer);
+VkrVulkanPublishedGeometry *vkr_vk_resolve_geometry(VkrVulkanRenderer *renderer,
+                                                    VkrGeometryHandle handle);
+bool8_t vkr_vk_prepare_animation_preview(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedPreview *out);
+void vkr_vk_record_animation_preview(VkrVulkanRenderer *renderer,
+                                     VkCommandBuffer command,
+                                     const VkrVulkanPreparedPreview *prepared);
+bool8_t vkr_vk_finalize_skinning_instances(VkrVulkanRenderer *renderer,
+                                           VkrVulkanFrameSlot *slot);
+void vkr_vk_mark_skinning_submitted(VkrVulkanRenderer *renderer,
+                                    uint64_t serial);
 void *vkr_vk_frame_upload_allocate(VkrVulkanFrameSlot *slot, uint64_t size,
                                    uint64_t alignment, uint64_t *out_address,
                                    uint64_t *out_offset);
 bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
                                      VkrVulkanFrameSlot *slot,
                                      uint64_t direct_bytes,
-                                     uint64_t candidate_bytes);
+                                     uint64_t candidate_bytes,
+                                     uint64_t skinning_bytes);
 uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
                                    uint64_t direct_draw_bytes,
                                    uint64_t text_bytes, uint64_t ui_root_bytes);

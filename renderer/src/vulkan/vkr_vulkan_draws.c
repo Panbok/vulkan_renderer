@@ -112,6 +112,178 @@ void *vkr_vk_frame_upload_allocate(VkrVulkanFrameSlot *slot, uint64_t size,
   return (uint8_t *)slot->frame_upload.allocation.mapped + offset;
 }
 
+vkr_internal bool8_t vkr_vk_upload_skinning(VkrVulkanRenderer *renderer,
+                                            VkrVulkanFrameSlot *slot,
+                                            const VkrWorldPassPayload *world) {
+  MemZero(slot->skinning_addresses, sizeof(slot->skinning_addresses));
+  slot->previous_skinning_output = NULL;
+  if (!vkr_skinning_history_prepare(world, &slot->pending_skinning_history)) {
+    return false_v;
+  }
+  if (!world || !world->skinning_count) {
+    return true_v;
+  }
+  VkrVulkanGraphBufferInstance *output =
+      vkr_vk_graph_buffer(renderer, renderer->skinning_output_handle);
+  if (!output) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < world->skinning_count; ++i) {
+    const VkrSkinningInput *source = &world->skinning[i];
+    VkrVulkanPublishedGeometry *geometry =
+        vkr_vk_resolve_geometry(renderer, source->geometry);
+    if (!geometry || geometry->vertex_count != source->vertex_count) {
+      return false_v;
+    }
+    const uint64_t output_offset =
+        slot->pending_skinning_history.records[i].offset_bytes;
+    const uint64_t output_bytes =
+        (uint64_t)source->vertex_count * sizeof(VkrDeformedVertex);
+    if (output_offset > output->buffer.size ||
+        output_bytes > output->buffer.size - output_offset) {
+      return false_v;
+    }
+    const uint64_t vertices_bytes =
+        (uint64_t)source->vertex_count * sizeof(*source->vertices);
+    const uint64_t influences_bytes =
+        (uint64_t)source->vertex_count * sizeof(*source->influences);
+    const uint64_t palette_bytes =
+        (uint64_t)source->joint_count * sizeof(*source->palette);
+    VkrVulkanSkinningRoot *root = &slot->skinning_roots[i];
+    *root = (VkrVulkanSkinningRoot){
+        .output = output->buffer.address + output_offset,
+        .vertex_count = source->vertex_count,
+        .palette_count = source->joint_count,
+    };
+    void *vertices = vkr_vk_frame_upload_allocate(slot, vertices_bytes, 16u,
+                                                  &root->bind_vertices, NULL);
+    void *influences = vkr_vk_frame_upload_allocate(slot, influences_bytes, 16u,
+                                                    &root->influences, NULL);
+    void *palette = vkr_vk_frame_upload_allocate(slot, palette_bytes, 16u,
+                                                 &root->palette, NULL);
+    if (!vertices || !influences || !palette) {
+      return false_v;
+    }
+    MemCopy(vertices, source->vertices, vertices_bytes);
+    MemCopy(influences, source->influences, influences_bytes);
+    MemCopy(palette, source->palette, palette_bytes);
+    slot->skinning_addresses[i] = root->output;
+  }
+  return true_v;
+}
+
+vkr_internal VkrPreparedInstanceGPU vkr_vk_prepare_skinning_instance(
+    const VkrVulkanFrameSlot *slot, const VkrInstanceDataGPU *source) {
+  VkrPreparedInstanceGPU result = vkr_gpu_prepare_instance(source);
+  if (source->skinning_index) {
+    result.deformation_address =
+        slot->skinning_addresses[source->skinning_index - 1u];
+  }
+  return result;
+}
+
+vkr_internal void
+vkr_vk_patch_skinning_history(VkrPreparedInstanceGPU *instances, uint32_t count,
+                              const VkrVulkanFrameSlot *slot,
+                              const VkrWorldPassPayload *world,
+                              const uint64_t *previous_addresses) {
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!instances[i].deformation_address) {
+      continue;
+    }
+    for (uint32_t skin = 0u; skin < world->skinning_count; ++skin) {
+      if (instances[i].deformation_address == slot->skinning_addresses[skin]) {
+        instances[i].previous_deformation_address = previous_addresses[skin];
+        break;
+      }
+    }
+  }
+}
+
+bool8_t vkr_vk_finalize_skinning_instances(VkrVulkanRenderer *renderer,
+                                           VkrVulkanFrameSlot *slot) {
+  const VkrWorldPassPayload *world = renderer->graph->packet->input.world;
+  if (!world || !world->skinning_count) {
+    return true_v;
+  }
+  uint64_t previous_addresses[VKR_SKINNING_BINDING_CAPACITY] = {0};
+  if (slot->temporal_transform_input && slot->temporal_history_valid) {
+    VkrVulkanGraphBuffer *outputs =
+        &renderer->graph_buffers[renderer->skinning_output_handle.id - 1u];
+    for (uint32_t h = 0u; h < outputs->instance_count; ++h) {
+      VkrVulkanGraphBufferInstance *previous = &outputs->instances[h];
+      const VkrSkinningHistory *history = &renderer->skinning_history[h];
+      const uint64_t producer =
+          slot->temporal_transform_input->history_producer_submit_value;
+      if (h == renderer->history_output_index || !history->producer_submit ||
+          history->producer_submit != producer ||
+          previous->history_producer_submit_value != producer) {
+        continue;
+      }
+      slot->previous_skinning_output = previous;
+      for (uint32_t i = 0u; i < world->skinning_count; ++i) {
+        const uint64_t offset =
+            vkr_skinning_history_find(history, &world->skinning[i]);
+        const uint64_t bytes = (uint64_t)world->skinning[i].vertex_count *
+                               sizeof(VkrDeformedVertex);
+        if (offset != UINT64_MAX && offset <= previous->buffer.size &&
+            bytes <= previous->buffer.size - offset) {
+          previous_addresses[i] = previous->buffer.address + offset;
+        }
+      }
+      break;
+    }
+  }
+  if (slot->world_instances) {
+    VkrPreparedInstanceGPU *instances =
+        (VkrPreparedInstanceGPU *)((uint8_t *)
+                                       slot->frame_upload.allocation.mapped +
+                                   slot->world_instances -
+                                   slot->frame_upload.address);
+    vkr_vk_patch_skinning_history(instances, world->instance_count, slot, world,
+                                  previous_addresses);
+  }
+  for (uint32_t i = 0u; i < slot->gpu_candidate_copy_count; ++i) {
+    const VkrVulkanCandidateCopyRange *copy = &slot->gpu_candidate_copies[i];
+    VkrPreparedInstanceGPU *instances =
+        (VkrPreparedInstanceGPU *)((uint8_t *)slot->candidate_upload.allocation
+                                       .mapped +
+                                   copy->instance_source_offset);
+    vkr_vk_patch_skinning_history(instances, copy->count, slot, world,
+                                  previous_addresses);
+  }
+  if (slot->transmission_gpu_candidate_count) {
+    VkrPreparedInstanceGPU *instances =
+        (VkrPreparedInstanceGPU
+             *)((uint8_t *)slot->candidate_upload.allocation.mapped +
+                slot->transmission_gpu_instance_upload_offset);
+    vkr_vk_patch_skinning_history(instances,
+                                  slot->transmission_gpu_candidate_count, slot,
+                                  world, previous_addresses);
+  }
+  return true_v;
+}
+
+void vkr_vk_mark_skinning_submitted(VkrVulkanRenderer *renderer,
+                                    uint64_t serial) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!slot->pending_skinning_history.count) {
+    return;
+  }
+  const uint32_t current = renderer->history_output_index;
+  slot->pending_skinning_history.producer_submit = serial;
+  renderer->skinning_history[current] = slot->pending_skinning_history;
+  VkrVulkanGraphBufferInstance *output =
+      vkr_vk_graph_buffer(renderer, renderer->skinning_output_handle);
+  output->history_producer_submit_value = serial;
+  output->last_use_submit_value = MAX(output->last_use_submit_value, serial);
+  if (slot->previous_skinning_output) {
+    slot->previous_skinning_output->last_use_submit_value =
+        MAX(slot->previous_skinning_output->last_use_submit_value, serial);
+  }
+}
+
 vkr_internal bool8_t vkr_vk_upload_instances(
     VkrVulkanFrameSlot *slot, const VkrInstanceDataGPU *instances,
     uint32_t count, uint64_t *out_address) {
@@ -126,7 +298,7 @@ vkr_internal bool8_t vkr_vk_upload_instances(
   if (!destination)
     return false_v;
   for (uint32_t i = 0u; i < count; ++i)
-    destination[i] = vkr_gpu_prepare_instance(&instances[i]);
+    destination[i] = vkr_vk_prepare_skinning_instance(slot, &instances[i]);
   return true_v;
 }
 
@@ -502,8 +674,17 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   uint64_t draw_bytes = 0u;
   uint64_t text_bytes = 0u;
   uint64_t ui_root_bytes = 0u;
+  uint64_t skinning_bytes = 0u;
   if (packet->input.world) {
     const VkrWorldPassPayload *world = packet->input.world;
+    for (uint32_t i = 0u; i < world->skinning_count; ++i) {
+      const VkrSkinningInput *skin = &world->skinning[i];
+      skinning_bytes +=
+          (uint64_t)skin->vertex_count *
+              (sizeof(*skin->vertices) + sizeof(*skin->influences)) +
+          (uint64_t)skin->joint_count * sizeof(*skin->palette) +
+          sizeof(VkrVulkanSkinningRoot) + 64u;
+    }
     const uint64_t direct_run_count = vkr_world_draw_parity_run_count(world);
     direct_bytes +=
         (uint64_t)world->instance_count * sizeof(VkrPreparedInstanceGPU) +
@@ -541,7 +722,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   direct_bytes += vkr_vk_graph_upload_bound(renderer, draw_bytes, text_bytes,
                                             ui_root_bytes);
   if (!vkr_vk_reserve_frame_uploads(renderer, slot, direct_bytes,
-                                    candidate_bytes))
+                                    candidate_bytes, skinning_bytes))
     return false_v;
   VkrDisplayOutputParams *display_output = vkr_vk_frame_upload_allocate(
       slot, sizeof(*display_output), _Alignof(VkrDisplayOutputParams),
@@ -593,6 +774,9 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
     /* Non-scene uploads begin at offset zero and invalidate this cached prefix.
      */
     slot->geometry_table_generation = 0u;
+  }
+  if (!vkr_vk_upload_skinning(renderer, slot, packet->input.world)) {
+    return false_v;
   }
   if (!vkr_vk_prepare_direct_draws(renderer, slot, packet->input.world)) {
     log_error("Vulkan failed to prepare direct draws");
@@ -720,14 +904,13 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   return packed;
 }
 
-vkr_internal VkrVulkanPublishedGeometry *
-vkr_vk_resolve_geometry(VkrVulkanRenderer *renderer, VkrGeometryHandle handle) {
+VkrVulkanPublishedGeometry *vkr_vk_resolve_geometry(VkrVulkanRenderer *renderer,
+                                                    VkrGeometryHandle handle) {
   if (handle.id == 0u || handle.id > renderer->config.geometry_capacity)
     return NULL;
   VkrVulkanPublishedGeometry *geometry =
       &renderer->published_geometries[handle.id - 1u];
-  return geometry->live && geometry->handle.generation == handle.generation &&
-                 geometry->pending_initialization_count == 0u
+  return geometry->live && geometry->handle.generation == handle.generation
              ? geometry
              : NULL;
 }
@@ -844,7 +1027,7 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
         vkr_vk_resolve_geometry(renderer, candidate->geometry);
     VkrVulkanPublishedMaterial *material =
         vkr_vk_resolve_material(renderer, candidate->material);
-    if (!geometry) {
+    if (!geometry || geometry->pending_initialization_count) {
       unpublished_geometry_count++;
       continue;
     }
@@ -858,7 +1041,8 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     }
     const VkrVulkanSubmeshRange *submesh =
         &geometry->submeshes[candidate->submesh_index];
-    instances[packed_count] = vkr_gpu_prepare_instance(&candidate->instance);
+    instances[packed_count] =
+        vkr_vk_prepare_skinning_instance(slot, &candidate->instance);
     const uint32_t state_bucket =
         candidate->state_bucket |
         (instances[packed_count].normal_column0.w < 0.0f
@@ -1388,17 +1572,30 @@ bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
       _Alignof(VkrVulkanPreparedUiDraw), &roots_address, NULL);
   if (!prepared)
     return false_v;
+  VkrVulkanGraphImageInstance *preview_image = NULL;
+  if (renderer->graph->packet->input.animation_preview) {
+    VkrRgImageHandle handle = vkr_rg_find_image(
+        renderer->graph, string8_lit("animation_preview_color"));
+    preview_image = vkr_vk_graph_image(renderer, handle,
+                                       renderer->prepared_frame.image_index);
+  }
   uint32_t prepared_count = 0u;
   for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
     const VkrUiDrawBatch *batch = &draw_list->batches[i];
     uint32_t texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
     uint32_t sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
     const bool8_t textured = batch->texture.id != 0u;
-    if (textured &&
-        !vkr_vk_resolve_sampled_pair(
-            renderer,
-            (VkrTextureHandle){batch->texture.id, batch->texture.generation},
-            &texture, &sampler))
+    if (batch->texture.id == UINT32_MAX) {
+      if (!preview_image || !preview_image->has_sampled_slot) {
+        continue;
+      }
+      texture = preview_image->sampled_slot.index;
+      sampler = renderer->transmission_sampler_slot;
+    } else if (textured && !vkr_vk_resolve_sampled_pair(
+                               renderer,
+                               (VkrTextureHandle){batch->texture.id,
+                                                  batch->texture.generation},
+                               &texture, &sampler))
       continue;
     prepared[prepared_count++] = (VkrVulkanPreparedUiDraw){
         .root =

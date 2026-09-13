@@ -2234,6 +2234,112 @@ vkr_internal bool8_t vkr_metal_packet_candidate_graph_buffers(
          *out_resource_generation != 0u;
 }
 
+vkr_internal VkrPreparedInstanceGPU vkr_metal_packet_prepare_instance(
+    VkrMetalPacketRenderer *renderer, const VkrInstanceDataGPU *source) {
+  VkrPreparedInstanceGPU result = vkr_gpu_prepare_instance(source);
+  if (source->skinning_index) {
+    const uint32_t index = source->skinning_index - 1u;
+    result.deformation_address = renderer->skinning_addresses[index];
+    result.previous_deformation_address =
+        renderer->previous_skinning_addresses[index];
+  }
+  return result;
+}
+
+vkr_internal bool8_t vkr_metal_packet_upload_skinning(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameUpload *upload,
+    const VkrWorldPassPayload *world, uint64_t offset) {
+  MemZero(renderer->skinning_addresses, sizeof(renderer->skinning_addresses));
+  MemZero(renderer->previous_skinning_addresses,
+          sizeof(renderer->previous_skinning_addresses));
+  if (!vkr_skinning_history_prepare(world,
+                                    &renderer->pending_skinning_history)) {
+    return false_v;
+  }
+  if (!world || !world->skinning_count) {
+    return true_v;
+  }
+  VkrMetalPacketGraphBufferInstance *output =
+      vkr_metal_packet_graph_buffer_instance(renderer,
+                                             renderer->skinning_output_handle,
+                                             renderer->history_output_index);
+  if (!output || !output->live) {
+    return false_v;
+  }
+  VkrMetalPacketGraphBufferInstance *previous = NULL;
+  const VkrSkinningHistory *history = NULL;
+  const uint32_t selected = renderer->selected_temporal_history_instance;
+  if (selected != UINT32_MAX) {
+    VkrMetalPacketGraphBufferInstance *transform =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->temporal_transform_history_handle, selected);
+    previous = vkr_metal_packet_graph_buffer_instance(
+        renderer, renderer->skinning_output_handle, selected);
+    history = &renderer->skinning_history[selected];
+    if (!previous || !previous->live || !transform ||
+        !transform->history_valid ||
+        history->producer_submit != transform->history_producer_submit_value ||
+        history->producer_submit != previous->history_producer_submit_value) {
+      previous = NULL;
+    }
+  }
+  uint8_t *cpu = upload->addresses.cpu_address;
+  const uint64_t gpu = upload->addresses.gpu_address;
+  for (uint32_t i = 0u; i < world->skinning_count; ++i) {
+    const VkrSkinningInput *source = &world->skinning[i];
+    VkrMetalPacketMesh *mesh = vkr_metal_packet_resolve_mesh(
+        renderer, (VkrMeshHandle){.id = source->geometry.id,
+                                  .generation = source->geometry.generation});
+    if (!mesh || mesh->vertex_count != source->vertex_count) {
+      return false_v;
+    }
+    const uint64_t output_offset =
+        renderer->pending_skinning_history.records[i].offset_bytes;
+    const uint64_t output_bytes =
+        (uint64_t)source->vertex_count * sizeof(VkrDeformedVertex);
+    if (output_offset > output->resource.length ||
+        output_bytes > output->resource.length - output_offset) {
+      return false_v;
+    }
+    const uint64_t vertices_bytes =
+        (uint64_t)source->vertex_count * sizeof(*source->vertices);
+    const uint64_t influence_bytes =
+        (uint64_t)source->vertex_count * sizeof(*source->influences);
+    const uint64_t palette_bytes =
+        (uint64_t)source->joint_count * sizeof(*source->palette);
+    const uint64_t vertices = offset;
+    MemCopy(cpu + offset, source->vertices, vertices_bytes);
+    offset += vertices_bytes;
+    const uint64_t influences = offset;
+    MemCopy(cpu + offset, source->influences, influence_bytes);
+    offset += influence_bytes;
+    const uint64_t palette = offset;
+    MemCopy(cpu + offset, source->palette, palette_bytes);
+    offset += palette_bytes;
+    renderer->skinning_addresses[i] =
+        output->resource.gpu_address + output_offset;
+    if (previous) {
+      const uint64_t previous_offset =
+          vkr_skinning_history_find(history, source);
+      if (previous_offset != UINT64_MAX &&
+          previous_offset <= previous->resource.length &&
+          output_bytes <= previous->resource.length - previous_offset) {
+        renderer->previous_skinning_addresses[i] =
+            previous->resource.gpu_address + previous_offset;
+      }
+    }
+    upload->skinning_roots[i] = (VkrMetalPacketSkinningRoot){
+        .bind_vertices = gpu + vertices,
+        .influences = gpu + influences,
+        .palette = gpu + palette,
+        .output = renderer->skinning_addresses[i],
+        .vertex_count = source->vertex_count,
+        .palette_count = source->joint_count,
+    };
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
     VkrMetalPacketRenderer *renderer, const VkrWorldDrawCandidate *sources,
     uint32_t count, uint32_t destination_first,
@@ -2269,7 +2375,8 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
       return false_v;
     const VkrMetalPacketSubmeshCreateInfo *submesh =
         &mesh->submeshes[source->submesh_index];
-    instances[packed_count] = vkr_gpu_prepare_instance(&source->instance);
+    instances[packed_count] =
+        vkr_metal_packet_prepare_instance(renderer, &source->instance);
     const uint32_t state_bucket = source->state_bucket |
         (instances[packed_count].normal_column0.w < 0.0f
              ? VKR_GPU_DRAW_STATE_MIRRORED_BIT : 0u);
@@ -2551,6 +2658,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     }
   }
   uint64_t root_count = 1u + overlay_count;
+  if (packet->input.animation_preview) {
+    root_count += packet->input.animation_preview->draw_count;
+  }
   if (vkr_metal_packet_ibl_needs_bake(renderer, packet))
     root_count += 1 + VKR_IBL_PREFILTER_MIP_COUNT;
   root_count +=
@@ -2888,8 +2998,24 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       (uint64_t)direct_draw_count * sizeof(VkrMetalPacketPreparedDraw);
   if (direct_draw_offset > UINT64_MAX - direct_draw_bytes)
     return false_v;
+  const uint64_t skinning_offset =
+      vkr_metal_packet_align_up(direct_draw_offset + direct_draw_bytes, 16u);
+  uint64_t skinning_bytes = 0u;
+  if (world) {
+    root_count += world->skinning_count;
+    for (uint32_t i = 0u; i < world->skinning_count; ++i) {
+      const VkrSkinningInput *skin = &world->skinning[i];
+      skinning_bytes +=
+          (uint64_t)skin->vertex_count *
+              (sizeof(*skin->vertices) + sizeof(*skin->influences)) +
+          (uint64_t)skin->joint_count * sizeof(*skin->palette);
+    }
+  }
+  if (root_count > renderer->max_draws) {
+    return false_v;
+  }
   const uint64_t root_offset = vkr_metal_packet_align_up(
-      direct_draw_offset + direct_draw_bytes, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+      skinning_offset + skinning_bytes, VKR_METAL_PACKET_ROOT_ALIGNMENT);
   if (root_count >
       (UINT64_MAX - root_offset) / VKR_METAL_PACKET_DRAW_ROOT_STRIDE)
     return false_v;
@@ -2916,6 +3042,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->acquired = true_v;
   uint8_t *cpu = upload->addresses.cpu_address;
   uint64_t gpu = upload->addresses.gpu_address;
+  if (!vkr_metal_packet_upload_skinning(renderer, upload, world,
+                                        skinning_offset)) {
+    return false_v;
+  }
   VkrDisplayOutputParams *display_output =
       (VkrDisplayOutputParams *)(cpu + display_output_offset);
   *display_output = renderer->display_output;
@@ -2941,8 +3071,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (world_bytes > 0) {
     VkrPreparedInstanceGPU *instances = (VkrPreparedInstanceGPU *)cpu;
     for (uint32_t i = 0u; i < world_count; ++i)
-      instances[i] =
-          vkr_gpu_prepare_instance(&packet->input.world->instances[i]);
+      instances[i] = vkr_metal_packet_prepare_instance(
+          renderer, &packet->input.world->instances[i]);
     upload->world_instances_gpu = gpu;
   }
   if (picking_bytes > 0) {

@@ -5,6 +5,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/scene_loader.h"
+#include "renderer/resources/loaders/animation_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
 #include "vkr_ibl_math.h"
 
@@ -174,6 +175,10 @@ bool8_t vkr_render_assets_initialize(
   if (!vkr_resource_system_register_loader((void *)assets,
                                            vkr_scene_loader_create()))
     return false_v;
+  if (!vkr_resource_system_register_loader(
+          (void *)assets, vkr_animation_loader_create())) {
+    return false_v;
+  }
 
   VkrFontSystemConfig font_config = {
       .bootstrap_directory = bootstrap_font_directory,

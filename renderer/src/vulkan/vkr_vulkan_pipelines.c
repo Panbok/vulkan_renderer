@@ -1665,6 +1665,16 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFroxelApplyRoot, extent),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFroxelApplyRoot, reserved),
   };
+  static const VkrVulkanReflectedField skinning_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, bind_vertices),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, influences),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, palette),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, output),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, vertex_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, palette_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, reserved0),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkinningRoot, reserved1),
+  };
   static const VkrVulkanReflectedField sdsm_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, reduce_state),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, depth_texture),
@@ -1673,6 +1683,10 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, reserved),
   };
   bool8_t valid = true_v;
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_SKINNING_COMP_SPV, "vk_skinning",
+      skinning_fields, ArrayCount(skinning_fields),
+      sizeof(VkrVulkanSkinningRoot));
   valid &= vkr_vk_validate_subsurface_root_abi(
       renderer, VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV, "vk_subsurface_gather");
   static const char *const motion_blur_shaders[] = {
@@ -1886,6 +1900,28 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
 }
 
 vkr_internal bool8_t
+vkr_vk_validate_animation_preview_root_abi(VkrVulkanRenderer *renderer) {
+  static const VkrVulkanReflectedField fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, model),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot,
+                                 view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, vertices),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, decode),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot,
+                                 deformation_address),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, reserved),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, tint),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, first_vertex),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, decode_index),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAnimationPreviewRoot, reserved_tail),
+  };
+  return vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_ANIMATION_PREVIEW_VERT_SPV,
+      "animation_preview_vertex", fields, ArrayCount(fields),
+      sizeof(VkrVulkanAnimationPreviewRoot));
+}
+
+vkr_internal bool8_t
 vkr_vk_validate_editor_overlay_root_abi(VkrVulkanRenderer *renderer) {
   static const VkrVulkanReflectedField fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanEditorOverlayRoot, vertices),
@@ -1971,7 +2007,8 @@ vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
 }
 
 bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
-  if (!vkr_vk_validate_editor_overlay_root_abi(renderer) ||
+  if (!vkr_vk_validate_animation_preview_root_abi(renderer) ||
+      !vkr_vk_validate_editor_overlay_root_abi(renderer) ||
       !vkr_vk_validate_fullscreen_root_abi(renderer) ||
       !vkr_vk_validate_ui_root_abi(renderer) ||
       !vkr_vk_validate_packet_root_abi(renderer) ||
@@ -2035,6 +2072,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "world_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_WORLD_TEMPORAL_VERTEX
                   ? "world_temporal_vertex"
+              : vertex_shader ==
+                      VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_VERTEX
+                  ? "animation_preview_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX
                   ? "editor_overlay_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX
@@ -2064,6 +2104,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "world_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_PICKING_FRAGMENT
                   ? "picking_fragment"
+              : fragment_shader ==
+                      VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_FRAGMENT
+                  ? "animation_preview_fragment"
               : fragment_shader ==
                       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT
                   ? "editor_overlay_fragment"
@@ -2304,6 +2347,8 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV,
       VKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV,
       VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV,
+      VKR_VULKAN_PACKET_ANIMATION_PREVIEW_VERT_SPV,
+      VKR_VULKAN_PACKET_ANIMATION_PREVIEW_FRAG_SPV,
   };
   for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_SHADER_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],
@@ -2315,6 +2360,12 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
           ? VK_FORMAT_R8G8B8A8_SRGB
           : renderer->window_target.format;
   return vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW,
+             VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_FRAGMENT,
+             VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, true_v, true_v,
+             false_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
              VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
              VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
@@ -2485,6 +2536,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
       VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
       VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
+      VKR_VULKAN_PACKET_SKINNING_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV,
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV,
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV,
@@ -2544,70 +2596,70 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV,
       VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV,
   };
-  vkr_local_persist const char
-      *const entries[] = {
-          "vk_gpu_draw_classify",
-          "vk_gpu_draw_prefix",
-          "vk_gpu_draw_encode",
-          "vk_temporal_transform",
-          "vk_gbuffer_resolve",
-          "vk_gbuffer_resolve",
-          "vk_gbuffer_resolve",
-          "vk_gbuffer_resolve",
-          "vk_deferred_lighting",
-          "vk_temporal_resolve",
-          "vk_fsr31_prepare",
-          "vk_fsr31_stabilize",
-          "vk_hzb_build",
-          "vk_ssr_depth_base",
-          "vk_ssr_depth_mip",
-          "vk_ssr_trace",
-          "vk_ssr_temporal",
-          "vk_ssr_composite",
-          "ssgi_depth_base_compute",
-          "ssgi_depth_mip_compute",
-          "ssgi_trace_compute",
-          "ssgi_temporal_compute",
-          "ssgi_composite_compute",
-          "fog_apply_compute",
-          "froxel_inject_compute",
-          "froxel_integrate_compute",
-          "froxel_apply_compute",
-          "vk_sdsm_reduce",
-          "vk_picking_resolve",
-          "vk_transmission_shade",
-          "vk_transmission_shade_partitioned",
-          "vk_transmission_shade_production",
-          "vk_transmission_shade_production_temporal",
-          "vk_transmission_shade_partitioned_production",
-          "vk_transmission_shade_partitioned_production_temporal",
-          "vk_transmission_compact_clear",
-          "vk_transmission_compact",
-          "vk_transmission_compact_finalize",
-          "vk_transmission_coverage",
-          "vk_exposure_clear",
-          "vk_exposure_histogram",
-          "vk_exposure_resolve",
-          "vk_subsurface_gather",
-          "vk_motion_blur_tile_max",
-          "vk_motion_blur_neighbor_max",
-          "vk_motion_blur_reconstruct",
-          "vk_dof_coc",
-          "vk_dof_dilate_horizontal",
-          "vk_dof_dilate_vertical",
-          "vk_dof_prefilter",
-          "vk_dof_gather",
-          "vk_dof_composite",
-          "vk_bloom_prefilter",
-          "vk_bloom_downsample_tent13",
-          "vk_bloom_downsample_box4",
-          "vk_bloom_upsample",
-          "vk_bloom_combine",
-          "vk_gtao_depth_prefilter",
-          "vk_gtao_depth_mip",
-          "vk_gtao_evaluate",
-          "vk_gtao_denoise",
-      };
+  vkr_local_persist const char *const entries[] = {
+      "vk_gpu_draw_classify",
+      "vk_gpu_draw_prefix",
+      "vk_gpu_draw_encode",
+      "vk_skinning",
+      "vk_temporal_transform",
+      "vk_gbuffer_resolve",
+      "vk_gbuffer_resolve",
+      "vk_gbuffer_resolve",
+      "vk_gbuffer_resolve",
+      "vk_deferred_lighting",
+      "vk_temporal_resolve",
+      "vk_fsr31_prepare",
+      "vk_fsr31_stabilize",
+      "vk_hzb_build",
+      "vk_ssr_depth_base",
+      "vk_ssr_depth_mip",
+      "vk_ssr_trace",
+      "vk_ssr_temporal",
+      "vk_ssr_composite",
+      "ssgi_depth_base_compute",
+      "ssgi_depth_mip_compute",
+      "ssgi_trace_compute",
+      "ssgi_temporal_compute",
+      "ssgi_composite_compute",
+      "fog_apply_compute",
+      "froxel_inject_compute",
+      "froxel_integrate_compute",
+      "froxel_apply_compute",
+      "vk_sdsm_reduce",
+      "vk_picking_resolve",
+      "vk_transmission_shade",
+      "vk_transmission_shade_partitioned",
+      "vk_transmission_shade_production",
+      "vk_transmission_shade_production_temporal",
+      "vk_transmission_shade_partitioned_production",
+      "vk_transmission_shade_partitioned_production_temporal",
+      "vk_transmission_compact_clear",
+      "vk_transmission_compact",
+      "vk_transmission_compact_finalize",
+      "vk_transmission_coverage",
+      "vk_exposure_clear",
+      "vk_exposure_histogram",
+      "vk_exposure_resolve",
+      "vk_subsurface_gather",
+      "vk_motion_blur_tile_max",
+      "vk_motion_blur_neighbor_max",
+      "vk_motion_blur_reconstruct",
+      "vk_dof_coc",
+      "vk_dof_dilate_horizontal",
+      "vk_dof_dilate_vertical",
+      "vk_dof_prefilter",
+      "vk_dof_gather",
+      "vk_dof_composite",
+      "vk_bloom_prefilter",
+      "vk_bloom_downsample_tent13",
+      "vk_bloom_downsample_box4",
+      "vk_bloom_upsample",
+      "vk_bloom_combine",
+      "vk_gtao_depth_prefilter",
+      "vk_gtao_depth_mip",
+      "vk_gtao_evaluate",
+      "vk_gtao_denoise",
+  };
   _Static_assert(ArrayCount(paths) == VKR_VULKAN_DEFERRED_PIPELINE_COUNT &&
                      ArrayCount(entries) == ArrayCount(paths),
                  "Deferred pipelines require one module and entry per kind");

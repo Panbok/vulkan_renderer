@@ -55,6 +55,7 @@ typedef struct VkrSceneWorldSource {
   uint32_t object_id;
   uint32_t temporal_index;
   uint32_t temporal_generation;
+  uint32_t skinning_index;
   bool8_t bounds_valid;
   bool8_t transmissive;
   bool8_t double_sided;
@@ -90,6 +91,7 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
               .object_id = source->object_id,
               .temporal_index = source->temporal_index,
               .temporal_generation = source->temporal_generation,
+              .skinning_index = source->skinning_index,
           },
       .local_bounding_sphere = {source->center.x, source->center.y,
                                 source->center.z, vec3_length(half_extents)},
@@ -213,6 +215,24 @@ VkrRendererError vkr_scene_build_world_draws(
   const uint32_t mesh_count = vkr_mesh_manager_count(meshes);
   const uint32_t live_instance_count = vkr_mesh_manager_instance_count(meshes);
   const uint32_t temporal_instance_offset = vkr_mesh_manager_capacity(meshes);
+  uint32_t skinning_count = 0;
+  for (uint32_t i = 0; i < live_instance_count; ++i) {
+    uint32_t slot = 0;
+    const VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(meshes, i, &slot);
+    if (instance->visible && instance->loading_state == VKR_MESH_LOADING_STATE_LOADED && instance->skinning) {
+      skinning_count++;
+    }
+  }
+  if (skinning_count > VKR_SKINNING_BINDING_CAPACITY) {
+    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+  }
+  VkrSkinningInput *skinning = skinning_count ? vkr_allocator_alloc(scratch,
+      (uint64_t)skinning_count * sizeof(VkrSkinningInput), VKR_ALLOCATOR_MEMORY_TAG_ARRAY) : NULL;
+  if (skinning_count && !skinning) {
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+  uint32_t skinning_cursor = 0;
+
   const uint64_t temporal_slot_capacity =
       (uint64_t)temporal_instance_offset +
       vkr_mesh_manager_instance_capacity(meshes);
@@ -344,7 +364,7 @@ VkrRendererError vkr_scene_build_world_draws(
       transmission_gpu_candidate_count += transmissive ? 1u : 0u;
       if (!transmissive && alpha.world_transparent) {
         bool8_t visible = true_v;
-        if (instance->bounds_valid) {
+        if (instance->bounds_valid && !instance->skinning) {
           Vec3 center = {0};
           float32_t radius = 0.0f;
           vkr_visibility_submesh_sphere(instance->model, submesh->center,
@@ -467,6 +487,11 @@ VkrRendererError vkr_scene_build_world_draws(
         instance->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
                                                     instance->render_id)
                             : 0u;
+    uint32_t skinning_index = 0;
+    if (instance->skinning) {
+      skinning[skinning_cursor] = *instance->skinning;
+      skinning_index = ++skinning_cursor;
+    }
     const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
@@ -487,17 +512,18 @@ VkrRendererError vkr_scene_build_world_draws(
           .geometry = submesh->geometry,
           .material = draw_material,
           .model = instance->model,
-          .center = submesh->center,
-          .min_extents = submesh->min_extents,
-          .max_extents = submesh->max_extents,
+          .center = instance->skinning ? vec3_scale(vec3_add(instance->skinning_min, instance->skinning_max), 0.5f) : submesh->center,
+          .min_extents = instance->skinning ? instance->skinning_min : submesh->min_extents,
+          .max_extents = instance->skinning ? instance->skinning_max : submesh->max_extents,
           .alpha = alpha,
           .submesh_index = submesh->geometry_submesh_index,
           .object_id = object_id,
           .temporal_index = temporal_instance_offset + instance_slot,
           .temporal_generation = instance->generation,
+          .skinning_index = skinning_index,
           .bounds_valid = instance->bounds_valid,
           .transmissive = transmissive,
-          .double_sided = material ? material->double_sided : false_v,
+          .double_sided = instance->skinning || (material && material->double_sided),
           .shadow_mobility = instance->shadow_mobility,
       };
       vkr_scene_emit_world_source(&emit, &source);
@@ -511,6 +537,8 @@ VkrRendererError vkr_scene_build_world_draws(
                             transparent_draws, transparent_instances);
 
   *out_payload = (VkrWorldPassPayload){
+      .skinning = skinning,
+      .skinning_count = skinning_count,
       .opaque_material_features = opaque_material_features,
       .opaque_material_features_valid = true_v,
       .gpu_candidates = gpu_candidates,

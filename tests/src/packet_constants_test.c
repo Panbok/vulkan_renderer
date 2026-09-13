@@ -4,6 +4,7 @@
 #include "vkr_packet_constants.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 
 vkr_internal void test_packet_frame_constants(void) {
@@ -154,11 +155,123 @@ vkr_internal void test_packet_frame_flags(void) {
   printf("  test_packet_frame_flags PASSED\n");
 }
 
+/* A different packet order must resolve the selected producer's vertex span,
+ * and seeks/topology changes must not borrow that span as motion history. */
+static void test_skinning_history_identity(void) {
+  VkrSkinningInput jobs[2] = {
+      {.geometry = {.id = 7, .generation = 2}, .temporal_index = 3,
+       .temporal_generation = 4, .vertex_count = 5, .discontinuity = 1},
+      {.geometry = {.id = 8, .generation = 2}, .temporal_index = 9,
+       .temporal_generation = 6, .vertex_count = 11, .discontinuity = 1},
+  };
+  VkrWorldPassPayload world = {.skinning = jobs, .skinning_count = 2};
+  VkrSkinningHistory history;
+  assert(vkr_skinning_history_prepare(&world, &history));
+  assert(vkr_skinning_history_find(&history, &jobs[0]) == UINT64_MAX);
+  history.producer_submit = 17;
+  VkrSkinningInput next = jobs[1];
+  next.pose_generation = 100;
+  assert(vkr_skinning_history_find(&history, &next) == 160);
+  assert(vkr_skinning_history_find(&history, &jobs[0]) == 0);
+  next.discontinuity++;
+  assert(vkr_skinning_history_find(&history, &next) == UINT64_MAX);
+  next = jobs[1];
+  next.geometry.generation++;
+  assert(vkr_skinning_history_find(&history, &next) == UINT64_MAX);
+  next = jobs[1];
+  next.temporal_generation++;
+  assert(vkr_skinning_history_find(&history, &next) == UINT64_MAX);
+  next = jobs[1];
+  next.vertex_count++;
+  assert(vkr_skinning_history_find(&history, &next) == UINT64_MAX);
+  next = jobs[1];
+  next.discontinuity = UINT64_MAX;
+  assert(vkr_skinning_history_find(&history, &next) == UINT64_MAX);
+  jobs[0].vertex_count = VKR_SKINNING_VERTEX_CAPACITY;
+  assert(!vkr_skinning_history_prepare(&world, &history));
+}
+
+/* A geometry generation selects its own vertex span. Pairing another span
+ * with its deformation can read past the output; non-finite preview transforms
+ * must be rejected before their native roots are published. */
+vkr_internal void test_skinning_packet_bindings(void) {
+  const VkrVertex3d vertex = {.normal = {0.0f, 1.0f, 0.0f}};
+  const VkrSkinningInfluence influence = {.weights = {1.0f, 0.0f, 0.0f, 0.0f}};
+  const Mat4 palette = mat4_identity();
+  const VkrSkinningInput skin = {
+      .geometry = {.id = 7u, .generation = 2u},
+      .temporal_index = 3u,
+      .temporal_generation = 4u,
+      .vertices = &vertex,
+      .influences = &influence,
+      .palette = &palette,
+      .vertex_count = 1u,
+      .joint_count = 1u,
+  };
+  VkrWorldPassPayload world = {.skinning = &skin, .skinning_count = 1u};
+  VkrAnimationPreviewDraw draw = {
+      .geometry = skin.geometry,
+      .skinning_index = 1u,
+      .model = mat4_identity(),
+  };
+  VkrAnimationPreviewInput preview = {
+      .view_projection = mat4_identity(), .draws = &draw, .draw_count = 1u};
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
+      .world = &world,
+      .animation_preview = &preview,
+  };
+  VkrValidationError validation = {0};
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+
+  draw.geometry.generation++;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  draw.geometry = skin.geometry;
+  preview.view_projection.elements[5] = NAN;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  preview.view_projection = mat4_identity();
+  draw.model.elements[12] = NAN;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  draw.model = mat4_identity();
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+
+  const VkrInstanceDataGPU instances[] = {
+      {.model = mat4_identity()},
+      {.model = mat4_identity(),
+       .temporal_index = skin.temporal_index,
+       .temporal_generation = skin.temporal_generation,
+       .skinning_index = 1u},
+  };
+  VkrDrawItem direct = {.geometry = skin.geometry, .instance_count = 2u};
+  world.instances = instances;
+  world.instance_count = ArrayCount(instances);
+  world.transparent_draws = &direct;
+  world.transparent_draw_count = 1u;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+  direct.geometry.generation++;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  direct.geometry = skin.geometry;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+}
+
 bool32_t run_packet_constants_tests(void) {
   printf("Running packet constants tests...\n");
   test_packet_frame_constants();
   test_packet_material_constants();
   test_packet_frame_flags();
+  test_skinning_history_identity();
+  test_skinning_packet_bindings();
   printf("Packet constants tests PASSED\n");
   return true_v;
 }

@@ -319,7 +319,7 @@
       "size": {
         "mode": "draw_elements",
         "count_source": "gpu_draw_candidate_capacity",
-        "bytes_per_element": 128
+        "bytes_per_element": 144
       },
       "usage": [
         "STORAGE",
@@ -447,7 +447,7 @@
       "size": {
         "mode": "draw_elements",
         "count_source": "transmission_gpu_draw_candidate_capacity",
-        "bytes_per_element": 128
+        "bytes_per_element": 144
       },
       "usage": [
         "STORAGE",
@@ -1980,6 +1980,58 @@
         "PER_IMAGE",
         "RESIZABLE"
       ]
+    },
+    {
+      "name": "skinning_output",
+      "condition": "skinning_enabled",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "skinning_vertex_capacity",
+        "bytes_per_element": 32
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "animation_preview_color",
+      "type": "image",
+      "condition": "animation_preview_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 512,
+        "height": 512
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "animation_preview_depth",
+      "type": "image",
+      "condition": "animation_preview_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 512,
+        "height": 512
+      },
+      "format": "D32_SFLOAT",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT"
+      ],
+      "flags": [
+        "PER_IMAGE"
+      ]
     }
   ],
   "passes": [
@@ -2021,6 +2073,22 @@
         }
       ],
       "execute": "pass.gpu_draw_upload"
+    },
+    {
+      "name": "Animation.Skinning",
+      "condition": "skinning_enabled",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.animation.skinning"
     },
     {
       "name": "Temporal.TransformHistory",
@@ -2167,6 +2235,12 @@
           "buffer": "gpu_draw_arguments",
           "access": "INDIRECT_READ",
           "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -2215,6 +2289,12 @@
           "buffer": "gpu_draw_arguments",
           "access": "INDIRECT_READ",
           "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -2263,6 +2343,12 @@
           "buffer": "gpu_draw_arguments",
           "access": "INDIRECT_READ",
           "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -2348,6 +2434,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -2424,6 +2516,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -2587,6 +2685,12 @@
           "buffer": "gpu_draw_arguments",
           "access": "INDIRECT_READ",
           "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -2866,6 +2970,12 @@
           "buffer": "transmission_gpu_draw_arguments",
           "access": "INDIRECT_READ",
           "binding": 4
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -2934,6 +3044,12 @@
             "base_layer": 0,
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -3002,6 +3118,12 @@
             "base_layer": 1,
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -3070,6 +3192,12 @@
             "base_layer": 2,
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -3141,6 +3269,12 @@
             "base_layer": 3,
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -3202,6 +3336,12 @@
           "buffer": "temporal_transform_history",
           "access": "STORAGE_READ",
           "binding": 10
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -3300,6 +3440,12 @@
           "buffer": "temporal_transform_history",
           "access": "STORAGE_READ",
           "binding": 10
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -5513,6 +5659,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -5686,6 +5838,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -5956,6 +6114,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -6122,6 +6286,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -6392,6 +6562,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -6558,6 +6734,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -6833,6 +7015,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -7014,6 +7202,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -7187,6 +7381,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -7338,6 +7538,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -7489,6 +7695,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -7645,6 +7857,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -7813,6 +8031,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -7964,6 +8188,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -8115,6 +8345,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -8271,6 +8507,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "writes": [
@@ -8608,7 +8850,15 @@
           "store": "DONT_CARE"
         }
       },
-      "execute": "pass.picking"
+      "execute": "pass.picking",
+      "reads": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ]
     },
     {
       "name": "Picking.EditorOverlay",
@@ -8627,7 +8877,8 @@
           }
         ]
       },
-      "execute": "pass.editor.overlay.picking"
+      "execute": "pass.editor.overlay.picking",
+      "reads": []
     },
     {
       "name": "Picking.Readback",
@@ -8745,6 +8996,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -8878,6 +9135,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
         }
       ],
       "attachments": {
@@ -10473,7 +10736,8 @@
           }
         ]
       },
-      "execute": "pass.editor.overlay"
+      "execute": "pass.editor.overlay",
+      "reads": []
     },
     {
       "name": "Editor.Composite",
@@ -10531,6 +10795,47 @@
       "execute": "pass.editor.clear"
     },
     {
+      "name": "Animation.Preview",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "animation_preview_enabled",
+      "reads": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "animation_preview_color",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0.045,
+                0.055,
+                0.07,
+                1
+              ]
+            }
+          }
+        ],
+        "depth": {
+          "image": "animation_preview_depth",
+          "load": "CLEAR",
+          "store": "DONT_CARE",
+          "clear": {
+            "depth": 1,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.animation.preview"
+    },
+    {
       "name": "UI.Fullscreen",
       "type": "graphics",
       "domain": "UI",
@@ -10544,7 +10849,15 @@
           }
         ]
       },
-      "execute": "pass.ui"
+      "execute": "pass.ui",
+      "reads": [
+        {
+          "image": "animation_preview_color",
+          "access": "SAMPLED",
+          "binding": 30,
+          "when": "animation_preview_enabled"
+        }
+      ]
     },
     {
       "name": "UI.Editor",
@@ -10560,7 +10873,15 @@
           }
         ]
       },
-      "execute": "pass.ui"
+      "execute": "pass.ui",
+      "reads": [
+        {
+          "image": "animation_preview_color",
+          "access": "SAMPLED",
+          "binding": 30,
+          "when": "animation_preview_enabled"
+        }
+      ]
     }
   ],
   "outputs": {

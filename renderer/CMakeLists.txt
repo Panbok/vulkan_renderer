@@ -109,6 +109,9 @@ vkr_add_vulkan_packet_shader(
 vkr_add_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classify compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_prefix.comp" vk_gpu_draw_prefix compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_encode.comp" vk_gpu_draw_encode compute)
+vkr_add_vulkan_packet_shader("packet.animation_preview.vert" animation_preview_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.animation_preview.frag" animation_preview_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.skinning.comp" vk_skinning compute)
 vkr_add_vulkan_packet_shader("packet.temporal_transform.comp" vk_temporal_transform compute)
 vkr_add_vulkan_packet_shader("packet.fsr31.prepare.comp" vk_fsr31_prepare compute)
 vkr_add_vulkan_packet_shader("packet.fsr31.stabilize.comp" vk_fsr31_stabilize compute)
@@ -344,6 +347,9 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/shadow/sampling.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/fullscreen.metalh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/skinning_kernel.slangh"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/skinning.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/editor/animation_preview.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/gpu_draws.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/common.metalh"

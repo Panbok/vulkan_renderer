@@ -38,11 +38,12 @@ static uint32_t vkr_mesh_cook_vertex_hash(const VkrVertex3d *vertex) {
 
 bool8_t vkr_mesh_cook_deduplicate_vertices(
     VkrAllocator *scratch_allocator, const VkrVertex3d *vertices,
-    uint32_t vertex_count, uint32_t *indices, uint32_t index_count,
-    VkrVertex3d **out_vertices, uint32_t *out_vertex_count) {
+    const VkrMeshSkinVertex *skin_vertices, uint32_t vertex_count,
+    uint32_t *indices, uint32_t index_count, VkrVertex3d **out_vertices,
+    VkrMeshSkinVertex **out_skin_vertices, uint32_t *out_vertex_count) {
   if (!scratch_allocator || !vertices || !indices || !out_vertices ||
-      !out_vertex_count || vertex_count == 0u ||
-      vertex_count > UINT32_MAX / 2u) {
+      !out_vertex_count || (skin_vertices && !out_skin_vertices) ||
+      vertex_count == 0u || vertex_count > UINT32_MAX / 2u) {
     return false_v;
   }
   const uint32_t table_size = Max(1024u, vertex_count * 2u);
@@ -55,7 +56,13 @@ bool8_t vkr_mesh_cook_deduplicate_vertices(
   uint32_t *remap = vkr_allocator_alloc(
       scratch_allocator, (uint64_t)vertex_count * sizeof(*remap),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!hash_table || !unique || !remap) {
+  VkrMeshSkinVertex *unique_skin =
+      skin_vertices
+          ? vkr_allocator_alloc(scratch_allocator,
+                                (uint64_t)vertex_count * sizeof(*unique_skin),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
+  if (!hash_table || !unique || !remap || (skin_vertices && !unique_skin)) {
     return false_v;
   }
   for (uint32_t i = 0u; i < table_size; ++i) {
@@ -70,12 +77,18 @@ bool8_t vkr_mesh_cook_deduplicate_vertices(
       if (hash_table[index] == UINT32_MAX) {
         hash_table[index] = unique_count;
         unique[unique_count] = vertices[i];
+        if (unique_skin) {
+          unique_skin[unique_count] = skin_vertices[i];
+        }
         remap[i] = unique_count++;
         found = true_v;
         break;
       }
       if (vkr_mesh_cook_vertex_equal(&vertices[i],
-                                     &unique[hash_table[index]])) {
+                                     &unique[hash_table[index]]) &&
+          (!skin_vertices ||
+           MemCompare(&skin_vertices[i], &unique_skin[hash_table[index]],
+                      sizeof(*skin_vertices)) == 0)) {
         remap[i] = hash_table[index];
         found = true_v;
         break;
@@ -92,6 +105,9 @@ bool8_t vkr_mesh_cook_deduplicate_vertices(
     indices[i] = remap[indices[i]];
   }
   *out_vertices = unique;
+  if (out_skin_vertices) {
+    *out_skin_vertices = unique_skin;
+  }
   *out_vertex_count = unique_count;
   return true_v;
 }

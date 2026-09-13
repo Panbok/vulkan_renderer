@@ -63,6 +63,15 @@ vkr_internal VkrRendererError vkr_renderer_validate_text_draws(
   return VKR_RENDERER_ERROR_NONE;
 }
 
+vkr_internal bool8_t vkr_renderer_matrix_finite(const Mat4 *matrix) {
+  for (uint32_t i = 0u; i < ArrayCount(matrix->elements); ++i) {
+    if (!isfinite(matrix->elements[i])) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_renderer_ui_vec4_finite(Vec4 value) {
   return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
          isfinite(value.w);
@@ -158,7 +167,8 @@ vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.batches.texture",
           "text batches require an atlas texture");
-    if (batch->texture.id != 0u && batch->texture.generation == VKR_INVALID_ID)
+    if (batch->texture.id != 0u && batch->texture.id != UINT32_MAX &&
+        batch->texture.generation == VKR_INVALID_ID)
       return vkr_renderer_validation_fail(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.batches.texture",
@@ -344,6 +354,29 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
+    VkrSkinningHistory skinning_layout;
+    if (!vkr_skinning_history_prepare(world, &skinning_layout)) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.skinning", "exceeds deformation capacity");
+    }
+    for (uint32_t i = 0; i < world->skinning_count; ++i) {
+      const VkrSkinningInput *skin = &world->skinning[i];
+      if (!skin->vertices || !skin->influences || !skin->palette ||
+          !skin->vertex_count || !skin->joint_count ||
+          skin->joint_count > VKR_SKINNING_JOINT_CAPACITY ||
+          !skin->geometry.id ||
+          skin->temporal_index >= VKR_TEMPORAL_TRANSFORM_CAPACITY) {
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.world.skinning",
+                          "incomplete deformation input");
+      }
+      for (uint32_t j = 0; j < skin->joint_count; ++j) {
+        if (!vkr_renderer_matrix_finite(&skin->palette[j])) {
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.world.skinning.palette", "non-finite pose");
+        }
+      }
+    }
     if (world->opaque_material_features_valid > true_v ||
         (world->opaque_material_features & ~VKR_WORLD_MATERIAL_FEATURE_ALL)) {
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
@@ -404,11 +437,103 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
         out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
+    for (uint32_t stream = 0; stream < 3; ++stream) {
+      const uint32_t count = stream == 0 ? world->gpu_candidate_count :
+          stream == 1 ? world->transmission_gpu_candidate_count : world->instance_count;
+      for (uint32_t i = 0; i < count; ++i) {
+        const VkrInstanceDataGPU *instance = stream == 0 ? &world->gpu_candidates[i].instance :
+            stream == 1 ? &world->transmission_gpu_candidates[i].instance : &world->instances[i];
+        if (instance->skinning_index > world->skinning_count) {
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.world.instances.skinning_index", "binding is out of range");
+        }
+        if (instance->skinning_index) {
+          if (stream == 0 && i < world->static_candidate_count) {
+            VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                              "packet.world.static_candidate_count", "skinning requires dynamic residency");
+          }
+          const VkrSkinningInput *skin = &world->skinning[instance->skinning_index - 1u];
+          if (skin->temporal_index != instance->temporal_index ||
+              skin->temporal_generation != instance->temporal_generation) {
+            VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                              "packet.world.instances.skinning_index", "binding identity differs");
+          }
+          if (stream < 2) {
+            const VkrGeometryHandle geometry = stream == 0 ? world->gpu_candidates[i].geometry :
+                world->transmission_gpu_candidates[i].geometry;
+            if (geometry.id != skin->geometry.id || geometry.generation != skin->geometry.generation) {
+              VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                                "packet.world.skinning.geometry", "binding geometry differs");
+            }
+          }
+        }
+      }
+    }
+    if (world->skinning_count) {
+      for (uint32_t i = 0u; i < world->transparent_draw_count; ++i) {
+        const VkrDrawItem *draw = &world->transparent_draws[i];
+        for (uint32_t j = 0u; j < draw->instance_count; ++j) {
+          const VkrInstanceDataGPU *instance =
+              &world->instances[draw->first_instance + j];
+          if (!instance->skinning_index) {
+            continue;
+          }
+          const VkrSkinningInput *skin =
+              &world->skinning[instance->skinning_index - 1u];
+          if (draw->geometry.id != skin->geometry.id ||
+              draw->geometry.generation != skin->geometry.generation) {
+            VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                              "packet.world.transparent_draws.geometry",
+                              "binding geometry differs");
+          }
+        }
+      }
+    }
     error = vkr_renderer_validate_text_draws(
         world->text_draws, world->text_draw_count, "packet.world.text_draws",
         "packet.world.text_draw_count", out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
+  }
+  if (packet->animation_preview) {
+    const VkrAnimationPreviewInput *preview = packet->animation_preview;
+    if (!vkr_renderer_matrix_finite(&preview->view_projection)) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.animation_preview.view_projection",
+                        "must contain only finite values");
+    }
+    VkrRendererError error = vkr_renderer_validate_packet_array(
+        preview->draws, preview->draw_count, VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+        "packet.animation_preview.draws", "packet.animation_preview.draw_count",
+        out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE) {
+      return error;
+    }
+    for (uint32_t i = 0; i < preview->draw_count; ++i) {
+      const VkrAnimationPreviewDraw *draw = &preview->draws[i];
+      if (!vkr_renderer_matrix_finite(&draw->model)) {
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.animation_preview.draws.model",
+                          "must contain only finite values");
+      }
+      if (!draw->geometry.id ||
+          (draw->skinning_index &&
+           (!world || draw->skinning_index > world->skinning_count))) {
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.animation_preview.draws",
+                          "invalid preview binding");
+      }
+      if (draw->skinning_index) {
+        const VkrSkinningInput *skin =
+            &world->skinning[draw->skinning_index - 1u];
+        if (draw->geometry.id != skin->geometry.id ||
+            draw->geometry.generation != skin->geometry.generation) {
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.animation_preview.draws.geometry",
+                            "binding geometry differs");
+        }
+      }
+    }
   }
   const VkrLocalShadowPassPayload *local = packet->local_shadow;
   if (local) {
@@ -769,4 +894,51 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
   if (out_validation_error)
     *out_validation_error = (VkrValidationError){0};
   return VKR_RENDERER_ERROR_NONE;
+}
+
+bool8_t vkr_skinning_history_prepare(const VkrWorldPassPayload *world,
+                                     VkrSkinningHistory *history) {
+  if (!history || (world && (world->skinning_count > VKR_SKINNING_BINDING_CAPACITY ||
+                            (world->skinning_count && !world->skinning)))) {
+    return false_v;
+  }
+  *history = (VkrSkinningHistory){0};
+  uint64_t vertices = 0;
+  for (uint32_t i = 0; world && i < world->skinning_count; ++i) {
+    const VkrSkinningInput *input = &world->skinning[i];
+    if (input->vertex_count > VKR_SKINNING_VERTEX_CAPACITY - vertices) {
+      return false_v;
+    }
+    history->records[i] = (VkrSkinningHistoryRecord){
+        .geometry = input->geometry,
+        .temporal_index = input->temporal_index,
+        .temporal_generation = input->temporal_generation,
+        .vertex_count = input->vertex_count,
+        .discontinuity = input->discontinuity,
+        .offset_bytes = vertices * sizeof(VkrDeformedVertex),
+    };
+    vertices += input->vertex_count;
+    history->count++;
+  }
+  return true_v;
+}
+
+uint64_t vkr_skinning_history_find(const VkrSkinningHistory *history,
+                                  const VkrSkinningInput *input) {
+  if (!history || !input || !history->producer_submit ||
+      input->discontinuity == UINT64_MAX || history->count > VKR_SKINNING_BINDING_CAPACITY) {
+    return UINT64_MAX;
+  }
+  for (uint32_t i = 0; i < history->count; ++i) {
+    const VkrSkinningHistoryRecord *record = &history->records[i];
+    if (record->geometry.id == input->geometry.id &&
+        record->geometry.generation == input->geometry.generation &&
+        record->temporal_index == input->temporal_index &&
+        record->temporal_generation == input->temporal_generation &&
+        record->vertex_count == input->vertex_count &&
+        record->discontinuity == input->discontinuity) {
+      return record->offset_bytes;
+    }
+  }
+  return UINT64_MAX;
 }

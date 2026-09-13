@@ -107,7 +107,9 @@ uint2 vkr_vk_ssgi_identity(VkrVkSsgiTemporalRoot* root, uint2 receiver_pixel)
         return uint2(0u);
     VkrGpuVisibleDrawRow visible = root.visible_rows[encoded - 1u];
     VkrVulkanInstance instance = root.instances[visible.instance_index];
-    return uint2(instance.temporal_index + 1u, instance.temporal_generation);
+    return instance.deformation_address == 0
+      ? uint2(instance.temporal_index + 1u, instance.temporal_generation)
+      : uint2(0u);
 }
 
 float3 vkr_vk_ssgi_view_normal(VkrSsgiParams params, uint normal_texture,

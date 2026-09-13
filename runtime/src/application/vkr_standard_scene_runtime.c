@@ -1,3 +1,4 @@
+#include "renderer/systems/vkr_scene_animation.h"
 
 #include "application/vkr_standard_scene_runtime.h"
 
@@ -1094,7 +1095,18 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     editor_payload.overlay_draws = overlay_draws;
   }
 
+  VkrAnimationPreviewInput animation_preview = {0};
+  bool8_t has_animation_preview = false_v;
+  if (application->animation_preview.player && active_scene &&
+      application->animation_preview.scene_generation == application->scene_generation) {
+    const VkrAnimationPreviewRequest *request = &application->animation_preview;
+    has_animation_preview = vkr_scene_animation_build_preview(active_scene,
+        request->wrapper, request->player, request->yaw, request->pitch,
+        request->distance, scratch, &world_payload, &animation_preview);
+  }
+
   VkrFrameInput packet = {
+      .animation_preview = has_animation_preview ? &animation_preview : NULL,
       .version = VKR_FRAME_INPUT_VERSION,
       .frame =
           {

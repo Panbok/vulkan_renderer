@@ -707,6 +707,36 @@ typedef struct VkrMetalPacketSdsmState {
 _Static_assert(sizeof(VkrMetalPacketSdsmState) == 16,
                "Metal SDSM state ABI must remain 16 bytes");
 
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketAnimationPreviewRoot {
+  Mat4 model;
+  Mat4 view_projection;
+  uint64_t vertices;
+  uint64_t decode;
+  uint64_t deformation_address;
+  uint64_t reserved;
+  Vec4 tint;
+  uint32_t first_vertex;
+  uint32_t decode_index;
+  uint64_t reserved_tail;
+} VkrMetalPacketAnimationPreviewRoot;
+
+_Static_assert(sizeof(VkrMetalPacketAnimationPreviewRoot) == 192,
+               "Metal animation preview root ABI must remain 192 bytes");
+
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkinningRoot {
+  uint64_t bind_vertices;
+  uint64_t influences;
+  uint64_t palette;
+  uint64_t output;
+  uint32_t vertex_count;
+  uint32_t palette_count;
+  uint32_t reserved0;
+  uint32_t reserved1;
+} VkrMetalPacketSkinningRoot;
+
+_Static_assert(sizeof(VkrMetalPacketSkinningRoot) == 48,
+               "Metal skinning root ABI must remain 48 bytes");
+
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalTransformRoot {
   uint64_t instances;
   uint64_t transforms;
@@ -1179,6 +1209,8 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
+  VKR_METAL_PACKET_ABI_SKINNING_ROOT,
+  VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT,
   VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_GTAO_PARAMS,
   VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT,

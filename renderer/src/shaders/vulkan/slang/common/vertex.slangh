@@ -29,6 +29,7 @@ VkrVulkanVertexData packet_vertex_data(uint vertex_id, uint instance_id,
         decode[visible.decode_index]);
     VkrVulkanInstance instance =
         frame.instances[visible.instance_index + instance_id];
+    vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_id);
     float4 world = mul(instance.model, float4(vertex.position, 1.0f));
     VkrVulkanVertexData output;
     output.position = mul(view_projection, world);
@@ -42,10 +43,13 @@ VkrVulkanVertexData packet_vertex_data(uint vertex_id, uint instance_id,
         normalize(mul(instance.model, float4(vertex.tangent.xyz, 0.0f)).xyz),
         vertex.tangent.w * instance.normal_column0.w);
     output.object_id = instance.object_id;
-    output.object_position = vertex.position;
+    // This varying supplies previous-frame object space to the motion fragment.
+    output.object_position = vkr_previous_deformed_position(
+        vertex.position, instance.previous_deformation_address, vertex_id);
     output.temporal_index = instance.temporal_index;
     output.temporal_generation = instance.temporal_generation;
-    output.temporal_flags = instance.temporal_flags;
+    output.temporal_flags = instance.deformation_address != 0 &&
+        instance.previous_deformation_address == 0 ? 0u : instance.temporal_flags;
     return output;
 }
 

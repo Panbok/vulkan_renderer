@@ -494,11 +494,26 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ui_draw_list(
       (uint64_t)upload->root_cursor * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   uint8_t *root_cpu = upload->root_cpu + root_offset;
   const uint64_t root_gpu = upload->root_gpu + root_offset;
+  VkrMetalPacketTexture preview_texture = {0};
+  if (renderer->graph->packet->input.animation_preview) {
+    VkrRgImageHandle handle = vkr_rg_find_image(
+        renderer->graph, string8_lit("animation_preview_color"));
+    VkrMetalPacketImageInstance *image =
+        vkr_metal_packet_image_instance(renderer, handle);
+    if (image) {
+      preview_texture.resource = image->resource;
+    }
+  }
   uint32_t prepared_count = 0u;
   for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
     const VkrUiDrawBatch *batch = &draw_list->batches[i];
     VkrMetalPacketTexture *texture = NULL;
-    if (batch->texture.id != 0u) {
+    if (batch->texture.id == UINT32_MAX) {
+      if (!preview_texture.resource.resource_id) {
+        continue;
+      }
+      texture = &preview_texture;
+    } else if (batch->texture.id != 0u) {
       texture = vkr_metal_packet_resolve_texture(
           renderer,
           (VkrTextureHandle){.id = batch->texture.id,
@@ -1080,6 +1095,26 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   prepared->active = true_v;
   if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
     renderer->ibl_last_use_submit_value = renderer->submit_value + 1u;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_prepare_skinning(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  const VkrWorldPassPayload *world = renderer->graph->packet->input.world;
+  prepared->skinning.count = world ? world->skinning_count : 0u;
+  for (uint32_t i = 0u; i < prepared->skinning.count; ++i) {
+    uint64_t address = 0u;
+    VkrMetalPacketSkinningRoot *root =
+        vkr_metal_packet_next_root(upload, sizeof(*root), &address);
+    if (!root) {
+      return false_v;
+    }
+    *root = upload->skinning_roots[i];
+    prepared->skinning.roots[i] = address;
+    prepared->skinning.vertices[i] = root->vertex_count;
+  }
+  prepared->active = prepared->skinning.count != 0u;
   return true_v;
 }
 
@@ -3601,6 +3636,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
       return false_v;
     return true_v;
   }
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_ANIMATION_PREVIEW) {
+    return vkr_metal_packet_prepare_animation_preview(renderer, prepared,
+                                                      packet, upload, result);
+  }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY ||
       kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING) {
     prepared->active = true_v;
@@ -3670,6 +3709,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE:
     return vkr_metal_packet_prepare_metalfx_stabilize(renderer, pass, packet,
                                                       prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SKINNING:
+    return vkr_metal_packet_prepare_skinning(renderer, prepared, upload);
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM:
     return vkr_metal_packet_prepare_temporal_transform(renderer, pass, packet,
                                                        prepared, upload);
@@ -4056,7 +4097,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       log_error("Metal packet stage failed: buffer realization");
       goto graph_failure;
     }
-    if (packet->scene_rendering &&
+    if ((packet->scene_rendering ||
+         (packet->input.world && packet->input.world->skinning_count)) &&
         !vkr_metal_packet_select_history_output(renderer)) {
       log_error("Metal packet stage failed: history output selection");
       goto graph_failure;
@@ -4080,6 +4122,18 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         !vkr_metal_packet_select_ssgi_history(renderer)) {
       log_error("Metal packet stage failed: SSGI history selection");
       goto graph_failure;
+    }
+    /* One prepared instance carries one previous deformation stream. Keep the
+       G-buffer's previous actor transform on that same image producer. */
+    if (packet->input.world && packet->input.world->skinning_count) {
+      if (renderer->selected_ssr_history_instance !=
+          renderer->selected_temporal_history_instance) {
+        renderer->selected_ssr_history_instance = UINT32_MAX;
+      }
+      if (renderer->selected_ssgi_history_instance !=
+          renderer->selected_temporal_history_instance) {
+        renderer->selected_ssgi_history_instance = UINT32_MAX;
+      }
     }
     if (packet->scene_rendering &&
         !vkr_metal_packet_select_motion_history(renderer)) {
@@ -4798,6 +4852,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_mark_froxel_history_submitted(renderer, submit_value);
       vkr_metal_packet_mark_exposure_submitted(renderer, submit_value);
     }
+    vkr_metal_packet_mark_skinning_submitted(renderer, submit_value);
     vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
     VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;
     command_slot->submit_value = submit_value;

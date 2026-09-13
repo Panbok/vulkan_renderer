@@ -27,6 +27,8 @@ struct VkrMetalPacketInstance
     float4 normal_column0;
     float4 normal_column1; // w: conservative affine sphere stretch.
     float4 normal_column2;
+    uint64_t deformation_address;
+    uint64_t previous_deformation_address;
 };
 
 struct VkrMetalPacketShadowCascade

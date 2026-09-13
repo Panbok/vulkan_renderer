@@ -1473,16 +1473,19 @@ void vkr_vk_destroy_atmosphere_resources(VkrVulkanRenderer *renderer) {
 bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
                                      VkrVulkanFrameSlot *slot,
                                      uint64_t direct_bytes,
-                                     uint64_t candidate_bytes) {
+                                     uint64_t candidate_bytes,
+                                     uint64_t skinning_bytes) {
   // Called before packet packing, after this slot's last submission completed.
   if (slot->retire_value > renderer->completed_value ||
-      candidate_bytes > VKR_VULKAN_CANDIDATE_UPLOAD_SIZE)
+      candidate_bytes > VKR_VULKAN_CANDIDATE_UPLOAD_SIZE ||
+      skinning_bytes > UINT64_MAX - VKR_VULKAN_FRAME_UPLOAD_SIZE)
     return false_v;
   VkrVulkanBuffer *buffers[] = {&slot->frame_upload, &slot->candidate_upload};
   const uint64_t required[] = {
-      Min(direct_bytes, (uint64_t)VKR_VULKAN_FRAME_UPLOAD_SIZE),
+      Min(direct_bytes, (uint64_t)VKR_VULKAN_FRAME_UPLOAD_SIZE) +
+          skinning_bytes,
       candidate_bytes};
-  const uint64_t limits[] = {VKR_VULKAN_FRAME_UPLOAD_SIZE,
+  const uint64_t limits[] = {VKR_VULKAN_FRAME_UPLOAD_SIZE + skinning_bytes,
                              VKR_VULKAN_CANDIDATE_UPLOAD_SIZE};
   const VkrVulkanMemoryClass classes[] = {VKR_VULKAN_MEMORY_CLASS_UPLOAD,
                                           VKR_VULKAN_MEMORY_CLASS_STAGING};
@@ -1496,7 +1499,7 @@ bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
       continue;
     uint64_t capacity = buffer->size ? buffer->size : 1024u * 1024u;
     while (capacity < required[i])
-      capacity = Min(capacity * 2u, limits[i]);
+      capacity = capacity > limits[i] / 2u ? limits[i] : capacity * 2u;
     VkrVulkanBuffer replacement = {0};
     if (!vkr_vk_create_buffer(renderer, classes[i],
                               VKR_GPU_ALLOCATION_OWNER_STAGING, capacity,

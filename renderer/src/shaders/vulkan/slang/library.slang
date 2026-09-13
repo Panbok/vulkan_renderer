@@ -33,6 +33,8 @@
 #include "../../shared/shadow_kernel.slangh"
 #include "ibl/common.slangh"
 #include "common/vertex.slangh"
+#include "../../shared/skinning_kernel.slangh"
+#include "world/skinning.slang"
 #include "post/tonemap.slangh"
 
 #include "ibl/default.slang"
@@ -57,3 +59,5 @@
 #include "ui/default.slang"
 
 #include "editor/overlay.slang"
+
+#include "editor/animation_preview.slang"

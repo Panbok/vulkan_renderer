@@ -790,7 +790,8 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   ok = ok && vkr_mesh_cooked_reader_u32(&reader, &header_reserved[0]);
   ok = ok && vkr_mesh_cooked_reader_u32(&reader, &header_reserved[1]);
   if (!ok || magic != VKR_MESH_COOKED_MAGIC ||
-      version != VKR_MESH_COOKED_VERSION ||
+      (version != VKR_MESH_COOKED_VERSION &&
+       version != VKR_MESH_COOKED_SKIN_VERSION) ||
       endian_tag != VKR_MESH_COOKED_ENDIAN_TAG ||
       header_size != VKR_MESH_COOKED_HEADER_SIZE ||
       library_version != vkr_meshopt_library_version() ||
@@ -949,6 +950,51 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         mesh->range_count > range_count - next_range)
       return false_v;
     next_range += mesh->range_count;
+  }
+  VkrMeshSkinData *skin = &out_decoded->skin;
+  if (version == VKR_MESH_COOKED_SKIN_VERSION) {
+    if (!vkr_mesh_cooked_reader_u64(&source_reader,
+                                    &skin->animation_fingerprint) ||
+        !vkr_mesh_cooked_reader_u32(&source_reader, &skin->skin_count) ||
+        !vkr_mesh_cooked_reader_u32(&source_reader, &skin->vertex_count) ||
+        !skin->skin_count || skin->skin_count > 65536u ||
+        skin->vertex_count != total_vertex_count ||
+        source_reader.offset > string_offset ||
+        (uint64_t)skin->skin_count * 4u + (uint64_t)skin->vertex_count * 32u !=
+            string_offset - source_reader.offset) {
+      return false_v;
+    }
+    skin->joint_counts = vkr_allocator_alloc(
+        result_allocator, (uint64_t)skin->skin_count * sizeof(uint32_t),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    skin->vertices = skin->vertex_count
+                         ? vkr_allocator_alloc(result_allocator,
+                                               (uint64_t)skin->vertex_count *
+                                                   sizeof(*skin->vertices),
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                         : NULL;
+    if (!skin->joint_counts || (skin->vertex_count && !skin->vertices)) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < skin->skin_count; ++i) {
+      if (!vkr_mesh_cooked_reader_u32(&source_reader, &skin->joint_counts[i])) {
+        return false_v;
+      }
+    }
+    for (uint32_t i = 0; i < skin->vertex_count; ++i) {
+      for (uint32_t j = 0; j < 4u; ++j) {
+        if (!vkr_mesh_cooked_reader_u32(&source_reader,
+                                        &skin->vertices[i].joints[j])) {
+          return false_v;
+        }
+      }
+      for (uint32_t j = 0; j < 4u; ++j) {
+        if (!vkr_mesh_cooked_reader_f32(&source_reader,
+                                        &skin->vertices[i].weights[j])) {
+          return false_v;
+        }
+      }
+    }
   }
   if (source_reader.offset != string_offset ||
       (source->meshes.length && next_range != range_count))
@@ -1250,6 +1296,12 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     vertex_base += range->vertex_count;
   }
 
+  if (version == VKR_MESH_COOKED_SKIN_VERSION &&
+      !vkr_mesh_skin_validate(skin, source, output_ranges.data, range_count,
+                              indices, total_index_count, total_vertex_count)) {
+    return false_v;
+  }
+
   out_decoded->mesh_buffer = (VkrGeometryUploadBuffer){
       .vertex_size = vertex_stride,
       .vertex_count = total_vertex_count,
@@ -1267,6 +1319,8 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   out_decoded->cooked_bytes = size;
   out_decoded->decoded_bytes =
       vertex_bytes + index_bytes +
+      (uint64_t)skin->skin_count * sizeof(uint32_t) +
+      (uint64_t)skin->vertex_count * sizeof(VkrMeshSkinVertex) +
       (uint64_t)range_count * sizeof(VkrGpuGeometryDecodeRecord);
   return true_v;
 }

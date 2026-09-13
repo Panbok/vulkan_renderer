@@ -14,6 +14,7 @@ typedef struct VkrMeshCookedEncodeInfo {
   uint32_t dependency_count;
   VkrGeometryUploadBuffer mesh_buffer;
   VkrMeshSource source;
+  VkrMeshSkinData skin;
   const VkrGeometryUploadRange *ranges;
   uint32_t range_count;
   VkrGeometryQuantizationBudgets budgets;
@@ -39,7 +40,8 @@ bool8_t vkr_mesh_cooked_write_atomic(VkrAllocator *scratch_allocator,
 
 /** Copy a validated artifact, replacing only same-size source-node metadata.
  * The caller must decode input first. Node/mesh counts and names cannot change;
- * compressed geometry, strings and source identity remain unchanged. */
+ * compressed geometry, strings and source identity remain unchanged. Version 18
+ * also preserves skin bytes and rejects changes to mesh/skin bindings or spans. */
 bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
                                         const uint8_t *input, uint64_t size,
                                         const VkrMeshSource *source,

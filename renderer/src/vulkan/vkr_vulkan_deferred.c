@@ -562,7 +562,9 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       slot->packet_build.hzb_history_rejections[VKR_HZB_HISTORY_DISABLED]++;
   }
   if (pipeline == VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY && !transmission &&
-      renderer->prepared_frame.hzb_build_enabled) {
+      renderer->prepared_frame.hzb_build_enabled &&
+      (!renderer->graph->packet->input.world ||
+       !renderer->graph->packet->input.world->skinning_count)) {
     const VkrRgImageUse *hzb_use =
         vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u);
     if (hzb_use && vkr_rg_image_handle_valid(hzb_use->image)) {

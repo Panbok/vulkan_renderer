@@ -774,6 +774,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
                                                  renderer->sh_coefficients);
       [renderer->gpu_draw_encode_pipeline release];
       [renderer->gpu_draw_encode_inherited_pipeline release];
+      [renderer->skinning_pipeline release];
       [renderer->temporal_transform_pipeline release];
       for (uint32_t i = 0u; i < ArrayCount(renderer->gbuffer_resolve_pipelines);
            ++i)
@@ -841,6 +842,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       [renderer->picking_pipeline release];
       [renderer->editor_overlay_pipeline release];
       [renderer->editor_overlay_picking_pipeline release];
+      [renderer->animation_preview_pipeline release];
       [renderer->fragment_library release];
       [renderer->metalfx_temporal_scaler release];
       [renderer->compiler release];

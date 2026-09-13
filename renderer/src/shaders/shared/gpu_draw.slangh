@@ -73,6 +73,41 @@ VkrGpuDecodedVertex vkr_decode_packed_vertex(
     return result;
 }
 
+
+struct VkrGpuDeformedVertex
+{
+    float3 position;
+    uint normal_packed;
+    uint tangent_packed;
+    float tangent_sign;
+    uint reserved0;
+    uint reserved1;
+};
+
+VkrGpuDecodedVertex vkr_apply_deformation(VkrGpuDecodedVertex vertex,
+                                         uint64_t address, uint vertex_index)
+{
+    if (address != 0)
+    {
+        VkrGpuDeformedVertex deformed = ((VkrGpuDeformedVertex*)address)[vertex_index];
+        vertex.position = deformed.position;
+        vertex.normal = vkr_packed_oct_decode(deformed.normal_packed);
+        vertex.tangent = float4(vkr_packed_oct_decode(deformed.tangent_packed),
+                                deformed.tangent_sign);
+    }
+    return vertex;
+}
+
+float3 vkr_previous_deformed_position(float3 fallback, uint64_t address,
+                                      uint vertex_index)
+{
+    if (address == 0)
+    {
+        return fallback;
+    }
+    return ((VkrGpuDeformedVertex*)address)[vertex_index].position;
+}
+
 struct VkrGpuCandidateDrawRow
 {
     uint geometry_index;

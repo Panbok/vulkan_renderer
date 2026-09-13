@@ -15,6 +15,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SKINNING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY,
@@ -78,6 +79,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_CLEAR,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_ANIMATION_PREVIEW,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_UI,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_PREPARE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_UPSCALE,
@@ -108,6 +110,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.animation.skinning", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.temporal.transform_history", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
@@ -171,6 +174,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.editor.clear", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.editor.overlay.picking", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.animation.preview", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.fsr31.prepare", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.fsr31.upscale", VKR_RG_PASS_TYPE_COMPUTE},
@@ -986,7 +990,9 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
   renderer->selected_hzb_history_instance = UINT32_MAX;
   renderer->prepared_frame.hzb_history_valid = false_v;
   renderer->packet_build.hzb_history_checks_valid = true_v;
-  if (!renderer->prepared_frame.hzb_build_enabled) {
+  if (!renderer->prepared_frame.hzb_build_enabled ||
+      (renderer->graph->packet->input.world &&
+       renderer->graph->packet->input.world->skinning_count)) {
     renderer->packet_build.hzb_history_rejections[VKR_HZB_HISTORY_DISABLED]++;
     return true_v;
   }
@@ -1631,6 +1637,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
   renderer->transmission_gpu_candidate_instance_buffer_handle =
       VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->temporal_transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->skinning_output_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->exposure_state_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
@@ -1651,6 +1658,8 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
     else if (vkr_string8_equals_cstr(&buffer->name,
                                      "temporal_transform_history"))
       renderer->temporal_transform_history_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name, "skinning_output"))
+      renderer->skinning_output_handle = handle;
     else if (vkr_string8_equals_cstr(&buffer->name, "exposure_state"))
       renderer->exposure_state_handle = handle;
     if (buffer->imported ||
@@ -1958,6 +1967,32 @@ vkr_metal_packet_mark_hzb_history_submitted(VkrMetalPacketRenderer *renderer,
     VkrMetalPacketImageInstance *instance = &slot->instances[selected];
     instance->last_use_submit_value =
         MAX(instance->last_use_submit_value, submit_value);
+  }
+}
+
+vkr_internal void
+vkr_metal_packet_mark_skinning_submitted(VkrMetalPacketRenderer *renderer,
+                                         uint64_t serial) {
+  if (!renderer->pending_skinning_history.count) {
+    return;
+  }
+  const uint32_t current = renderer->history_output_index;
+  renderer->pending_skinning_history.producer_submit = serial;
+  renderer->skinning_history[current] = renderer->pending_skinning_history;
+  VkrMetalPacketGraphBufferInstance *output =
+      vkr_metal_packet_graph_buffer_instance(
+          renderer, renderer->skinning_output_handle, current);
+  output->history_producer_submit_value = serial;
+  output->last_use_submit_value = MAX(output->last_use_submit_value, serial);
+  const uint32_t selected = renderer->selected_temporal_history_instance;
+  if (selected != UINT32_MAX) {
+    VkrMetalPacketGraphBufferInstance *previous =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->skinning_output_handle, selected);
+    if (previous) {
+      previous->last_use_submit_value =
+          MAX(previous->last_use_submit_value, serial);
+    }
   }
 }
 

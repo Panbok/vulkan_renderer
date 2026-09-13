@@ -331,6 +331,7 @@ typedef struct VkrMetalPacketPreparedDraw {
 
 typedef struct VkrMetalPacketFrameUpload {
   VkrMetalPacketTemporalSceneState temporal_scene;
+  VkrMetalPacketSkinningRoot skinning_roots[VKR_SKINNING_BINDING_CAPACITY];
   VkrMetalRingSlice slice;
   VkrMetalAddressPair addresses;
   id<MTLBuffer> buffer;
@@ -643,6 +644,7 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> picking_pipeline;
   id<MTLRenderPipelineState> editor_overlay_pipeline;
   id<MTLRenderPipelineState> editor_overlay_picking_pipeline;
+  id<MTLRenderPipelineState> animation_preview_pipeline;
   id<MTLRenderPipelineState> tonemap_pipeline;
   id<MTLRenderPipelineState> display_linear_pipeline;
   id<MTLRenderPipelineState> world_text_pipeline;
@@ -659,6 +661,13 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_inherited_pipeline;
+  id<MTLRenderPipelineState> preview_pipeline;
+  id<MTLComputePipelineState> skinning_pipeline;
+  VkrRgBufferHandle skinning_output_handle;
+  VkrSkinningHistory skinning_history[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
+  VkrSkinningHistory pending_skinning_history;
+  uint64_t skinning_addresses[VKR_SKINNING_BINDING_CAPACITY];
+  uint64_t previous_skinning_addresses[VKR_SKINNING_BINDING_CAPACITY];
   id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipelines[4];
   id<MTLComputePipelineState> deferred_lighting_pipeline;
@@ -952,6 +961,7 @@ vkr_internal void vkr_metal_packet_collect_picking_results(
 #include "metal/internal/vkr_metal_packet_commands.inc"
 #include "metal/internal/vkr_metal_packet_setup.inc"
 #include "metal/internal/vkr_metal_packet_resources.inc"
+#include "metal/internal/vkr_metal_packet_animation_preview.inc"
 #include "metal/internal/vkr_metal_packet_frame.inc"
 #include "metal/internal/vkr_metal_packet_lifecycle.inc"
 // clang-format on

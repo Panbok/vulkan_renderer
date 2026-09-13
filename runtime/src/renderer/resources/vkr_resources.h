@@ -268,10 +268,17 @@ Array(VkrMeshAsset);
  * Stores transform and visibility. The actual
  * geometry/material data is retrieved from the referenced asset.
  */
+struct VkrSkinningInput;
+
 typedef struct VkrMeshInstance {
   VkrMeshAssetHandle asset;
   uint32_t generation; // Handle generation for stale-handle detection.
   uint32_t live_index; // Index in mesh manager's active instance list.
+  /** Borrowed from the scene animator until explicitly unbound. */
+  const struct VkrSkinningInput *skinning;
+  uint64_t skinning_generation;
+  Vec3 skinning_min;
+  Vec3 skinning_max;
 
   Mat4 model;
   uint32_t render_id;

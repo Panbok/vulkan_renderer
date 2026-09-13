@@ -849,7 +849,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     prepared->frame.editor_image_rect_px = output;
   }
   if (!prepared->frame.scene_rendering) {
-    prepared->frame.input.world = NULL;
+    if (!packet->animation_preview) {
+      prepared->frame.input.world = NULL;
+    }
     prepared->frame.input.shadow = NULL;
     prepared->frame.input.local_shadow = NULL;
     prepared->frame.input.lighting = NULL;

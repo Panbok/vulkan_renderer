@@ -64,6 +64,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_PREFILTER_ROOT:
   case VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT:
+  case VKR_METAL_PACKET_ABI_SKINNING_ROOT:
   case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
   case VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT:
@@ -801,6 +802,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     [slang release];
     return false_v;
   }
+  renderer->animation_preview_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_animation_preview_vertex", fragment,
+      "vkr_metal_packet_animation_preview_fragment", MTLPixelFormatRGBA8Unorm,
+      false_v, VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v, @"VKR animation preview");
   renderer->gpu_shadow_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
       "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid, false_v,
@@ -972,6 +978,9 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_gpu_draw_encode_inherited",
           VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
           @"VKR Metal packet inherited GPU draw encode");
+  renderer->skinning_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_skinning",
+      VKR_METAL_PACKET_ABI_SKINNING_ROOT, false_v, @"VKR compute skinning");
   renderer->temporal_transform_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_temporal_transform",
@@ -1239,7 +1248,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->gpu_draw_prefix_pipeline ||
       !renderer->gpu_draw_encode_pipeline ||
       !renderer->gpu_draw_encode_inherited_pipeline ||
-      !renderer->temporal_transform_pipeline ||
+      !renderer->skinning_pipeline || !renderer->temporal_transform_pipeline ||
       !renderer->gbuffer_resolve_pipelines[0] ||
       !renderer->gbuffer_resolve_pipelines[1] ||
       !renderer->gbuffer_resolve_pipelines[2] ||
@@ -1281,7 +1290,8 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->bloom_downsample_tent13_pipeline ||
       !renderer->bloom_downsample_box4_pipeline ||
       !renderer->bloom_upsample_pipeline || !renderer->bloom_combine_pipeline ||
-      !renderer->gpu_shadow_pipeline || !renderer->gpu_shadow_opaque_pipeline ||
+      !renderer->animation_preview_pipeline || !renderer->gpu_shadow_pipeline ||
+      !renderer->gpu_shadow_opaque_pipeline ||
       !renderer->local_shadow_transmission_pipelines[0] ||
       !renderer->local_shadow_transmission_pipelines[1] ||
       !renderer->local_shadow_transmission_pipelines[2] ||
@@ -1352,6 +1362,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->gpu_draw_encode_pipeline, "draw encode pipeline"},
       {renderer->gpu_draw_encode_inherited_pipeline,
        "inherited draw encode pipeline"},
+      {renderer->skinning_pipeline, "skinning pipeline"},
       {renderer->temporal_transform_pipeline, "temporal transform pipeline"},
       {renderer->gbuffer_resolve_pipelines[0], "G-buffer resolve pipeline"},
       {renderer->gbuffer_resolve_pipelines[1],

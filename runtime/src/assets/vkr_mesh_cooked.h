@@ -1,5 +1,6 @@
 #pragma once
 
+#include "assets/vkr_mesh_skin.h"
 #include "assets/vkr_mesh_source.h"
 #include "containers/str.h"
 #include "memory/vkr_allocator.h"
@@ -8,6 +9,7 @@
 
 #define VKR_MESH_COOKED_MAGIC 0x564B4D48u /* 'VKMH' */
 #define VKR_MESH_COOKED_VERSION 17u
+#define VKR_MESH_COOKED_SKIN_VERSION 18u
 #define VKR_MESH_COOKED_ENDIAN_TAG 0x01020304u
 #define VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1 2u
 #define VKR_MESH_COOKED_STREAM_ALIGNMENT 16u
@@ -18,6 +20,7 @@ typedef struct VkrMeshCookedDecoded {
   uint64_t decoded_bytes;
   VkrGeometryUploadBuffer mesh_buffer;
   VkrMeshSource source;
+  VkrMeshSkinData skin;
   Array_VkrGeometryUploadRange ranges;
   VkrGeometryQuantizationMetrics quantization;
 } VkrMeshCookedDecoded;

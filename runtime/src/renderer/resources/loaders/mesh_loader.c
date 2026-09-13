@@ -250,6 +250,7 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
   }
   result->root_transform = vkr_transform_identity();
   result->source = decoded.source;
+  result->skin = decoded.skin;
   result->has_mesh_buffer = decoded.ranges.length != 0u;
   result->mesh_buffer = (VkrMeshLoaderBuffer){
       .vertex_size = decoded.mesh_buffer.vertex_size,
@@ -282,7 +283,10 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
       .source_bytes = decoded.source_bytes,
       .cooked_bytes = decoded.cooked_bytes,
       .decoded_bytes = decoded.decoded_bytes,
-      .upload_bytes = decoded.decoded_bytes,
+      .upload_bytes =
+          decoded.decoded_bytes -
+          (uint64_t)decoded.skin.vertex_count * sizeof(VkrMeshSkinVertex) -
+          (uint64_t)decoded.skin.skin_count * sizeof(uint32_t),
       .vertex_count = decoded.mesh_buffer.vertex_count,
       .index_count = decoded.mesh_buffer.index_count,
       .range_count = (uint32_t)decoded.ranges.length,
