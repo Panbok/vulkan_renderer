@@ -68,43 +68,66 @@ bool8_t vkr_json_parse_float(VkrJsonReader *reader, float32_t *out_value) {
   return true_v;
 }
 
+static bool8_t vkr_json_value_ended(const VkrJsonReader *reader);
+
 bool8_t vkr_json_parse_double(VkrJsonReader *reader, float64_t *out_value) {
-  vkr_json_skip_whitespace(reader);
-
-  uint64_t start = reader->pos;
-
-  if (reader->pos < reader->length &&
-      (reader->data[reader->pos] == '-' || reader->data[reader->pos] == '+')) {
-    reader->pos++;
-  }
-
-  while (reader->pos < reader->length) {
-    uint8_t c = reader->data[reader->pos];
-    if ((c >= '0' && c <= '9') || c == '.') {
-      reader->pos++;
-    } else if (c == 'e' || c == 'E') {
-      reader->pos++;
-      if (reader->pos < reader->length && (reader->data[reader->pos] == '-' ||
-                                           reader->data[reader->pos] == '+')) {
-        reader->pos++;
-      }
-      while (reader->pos < reader->length && reader->data[reader->pos] >= '0' &&
-             reader->data[reader->pos] <= '9') {
-        reader->pos++;
-      }
-      break;
-    } else {
-      break;
-    }
-  }
-
-  if (reader->pos == start) {
+  if (!reader || !out_value) {
     return false_v;
   }
-
-  String8 num_str = {.str = (uint8_t *)(reader->data + start),
-                     .length = reader->pos - start};
-  return string8_to_f64(&num_str, out_value);
+  VkrJsonReader number = *reader;
+  vkr_json_skip_whitespace(&number);
+  const uint64_t start = number.pos;
+  if (number.pos < number.length && number.data[number.pos] == '-') {
+    number.pos++;
+  }
+  if (number.pos >= number.length || number.data[number.pos] < '0' ||
+      number.data[number.pos] > '9') {
+    return false_v;
+  }
+  if (number.data[number.pos++] != '0') {
+    while (number.pos < number.length && number.data[number.pos] >= '0' &&
+           number.data[number.pos] <= '9') {
+      number.pos++;
+    }
+  }
+  if (number.pos < number.length && number.data[number.pos] == '.') {
+    const uint64_t digits = ++number.pos;
+    while (number.pos < number.length && number.data[number.pos] >= '0' &&
+           number.data[number.pos] <= '9') {
+      number.pos++;
+    }
+    if (number.pos == digits) {
+      return false_v;
+    }
+  }
+  if (number.pos < number.length &&
+      (number.data[number.pos] == 'e' || number.data[number.pos] == 'E')) {
+    number.pos++;
+    if (number.pos < number.length &&
+        (number.data[number.pos] == '+' || number.data[number.pos] == '-')) {
+      number.pos++;
+    }
+    const uint64_t digits = number.pos;
+    while (number.pos < number.length && number.data[number.pos] >= '0' &&
+           number.data[number.pos] <= '9') {
+      number.pos++;
+    }
+    if (number.pos == digits) {
+      return false_v;
+    }
+  }
+  if (!vkr_json_value_ended(&number)) {
+    return false_v;
+  }
+  String8 text = {.str = (uint8_t *)number.data + start,
+                  .length = number.pos - start};
+  float64_t value = 0.0;
+  if (!string8_to_f64(&text, &value)) {
+    return false_v;
+  }
+  *out_value = value;
+  *reader = number;
+  return true_v;
 }
 
 static bool8_t vkr_json_value_ended(const VkrJsonReader *reader) {

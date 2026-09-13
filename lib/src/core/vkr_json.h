@@ -114,7 +114,8 @@ bool8_t vkr_json_enter_object(VkrJsonReader *reader,
 bool8_t vkr_json_parse_float(VkrJsonReader *reader, float32_t *out_value);
 
 /**
- * @brief Parses a double value at current position.
+ * @brief Parses a JSON number at current position. Failure preserves reader and
+ * output.
  * @param reader The reader
  * @param out_value Output double value
  * @return true if parsed successfully

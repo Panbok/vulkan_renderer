@@ -302,6 +302,31 @@ static void test_integer_range_and_token_boundaries(void) {
   assert(value == true_v && reader.pos == 0);
 }
 
+static void test_double_number_grammar(void) {
+  const struct {
+    const char *text;
+    float64_t expected;
+  } valid[] = {{"0", 0.0},           {"-0}", 0.0},       {"1.25,", 1.25},
+               {"-12e+2]", -1200.0}, {" 2.5E-1 ", 0.25}, {"0.125", 0.125}};
+  for (uint32_t i = 0; i < ArrayCount(valid); ++i) {
+    VkrJsonReader reader = vkr_json_reader_create(
+        (const uint8_t *)valid[i].text, string_length(valid[i].text));
+    float64_t value = 77.0;
+    assert(vkr_json_parse_double(&reader, &value));
+    assert(value == valid[i].expected);
+  }
+  const char *invalid[] = {"+1",  ".5",       "01",  "-01",   "1.",    "1e",
+                           "1e+", "1e-",      "--1", "1.2.3", "1junk", "0x1",
+                           "NaN", "Infinity", "-",   "",      "1e2e3"};
+  for (uint32_t i = 0; i < ArrayCount(invalid); ++i) {
+    VkrJsonReader reader = vkr_json_reader_create((const uint8_t *)invalid[i],
+                                                  string_length(invalid[i]));
+    float64_t value = 77.0;
+    assert(!vkr_json_parse_double(&reader, &value));
+    assert(value == 77.0 && reader.pos == 0);
+  }
+}
+
 bool32_t run_json_tests(void) {
   printf("--- Starting JSON Tests ---\n");
 
@@ -315,6 +340,7 @@ bool32_t run_json_tests(void) {
   test_enter_object_nested();
   test_truncated_tokens_do_not_publish_views();
   test_integer_range_and_token_boundaries();
+  test_double_number_grammar();
 
   printf("--- JSON Tests Completed ---\n");
   return true;
