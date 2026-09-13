@@ -1,3 +1,5 @@
+#include "filesystem/vkr_filesystem_cpp.h"
+#include "../assets/vkr_ktx_file.h"
 #include "bake/vkr_bake_material.h"
 
 #include <ktx.h>
@@ -399,11 +401,11 @@ bool8_t layer_texture_intent_valid(const std::string &value, uint32_t slot) {
 
 bool8_t read_file(const fs::path &path, std::vector<uint8_t> *out_bytes) {
   std::error_code error;
-  if (!fs::is_regular_file(path, error) || error) return false_v;
-  const uintmax_t size = fs::file_size(path, error);
+  if (!fs::is_regular_file(vkr_filesystem_native_path(path), error) || error) return false_v;
+  const uintmax_t size = fs::file_size(vkr_filesystem_native_path(path), error);
   if (error || size == 0u || size > INT_MAX || size > SIZE_MAX) return false_v;
   out_bytes->resize((size_t)size);
-  std::ifstream file(path, std::ios::binary);
+  std::ifstream file(vkr_filesystem_native_path(path), std::ios::binary);
   return file && file.read((char *)out_bytes->data(), (std::streamsize)out_bytes->size()) ? true_v : false_v;
 }
 
@@ -482,7 +484,7 @@ void destroy_ktx(ktxTexture2 *texture) { ktxTexture_Destroy(ktxTexture(texture))
 bool8_t decode_ktx2(VkrBakeTextureStore *store, const fs::path &path,
                     VkrBakeTextureEntry *entry) {
   ktxTexture2 *texture = nullptr;
-  if (ktxTexture2_CreateFromNamedFile(path.string().c_str(),
+  if (vkr_ktx_read_file(path.u8string().c_str(),
                                       KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
                                       &texture) != KTX_SUCCESS || !texture)
     return false_v;
@@ -552,7 +554,7 @@ bool8_t decode_ktx2_cube_rgba16f(VkrBakeTextureStore *store,
                                       const fs::path &path,
                                       VkrBakeTextureEntry *entry) {
   ktxTexture2 *texture = nullptr;
-  if (ktxTexture2_CreateFromNamedFile(path.string().c_str(),
+  if (vkr_ktx_read_file(path.u8string().c_str(),
                                       KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
                                       &texture) != KTX_SUCCESS || !texture)
     return false_v;
@@ -620,12 +622,12 @@ bool8_t texture_store_load_cube_rgba16f(VkrBakeTextureStore *store,
                                         uint32_t *out_index,
                                         VkrBakeMaterialError *out_error) {
   std::error_code error;
-  const fs::path selected(path);
-  if (!fs::is_regular_file(selected, error) || error) {
+  const fs::path selected = fs::u8path(path);
+  if (!fs::is_regular_file(vkr_filesystem_native_path(selected), error) || error) {
     *out_error = VKR_BAKE_MATERIAL_ERROR_IO;
     return false_v;
   }
-  const std::string canonical = fs::absolute(selected, error).lexically_normal().string();
+  const std::string canonical = fs::absolute(vkr_filesystem_native_path(selected), error).lexically_normal().u8string();
   if (error || canonical.empty()) {
     *out_error = VKR_BAKE_MATERIAL_ERROR_IO;
     return false_v;
@@ -691,29 +693,29 @@ bool8_t texture_store_find_or_load(VkrBakeTextureStore *store,
                                    bool8_t source_srgb_hint,
                                    uint32_t *out_index,
                                    VkrBakeMaterialError *out_error) {
-  fs::path source(request.path);
+  fs::path source = fs::u8path(request.path);
   std::error_code error;
   const bool8_t owner_relative =
       request.path.rfind("./", 0) == 0 || request.path.rfind("../", 0) == 0;
   if (owner_relative && !material_directory.empty()) {
     source = (material_directory / source).lexically_normal();
-  } else if (!source.is_absolute() && !fs::exists(source, error)) {
+  } else if (!source.is_absolute() && !fs::exists(vkr_filesystem_native_path(source), error)) {
     error.clear();
     const fs::path local = material_directory / source;
-    if (fs::exists(local, error)) source = local;
+    if (fs::exists(vkr_filesystem_native_path(local), error)) source = local;
   }
   error.clear();
   fs::path selected = source;
-  const bool8_t direct_vkt = ascii_lower(source.extension().string()) == ".vkt";
+  const bool8_t direct_vkt = ascii_lower(source.extension().u8string()) == ".vkt";
   if (!direct_vkt && !request.source_only) {
-    const fs::path sidecar = source.string() + ".vkt";
-    if (fs::is_regular_file(sidecar, error) && !error) selected = sidecar;
+    const fs::path sidecar = fs::u8path(source.u8string() + ".vkt");
+    if (fs::is_regular_file(vkr_filesystem_native_path(sidecar), error) && !error) selected = sidecar;
   }
-  if (!fs::is_regular_file(selected, error) || error) {
+  if (!fs::is_regular_file(vkr_filesystem_native_path(selected), error) || error) {
     *out_error = VKR_BAKE_MATERIAL_ERROR_IO;
     return false_v;
   }
-  const std::string canonical = fs::absolute(selected, error).lexically_normal().string();
+  const std::string canonical = fs::absolute(vkr_filesystem_native_path(selected), error).lexically_normal().u8string();
   if (error || canonical.empty()) { *out_error = VKR_BAKE_MATERIAL_ERROR_IO; return false_v; }
   for (uint32_t i = 0u; i < store->count; ++i) {
     if (strcmp(store->entries[i].path, canonical.c_str()) == 0 &&
@@ -735,11 +737,11 @@ bool8_t texture_store_find_or_load(VkrBakeTextureStore *store,
   Sha256 hash = {};
   sha256_begin(&hash); sha256_update(&hash, bytes.data(), bytes.size()); sha256_end(&hash, entry.sha256);
   entry.byte_count = bytes.size();
-  const bool8_t decoded = direct_vkt || ascii_lower(selected.extension().string()) == ".vkt"
+  const bool8_t decoded = direct_vkt || ascii_lower(selected.extension().u8string()) == ".vkt"
                               ? decode_ktx2(store, selected, &entry)
                               : decode_source_image(store, bytes,
                                                     ldr_vertical_flip, &entry);
-  if (!(direct_vkt || ascii_lower(selected.extension().string()) == ".vkt"))
+  if (!(direct_vkt || ascii_lower(selected.extension().u8string()) == ".vkt"))
     entry.srgb_hint = source_srgb_hint;
   if (!decoded) { texture_entry_release(store->allocator, &entry); *out_error = VKR_BAKE_MATERIAL_ERROR_TEXTURE; return false_v; }
   analyze_alpha(&entry);
@@ -947,7 +949,7 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
                                             VkrBakeMaterialError *out_error) {
   if (out_error) *out_error = VKR_BAKE_MATERIAL_ERROR_NONE;
   if (!store || !material_path || !out_material) { if (out_error) *out_error = VKR_BAKE_MATERIAL_ERROR_INVALID_ARGUMENT; return false_v; }
-  std::ifstream file(material_path);
+  std::ifstream file(vkr_filesystem_native_utf8_path(material_path));
   if (!file) { if (out_error) *out_error = VKR_BAKE_MATERIAL_ERROR_IO; return false_v; }
   VkrBakeMaterial material = {};
   material_defaults(&material);
@@ -1025,7 +1027,7 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
     }
     uint32_t index = 0u;
     VkrBakeMaterialError error = VKR_BAKE_MATERIAL_ERROR_NONE;
-    if (!texture_store_find_or_load(store, request, fs::path(material_path).parent_path(),
+    if (!texture_store_find_or_load(store, request, fs::u8path(material_path).parent_path(),
                                     true_v, false_v, &index, &error)) {
       if (out_error) *out_error = error;
       return false_v;

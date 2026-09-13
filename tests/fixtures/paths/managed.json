@@ -1,0 +1,96 @@
+{
+  "cases": [
+    {
+      "value": "mesh.vkb",
+      "valid": true
+    },
+    {
+      "value": "builds/id/mesh.vkb",
+      "valid": true
+    },
+    {
+      "value": "тест/меш.vkb",
+      "valid": true
+    },
+    {
+      "value": "space name/file.bin",
+      "valid": true
+    },
+    {
+      "value": "literal%20name.png",
+      "valid": true
+    },
+    {
+      "value": "hash#name.png",
+      "valid": true
+    },
+    {
+      "value": "question?name.png",
+      "valid": true
+    },
+    {
+      "value": "",
+      "valid": false
+    },
+    {
+      "value": ".",
+      "valid": false
+    },
+    {
+      "value": "..",
+      "valid": false
+    },
+    {
+      "value": "./mesh.vkb",
+      "valid": false
+    },
+    {
+      "value": "a/./b",
+      "valid": false
+    },
+    {
+      "value": "a/../b",
+      "valid": false
+    },
+    {
+      "value": "a//b",
+      "valid": false
+    },
+    {
+      "value": "/mesh.vkb",
+      "valid": false
+    },
+    {
+      "value": "a/",
+      "valid": false
+    },
+    {
+      "value": "a\\b",
+      "valid": false
+    },
+    {
+      "value": "C:/mesh.vkb",
+      "valid": false
+    },
+    {
+      "value": "C:mesh.vkb",
+      "valid": false
+    },
+    {
+      "value": "//server/share/mesh.vkb",
+      "valid": false
+    },
+    {
+      "value": "\\\\server\\share\\mesh.vkb",
+      "valid": false
+    },
+    {
+      "value": "a\u0000b",
+      "valid": false
+    },
+    {
+      "value": "a:b",
+      "valid": false
+    }
+  ]
+}

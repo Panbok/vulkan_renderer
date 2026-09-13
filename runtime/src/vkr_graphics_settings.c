@@ -126,7 +126,7 @@ bool8_t vkr_graphics_settings_load(const char *path,
                                    VkrGraphicsSettings *settings) {
   if (!path || !path[0])
     return true_v;
-  FILE *file = fopen(path, "rb");
+  FILE *file = file_fopen(path, "rb");
   if (!file)
     return errno == ENOENT;
   uint8_t bytes[4096];

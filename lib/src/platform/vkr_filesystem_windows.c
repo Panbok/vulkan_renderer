@@ -4,6 +4,7 @@
 
 #include "core/logger.h"
 
+#include <errno.h>
 #include <wchar.h>
 
 #define VKR_WINDOWS_PATH_WCHARS 32768u
@@ -11,8 +12,8 @@
 /* Native conversion is bounded cold-path stack storage. No path bytes or
  * platform buffer escape an operation. Normalize before adding the long-path
  * prefix because Win32 extended paths do not interpret dot components. */
-static bool8_t fs_windows_path(const FilePath *path,
-                               wchar_t output[VKR_WINDOWS_PATH_WCHARS]) {
+bool8_t file_windows_native_path(const FilePath *path,
+                                 wchar_t output[VKR_WINDOWS_PATH_WCHARS]) {
   if (!path || !path->path.str || !path->path.length ||
       path->path.length > INT_MAX ||
       memchr(path->path.str, 0, path->path.length)) {
@@ -34,7 +35,7 @@ static bool8_t fs_windows_path(const FilePath *path,
   if (length >= 4 && !wcsncmp(input, L"\\\\.\\", 4)) {
     return false_v;
   }
-  if (length >= 8 && !wcsncmp(input, L"\\\\?\\UNC\\", 8)) {
+  if (length >= 8 && !_wcsnicmp(input, L"\\\\?\\UNC\\", 8)) {
     MemCopy(input + 2, input + 8, ((uint64_t)length - 8 + 1) * sizeof(wchar_t));
     input[0] = L'\\';
     input[1] = L'\\';
@@ -43,6 +44,9 @@ static bool8_t fs_windows_path(const FilePath *path,
       return false_v;
     }
     MemCopy(input, input + 4, ((uint64_t)length - 4 + 1) * sizeof(wchar_t));
+  }
+  if (input[0] && input[1] == L':' && input[2] != L'\\') {
+    return false_v;
   }
   DWORD used =
       GetFullPathNameW(input, VKR_WINDOWS_PATH_WCHARS - 8, output + 8, NULL);
@@ -61,6 +65,24 @@ static bool8_t fs_windows_path(const FilePath *path,
     MemCopy(output, L"\\\\?\\", 4 * sizeof(wchar_t));
   }
   return true_v;
+}
+
+FILE *file_fopen(const char *utf8_path, const char *mode) {
+  if (!utf8_path || !mode) {
+    errno = EINVAL;
+    return NULL;
+  }
+  FilePath path = {
+      .path = {.str = (uint8_t *)utf8_path, .length = strlen(utf8_path)}};
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  wchar_t native_mode[16];
+  if (!file_windows_native_path(&path, native) ||
+      !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, native_mode,
+                           ArrayCount(native_mode))) {
+    errno = EINVAL;
+    return NULL;
+  }
+  return _wfopen(native, native_mode);
 }
 
 static FileError fs_windows_error(DWORD error) {
@@ -162,13 +184,13 @@ String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
 
 bool8_t file_exists(const FilePath *path) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  return fs_windows_path(path, native) &&
+  return file_windows_native_path(path, native) &&
          GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES;
 }
 
 FileError file_stats(const FilePath *path, FileStats *out_stats) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  if (!out_stats || !fs_windows_path(path, native)) {
+  if (!out_stats || !file_windows_native_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
   WIN32_FILE_ATTRIBUTE_DATA data;
@@ -188,7 +210,7 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
 
 bool8_t file_create_directory(const FilePath *path) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  if (!fs_windows_path(path, native)) {
+  if (!file_windows_native_path(path, native)) {
     return false_v;
   }
   if (CreateDirectoryW(native, NULL)) {
@@ -204,7 +226,7 @@ bool8_t file_create_directory(const FilePath *path) {
 
 FileError file_create_directory_exclusive(const FilePath *path) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  if (!fs_windows_path(path, native)) {
+  if (!file_windows_native_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
   return CreateDirectoryW(native, NULL) ? FILE_ERROR_NONE
@@ -215,7 +237,7 @@ FileError file_path_resolve(const FilePath *path, char *out_path,
                             uint64_t out_capacity) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (!out_path || !out_capacity || out_capacity > INT_MAX ||
-      !fs_windows_path(path, native)) {
+      !file_windows_native_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
   out_path[0] = 0;
@@ -257,7 +279,8 @@ bool8_t file_path_equals(const char *lhs, const char *rhs) {
       .path = string8_create_from_cstr((const uint8_t *)rhs, strlen(rhs))};
   wchar_t a[VKR_WINDOWS_PATH_WCHARS];
   wchar_t b[VKR_WINDOWS_PATH_WCHARS];
-  return fs_windows_path(&left, a) && fs_windows_path(&right, b) &&
+  return file_windows_native_path(&left, a) &&
+         file_windows_native_path(&right, b) &&
          CompareStringOrdinal(a, -1, b, -1, TRUE) == CSTR_EQUAL;
 }
 
@@ -271,7 +294,8 @@ bool8_t file_path_starts_with(const char *path, const char *prefix) {
                                                      strlen(prefix))};
   wchar_t a[VKR_WINDOWS_PATH_WCHARS];
   wchar_t b[VKR_WINDOWS_PATH_WCHARS];
-  if (!fs_windows_path(&full, a) || !fs_windows_path(&start, b)) {
+  if (!file_windows_native_path(&full, a) ||
+      !file_windows_native_path(&start, b)) {
     return false_v;
   }
   size_t length = wcslen(b);
@@ -287,7 +311,7 @@ bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
   }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   FilePath input = {.path = *path};
-  if (!fs_windows_path(&input, native)) {
+  if (!file_windows_native_path(&input, native)) {
     return false_v;
   }
   size_t start = 7; // \\?\C:\ drive root
@@ -371,7 +395,7 @@ FileError file_open(const FilePath *path, FileMode mode,
   }
 
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  if (!fs_windows_path(path, native)) {
+  if (!file_windows_native_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
   HANDLE hFile =
@@ -516,7 +540,7 @@ FileError file_sync(FileHandle *handle) {
 
 FileError file_remove(const FilePath *path) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  if (!fs_windows_path(path, native)) {
+  if (!file_windows_native_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
   return DeleteFileW(native) ? FILE_ERROR_NONE
@@ -527,7 +551,8 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
                       bool8_t overwrite) {
   wchar_t from[VKR_WINDOWS_PATH_WCHARS];
   wchar_t to[VKR_WINDOWS_PATH_WCHARS];
-  if (!fs_windows_path(source, from) || !fs_windows_path(destination, to)) {
+  if (!file_windows_native_path(source, from) ||
+      !file_windows_native_path(destination, to)) {
     return FILE_ERROR_INVALID_PATH;
   }
   DWORD flags = MOVEFILE_WRITE_THROUGH;

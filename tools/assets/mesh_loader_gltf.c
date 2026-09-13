@@ -1,4 +1,5 @@
 #include "assets/mesh_loader_gltf.h"
+#include "assets/vkr_cgltf.h"
 #include "assets/vkr_gltf_material_conversion.h"
 #include "assets/vkr_mesh_encode.h"
 #include "assets/vkr_meshoptimizer_bridge.h"
@@ -3053,13 +3054,22 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_extract_images(
       if (base64[length - 2] == '=') {
         --size;
       }
-      cgltf_options options = {.memory = data->memory};
+      cgltf_options options = {.memory = data->memory,
+                               .file = vkr_cgltf_file_options()};
       if (cgltf_load_buffer_base64(&options, size, base64, &decoded) !=
           cgltf_result_success) {
         return false_v;
       }
       bytes = decoded;
     } else {
+      /* External image URIs become filenames once at this import boundary.
+       * Generated image paths below are already host filenames. */
+      if (image->uri) {
+        cgltf_size length = cgltf_decode_uri(image->uri);
+        if (memchr(image->uri, 0, length)) {
+          return false_v;
+        }
+      }
       continue;
     }
     int32_t width = 0;
@@ -3130,7 +3140,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
       info->load_allocator, "%.*s", (int32_t)info->source_path.length,
       info->source_path.str);
 
-  cgltf_options options = {0};
+  cgltf_options options = {.file = vkr_cgltf_file_options()};
   cgltf_data *data = NULL;
   cgltf_result parse_result =
       cgltf_parse_file(&options, (const char *)cstr_path.str, &data);

@@ -1653,7 +1653,8 @@ bool8_t vkr_mesh_cook_source_managed(
       vkr_mesh_loader_path_is_absolute(bundle_root) && import_id.length &&
       import_id.length <= 128 && output_path.length > bundle_root.length + 1 &&
       MemCompare(output_path.str, bundle_root.str, bundle_root.length) == 0 &&
-      output_path.str[bundle_root.length] == '/';
+      (output_path.str[bundle_root.length] == '/' ||
+       output_path.str[bundle_root.length] == '\\');
   for (uint64_t i = 0; i < import_id.length; ++i) {
     uint8_t c = import_id.str[i];
     valid = valid && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||

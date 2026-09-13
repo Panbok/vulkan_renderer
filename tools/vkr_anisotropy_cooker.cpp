@@ -1,3 +1,4 @@
+#include "platform/vkr_entry.h"
 #include "vkr_anisotropy_lut.h"
 #include "vkr_atomic_file.h"
 extern "C" {
@@ -238,7 +239,7 @@ struct Record {
 };
 } // namespace
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   if (argc != 2) {
     std::cerr << "Usage: vkr_anisotropy_cooker <output.inc>\n";
     return 2;
@@ -366,7 +367,7 @@ int main(int argc, char **argv) {
   {
     // Windows refuses to replace a file this process still holds open, so the
     // comparison read must be closed before the atomic rename.
-    std::ifstream old(argv[1], std::ios::binary);
+    std::ifstream old(vkr_filesystem_native_utf8_path(argv[1]), std::ios::binary);
     previous.assign((std::istreambuf_iterator<char>(old)),
                     std::istreambuf_iterator<char>());
   }

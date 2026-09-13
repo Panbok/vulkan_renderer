@@ -1,3 +1,4 @@
+#include "platform/vkr_entry.h"
 #include "vkr_atomic_file.h"
 #include "vkr_sheen_lut.h"
 
@@ -30,21 +31,21 @@ constexpr double k_allocation_absolute_reserve = 0.003;
 constexpr double k_min_no_v = VKR_SHEEN_MIN_NOV;
 constexpr double k_eps = 1.0e-12;
 
-struct Vec3 { double x, y, z; };
+struct SheenVec3 { double x, y, z; };
 
-Vec3 add(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
-Vec3 sub(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-Vec3 mul(Vec3 a, double b) { return {a.x * b, a.y * b, a.z * b}; }
-double dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-Vec3 cross(Vec3 a, Vec3 b) {
+SheenVec3 add(SheenVec3 a, SheenVec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+SheenVec3 sub(SheenVec3 a, SheenVec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+SheenVec3 mul(SheenVec3 a, double b) { return {a.x * b, a.y * b, a.z * b}; }
+double dot(SheenVec3 a, SheenVec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+SheenVec3 cross(SheenVec3 a, SheenVec3 b) {
   return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
           a.x * b.y - a.y * b.x};
 }
-double length2(Vec3 a) { return dot(a, a); }
-Vec3 normalize(Vec3 a) {
+double length2(SheenVec3 a) { return dot(a, a); }
+SheenVec3 normalize(SheenVec3 a) {
   const double length_squared = length2(a);
   return length_squared > k_eps ? mul(a, 1.0 / std::sqrt(length_squared))
-                                : Vec3{0.0, 0.0, 0.0};
+                                : SheenVec3{0.0, 0.0, 0.0};
 }
 double saturate(double value) { return std::clamp(value, 0.0, 1.0); }
 
@@ -87,13 +88,13 @@ double charlie_d(double no_h, double roughness) {
 
 double charlie_visibility(double no_v, double no_l, double roughness);
 
-double charlie_brdf(double no_v, Vec3 wi, double roughness) {
+double charlie_brdf(double no_v, SheenVec3 wi, double roughness) {
   if (no_v < 0.0 || wi.z < 0.0)
     return 0.0;
   /* Keep the actual geometric directions for the half vector; only the
      fitted visibility domain is regularized at grazing incidence. */
-  const Vec3 wo = {std::sqrt(std::max(0.0, 1.0 - no_v * no_v)), 0.0, no_v};
-  const Vec3 h = normalize(add(wo, wi));
+  const SheenVec3 wo = {std::sqrt(std::max(0.0, 1.0 - no_v * no_v)), 0.0, no_v};
+  const SheenVec3 h = normalize(add(wo, wi));
   if (h.z <= 0.0)
     return 0.0;
   return charlie_d(h.z, roughness) *
@@ -159,7 +160,7 @@ double charlie_visibility(double no_v, double no_l, double roughness) {
 double directional_energy(double no_v, double roughness) {
   if (no_v < 0.0 || no_v > 1.0)
     return 0.0;
-  const Vec3 wo = {std::sqrt(std::max(0.0, 1.0 - no_v * no_v)), 0.0, no_v};
+  const SheenVec3 wo = {std::sqrt(std::max(0.0, 1.0 - no_v * no_v)), 0.0, no_v};
   const GaussRule &rule = gauss_rule();
   double value = 0.0;
   for (uint32_t h_index = 0; h_index < k_energy_axis_samples; ++h_index) {
@@ -170,11 +171,11 @@ double directional_energy(double no_v, double roughness) {
       const double phi = 2.0 * k_pi *
                          (static_cast<double>(phi_index) + 0.5) /
                          k_energy_axis_samples;
-      const Vec3 h = {sin_h * std::cos(phi), sin_h * std::sin(phi), no_h};
+      const SheenVec3 h = {sin_h * std::cos(phi), sin_h * std::sin(phi), no_h};
       const double wo_h = dot(wo, h);
       if (wo_h <= k_eps)
         continue;
-      const Vec3 wi = sub(mul(h, 2.0 * wo_h), wo);
+      const SheenVec3 wi = sub(mul(h, 2.0 * wo_h), wo);
       if (wi.z <= 0.0)
         continue;
       value += rule.w[h_index] * d * charlie_visibility(no_v, wi.z, roughness) *
@@ -209,30 +210,30 @@ double interpolate_scale(const std::array<double, VKR_SHEEN_LTC_LUT_SIZE> &scale
 }
 
 struct JointSample {
-  Vec3 wi;
+  SheenVec3 wi;
   double target;
   double weight;
 };
 
 struct JointRectangle {
-  std::array<Vec3, 4> vertices;
+  std::array<SheenVec3, 4> vertices;
   double target;
 };
 
-double charlie_rectangle_integral(const std::array<Vec3, 4> &vertices,
+double charlie_rectangle_integral(const std::array<SheenVec3, 4> &vertices,
                                   double no_v, double roughness) {
   constexpr uint32_t k_side = 20u;
-  const Vec3 edge_x = mul(sub(vertices[3], vertices[0]), 1.0 / k_side);
-  const Vec3 edge_y = mul(sub(vertices[1], vertices[0]), 1.0 / k_side);
+  const SheenVec3 edge_x = mul(sub(vertices[3], vertices[0]), 1.0 / k_side);
+  const SheenVec3 edge_y = mul(sub(vertices[1], vertices[0]), 1.0 / k_side);
   const double area = std::sqrt(length2(cross(edge_x, edge_y)));
   double value = 0.0;
   for (uint32_t y = 0; y < k_side; ++y) for (uint32_t x = 0; x < k_side; ++x) {
-    const Vec3 point = add(vertices[0], add(mul(edge_x, x + 0.5),
+    const SheenVec3 point = add(vertices[0], add(mul(edge_x, x + 0.5),
                                              mul(edge_y, y + 0.5)));
     const double distance_squared = length2(point);
     const double distance = std::sqrt(distance_squared);
     if (point.z <= 0.0 || distance <= k_eps) continue;
-    const Vec3 wi = mul(point, 1.0 / distance);
+    const SheenVec3 wi = mul(point, 1.0 / distance);
     value += wi.z * charlie_brdf(no_v, wi, roughness) *
              point.z * area / (distance_squared * distance);
   }
@@ -240,7 +241,7 @@ double charlie_rectangle_integral(const std::array<Vec3, 4> &vertices,
 }
 
 std::array<JointRectangle, 4> joint_rectangles(double no_v, double roughness, double target_energy) {
-  struct Definition { Vec3 center; double half_width, half_height; };
+  struct Definition { SheenVec3 center; double half_width, half_height; };
   constexpr std::array<Definition, 4> definitions = {
       Definition{{0.0, 0.0, 1.5}, 0.25, 0.25},
       Definition{{0.55, 0.15, 1.2}, 0.5, 0.2},
@@ -250,10 +251,10 @@ std::array<JointRectangle, 4> joint_rectangles(double no_v, double roughness, do
   std::array<JointRectangle, 4> result = {};
   for (uint32_t i = 0; i < definitions.size(); ++i) {
     const Definition &d = definitions[i];
-    result[i].vertices = {Vec3{d.center.x - d.half_width, d.center.y - d.half_height, d.center.z},
-                          Vec3{d.center.x - d.half_width, d.center.y + d.half_height, d.center.z},
-                          Vec3{d.center.x + d.half_width, d.center.y + d.half_height, d.center.z},
-                          Vec3{d.center.x + d.half_width, d.center.y - d.half_height, d.center.z}};
+    result[i].vertices = {SheenVec3{d.center.x - d.half_width, d.center.y - d.half_height, d.center.z},
+                          SheenVec3{d.center.x - d.half_width, d.center.y + d.half_height, d.center.z},
+                          SheenVec3{d.center.x + d.half_width, d.center.y + d.half_height, d.center.z},
+                          SheenVec3{d.center.x + d.half_width, d.center.y - d.half_height, d.center.z}};
     result[i].target = charlie_rectangle_integral(result[i].vertices, no_v, roughness) /
                        std::max(target_energy, k_eps);
   }
@@ -284,22 +285,22 @@ double full_mass(const FullFit &fit) {
 /* The transform depends only on the fit, so the per-sample loops below hoist
    it out rather than recomputing six transcendentals for every direction. */
 double full_density_transformed(const std::array<double, 4> &a,
-                                Vec3 direction) {
-  const Vec3 transformed = {a[0] * direction.x + a[2] * direction.z, direction.y,
+                                SheenVec3 direction) {
+  const SheenVec3 transformed = {a[0] * direction.x + a[2] * direction.z, direction.y,
                             a[1] * direction.x + a[3] * direction.z};
   const double length = std::sqrt(length2(transformed));
   const double determinant = a[0] * a[3] - a[1] * a[2];
   if (length <= k_eps || determinant <= k_eps) return 0.0;
-  const Vec3 local = mul(transformed, 1.0 / length);
+  const SheenVec3 local = mul(transformed, 1.0 / length);
   return local.z > 0.0 ? local.z * determinant /
       (k_pi * length * length * length) : 0.0;
 }
 
-double full_density(const FullFit &fit, Vec3 direction) {
+double full_density(const FullFit &fit, SheenVec3 direction) {
   return full_density_transformed(full_matrix(fit), direction);
 }
 
-double full_edge_integral(Vec3 a, Vec3 b) {
+double full_edge_integral(SheenVec3 a, SheenVec3 b) {
   a = normalize(a);
   b = normalize(b);
   const double cosine = std::clamp(dot(a, b), -1.0, 1.0);
@@ -308,19 +309,19 @@ double full_edge_integral(Vec3 a, Vec3 b) {
 }
 
 double full_rectangle_component(const FullFit &fit,
-                                const std::array<Vec3, 4> &vertices) {
+                                const std::array<SheenVec3, 4> &vertices) {
   const std::array<double, 4> matrix = full_matrix(fit);
-  std::array<Vec3, 5> clipped = {};
+  std::array<SheenVec3, 5> clipped = {};
   uint32_t count = 0u;
-  std::array<Vec3, 4> transformed = {};
+  std::array<SheenVec3, 4> transformed = {};
   for (uint32_t i = 0; i < 4u; ++i) {
-    const Vec3 v = vertices[i];
+    const SheenVec3 v = vertices[i];
     transformed[i] = {matrix[0] * v.x + matrix[2] * v.z, v.y,
                       matrix[1] * v.x + matrix[3] * v.z};
   }
   for (uint32_t i = 0; i < 4u; ++i) {
-    const Vec3 a = transformed[i];
-    const Vec3 b = transformed[(i + 1u) & 3u];
+    const SheenVec3 a = transformed[i];
+    const SheenVec3 b = transformed[(i + 1u) & 3u];
     const bool inside_a = a.z > 0.0;
     const bool inside_b = b.z > 0.0;
     if (inside_a) clipped[count++] = a;
@@ -602,7 +603,7 @@ template <typename Body> void vkr_parallel_rows(uint32_t rows, Body body) {
     worker.join();
 }
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   if (argc != 2) {
     std::cerr << "Usage: vkr_sheen_cooker <output.inc>\n";
     return 2;
@@ -701,7 +702,7 @@ int main(int argc, char **argv) {
       const double sin_l = std::sqrt(std::max(0.0, 1.0 - no_l * no_l));
       for (uint32_t phi_index = 0; phi_index < 64u; ++phi_index) {
         const double phi = 2.0 * k_pi * (phi_index + 0.5) / 64.0;
-        const Vec3 wi = {sin_l * std::cos(phi), sin_l * std::sin(phi), no_l};
+        const SheenVec3 wi = {sin_l * std::cos(phi), sin_l * std::sin(phi), no_l};
         samples.push_back({wi, no_l * charlie_brdf(no_v, wi, roughness) /
             std::max(target_energy, k_eps), rule.w[z_index] * 2.0 * k_pi / 64.0});
       }
@@ -783,7 +784,7 @@ int main(int argc, char **argv) {
         const double radial = std::sqrt(std::max(0.0, 1.0 - z * z));
         for (uint32_t phi_index = 0; phi_index < 8u; ++phi_index) {
           const double phi = 2.0 * k_pi * phi_index / 8.0;
-          const Vec3 wi = {radial * std::cos(phi), radial * std::sin(phi), z};
+          const SheenVec3 wi = {radial * std::cos(phi), radial * std::sin(phi), z};
           const double target = z * charlie_brdf(midpoint_no_v, wi,
                                                   midpoint_roughness) /
               std::max(energy, k_eps);
@@ -925,7 +926,7 @@ int main(int argc, char **argv) {
   {
     // Windows refuses to replace a file this process still holds open, so the
     // comparison read must be closed before the atomic rename.
-    std::ifstream previous_file(argv[1], std::ios::binary);
+    std::ifstream previous_file(vkr_filesystem_native_utf8_path(argv[1]), std::ios::binary);
     existing.assign((std::istreambuf_iterator<char>(previous_file)),
                     std::istreambuf_iterator<char>());
   }

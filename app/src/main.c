@@ -1,7 +1,8 @@
+#include "platform/vkr_entry.h"
 #include "app_ui.h"
 #include "vkr_sample_runtime.h"
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   VkrAppUi ui = {0};
   VkrSampleRuntimeConfig config = vkr_sample_runtime_config_default();
   config.title = "VKR Renderer";

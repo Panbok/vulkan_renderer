@@ -269,7 +269,8 @@ static FilePathType vkr_texture_cache_path_type(String8 path) {
 
 static void vkr_texture_cache_remove(String8 path) {
   if (path.str && path.length > 0u) {
-    remove((const char *)path.str);
+    FilePath file = {.path = path, .type = vkr_texture_cache_path_type(path)};
+    (void)file_remove(&file);
   }
 }
 

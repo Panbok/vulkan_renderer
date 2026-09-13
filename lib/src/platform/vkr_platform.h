@@ -35,6 +35,9 @@ typedef struct VkrPlatformProcessConfig {
   const char *const *arguments;
   uint32_t argument_count;
   /** Borrowed optional paths; redirected output files are truncated. */
+  /* Windows cwd must fit MAX_PATH, directly or via an existing same-directory
+   * short name. Otherwise launch fails with ERROR_FILENAME_EXCED_RANGE; long
+   * executable and log paths remain supported independently. */
   const char *working_directory;
   const char *stdout_path;
   const char *stderr_path;

@@ -1,3 +1,5 @@
+#include "filesystem/vkr_filesystem_cpp.h"
+#include "platform/vkr_entry.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -125,7 +127,7 @@ bool parse(int argc, char **argv, Options *out) {
          out->grid.probe_dimensions[0] <= 256 &&
          out->grid.probe_dimensions[1] <= 256 &&
          out->grid.probe_dimensions[2] <= 256 && probe_count <= 256 &&
-         (!out->output || fs::path(out->output).extension() == ".vkdv");
+         (!out->output || fs::u8path(out->output).extension() == ".vkdv");
 }
 
 std::string json_string(const std::string &value) {
@@ -146,7 +148,7 @@ std::string json_string(const std::string &value) {
 }
 
 bool write_atomic(const char *path, const void *bytes, uint64_t size) {
-  fs::path target(path);
+  fs::path target = vkr_filesystem_native_utf8_path(path);
   fs::path temporary = target;
   temporary += ".tmp." +
                std::to_string(
@@ -346,7 +348,7 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
   }
   // Resolve aliases before any output can replace a source used by the bake.
   for (const auto &dependency : scene.dependency_paths) {
-    const fs::path source = fs::weakly_canonical(dependency);
+    const fs::path source = fs::weakly_canonical(vkr_filesystem_native_utf8_path(dependency));
     if ((options.output && fs::weakly_canonical(options.output) == source) ||
         (options.manifest &&
          fs::weakly_canonical(options.manifest) == source)) {
@@ -470,7 +472,7 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
 }
 } // namespace
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   Options options;
   if (!parse(argc, argv, &options)) {
     usage();

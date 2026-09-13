@@ -1,6 +1,10 @@
 #include "test_main.h"
 #include "editor_project_store_test.h"
 
+bool32_t run_path_io_tests(void);
+bool32_t run_process_path_tests(void);
+int32_t process_path_test_child(void);
+bool32_t run_asset_path_tests(void);
 bool32_t run_local_shadow_tests(void);
 
 typedef bool32_t (*VkrTestSuite)(void);
@@ -58,6 +62,9 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_material_pbr_tests,
     run_mesh_cooked_tests,
     run_filesystem_tests,
+    run_asset_path_tests,
+    run_path_io_tests,
+    run_process_path_tests,
     run_hashtable_tests,
     run_freelist_tests,
     run_metal_memory_tests,
@@ -71,8 +78,9 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
 };
 
 int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
+  if (argc == 2 && strcmp(argv[1], "--process-path-test-child") == 0) {
+    return process_path_test_child();
+  }
   printf("Running tests...\n\n");
 
   vkr_platform_init();

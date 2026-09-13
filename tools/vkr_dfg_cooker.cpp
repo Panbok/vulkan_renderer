@@ -1,3 +1,4 @@
+#include "platform/vkr_entry.h"
 #include "vkr_atomic_file.h"
 #include "vkr_dfg_lut.h"
 
@@ -97,7 +98,7 @@ Integral integrate(double no_v, double roughness,
 }
 } // namespace
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   if (argc != 2) {
     std::cerr << "Usage: vkr_dfg_cooker <output.inc>\n";
     return 2;
@@ -160,7 +161,7 @@ int main(int argc, char **argv) {
   {
     // Windows refuses to replace a file this process still holds open, so the
     // comparison read must be closed before the atomic rename.
-    std::ifstream previous(argv[1], std::ios::binary);
+    std::ifstream previous(vkr_filesystem_native_utf8_path(argv[1]), std::ios::binary);
     existing.assign((std::istreambuf_iterator<char>(previous)),
                     std::istreambuf_iterator<char>());
   }

@@ -1,6 +1,7 @@
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_entry.h"
 #include "platform/vkr_platform.h"
 #include <ktx.h>
 #include <math.h>
@@ -78,7 +79,7 @@ static void preview_write(void *context, void *bytes, int32_t count) {
   }
 }
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   const char *input = NULL;
   const char *output = NULL;
   uint32_t size = 128;
@@ -279,7 +280,9 @@ cleanup:
   file_close(&file);
   file_close(&writer.file);
   if (!success && temporary[0]) {
-    remove(temporary);
+    FilePath failed_output = {
+        .path = {.str = (uint8_t *)temporary, .length = strlen(temporary)}};
+    (void)file_remove(&failed_output);
   }
   if (ktx) {
     ktxTexture_Destroy(ktxTexture(ktx));

@@ -1,4 +1,5 @@
 #include "vkr_scene_edit.h"
+#include "filesystem/filesystem.h"
 
 #include "core/logger.h"
 #include "core/vkr_json_writer.h"
@@ -956,7 +957,7 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
     goto cleanup;
   MemCopy(cpath, path.str, path.length);
   cpath[path.length] = 0;
-  file = fopen(cpath, "rb");
+  file = file_fopen(cpath, "rb");
   if (!file && errno == ENOENT) {
     s->sidecar_conflict = false_v;
     return true_v;

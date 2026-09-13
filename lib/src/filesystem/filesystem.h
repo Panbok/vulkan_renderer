@@ -1,5 +1,17 @@
 #pragma once
 
+#include <stdio.h>
+
+/* UTF-8 host path; caller owns the returned stream and closes it with fclose.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+FILE *file_fopen(const char *utf8_path, const char *mode);
+#ifdef __cplusplus
+}
+#endif
+
 #include "containers/bitset.h"
 #include "containers/str.h"
 #include "defines.h"
@@ -579,3 +591,9 @@ String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file);
  * @return The error string.
  */
 String8 file_get_error_string(FileError error);
+
+#if defined(PLATFORM_WINDOWS)
+/* Shared native boundary for filesystem and process paths. Output is borrowed
+ * caller storage and never escapes the OS call. */
+bool8_t file_windows_native_path(const FilePath *path, wchar_t output[32768]);
+#endif

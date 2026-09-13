@@ -1,3 +1,6 @@
+#include "filesystem/vkr_filesystem_cpp.h"
+#include "assets/vkr_ktx_file.h"
+#include "platform/vkr_entry.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -98,7 +101,7 @@ ParseResult parse_args(int argc, char **argv, Config *out_config) {
         std::cerr << "--output is required exactly once\n";
         return ParseResult::kError;
       }
-      out_config->output = fs::path(argv[++index]);
+      out_config->output = vkr_filesystem_native_utf8_path(argv[++index]);
       out_config->output_set = true;
       continue;
     }
@@ -107,7 +110,7 @@ ParseResult parse_args(int argc, char **argv, Config *out_config) {
         std::cerr << "Missing path after --face\n";
         return ParseResult::kError;
       }
-      out_config->faces.emplace_back(argv[++index]);
+      out_config->faces.emplace_back(vkr_filesystem_native_utf8_path(argv[++index]));
       continue;
     }
     std::cerr << "Unknown argument: " << arg << "\n";
@@ -234,14 +237,14 @@ fs::path temporary_output_path(const fs::path &output) {
           std::chrono::steady_clock::now().time_since_epoch().count()) ^
       static_cast<uint64_t>(
           std::hash<std::thread::id>{}(std::this_thread::get_id()));
-  return fs::path(output.string() + ".tmp." + std::to_string(suffix));
+  return vkr_filesystem_native_utf8_path(output.u8string() + ".tmp." + std::to_string(suffix));
 }
 
 bool validate_written_ktx(const fs::path &path, uint32_t size,
                           uint64_t image_bytes) {
   ktxTexture2 *texture = nullptr;
-  const KTX_error_code result = ktxTexture2_CreateFromNamedFile(
-      path.string().c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &texture);
+  const KTX_error_code result = vkr_ktx_read_file(
+      path.u8string().c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &texture);
   if (result != KTX_SUCCESS || !texture) {
     std::cerr << "Temporary KTX2 cannot be reopened: " << ktxErrorString(result)
               << "\n";
@@ -341,8 +344,8 @@ bool pack_hdr_cube(const Config &config) {
     }
   }
   const fs::path temporary = temporary_output_path(config.output);
-  result = ktxTexture_WriteToNamedFile(ktxTexture(texture),
-                                       temporary.string().c_str());
+  result = vkr_ktx_write_file(ktxTexture(texture),
+                                       temporary.u8string().c_str());
   if (result != KTX_SUCCESS) {
     std::cerr << "Failed to write temporary KTX2: " << ktxErrorString(result)
               << "\n";
@@ -367,7 +370,7 @@ bool pack_hdr_cube(const Config &config) {
 
 } // namespace
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   Config config;
   const ParseResult parsed = parse_args(argc, argv, &config);
   if (parsed == ParseResult::kHelp) {

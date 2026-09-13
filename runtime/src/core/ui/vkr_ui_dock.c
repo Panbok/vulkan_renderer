@@ -1,6 +1,7 @@
 #include "core/ui/vkr_ui_dock.h"
 
 #include "core/vkr_json.h"
+#include "filesystem/filesystem.h"
 #include "math/vkr_math.h"
 
 #include <math.h>
@@ -1027,7 +1028,7 @@ bool8_t vkr_ui_dock_load_file(VkrUiDockTree *tree, String8 path) {
   char cpath[VKR_JSON_WRITER_PATH_MAX + 1u];
   MemCopy(cpath, path.str, path.length);
   cpath[path.length] = '\0';
-  FILE *file = fopen(cpath, "rb");
+  FILE *file = file_fopen(cpath, "rb");
   if (!file)
     return false_v;
   uint8_t json[VKR_UI_DOCK_JSON_CAPACITY];

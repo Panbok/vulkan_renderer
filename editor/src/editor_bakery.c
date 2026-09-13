@@ -337,9 +337,15 @@ void vkr_editor_bakery_destroy(VkrEditorBakery *bakery) {
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
 }
 
+static void editor_bakery_remove_log(const char *path) {
+  FilePath file = {.path = editor_bakery_string(path),
+                   .type = FILE_PATH_TYPE_ABSOLUTE};
+  (void)file_remove(&file);
+}
+
 static uint32_t editor_bakery_tail(const char *path, uint8_t *bytes,
                                    uint32_t capacity) {
-  FILE *file = fopen(path, "rb");
+  FILE *file = file_fopen(path, "rb");
   if (!file)
     return 0u;
   uint32_t length = 0u;
@@ -531,8 +537,8 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
            bakery->log_directory, index);
   snprintf(job->stderr_path, sizeof(job->stderr_path), "%s/%u.stderr.log",
            bakery->log_directory, index);
-  (void)remove(job->stdout_path);
-  (void)remove(job->stderr_path);
+  editor_bakery_remove_log(job->stdout_path);
+  editor_bakery_remove_log(job->stderr_path);
   bakery->selected = index;
   bakery->view = EDITOR_BAKERY_JOBS;
   bakery->message[0] = '\0';
@@ -1002,8 +1008,8 @@ static void editor_bakery_jobs(VkrEditorBakery *bakery, VkrUiSystem *ui,
       selected->timed_out = false_v;
       selected->process_ok = false_v;
       bakery->message[0] = 0;
-      (void)remove(selected->stdout_path);
-      (void)remove(selected->stderr_path);
+      editor_bakery_remove_log(selected->stdout_path);
+      editor_bakery_remove_log(selected->stderr_path);
       bakery->next_log_read = 0.0;
     }
     config.placement.row = 3u / action_columns;

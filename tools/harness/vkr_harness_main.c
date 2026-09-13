@@ -1,3 +1,4 @@
+#include "platform/vkr_entry.h"
 /**
  * @file vkr_harness_main.c
  * @brief Command-line entry point.
@@ -48,7 +49,7 @@ static bool8_t vkr_harness_child_run_dir_valid(const char *repo_root,
   return vkr_harness_existing_path_is_below(artifact_root, run_dir);
 }
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   const bool8_t child_profile =
       argc > 1 && string_equals(argv[1], "--child-profile");
   const bool8_t child_snapshot =

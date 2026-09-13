@@ -63,6 +63,15 @@ out.mkdir(exist_ok=True)
 subprocess.run([str(exe), '--input', str(relocated / 'embedded.gltf'), '--output', str(out / 'mesh.vkb'), '--bundle-root', str(out), '--import-id', 'fixture-import'], check=True)
 assert (out / 'mesh.vkb').read_bytes() == (root / 'embedded.gltf.bundle' / 'mesh.vkb').read_bytes()
 print('relocated recook byte-identical')
+# Accept native separators without weakening the direct-child output boundary.
+for invalid_output in [out / 'nested' / 'mesh.vkb', out / '..' / 'escaped.vkb',
+                       relocated / 'bundle-sibling' / 'mesh.vkb']:
+    invalid_output.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([str(exe), '--input', str(relocated / 'embedded.gltf'),
+                             '--output', str(invalid_output), '--bundle-root', str(out),
+                             '--import-id', 'fixture-import'], capture_output=True)
+    assert result.returncode != 0 and not invalid_output.exists(), invalid_output
+print('nested, traversal and sibling output paths rejected')
 for name in ['missing', 'malformed']:
     bad = json.loads(json.dumps(gltf))
     bad['images'][0]['uri'] = 'missing.png' if name == 'missing' else 'data:image/png;base64,AAAA'

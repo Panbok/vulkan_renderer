@@ -1,3 +1,5 @@
+#include "filesystem/vkr_filesystem_cpp.h"
+#include "platform/vkr_entry.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -319,7 +321,7 @@ bool is_scalar_key(const std::string &key) {
 }
 
 bool parse_config(const fs::path &path, Config *out, std::string *error) {
-  std::ifstream input(path);
+  std::ifstream input(vkr_filesystem_native_path(path));
   if (!input) {
     *error = "unable to read config";
     return false;
@@ -354,7 +356,7 @@ bool parse_config(const fs::path &path, Config *out, std::string *error) {
       }
       out->ranges.push_back(range);
     } else if (key == "charset_file")
-      out->charset_files.emplace_back(value);
+      out->charset_files.emplace_back(fs::u8path(value));
     else if (key == "axis") {
       const size_t colon = value.find(':');
       if (colon != 4u || value.find(':', colon + 1u) != std::string::npos) {
@@ -375,9 +377,9 @@ bool parse_config(const fs::path &path, Config *out, std::string *error) {
     } else if (key == "type")
       out->type = value;
     else if (key == "source")
-      out->source = value;
+      out->source = fs::u8path(value);
     else if (key == "file")
-      out->output = value;
+      out->output = fs::u8path(value);
     else if (key == "face")
       out->face = value;
     else if (key == "face_index") {
@@ -548,9 +550,9 @@ bool parse_config(const fs::path &path, Config *out, std::string *error) {
 bool load_charset_file(const fs::path &path,
                        std::vector<CodepointRange> *ranges,
                        std::string *error) {
-  std::ifstream input(path);
+  std::ifstream input(vkr_filesystem_native_path(path));
   if (!input) {
-    *error = "unable to read charset_file: " + path.string();
+    *error = "unable to read charset_file: " + path.u8string();
     return false;
   }
   std::string line;
@@ -573,7 +575,7 @@ bool load_charset_file(const fs::path &path,
 }
 
 bool read_bytes(const fs::path &path, std::vector<uint8_t> *bytes) {
-  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  std::ifstream input(vkr_filesystem_native_path(path), std::ios::binary | std::ios::ate);
   if (!input)
     return false;
   const auto end = input.tellg();
@@ -1030,7 +1032,7 @@ bool cook(const Config &config, const fs::path &output,
     info.kerning_count = kernings.size();
     info.pages = &page;
     info.page_count = 1u;
-    const std::string output_string = output.string();
+    const std::string output_string = output.u8string();
     VkrAllocatorScope format_scope = vkr_allocator_begin_scope(allocator);
     const uint64_t format_temp_start =
         arena_pos(static_cast<Arena *>(allocator->ctx));
@@ -1070,7 +1072,7 @@ bool cook(const Config &config, const fs::path &output,
 bool inspect_font(const fs::path &source, const fs::path &output) {
   std::vector<uint8_t> bytes;
   std::error_code error;
-  const uint64_t size = fs::file_size(source, error);
+  const uint64_t size = fs::file_size(vkr_filesystem_native_path(source), error);
   if (error || size > 64u * 1024u * 1024u || !read_bytes(source, &bytes)) {
     return false;
   }
@@ -1087,7 +1089,7 @@ bool inspect_font(const fs::path &source, const fs::path &output) {
     if (name.size() > 4096u || name.find_first_of("\r\n=") != std::string::npos) {
       goto cleanup;
     }
-    std::ofstream document(output, std::ios::binary | std::ios::trunc);
+    std::ofstream document(vkr_filesystem_native_path(output), std::ios::binary | std::ios::trunc);
     document << "{\"version\":1,\"face_index\":0,\"face\":\"";
     for (unsigned char value : name) {
       if (value < 32u || value == '\\' || value == '"') {
@@ -1114,11 +1116,11 @@ bool parse_args(int argc, char **argv, Options *out) {
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--inspect-font" && i + 1 < argc)
-      out->inspect_font = argv[++i];
+      out->inspect_font = fs::u8path(argv[++i]);
     else if (arg == "--config" && i + 1 < argc)
-      out->config_path = argv[++i];
+      out->config_path = fs::u8path(argv[++i]);
     else if (arg == "--output" && i + 1 < argc) {
-      out->output_override = argv[++i];
+      out->output_override = fs::u8path(argv[++i]);
       out->has_output_override = true;
     } else if (arg == "--force")
       out->force = true;
@@ -1142,7 +1144,7 @@ void print_usage(const char *program) {
 
 } // namespace
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   Options options;
   if (!parse_args(argc, argv, &options)) {
     print_usage(argv[0]);
@@ -1196,7 +1198,7 @@ int main(int argc, char **argv) {
   const auto identity = font_identity(config, source, semantic_codepoints);
   if (!output.parent_path().empty()) {
     std::error_code error;
-    fs::create_directories(output.parent_path(), error);
+    fs::create_directories(vkr_filesystem_native_path(output.parent_path()), error);
     if (error) {
       std::cerr << "Unable to create output directory: " << error.message()
                 << "\n";

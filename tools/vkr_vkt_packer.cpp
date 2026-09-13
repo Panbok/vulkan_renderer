@@ -1,3 +1,5 @@
+#include "filesystem/vkr_filesystem_cpp.h"
+#include "assets/vkr_ktx_file.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -228,7 +230,7 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
         std::cerr << "Missing value for --input-dir\n";
         return ParseResult::kError;
       }
-      out_config.input_dir = fs::path(argv[++index]);
+      out_config.input_dir = vkr_filesystem_native_utf8_path(argv[++index]);
       continue;
     }
     if (arg == "--output") {
@@ -236,7 +238,7 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
         std::cerr << "Missing value for --output\n";
         return ParseResult::kError;
       }
-      out_config.output = fs::path(argv[++index]);
+      out_config.output = vkr_filesystem_native_utf8_path(argv[++index]);
       out_config.layered_mode = true;
       continue;
     }
@@ -255,7 +257,7 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
         std::cerr << "Missing value for --layer\n";
         return ParseResult::kError;
       }
-      out_config.layers.emplace_back(argv[++index]);
+      out_config.layers.emplace_back(vkr_filesystem_native_utf8_path(argv[++index]));
       out_config.layered_mode = true;
       continue;
     }
@@ -430,7 +432,7 @@ std::string to_lower_ascii(std::string value) {
 bool is_supported_source_extension(const fs::path &path) {
   static const std::array<const char *, 5> kExts = {".png", ".jpg", ".jpeg",
                                                     ".bmp", ".tga"};
-  std::string ext = to_lower_ascii(path.extension().string());
+  std::string ext = to_lower_ascii(path.extension().u8string());
   return std::find(kExts.begin(), kExts.end(), ext) != kExts.end();
 }
 
@@ -445,7 +447,7 @@ bool contains_any_token(const std::string &value,
 }
 
 TextureClass infer_texture_class(const fs::path &path) {
-  const std::string name = to_lower_ascii(path.filename().string());
+  const std::string name = to_lower_ascii(path.filename().u8string());
   if (vkr_vkt_filename_is_normal_rg(name.data(), name.size())) {
     return TextureClass::kNormalRg;
   }
@@ -710,7 +712,7 @@ bool should_skip_output(const std::vector<fs::path> &source_paths,
     return false;
   }
   ktxTexture2 *texture = nullptr;
-  if (ktxTexture2_CreateFromNamedFile(dst.string().c_str(),
+  if (vkr_ktx_read_file(dst.u8string().c_str(),
                                       KTX_TEXTURE_CREATE_NO_FLAGS,
                                       &texture) != KTX_SUCCESS ||
       !texture) {
@@ -924,8 +926,8 @@ bool write_packed_sources(const std::vector<fs::path> &source_paths,
         static_cast<uint64_t>(
             std::hash<std::thread::id>{}(std::this_thread::get_id()));
     tmp_path += ".tmp." + to_hex_u64(unique_suffix);
-    result = ktxTexture_WriteToNamedFile(ktxTexture(texture),
-                                         tmp_path.string().c_str());
+    result = vkr_ktx_write_file(ktxTexture(texture),
+                                         tmp_path.u8string().c_str());
     if (result != KTX_SUCCESS) {
       std::cerr << "Failed to write temporary output '" << tmp_path
                 << "': " << ktxErrorString(result) << "\n";
@@ -1163,8 +1165,8 @@ int vkr_vkt_pack_cutout(const char *source, const char *output, float cutoff,
     config.alpha_cutoff = cutoff == 0.0f ? 0.0f : cutoff;
     config.alpha_factor = factor == 0.0f ? 0.0f : factor;
     config.basis_threads = resolve_basis_thread_count(config.basis_threads);
-    const std::vector<fs::path> sources = {fs::path(source)};
-    const fs::path destination(output);
+    const std::vector<fs::path> sources = {vkr_filesystem_native_utf8_path(source)};
+    const fs::path destination = vkr_filesystem_native_utf8_path(output);
     if (should_skip_output(sources, destination, TextureClass::kColorSrgb,
                            TextureShape::k2D, config)) {
       return 1;
@@ -1193,11 +1195,11 @@ int vkr_vkt_pack_normal_roughness(const char *normal_source,
     return VKR_VKT_PAIR_FAILED;
   }
   try {
-    const fs::path normal_path(normal_output);
-    const fs::path roughness_path(roughness_output);
-    std::vector<fs::path> sources = {fs::path(normal_source)};
+    const fs::path normal_path = vkr_filesystem_native_utf8_path(normal_output);
+    const fs::path roughness_path = vkr_filesystem_native_utf8_path(roughness_output);
+    std::vector<fs::path> sources = {vkr_filesystem_native_utf8_path(normal_source)};
     if (roughness_source) {
-      sources.emplace_back(roughness_source);
+      sources.emplace_back(vkr_filesystem_native_utf8_path(roughness_source));
     }
     // Publishing a pair must never overwrite either source or the other output.
     const fs::path normal_absolute =
@@ -1330,7 +1332,7 @@ int vkr_vkt_packer_main(int argc, char **argv) {
   stats.discovered = static_cast<uint32_t>(sources.size());
   log_progress_line(config.progress,
                     "Discovered " + std::to_string(stats.discovered) +
-                        " source textures under " + config.input_dir.string());
+                        " source textures under " + config.input_dir.u8string());
   {
     std::ostringstream encode_config_line;
     encode_config_line << "Encode config: uastc_level="
@@ -1371,7 +1373,7 @@ int vkr_vkt_packer_main(int argc, char **argv) {
       log_progress_line(true, header.str());
     }
 
-    const fs::path dst_path = src_path.string() + ".vkt";
+    const fs::path dst_path = vkr_filesystem_native_utf8_path(src_path.u8string() + ".vkt");
     const TextureClass texture_class = infer_texture_class(src_path);
     if (should_skip_output({src_path}, dst_path, texture_class,
                            TextureShape::k2D, config)) {

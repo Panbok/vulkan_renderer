@@ -1,5 +1,7 @@
 #pragma once
 
+#include "filesystem/vkr_filesystem_cpp.h"
+
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -33,8 +35,8 @@ inline uint64_t atomic_process_id(void) {
 inline std::filesystem::path
 atomic_temporary_path(const std::filesystem::path &destination) {
   static std::atomic<uint32_t> sequence = 0u;
-  return std::filesystem::path(
-      destination.string() + ".tmp." + std::to_string(atomic_process_id()) +
+  return std::filesystem::u8path(
+      destination.u8string() + ".tmp." + std::to_string(atomic_process_id()) +
       "." +
       std::to_string(
           std::chrono::steady_clock::now().time_since_epoch().count()) +
@@ -49,11 +51,11 @@ inline bool write_file_atomic(const char *path, const std::string &contents) {
     std::cerr << "write_file_atomic: empty destination path\n";
     return false;
   }
-  const std::filesystem::path destination(path);
+  const std::filesystem::path destination = vkr_filesystem_native_utf8_path(path);
   const std::filesystem::path temporary = atomic_temporary_path(destination);
   std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
   if (!file) {
-    std::cerr << "write_file_atomic: cannot open " << temporary.string()
+    std::cerr << "write_file_atomic: cannot open " << temporary.u8string()
               << " for writing: "
               << std::error_code(errno, std::generic_category()).message()
               << "\n";
@@ -63,7 +65,7 @@ inline bool write_file_atomic(const char *path, const std::string &contents) {
   file.close();
   if (file.fail()) {
     std::cerr << "write_file_atomic: failed writing " << contents.size()
-              << " bytes to " << temporary.string() << ": "
+              << " bytes to " << temporary.u8string() << ": "
               << std::error_code(errno, std::generic_category()).message()
               << "\n";
     std::error_code remove_error;
@@ -79,8 +81,8 @@ inline bool write_file_atomic(const char *path, const std::string &contents) {
   std::filesystem::rename(temporary, destination, error);
 #endif
   if (error) {
-    std::cerr << "write_file_atomic: cannot replace " << destination.string()
-              << " with " << temporary.string() << ": " << error.message()
+    std::cerr << "write_file_atomic: cannot replace " << destination.u8string()
+              << " with " << temporary.u8string() << ": " << error.message()
               << "\n";
     std::error_code remove_error;
     std::filesystem::remove(temporary, remove_error);

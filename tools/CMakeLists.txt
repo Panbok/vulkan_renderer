@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.27)
 
 project(vkr_tools)
 
+# Shared UTF-8 CRT entry adapter also serves standalone table cookers.
+include_directories("${CMAKE_SOURCE_DIR}/lib/src")
+
 if(APPLE)
     enable_language(OBJC)
 endif()
@@ -12,18 +15,21 @@ endif()
 add_executable(vkr_dfg_cooker vkr_dfg_cooker.cpp)
 target_compile_features(vkr_dfg_cooker PRIVATE cxx_std_17)
 vkr_configure_table_cooker_target(vkr_dfg_cooker)
+target_link_libraries(vkr_dfg_cooker PRIVATE vkr_foundation)
 target_include_directories(vkr_dfg_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
 # Charlie energy and rectangle fits share one immutable payload in both backends.
 add_executable(vkr_sheen_cooker vkr_sheen_cooker.cpp)
 target_compile_features(vkr_sheen_cooker PRIVATE cxx_std_17)
 vkr_configure_table_cooker_target(vkr_sheen_cooker)
+target_link_libraries(vkr_sheen_cooker PRIVATE vkr_foundation)
 target_include_directories(vkr_sheen_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
 add_executable(vkr_anisotropy_cooker vkr_anisotropy_cooker.cpp
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_ltc_lut.c")
 target_compile_features(vkr_anisotropy_cooker PRIVATE cxx_std_17)
 vkr_configure_table_cooker_target(vkr_anisotropy_cooker)
+target_link_libraries(vkr_anisotropy_cooker PRIVATE vkr_foundation)
 target_include_directories(vkr_anisotropy_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
 find_package(Vulkan REQUIRED)
@@ -138,6 +144,7 @@ target_include_directories(vkr_vkt_cooking
 target_link_libraries(vkr_vkt_cooking
     PRIVATE
         ktx
+        vkr_foundation
         vkr_image_decode
 )
 
@@ -155,7 +162,7 @@ add_executable(vkr_hdr_cube_packer vkr_hdr_cube_packer.cpp)
 vkr_configure_cooker_target(vkr_hdr_cube_packer)
 target_compile_features(vkr_hdr_cube_packer PRIVATE cxx_std_17)
 target_include_directories(vkr_hdr_cube_packer PRIVATE ${Vulkan_INCLUDE_DIRS})
-target_link_libraries(vkr_hdr_cube_packer PRIVATE ktx)
+target_link_libraries(vkr_hdr_cube_packer PRIVATE ktx vkr_foundation)
 
 # CPU-only indirect-lighting preparation and portable baked assets.
 add_library(vkr_bake_core STATIC

@@ -4,7 +4,16 @@
 
 #include "core/logger.h"
 
+#include <errno.h>
 #include <limits.h>
+
+FILE *file_fopen(const char *utf8_path, const char *mode) {
+  if (!utf8_path || !mode) {
+    errno = EINVAL;
+    return NULL;
+  }
+  return fopen(utf8_path, mode);
+}
 
 vkr_internal int fs_file_descriptor(const FileHandle *handle) {
   return (int)(intptr_t)handle->handle - 1;

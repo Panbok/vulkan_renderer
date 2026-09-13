@@ -3,9 +3,11 @@
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "defines.h"
+#include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_entry.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -45,7 +47,7 @@ static bool8_t vkr_mesh_cooker_float_array(VkrJsonReader object,
 static bool8_t vkr_mesh_cooker_apply_patches(const char *path,
                                              VkrAllocator *allocator,
                                              VkrMeshCookedDecoded *decoded) {
-  FILE *file = fopen(path, "rb");
+  FILE *file = file_fopen(path, "rb");
   if (!file) {
     return false_v;
   }
@@ -162,7 +164,7 @@ static bool8_t vkr_mesh_cooker_inspect(const char *input, const char *output,
                                        const char *patches,
                                        VkrAllocator *allocator,
                                        VkrAllocator *scratch) {
-  FILE *source = fopen(input, "rb");
+  FILE *source = file_fopen(input, "rb");
   if (!source) {
     return false_v;
   }
@@ -197,7 +199,7 @@ static bool8_t vkr_mesh_cooker_inspect(const char *input, const char *output,
     }
     goto cleanup;
   }
-  destination = fopen(output, "wb");
+  destination = file_fopen(output, "wb");
   if (!destination) {
     goto cleanup;
   }
@@ -260,12 +262,14 @@ cleanup:
     success = false_v;
   }
   if (!success && destination) {
-    (void)remove(output);
+    FilePath failed_output = {
+        .path = {.str = (uint8_t *)output, .length = strlen(output)}};
+    (void)file_remove(&failed_output);
   }
   return success;
 }
 
-int main(int argc, char **argv) {
+VKR_MAIN(argc, argv) {
   const char *input = NULL;
   const char *output = NULL;
   const char *bundle_root = NULL;

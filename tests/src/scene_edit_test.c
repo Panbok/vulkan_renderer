@@ -10,7 +10,7 @@
 #include <string.h>
 
 static void edit_test_write(const char *path, const char *bytes, size_t size) {
-  FILE *file = fopen(path, "wb");
+  FILE *file = file_fopen(path, "wb");
   assert(file);
   assert(fwrite(bytes, 1, size, file) == size);
   assert(fclose(file) == 0);
@@ -77,12 +77,12 @@ bool32_t run_scene_edit_tests(void) {
   assert(file_create_directory(&directory));
   char path[1024];
   snprintf(path, sizeof(path),
-           PROJECT_SOURCE_DIR "tests/tmp/scene_edit_%u.json",
+           PROJECT_SOURCE_DIR "tests/tmp/scene_edit_тест_%u.json",
            vkr_platform_get_process_id());
   String8 file_path = string8_create((uint8_t *)path, strlen(path));
   assert(vkr_scene_edit_save(&state, &scene, file_path));
   char saved[4096];
-  FILE *file = fopen(path, "rb");
+  FILE *file = file_fopen(path, "rb");
   assert(file);
   size_t saved_size = fread(saved, 1, sizeof(saved), file);
   assert(saved_size > 0 && saved_size < sizeof(saved) && feof(file));
@@ -139,7 +139,7 @@ bool32_t run_scene_edit_tests(void) {
     String8 name = vkr_scene_get_name(&scene, parent);
     assert(name.length == 6 && MemCompare(name.str, "parent", 6) == 0);
     assert(!vkr_scene_edit_save(&state, &scene, file_path));
-    file = fopen(path, "rb");
+    file = file_fopen(path, "rb");
     assert(file);
     char unchanged[1024];
     size_t size = fread(unchanged, 1, sizeof(unchanged), file);
@@ -171,7 +171,8 @@ bool32_t run_scene_edit_tests(void) {
   assert(vkr_scene_get_transform(&scene, child)->position.x == 2);
   assert(vkr_scene_edit_undo(&state, &scene, true_v));
   assert(vkr_scene_get_transform(&scene, child)->position.x == 9);
-  assert(remove(path) == 0);
+  FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&saved_path) == FILE_ERROR_NONE);
   vkr_scene_edit_reset(&state, &allocator, 0);
   vkr_scene_shutdown(&scene, NULL);
   vkr_dmemory_destroy(&memory);

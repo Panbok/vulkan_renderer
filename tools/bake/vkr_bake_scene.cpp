@@ -1,3 +1,4 @@
+#include "filesystem/vkr_filesystem_cpp.h"
 #include "bake/vkr_bake_scene.h"
 
 #include "bake/vkr_bake_mesh_decode.h"
@@ -86,7 +87,7 @@ bool append_unique_path(std::vector<std::string> *paths,
 }
 
 bool read_file(const char *path, std::vector<uint8_t> *out_bytes) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  std::ifstream file(vkr_filesystem_native_utf8_path(path), std::ios::binary | std::ios::ate);
   if (!file)
     return false;
   const std::streamsize size = file.tellg();
@@ -857,7 +858,7 @@ bool append_mesh(VkrBakeScene *scene, const std::string &path,
     return false;
   const std::string sidecar = path + ".remap.json";
   std::error_code sidecar_error;
-  if (std::filesystem::is_regular_file(sidecar, sidecar_error) &&
+  if (std::filesystem::is_regular_file(vkr_filesystem_native_utf8_path(sidecar), sidecar_error) &&
       !append_unique_path(&scene->dependency_paths, sidecar)) {
     return false;
   }

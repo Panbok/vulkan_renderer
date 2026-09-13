@@ -1,3 +1,5 @@
+#include "core/logger.h"
+#include "filesystem/filesystem.h"
 #include "vkr_platform.h"
 
 #if defined(PLATFORM_WINDOWS)
@@ -593,6 +595,69 @@ vkr_internal bool8_t vkr_platform_process_job_stop(HANDLE *job) {
   return stopped;
 }
 
+static bool8_t vkr_platform_native_path(const char *path,
+                                        wchar_t output[32768]) {
+  FilePath value = {.path = {.str = (uint8_t *)path, .length = strlen(path)}};
+  return file_windows_native_path(&value, output);
+}
+
+/* CreateProcessW rejects working directories at MAX_PATH even though its
+ * executable and redirection files accept extended paths. A filesystem short
+ * name names the same directory; never substitute a different working directory
+ * or mutate this process's global cwd. Volumes without short names fail here.
+ */
+static bool8_t vkr_platform_native_working_directory(const char *path,
+                                                     wchar_t output[32768]) {
+  if (!vkr_platform_native_path(path, output)) {
+    SetLastError(ERROR_INVALID_NAME);
+    return false_v;
+  }
+  size_t prefix = !_wcsnicmp(output, L"\\\\?\\UNC\\", 8)
+                      ? 6u
+                      : (!wcsncmp(output, L"\\\\?\\", 4) ? 4u : 0u);
+  if (wcslen(output) - prefix >= MAX_PATH) {
+    wchar_t short_path[32768];
+    DWORD length =
+        GetShortPathNameW(output, short_path, ArrayCount(short_path));
+    if (!length || length >= ArrayCount(short_path)) {
+      log_error("Process working directory exceeds Windows MAX_PATH and has "
+                "no usable short name: %s",
+                path);
+      SetLastError(ERROR_FILENAME_EXCED_RANGE);
+      return false_v;
+    }
+    MemCopy(output, short_path, ((uint64_t)length + 1u) * sizeof(wchar_t));
+    prefix = !_wcsnicmp(output, L"\\\\?\\UNC\\", 8)
+                 ? 6u
+                 : (!wcsncmp(output, L"\\\\?\\", 4) ? 4u : 0u);
+    if ((size_t)length - prefix >= MAX_PATH) {
+      log_error("Process working directory exceeds Windows MAX_PATH and has "
+                "no usable short name: %s",
+                path);
+      SetLastError(ERROR_FILENAME_EXCED_RANGE);
+      return false_v;
+    }
+  }
+  if (prefix == 6u) {
+    MemCopy(output + 2, output + 8,
+            (wcslen(output + 8) + 1u) * sizeof(wchar_t));
+  } else if (prefix == 4u) {
+    MemCopy(output, output + 4, (wcslen(output + 4) + 1u) * sizeof(wchar_t));
+  }
+  return true_v;
+}
+
+/* Preserve PATH lookup for a bare executable name. Explicit paths use the
+ * same absolute extended-path conversion as filesystem operations. */
+static bool8_t vkr_platform_native_executable(const char *path,
+                                              wchar_t output[32768]) {
+  output[0] = 0;
+  if (!strchr(path, '/') && !strchr(path, '\\') && !strchr(path, ':')) {
+    return true_v;
+  }
+  return vkr_platform_native_path(path, output);
+}
+
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
                                  bool8_t *out_timed_out) {
@@ -609,11 +674,13 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     return false_v;
   }
   wchar_t wide_command[ArrayCount(command)];
-  wchar_t wide_directory[1024];
-  if (!vkr_platform_widen(command, wide_command, ArrayCount(wide_command)) ||
+  wchar_t wide_directory[32768];
+  wchar_t wide_executable[32768];
+  if (!vkr_platform_native_executable(config->executable, wide_executable) ||
+      !vkr_platform_widen(command, wide_command, ArrayCount(wide_command)) ||
       (config->working_directory &&
-       !vkr_platform_widen(config->working_directory, wide_directory,
-                           ArrayCount(wide_directory)))) {
+       !vkr_platform_native_working_directory(config->working_directory,
+                                              wide_directory))) {
     return false_v;
   }
   SECURITY_ATTRIBUTES security = {.nLength = sizeof(security),
@@ -623,13 +690,12 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   const char *paths[2] = {config->stdout_path, config->stderr_path};
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
     if (paths[i]) {
-      wchar_t wide_path[1024];
-      output[i] =
-          vkr_platform_widen(paths[i], wide_path, ArrayCount(wide_path))
-              ? CreateFileW(wide_path, GENERIC_WRITE, FILE_SHARE_READ,
-                            &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                            NULL)
-              : INVALID_HANDLE_VALUE;
+      wchar_t wide_path[32768];
+      output[i] = vkr_platform_native_path(paths[i], wide_path)
+                      ? CreateFileW(wide_path, GENERIC_WRITE, FILE_SHARE_READ,
+                                    &security, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, NULL)
+                      : INVALID_HANDLE_VALUE;
       if (output[i] == INVALID_HANDLE_VALUE) {
         for (uint32_t close_index = 0; close_index < i; ++close_index) {
           if (paths[close_index]) {
@@ -677,7 +743,8 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       creation_flags |= CREATE_SUSPENDED;
     }
     created = CreateProcessW(
-        NULL, wide_command, NULL, NULL, TRUE, creation_flags, NULL,
+        wide_executable[0] ? wide_executable : NULL, wide_command, NULL, NULL,
+        TRUE, creation_flags, NULL,
         config->working_directory ? wide_directory : NULL, &startup, &process);
     vkr_platform_environment_restore(saved, config->environment_count);
   }
@@ -766,11 +833,12 @@ bool8_t vkr_platform_process_capture(const char *executable,
     return false_v;
   }
   wchar_t wide_command[ArrayCount(command)];
-  wchar_t wide_directory[1024];
-  if (!vkr_platform_widen(command, wide_command, ArrayCount(wide_command)) ||
-      (working_directory && !vkr_platform_widen(working_directory,
-                                                wide_directory,
-                                                ArrayCount(wide_directory)))) {
+  wchar_t wide_directory[32768];
+  wchar_t wide_executable[32768];
+  if (!vkr_platform_native_executable(executable, wide_executable) ||
+      !vkr_platform_widen(command, wide_command, ArrayCount(wide_command)) ||
+      (working_directory && !vkr_platform_native_working_directory(
+                                working_directory, wide_directory))) {
     return false_v;
   }
   SECURITY_ATTRIBUTES security = {.nLength = sizeof(security),
@@ -796,8 +864,9 @@ bool8_t vkr_platform_process_capture(const char *executable,
   };
   PROCESS_INFORMATION process = {0};
   const BOOL created = CreateProcessW(
-      NULL, wide_command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL,
-      working_directory ? wide_directory : NULL, &startup, &process);
+      wide_executable[0] ? wide_executable : NULL, wide_command, NULL, NULL,
+      TRUE, CREATE_NO_WINDOW, NULL, working_directory ? wide_directory : NULL,
+      &startup, &process);
   CloseHandle(write_handle);
   if (!created) {
     CloseHandle(read_handle);

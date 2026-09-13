@@ -1,0 +1,93 @@
+{
+  "cases": [
+    {
+      "owner": "",
+      "reference": "./a/../mesh.vkb",
+      "expected": "mesh.vkb"
+    },
+    {
+      "owner": "/scene/main.json",
+      "reference": "./mesh.vkb",
+      "expected": "/scene/mesh.vkb"
+    },
+    {
+      "owner": "/scene/main.json?ignored/slash",
+      "reference": "../mesh.vkb?image=1",
+      "expected": "/mesh.vkb?image=1"
+    },
+    {
+      "owner": "",
+      "reference": "../../a/../mesh.vkb",
+      "expected": "../../mesh.vkb"
+    },
+    {
+      "owner": "",
+      "reference": "//server/share/../mesh.vkb",
+      "expected": "//server/share/mesh.vkb"
+    },
+    {
+      "owner": "",
+      "reference": "//server/share/a/../../mesh.vkb",
+      "expected": "//server/share/mesh.vkb"
+    },
+    {
+      "owner": "",
+      "reference": "a%20b#c.vkb",
+      "expected": "a%20b#c.vkb"
+    },
+    {
+      "owner": "C:\\scene\\main.json",
+      "reference": ".\\mesh.vkb",
+      "expected": "C:/scene/mesh.vkb",
+      "platform": "windows"
+    },
+    {
+      "owner": "C:\\scene\\main.json",
+      "reference": "..\\mesh.vkb",
+      "expected": "C:/mesh.vkb",
+      "platform": "windows"
+    },
+    {
+      "owner": "\\\\?\\C:\\scene\\main.json",
+      "reference": ".\\mesh.vkb?image=1",
+      "expected": "//?/C:/scene/mesh.vkb?image=1",
+      "platform": "windows"
+    },
+    {
+      "owner": "\\\\?\\UNC\\server\\share\\scene\\main.json",
+      "reference": "../../mesh.vkb",
+      "expected": "//?/UNC/server/share/mesh.vkb",
+      "platform": "windows"
+    },
+    {
+      "owner": "",
+      "reference": "C:mesh.vkb",
+      "expected": null,
+      "platform": "windows"
+    },
+    {
+      "owner": "",
+      "reference": "\\\\.\\pipe\\device",
+      "expected": null,
+      "platform": "windows"
+    },
+    {
+      "owner": "",
+      "reference": "\\\\?\\GLOBALROOT\\Device\\x",
+      "expected": null,
+      "platform": "windows"
+    },
+    {
+      "owner": "",
+      "reference": "\\\\server",
+      "expected": null,
+      "platform": "windows"
+    },
+    {
+      "owner": "/scene/main.json",
+      "reference": ".\\mesh.vkb",
+      "expected": ".\\mesh.vkb",
+      "platform": "posix"
+    }
+  ]
+}

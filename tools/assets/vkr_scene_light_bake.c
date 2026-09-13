@@ -1,4 +1,5 @@
 #include "assets/vkr_scene_light_bake.h"
+#include "assets/vkr_cgltf.h"
 
 #include <cgltf.h>
 #include <math.h>
@@ -27,7 +28,7 @@ bool8_t vkr_scene_bake_apply_light_ranges(
   }
   char path[VKR_SCENE_BAKE_PATH_MAX] = {0};
   MemCopy(path, source_path.str, source_path.length);
-  cgltf_options options = {0};
+  cgltf_options options = {.file = vkr_cgltf_file_options()};
   cgltf_data *data = NULL;
   if (cgltf_parse_file(&options, path, &data) != cgltf_result_success ||
       !data) {
