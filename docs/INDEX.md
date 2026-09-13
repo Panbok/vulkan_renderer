@@ -106,6 +106,18 @@ The standalone animation cooker builds and writes an explicitly selected bank:
 ./build_release/tools/vkr_animation_cooker --inspect --input /path/to/player.vka --clip 0 --time 0.5
 ```
 
+The collision cooker writes one static proxy hull or triangle mesh:
+
+```sh
+./tools/cook_vkr_collisions.sh --input /path/to/proxy.gltf --output /path/to/proxy.vkc --kind hull
+./build_release/tools/vkr_collision_cooker --inspect --input /path/to/proxy.vkc
+```
+
+Use `--kind mesh` for Static/Kinematic triangle collision and `--node <index>`
+for a selected subtree in its local coordinates. Bakery exposes both recipes.
+On Windows, use `tools/cook_vkr_collisions.bat` with the same arguments.
+[ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) specifies format limits.
+
 On Windows, use `tools/cook_vkr_animations.bat` with the same arguments.
 Managed model import and Rebuild publish matching mesh and animation banks.
 Scene bindings evaluate per-wrapper poses and blend controllers for compute skinning; see
@@ -183,6 +195,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [069](adr/069-editor-projects-and-workspaces.md) | Portable workspaces, background preference publication, managed imports, entity addition, scene publication and deletion | implemented |
 | [070](adr/070-portable-path-boundaries.md) | Native UTF-8 I/O, managed reference grammar, format boundaries and path regression gates | implemented |
 | [071](adr/071-animation-bank-and-reference-pose.md) | Animation banks, CPU playback, compute deformation and the movable graph/sequence preview editor | partial |
+| [072](adr/072-entity-collision-and-rigid-body-physics.md) | Scene-owned Jolt bodies/joints, cooked collision, bone attachments, queries and transactional editor authoring | implemented |
 
 ## Proposals
 
@@ -197,6 +210,7 @@ decisions before dependent implementation.
 | [Dedicated transfer queue](proposals/dedicated-transfer-queue.md) | Independent upload submission and completion-safe publication. |
 | [Deformable scene effects](proposals/deformable-scene-effects.md) | A bounded deformation pilot with shared pass and history inputs. |
 | [Animation graph and baking extensions](proposals/compute-animation-and-editor.md) | Managed controller/sequence assets, fixed-step control, baking, GPU pose evaluation and preview extensions. |
+| [Collision extensions and destructibles](proposals/entity-collision-and-physics.md) | Engine/UI research and remaining AVBD/destruction, deforming collision and active-ragdoll work; implemented contracts are in ADR-072. |
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
 | [Editor Projects](proposals/editor-projects.md) | Remaining Projects workflow, native-platform, inspection, retirement and frame-budget acceptance; implemented contracts are in ADR-069. |
 | [Portable path contract](proposals/portable-path-contract.md) | Remaining macOS, network-share and interactive scene-selection evidence gates; implemented contract is in ADR-070. |

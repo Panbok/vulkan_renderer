@@ -12,7 +12,7 @@ implementations own GPU resources, pipelines, commands and completion; shared
 code owns portable contracts and scene-facing systems. Linux, D3D12 and the
 retired Vulkan 1.2 renderer are not current execution paths.
 
-This document describes code present on 2026-09-09. It does not certify a fresh
+This document describes code present on 2026-09-13. It does not certify a fresh
 native run or a performance result. [INDEX](INDEX.md) locates accepted decisions
 and proposals; [CONTEXT](CONTEXT.md) defines vocabulary.
 
@@ -32,7 +32,10 @@ standard scene runtime, runtime core services, and scene-facing systems.
 `vkr_sample_runtime` is an optional consumer that supplies sample control and
 presentation policy for the app and editor. `vkr_asset_cooking` is tool-only;
 it owns source import and cooked-artifact encoding and is not a runtime
-dependency.
+dependency. `vkr_physics` is an explicit C++17 Jolt adapter consumed by the C11
+scene runtime. It exposes C value/handle operations and owns no renderer state;
+[ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) records its pinned
+dependency and simulation boundary.
 
 `assets/` contains asset data only. Shared reader code lives in
 `runtime/src/assets/`, offline producers in `tools/assets/`, and renderer code
@@ -117,6 +120,8 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Shared graph | JSON realization, dependency order, culling, subresource barriers | `renderer/src/vkr_rg_json.c`, `vkr_rg_compile.c` |
 | GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `renderer/src/vkr_gpu_*`, `vkr_capture_ring.*` |
 | Render assets | Geometry, textures, materials, meshes, animation banks, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
+| Scene physics | Authored bodies/collider children, staged editor mutations, fixed ticks and evaluated pose publication | `runtime/src/renderer/systems/vkr_scene_physics.c` |
+| Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |
 | Production shaders | Shared math and native bindings/entry points | `renderer/src/shaders/` |
 | Offline tools/harness | Asset cooking, cases, captures, comparisons and profiles | `tools/` |
 
@@ -345,6 +350,36 @@ scene data for its current build and never keeps ECS component pointers.
 `vkr_scene_build_world_draws()` scans mesh/instance/submesh records through
 explicit mesh, material, publication and view inputs rather than reading ECS
 archetype arrays directly. This bridge duplicates some retained data.
+
+Scene physics owns bodies at any supported hierarchy depth and direct collider
+children independently of render visibility. Static, Kinematic and Dynamic bodies
+form compounds from boxes, spheres, capsules and cooked convex hulls; cooked
+triangle meshes are Static/Kinematic. Composed transforms require positive scale
+and no shear. Sphere/capsule scale is uniform; other shapes allow nonuniform scale.
+Dynamic poses remain in world space while Static/Kinematic bodies follow parents.
+Jolt owns contact response, mass/inertia, joints, sleeping and supported solid CCD.
+
+The physics clock runs at 60 Hz with at most eight ticks per update and retained
+catch-up debt. Sixty consecutive overloaded updates pause simulation. Animation
+samples before each fixed tick; bone attachments use global asset-space node poses,
+and ragdoll bodies publish solved poses into the existing CPU skin-palette path.
+Rendering interpolates completed poses; pause/Step show the exact current pose.
+Reset clears clocks/debt and seeks animation to zero. Authored local TRS survives
+simulation and Save. Queries provide rays, sphere overlaps and fixed-orientation
+shape sweeps. Solid BEGIN/PERSIST/END callbacks run outside solver locks after each
+tick; mutation must be queued until dispatch returns. Sensors have a separate
+begin/end stream. Bounded event exhaustion faults the world.
+
+The editor stages body, ragdoll and collision-matrix changes transactionally.
+Version 3 overlays retain source identities, collider/joint IDs, bone references,
+cooked paths and scene-owned named layers/presets. Legacy versions 1/2 remain
+readable. Bakery and the standalone collision cooker produce validated VKC1 files
+from static glTF/GLB proxies. Managed scene import retains collision dependencies
+and remaps source references. Session mutes, impulses and evaluated poses are not
+saved. Debug lines use the UI stream with a 512-line cap; shader and native packet
+layouts are unchanged. SDK/adapter allocations remain outside VKR allocator-tag
+totals. [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) owns the limits,
+asset lifetime, transform rules and future solver boundary.
 
 Extraction counts static and total candidates before allocation, then fills
 disjoint static/dynamic spans in one source traversal. Transmission and direct
@@ -967,6 +1002,13 @@ See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-
 ## Remaining implementation and evidence boundaries
 
 These are limits of current code or retained acceptance, not scheduled promises:
+
+- Physics authoring includes cooked convex/triangle collision, parented bodies,
+  bone attachments/ragdolls, joints, sweeps, contacts and named layer matrices.
+  AVBD/fracture, deforming collision, rotational sweeps and active-ragdoll blending
+  remain future work. Native Vulkan/Windows, skinned-ragdoll renderer captures and
+  matched Release cost evidence remain separate gates;
+  [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) records the limits.
 
 - The complete asset/application ownership split and preparation of all native
   pass families passed Release app/editor builds, CPU checks, and serial Metal
