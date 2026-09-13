@@ -43,7 +43,16 @@ struct s_VkrAnimationPlayer {
   bool8_t playing;
   bool8_t external_pose;
   VkrAnimationCrossfade fade;
+  bool8_t checkpoint_active;
+  bool8_t checkpoint_published;
 };
+
+struct s_VkrAnimationPlayerCheckpoint {
+  VkrAnimationPlayer *player;
+  VkrAnimationPlayer saved;
+};
+_Static_assert(sizeof(VkrAnimationPlayerCheckpoint) <= KB(1),
+               "Scene reset checkpoint reserve");
 
 static bool8_t animation_player_build_pose(VkrAnimationPlayer *player,
                                            uint32_t next) {
@@ -72,6 +81,7 @@ static bool8_t animation_player_commit(VkrAnimationPlayer *player,
     return false_v;
   }
   player->current = next;
+  player->checkpoint_published |= player->checkpoint_active;
   player->generation++;
   player->discontinuity += discontinuity ? 1u : 0u;
   return true_v;
@@ -299,6 +309,9 @@ bool8_t vkr_animation_player_sample_blend(VkrAnimationPlayer *player,
                                           const VkrAnimationSample *samples,
                                           uint32_t count,
                                           bool8_t discontinuity) {
+  if (player && player->checkpoint_published) {
+    return false_v;
+  }
   if (!player || !samples || !count ||
       count > VKR_ANIMATION_BLEND_SAMPLE_CAPACITY) {
     return false_v;
@@ -339,6 +352,9 @@ bool8_t vkr_animation_player_sample_blend(VkrAnimationPlayer *player,
 bool8_t vkr_animation_player_crossfade(VkrAnimationPlayer *player,
                                        uint32_t clip, bool8_t loop,
                                        float64_t duration) {
+  if (player && player->checkpoint_active) {
+    return false_v;
+  }
   if (!player || clip >= player->asset->clip_count || !isfinite(duration) ||
       duration < 0.0) {
     return false_v;
@@ -377,6 +393,9 @@ bool8_t vkr_animation_player_crossfade(VkrAnimationPlayer *player,
 }
 
 bool8_t vkr_animation_player_advance(VkrAnimationPlayer *player, float64_t dt) {
+  if (player && player->checkpoint_active) {
+    return false_v;
+  }
   if (!player || !isfinite(dt) || dt < 0.0) {
     return false_v;
   }
@@ -446,6 +465,9 @@ bool8_t vkr_animation_player_advance(VkrAnimationPlayer *player, float64_t dt) {
 
 bool8_t vkr_animation_player_seek(VkrAnimationPlayer *player,
                                   float64_t seconds) {
+  if (player && player->checkpoint_published) {
+    return false_v;
+  }
   if (!player || !isfinite(seconds)) {
     return false_v;
   }
@@ -464,6 +486,9 @@ bool8_t vkr_animation_player_seek(VkrAnimationPlayer *player,
 
 bool8_t vkr_animation_player_select_clip(VkrAnimationPlayer *player,
                                          uint32_t clip, bool8_t loop) {
+  if (player && player->checkpoint_active) {
+    return false_v;
+  }
   if (!player || clip >= player->asset->clip_count ||
       !animation_player_publish(player, clip, 0.0, loop, true_v)) {
     return false_v;
@@ -554,4 +579,113 @@ vkr_animation_player_crossfade_progress(const VkrAnimationPlayer *player) {
 
 bool8_t vkr_animation_player_loop(const VkrAnimationPlayer *player) {
   return player ? player->loop : false_v;
+}
+
+bool8_t vkr_animation_player_override_globals(VkrAnimationPlayer *player,
+                                              const uint32_t *nodes,
+                                              const Mat4 *matrices,
+                                              uint32_t count) {
+  if (player && player->checkpoint_active) {
+    return false_v;
+  }
+  if (!player || (count && (!nodes || !matrices)) ||
+      count > player->asset->node_count || player->generation == UINT64_MAX) {
+    return false_v;
+  }
+  if (!count) {
+    return true_v;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (nodes[i] >= player->asset->node_count) {
+      return false_v;
+    }
+    for (uint32_t j = 0; j < i; ++j) {
+      if (nodes[i] == nodes[j]) {
+        return false_v;
+      }
+    }
+    for (uint32_t j = 0; j < 16; ++j) {
+      if (!isfinite(matrices[i].elements[j])) {
+        return false_v;
+      }
+    }
+    if (fabsf(matrices[i].elements[3]) > 1e-6f ||
+        fabsf(matrices[i].elements[7]) > 1e-6f ||
+        fabsf(matrices[i].elements[11]) > 1e-6f ||
+        fabsf(matrices[i].elements[15] - 1) > 1e-6f) {
+      return false_v;
+    }
+  }
+  const uint32_t next = player->current ^ 1u;
+  MemCopy(player->local[next], player->local[player->current],
+          (uint64_t)player->asset->node_count * sizeof(VkrAnimationTrs));
+  for (uint32_t order = 0; order < player->asset->node_count; ++order) {
+    const uint32_t n = player->asset->node_order[order];
+    uint32_t override = 0;
+    while (override < count && nodes[override] != n) {
+      override++;
+    }
+    if (override < count) {
+      player->global[next][n] = matrices[override];
+    } else {
+      const VkrAnimationNode *node = &player->asset->nodes[n];
+      const VkrAnimationTrs *trs = &player->local[next][n];
+      Mat4 local = node->matrix_authored
+                       ? node->local
+                       : mat4_mul(mat4_from_vkr_quat_pos(trs->rotation,
+                                                         trs->translation),
+                                  mat4_scale(trs->scale));
+      player->global[next][n] =
+          node->parent == UINT32_MAX
+              ? local
+              : mat4_mul(player->global[next][node->parent], local);
+    }
+    for (uint32_t j = 0; j < 16; ++j) {
+      if (!isfinite(player->global[next][n].elements[j])) {
+        return false_v;
+      }
+    }
+  }
+  for (uint32_t skin = 0; skin < player->asset->skin_count; ++skin) {
+    if (!vkr_animation_skin_palette(player->asset, skin, player->global[next],
+                                    player->palettes[next] +
+                                        player->skin_offsets[skin])) {
+      return false_v;
+    }
+  }
+  player->current = next;
+  player->generation++;
+  return true_v;
+}
+
+VkrAnimationPlayerCheckpoint *
+vkr_animation_player_checkpoint_begin(VkrAnimationPlayer *player,
+                                      Arena *arena) {
+  if (!player || !arena || player->checkpoint_active) {
+    return NULL;
+  }
+  VkrAnimationPlayerCheckpoint *checkpoint =
+      arena_alloc(arena, sizeof(*checkpoint), ARENA_MEMORY_TAG_STRUCT);
+  if (!checkpoint) {
+    return NULL;
+  }
+  *checkpoint =
+      (VkrAnimationPlayerCheckpoint){.player = player, .saved = *player};
+  player->checkpoint_active = true_v;
+  player->checkpoint_published = false_v;
+  return checkpoint;
+}
+
+void vkr_animation_player_checkpoint_finish(
+    VkrAnimationPlayerCheckpoint *checkpoint, bool8_t commit) {
+  if (!checkpoint || !checkpoint->player) {
+    return;
+  }
+  if (!commit) {
+    *checkpoint->player = checkpoint->saved;
+  } else {
+    checkpoint->player->checkpoint_active = false_v;
+    checkpoint->player->checkpoint_published = false_v;
+  }
+  checkpoint->player = NULL;
 }

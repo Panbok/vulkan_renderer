@@ -362,8 +362,19 @@ typedef struct VkrSceneAtmosphere {
  * @brief Scene containing ECS world and renderer integration state.
  */
 typedef struct s_VkrSceneAnimation VkrSceneAnimation;
+typedef struct s_VkrScenePhysics VkrScenePhysics;
+typedef struct VkrSceneCollisionLayers VkrSceneCollisionLayers;
 
 typedef struct VkrScene {
+  VkrScenePhysics *physics;
+  VkrSceneCollisionLayers *collision_layers;
+  VkrSceneCollisionLayers *collision_layers_pending;
+  uint64_t collision_layers_revision;
+  char physics_asset_root[1024];
+  bool8_t physics_paused;
+  bool8_t physics_disabled;
+  VkrComponentTypeId comp_physics_body;
+  VkrComponentTypeId comp_physics_collider;
   VkrSceneAnimation *animations;  // Independently owned per-wrapper pose state.
   VkrWorld *world;                // ECS storage (authoritative scene state)
   VkrAllocator *alloc;            // Scene-owned allocator

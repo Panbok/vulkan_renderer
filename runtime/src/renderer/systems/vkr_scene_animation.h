@@ -70,3 +70,24 @@ bool8_t vkr_scene_animation_build_preview(
     const VkrAnimationPlayer *player, float32_t yaw, float32_t pitch,
     float32_t distance, VkrAllocator *scratch, VkrWorldPassPayload *world,
     VkrAnimationPreviewInput *preview);
+
+/* Source-node identity remains stable across evaluated poses. Bone matrices
+ * include the wrapper's evaluated world matrix. No authored TRS is changed. */
+VkrEntityId vkr_scene_animation_node_entity(const VkrScene *scene,
+                                            VkrEntityId wrapper,
+                                            uint32_t source_node);
+bool8_t vkr_scene_animation_node_world(const VkrScene *scene,
+                                       VkrEntityId wrapper,
+                                       uint32_t source_node, Mat4 *world);
+bool8_t vkr_scene_animation_override_nodes(VkrScene *scene, VkrEntityId wrapper,
+                                           const uint32_t *source_nodes,
+                                           const Mat4 *world_matrices,
+                                           uint32_t count, const char **error);
+
+/* Cold, fallible all-player seek-to-zero transaction. Owns a short-lived arena;
+ * finish commits or restores clock, graph, crossfade and published pose. */
+typedef struct s_VkrSceneAnimationReset VkrSceneAnimationReset;
+VkrSceneAnimationReset *vkr_scene_animation_reset_begin(VkrScene *scene,
+                                                        const char **error);
+void vkr_scene_animation_reset_finish(VkrSceneAnimationReset *reset,
+                                      bool8_t commit);

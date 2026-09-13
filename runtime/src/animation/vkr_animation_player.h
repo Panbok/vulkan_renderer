@@ -88,3 +88,25 @@ const Mat4 *vkr_animation_player_skin_palette(const VkrAnimationPlayer *player,
                                               uint32_t skin);
 uint64_t vkr_animation_player_generation(const VkrAnimationPlayer *player);
 uint64_t vkr_animation_player_discontinuity(const VkrAnimationPlayer *player);
+
+/* Physics supplies global matrices in animation-wrapper space. Overrides and
+ * their descendants rebuild palettes transactionally in existing pose storage;
+ * authored assets and sampled local TRS remain unchanged. Next sampling
+ * replaces overrides. This is not an animation/ragdoll blend-back controller.
+ */
+bool8_t vkr_animation_player_override_globals(VkrAnimationPlayer *player,
+                                              const uint32_t *nodes,
+                                              const Mat4 *matrices,
+                                              uint32_t count);
+
+/* Cold reset transaction. Token storage belongs to the supplied arena. Between
+ * begin and finish only one seek/sample_blend is permitted; it writes the
+ * inactive pose slot. Cancel restores playback/crossfade state and the
+ * untouched original pose slot without resampling. Finish before releasing the
+ * arena. */
+typedef struct s_VkrAnimationPlayerCheckpoint VkrAnimationPlayerCheckpoint;
+VkrAnimationPlayerCheckpoint *
+vkr_animation_player_checkpoint_begin(VkrAnimationPlayer *player,
+                                      struct Arena *arena);
+void vkr_animation_player_checkpoint_finish(
+    VkrAnimationPlayerCheckpoint *checkpoint, bool8_t commit);

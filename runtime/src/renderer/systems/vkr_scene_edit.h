@@ -1,5 +1,7 @@
 #pragma once
 
+#include "renderer/systems/vkr_scene_collision_layers.h"
+#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
 
 #define VKR_SCENE_EDIT_NAME_CAPACITY 512u
@@ -9,6 +11,8 @@ typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_NONE,
   VKR_SCENE_EDIT_SELECT,
   VKR_SCENE_EDIT_APPLY,
+  VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS,
+  VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH,
   VKR_SCENE_EDIT_UNDO,
   VKR_SCENE_EDIT_REDO,
   VKR_SCENE_EDIT_SAVE,
@@ -25,6 +29,7 @@ typedef enum VkrSceneEditField {
   VKR_SCENE_EDIT_POINT_LIGHT = 1u << 3,
   VKR_SCENE_EDIT_DIRECTIONAL_LIGHT = 1u << 4,
   VKR_SCENE_EDIT_RECTANGLE_LIGHT = 1u << 5,
+  VKR_SCENE_EDIT_PHYSICS = 1u << 6,
 } VkrSceneEditField;
 
 typedef struct VkrSceneEditValues {
@@ -37,18 +42,30 @@ typedef struct VkrSceneEditValues {
   ScenePointLight point_light;
   SceneDirectionalLight directional_light;
   SceneRectangleLight rectangle_light;
+  VkrScenePhysicsSnapshot physics;
 } VkrSceneEditValues;
 
 typedef struct VkrSceneEditRequest {
   VkrSceneEditAction action;
   VkrEntityId entity;
   VkrSceneEditValues values;
+  /* Borrowed until runtime dispatch after this UI build. */
+  const VkrSceneCollisionLayers *collision_layers;
+  const VkrScenePhysicsChange *physics_batch;
+  uint32_t physics_batch_count;
 } VkrSceneEditRequest;
+
+typedef enum VkrSceneEditEntryKind {
+  VKR_SCENE_EDIT_ENTRY_ENTITY,
+  VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS,
+  VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH,
+} VkrSceneEditEntryKind;
 
 typedef struct VkrSceneEditEntry {
   VkrEntityId entity;
-  VkrSceneEditValues before;
-  VkrSceneEditValues after;
+  VkrSceneEditEntryKind kind;
+  void *payload;
+  uint64_t payload_size;
 } VkrSceneEditEntry;
 
 /* Runtime owns the journal; UI borrows snapshots only for its current build.
@@ -88,3 +105,12 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *state, const VkrScene *scene,
                             String8 path);
 bool8_t vkr_scene_edit_load(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
+
+bool8_t
+vkr_scene_edit_apply_collision_layers(VkrSceneEditState *state, VkrScene *scene,
+                                      const VkrSceneCollisionLayers *settings);
+
+bool8_t vkr_scene_edit_apply_physics_batch(VkrSceneEditState *state,
+                                           VkrScene *scene,
+                                           const VkrScenePhysicsChange *changes,
+                                           uint32_t count);

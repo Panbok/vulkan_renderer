@@ -61,12 +61,19 @@ bool8_t vkr_scene_edit_read(const VkrScene *scene, VkrEntityId entity,
     out->fields |= VKR_SCENE_EDIT_RECTANGLE_LIGHT;
     out->rectangle_light = *rectangle;
   }
+  if (vkr_scene_physics_read(scene, entity, &out->physics)) {
+    out->fields |= VKR_SCENE_EDIT_PHYSICS;
+  }
   return true_v;
 }
 
 bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *v) {
-  if (!v->fields || (v->fields & ~63u))
+  if (!v->fields || (v->fields & ~127u))
     return false_v;
+  if ((v->fields & VKR_SCENE_EDIT_PHYSICS) &&
+      !vkr_scene_physics_snapshot_validate(&v->physics, NULL)) {
+    return false_v;
+  }
   if ((v->fields & VKR_SCENE_EDIT_NAME) && !memchr(v->name, 0, sizeof(v->name)))
     return false_v;
   if (v->fields & VKR_SCENE_EDIT_TRANSFORM) {
@@ -128,6 +135,10 @@ bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *v) {
 
 void vkr_scene_edit_reset(VkrSceneEditState *s, VkrAllocator *allocator,
                           uint64_t generation) {
+  for (uint32_t i = 0; i < s->undo_count; ++i) {
+    vkr_allocator_free(s->allocator, s->undo[i].payload,
+                       s->undo[i].payload_size, EDIT_TAG);
+  }
   if (s->undo)
     vkr_allocator_free(s->allocator, s->undo,
                        sizeof(*s->undo) * VKR_SCENE_EDIT_UNDO_CAPACITY,
@@ -163,10 +174,13 @@ typedef struct EditPrepared {
   VkrEntityId entity;
   VkrSceneEditValues values;
   String8 replacement_name;
+  VkrScenePhysicsPrepared *physics;
   bool8_t add_touched;
 } EditPrepared;
 
 static void edit_discard(VkrScene *scene, EditPrepared *p) {
+  vkr_scene_physics_discard(p->physics);
+  p->physics = NULL;
   if (p->replacement_name.str)
     vkr_allocator_free(scene->alloc, p->replacement_name.str,
                        p->replacement_name.length + 1u,
@@ -181,6 +195,14 @@ static bool8_t edit_prepare(VkrScene *scene, VkrEntityId entity,
   if (!vkr_scene_edit_read(scene, entity, &current) ||
       (v->fields & ~current.fields) || !vkr_scene_edit_validate(v))
     return false_v;
+  const VkrEntityId physics_owner = vkr_scene_physics_owner(scene, entity);
+  if (physics_owner.u64 && physics_owner.u64 != entity.u64) {
+    return false_v;
+  }
+  if ((v->fields & VKR_SCENE_EDIT_TRANSFORM) && current.physics.present &&
+      !vkr_scene_physics_is_paused(scene)) {
+    return false_v;
+  }
   if ((v->fields & VKR_SCENE_EDIT_NAME) && strcmp(current.name, v->name)) {
     uint64_t length = strlen(v->name);
     uint8_t *name = vkr_allocator_alloc(scene->alloc, length + 1u,
@@ -190,12 +212,42 @@ static bool8_t edit_prepare(VkrScene *scene, VkrEntityId entity,
     MemCopy(name, v->name, length + 1u);
     p->replacement_name = string8_create(name, length);
   }
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  if ((v->fields & VKR_SCENE_EDIT_TRANSFORM) &&
+      ((v->fields & VKR_SCENE_EDIT_PHYSICS) ? v->physics.present
+                                            : current.physics.present) &&
+      (!transform ||
+       !vkr_scene_physics_transform_validate(
+           scene, entity, v->position, vkr_quat_normalize(v->rotation),
+           v->scale, transform->parent, NULL))) {
+    edit_discard(scene, p);
+    return false_v;
+  }
   return true_v;
+}
+
+static bool8_t edit_prepare_physics(VkrScene *scene, EditPrepared *prepared) {
+  const VkrSceneEditValues *values = &prepared->values;
+  if (!(values->fields & VKR_SCENE_EDIT_PHYSICS)) {
+    return true_v;
+  }
+  VkrScenePhysicsSnapshot current;
+  if (!vkr_scene_physics_read(scene, prepared->entity, &current)) {
+    return false_v;
+  }
+  return !(values->physics.present || current.present) ||
+         vkr_scene_physics_prepare(scene, prepared->entity, &values->physics,
+                                   &prepared->physics, NULL);
 }
 
 static void edit_commit(VkrScene *scene, EditPrepared *p) {
   const VkrSceneEditValues *v = &p->values;
   VkrEntityId entity = p->entity;
+  if (p->physics) {
+    vkr_scene_physics_commit(p->physics);
+    p->physics = NULL;
+  }
   if (p->replacement_name.str) {
     SceneName *name =
         vkr_entity_get_component_mut(scene->world, entity, scene->comp_name);
@@ -226,34 +278,55 @@ static void edit_commit(VkrScene *scene, EditPrepared *p) {
 static bool8_t edit_write(VkrScene *scene, VkrEntityId entity,
                           const VkrSceneEditValues *v) {
   EditPrepared prepared;
-  if (!edit_prepare(scene, entity, v, &prepared))
+  if (!edit_prepare(scene, entity, v, &prepared)) {
     return false_v;
+  }
+  if (!edit_prepare_physics(scene, &prepared) ||
+      !vkr_scene_physics_prepare_complete(scene, NULL)) {
+    edit_discard(scene, &prepared);
+    return false_v;
+  }
   edit_commit(scene, &prepared);
   return true_v;
 }
 
-static bool8_t edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity) {
+/* Payloads are allocated only for live journal entries. Expanded collider
+   references and scene-global settings do not inflate every history slot. */
+static void *edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity,
+                                  uint64_t payload_size) {
   if (!s->undo) {
     s->undo = vkr_allocator_alloc(
         s->allocator, sizeof(*s->undo) * VKR_SCENE_EDIT_UNDO_CAPACITY,
         EDIT_TAG);
-    if (!s->undo)
-      return false_v;
+    if (!s->undo) {
+      return NULL;
+    }
   }
-  return edit_touch(s, entity);
+  void *payload = vkr_allocator_alloc(s->allocator, payload_size, EDIT_TAG);
+  if (!payload) {
+    return NULL;
+  }
+  if (entity.u64 && !edit_touch(s, entity)) {
+    vkr_allocator_free(s->allocator, payload, payload_size, EDIT_TAG);
+    return NULL;
+  }
+  return payload;
 }
 
-static void edit_journal_append(VkrSceneEditState *s, VkrEntityId entity,
-                                VkrSceneEditValues before,
-                                const VkrSceneEditValues *after) {
-  before.fields = after->fields;
+static void edit_journal_append(VkrSceneEditState *s, VkrSceneEditEntry entry) {
+  for (uint32_t i = s->undo_cursor; i < s->undo_count; ++i) {
+    vkr_allocator_free(s->allocator, s->undo[i].payload,
+                       s->undo[i].payload_size, EDIT_TAG);
+  }
   s->undo_count = s->undo_cursor;
   if (s->undo_count == VKR_SCENE_EDIT_UNDO_CAPACITY) {
-    memmove(s->undo, s->undo + 1,
+    vkr_allocator_free(s->allocator, s->undo[0].payload,
+                       s->undo[0].payload_size, EDIT_TAG);
+    MemCopy(s->undo, s->undo + 1,
             (VKR_SCENE_EDIT_UNDO_CAPACITY - 1u) * sizeof(*s->undo));
     s->undo_count--;
   }
-  s->undo[s->undo_count++] = (VkrSceneEditEntry){entity, before, *after};
+  s->undo[s->undo_count++] = entry;
   s->undo_cursor = s->undo_count;
   s->revision++;
   snprintf(s->status, sizeof(s->status),
@@ -264,18 +337,48 @@ bool8_t vkr_scene_edit_apply(VkrSceneEditState *s, VkrScene *scene,
                              VkrEntityId entity, const VkrSceneEditValues *v) {
   VkrSceneEditValues before;
   EditPrepared prepared;
+  if ((v->fields & VKR_SCENE_EDIT_PHYSICS) &&
+      (v->physics.present || vkr_scene_physics_owner(scene, entity).u64)) {
+    const char *error = NULL;
+    if (!vkr_scene_physics_is_paused(scene)) {
+      snprintf(s->status, sizeof(s->status),
+               "Pause simulation before editing physics.");
+      return false_v;
+    }
+    if (!vkr_scene_physics_validate(scene, entity, &v->physics, &error)) {
+      snprintf(s->status, sizeof(s->status), "%s",
+               error ? error : "Invalid physics settings.");
+      return false_v;
+    }
+  }
   if (!vkr_scene_edit_read(scene, entity, &before) ||
       !edit_prepare(scene, entity, v, &prepared)) {
     snprintf(s->status, sizeof(s->status),
              "Invalid values or stale selection.");
     return false_v;
   }
-  if (!edit_journal_prepare(s, entity)) {
+  if (!edit_prepare_physics(scene, &prepared) ||
+      !vkr_scene_physics_prepare_complete(scene, NULL)) {
+    edit_discard(scene, &prepared);
+    snprintf(s->status, sizeof(s->status), "%s",
+             vkr_scene_physics_error(scene));
+    return false_v;
+  }
+  VkrSceneEditValues *payload =
+      edit_journal_prepare(s, entity, 2u * sizeof(*payload));
+  if (!payload) {
     edit_discard(scene, &prepared);
     return false_v;
   }
+  before.fields = v->fields;
+  payload[0] = before;
+  payload[1] = *v;
   edit_commit(scene, &prepared);
-  edit_journal_append(s, entity, before, v);
+  edit_journal_append(
+      s, (VkrSceneEditEntry){.entity = entity,
+                             .kind = VKR_SCENE_EDIT_ENTRY_ENTITY,
+                             .payload = payload,
+                             .payload_size = 2u * sizeof(*payload)});
   return true_v;
 }
 
@@ -287,10 +390,130 @@ bool8_t vkr_scene_edit_record_external(VkrSceneEditState *s, VkrScene *scene,
   if (before->fields != after->fields || !vkr_scene_edit_validate(before) ||
       !vkr_scene_edit_validate(after) ||
       !vkr_scene_edit_read(scene, entity, &current) ||
-      (after->fields & ~current.fields) || !edit_journal_prepare(s, entity))
+      (after->fields & ~current.fields)) {
     return false_v;
-  edit_journal_append(s, entity, *before, after);
+  }
+  VkrSceneEditValues *payload =
+      edit_journal_prepare(s, entity, 2u * sizeof(*payload));
+  if (!payload) {
+    return false_v;
+  }
+  payload[0] = *before;
+  payload[1] = *after;
+  edit_journal_append(
+      s, (VkrSceneEditEntry){.entity = entity,
+                             .kind = VKR_SCENE_EDIT_ENTRY_ENTITY,
+                             .payload = payload,
+                             .payload_size = 2u * sizeof(*payload)});
   return true_v;
+}
+
+bool8_t
+vkr_scene_edit_apply_collision_layers(VkrSceneEditState *s, VkrScene *scene,
+                                      const VkrSceneCollisionLayers *settings) {
+  const char *error = NULL;
+  if (!vkr_scene_collision_layers_validate(settings, &error)) {
+    snprintf(s->status, sizeof(s->status), "%s",
+             error ? error : "Invalid collision settings.");
+    return false_v;
+  }
+  VkrSceneCollisionLayers *payload =
+      edit_journal_prepare(s, VKR_ENTITY_ID_INVALID, 2u * sizeof(*payload));
+  if (!payload) {
+    return false_v;
+  }
+  vkr_scene_collision_layers_read(scene, &payload[0]);
+  payload[1] = *settings;
+  if (!vkr_scene_collision_layers_apply(scene, settings, &error)) {
+    vkr_allocator_free(s->allocator, payload, 2u * sizeof(*payload), EDIT_TAG);
+    snprintf(s->status, sizeof(s->status), "%s",
+             error ? error : "Collision settings failed.");
+    return false_v;
+  }
+  edit_journal_append(
+      s, (VkrSceneEditEntry){.kind = VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS,
+                             .payload = payload,
+                             .payload_size = 2u * sizeof(*payload)});
+  return true_v;
+}
+
+typedef struct EditPhysicsBatchRecord {
+  VkrEntityId entity;
+  VkrScenePhysicsSnapshot before;
+  VkrScenePhysicsSnapshot after;
+} EditPhysicsBatchRecord;
+
+static bool8_t edit_physics_batch_write(VkrSceneEditState *s, VkrScene *scene,
+                                        const EditPhysicsBatchRecord *records,
+                                        uint32_t count, bool8_t after) {
+  VkrScenePhysicsPrepared *pending[VKR_SCENE_PHYSICS_MAX_BODIES] = {0};
+  uint32_t prepared_count = 0;
+  const char *error = NULL;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!vkr_scene_physics_prepare(scene, records[i].entity,
+                                   after ? &records[i].after
+                                         : &records[i].before,
+                                   &pending[prepared_count], &error)) {
+      goto failed;
+    }
+    prepared_count++;
+  }
+  if (!vkr_scene_physics_prepare_complete(scene, &error)) {
+    goto failed;
+  }
+  for (uint32_t i = 0; i < prepared_count; ++i) {
+    vkr_scene_physics_commit(pending[i]);
+  }
+  return true_v;
+failed:
+  for (uint32_t i = 0; i < prepared_count; ++i) {
+    vkr_scene_physics_discard(pending[i]);
+  }
+  snprintf(s->status, sizeof(s->status), "%s",
+           error ? error : "Physics batch could not be staged.");
+  return false_v;
+}
+
+bool8_t vkr_scene_edit_apply_physics_batch(VkrSceneEditState *s,
+                                           VkrScene *scene,
+                                           const VkrScenePhysicsChange *changes,
+                                           uint32_t count) {
+  if (!changes || !count || count > VKR_SCENE_PHYSICS_MAX_BODIES) {
+    return false_v;
+  }
+  const uint64_t size = count * sizeof(EditPhysicsBatchRecord);
+  EditPhysicsBatchRecord *records =
+      edit_journal_prepare(s, VKR_ENTITY_ID_INVALID, size);
+  if (!records) {
+    return false_v;
+  }
+  const uint32_t touched_before = s->touched_count;
+  for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t j = 0; j < i; ++j) {
+      if (changes[j].entity.u64 == changes[i].entity.u64) {
+        goto failed;
+      }
+    }
+    records[i].entity = changes[i].entity;
+    records[i].after = changes[i].snapshot;
+    if (!vkr_scene_physics_read(scene, records[i].entity, &records[i].before) ||
+        !vkr_scene_physics_snapshot_validate(&records[i].after, NULL) ||
+        !edit_touch(s, records[i].entity)) {
+      goto failed;
+    }
+  }
+  if (!edit_physics_batch_write(s, scene, records, count, true_v)) {
+    goto failed;
+  }
+  edit_journal_append(
+      s, (VkrSceneEditEntry){.kind = VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH,
+                             .payload = records,
+                             .payload_size = size});
+  return true_v;
+failed:
+  s->touched_count = touched_before;
+  vkr_allocator_free(s->allocator, records, size, EDIT_TAG);
+  return false_v;
 }
 
 bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
@@ -299,8 +522,28 @@ bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
     return false_v;
   VkrSceneEditEntry *entry =
       &s->undo[redo ? s->undo_cursor : s->undo_cursor - 1u];
-  if (!edit_write(scene, entry->entity, redo ? &entry->after : &entry->before))
-    return false_v;
+  if (entry->kind == VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH) {
+    if (!edit_physics_batch_write(
+            s, scene, entry->payload,
+            (uint32_t)(entry->payload_size / sizeof(EditPhysicsBatchRecord)),
+            redo)) {
+      return false_v;
+    }
+  } else if (entry->kind == VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS) {
+    const VkrSceneCollisionLayers *payload = entry->payload;
+    const char *error = NULL;
+    if (!vkr_scene_collision_layers_apply(scene, &payload[redo ? 1 : 0],
+                                          &error)) {
+      snprintf(s->status, sizeof(s->status), "%s",
+               error ? error : "Collision settings undo failed.");
+      return false_v;
+    }
+  } else {
+    const VkrSceneEditValues *payload = entry->payload;
+    if (!edit_write(scene, entry->entity, &payload[redo ? 1 : 0])) {
+      return false_v;
+    }
+  }
   if (redo)
     s->undo_cursor++;
   else
@@ -319,6 +562,123 @@ static bool8_t json_floats(VkrJsonWriter *w, const char *name,
     if (!vkr_json_writer_f64(w, values[i]))
       return false_v;
   return vkr_json_writer_end_array(w);
+}
+
+static bool8_t write_source(VkrJsonWriter *w,
+                            const SceneSourceIdentity *source) {
+  char fingerprint[17];
+  snprintf(fingerprint, sizeof(fingerprint), "%016llx",
+           (unsigned long long)source->source_fingerprint);
+  return vkr_json_writer_begin_object(w) &&
+         vkr_json_writer_name(w, string8_lit("scene_entity")) &&
+         vkr_json_writer_i64(w, source->scene_entity_index) &&
+         vkr_json_writer_name(w, string8_lit("gltf_node")) &&
+         vkr_json_writer_i64(w, (int32_t)source->gltf_node_index) &&
+         vkr_json_writer_name(w, string8_lit("fingerprint")) &&
+         vkr_json_writer_string(w,
+                                string8_create((uint8_t *)fingerprint, 16)) &&
+         vkr_json_writer_end_object(w);
+}
+
+static bool8_t
+write_attachment_and_joints(VkrJsonWriter *w,
+                            const VkrScenePhysicsSnapshot *body) {
+  const VkrScenePhysicsAttachment *attachment = &body->attachment;
+  if (!vkr_json_writer_name(w, string8_lit("attachment")) ||
+      !vkr_json_writer_begin_object(w) ||
+      !vkr_json_writer_name(w, string8_lit("enabled")) ||
+      !vkr_json_writer_bool(w, attachment->enabled) ||
+      !vkr_json_writer_name(w, string8_lit("source")) ||
+      !write_source(w, &attachment->animation_source) ||
+      !vkr_json_writer_name(w, string8_lit("node")) ||
+      !vkr_json_writer_i64(w, attachment->source_node) ||
+      !vkr_json_writer_name(w, string8_lit("drive_bone")) ||
+      !vkr_json_writer_bool(w, attachment->drive_bone) ||
+      !json_floats(w, "position", &attachment->position.x, 3) ||
+      !json_floats(w, "rotation", &attachment->rotation.x, 4) ||
+      !vkr_json_writer_end_object(w) ||
+      !vkr_json_writer_name(w, string8_lit("joints")) ||
+      !vkr_json_writer_begin_array(w)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < body->joint_count; ++i) {
+    const VkrSceneJointConfig *joint = &body->joints[i];
+    char id[17];
+    snprintf(id, sizeof(id), "%016llx", (unsigned long long)joint->authored_id);
+    const float32_t limits[] = {joint->min_limit, joint->max_limit,
+                                joint->swing_normal_limit,
+                                joint->swing_plane_limit};
+    if (!vkr_json_writer_begin_object(w) ||
+        !vkr_json_writer_name(w, string8_lit("id")) ||
+        !vkr_json_writer_string(w, string8_create((uint8_t *)id, 16)) ||
+        !vkr_json_writer_name(w, string8_lit("type")) ||
+        !vkr_json_writer_i64(w, joint->type) ||
+        !vkr_json_writer_name(w, string8_lit("enabled")) ||
+        !vkr_json_writer_bool(w, joint->enabled) ||
+        !vkr_json_writer_name(w, string8_lit("target")) ||
+        !write_source(w, &joint->target_source) ||
+        !json_floats(w, "anchor_a", &joint->anchor_a.x, 3) ||
+        !json_floats(w, "anchor_b", &joint->anchor_b.x, 3) ||
+        !json_floats(w, "axis_a", &joint->axis_a.x, 3) ||
+        !json_floats(w, "axis_b", &joint->axis_b.x, 3) ||
+        !json_floats(w, "normal_a", &joint->normal_a.x, 3) ||
+        !json_floats(w, "normal_b", &joint->normal_b.x, 3) ||
+        !json_floats(w, "limits", limits, ArrayCount(limits)) ||
+        !vkr_json_writer_end_object(w)) {
+      return false_v;
+    }
+  }
+  return vkr_json_writer_end_array(w);
+}
+
+static bool8_t write_collision_layers(VkrJsonWriter *w,
+                                      const VkrSceneCollisionLayers *settings) {
+  if (!vkr_json_writer_begin_object(w) ||
+      !vkr_json_writer_name(w, string8_lit("version")) ||
+      !vkr_json_writer_i64(w, 1) ||
+      !vkr_json_writer_name(w, string8_lit("names")) ||
+      !vkr_json_writer_begin_array(w)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    if (!vkr_json_writer_string(w,
+                                string8_create((uint8_t *)settings->names[i],
+                                               strlen(settings->names[i])))) {
+      return false_v;
+    }
+  }
+  if (!vkr_json_writer_end_array(w) ||
+      !vkr_json_writer_name(w, string8_lit("matrix")) ||
+      !vkr_json_writer_begin_array(w)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    if (!vkr_json_writer_i64(w, settings->matrix[i])) {
+      return false_v;
+    }
+  }
+  if (!vkr_json_writer_end_array(w) ||
+      !vkr_json_writer_name(w, string8_lit("presets")) ||
+      !vkr_json_writer_begin_array(w)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < settings->preset_count; ++i) {
+    const VkrSceneCollisionPreset *preset = &settings->presets[i];
+    if (!vkr_json_writer_begin_object(w) ||
+        !vkr_json_writer_name(w, string8_lit("name")) ||
+        !vkr_json_writer_string(
+            w, string8_create((uint8_t *)preset->name, strlen(preset->name))) ||
+        !vkr_json_writer_name(w, string8_lit("membership")) ||
+        !vkr_json_writer_i64(w, preset->membership) ||
+        !vkr_json_writer_name(w, string8_lit("mask")) ||
+        !vkr_json_writer_i64(w, preset->mask) ||
+        !vkr_json_writer_name(w, string8_lit("sensor")) ||
+        !vkr_json_writer_bool(w, preset->sensor) ||
+        !vkr_json_writer_end_object(w)) {
+      return false_v;
+    }
+  }
+  return vkr_json_writer_end_array(w) && vkr_json_writer_end_object(w);
 }
 
 static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
@@ -374,6 +734,53 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !WRITE_BOOL("rectangle_enabled", p->enabled))
       return false_v;
   }
+  if (v->fields & VKR_SCENE_EDIT_PHYSICS) {
+    const VkrScenePhysicsSnapshot *p = &v->physics;
+    const float32_t params[] = {p->mass,           p->friction,
+                                p->restitution,    p->gravity_factor,
+                                p->linear_damping, p->angular_damping};
+    if (!vkr_json_writer_name(w, string8_lit("physics")) ||
+        !vkr_json_writer_begin_object(w) || !WRITE_INT("version", 2) ||
+        !WRITE_BOOL("present", p->present) || !WRITE_INT("motion", p->motion) ||
+        !WRITE_INT("layer", p->collision_layer) ||
+        !WRITE_INT("mask", p->collision_mask) ||
+        !json_floats(w, "parameters", params, ArrayCount(params)) ||
+        !WRITE_BOOL("enabled", p->enabled) ||
+        !WRITE_BOOL("sleep", p->allow_sleep) ||
+        !WRITE_BOOL("continuous", p->continuous) ||
+        !WRITE_BOOL("sensor", p->sensor) ||
+        !write_attachment_and_joints(w, p) ||
+        !vkr_json_writer_name(w, string8_lit("colliders")) ||
+        !vkr_json_writer_begin_array(w)) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < p->collider_count; ++i) {
+      const VkrSceneColliderConfig *c = &p->colliders[i];
+      char id[17];
+      snprintf(id, sizeof(id), "%016llx", (unsigned long long)c->authored_id);
+      const float32_t dimensions[] = {c->half_extent.x, c->half_extent.y,
+                                      c->half_extent.z, c->radius,
+                                      c->half_height};
+      if (!vkr_json_writer_begin_object(w) ||
+          !vkr_json_writer_name(w, string8_lit("id")) ||
+          !vkr_json_writer_string(w, string8_create((uint8_t *)id, 16)) ||
+          !WRITE_INT("shape", c->shape) || !WRITE_BOOL("enabled", c->enabled) ||
+          !json_floats(w, "position", &c->position.x, 3) ||
+          !json_floats(w, "rotation", &c->rotation.x, 4) ||
+          !json_floats(w, "dimensions", dimensions, ArrayCount(dimensions)) ||
+          !json_floats(w, "scale", &c->scale.x, 3) ||
+          !vkr_json_writer_name(w, string8_lit("asset")) ||
+          !vkr_json_writer_string(w,
+                                  (String8){.str = (uint8_t *)c->asset_path,
+                                            .length = strlen(c->asset_path)}) ||
+          !vkr_json_writer_end_object(w)) {
+        return false_v;
+      }
+    }
+    if (!vkr_json_writer_end_array(w) || !vkr_json_writer_end_object(w)) {
+      return false_v;
+    }
+  }
   return true_v;
 }
 
@@ -399,7 +806,7 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, const VkrScene *scene,
   if (!vkr_json_file_writer_begin(&file, path))
     goto failed;
   VkrJsonWriter *w = &file.writer;
-  if (!vkr_json_writer_begin_object(w) || !WRITE_INT("version", 1) ||
+  if (!vkr_json_writer_begin_object(w) || !WRITE_INT("version", 3) ||
       !vkr_json_writer_name(w, string8_lit("overrides")) ||
       !vkr_json_writer_begin_array(w))
     goto failed;
@@ -421,7 +828,11 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, const VkrScene *scene,
         !write_values(w, &values) || !vkr_json_writer_end_object(w))
       goto failed;
   }
-  if (!vkr_json_writer_end_array(w) || !vkr_json_writer_end_object(w) ||
+  VkrSceneCollisionLayers settings;
+  vkr_scene_collision_layers_read(scene, &settings);
+  if (!vkr_json_writer_end_array(w) ||
+      !vkr_json_writer_name(w, string8_lit("collision_settings")) ||
+      !write_collision_layers(w, &settings) || !vkr_json_writer_end_object(w) ||
       !vkr_json_file_writer_commit(&file))
     goto failed;
   s->saved_revision = s->revision;
@@ -671,6 +1082,287 @@ static bool8_t edit_json_floats(EditJson *j, float32_t *out, uint32_t count) {
   return edit_json_take(j, ']');
 }
 
+static bool8_t edit_json_key(EditJson *j, const char *expected, bool8_t comma) {
+  char key[32];
+  return (!comma || edit_json_take(j, ',')) &&
+         edit_json_string(j, key, sizeof(key)) && !strcmp(key, expected) &&
+         edit_json_take(j, ':');
+}
+
+static bool8_t edit_json_u64_hex(EditJson *j, uint64_t *value) {
+  char text[17];
+  if (!edit_json_string(j, text, sizeof(text)) || strlen(text) != 16) {
+    return false_v;
+  }
+  *value = 0;
+  for (uint32_t i = 0; i < 16; ++i) {
+    const int32_t digit = hex_digit((uint8_t)text[i]);
+    if (digit < 0) {
+      return false_v;
+    }
+    *value = (*value << 4u) | (uint32_t)digit;
+  }
+  return true_v;
+}
+
+static bool8_t edit_json_source(EditJson *j, SceneSourceIdentity *source) {
+  int64_t value;
+  if (!edit_json_take(j, '{') || !edit_json_key(j, "scene_entity", false_v) ||
+      !edit_json_int(j, 0, UINT32_MAX, &value)) {
+    return false_v;
+  }
+  source->scene_entity_index = (uint32_t)value;
+  if (!edit_json_key(j, "gltf_node", true_v) ||
+      !edit_json_int(j, -1, INT32_MAX, &value)) {
+    return false_v;
+  }
+  source->gltf_node_index = (uint32_t)value;
+  return edit_json_key(j, "fingerprint", true_v) &&
+         edit_json_u64_hex(j, &source->source_fingerprint) &&
+         edit_json_take(j, '}');
+}
+
+static bool8_t edit_json_attachment_joints(EditJson *j,
+                                           VkrScenePhysicsSnapshot *body) {
+  VkrScenePhysicsAttachment *attachment = &body->attachment;
+  int64_t integer;
+  if (!edit_json_key(j, "attachment", true_v) || !edit_json_take(j, '{') ||
+      !edit_json_key(j, "enabled", false_v) ||
+      !edit_json_bool(j, &attachment->enabled) ||
+      !edit_json_key(j, "source", true_v) ||
+      !edit_json_source(j, &attachment->animation_source) ||
+      !edit_json_key(j, "node", true_v) ||
+      !edit_json_int(j, 0, UINT32_MAX, &integer)) {
+    return false_v;
+  }
+  attachment->source_node = (uint32_t)integer;
+  if (!edit_json_key(j, "drive_bone", true_v) ||
+      !edit_json_bool(j, &attachment->drive_bone) ||
+      !edit_json_key(j, "position", true_v) ||
+      !edit_json_floats(j, &attachment->position.x, 3) ||
+      !edit_json_key(j, "rotation", true_v) ||
+      !edit_json_floats(j, &attachment->rotation.x, 4) ||
+      !edit_json_take(j, '}') || !edit_json_key(j, "joints", true_v) ||
+      !edit_json_take(j, '[')) {
+    return false_v;
+  }
+  if (!edit_json_take(j, ']')) {
+    do {
+      if (body->joint_count == VKR_SCENE_PHYSICS_MAX_JOINTS) {
+        return false_v;
+      }
+      VkrSceneJointConfig *joint = &body->joints[body->joint_count++];
+      float32_t limits[4];
+      if (!edit_json_take(j, '{') || !edit_json_key(j, "id", false_v) ||
+          !edit_json_u64_hex(j, &joint->authored_id) ||
+          !edit_json_key(j, "type", true_v) ||
+          !edit_json_int(j, VKR_PHYSICS_JOINT_FIXED,
+                         VKR_PHYSICS_JOINT_SWING_TWIST, &integer)) {
+        return false_v;
+      }
+      joint->type = (VkrPhysicsJointType)integer;
+      if (!edit_json_key(j, "enabled", true_v) ||
+          !edit_json_bool(j, &joint->enabled) ||
+          !edit_json_key(j, "target", true_v) ||
+          !edit_json_source(j, &joint->target_source) ||
+          !edit_json_key(j, "anchor_a", true_v) ||
+          !edit_json_floats(j, &joint->anchor_a.x, 3) ||
+          !edit_json_key(j, "anchor_b", true_v) ||
+          !edit_json_floats(j, &joint->anchor_b.x, 3) ||
+          !edit_json_key(j, "axis_a", true_v) ||
+          !edit_json_floats(j, &joint->axis_a.x, 3) ||
+          !edit_json_key(j, "axis_b", true_v) ||
+          !edit_json_floats(j, &joint->axis_b.x, 3) ||
+          !edit_json_key(j, "normal_a", true_v) ||
+          !edit_json_floats(j, &joint->normal_a.x, 3) ||
+          !edit_json_key(j, "normal_b", true_v) ||
+          !edit_json_floats(j, &joint->normal_b.x, 3) ||
+          !edit_json_key(j, "limits", true_v) ||
+          !edit_json_floats(j, limits, 4) || !edit_json_take(j, '}')) {
+        return false_v;
+      }
+      joint->min_limit = limits[0];
+      joint->max_limit = limits[1];
+      joint->swing_normal_limit = limits[2];
+      joint->swing_plane_limit = limits[3];
+      if (edit_json_take(j, ']')) {
+        break;
+      }
+      if (!edit_json_take(j, ',')) {
+        return false_v;
+      }
+    } while (true_v);
+  }
+  return true_v;
+}
+
+static bool8_t edit_json_collision_layers(EditJson *j,
+                                          VkrSceneCollisionLayers *settings) {
+  int64_t integer;
+  MemZero(settings, sizeof(*settings));
+  if (!edit_json_take(j, '{') || !edit_json_key(j, "version", false_v) ||
+      !edit_json_int(j, 1, 1, &integer) || !edit_json_key(j, "names", true_v) ||
+      !edit_json_take(j, '[')) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    if ((i && !edit_json_take(j, ',')) ||
+        !edit_json_string(j, settings->names[i], sizeof(settings->names[i]))) {
+      return false_v;
+    }
+  }
+  if (!edit_json_take(j, ']') || !edit_json_key(j, "matrix", true_v) ||
+      !edit_json_take(j, '[')) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    if ((i && !edit_json_take(j, ',')) ||
+        !edit_json_int(j, 0, UINT16_MAX, &integer)) {
+      return false_v;
+    }
+    settings->matrix[i] = (uint16_t)integer;
+  }
+  if (!edit_json_take(j, ']') || !edit_json_key(j, "presets", true_v) ||
+      !edit_json_take(j, '[')) {
+    return false_v;
+  }
+  if (!edit_json_take(j, ']')) {
+    do {
+      if (settings->preset_count == VKR_COLLISION_PRESET_CAPACITY) {
+        return false_v;
+      }
+      VkrSceneCollisionPreset *preset =
+          &settings->presets[settings->preset_count++];
+      if (!edit_json_take(j, '{') || !edit_json_key(j, "name", false_v) ||
+          !edit_json_string(j, preset->name, sizeof(preset->name)) ||
+          !edit_json_key(j, "membership", true_v) ||
+          !edit_json_int(j, 0, UINT16_MAX, &integer)) {
+        return false_v;
+      }
+      preset->membership = (uint16_t)integer;
+      if (!edit_json_key(j, "mask", true_v) ||
+          !edit_json_int(j, 0, UINT16_MAX, &integer)) {
+        return false_v;
+      }
+      preset->mask = (uint16_t)integer;
+      if (!edit_json_key(j, "sensor", true_v) ||
+          !edit_json_bool(j, &preset->sensor) || !edit_json_take(j, '}')) {
+        return false_v;
+      }
+      if (edit_json_take(j, ']')) {
+        break;
+      }
+      if (!edit_json_take(j, ',')) {
+        return false_v;
+      }
+    } while (true_v);
+  }
+  return edit_json_take(j, '}') &&
+         vkr_scene_collision_layers_validate(settings, NULL);
+}
+
+/* The versioned physics object has canonical field order. Every delimiter and
+   field is consumed; unknown/duplicate properties cannot become partial edits.
+ */
+static bool8_t edit_json_physics(EditJson *j, VkrScenePhysicsSnapshot *p) {
+  int64_t integer;
+  int64_t version;
+  float32_t params[6];
+  p->attachment.rotation = vkr_quat_identity();
+  if (!edit_json_take(j, '{') || !edit_json_key(j, "version", false_v) ||
+      !edit_json_int(j, 1, 2, &version) ||
+      !edit_json_key(j, "present", true_v) || !edit_json_bool(j, &p->present) ||
+      !edit_json_key(j, "motion", true_v) ||
+      !edit_json_int(j, VKR_PHYSICS_STATIC, VKR_PHYSICS_DYNAMIC, &integer)) {
+    return false_v;
+  }
+  p->motion = (VkrPhysicsMotion)integer;
+  if (!edit_json_key(j, "layer", true_v) ||
+      !edit_json_int(j, 0, UINT16_MAX, &integer)) {
+    return false_v;
+  }
+  p->collision_layer = (uint16_t)integer;
+  if (!edit_json_key(j, "mask", true_v) ||
+      !edit_json_int(j, 0, UINT16_MAX, &integer)) {
+    return false_v;
+  }
+  p->collision_mask = (uint16_t)integer;
+  if (!edit_json_key(j, "parameters", true_v) ||
+      !edit_json_floats(j, params, ArrayCount(params)) ||
+      !edit_json_key(j, "enabled", true_v) || !edit_json_bool(j, &p->enabled) ||
+      !edit_json_key(j, "sleep", true_v) ||
+      !edit_json_bool(j, &p->allow_sleep) ||
+      !edit_json_key(j, "continuous", true_v) ||
+      !edit_json_bool(j, &p->continuous) ||
+      !edit_json_key(j, "sensor", true_v) || !edit_json_bool(j, &p->sensor) ||
+      (version >= 2 && !edit_json_attachment_joints(j, p)) ||
+      !edit_json_key(j, "colliders", true_v) || !edit_json_take(j, '[')) {
+    return false_v;
+  }
+  p->mass = params[0];
+  p->friction = params[1];
+  p->restitution = params[2];
+  p->gravity_factor = params[3];
+  p->linear_damping = params[4];
+  p->angular_damping = params[5];
+  if (!edit_json_take(j, ']')) {
+    do {
+      if (p->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS) {
+        return false_v;
+      }
+      VkrSceneColliderConfig *c = &p->colliders[p->collider_count++];
+      c->scale = vec3_one();
+      char id[17];
+      float32_t dimensions[5];
+      if (!edit_json_take(j, '{') || !edit_json_key(j, "id", false_v) ||
+          !edit_json_string(j, id, sizeof(id)) || strlen(id) != 16) {
+        return false_v;
+      }
+      for (uint32_t i = 0; i < 16; ++i) {
+        const int32_t digit = hex_digit((uint8_t)id[i]);
+        if (digit < 0) {
+          return false_v;
+        }
+        c->authored_id = (c->authored_id << 4u) | (uint32_t)digit;
+      }
+      if (!edit_json_key(j, "shape", true_v) ||
+          !edit_json_int(j, VKR_PHYSICS_BOX,
+                         version >= 2 ? VKR_PHYSICS_TRIANGLE_MESH
+                                      : VKR_PHYSICS_CAPSULE,
+                         &integer)) {
+        return false_v;
+      }
+      c->shape = (VkrPhysicsShape)integer;
+      if (!edit_json_key(j, "enabled", true_v) ||
+          !edit_json_bool(j, &c->enabled) ||
+          !edit_json_key(j, "position", true_v) ||
+          !edit_json_floats(j, &c->position.x, 3) ||
+          !edit_json_key(j, "rotation", true_v) ||
+          !edit_json_floats(j, &c->rotation.x, 4) ||
+          !edit_json_key(j, "dimensions", true_v) ||
+          !edit_json_floats(j, dimensions, 5) ||
+          (version >= 2 &&
+           (!edit_json_key(j, "scale", true_v) ||
+            !edit_json_floats(j, &c->scale.x, 3) ||
+            !edit_json_key(j, "asset", true_v) ||
+            !edit_json_string(j, c->asset_path, sizeof(c->asset_path)))) ||
+          !edit_json_take(j, '}')) {
+        return false_v;
+      }
+      c->half_extent = vec3_new(dimensions[0], dimensions[1], dimensions[2]);
+      c->radius = dimensions[3];
+      c->half_height = dimensions[4];
+      if (edit_json_take(j, ']')) {
+        break;
+      }
+      if (!edit_json_take(j, ',')) {
+        return false_v;
+      }
+    } while (true_v);
+  }
+  return edit_json_take(j, '}') && vkr_scene_physics_snapshot_validate(p, NULL);
+}
+
 static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                 uint32_t *wrapper, uint32_t *node,
                                 uint64_t *fingerprint) {
@@ -698,7 +1390,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "rectangle_color",
                                "rectangle_radiance",
                                "rectangle_size",
-                               "rectangle_enabled"};
+                               "rectangle_enabled",
+                               "physics"};
   MemZero(v, sizeof(*v));
   v->directional_light.sun_angular_diameter_degrees =
       VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
@@ -741,7 +1434,7 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
       break;
     }
     case 3:
-      ok = edit_json_int(j, 1, 63, &integer);
+      ok = edit_json_int(j, 1, 127, &integer);
       v->fields = (uint32_t)integer;
       break;
     case 4:
@@ -818,6 +1511,9 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 23:
       ok = edit_json_floats(j, &v->rectangle_light.size.x, 2);
       break;
+    case 25:
+      ok = edit_json_physics(j, &v->physics);
+      break;
     case 24:
       ok = edit_json_bool(j, &v->rectangle_light.enabled);
       break;
@@ -846,6 +1542,9 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     required |= seen & (1u << 19u); /* Old journals default shadows off. */
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
     required |= 15u << 21u;
+  if (v->fields & VKR_SCENE_EDIT_PHYSICS) {
+    required |= 1u << 25u;
+  }
   return seen == required && vkr_scene_edit_validate(v);
 }
 
@@ -943,6 +1642,10 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   FILE *file = NULL;
   uint8_t *bytes = NULL;
   EditPrepared *pending = NULL;
+  VkrSceneCollisionLayers settings = {0};
+  VkrSceneCollisionLayersPrepared *pending_settings = NULL;
+  VkrScenePhysicsPrepared *matrix_bodies[VKR_SCENE_PHYSICS_MAX_BODIES] = {0};
+  uint32_t matrix_body_count = 0;
   uint32_t count = 0, capacity = 0;
   EditSourceIndex *index = NULL;
   uint32_t index_count = 0, additional_touched = 0;
@@ -1013,6 +1716,7 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   }
   EditJson json = {.at = bytes, .end = bytes + length};
   uint32_t root_seen = 0;
+  int64_t version = 0;
   if (!edit_json_take(&json, '{')) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
     goto cleanup;
@@ -1025,8 +1729,7 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
       goto cleanup;
     }
     if (strcmp(key, "version") == 0) {
-      int64_t version;
-      if ((root_seen & 1u) || !edit_json_int(&json, 1, 1, &version)) {
+      if ((root_seen & 1u) || !edit_json_int(&json, 1, 3, &version)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
         goto cleanup;
       }
@@ -1101,6 +1804,12 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
             goto cleanup;
           }
         }
+    } else if (!strcmp(key, "collision_settings")) {
+      if ((root_seen & 4u) || !edit_json_collision_layers(&json, &settings)) {
+        diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
+        goto cleanup;
+      }
+      root_seen |= 4u;
     } else {
       diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
       goto cleanup;
@@ -1113,9 +1822,17 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
     }
   }
   edit_json_space(&json);
-  if (root_seen != 3u || json.at != json.end) {
+  if (root_seen != (version >= 3 ? 7u : 3u) || json.at != json.end) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
     goto cleanup;
+  }
+  if (version == 1) {
+    for (uint32_t i = 0; i < count; ++i) {
+      if (pending[i].values.fields & VKR_SCENE_EDIT_PHYSICS) {
+        diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
+        goto cleanup;
+      }
+    }
   }
   if (additional_touched > UINT32_MAX - touched_before) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
@@ -1134,15 +1851,69 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
     s->touched = next;
     s->touched_capacity = next_capacity;
   }
+  bool8_t rebuild_matrix = false_v;
+  if (root_seen & 4u) {
+    VkrSceneCollisionLayers before;
+    vkr_scene_collision_layers_read(scene, &before);
+    rebuild_matrix =
+        MemCompare(before.matrix, settings.matrix, sizeof(before.matrix)) != 0;
+    if (!vkr_scene_collision_layers_prepare(scene, &settings, &pending_settings,
+                                            NULL)) {
+      diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
+      goto cleanup;
+    }
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!edit_prepare_physics(scene, &pending[i])) {
+      diagnostic.failure = EDIT_SIDECAR_FAILURE_FIELDS;
+      goto cleanup;
+    }
+  }
+  if (rebuild_matrix) {
+    const uint32_t bodies = vkr_scene_physics_body_count(scene);
+    for (uint32_t i = 0; i < bodies; ++i) {
+      const VkrEntityId entity = vkr_scene_physics_body_at(scene, i);
+      bool8_t overridden = false_v;
+      for (uint32_t j = 0; j < count; ++j) {
+        overridden |=
+            pending[j].entity.u64 == entity.u64 && pending[j].physics != NULL;
+      }
+      if (overridden) {
+        continue;
+      }
+      VkrScenePhysicsSnapshot snapshot;
+      if (!vkr_scene_physics_read(scene, entity, &snapshot) ||
+          !vkr_scene_physics_prepare(scene, entity, &snapshot,
+                                     &matrix_bodies[matrix_body_count], NULL)) {
+        diagnostic.failure = EDIT_SIDECAR_FAILURE_FIELDS;
+        goto cleanup;
+      }
+      matrix_body_count++;
+    }
+  }
+  if (!vkr_scene_physics_prepare_complete(scene, NULL)) {
+    diagnostic.failure = EDIT_SIDECAR_FAILURE_FIELDS;
+    goto cleanup;
+  }
+  for (uint32_t i = 0; i < matrix_body_count; ++i) {
+    vkr_scene_physics_commit(matrix_bodies[i]);
+    matrix_bodies[i] = NULL;
+  }
   for (uint32_t i = 0; i < count; ++i) {
     if (pending[i].add_touched)
       s->touched[s->touched_count++] = pending[i].entity;
     edit_commit(scene, &pending[i]);
   }
+  vkr_scene_collision_layers_commit(pending_settings);
+  pending_settings = NULL;
   snprintf(s->status, sizeof(s->status), "Loaded %u node overrides.", count);
   success = true_v;
   s->sidecar_conflict = false_v;
 cleanup:
+  for (uint32_t i = 0; i < matrix_body_count; ++i) {
+    vkr_scene_physics_discard(matrix_bodies[i]);
+  }
+  vkr_scene_collision_layers_discard(pending_settings);
   if (index)
     vkr_allocator_free(s->allocator, index, index_capacity * sizeof(*index),
                        EDIT_TAG);

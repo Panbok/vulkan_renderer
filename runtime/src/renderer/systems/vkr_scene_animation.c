@@ -1,4 +1,5 @@
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_physics.h"
 
 #include "core/logger.h"
 #include "memory/arena.h"
@@ -333,6 +334,9 @@ bool8_t vkr_scene_animation_attach(VkrScene *scene, VkrEntityId wrapper,
                                    uint32_t node_count,
                                    const VkrSceneAnimationConfig *config,
                                    VkrAllocator *scratch, const char **error) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return false_v;
+  }
   if (error) {
     *error = NULL;
   }
@@ -546,6 +550,9 @@ bool8_t vkr_scene_animation_attach(VkrScene *scene, VkrEntityId wrapper,
 }
 
 void vkr_scene_animation_detach(VkrScene *scene, VkrEntityId wrapper) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return;
+  }
   if (!scene) {
     return;
   }
@@ -593,6 +600,9 @@ bool8_t vkr_scene_animation_apply_graph(const VkrScene *scene,
                                         VkrEntityId wrapper,
                                         const VkrAnimationGraph *graph,
                                         const char **error) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return false_v;
+  }
   if (error) {
     *error = NULL;
   }
@@ -642,6 +652,9 @@ bool8_t vkr_scene_animation_apply_graph(const VkrScene *scene,
 
 bool8_t vkr_scene_animation_seek(const VkrScene *scene, VkrEntityId wrapper,
                                  float64_t seconds) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return false_v;
+  }
   if (!scene) {
     return false_v;
   }
@@ -660,6 +673,9 @@ bool8_t vkr_scene_animation_seek(const VkrScene *scene, VkrEntityId wrapper,
 bool8_t vkr_scene_animation_set_parameter(const VkrScene *scene,
                                           VkrEntityId wrapper,
                                           uint32_t parameter, float32_t value) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return false_v;
+  }
   if (!scene) {
     return false_v;
   }
@@ -687,6 +703,9 @@ bool8_t vkr_scene_animation_set_parameter(const VkrScene *scene,
 }
 
 void vkr_scene_animation_update(VkrScene *scene, float64_t dt) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return;
+  }
   if (!scene || !isfinite(dt) || dt < 0.0) {
     return;
   }
@@ -727,6 +746,9 @@ void vkr_scene_animation_update(VkrScene *scene, float64_t dt) {
 }
 
 void vkr_scene_animation_shutdown(VkrScene *scene) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return;
+  }
   if (!scene) {
     return;
   }
@@ -971,4 +993,144 @@ bool8_t vkr_scene_animation_build_preview(
   world->skinning = inputs;
   world->skinning_count = skin_cursor;
   return true_v;
+}
+
+VkrEntityId vkr_scene_animation_node_entity(const VkrScene *scene,
+                                            VkrEntityId wrapper,
+                                            uint32_t source_node) {
+  for (VkrSceneAnimation *animation = scene ? scene->animations : NULL;
+       animation; animation = animation->next) {
+    if (animation->wrapper.u64 == wrapper.u64 &&
+        source_node < animation->mesh->source.nodes.length) {
+      return animation->nodes[source_node];
+    }
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+bool8_t vkr_scene_animation_node_world(const VkrScene *scene,
+                                       VkrEntityId wrapper,
+                                       uint32_t source_node, Mat4 *world) {
+  VkrAnimationPlayer *player = vkr_scene_animation_get_player(scene, wrapper);
+  const VkrAnimationAsset *asset = vkr_animation_player_asset(player);
+  Mat4 wrapper_world;
+  if (!player || !asset || source_node >= asset->node_count || !world ||
+      !vkr_scene_physics_resolve_world(scene, wrapper, &wrapper_world)) {
+    return false_v;
+  }
+  *world = mat4_mul(wrapper_world,
+                    vkr_animation_player_global_pose(player)[source_node]);
+  return true_v;
+}
+
+bool8_t vkr_scene_animation_override_nodes(VkrScene *scene, VkrEntityId wrapper,
+                                           const uint32_t *source_nodes,
+                                           const Mat4 *world_matrices,
+                                           uint32_t count, const char **error) {
+  VkrAnimationPlayer *player = vkr_scene_animation_get_player(scene, wrapper);
+  Mat4 wrapper_world;
+  if (!player || count > VKR_SCENE_PHYSICS_MAX_BODIES ||
+      !vkr_scene_physics_resolve_world(scene, wrapper, &wrapper_world)) {
+    return scene_animation_fail(error,
+                                "Cannot resolve ragdoll animation wrapper");
+  }
+  Mat4 globals[VKR_SCENE_PHYSICS_MAX_BODIES];
+  const Mat4 inverse = mat4_inverse(wrapper_world);
+  for (uint32_t i = 0; i < count; ++i) {
+    globals[i] = mat4_mul(inverse, world_matrices[i]);
+  }
+  if (!vkr_animation_player_override_globals(player, source_nodes, globals,
+                                             count)) {
+    return scene_animation_fail(error, "Ragdoll bone pose publication failed");
+  }
+  return true_v;
+}
+
+typedef struct SceneAnimationResetEntry {
+  struct SceneAnimationResetEntry *next;
+  VkrSceneAnimation *animation;
+  VkrAnimationPlayerCheckpoint *player;
+  VkrAnimationGraphInstance graph;
+} SceneAnimationResetEntry;
+
+struct s_VkrSceneAnimationReset {
+  Arena *arena;
+  SceneAnimationResetEntry *entries;
+};
+
+void vkr_scene_animation_reset_finish(VkrSceneAnimationReset *reset,
+                                      bool8_t commit) {
+  if (!reset) {
+    return;
+  }
+  for (SceneAnimationResetEntry *entry = reset->entries; entry;
+       entry = entry->next) {
+    vkr_animation_player_checkpoint_finish(entry->player, commit);
+    if (!commit && entry->animation->controller_enabled) {
+      *entry->animation->controller = entry->graph;
+    }
+  }
+  arena_destroy(reset->arena);
+}
+
+VkrSceneAnimationReset *vkr_scene_animation_reset_begin(VkrScene *scene,
+                                                        const char **error) {
+  if (!scene || !vkr_scene_physics_mutations_allowed(scene)) {
+    scene_animation_fail(error,
+                         "Cannot reset animations during contact dispatch");
+    return NULL;
+  }
+  uint64_t count = 0;
+  for (VkrSceneAnimation *animation = scene->animations; animation;
+       animation = animation->next) {
+    count++;
+  }
+  /* Player checkpoint contains only scalar/pointer state (<1KiB); pose arrays
+   * remain in the untouched original slot throughout this synchronous reset. */
+  uint64_t reserve =
+      ARENA_HEADER_SIZE + sizeof(VkrSceneAnimationReset) +
+      count * (sizeof(SceneAnimationResetEntry) + KB(1) + 2 * MaxAlign());
+  Arena *arena = arena_create(Max(reserve, KB(64)), KB(4));
+  if (!arena) {
+    scene_animation_fail(error, "Animation reset checkpoint allocation failed");
+    return NULL;
+  }
+  VkrSceneAnimationReset *reset =
+      arena_alloc(arena, sizeof(*reset), ARENA_MEMORY_TAG_STRUCT);
+  if (!reset) {
+    arena_destroy(arena);
+    scene_animation_fail(error, "Animation reset checkpoint allocation failed");
+    return NULL;
+  }
+  *reset = (VkrSceneAnimationReset){.arena = arena};
+  for (VkrSceneAnimation *animation = scene->animations; animation;
+       animation = animation->next) {
+    SceneAnimationResetEntry *entry =
+        arena_alloc(arena, sizeof(*entry), ARENA_MEMORY_TAG_STRUCT);
+    if (!entry) {
+      goto cleanup;
+    }
+    *entry = (SceneAnimationResetEntry){.next = reset->entries,
+                                        .animation = animation};
+    if (animation->controller_enabled) {
+      entry->graph = *animation->controller;
+    }
+    reset->entries = entry;
+    entry->player =
+        vkr_animation_player_checkpoint_begin(animation->player, arena);
+    if (!entry->player) {
+      goto cleanup;
+    }
+  }
+  for (SceneAnimationResetEntry *entry = reset->entries; entry;
+       entry = entry->next) {
+    if (!vkr_scene_animation_seek(scene, entry->animation->wrapper, 0.0)) {
+      goto cleanup;
+    }
+  }
+  return reset;
+cleanup:
+  vkr_scene_animation_reset_finish(reset, false_v);
+  scene_animation_fail(error, "Animation reset checkpoint/seek failed");
+  return NULL;
 }
