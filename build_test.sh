@@ -2,6 +2,9 @@
 
 set -e # Exit early if any commands fail
 
+python3 "$(dirname "$0")/tools/checks/check_path_boundaries.py"
+python3 "$(dirname "$0")/tools/checks/check_path_contract.py"
+
 # Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
 VKR_BUILD_TARGET=vulkan_renderer_tester VKR_BUILD_LABEL="VKR CPU tests" \
   "$(dirname "$0")/build.sh" Debug

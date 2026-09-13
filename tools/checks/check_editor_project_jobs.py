@@ -55,6 +55,7 @@ def main():
         assert '.staging' not in json.dumps(managed)
         assert str(source) not in json.dumps(managed)
         assert len(managed['assets']) >= 2
+        assert all('\\' not in item.get('source', '') for item in managed['assets'] if item.get('source'))
         assert any(item['kind'] == 'material' and item['name'] == 'test' for item in managed['assets'])
         assert any(item['kind'] == 'texture' and item['name'] == 'pixel' for item in managed['assets'])
         assert Path(runtime['entities'][0]['mesh']['path']).is_file()
@@ -271,6 +272,18 @@ def main():
 
         # Inject cancellation immediately after scene publication; referenced revisions survive.
         rebuild = dict(local_prepare, operation='rebuild_asset', asset_id=mesh_record['id'])
+        legacy_scene = jobs.load_json(scene_path)
+        legacy_mesh = next(item for item in legacy_scene['assets'] if item['id'] == mesh_record['id'])
+        legacy_mesh['source'] = legacy_mesh['source'].replace('/', '\\')
+        valid_source = legacy_mesh['source']
+        legacy_mesh['source'] = '..\\outside.obj'
+        jobs.atomic_json(scene_path, legacy_scene)
+        invalid_scene = scene_path.read_bytes()
+        assert jobs.Job(rebuild, result_path).execute() == 1
+        assert 'escapes its owner' in jobs.load_json(result_path)['error']
+        assert scene_path.read_bytes() == invalid_scene
+        legacy_mesh['source'] = valid_source
+        jobs.atomic_json(scene_path, legacy_scene)
         transaction = jobs.Job(rebuild, result_path)
         write_json = jobs.atomic_json
         fired = False
@@ -287,6 +300,8 @@ def main():
             jobs.atomic_json = write_json
         assert fired
         after = jobs.load_json(scene_path)
+        rebuilt_mesh = next(item for item in after['assets'] if item['id'] == mesh_record['id'])
+        assert '\\' not in rebuilt_mesh['source'], 'Legacy source path was not normalized'
         for item in after['assets']:
             for product in item.get('artifacts', []):
                 assert (scene_path.parent / product['path']).is_file(), 'Committed asset removed by cancellation cleanup'

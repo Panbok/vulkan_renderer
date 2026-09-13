@@ -383,6 +383,22 @@ bool32_t run_editor_project_store_tests(void) {
   assert(s_loaded.editor_settings.length == s_project.editor_settings.length);
   assert(MemCompare(s_loaded.editor_settings.str, s_project.editor_settings.str,
                     s_project.editor_settings.length) == 0);
+  // Request-generation uses the loaded native manifest path as the scene owner.
+  char selected_scene[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  s_loaded.scene_count = 1;
+  strcpy(s_loaded.scenes[0].path, "project.json");
+  assert(vkr_editor_project_scene_path(&s_loaded, 0, true_v, selected_scene,
+                                       &error));
+  assert(strcmp(selected_scene, s_loaded.manifest_path) == 0);
+  strcpy(s_loaded.scenes[0].path, "missing-scene.json");
+  assert(!vkr_editor_project_scene_path(&s_loaded, 0, true_v, selected_scene,
+                                        &error));
+  assert(vkr_editor_project_scene_path(&s_loaded, 0, false_v, selected_scene,
+                                       &error));
+  strcpy(s_loaded.scenes[0].path, "../escape.json");
+  assert(!vkr_editor_project_scene_path(&s_loaded, 0, false_v, selected_scene,
+                                        &error));
+  s_loaded.scene_count = 0;
   char lock_directory[1024];
   snprintf(lock_directory, sizeof(lock_directory), "%s/projects/%s",
            workspace.root, s_project.id);
@@ -408,6 +424,50 @@ bool32_t run_editor_project_store_tests(void) {
   s_loaded.scene_count = 0;
   assert(vkr_editor_project_save(&s_loaded, &error));
   project_test_overlay(&allocator, s_loaded.manifest_path);
+  // Deletion must preserve order and unrelated recall, survive reopening, and
+  // restore the entire selection on a stale manifest conflict.
+  for (uint32_t i = 0; i < 3; ++i) {
+    snprintf(s_loaded.scenes[i].id, sizeof(s_loaded.scenes[i].id),
+             "00000000-0000-4000-8000-%012u", i + 10);
+    snprintf(s_loaded.scenes[i].name, sizeof(s_loaded.scenes[i].name),
+             "Deletion fixture %u", i);
+    snprintf(s_loaded.scenes[i].path, sizeof(s_loaded.scenes[i].path),
+             "scenes/%s/scene.json", s_loaded.scenes[i].id);
+  }
+  s_loaded.scene_count = 3;
+  s_loaded.scene_editor_state =
+      string8_lit("{\"00000000-0000-4000-8000-000000000010\":{\"marker\":10},"
+                  "\"00000000-0000-4000-8000-000000000011\":{\"marker\":11},"
+                  "\"00000000-0000-4000-8000-000000000012\":{\"marker\":12}}");
+  assert(vkr_editor_project_save(&s_loaded, &error));
+  s_project = s_loaded;
+  assert(vkr_editor_project_remove_scene(&s_loaded, 1, &allocator, &error));
+  assert(s_loaded.scene_count == 2);
+  assert(
+      !strcmp(s_loaded.scenes[1].id, "00000000-0000-4000-8000-000000000012"));
+  assert(!vkr_editor_project_remove_scene(&s_project, 0, &allocator, &error));
+  assert(strstr(error.message, "changed outside"));
+  assert(s_project.scene_count == 3);
+  assert(
+      !strcmp(s_project.scenes[1].id, "00000000-0000-4000-8000-000000000011"));
+  assert(strstr((char *)s_project.scene_editor_state.str, "marker\":11"));
+  assert(vkr_editor_project_load(&workspace, s_loaded.id, &allocator,
+                                 &s_project, &error));
+  assert(s_project.scene_count == 2);
+  String8 deleted_recall;
+  assert(!vkr_editor_project_json_member(s_project.scene_editor_state,
+                                         "00000000-0000-4000-8000-000000000011",
+                                         &deleted_recall, &error));
+  assert(!deleted_recall.length);
+  assert(vkr_editor_project_remove_scene(&s_loaded, 1, &allocator, &error));
+  assert(vkr_editor_project_remove_scene(&s_loaded, 0, &allocator, &error));
+  assert(s_loaded.scene_count == 0);
+  const String8 empty_recall = string8_lit("{}");
+  assert(string8_equals(&s_loaded.scene_editor_state, &empty_recall));
+  assert(!vkr_editor_project_remove_scene(&s_loaded, 0, &allocator, &error));
+  assert(vkr_editor_project_load(&workspace, s_loaded.id, &allocator,
+                                 &s_project, &error));
+  assert(s_project.scene_count == 0);
   String8 replaced;
   assert(vkr_editor_project_json_replace_member(
       &allocator, string8_lit("{\"untouched\":9007199254740993,\"value\":1}"),

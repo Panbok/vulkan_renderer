@@ -16,9 +16,9 @@ import json
 import math
 import os
 from pathlib import Path
-import shlex
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -105,6 +105,21 @@ def atomic_json(path, value):
         Path(name).unlink(missing_ok=True)
 
 
+def publish_directory(source, destination):
+    """Publish a prepared directory without replacing another writer's entry."""
+    if os.name == 'nt':
+        os.rename(source, destination)
+        return
+    # Reserve an empty destination exclusively; POSIX rename may otherwise
+    # replace a directory created by a concurrent writer.
+    destination.mkdir()
+    try:
+        os.replace(source, destination)
+    except BaseException:
+        destination.rmdir()
+        raise
+
+
 def digest(path):
     result = hashlib.sha256()
     with Path(path).open('rb') as source:
@@ -132,27 +147,112 @@ def identifier(value):
     return value
 
 
+def validate_managed_path(value):
+    """Check serialized segments before Path can erase empty or dot segments."""
+    if isinstance(value, str) and '..' in value.split('/'):
+        raise JobError(f'Managed path escapes its owner: {value}')
+    if (not isinstance(value, str) or not value or
+            any(character in value for character in ('\\', ':', '\x00')) or
+            any(part in ('', '.', '..') for part in value.split('/'))):
+        raise JobError(f'Invalid managed path: {value!r}')
+    return value
+
+
+def managed_reference(path, owner):
+    """Serialize a host path at the managed-document boundary."""
+    try:
+        value = Path(path).relative_to(owner).as_posix()
+    except ValueError as error:
+        raise JobError(f'Managed path {path} is outside owner {owner}') from error
+    return validate_managed_path(value)
+
+
+def migrate_source_references(document, label):
+    """Repair only historical source fields, never arbitrary document strings."""
+    def source(record, field):
+        value = record.get('source')
+        if value is not None:
+            try:
+                record['source'] = validate_managed_path(value.replace('\\', '/') if isinstance(value, str) else value)
+            except JobError as error:
+                raise JobError(f'{label}: {field}.source: {error}') from error
+    for index, record in enumerate(document.get('assets', [])):
+        source(record, f'assets[{index}]')
+    # Import records carry both the snapshot source and an optional asset copy.
+    if document.get('version') == 1 and 'id' in document and ('dependencies' in document or 'material_remaps' in document):
+        source(document, 'import')
+        if isinstance(document.get('asset'), dict):
+            source(document['asset'], 'asset')
+        for index, record in enumerate(document.get('artifacts', [])):
+            source(record, f'artifacts[{index}]')
+    return document
+
+
 def contained(root, value, must_exist=True):
     root = Path(root).resolve()
-    if not isinstance(value, str) or not value or '\\' in value or ':' in value or '\x00' in value:
-        raise JobError('Invalid managed path')
-    relative = Path(value)
-    if relative.is_absolute() or any(part in ('..', '') for part in relative.parts):
-        raise JobError(f'Managed path escapes its owner: {value}')
+    validate_managed_path(value)
     try:
-        result = (root / relative).resolve(strict=must_exist)
+        result = (root / value).resolve(strict=must_exist)
     except OSError as error:
-        raise JobError(f'Missing managed asset: {value}') from error
+        raise JobError(f'Managed path open failed: {value!r}, owner {root}: {error}') from error
     if not result.is_relative_to(root):
         raise JobError(f'Managed path escapes its owner: {value}')
     return result
 
 
+def model_tokens(line):
+    """OBJ/MTL whitespace, quotes and comments; backslashes are filename bytes."""
+    tokens = []
+    token = []
+    quote = None
+    for character in line:
+        if quote:
+            if character == quote:
+                quote = None
+            else:
+                token.append(character)
+        elif character in ('"', "'") and not token:
+            quote = character
+        elif character == '#':
+            break
+        elif character.isspace():
+            if token:
+                tokens.append(''.join(token))
+                token = []
+        else:
+            token.append(character)
+    if quote:
+        raise JobError('Unterminated quote in OBJ/MTL filename')
+    if token:
+        tokens.append(''.join(token))
+    return tokens
+
+
+def gltf_uri_path(value):
+    uri = urlsplit(value)
+    if uri.scheme or uri.netloc:
+        raise JobError('Remote or absolute URI dependencies are unsupported; download them before importing')
+    if uri.query or uri.fragment:
+        raise JobError(f'glTF dependency URI has unsupported query or fragment: {value}')
+    try:
+        return unquote(uri.path, encoding='utf-8', errors='strict')
+    except UnicodeError as error:
+        raise JobError(f'Invalid UTF-8 glTF dependency URI: {value}') from error
+
+
 def source_file(value):
     try:
-        path = Path(value).expanduser().resolve(strict=True)
+        path = Path(value).expanduser()
+        if os.name == 'nt':
+            native = str(path).replace('/', '\\')
+            extended = native.startswith('\\\\?\\')
+            filesystem_extended = (native[4:8].upper() == 'UNC\\' or
+                                   (len(native) >= 7 and native[4].isalpha() and native[5:7] == ':\\'))
+            if (path.drive and not path.root) or native.startswith('\\\\.\\') or (extended and not filesystem_extended):
+                raise ValueError('Drive-relative and device paths are unsupported')
+        path = path.resolve(strict=True)
     except (TypeError, ValueError, OSError) as error:
-        raise JobError(f'Source file is unavailable: {value}') from error
+        raise JobError(f'Source file is unavailable: {value}: {error}') from error
     if not path.is_file():
         raise JobError(f'Source is not a regular file: {path}')
     return path
@@ -179,7 +279,7 @@ def legacy_source(value, origin, legacy_root):
 
 
 def relative_reference(path, owner):
-    return './' + Path(path).relative_to(owner).as_posix()
+    return './' + managed_reference(path, owner)
 
 
 class Job:
@@ -268,7 +368,7 @@ class Job:
                     raise JobError('Installed editor bundle contains a symlink')
                 if path.is_file():
                     destination = self.copy_file(path, staging / path.relative_to(source))
-                    files.append({'path': destination.relative_to(staging).as_posix(), 'sha256': digest(destination)})
+                    files.append({'path': managed_reference(destination, staging), 'sha256': digest(destination)})
             assets = []
             for config in sorted((staging / 'fonts').glob('*.fontcfg')):
                 config_type = next((line.partition('=')[2].strip() for line in config.read_text(encoding='utf-8').splitlines()
@@ -278,13 +378,13 @@ class Job:
                 self.validate_bundle_dependencies(staging, config, set())
                 asset_id = 'default-scene-font' if config.name == 'UbuntuMono-cooked.fontcfg' else config.stem
                 assets.append({'id': asset_id, 'kind': 'font', 'name': config.stem,
-                    'artifacts': [{'role': 'font', 'path': config.relative_to(staging).as_posix(), 'version': 1}],
+                    'artifacts': [{'role': 'font', 'path': managed_reference(config, staging), 'version': 1}],
                     'fingerprint': 'sha256:' + digest(config)})
             atomic_json(staging / 'manifest.json', {'version': 1, 'id': 'vkr-editor-bundle-1',
                                                   'assets': assets, 'files': files})
             if bundle.exists():
                 raise JobError('An incomplete editor bundle exists; repair it before opening the workspace')
-            os.rename(staging, bundle)
+            publish_directory(staging, bundle)
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
@@ -307,14 +407,14 @@ class Job:
                 closure = set()
                 for product in record['artifacts']:
                     self.validate_bundle_dependencies(temporary, contained(temporary, product['path']), closure)
-                record['closure'] = {path.relative_to(temporary).as_posix(): digest(path) for path in closure}
+                record['closure'] = {managed_reference(path, temporary): digest(path) for path in closure}
             builds = self.project_root / 'builds'
             builds.mkdir(exist_ok=True)
             for directory in (temporary / 'builds').iterdir():
                 destination = builds / directory.name
                 if destination.exists():
                     raise JobError('Project font build revision collision')
-                os.rename(directory, destination)
+                publish_directory(directory, destination)
                 self.project_builds.append(destination)
             project = self.project_document()
             self.pending_project_assets = [*project.get('assets', []), *records]
@@ -426,8 +526,8 @@ class Job:
                  **metadata):
         asset_id = str(uuid.uuid4())
         asset = {'id': asset_id, 'kind': kind, 'name': name,
-                 'import_id': import_id, 'source': str(source.relative_to(self.stage)) if source else None,
-                 'artifacts': [{'role': role or kind, 'path': path.relative_to(self.stage).as_posix(),
+                 'import_id': import_id, 'source': managed_reference(source, self.stage) if source else None,
+                 'artifacts': [{'role': role or kind, 'path': managed_reference(path, self.stage),
                                 'version': 1}], 'fingerprint': 'sha256:' + digest(path), **metadata}
         self.assets.append(asset)
         return {'scope': 'scene', 'id': asset_id, 'role': role or kind}
@@ -445,12 +545,9 @@ class Job:
         material_names = []
 
         def dependency(value, origin):
-            uri = urlsplit(value)
-            if uri.scheme and not (len(uri.scheme) == 1 and value[1:2] == ':'):
-                raise JobError('Remote dependencies are unsupported; download them before importing')
-            resolved = source_file(origin / unquote(value))
+            resolved = source_file(origin / value)
             copied = self.copy_blob(resolved, directory / 'dependencies')
-            dependencies.append({'path': copied.relative_to(directory).as_posix(),
+            dependencies.append({'path': managed_reference(copied, directory),
                                  'sha256': digest(copied), 'bytes': copied.stat().st_size})
             return copied
 
@@ -484,8 +581,8 @@ class Job:
                 for item in model.get(field, []):
                     uri = item.get('uri')
                     if uri and not uri.startswith('data:'):
-                        copied = dependency(uri, source.parent)
-                        item['uri'] = copied.relative_to(directory).as_posix()
+                        copied = dependency(gltf_uri_path(uri), source.parent)
+                        item['uri'] = managed_reference(copied, directory)
             if binary is None:
                 atomic_json(destination, model)
             else:
@@ -501,7 +598,7 @@ class Job:
         elif source.suffix.lower() == '.obj':
             lines = []
             for line in source.read_text(encoding='utf-8-sig').splitlines():
-                tokens = shlex.split(line, comments=True, posix=True)
+                tokens = model_tokens(line)
                 if not tokens or tokens[0] != 'mtllib':
                     lines.append(line)
                     continue
@@ -512,7 +609,7 @@ class Job:
                     mtl = directory / ('material_' + digest(mtl_source) + '.mtl')
                     rewritten = []
                     for material_line in mtl_source.read_text(encoding='utf-8-sig').splitlines():
-                        fields = shlex.split(material_line, comments=True, posix=True)
+                        fields = model_tokens(material_line)
                         if fields and fields[0] == 'newmtl':
                             material_names.append(' '.join(fields[1:]))
                         if fields and (fields[0].startswith('map_') or fields[0] in ('bump', 'disp', 'decal', 'norm')):
@@ -521,7 +618,7 @@ class Job:
                             copied = dependency(fields[1], mtl_source.parent)
                             if fields[0] not in ('map_Kd', 'map_Ks', 'bump', 'map_bump'):
                                 self.warnings.append(f'OBJ channel {fields[0]} is retained in the source snapshot but is not rendered')
-                            material_line = fields[0] + ' ' + copied.relative_to(directory).as_posix()
+                            material_line = fields[0] + ' ' + managed_reference(copied, directory)
                         rewritten.append(material_line)
                     mtl.write_text('\n'.join(rewritten) + '\n', encoding='utf-8')
                     dependencies.append({'path': mtl.name, 'sha256': digest(mtl), 'bytes': mtl.stat().st_size})
@@ -534,7 +631,7 @@ class Job:
         dependencies.append({'path': destination.name, 'sha256': digest(destination),
                              'bytes': destination.stat().st_size})
         self.sources[import_id] = {'version': 1, 'id': import_id,
-            'source': destination.relative_to(self.stage).as_posix(),
+            'source': managed_reference(destination, self.stage),
             'original_sha256': original_digest, 'material_names': material_names,
             'dependencies': dependencies, 'reimport_status': 'source_snapshot',
             'unsupported_features': list(self.warnings)}
@@ -549,7 +646,7 @@ class Job:
         if self.request.get('bakes', {}).get('prepare_assets') is False:
             asset_id = str(uuid.uuid4())
             self.assets.append({'id': asset_id, 'kind': 'mesh', 'name': Path(source).stem,
-                'import_id': import_id, 'source': snapshot.relative_to(self.stage).as_posix(),
+                'import_id': import_id, 'source': managed_reference(snapshot, self.stage),
                 'artifacts': [], 'recipe': {'tool': 'mesh', 'version': 1},
                 'fingerprint': 'sha256:' + digest(snapshot)})
             atomic_json(self.stage / 'imports' / (import_id + '.json'), self.sources[import_id])
@@ -742,9 +839,9 @@ class Job:
         if self.request.get('bakes', {}).get('prepare_assets') is False:
             asset_id = str(uuid.uuid4())
             self.assets.append({'id': asset_id, 'kind': 'font', 'name': source.stem,
-                'import_id': import_id, 'source': copied.relative_to(self.stage).as_posix(),
+                'import_id': import_id, 'source': managed_reference(copied, self.stage),
                 'artifacts': [], 'recipe': {'tool': 'font', 'version': 1,
-                    'config': config.relative_to(self.stage).as_posix()},
+                    'config': managed_reference(config, self.stage)},
                 'fingerprint': 'sha256:' + digest(copied)})
             return {'scope': 'scene', 'id': asset_id, 'role': 'font'}
         self.run_tool('font', ['--config', config], 'Cooking scene font')
@@ -782,7 +879,7 @@ class Job:
                 copied = self.copy_file(source, directory / ('cube_' + face + '.' + output_extension))
                 face_paths.append(copied)
             reference = self.artifact('environment', 'Cubemap', face_paths[0], import_id=import_id,
-                                      source_kind='faces', base_path=(directory / 'cube').relative_to(self.stage).as_posix(),
+                                      source_kind='faces', base_path=managed_reference(directory / 'cube', self.stage),
                                       extension=output_extension)
             return reference
         raise JobError('Unsupported environment asset')
@@ -891,12 +988,12 @@ class Job:
             copied = self.copy_file(overlay, self.stage / 'edits' / 'scene.editor.json')
             expected = source_fingerprint(scene['source_identity'].encode()) if scene.get('source_identity') else source_fingerprint(source.read_bytes())
             self.remap_overlay(copied, expected, scene)
-            scene['edit_overlay'] = copied.relative_to(self.stage).as_posix()
+            scene['edit_overlay'] = managed_reference(copied, self.stage)
         scene.pop('source_identity', None)
         return scene
 
     def import_managed_scene(self, scene, origin):
-        scene = copy.deepcopy(scene)
+        scene = migrate_source_references(copy.deepcopy(scene), origin / 'scene.json')
         if any(a.get('scope') not in (None, 'scene') for a in scene.get('assets', [])):
             raise JobError('Managed scene import has an invalid asset inventory')
         # A managed scene bundle is the dependency closure. Copy only this owner;
@@ -914,6 +1011,11 @@ class Job:
                         self.copy_file(path, self.stage / path.relative_to(origin))
             elif child.is_file():
                 self.copy_file(child, self.stage / child.name)
+        for import_path in (self.stage / 'imports').glob('*.json'):
+            record = load_json(import_path)
+            migrated = migrate_source_references(copy.deepcopy(record), import_path)
+            if migrated != record:
+                atomic_json(import_path, migrated)
         self.assets = scene.get('assets', [])
         if scene.get('edit_overlay'):
             self.remap_overlay(contained(self.stage, scene['edit_overlay'], must_exist=False),
@@ -956,7 +1058,7 @@ class Job:
                             self.copy_file(path, target / path.relative_to(bundle_root))
                     for product in products:
                         old_path = contained(source_project_path.parent, product['path'])
-                        product['path'] = (target / old_path.relative_to(bundle_root)).relative_to(self.stage).as_posix()
+                        product['path'] = managed_reference(target / old_path.relative_to(bundle_root), self.stage)
                     record.pop('closure', None)
                     record.update(id=new_id, source=None)
                     self.assets.append(record)
@@ -1035,9 +1137,8 @@ class Job:
         self.final.parent.mkdir(parents=True, exist_ok=True)
         if self.final.exists():
             raise JobError('Scene was created by another writer')
-        self.final.mkdir()
+        publish_directory(self.stage, self.final)
         self.final_owned = True
-        os.replace(self.stage, self.final)
         self.stage = None
         self.progress('Opening scene', 0.95)
         if unbuilt:
@@ -1267,7 +1368,7 @@ class Job:
                 if not destination.is_file():
                     raise JobError('Reflection baker did not publish a cubemap')
                 record['artifacts'] = [{'role': 'probe-cube',
-                    'path': destination.relative_to(asset_root).as_posix(), 'version': 1}]
+                    'path': managed_reference(destination, asset_root), 'version': 1}]
                 record['fingerprint'] = 'sha256:' + digest(destination)
                 record.pop('closure', None)
         if bakes.get('diffuse'):
@@ -1293,7 +1394,7 @@ class Job:
                 raise JobError('Diffuse baker did not publish its artifact')
             record = {'id': str(uuid.uuid4()), 'kind': 'volume', 'name': 'Diffuse volume',
                 'import_id': revision, 'source': None, 'artifacts': [{'role': 'volume',
-                    'path': destination.relative_to(asset_root).as_posix(), 'version': 1}],
+                    'path': managed_reference(destination, asset_root), 'version': 1}],
                 'fingerprint': 'sha256:' + digest(destination),
                 'recipe': {'tool': 'diffuse', 'version': 1, 'settings': settings}}
             previous_ref = scene.get('diffuse_volume', {}).get('asset', {})
@@ -1407,7 +1508,7 @@ class Job:
                         face_path = contained(owner, record['base_path'] + '_' + face + '.' + record['extension'])
                         record_paths.add(face_path)
                 closure = record.get('closure')
-                current = {item.relative_to(owner).as_posix(): digest(item) for item in record_paths}
+                current = {managed_reference(item, owner): digest(item) for item in record_paths}
                 if closure is not None and closure != current:
                     raise JobError(f'Asset dependency closure changed: {record.get("name", record["id"])}; rebuild or reimport it')
                 if record_paths and not self.read_only:
@@ -1458,7 +1559,7 @@ class Job:
                 base = contained(owner, record['base_path'], must_exist=False)
                 extension = record['extension']
                 for face in FACES:
-                    contained(owner, str(base.relative_to(owner)) + '_' + face + '.' + extension)
+                    contained(owner, managed_reference(base, owner) + '_' + face + '.' + extension)
                 component['cubemap'] = {'base_path': str(base), 'extension': extension}
             else:
                 if environment and kind == 'equirect':
@@ -1521,7 +1622,7 @@ class Job:
         self.progress('Resolving scene assets', 0.2)
         scene_bytes = path.read_bytes()
         project_before = digest(self.project_path) if self.read_only else None
-        scene = load_json(path, MAX_MANAGED_DOCUMENT_BYTES)
+        scene = migrate_source_references(load_json(path, MAX_MANAGED_DOCUMENT_BYTES), path)
         self.validate_semantics(scene)
         pending_bakes = scene.get('bake_recipes', {}).get('prepare_assets') is False and (scene.get('bake_recipes', {}).get('reflection') or scene.get('bake_recipes', {}).get('diffuse'))
         if any(not record.get('artifacts') for record in scene.get('assets', [])) or pending_bakes or self.texture_repair_bundles(scene, path.parent):
@@ -1550,14 +1651,14 @@ class Job:
         self.assets = scene['assets']
         for original in self.texture_repair_bundles(scene, path.parent):
             for sidecar in original.glob('*.vkb.remap.json'):
-                for reference, managed_reference in load_json(sidecar).get('materials', {}).items():
+                for reference, material_reference in load_json(sidecar).get('materials', {}).items():
                     try:
                         material = legacy_source(reference, original, self.legacy_root)
-                        self.asset_display_names[(original / managed_reference).resolve()] = material.stem
+                        self.asset_display_names[(original / material_reference).resolve()] = material.stem
                         for line in material.read_text(encoding='utf-8').splitlines():
                             key, separator, value = line.partition('=')
                             if separator and key.strip() == 'name' and value.strip():
-                                self.asset_display_names[(original / managed_reference).resolve()] = value.strip()
+                                self.asset_display_names[(original / material_reference).resolve()] = value.strip()
                             if separator and key.strip().endswith('_texture') and value.strip():
                                 source = legacy_source(value.strip().split('?', 1)[0], material.parent, self.legacy_root)
                                 self.source_display_names[digest(source)] = source.stem
@@ -1574,8 +1675,8 @@ class Job:
                         self.asset_display_names[copied] = self.asset_display_names[source.resolve()]
             for material in (revision / 'materials').glob('*.mt'):
                 self.pack_material_textures(material)
-            prefix = original.relative_to(path.parent).as_posix() + '/'
-            replacement = revision.relative_to(self.stage).as_posix() + '/'
+            prefix = managed_reference(original, path.parent) + '/'
+            replacement = managed_reference(revision, self.stage) + '/'
             for record in self.assets:
                 changed = False
                 for product in record.get('artifacts', []):
@@ -1613,7 +1714,7 @@ class Job:
             else:
                 raise JobError(f'No build recipe for {record["kind"]}')
             record['artifacts'] = [{'role': record['kind'],
-                                   'path': output.relative_to(self.stage).as_posix(), 'version': 1}]
+                                   'path': managed_reference(output, self.stage), 'version': 1}]
             record['fingerprint'] = 'sha256:' + digest(output)
             record.pop('closure', None)
         scene['assets'] = self.assets
@@ -1625,7 +1726,7 @@ class Job:
             destination = builds / directory.name
             if destination.exists():
                 raise JobError('Build revision collision')
-            os.rename(directory, destination)
+            publish_directory(directory, destination)
             self.published_builds.append(destination)
         requested_bakes = self.request.get('bakes', {})
         self.request['bakes'] = {**scene.get('bake_recipes', {}), **requested_bakes, 'prepare_assets': True}
@@ -1644,7 +1745,7 @@ class Job:
         path = Path(self.request['scene_path']).resolve(strict=True)
         if path != (self.final / 'scene.json').resolve():
             raise JobError('Asset operation scene does not match project membership')
-        scene = load_json(path)
+        scene = migrate_source_references(load_json(path), path)
         fingerprint = digest(path)
         if scene.get('edit_overlay'):
             load_json(contained(path.parent, scene['edit_overlay']))
@@ -1689,7 +1790,7 @@ class Job:
             if operation == 'rename_asset':
                 name = self.request.get('name')
                 if not isinstance(name, str) or not name.strip() or len(name.strip().encode('utf-8')) > 512 or any(ord(c) < 32 or ord(c) == 127 for c in name):
-                    raise JobError('Asset name must be 1–512 UTF-8 bytes without control characters')
+                    raise JobError('Asset name must be 1Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р Р†Р вЂљРІвЂћСћР В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р’В Р Р†Р вЂљР’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р РЋРІвЂћСћР В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂєР В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В Р вЂ Р В РІР‚С™Р вЂ™Р’В Р В Р’В Р вЂ™Р’В Р В РІР‚в„ўР вЂ™Р’В Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р Р‹Р Р†РІР‚С›РЎС›Р В Р’В Р вЂ™Р’В Р В Р’В Р В РІР‚в„–Р В Р’В Р В Р вЂ№Р В Р вЂ Р Р†Р вЂљРЎвЂєР РЋРЎвЂє512 UTF-8 bytes without control characters')
                 record['name'] = name.strip()
                 result = self.lower(scene, path.parent)
                 if digest(path) != fingerprint:
@@ -1713,7 +1814,7 @@ class Job:
             if record['kind'] == 'mesh':
                 if operation == 'reimport_asset':
                     source = self.snapshot_model(source, revision)
-                    record['source'] = source.relative_to(self.stage).as_posix()
+                    record['source'] = managed_reference(source, self.stage)
                 output = bundle / 'mesh.vkb'
                 self.run_tool('mesh', ['--input', source, '--output', output,
                     '--bundle-root', bundle, '--import-id', import_id], 'Rebuilding model')
@@ -1743,17 +1844,17 @@ class Job:
                 record.update(source=generated['source'], recipe=generated.get('recipe', {}))
             elif record['kind'] == 'material':
                 output = self.import_material(source, bundle, import_id, 0)
-                record['source'] = output.relative_to(self.stage).as_posix()
+                record['source'] = managed_reference(output, self.stage)
             elif record['kind'] in ('texture', 'environment'):
                 output = self.copy_blob(source, bundle)
-                record['source'] = output.relative_to(self.stage).as_posix()
+                record['source'] = managed_reference(output, self.stage)
             else:
                 raise JobError('Use the scene bake controls to rebuild this generated asset')
             role = (record.get('artifacts') or [{}])[0].get('role', record['kind'])
             record.pop('closure', None)
             record.update(id=asset_id, import_id=import_id, import_revision=revision,
                 reimport_status='source_snapshot', artifacts=[{'role': role,
-                    'path': output.relative_to(self.stage).as_posix(), 'version': 1}],
+                    'path': managed_reference(output, self.stage), 'version': 1}],
                 fingerprint='sha256:' + digest(output))
             atomic_json(self.stage / 'imports' / (import_id + '-' + revision + '.json'), {
                 'version': 1, 'id': import_id, 'revision': revision,
@@ -1770,7 +1871,10 @@ class Job:
                 destination = destination_root / source.name
                 if destination.exists():
                     raise JobError('Asset revision already exists')
-                os.rename(source, destination)
+                if source.is_dir():
+                    publish_directory(source, destination)
+                else:
+                    os.rename(source, destination)
                 self.published_builds.append(destination)
         result = self.lower(scene, path.parent)
         if digest(path) != fingerprint:
@@ -1782,8 +1886,68 @@ class Job:
         atomic_json(path, scene)
         return result
 
+    def delete_scene(self):
+        """Erase scene-owned files only after the project store removed membership."""
+        if self.read_only:
+            raise JobError('Cannot delete a scene in a read-only workspace')
+        expected = self.final / 'scene.json'
+        raw_path = self.request.get('scene_path')
+        if not isinstance(raw_path, str) or not Path(raw_path).is_absolute() or Path(raw_path) != expected:
+            raise JobError('Delete scene path must be the exact project-owned scene manifest')
+        if self.result_path.is_relative_to(self.final):
+            raise JobError('Delete result must be outside the scene directory')
+
+        def checked_stat(path):
+            info = path.lstat()
+            # Junctions and other Windows reparse points must never become
+            # recursive deletion roots, even when their targets are local.
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise JobError(f'Scene deletion refuses links or reparse points: {path}')
+            return info
+
+        # Validate ancestors before resolving or traversing the deletion tree.
+        for ancestor in (self.project_root, self.project_root / 'scenes'):
+            try:
+                checked_stat(ancestor)
+            except FileNotFoundError:
+                pass
+        if expected.resolve() != expected:
+            raise JobError('Delete scene path escapes its project-owned directory')
+        project = load_json(self.project_path)
+        scenes = project.get('scenes')
+        if project.get('version') != VERSION or not isinstance(scenes, list):
+            raise JobError('Invalid project manifest for scene deletion')
+        for scene in scenes:
+            if not isinstance(scene, dict) or not isinstance(scene.get('path'), str):
+                raise JobError('Invalid project scene membership')
+            member_path = (self.project_root / scene['path']).resolve()
+            if scene.get('id') == self.scene_id or member_path.is_relative_to(self.final):
+                raise JobError('Scene is still referenced by the project; remove membership before deleting files')
+        try:
+            info = checked_stat(self.final)
+        except FileNotFoundError:
+            return {'version': VERSION, 'status': 'complete', 'deleted_scene_id': self.scene_id}
+        if not stat.S_ISDIR(info.st_mode):
+            raise JobError('Scene deletion root is not a directory')
+        pending = [self.final]
+        while pending:
+            directory = pending.pop()
+            for child in directory.iterdir():
+                info = checked_stat(child)
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(child)
+        self.progress('Deleting scene files', 0.1)
+        shutil.rmtree(self.final)
+        return {'version': VERSION, 'status': 'complete', 'deleted_scene_id': self.scene_id}
+
     def execute(self):
         try:
+            if self.request.get('operation') == 'delete_scene':
+                result = self.delete_scene()
+                atomic_json(self.result_path, result)
+                atomic_json(self.progress_path, {'version': VERSION, 'status': 'complete',
+                                                'stage': 'Scene deleted', 'progress': 1.0})
+                return 0
             self.ensure_bootstrap()
             if not self.read_only:
                 self.prepare_project_font()
@@ -1795,7 +1959,7 @@ class Job:
                 path = Path(self.request['scene_path']).resolve(strict=True)
                 if path != (self.final / 'scene.json').resolve():
                     raise JobError('Bake scene does not match project membership')
-                result = self.prepare_unbuilt(path, load_json(path))
+                result = self.prepare_unbuilt(path, migrate_source_references(load_json(path), path))
             elif self.request.get('operation') == 'prepare_scene':
                 result = self.prepare(self.request['scene_path'])
             elif self.request.get('operation') in ('import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset'):

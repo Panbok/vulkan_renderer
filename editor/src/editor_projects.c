@@ -6,6 +6,8 @@
 
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
+#include "core/vkr_atomic.h"
+#include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
@@ -29,6 +31,7 @@ typedef enum ProjectView {
   PROJECT_VIEW_PROGRESS,
   PROJECT_VIEW_CONFIRM,
   PROJECT_VIEW_RENAME,
+  PROJECT_VIEW_DELETE,
   PROJECT_VIEW_EDITOR,
 } ProjectView;
 
@@ -68,11 +71,22 @@ typedef struct ProjectJsonBuffer {
   uint32_t capacity;
 } ProjectJsonBuffer;
 
+typedef struct ProjectSettingsSave {
+  VkrEditorProject project;
+  VkrEditorProjectError error;
+  VkrThread worker;
+  VkrAtomicBool complete;
+  bool8_t succeeded;
+  uint64_t capacity;
+  uint8_t bytes[];
+} ProjectSettingsSave;
+
 struct VkrEditorProjects {
   VkrAllocator *allocator;
   Arena *project_arena;
   VkrAllocator project_allocator;
   VkrEditorProject *project;
+  ProjectSettingsSave *settings_save;
   VkrEditorWorkspace workspace;
   VkrEditorWorkspaceLease lease;
   bool8_t read_only;
@@ -145,6 +159,7 @@ struct VkrEditorProjects {
   bool8_t closing;
   bool8_t awaiting_save;
   bool8_t rename_project;
+  bool8_t delete_waiting_unload;
   char rename_name[513];
   char action_name[513];
   char message[512];
@@ -261,15 +276,12 @@ static void project_refresh(VkrEditorProjects *projects) {
   }
 }
 
-static bool8_t project_save_settings(VkrEditorProjects *projects,
-                                     VkrEditorUi *editor,
-                                     const VkrUiDockTree *dock) {
-  if (!projects->project || projects->unpublished_project ||
-      !projects->settings_restored || projects->read_only) {
-    return true_v;
-  }
-  uint8_t bytes[PROJECT_SETTINGS_CAPACITY];
-  ProjectJsonBuffer buffer = {.bytes = bytes, .capacity = sizeof(bytes)};
+static bool8_t project_collect_settings(VkrEditorProjects *projects,
+                                        VkrEditorUi *editor,
+                                        const VkrUiDockTree *dock,
+                                        uint8_t *bytes, uint32_t *length) {
+  ProjectJsonBuffer buffer = {.bytes = bytes,
+                              .capacity = PROJECT_SETTINGS_CAPACITY};
   VkrJsonWriter writer;
   vkr_json_writer_init(&writer, project_buffer_write, &buffer);
   bool8_t ok =
@@ -348,7 +360,7 @@ static bool8_t project_save_settings(VkrEditorProjects *projects,
   ok = vkr_editor_project_json_merge_objects(
       &projects->project_allocator, projects->project->editor_settings,
       string8_create(bytes, buffer.length), &merged, &error);
-  if (ok && merged.length <= sizeof(bytes)) {
+  if (ok && merged.length <= PROJECT_SETTINGS_CAPACITY) {
     MemCopy(bytes, merged.str, merged.length);
     buffer.length = merged.length;
   } else {
@@ -361,25 +373,153 @@ static bool8_t project_save_settings(VkrEditorProjects *projects,
         "Project settings cannot be preserved within their storage limit.");
     return false_v;
   }
-  if (!projects->settings_dirty &&
-      buffer.length == projects->saved_settings_length &&
-      MemCompare(bytes, projects->saved_settings, buffer.length) == 0) {
+  *length = buffer.length;
+  return true_v;
+}
+
+static void *project_settings_save_worker(void *context) {
+  ProjectSettingsSave *save = context;
+  save->succeeded = vkr_editor_project_save(&save->project, &save->error);
+  vkr_atomic_bool_store(&save->complete, true_v, VKR_MEMORY_ORDER_RELEASE);
+  return NULL;
+}
+
+// Explicit transitions wait here; periodic updates call only after completion.
+// The worker accesses only its snapshot, never UI storage or its allocator.
+static bool8_t project_finish_settings_save(VkrEditorProjects *projects) {
+  ProjectSettingsSave *save = projects->settings_save;
+  if (!save || !save->worker) {
     return true_v;
   }
+  if (!vkr_thread_join(save->worker) ||
+      !vkr_thread_destroy(projects->allocator, &save->worker)) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Cannot finish the project settings writer. Retry saving.");
+    return false_v;
+  }
+  if (!save->succeeded) {
+    projects->settings_dirty = true_v;
+    project_error(projects, &save->error);
+    return false_v;
+  }
+  projects->project->fingerprint = save->project.fingerprint;
+  const String8 settings = save->project.editor_settings;
+  MemCopy(projects->saved_settings, settings.str, settings.length);
+  projects->saved_settings_length = (uint32_t)settings.length;
+  projects->project->editor_settings =
+      string8_create(projects->saved_settings, settings.length);
+  // Dispatch consumed the previous dirty state. Recall may have changed while
+  // the immutable snapshot was being written; completion must retain that.
+  return true_v;
+}
+
+static bool8_t project_save_settings(VkrEditorProjects *projects,
+                                     VkrEditorUi *editor,
+                                     const VkrUiDockTree *dock) {
+  if (!project_finish_settings_save(projects)) {
+    return false_v;
+  }
+  if (!projects->project || projects->unpublished_project ||
+      !projects->settings_restored || projects->read_only) {
+    return true_v;
+  }
+  uint8_t bytes[PROJECT_SETTINGS_CAPACITY];
+  uint32_t length = 0;
+  if (!project_collect_settings(projects, editor, dock, bytes, &length)) {
+    return false_v;
+  }
+  if (!projects->settings_dirty && length == projects->saved_settings_length &&
+      MemCompare(bytes, projects->saved_settings, length) == 0) {
+    return true_v;
+  }
+  VkrEditorProjectError error = {0};
   const String8 previous = projects->project->editor_settings;
-  projects->project->editor_settings = string8_create(bytes, buffer.length);
+  projects->project->editor_settings = string8_create(bytes, length);
   if (!vkr_editor_project_save(projects->project, &error)) {
     projects->project->editor_settings = previous;
     projects->settings_dirty = true_v;
     project_error(projects, &error);
     return false_v;
   }
-  MemCopy(projects->saved_settings, bytes, buffer.length);
-  projects->saved_settings_length = buffer.length;
+  MemCopy(projects->saved_settings, bytes, length);
+  projects->saved_settings_length = length;
   projects->project->editor_settings =
       string8_create(projects->saved_settings, projects->saved_settings_length);
   projects->settings_dirty = false_v;
   return true_v;
+}
+
+static void project_queue_settings_save(VkrEditorProjects *projects,
+                                        VkrEditorUi *editor,
+                                        const VkrUiDockTree *dock) {
+  if (!projects->project || projects->unpublished_project ||
+      !projects->settings_restored || projects->read_only ||
+      (projects->settings_save && projects->settings_save->worker)) {
+    return;
+  }
+  uint8_t bytes[PROJECT_SETTINGS_CAPACITY];
+  uint32_t length = 0;
+  if (!project_collect_settings(projects, editor, dock, bytes, &length)) {
+    return;
+  }
+  if (!projects->settings_dirty && length == projects->saved_settings_length &&
+      MemCompare(bytes, projects->saved_settings, length) == 0) {
+    return;
+  }
+  const String8 views[] = {
+      projects->project->default_font, string8_create(bytes, length),
+      projects->project->scene_editor_state, projects->project->assets,
+      projects->project->document};
+  uint64_t capacity = 0;
+  for (uint32_t i = 0; i < ArrayCount(views); ++i) {
+    capacity += views[i].length;
+  }
+  // Each view is bounded by the managed document limit. Retain rounded
+  // capacity so small camera-JSON length changes do not churn allocations.
+  capacity = AlignPow2(capacity, KB(64));
+  ProjectSettingsSave *save = projects->settings_save;
+  if (!save || capacity > save->capacity) {
+    ProjectSettingsSave *replacement = vkr_allocator_alloc(
+        projects->allocator, sizeof(*replacement) + capacity,
+        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    if (!replacement) {
+      snprintf(projects->message, sizeof(projects->message),
+               "Cannot retain the project settings snapshot. Retry saving.");
+      return;
+    }
+    MemZero(replacement, sizeof(*replacement));
+    replacement->capacity = capacity;
+    if (save) {
+      vkr_allocator_free(projects->allocator, save,
+                         sizeof(*save) + save->capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    }
+    projects->settings_save = replacement;
+    save = replacement;
+  }
+  save->project = *projects->project;
+  String8 *destinations[] = {&save->project.default_font,
+                             &save->project.editor_settings,
+                             &save->project.scene_editor_state,
+                             &save->project.assets, &save->project.document};
+  uint64_t offset = 0;
+  for (uint32_t i = 0; i < ArrayCount(views); ++i) {
+    if (views[i].length) {
+      MemCopy(save->bytes + offset, views[i].str, views[i].length);
+    }
+    *destinations[i] = string8_create(save->bytes + offset, views[i].length);
+    offset += views[i].length;
+  }
+  save->error = (VkrEditorProjectError){0};
+  save->succeeded = false_v;
+  vkr_atomic_bool_store(&save->complete, false_v, VKR_MEMORY_ORDER_RELAXED);
+  if (!vkr_thread_create(projects->allocator, &save->worker,
+                         project_settings_save_worker, save)) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Cannot start the project settings writer. Retry saving.");
+    return;
+  }
+  projects->settings_dirty = false_v;
 }
 
 static void project_restore_settings(VkrEditorProjects *projects,
@@ -807,6 +947,9 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   VkrJsonFileWriter file = {0};
   if (!vkr_json_file_writer_begin(&file,
                                   project_string(projects->request_path))) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Cannot open Bakery request for writing: %s",
+             projects->request_path);
     return false_v;
   }
   VkrJsonWriter *writer = &file.writer;
@@ -929,25 +1072,18 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
         project_json_bool(writer, "diffuse", projects->bake_diffuse) &&
         vkr_json_writer_end_object(writer);
   } else {
-    ok = ok && project_json_text(
-                   writer, "scene_id",
-                   projects->project->scenes[projects->pending_scene].id);
-    char root[1024];
-    snprintf(root, sizeof(root), "%s", projects->project->manifest_path);
-    char *separator = strrchr(root, '/');
-    if (!separator) {
+    char scene_path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+    if (!vkr_editor_project_scene_path(
+            projects->project, projects->pending_scene,
+            strcmp(projects->operation, "delete_scene") != 0, scene_path,
+            &error)) {
+      project_error(projects, &error);
       ok = false_v;
     } else {
-      *separator = '\0';
-      char scene_path[1024];
-      if (!vkr_editor_project_resolve(
-              root, projects->project->scenes[projects->pending_scene].path,
-              scene_path, &error)) {
-        project_error(projects, &error);
-        ok = false_v;
-      } else {
-        ok = ok && project_json_text(writer, "scene_path", scene_path);
-      }
+      ok = ok && project_json_text(
+                     writer, "scene_id",
+                     projects->project->scenes[projects->pending_scene].id) &&
+           project_json_text(writer, "scene_path", scene_path);
     }
   }
   if (strcmp(projects->operation, "bake_scene") == 0) {
@@ -984,6 +1120,11 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
        vkr_json_writer_end_object(writer) && vkr_json_file_writer_commit(&file);
   if (!ok) {
     vkr_json_file_writer_abort(&file);
+    if (!projects->message[0]) {
+      snprintf(projects->message, sizeof(projects->message),
+               "Cannot serialize or publish Bakery request: %s",
+               projects->request_path);
+    }
     return false_v;
   }
   projects->job_creates_scene = create_scene && !projects->job_creates_project;
@@ -1002,6 +1143,7 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   if (!project_save_settings(projects, editor, frame->dock)) {
     return;
   }
+  projects->message[0] = '\0';
   if (!project_write_job(projects, frame, create)) {
     return;
   }
@@ -1024,6 +1166,82 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   projects->progress_detail[0] = '\0';
   projects->waiting_activation = false_v;
   projects->message[0] = '\0';
+}
+
+static void project_delete_scene(VkrEditorProjects *projects,
+                                 VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame) {
+  if (projects->read_only || !projects->project || projects->job_id ||
+      projects->waiting_activation || frame->scene_loading ||
+      vkr_editor_bakery_busy(editor->bakery) ||
+      projects->pending_scene >= projects->project->scene_count) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Scene deletion requires a writable, idle project.");
+    return;
+  }
+  if (!vkr_editor_content_stop_previews(editor->content)) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Cannot stop asset previews. Retry deleting the scene.");
+    return;
+  }
+  if (!projects->delete_waiting_unload) {
+    project_remember_scene(projects, editor, frame);
+    snprintf(projects->operation, sizeof(projects->operation), "delete_scene");
+    if (!project_save_settings(projects, editor, frame->dock) ||
+        !project_write_job(projects, frame, false_v)) {
+      return;
+    }
+    if (projects->active_scene == projects->pending_scene && frame->scene) {
+      *frame->scene_request =
+          (VkrSampleSceneRequest){.unload = true_v, .discard_edits = true_v};
+      projects->delete_waiting_unload = true_v;
+      return;
+    }
+  }
+  if (projects->delete_waiting_unload && frame->scene) {
+    return;
+  }
+  projects->delete_waiting_unload = false_v;
+  if (!project_finish_settings_save(projects)) {
+    return;
+  }
+  VkrEditorProjectError error = {0};
+  const uint32_t index = projects->pending_scene;
+  if (!vkr_editor_project_remove_scene(projects->project, index,
+                                       frame->ui->frame_allocator, &error)) {
+    project_error(projects, &error);
+    return;
+  }
+  const String8 recall = projects->project->scene_editor_state;
+  MemCopy(projects->scene_states, recall.str, recall.length);
+  projects->scene_states_length = (uint32_t)recall.length;
+  projects->project->scene_editor_state =
+      string8_create(projects->scene_states, recall.length);
+  if (projects->active_scene == index) {
+    projects->active_scene = UINT32_MAX;
+    projects->content_scene[0] = '\0';
+    projects->runtime_path[0] = '\0';
+    projects->scene_manifest_path[0] = '\0';
+    projects->scene_manifest_fingerprint = 0;
+    projects->edit_path[0] = '\0';
+    vkr_editor_content_set_project(editor->content, projects->workspace.root,
+                                   projects->project->id, "");
+  } else if (projects->active_scene != UINT32_MAX &&
+             projects->active_scene > index) {
+    --projects->active_scene;
+  }
+  projects->pending_scene = UINT32_MAX;
+  projects->discard_edits = false_v;
+  projects->job_id = vkr_editor_bakery_project_start(
+      editor->bakery, projects->request_path, projects->result_path);
+  projects->view = PROJECT_VIEW_PROGRESS;
+  projects->progress_stage[0] = '\0';
+  projects->progress_detail[0] = '\0';
+  snprintf(projects->message, sizeof(projects->message),
+           projects->job_id
+               ? "Removing scene files..."
+               : "Scene removed from project. Retry to erase its files.");
+  project_refresh(projects);
 }
 
 static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
@@ -1104,6 +1322,9 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
 static void project_job_complete(VkrEditorProjects *projects,
                                  VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
+  if (!project_finish_settings_save(projects)) {
+    return;
+  }
   String8 result = {0};
   VkrEditorProjectError error = {0};
   char status[32] = {0};
@@ -1117,6 +1338,14 @@ static void project_job_complete(VkrEditorProjects *projects,
     return;
   }
   const bool8_t unbuilt = strcmp(status, "unbuilt") == 0;
+  if (!strcmp(projects->operation, "delete_scene")) {
+    projects->job_id = 0;
+    projects->operation[0] = '\0';
+    projects->view = PROJECT_VIEW_SCENES;
+    snprintf(projects->message, sizeof(projects->message),
+             "Scene and its files permanently deleted.");
+    return;
+  }
   if (!projects->job_creates_project) {
     char fingerprint[17] = {0};
     if (!vkr_editor_project_json_string(
@@ -1438,6 +1667,10 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
     return true_v;
   }
   const bool8_t saved = project_save_settings(projects, editor, dock);
+  if (projects->settings_save && projects->settings_save->worker) {
+    /* A failed join leaves worker ownership and its workspace lease intact. */
+    return false_v;
+  }
   if (projects->job_id) {
     vkr_editor_bakery_project_cancel(editor->bakery, projects->job_id);
   }
@@ -1446,6 +1679,12 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
     arena_destroy(projects->project_arena);
   }
   vkr_editor_workspace_lease_release(&projects->lease);
+  if (projects->settings_save) {
+    vkr_allocator_free(
+        projects->allocator, projects->settings_save,
+        sizeof(*projects->settings_save) + projects->settings_save->capacity,
+        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  }
   if (projects->owned_assets.str) {
     vkr_allocator_free(projects->allocator, projects->owned_assets.str,
                        projects->owned_assets.length + 1,
@@ -1484,6 +1723,11 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   if (!projects) {
     return;
   }
+  if (projects->settings_save && projects->settings_save->worker &&
+      vkr_atomic_bool_load(&projects->settings_save->complete,
+                            VKR_MEMORY_ORDER_ACQUIRE)) {
+    (void)project_finish_settings_save(projects);
+  }
   if (!projects->defaults_captured) {
     projects->default_graphics = frame->graphics->settings;
     projects->default_preferences = frame->runtime_preferences;
@@ -1505,7 +1749,9 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   vkr_editor_content_set_read_only(editor->content, projects->read_only);
   vkr_editor_bakery_set_managed(
       editor->bakery, true_v,
-      !projects->read_only && projects->project && frame->scene,
+      !projects->read_only && projects->project && frame->scene &&
+          !projects->job_id && !projects->waiting_activation &&
+          strcmp(projects->operation, "delete_scene"),
       projects->read_only ? projects->local_jobs_directory
                           : projects->workspace.root);
   vkr_editor_content_suspend_previews(
@@ -1513,6 +1759,9 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
                            projects->job_id || projects->waiting_activation ||
                            vkr_editor_bakery_busy(editor->bakery));
   vkr_editor_bakery_update(editor->bakery);
+  if (projects->delete_waiting_unload) {
+    project_delete_scene(projects, editor, frame);
+  }
   if (projects->scan_index < projects->card_count) {
     ProjectCard *card = &projects->cards[projects->scan_index++];
     VkrAllocatorScope scope =
@@ -1586,11 +1835,18 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       return;
     } else if (status == VKR_EDITOR_PROJECT_JOB_FAILED ||
                status == VKR_EDITOR_PROJECT_JOB_CANCELLED) {
-      snprintf(projects->message, sizeof(projects->message),
-               "%s. Your source files and existing projects are unchanged. See "
-               "Bakery for the job output.",
-               status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Creation cancelled"
-                                                          : "Creation failed");
+      if (!strcmp(projects->operation, "delete_scene")) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "Scene removed from project; file deletion is incomplete. "
+                 "Retry to finish. See Bakery for details.");
+      } else {
+        snprintf(
+            projects->message, sizeof(projects->message),
+            "%s. Your source files and existing projects are unchanged. See "
+            "Bakery for the job output.",
+            status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Creation cancelled"
+                                                       : "Creation failed");
+      }
     }
   }
   if (projects->waiting_activation) {
@@ -1635,7 +1891,9 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   if (projects->settings_restored && !frame->graphics_request->apply) {
     projects->graphics = frame->graphics->settings;
   }
-  if (vkr_editor_bakery_take_scene_bake(editor->bakery,
+  if (!projects->job_id && !projects->waiting_activation &&
+      strcmp(projects->operation, "delete_scene") &&
+      vkr_editor_bakery_take_scene_bake(editor->bakery,
                                         &projects->bake_reflection,
                                         &projects->bake_diffuse) &&
       projects->project &&
@@ -1699,7 +1957,9 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   if (projects->project && now >= projects->next_settings_check) {
     projects->next_settings_check = now + .25;
     project_remember_scene(projects, editor, frame);
-    (void)project_save_settings(projects, editor, frame->dock);
+    if (!projects->job_id && !projects->delete_waiting_unload) {
+      project_queue_settings_save(projects, editor, frame->dock);
+    }
   }
 }
 
@@ -2206,6 +2466,7 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       : projects->view == PROJECT_VIEW_ADD_SCENE ? "Add scene"
       : projects->view == PROJECT_VIEW_SCENES    ? "Scenes"
       : projects->view == PROJECT_VIEW_RENAME    ? "Rename"
+      : projects->view == PROJECT_VIEW_DELETE    ? "Delete scene permanently?"
       : projects->view == PROJECT_VIEW_CONFIRM
           ? projects->closing ? "Close editor" : "Unsaved scene edits"
           : "Preparing your project";
@@ -2299,7 +2560,7 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
         VkrEditorProjectError error = {0};
         if (!vkr_editor_project_name_valid(projects->rename_name, &error)) {
           project_error(projects, &error);
-        } else {
+        } else if (project_finish_settings_save(projects)) {
           char *target_name =
               projects->rename_project
                   ? projects->project->name
@@ -2318,6 +2579,31 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
           }
         }
       }
+    } else if (projects->view == PROJECT_VIEW_DELETE && projects->project &&
+               projects->pending_scene < projects->project->scene_count) {
+      project_label(ui, "delete.name",
+                    projects->project->scenes[projects->pending_scene].name, 12,
+                    12, body_width - 24);
+      project_label(ui, "delete.warning",
+                    "Permanently erase this scene and its managed files.", 12,
+                    56, body_width - 24);
+      project_label(
+          ui, "delete.edits",
+          projects->pending_scene == projects->active_scene
+              ? "The scene will unload. Unsaved edits will be discarded."
+              : "The current scene will remain open.",
+          12, 96, body_width - 24);
+      project_label(ui, "delete.shared",
+                    "Project-shared assets are kept. This cannot be undone.",
+                    12, 136, body_width - 24);
+      if (project_button(ui, "delete.confirm", "Delete permanently", 12, 184,
+                         190,
+                         projects->read_only || frame->scene_loading ||
+                             projects->job_id || projects->waiting_activation ||
+                             projects->delete_waiting_unload ||
+                             vkr_editor_bakery_busy(editor->bakery))) {
+        project_delete_scene(projects, editor, frame);
+      }
     } else if (projects->view == PROJECT_VIEW_SCENES && projects->project) {
       project_label(ui, "scene.project", projects->project->name, 12, 0,
                     body_width - 142);
@@ -2332,7 +2618,7 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
         VkrEditorProjectScene *scene = &projects->project->scenes[i];
         (void)vkr_ui_push_id_u64(ui, i);
         if (project_button(ui, "scene.open", scene->name, 12, 46 + i * 40.0f,
-                           body_width - 130, false_v)) {
+                           body_width - 230, false_v)) {
           projects->pending_scene = i;
           projects->operation[0] = '\0';
           if (frame->edits->revision != frame->edits->saved_revision) {
@@ -2342,13 +2628,22 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
             project_start_job(projects, editor, frame, false_v);
           }
         }
-        if (project_button(ui, "scene.rename", "Rename", body_width - 108,
+        if (project_button(ui, "scene.rename", "Rename", body_width - 208,
                            46 + i * 40.0f, 96, projects->read_only)) {
           projects->pending_scene = i;
           projects->rename_project = false_v;
           snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
                    scene->name);
           projects->view = PROJECT_VIEW_RENAME;
+        }
+        if (project_button(ui, "scene.delete", "Delete", body_width - 108,
+                           46 + i * 40.0f, 96,
+                           projects->read_only || frame->scene_loading ||
+                               projects->job_id || projects->waiting_activation ||
+                               vkr_editor_bakery_busy(editor->bakery))) {
+          projects->pending_scene = i;
+          projects->message[0] = '\0';
+          projects->view = PROJECT_VIEW_DELETE;
         }
         (void)vkr_ui_pop_id(ui);
       }
@@ -2413,14 +2708,21 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       projects->view = PROJECT_VIEW_ADD_SCENE;
     }
     if (project_button(ui, "projects.back",
-                       projects->view == PROJECT_VIEW_CONFIRM ? "Cancel"
+                       projects->view == PROJECT_VIEW_CONFIRM ||
+                               projects->view == PROJECT_VIEW_DELETE
+                           ? "Cancel"
                        : projects->project && !projects->unpublished_project
                            ? "Back to editor"
                            : "Back",
                        12, height - 65, 148,
-                       projects->view == PROJECT_VIEW_CHOOSER &&
-                           !projects->project)) {
-      if (projects->closing) {
+                       projects->delete_waiting_unload ||
+                           (projects->view == PROJECT_VIEW_CHOOSER &&
+                            !projects->project))) {
+      if (projects->view == PROJECT_VIEW_DELETE) {
+        projects->view = PROJECT_VIEW_SCENES;
+        projects->delete_waiting_unload = false_v;
+        projects->operation[0] = '\0';
+      } else if (projects->closing) {
         *frame->close_response = VKR_SAMPLE_CLOSE_CANCEL;
         projects->closing = false_v;
         projects->view = projects->resume_view;
@@ -2497,9 +2799,13 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   label.tooltip = project_string(
       projects->message[0] ? projects->message : projects->progress_detail);
   const char *stage =
-      running ? projects->progress_stage[0]   ? projects->progress_stage
+      running ? projects->progress_stage[0] ? projects->progress_stage
+                : !strcmp(projects->operation, "delete_scene")
+                    ? "Deleting scene files..."
                 : projects->job_creates_project ? "Creating project..."
-                                               : "Preparing scene..."
+                                                : "Preparing scene..."
+      : !strcmp(projects->operation, "delete_scene")
+          ? "File deletion incomplete"
       : status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Preparation cancelled"
                                                    : "Preparation failed";
   vkr_ui_label(ui, string8_lit("scene.prepare.stage"), project_string(stage),
@@ -2552,7 +2858,7 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   } else {
     if (vkr_ui_button(ui, string8_lit("scene.prepare.retry"),
                       string8_lit("Retry"), &action)) {
-      if (!projects->job_id) {
+      if (!projects->job_id && strcmp(projects->operation, "delete_scene")) {
         project_job_complete(projects, editor, frame);
       } else {
         projects->job_id = vkr_editor_bakery_project_start(
@@ -2606,7 +2912,8 @@ void vkr_editor_projects_scene_action(VkrEditorProjects *projects,
   }
   const VkrSceneEditAction action = frame->scene_edit->action;
   if ((frame->scene_loading || projects->job_id ||
-       projects->waiting_activation) &&
+       projects->waiting_activation ||
+       !strcmp(projects->operation, "delete_scene")) &&
       (action == VKR_SCENE_EDIT_LOAD || action == VKR_SCENE_EDIT_RELOAD ||
        action == VKR_SCENE_EDIT_UNLOAD)) {
     frame->scene_edit->action = VKR_SCENE_EDIT_NONE;
@@ -2650,6 +2957,7 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
                                            : (Vec4){.09f, .22f, .24f, .85f};
     button.style.text_color = (Vec4){.78f, .92f, .91f, 1};
     button.disabled = projects->job_id || projects->waiting_activation ||
+                      !strcmp(projects->operation, "delete_scene") ||
                       (i == 1 && !projects->project);
     button.tooltip =
         i == 1 ? string8_lit("Choose a scene in the current project")

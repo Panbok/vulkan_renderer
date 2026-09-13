@@ -2,6 +2,7 @@
 
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_asset_path.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_edit.h"
@@ -609,24 +610,7 @@ bool8_t vkr_editor_project_parse(String8 bytes, VkrEditorProject *project,
 }
 
 static bool8_t project_relative_valid(const char *relative) {
-  if (!relative || !relative[0] || relative[0] == '/' ||
-      strchr(relative, '\\') || strchr(relative, ':')) {
-    return false_v;
-  }
-  const char *segment = relative;
-  for (const char *p = relative;; ++p) {
-    if (*p == '/' || !*p) {
-      size_t length = (size_t)(p - segment);
-      if (!length || (length == 1 && segment[0] == '.') ||
-          (length == 2 && segment[0] == '.' && segment[1] == '.')) {
-        return false_v;
-      }
-      if (!*p) {
-        return true_v;
-      }
-      segment = p + 1;
-    }
-  }
+  return relative && vkr_asset_path_managed_valid(project_string(relative));
 }
 
 bool8_t
@@ -652,6 +636,47 @@ vkr_editor_project_resolve(const char *owner_root, const char *relative,
   if (!file_path_starts_with(out_path, root) ||
       (out_path[root_length] != '/' && out_path[root_length] != '\\')) {
     return project_error(error, "Managed path escapes its owner: %s", relative);
+  }
+  return true_v;
+}
+
+bool8_t
+vkr_editor_project_scene_path(const VkrEditorProject *project, uint32_t index,
+                              bool8_t must_exist,
+                              char out_path[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+                              VkrEditorProjectError *error) {
+  if (!project || index >= project->scene_count || !out_path) {
+    return project_error(error, "Invalid project scene selection");
+  }
+  char owner[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  size_t length = strlen(project->manifest_path);
+  size_t parent = 0;
+  for (size_t i = 0; i < length; ++i) {
+    if (project->manifest_path[i] == '/'
+#if defined(PLATFORM_WINDOWS)
+        || project->manifest_path[i] == '\\'
+#endif
+    ) {
+      parent = i + 1;
+    }
+  }
+  if (!parent || parent >= sizeof(owner)) {
+    return project_error(error, "Project scene has no valid manifest owner: %s",
+                         project->manifest_path);
+  }
+  MemCopy(owner, project->manifest_path, parent);
+  owner[parent] = 0;
+  const char *relative = project->scenes[index].path;
+  if (must_exist) {
+    return vkr_editor_project_resolve(owner, relative, out_path, error);
+  }
+  // Delete requests may name a manifest already removed externally. Keep raw
+  // grammar validation and let the transactional job recheck physical
+  // ownership.
+  if (!project_relative_valid(relative) ||
+      !project_join(out_path, owner, relative)) {
+    return project_error(error, "Invalid managed scene reference: %s",
+                         relative);
   }
   return true_v;
 }
@@ -1574,6 +1599,73 @@ bool8_t vkr_editor_project_json_replace_member(VkrAllocator *allocator,
   bytes[length] = '\0';
   *out = (String8){.str = bytes, .length = length};
   return project_json_finish(&json, true_v);
+}
+
+bool8_t vkr_editor_project_remove_scene(VkrEditorProject *project,
+                                        uint32_t index, VkrAllocator *allocator,
+                                        VkrEditorProjectError *error) {
+  if (!project || !allocator || index >= project->scene_count ||
+      project->scene_count > VKR_EDITOR_PROJECT_MAX_SCENES) {
+    return project_error(error, "Invalid scene removal request");
+  }
+  const VkrEditorProjectScene removed = project->scenes[index];
+  const String8 previous_recall = project->scene_editor_state;
+  s_ProjectJson json = {0};
+  if (!project_json_parse(&json, previous_recall) ||
+      json.tokens[0].kind != '{') {
+    return project_json_finish(
+        &json, project_error(error, "Invalid scene editor recall"));
+  }
+  uint64_t start = 0;
+  uint64_t end = 0;
+  uint32_t previous = UINT32_MAX;
+  for (uint32_t key = json.tokens[0].child; key < json.tokens[0].next;
+       key = json.tokens[key + 1].next) {
+    char name[256];
+    if (!project_json_decode(&json, key, name, sizeof(name))) {
+      return project_json_finish(
+          &json, project_error(error, "Invalid scene recall identity"));
+    }
+    if (!strcmp(name, removed.id)) {
+      start = json.tokens[key].start;
+      end = json.tokens[key + 1].end;
+      if (json.tokens[key + 1].next < json.tokens[0].next) {
+        end = json.tokens[json.tokens[key + 1].next].start;
+      } else if (previous != UINT32_MAX) {
+        start = json.tokens[previous + 1].end;
+      }
+      break;
+    }
+    previous = key;
+  }
+  project_json_finish(&json, true_v);
+  const uint64_t length = previous_recall.length - (end - start);
+  uint8_t *recall = vkr_allocator_alloc(allocator, length + 1,
+                                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!recall) {
+    return project_error(error, "Cannot allocate scene recall during deletion");
+  }
+  MemCopy(recall, previous_recall.str, start);
+  MemCopy(recall + start, previous_recall.str + end,
+          previous_recall.length - end);
+  recall[length] = '\0';
+  project->scene_editor_state = string8_create(recall, length);
+  const uint32_t tail = project->scene_count - index - 1;
+  MemCopy(&project->scenes[index], &project->scenes[index + 1],
+          tail * sizeof(removed));
+  --project->scene_count;
+  if (!vkr_editor_project_save(project, error)) {
+    MemCopy(&project->scenes[index + 1], &project->scenes[index],
+            tail * sizeof(removed));
+    project->scenes[index] = removed;
+    ++project->scene_count;
+    project->scene_editor_state = previous_recall;
+    vkr_allocator_free(allocator, recall, length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    return false_v;
+  }
+  MemZero(&project->scenes[project->scene_count], sizeof(removed));
+  return true_v;
 }
 
 bool8_t vkr_editor_project_json_read_file(const char *path,
