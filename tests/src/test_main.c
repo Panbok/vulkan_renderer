@@ -1,5 +1,8 @@
 #include "test_main.h"
 #include "editor_project_store_test.h"
+#include "animation_tests.h"
+#include "animation_cooked_tests.h"
+#include "animation_import_tests.h"
 
 bool32_t run_path_io_tests(void);
 bool32_t run_process_path_tests(void);
@@ -59,6 +62,9 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_scene_edit_tests,
     run_editor_project_store_tests,
     run_gltf_importer_tests,
+    run_animation_tests,
+    run_animation_cooked_tests,
+    run_animation_import_tests,
     run_material_pbr_tests,
     run_mesh_cooked_tests,
     run_filesystem_tests,

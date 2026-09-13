@@ -113,6 +113,8 @@ endif()
 
 if(VKR_BUILD_TOOLS)
 add_library(vkr_asset_cooking STATIC
+    assets/vkr_animation_import.c
+    assets/vkr_animation_encode.c
     assets/vkr_font_encode.c
     assets/vkr_mesh_encode.c
     assets/vkr_mesh_cook_source.c
@@ -195,6 +197,11 @@ add_executable(vkr_mesh_cooker
 vkr_require_declared_c_functions(vkr_mesh_cooker)
 vkr_configure_cooker_target(vkr_mesh_cooker)
 target_link_libraries(vkr_mesh_cooker PRIVATE vkr_asset_cooking)
+
+add_executable(vkr_animation_cooker vkr_animation_cooker.c)
+vkr_require_declared_c_functions(vkr_animation_cooker)
+vkr_configure_cooker_target(vkr_animation_cooker)
+target_link_libraries(vkr_animation_cooker PRIVATE vkr_asset_cooking)
 
 set(VKR_MSDF_ATLAS_DIR "${CMAKE_SOURCE_DIR}/vendor/msdf-atlas-gen")
 set(VKR_MSDF_ATLAS_COMMIT
