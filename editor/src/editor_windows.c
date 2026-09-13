@@ -559,7 +559,7 @@ static VkrUiRect editor_menu_popup_rect(const VkrEditorUi *editor,
   const float32_t width = Min(settings ? 180.0f : (debug ? 230.0f : 210.0f),
                               target_width);
   const float32_t height = Min(
-      settings ? 66.0f
+      settings ? 96.0f
                : (debug ? (editor->labels_expanded ? 184.0f : 50.0f) : 94.0f),
       Max(0.0f, target_height - VKR_EDITOR_NAVIGATION_HEIGHT_PT));
   const float32_t x =
@@ -600,7 +600,7 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
   popup.column_count = 1u;
   popup.rows = rows;
   popup.row_count =
-      settings ? 2u : (debug ? (editor->labels_expanded ? 5u : 1u) : 3u);
+      settings ? 3u : (debug ? (editor->labels_expanded ? 5u : 1u) : 3u);
   popup.style = vkr_editor_glass_style();
   popup.style.background_color.w = 0.98f;
   popup.style.min_size_pt =
@@ -628,6 +628,11 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
     if (vkr_ui_button(ui, string8_lit("animation"), string8_lit("Animation"),
                       &item)) {
       editor_window_raise(editor, VKR_EDITOR_WINDOW_ANIMATION);
+      editor->menu = VKR_EDITOR_MENU_NONE;
+    }
+    item.placement.row = 2u;
+    if (vkr_ui_button(ui, string8_lit("physics"), string8_lit("Physics"), &item)) {
+      editor_window_raise(editor, VKR_EDITOR_WINDOW_PHYSICS);
       editor->menu = VKR_EDITOR_MENU_NONE;
     }
     (void)vkr_ui_panel_end(ui);
@@ -798,6 +803,9 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   String8 body_text = {0};
   float32_t font_size_pt = 10.0f;
   switch (kind) {
+  case VKR_EDITOR_WINDOW_PHYSICS:
+    title_text = string8_lit("PHYSICS / COLLISION LAYERS");
+    break;
   case VKR_EDITOR_WINDOW_ANIMATION:
     title_text = string8_lit("ANIMATION");
     break;
@@ -964,6 +972,22 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     vkr_editor_graphics_build(editor, frame);
   else if (kind == VKR_EDITOR_WINDOW_ANIMATION) {
     vkr_editor_animation_build(editor, frame);
+  } else if (kind == VKR_EDITOR_WINDOW_PHYSICS) {
+    VkrUiPanelConfig body = vkr_ui_panel_config_default();
+    body.placement.column = 0;
+    body.placement.row = 1;
+    body.style.padding_pt = (VkrUiEdges){0};
+    body.style.background_color = (Vec4){0.025f, 0.035f, 0.05f, 0.98f};
+    body.clip_children = true_v;
+    if (vkr_ui_panel_begin(ui, string8_lit("physics.settings.body"), &body)) {
+      const VkrUiRect bounds = {
+          window->position_pt.x * ui->content_scale,
+          (window->position_pt.y + 30.0f) * ui->content_scale,
+          window->size_pt.x * ui->content_scale,
+          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+      vkr_editor_physics_settings_build(editor->physics_settings, frame, bounds, editor->heading_font);
+      (void)vkr_ui_panel_end(ui);
+    }
   } else {
     VkrUiWidgetConfig body = vkr_editor_text_config(
         font_size_pt, (Vec4){0.84f, 0.87f, 0.92f, 1.0f});
@@ -1009,6 +1033,7 @@ typedef enum EditorCommand {
   CMD_BAKERY,
   CMD_CONTENT,
   CMD_ANIMATION,
+  CMD_PHYSICS,
   CMD_RESET_LAYOUT,
   CMD_SIM_START,
   CMD_SIM_PAUSE,
@@ -1030,6 +1055,7 @@ static const char *s_command_names[CMD_COUNT] = {"Load scene",
                                                  "Show Bakery",
                                                  "Show Content",
                                                  "Show Animation Editor",
+                                                 "Show Physics Settings",
                                                  "Reset panel layout",
                                                  "Start / resume simulation",
                                                  "Pause simulation",
@@ -1091,6 +1117,9 @@ static void editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_CONTENT:
     vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
+    break;
+  case CMD_PHYSICS:
+    editor_window_raise(editor, VKR_EDITOR_WINDOW_PHYSICS);
     break;
   case CMD_ANIMATION:
     editor_window_raise(editor, VKR_EDITOR_WINDOW_ANIMATION);

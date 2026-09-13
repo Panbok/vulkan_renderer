@@ -23,6 +23,7 @@
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "vkr_renderer.h"
@@ -105,6 +106,13 @@ typedef struct ApplicationUiText {
 typedef struct State {
   InputState *input_state;
   bool8_t scene_keyboard_focus;
+  uint32_t collision_display;
+  /* Reused application-owned event buffer; draining the editor's demo events
+     prevents an otherwise unconsumed sensor queue from exhausting capacity. */
+  VkrPhysicsSensorEvent
+      physics_sensor_events[VKR_SCENE_PHYSICS_MAX_BODIES *
+                            VKR_PHYSICS_SENSOR_EVENTS_PER_BODY];
+  uint32_t physics_sensor_event_count;
 
   Arena *app_arena;
   Arena *event_arena;
@@ -134,9 +142,13 @@ typedef struct State {
   String8 scene_path;
   char scene_path_storage[1024];
   char sidecar_path[1024];
+  char physics_asset_root[1024];
   char scene_status[512];
   bool8_t modal;
   VkrSceneEditValues gizmo_before;
+  VkrEntityId gizmo_edit_entity;
+  uint64_t gizmo_collider_id;
+  VkrEntityId picked_collider;
   bool8_t gizmo_edit_pending;
   VkrClock fps_update_clock;
   VkrClock memory_update_clock;
@@ -1155,18 +1167,87 @@ vkr_internal void vkr_standard_scene_runtime_sync_world_text_transform(
       application, text->text_index, (String8){0}, &text_transform);
 }
 
+vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
+    VkrStandardSceneRuntime *application) {
+  VkrScene *scene = application->active_scene;
+  if (!scene) {
+    return false_v;
+  }
+  if (state->gizmo_before.fields & VKR_SCENE_EDIT_PHYSICS) {
+    const char *error = NULL;
+    if (!vkr_scene_physics_apply(scene, state->gizmo_edit_entity,
+                                 &state->gizmo_before.physics, &error)) {
+      snprintf(state->edits.status, sizeof(state->edits.status),
+               "Could not restore collider drag: %s",
+               error ? error : "allocation failed");
+      return false_v;
+    }
+  } else {
+    if (!vkr_scene_set_transform(scene, state->gizmo_drag.entity,
+                                  state->gizmo_before.position,
+                                  state->gizmo_before.rotation,
+                                  state->gizmo_before.scale)) {
+      snprintf(state->edits.status, sizeof(state->edits.status),
+               "Could not restore the authored transform.");
+      return false_v;
+    }
+    vkr_standard_scene_runtime_sync_world_text_transform(
+        application, scene, state->gizmo_drag.entity);
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
+    VkrStandardSceneRuntime *application, Vec3 position, VkrQuat rotation,
+    Vec3 scale) {
+  VkrScene *scene = application->active_scene;
+  if (state->gizmo_before.fields & VKR_SCENE_EDIT_PHYSICS) {
+    VkrScenePhysicsSnapshot snapshot = state->gizmo_before.physics;
+    for (uint32_t i = 0; i < snapshot.collider_count; ++i) {
+      VkrSceneColliderConfig *collider = &snapshot.colliders[i];
+      if (collider->authored_id != state->gizmo_collider_id) {
+        continue;
+      }
+      collider->position = position;
+      collider->rotation = rotation;
+      collider->scale = scale;
+      const char *error = NULL;
+      if (!vkr_scene_physics_apply(scene, state->gizmo_edit_entity, &snapshot,
+                                   &error)) {
+        snprintf(state->edits.status, sizeof(state->edits.status), "%s",
+                 error ? error : "Collider edit failed.");
+        return false_v;
+      }
+      return true_v;
+    }
+    return false_v;
+  }
+  const SceneTransform *transform =
+      vkr_scene_get_transform(scene, state->gizmo_drag.entity);
+  const char *error = NULL;
+  if (!transform ||
+      !vkr_scene_physics_transform_validate(scene, state->gizmo_drag.entity,
+                                             position, rotation, scale,
+                                             transform->parent, &error) ||
+      !vkr_scene_set_transform(scene, state->gizmo_drag.entity, position,
+                                rotation, scale)) {
+    snprintf(state->edits.status, sizeof(state->edits.status), "%s",
+             error ? error : "Transform edit failed.");
+    return false_v;
+  }
+  vkr_standard_scene_runtime_sync_world_text_transform(
+      application, scene, state->gizmo_drag.entity);
+  return true_v;
+}
+
 vkr_internal void vkr_standard_scene_runtime_cancel_gizmo_edit(
     VkrStandardSceneRuntime *application) {
   VkrScene *scene = application->active_scene;
-  if (state->gizmo_edit_pending && scene) {
-    vkr_scene_set_position(scene, state->gizmo_drag.entity,
-                           state->gizmo_before.position);
-    vkr_scene_set_rotation(scene, state->gizmo_drag.entity,
-                           state->gizmo_before.rotation);
-    vkr_scene_set_scale(scene, state->gizmo_drag.entity,
-                        state->gizmo_before.scale);
-    vkr_standard_scene_runtime_sync_world_text_transform(
-        application, scene, state->gizmo_drag.entity);
+  if (state->gizmo_edit_pending && scene &&
+      !vkr_standard_scene_runtime_restore_gizmo_edit(application)) {
+    state->gizmo_drag.active = false_v;
+    vkr_standard_scene_runtime_clear_gizmo_handles(application);
+    return;
   }
   state->gizmo_edit_pending = false_v;
   state->gizmo_drag.active = false_v;
@@ -1200,6 +1281,26 @@ vkr_internal bool8_t vkr_standard_scene_runtime_request_picking(
           camera, viewport_info->position, &state->gizmo_drag.pick_ray_origin,
           &state->gizmo_drag.pick_ray_direction))
     return false_v;
+  state->picked_collider = VKR_ENTITY_ID_INVALID;
+  if (state->collision_display && application->active_scene) {
+    VkrPhysicsRayHit hit = {0};
+    const Vec3 displacement =
+        vec3_scale(state->gizmo_drag.pick_ray_direction, camera->far_clip);
+    if (vkr_scene_physics_raycast(application->active_scene,
+                                  state->gizmo_drag.pick_ray_origin,
+                                  displacement, &hit)) {
+      const VkrEntityId owner = {.u64 = hit.entity_id};
+      const VkrEntityId child = {.u64 = hit.collider_entity_id};
+      const VkrEntityId selected_owner = vkr_scene_physics_owner(
+          application->active_scene, state->selected_entity);
+      if ((state->collision_display == 2 || owner.u64 == selected_owner.u64) &&
+          vkr_scene_entity_alive(application->active_scene, child) &&
+          vkr_scene_physics_owner(application->active_scene, child).u64 ==
+              owner.u64) {
+        state->picked_collider = child;
+      }
+    }
+  }
   state->pick_scene_generation = application->scene_generation;
   state->pick_selected_entity = state->selected_entity;
   vkr_picking_request(picking, viewport_info->target_x,
@@ -1323,15 +1424,27 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
 
   Vec3 offset = vec3_sub(hit, world_position);
 
+  const VkrEntityId owner =
+      vkr_scene_physics_owner(scene, state->selected_entity);
+  if (owner.u64 && !vkr_scene_physics_is_paused(scene)) {
+    return false_v;
+  }
+  const ScenePhysicsCollider *collider = vkr_entity_get_component(
+      scene->world, state->selected_entity, scene->comp_physics_collider);
+  state->gizmo_edit_entity =
+      collider ? collider->owner : state->selected_entity;
+  state->gizmo_collider_id = collider ? collider->authored_id : 0;
   state->gizmo_edit_pending =
       application->editor_viewport.enabled &&
-      vkr_scene_edit_read(scene, state->selected_entity, &state->gizmo_before);
+      vkr_scene_edit_read(scene, state->gizmo_edit_entity,
+                          &state->gizmo_before);
   if (!state->gizmo_edit_pending ||
       !(state->gizmo_before.fields & VKR_SCENE_EDIT_TRANSFORM)) {
     state->gizmo_edit_pending = false_v;
     return false_v;
   }
-  state->gizmo_before.fields = VKR_SCENE_EDIT_TRANSFORM;
+  state->gizmo_before.fields =
+      collider ? VKR_SCENE_EDIT_PHYSICS : VKR_SCENE_EDIT_TRANSFORM;
   state->gizmo_drag.entity = state->selected_entity;
   state->gizmo_drag.parent_inverse = parent_inverse;
   state->gizmo_drag.parent_rotation = parent_rotation;
@@ -1373,14 +1486,7 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
 
   if (viewport_info->position.x == state->gizmo_drag.pick_position.x &&
       viewport_info->position.y == state->gizmo_drag.pick_position.y) {
-    vkr_scene_set_position(scene, state->gizmo_drag.entity,
-                           state->gizmo_before.position);
-    vkr_scene_set_rotation(scene, state->gizmo_drag.entity,
-                           state->gizmo_before.rotation);
-    vkr_scene_set_scale(scene, state->gizmo_drag.entity,
-                        state->gizmo_before.scale);
-    vkr_standard_scene_runtime_sync_world_text_transform(
-        application, scene, state->gizmo_drag.entity);
+    (void)vkr_standard_scene_runtime_restore_gizmo_edit(application);
     return;
   }
 
@@ -1408,6 +1514,9 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
   Vec3 delta = vec3_sub(hit, state->gizmo_drag.start_hit);
 
   bool8_t updated = false_v;
+  Vec3 result_position = transform->position;
+  VkrQuat result_rotation = state->gizmo_drag.start_rotation;
+  Vec3 result_scale = state->gizmo_drag.start_scale;
 
   if (state->gizmo_drag.mode == VKR_GIZMO_MODE_TRANSLATE) {
     Vec3 new_pivot = state->gizmo_drag.start_world_position;
@@ -1431,7 +1540,7 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
       local_pos = vec3_new(local.x, local.y, local.z);
     }
 
-    vkr_scene_set_position(scene, state->gizmo_drag.entity, local_pos);
+    result_position = local_pos;
     updated = true_v;
   } else if (state->gizmo_drag.mode == VKR_GIZMO_MODE_SCALE) {
     Vec3 new_scale = state->gizmo_drag.start_scale;
@@ -1450,10 +1559,10 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
           scene, transform, state->gizmo_drag.start_world_position,
           state->gizmo_drag.text_pivot_local, new_scale,
           state->gizmo_drag.start_rotation);
-      vkr_scene_set_position(scene, state->gizmo_drag.entity, local_pos);
+      result_position = local_pos;
     }
 
-    vkr_scene_set_scale(scene, state->gizmo_drag.entity, new_scale);
+    result_scale = new_scale;
     updated = true_v;
   } else if (state->gizmo_drag.mode == VKR_GIZMO_MODE_ROTATE) {
     Vec3 pivot = state->gizmo_drag.start_world_position;
@@ -1490,16 +1599,16 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
           scene, transform, state->gizmo_drag.start_world_position,
           state->gizmo_drag.text_pivot_local, state->gizmo_drag.start_scale,
           new_rotation);
-      vkr_scene_set_position(scene, state->gizmo_drag.entity, local_pos);
+      result_position = local_pos;
     }
 
-    vkr_scene_set_rotation(scene, state->gizmo_drag.entity, new_rotation);
+    result_rotation = new_rotation;
     updated = true_v;
   }
 
   if (updated) {
-    vkr_standard_scene_runtime_sync_world_text_transform(
-        application, scene, state->gizmo_drag.entity);
+    (void)vkr_standard_scene_runtime_apply_gizmo_pose(
+        application, result_position, result_rotation, result_scale);
   }
 }
 
@@ -1655,7 +1764,13 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     vkr_scene_edit_reset(&state->edits,
                          &application->ui_system.retained_allocator,
                          application->scene_generation);
-    if (state->sidecar_path[0]) {
+    const char *physics_root_error = NULL;
+    if (!vkr_scene_physics_set_asset_root(scene,
+          string8_create((uint8_t *)state->physics_asset_root, strlen(state->physics_asset_root)),
+          &physics_root_error)) {
+      snprintf(state->edits.status, sizeof(state->edits.status), "%s",
+               physics_root_error ? physics_root_error : "Invalid physics asset root");
+    } else if (state->sidecar_path[0]) {
       (void)vkr_scene_edit_load(&state->edits, scene,
                                 string8_create((uint8_t *)state->sidecar_path,
                                                strlen(state->sidecar_path)));
@@ -2544,6 +2659,14 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
 
   vkr_scene_handle_update_and_sync(state->scene_resource.as.scene,
                                    &application->assets, delta_time);
+  if (!vkr_scene_physics_sensor_events(application->active_scene,
+                                       state->physics_sensor_events,
+                                       ArrayCount(state->physics_sensor_events),
+                                       &state->physics_sensor_event_count)) {
+    snprintf(state->edits.status, sizeof(state->edits.status),
+             "Physics sensor event drain failed: %s",
+             vkr_scene_physics_error(application->active_scene));
+  }
 
   if (application->gizmo_system.initialized) {
     if (!state->has_selection) {
@@ -2560,6 +2683,11 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
       return;
     }
 
+    if (vkr_scene_physics_owner(scene, state->selected_entity).u64 &&
+        !vkr_scene_physics_is_paused(scene)) {
+      vkr_gizmo_system_clear_target(&application->gizmo_system);
+      return;
+    }
     Mat4 parent_inverse;
     VkrQuat parent_rotation;
     if (!vkr_standard_scene_runtime_gizmo_parent_frame(
@@ -2588,22 +2716,25 @@ vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
   if (state->gizmo_edit_pending) {
     VkrScene *scene = application->active_scene;
     VkrSceneEditValues after;
-    if (scene && vkr_scene_edit_read(scene, state->gizmo_drag.entity, &after)) {
-      after.fields = VKR_SCENE_EDIT_TRANSFORM;
+    if (scene && vkr_scene_edit_read(scene, state->gizmo_edit_entity, &after)) {
+      after.fields = state->gizmo_before.fields;
       const bool8_t changed =
-          !vec3_equal(state->gizmo_before.position, after.position, 0.0f) ||
-          !vec3_equal(state->gizmo_before.scale, after.scale, 0.0f) ||
-          MemCompare(&state->gizmo_before.rotation, &after.rotation,
-                     sizeof(after.rotation)) != 0;
-      if (changed && !vkr_scene_edit_record_external(
-                         &state->edits, scene, state->gizmo_drag.entity,
-                         &state->gizmo_before, &after)) {
-        vkr_scene_set_position(scene, state->gizmo_drag.entity,
-                               state->gizmo_before.position);
-        vkr_scene_set_rotation(scene, state->gizmo_drag.entity,
-                               state->gizmo_before.rotation);
-        vkr_scene_set_scale(scene, state->gizmo_drag.entity,
-                            state->gizmo_before.scale);
+          (after.fields & VKR_SCENE_EDIT_PHYSICS)
+              ? MemCompare(&state->gizmo_before.physics, &after.physics,
+                           sizeof(after.physics)) != 0
+              : !vec3_equal(state->gizmo_before.position, after.position,
+                            0.0f) ||
+                    !vec3_equal(state->gizmo_before.scale, after.scale, 0.0f) ||
+                    MemCompare(&state->gizmo_before.rotation, &after.rotation,
+                               sizeof(after.rotation)) != 0;
+      if (changed &&
+          !vkr_scene_edit_record_external(&state->edits, scene,
+                                          state->gizmo_edit_entity,
+                                          &state->gizmo_before, &after) &&
+          !vkr_standard_scene_runtime_restore_gizmo_edit(application)) {
+        state->gizmo_drag.active = false_v;
+        vkr_standard_scene_runtime_clear_gizmo_handles(application);
+        return;
       }
     }
     state->gizmo_edit_pending = false_v;
@@ -2814,6 +2945,17 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
       picked_text = string8_lit("Picked: none");
     }
 
+    /* A rendered gizmo keeps priority. In collision display mode, an eligible
+       CPU ray hit selects its collider child even when the rendered mesh hit
+       has no picking ID for the debug wireframe. */
+    if (update_selection && state->picked_collider.u64 &&
+        vkr_scene_entity_alive(application->active_scene,
+                               state->picked_collider)) {
+      picked_entity = state->picked_collider;
+      picked_entity_valid = true_v;
+      picked_text = string8_create_formatted(frame_alloc, "Picked: collider %u",
+                                             picked_entity.parts.index);
+    }
     if (update_selection) {
       if (picked_entity_valid) {
         state->selected_entity = picked_entity;
@@ -2996,6 +3138,10 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     return;
   }
 
+  vkr_scene_physics_set_paused(
+      application->active_scene,
+      !application->editor_viewport.simulation_running);
+
   if (application->editor_viewport.enabled) {
     /* Resolution recovery invalidates GPU picks, not scene-owned edits. */
     if (application->editor_viewport.scene_error != VKR_RENDERER_ERROR_NONE &&
@@ -3069,6 +3215,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                                strlen(state->graphics_message));
   VkrGraphicsSettingsRequest graphics_request = {0};
   VkrSampleTransportAction transport_action = VKR_SAMPLE_TRANSPORT_NONE;
+  VkrSamplePhysicsRequest physics_request = {0};
   VkrSceneEditRequest scene_edit = {0};
   VkrSampleSceneRequest scene_request = {0};
   VkrSampleEditorStateRequest editor_state_request = {0};
@@ -3123,6 +3270,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       .graphics = &state->graphics,
       .graphics_request = &graphics_request,
       .transport_action = &transport_action,
+      .physics_request = &physics_request,
+      .collision_display = state->collision_display,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
       .scene_backdrop_blur = &application->editor_viewport.scene_backdrop_blur,
       .animation_preview = &application->animation_preview,
@@ -3189,6 +3338,10 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       snprintf(state->scene_status, sizeof(state->scene_status),
                "Save or discard scene edits before switching.");
     } else if (scene_request.path.length >= sizeof(state->scene_path_storage) ||
+               (scene_request.asset_root.length &&
+                !scene_request.asset_root.str) ||
+               scene_request.asset_root.length >=
+                   sizeof(state->physics_asset_root) ||
                scene_request.sidecar_path.length >=
                    sizeof(state->sidecar_path) ||
                (scene_request.select && !scene_request.path.length)) {
@@ -3198,6 +3351,13 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       /* Snapshot borrowed paths before unloading resets scene-owned storage. */
       char next_path[1024] = {0};
       char next_sidecar[1024] = {0};
+      char next_asset_root[1024] = {0};
+      if (scene_request.asset_root.length) {
+        MemCopy(next_asset_root, scene_request.asset_root.str,
+                 scene_request.asset_root.length);
+      } else {
+        snprintf(next_asset_root, sizeof(next_asset_root), "%s", PROJECT_SOURCE_DIR);
+      }
       if (scene_request.path.length) {
         MemCopy(next_path, scene_request.path.str, scene_request.path.length);
       }
@@ -3208,6 +3368,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       vkr_standard_scene_runtime_unload_scene_system(application);
       MemCopy(state->scene_path_storage, next_path, sizeof(next_path));
       MemCopy(state->sidecar_path, next_sidecar, sizeof(next_sidecar));
+      MemCopy(state->physics_asset_root, next_asset_root, sizeof(next_asset_root));
       state->scene_path = string8_create_from_cstr(
           (const uint8_t *)state->scene_path_storage, strlen(next_path));
       state->scene_status[0] = '\0';
@@ -3247,6 +3408,14 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
         state->selected_entity = scene_edit.entity;
         state->has_selection = true_v;
       }
+      break;
+    case VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS:
+      (void)vkr_scene_edit_apply_collision_layers(&state->edits, scene, scene_edit.collision_layers);
+      break;
+    case VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH:
+      (void)vkr_scene_edit_apply_physics_batch(&state->edits, scene,
+                                               scene_edit.physics_batch,
+                                               scene_edit.physics_batch_count);
       break;
     case VKR_SCENE_EDIT_APPLY:
       (void)vkr_scene_edit_apply(&state->edits, scene, scene_edit.entity,
@@ -3330,6 +3499,44 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   case VKR_SAMPLE_TRANSPORT_PAUSE_SIMULATION:
     application->editor_viewport.simulation_running = false_v;
     break;
+  case VKR_SAMPLE_TRANSPORT_STEP_SIMULATION: {
+    const char *error = NULL;
+    if (!application->editor_viewport.simulation_running &&
+        application->active_scene &&
+        !vkr_scene_physics_step(application->active_scene, &error)) {
+      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+               error ? error : "Physics step failed.");
+    }
+    break;
+  }
+  case VKR_SAMPLE_TRANSPORT_RESET_SIMULATION: {
+    const char *error = NULL;
+    application->editor_viewport.simulation_running = false_v;
+    vkr_scene_physics_set_paused(application->active_scene, true_v);
+    if (application->active_scene &&
+        !vkr_scene_physics_reset(application->active_scene, &error)) {
+      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+               error ? error : "Physics reset failed.");
+    } else {
+      application->editor_viewport.simulation_time = 0.0;
+    }
+    break;
+  }
+  case VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS: {
+    const char *error = NULL;
+    if (application->active_scene &&
+        !vkr_scene_physics_set_disabled(
+            application->active_scene,
+            !vkr_scene_physics_is_disabled(application->active_scene),
+            &error)) {
+      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+               error ? error : "Physics override failed.");
+    }
+    break;
+  }
+  case VKR_SAMPLE_TRANSPORT_CYCLE_COLLISION_DISPLAY:
+    state->collision_display = (state->collision_display + 1u) % 3u;
+    break;
   case VKR_SAMPLE_TRANSPORT_START_RENDERING:
     application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
     application->editor_viewport.scene_rendering_stopped = false_v;
@@ -3362,6 +3569,29 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     break;
   case VKR_SAMPLE_TRANSPORT_NONE:
     break;
+  }
+  vkr_scene_physics_set_paused(
+      application->active_scene,
+      !application->editor_viewport.simulation_running);
+  if (physics_request.set_body_disabled && application->active_scene) {
+    const char *error = NULL;
+    if (!vkr_scene_physics_set_body_disabled(
+            application->active_scene, physics_request.entity,
+            physics_request.body_disabled, &error)) {
+      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+               error ? error : "Body session mute rejected.");
+    }
+  }
+  if (physics_request.apply_impulse && application->active_scene) {
+    const char *error = NULL;
+    if (!vkr_scene_physics_impulse(
+            application->active_scene, physics_request.entity,
+            physics_request.impulse,
+            physics_request.at_point ? &physics_request.world_point : NULL,
+            &error)) {
+      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+               error ? error : "Impulse rejected.");
+    }
   }
 }
 
@@ -3421,6 +3651,15 @@ vkr_sample_runtime_update(void *state_ptr, VkrStandardSceneRuntime *application,
       application->editor_viewport.simulation_running ? delta : 0.0;
   application->editor_viewport.simulation_time += scene_delta;
   vkr_standard_scene_runtime_update_scene(application, scene_delta);
+  if (vkr_scene_physics_body_count(application->active_scene)) {
+    application->editor_viewport.simulation_time =
+        vkr_scene_physics_time(application->active_scene);
+    const char *physics_error =
+        vkr_scene_physics_error(application->active_scene);
+    if (physics_error && physics_error[0]) {
+      application->editor_viewport.simulation_running = false_v;
+    }
+  }
   vkr_standard_scene_runtime_update_ibl_validation_controls(application);
   vkr_standard_scene_runtime_poll_upload_wait_stats(application);
   vkr_standard_scene_runtime_dump_periodic_metrics(application);
@@ -3676,6 +3915,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
                                strlen(state->scene_path_storage));
   state->sidecar_path[0] = '\0';
   state->scene_status[0] = '\0';
+  snprintf(state->physics_asset_root, sizeof(state->physics_asset_root), "%s", PROJECT_SOURCE_DIR);
   state->modal = runtime_config->project_managed;
   if (!runtime_config->project_managed) {
     const bool8_t absolute =
@@ -3690,6 +3930,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->gizmo_edit_pending = false_v;
   application.editor_viewport.simulation_running =
       !runtime_config->presentation.paneled;
+  state->collision_display = 1u;
   if (!state->ui.initialize(state->ui.state, &application.editor_viewport.dock,
                             &application.ui_system)) {
     arena_destroy(state->stats_arena);

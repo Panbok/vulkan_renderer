@@ -2250,6 +2250,15 @@ vkr_internal VkrUiRect vkr_ui_uniform_inset(VkrUiRect rect, float32_t inset) {
   return vkr_ui_rect_inset(rect, (VkrUiEdges){inset, inset, inset, inset});
 }
 
+vkr_internal uint32_t vkr_ui_bezier_segments(const VkrUiFrameNode *node) {
+  const bool8_t straight =
+    node->bezier_points[0].x == node->bezier_points[1].x &&
+    node->bezier_points[0].y == node->bezier_points[1].y &&
+    node->bezier_points[2].x == node->bezier_points[3].x &&
+    node->bezier_points[2].y == node->bezier_points[3].y;
+  return straight ? 1u : 24u;
+}
+
 vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
                                    VkrUiDrawBuffer *buffer) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
@@ -2283,8 +2292,9 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
     const float32_t scale = system->content_scale;
     const float32_t half_width = node->bezier_width * scale * 0.5f;
     const Vec4 color = vkr_ui_linear_color(node->style.text_color);
-    for (uint32_t segment = 1; segment <= 24; ++segment) {
-      const float32_t t = (float32_t)segment / 24;
+    const uint32_t segments = vkr_ui_bezier_segments(node);
+    for (uint32_t segment = 1; segment <= segments; ++segment) {
+      const float32_t t = (float32_t)segment / (float32_t)segments;
       const float32_t u = 1 - t;
       const float32_t weights[4] = {u * u * u, 3 * u * u * t, 3 * u * t * t,
                                     t * t * t};
@@ -2540,7 +2550,7 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
   for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
     const VkrUiFrameNode *node = &system->frame_nodes[i];
     estimate += node->kind == VKR_UI_NODE_IMAGE    ? 26u
-                : node->kind == VKR_UI_NODE_BEZIER ? 33u
+                : node->kind == VKR_UI_NODE_BEZIER ? 9u + vkr_ui_bezier_segments(node)
                                                    : 9u;
     if (node->icon != VKR_UI_ICON_NONE)
       estimate += 20u;
@@ -2684,6 +2694,29 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
   };
   system->frame_open = false_v;
   return system->capture;
+}
+
+bool8_t vkr_ui_bezier_set_points(VkrUiSystem *system, VkrUiId id,
+                                 const Vec2 points[4]) {
+  if (!system || (!system->frame_open && !system->frame_draw_pending) ||
+      !points || id == VKR_UI_ID_NONE) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (!isfinite(points[i].x) || !isfinite(points[i].y)) {
+      return false_v;
+    }
+  }
+  VkrUiRetainedState *retained = vkr_ui_retained_find(system, id);
+  if (!retained || retained->last_seen_frame != system->frame_index) {
+    return false_v;
+  }
+  VkrUiFrameNode *node = &system->frame_nodes[retained->frame_node_index];
+  if (node->kind != VKR_UI_NODE_BEZIER) {
+    return false_v;
+  }
+  MemCopy(node->bezier_points, points, sizeof(node->bezier_points));
+  return true_v;
 }
 
 bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,

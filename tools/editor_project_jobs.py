@@ -329,6 +329,7 @@ class Job:
         self.pending_default_font = None
         self.project_builds = []
         self.inspections = {}
+        self.collision_inspections = set()
         self.texture_seeds = {}
         self.texture_tool_hash = None
         self.asset_display_names = {}
@@ -935,39 +936,151 @@ class Job:
             value = ((value ^ byte) * 1099511628211) & 0xffffffffffffffff
         return f'{value:016x}'
 
-    def remap_overlay(self, path, expected, scene):
-        overlay = load_json(path)
-        if overlay.get('version') != 1 or not isinstance(overlay.get('overrides'), list):
+    @staticmethod
+    def checked_overlay(overlay):
+        if (not isinstance(overlay, dict) or type(overlay.get('version')) is not int or
+                overlay['version'] not in (1, 2, 3) or not isinstance(overlay.get('overrides'), list)):
             raise JobError('Unsupported authored override journal')
+        if any(not isinstance(record, dict) for record in overlay['overrides']):
+            raise JobError('Invalid authored override record')
+        return overlay
+
+    @staticmethod
+    def overlay_references(record):
+        yield record, 'source_fingerprint', True
+        physics = record.get('physics')
+        if physics is None:
+            return
+        if not isinstance(physics, dict):
+            raise JobError('Invalid physics override')
+        attachment = physics.get('attachment')
+        if attachment is not None:
+            if not isinstance(attachment, dict) or not isinstance(attachment.get('source'), dict):
+                raise JobError('Invalid physics attachment source')
+            yield attachment['source'], 'fingerprint', attachment.get('enabled', False)
+        joints = physics.get('joints', [])
+        if not isinstance(joints, list) or len(joints) > 16:
+            raise JobError('Invalid physics joint list')
+        for joint in joints:
+            if not isinstance(joint, dict) or not isinstance(joint.get('target'), dict):
+                raise JobError('Invalid physics joint target')
+            yield joint['target'], 'fingerprint', joint.get('enabled', False)
+
+    @staticmethod
+    def overlay_colliders(overlay):
+        for record in overlay['overrides']:
+            physics = record.get('physics')
+            if physics is None:
+                continue
+            if not isinstance(physics, dict) or not isinstance(physics.get('colliders', []), list):
+                raise JobError('Invalid physics collider list')
+            colliders = physics.get('colliders', [])
+            if len(colliders) > 32:
+                raise JobError('Physics body exceeds collider capacity')
+            for collider in colliders:
+                if not isinstance(collider, dict) or not isinstance(collider.get('asset', ''), str):
+                    raise JobError('Invalid collision asset reference')
+                value = collider.get('asset', '')
+                if collider.get('shape') in (3, 4) and not value:
+                    raise JobError('Geometry collider requires a cooked collision asset')
+                if value:
+                    yield collider
+
+    def overlay_identity(self, reference, seed, scene, root):
+        index, node = reference.get('scene_entity'), reference.get('gltf_node')
+        entities = scene.get('entities', [])
+        if (type(index) is not int or not 0 <= index < len(entities) or
+                type(node) is not int or node < -1):
+            raise JobError('Authored override references a missing source entity')
+        mesh = entities[index].get('mesh', {})
+        asset_reference = mesh.get('asset')
+        mesh_path = mesh.get('path')
+        if asset_reference:
+            if asset_reference.get('scope') != 'scene':
+                raise JobError('Import the project mesh locally before cloning authored source-node edits')
+            inventory = scene.get('assets', self.assets)
+            asset = next((item for item in inventory if item['id'] == asset_reference['id']), None)
+            if not asset or not asset.get('artifacts'):
+                raise JobError('Authored source-node edits require a built mesh')
+            mesh_path = contained(root, asset['artifacts'][0]['path'])
+        if mesh_path:
+            info = self.inspect_mesh(mesh_path)
+            if node != -1 and node not in {entry['index'] for entry in info['nodes']}:
+                raise JobError('Authored override references a missing cooked source node')
+            if info['nodes']:
+                return self.mesh_identity(seed, info['fingerprint'])
+        elif node != -1:
+            raise JobError('Authored source-node edit targets an entity without a mesh')
+        return seed
+
+    def inspect_collision(self, path):
+        path = source_file(path)
+        if path.suffix.lower() != '.vkc' or not 48 <= path.stat().st_size <= 64 * 1024 * 1024:
+            raise JobError('Collision dependency must be a bounded cooked .vkc file')
+        fingerprint = digest(path)
+        key = (path, fingerprint)
+        if key not in self.collision_inspections:
+            self.run_tool('collision', ['--inspect', '--input', path], 'Validating cooked collision')
+            if digest(path) != fingerprint:
+                raise JobError('Collision dependency changed during validation')
+            self.collision_inspections.add(key)
+        return path
+
+    def import_overlay_collision(self, value, source_root, source_scene):
+        if Path(value).is_absolute():
+            return source_file(value)
+        if source_scene is None:
+            # Legacy runtime resolves physics assets against PROJECT_SOURCE_DIR.
+            return source_file(self.legacy_root / value)
+        validate_managed_path(value)
+        parts = Path(value).parts
+        # A detached scene bundle still carries its original workspace-relative
+        # references. Its own closure can be resolved without the old workspace.
+        if (len(parts) > 4 and parts[0] == 'projects' and parts[2] == 'scenes' and
+                parts[3] == source_scene['id']):
+            return source_file(contained(source_root, '/'.join(parts[4:])))
+        if source_root.parent.name != 'scenes' or source_root.parent.parent.parent.name != 'projects':
+            raise JobError('External collision dependency requires its original managed workspace')
+        source_workspace = source_root.parent.parent.parent.parent
+        return source_file(contained(source_workspace, value))
+
+    def remap_overlay(self, path, expected, scene, source_root=None, managed=False):
+        overlay = self.checked_overlay(load_json(path))
         seen = set()
         for record in overlay['overrides']:
             key = (record.get('scene_entity'), record.get('gltf_node'))
+            if any(type(value) is not int for value in key):
+                raise JobError('Invalid authored override source identity')
             if key in seen:
                 raise JobError('Duplicate authored override source identity')
             seen.add(key)
-            index = record.get('scene_entity')
-            entities = scene.get('entities', [])
-            if not isinstance(index, int) or not 0 <= index < len(entities):
-                raise JobError('Authored override references a missing entity')
-            old_hash, new_hash = expected, source_fingerprint(self.scene_id.encode())
-            reference = entities[index].get('mesh', {}).get('asset')
-            if reference:
-                if reference.get('scope') != 'scene':
-                    raise JobError('Import the project mesh locally before cloning authored source-node edits')
-                asset = next((item for item in self.assets if item['id'] == reference['id']), None)
-                if not asset or not asset.get('artifacts'):
-                    raise JobError('Authored source-node edits require a built mesh')
-                mesh = contained(self.stage, asset['artifacts'][0]['path'])
-                info = self.inspect_mesh(mesh)
-                if info['nodes']:
-                    old_hash = self.mesh_identity(old_hash, info['fingerprint'])
-                    new_hash = self.mesh_identity(new_hash, info['fingerprint'])
-            elif record.get('gltf_node') != -1:
-                raise JobError('Authored source-node edit targets an entity without a mesh')
-            if record.get('source_fingerprint') != old_hash:
-                raise JobError('Authored overrides conflict with the selected source scene')
-            record['source_fingerprint'] = new_hash
+            for reference, field, required in self.overlay_references(record):
+                if not required and reference.get(field) == '0000000000000000':
+                    continue
+                old_hash = self.overlay_identity(reference, expected, scene, self.stage)
+                if reference.get(field) != old_hash:
+                    raise JobError('Authored overrides conflict with the selected source scene')
+                reference[field] = self.overlay_identity(
+                    reference, source_fingerprint(self.scene_id.encode()), scene, self.stage)
+        for collider in self.overlay_colliders(overlay):
+            source = self.import_overlay_collision(collider['asset'], source_root,
+                                                   scene if managed else None)
+            self.inspect_collision(source)
+            copied = self.copy_blob(source, self.stage / 'builds' / 'collisions')
+            final_path = self.final / copied.relative_to(self.stage)
+            collider['asset'] = managed_reference(final_path, self.workspace)
         atomic_json(path, overlay)
+
+    def validate_overlay_dependencies(self, overlay, root):
+        for collider in self.overlay_colliders(overlay):
+            value = collider['asset']
+            validate_managed_path(value)
+            final_reference = managed_reference(self.final, self.workspace)
+            if value.startswith(final_reference + '/'):
+                path = contained(root, value[len(final_reference) + 1:])
+            else:
+                path = contained(self.workspace, value)
+            self.inspect_collision(path)
 
     def import_scene(self, source):
         source = source_file(source)
@@ -1021,7 +1134,7 @@ class Job:
         if overlay.is_file():
             copied = self.copy_file(overlay, self.stage / 'edits' / 'scene.editor.json')
             expected = source_fingerprint(scene['source_identity'].encode()) if scene.get('source_identity') else source_fingerprint(source.read_bytes())
-            self.remap_overlay(copied, expected, scene)
+            self.remap_overlay(copied, expected, scene, source.parent)
             scene['edit_overlay'] = managed_reference(copied, self.stage)
         scene.pop('source_identity', None)
         return scene
@@ -1053,7 +1166,7 @@ class Job:
         self.assets = scene.get('assets', [])
         if scene.get('edit_overlay'):
             self.remap_overlay(contained(self.stage, scene['edit_overlay'], must_exist=False),
-                               source_fingerprint(identifier(scene['id']).encode()), scene)
+                               source_fingerprint(identifier(scene['id']).encode()), scene, origin, managed=True)
         source_project_path = origin.parent.parent / 'project.json'
         source_project = load_json(source_project_path) if source_project_path.is_file() else {'assets': []}
         if not scene.get('default_font'):
@@ -1244,13 +1357,17 @@ class Job:
         overlay = scene.get('edit_overlay')
         if not overlay:
             return result
-        journal = load_json(contained(root, overlay))
-        if journal.get('version') != 1 or not isinstance(journal.get('overrides'), list):
-            raise JobError('Unsupported authored override journal')
+        journal = self.checked_overlay(load_json(contained(root, overlay)))
         runtime = load_json(result['runtime_path'])
         entities = runtime.get('entities', [])
         wrapper_edits, node_edits = {}, {}
         for edit in journal['overrides']:
+            for reference, field, required in self.overlay_references(edit):
+                if not required and reference.get(field) == '0000000000000000':
+                    continue
+                expected = self.overlay_identity(reference, source_fingerprint(self.scene_id.encode()), runtime, root)
+                if reference.get(field) != expected:
+                    raise JobError('Authored physics/source identity conflicts with scene')
             index, node = edit.get('scene_entity'), edit.get('gltf_node')
             if not isinstance(index, int) or not 0 <= index < len(entities) or not isinstance(node, int) or node < -1:
                 raise JobError('Authored override target is unavailable for baking')
@@ -1668,6 +1785,8 @@ class Job:
         edit_path = contained(root, overlay, must_exist=True) if overlay else root / 'edits' / 'scene.editor.json'
         if overlay and not edit_path.is_file():
             raise JobError('Selected authored override journal is unavailable')
+        if overlay:
+            self.validate_overlay_dependencies(self.checked_overlay(load_json(edit_path)), root)
         if self.read_only:
             selected_overlay = load_json(edit_path) if overlay else {'version': 1, 'overrides': []}
             edit_path = self.runtime_directory / 'scene.editor.json'

@@ -25,13 +25,15 @@ typedef enum EditorBakeKind {
   EDITOR_BAKE_ANISOTROPY_TABLE,
   EDITOR_BAKE_DIFFUSE_VOLUME,
   EDITOR_BAKE_REFLECTION_PROBE,
+  EDITOR_BAKE_COLLISION_HULL,
+  EDITOR_BAKE_COLLISION_MESH,
   EDITOR_BAKE_KIND_COUNT,
   EDITOR_BAKE_PROJECT = EDITOR_BAKE_KIND_COUNT,
 } EditorBakeKind;
 
 static const char *const editor_bakery_kind_names[] = {
     "Mesh",    "Font",       "Texture", "Texture folder", "GGX DFG",
-    "Charlie", "Anisotropy", "Diffuse", "Reflection", "Project"};
+    "Charlie", "Anisotropy", "Diffuse", "Reflection", "Hull", "Collision mesh", "Project"};
 
 typedef enum EditorBakeryView {
   EDITOR_BAKERY_SETUP,
@@ -111,7 +113,8 @@ static const char *editor_bakery_status(EditorBakeStatus status) {
 
 static bool8_t editor_bakery_uses_explicit_output(EditorBakeKind kind) {
   return kind == EDITOR_BAKE_DIFFUSE_VOLUME ||
-         kind == EDITOR_BAKE_REFLECTION_PROBE;
+         kind == EDITOR_BAKE_REFLECTION_PROBE ||
+         kind == EDITOR_BAKE_COLLISION_HULL || kind == EDITOR_BAKE_COLLISION_MESH;
 }
 
 static bool8_t editor_bakery_is_static_table(EditorBakeKind kind) {
@@ -167,6 +170,15 @@ static void *editor_bakery_worker(void *argument) {
     arguments[count++] = job->input;
     arguments[count++] = "--output";
     arguments[count++] = job->output;
+  } else if (job->kind == EDITOR_BAKE_COLLISION_HULL ||
+             job->kind == EDITOR_BAKE_COLLISION_MESH) {
+    executable = VKR_EDITOR_COLLISION_COOKER_PATH;
+    arguments[count++] = "--input";
+    arguments[count++] = job->input;
+    arguments[count++] = "--output";
+    arguments[count++] = job->output;
+    arguments[count++] = "--kind";
+    arguments[count++] = job->kind == EDITOR_BAKE_COLLISION_HULL ? "hull" : "mesh";
   } else if (job->kind == EDITOR_BAKE_FONT) {
     executable = VKR_EDITOR_FONT_COOKER_PATH;
     arguments[count++] = "--config";
@@ -483,6 +495,11 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
              "Mesh source must end in .gltf, .glb or .obj.");
     return;
   }
+  if ((kind == EDITOR_BAKE_COLLISION_HULL || kind == EDITOR_BAKE_COLLISION_MESH) &&
+      !string8_equalsi(&source_extension, &gltf) && !string8_equalsi(&source_extension, &glb)) {
+    snprintf(bakery->message, sizeof(bakery->message), "Collision source must end in .gltf or .glb.");
+    return;
+  }
   if (editor_bakery_uses_explicit_output(kind) && !output[0]) {
     snprintf(bakery->message, sizeof(bakery->message),
              "Enter an output path before adding this bake.");
@@ -500,6 +517,11 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
         bakery->message, sizeof(bakery->message), "%s output must end in %s.",
         kind == EDITOR_BAKE_DIFFUSE_VOLUME ? "Diffuse volume" : "Reflection",
         kind == EDITOR_BAKE_DIFFUSE_VOLUME ? ".vkdv" : ".vkt");
+    return;
+  }
+  if ((kind == EDITOR_BAKE_COLLISION_HULL || kind == EDITOR_BAKE_COLLISION_MESH) &&
+      (!output_dot || strcmp(output_dot, ".vkc"))) {
+    snprintf(bakery->message, sizeof(bakery->message), "Collision output must end in .vkc.");
     return;
   }
   if (bakery->job_count == EDITOR_BAKERY_JOB_CAPACITY) {
@@ -740,6 +762,8 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
         "Fixed output for the shared anisotropic GGX static table.",
         "Scene JSON used to bake a diffuse volume.",
         "Scene JSON captured into a six-face reflection probe.",
+        "Static glTF/GLB geometry; cooks one convex hull. Split detailed sources into subtrees with the CLI.",
+        "Static glTF/GLB geometry; cooks triangle collision for static or kinematic bodies.",
     };
     config.tooltip = editor_bakery_string(path_hints[bakery->kind]);
     config.disabled = editor_bakery_is_static_table(bakery->kind);
@@ -786,7 +810,9 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       config = editor_bakery_widget(wide ? 0u : 1u, wide ? 1u : 0u);
       config.placement.column_span = wide ? 2u : 1u;
       vkr_editor_field_style(&config);
-      config.tooltip = bakery->kind == EDITOR_BAKE_DIFFUSE_VOLUME
+      config.tooltip = (bakery->kind == EDITOR_BAKE_COLLISION_HULL || bakery->kind == EDITOR_BAKE_COLLISION_MESH)
+                           ? string8_lit("Collision asset output: .vkc")
+                       : bakery->kind == EDITOR_BAKE_DIFFUSE_VOLUME
                            ? string8_lit("Volume output: .vkdv")
                            : string8_lit("Cubemap output: .vkt");
       VkrUiTextEditBuffer output = {.data = bakery->output_paths[bakery->kind],

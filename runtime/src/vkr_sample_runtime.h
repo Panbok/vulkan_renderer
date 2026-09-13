@@ -27,13 +27,28 @@ typedef enum VkrSampleTransportAction {
   VKR_SAMPLE_TRANSPORT_START_RENDERING,
   VKR_SAMPLE_TRANSPORT_STOP_RENDERING,
   VKR_SAMPLE_TRANSPORT_TOGGLE_CAMERA,
+  VKR_SAMPLE_TRANSPORT_STEP_SIMULATION,
+  VKR_SAMPLE_TRANSPORT_RESET_SIMULATION,
+  VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS,
+  VKR_SAMPLE_TRANSPORT_CYCLE_COLLISION_DISPLAY,
 } VkrSampleTransportAction;
+
+typedef struct VkrSamplePhysicsRequest {
+  VkrEntityId entity;
+  Vec3 impulse;
+  Vec3 world_point;
+  bool8_t apply_impulse;
+  bool8_t at_point;
+  bool8_t set_body_disabled;
+  bool8_t body_disabled;
+} VkrSamplePhysicsRequest;
 
 /* Consumed after UI build. Paths are copied before the frame scratch expires.
  * Selection replaces the old scene only after the dirty-edit decision. */
 typedef struct VkrSampleSceneRequest {
   String8 path;
   String8 sidecar_path;
+  String8 asset_root; /* Managed workspace root; empty uses repository asset root. */
   bool8_t select;
   bool8_t unload;
   bool8_t discard_edits;
@@ -160,12 +175,15 @@ typedef struct VkrSampleUiFrame {
   uint32_t texture_demanded_missing_count;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
+  VkrSamplePhysicsRequest *physics_request;
+  uint32_t collision_display; /* 0 off, 1 selected body, 2 all (bounded). */
   bool8_t mapping_valid;
   bool8_t scene_only;
   bool8_t mouse_captured;
   /* Runtime owns Scene keyboard focus; editor updates it during build. */
   bool8_t *scene_keyboard_focus;
-  /** Frame-local request to blur the retained Scene image during preparation. */
+  /** Frame-local request to blur the retained Scene image during preparation.
+   */
   bool8_t *scene_backdrop_blur;
 } VkrSampleUiFrame;
 

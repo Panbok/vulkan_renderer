@@ -283,6 +283,10 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
  * draw preparation. Input keeps using the preceding presented bounds. */
 bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,
                                 VkrUiRect rect_pt);
+/* Update a noninteractive wire after the current scene/camera pose is known,
+ * before draw preparation. Coordinates remain widget-local points. */
+bool8_t vkr_ui_bezier_set_points(VkrUiSystem *system, VkrUiId id,
+                                 const Vec2 points[4]);
 
 VkrUiInputCapture vkr_ui_system_capture(const VkrUiSystem *system);
 

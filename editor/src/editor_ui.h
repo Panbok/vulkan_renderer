@@ -5,6 +5,7 @@
 #include "editor_console.h"
 #include "editor_content.h"
 #include "editor_scene_panels.h"
+#include "editor_physics_settings.h"
 #include "vkr_sample_runtime.h"
 
 typedef struct VkrEditorProjects VkrEditorProjects;
@@ -22,6 +23,7 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_MEMORY,
   VKR_EDITOR_WINDOW_HELP,
   VKR_EDITOR_WINDOW_ANIMATION,
+  VKR_EDITOR_WINDOW_PHYSICS,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -48,12 +50,20 @@ typedef struct VkrEditorLabelAnchor {
   VkrEntityId entity;
 } VkrEditorLabelAnchor;
 
+typedef struct VkrEditorPhysicsLine VkrEditorPhysicsLine;
+
 typedef struct VkrEditorUi {
+  VkrEditorPhysicsLine *physics_lines;
+  uint32_t physics_line_count;
+  uint64_t physics_scene_generation;
+  VkrUiId physics_panel;
+  bool8_t physics_lines_truncated;
   VkrEditorProjects *projects;
   VkrEditorConsole console;
   VkrEditorBakery *bakery;
   VkrEditorContent *content;
   VkrEditorScenePanels *scene_panels;
+  VkrEditorPhysicsSettings *physics_settings;
   VkrEditorMenu menu;
   bool8_t labels_expanded;
   bool8_t labels_enabled;

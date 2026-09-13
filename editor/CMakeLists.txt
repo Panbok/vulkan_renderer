@@ -15,6 +15,8 @@ add_executable(vkr_editor
     src/editor_bakery.c
     src/editor_scene_panels.c
     src/editor_labels.c
+    src/editor_physics.c
+    src/editor_physics_settings.c
     src/editor_graphics.c
     src/editor_content.c
     src/editor_projects.c
@@ -24,7 +26,7 @@ target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 vkr_configure_application_target(vkr_editor)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-add_dependencies(vkr_editor vkr_mesh_cooker vkr_animation_cooker vkr_font_cooker vkr_vkt_packer
+add_dependencies(vkr_editor vkr_collision_cooker vkr_mesh_cooker vkr_animation_cooker vkr_font_cooker vkr_vkt_packer
     vkr_dfg_cooker vkr_sheen_cooker vkr_anisotropy_cooker
     vkr_diffuse_baker vkr_hdr_cube_packer vkr_harness vkr_asset_preview)
 target_compile_definitions(vkr_editor PRIVATE
@@ -36,6 +38,7 @@ target_compile_definitions(vkr_editor PRIVATE
     VKR_EDITOR_HDR_CUBE_PACKER_PATH="$<TARGET_FILE:vkr_hdr_cube_packer>"
     VKR_EDITOR_HARNESS_PATH="$<TARGET_FILE:vkr_harness>"
     VKR_EDITOR_PYTHON_PATH="${Python3_EXECUTABLE}"
+    VKR_EDITOR_COLLISION_COOKER_PATH="$<TARGET_FILE:vkr_collision_cooker>"
     VKR_EDITOR_MESH_COOKER_PATH="$<TARGET_FILE:vkr_mesh_cooker>"
     VKR_EDITOR_ANIMATION_COOKER_PATH="$<TARGET_FILE:vkr_animation_cooker>"
     VKR_EDITOR_FONT_COOKER_PATH="$<TARGET_FILE:vkr_font_cooker>"

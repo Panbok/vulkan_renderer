@@ -3,6 +3,8 @@
 #include "editor_internal.h"
 #include "editor_project_store.h"
 #include "editor_projects.h"
+#include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_animation.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -10,6 +12,12 @@
 #include <string.h>
 
 #define PANEL_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
+#define PHYSICS_COLLIDER_STRIDE 14u
+#define PHYSICS_ATTACHMENT_BASE                                                \
+  (8u + VKR_SCENE_PHYSICS_MAX_COLLIDERS * PHYSICS_COLLIDER_STRIDE)
+#define PHYSICS_JOINT_BASE (PHYSICS_ATTACHMENT_BASE + 6u)
+#define PHYSICS_NUMBER_COUNT                                                   \
+  (PHYSICS_JOINT_BASE + VKR_SCENE_PHYSICS_MAX_JOINTS * 22u)
 #define NO_ROW UINT32_MAX
 #define TREE_VISIBLE_SLOTS 96u
 
@@ -48,6 +56,18 @@ struct VkrEditorScenePanels {
   VkrSceneEditValues original_values;
   char numbers[21][48];
   char original_numbers[21][48];
+  char physics_numbers[PHYSICS_NUMBER_COUNT][48];
+  char physics_original_numbers[PHYSICS_NUMBER_COUNT][48];
+  char impulse_numbers[6][48];
+  bool8_t impulse_at_point;
+  VkrUiId physics_focused_id;
+  uint64_t open_collider;
+  uint64_t open_joint;
+  uint32_t preset_index;
+  bool8_t show_collision_layers;
+  bool8_t show_attachment;
+  bool8_t show_joints;
+  char bone_filter[64];
   char error[128];
   bool8_t changed;
   float32_t inspector_scroll;
@@ -437,8 +457,197 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
                &c);
 }
 
+static void physics_numbers_read(VkrEditorScenePanels *p) {
+  const VkrScenePhysicsSnapshot *body = &p->values.physics;
+  float32_t numbers[PHYSICS_NUMBER_COUNT] = {body->mass,
+                                             body->friction,
+                                             body->restitution,
+                                             body->gravity_factor,
+                                             body->linear_damping,
+                                             body->angular_damping,
+                                             body->collision_layer,
+                                             body->collision_mask};
+  for (uint32_t i = 0; i < body->collider_count; ++i) {
+    const VkrSceneColliderConfig *c = &body->colliders[i];
+    float32_t *n = &numbers[8u + i * PHYSICS_COLLIDER_STRIDE];
+    n[0] = c->position.x;
+    n[1] = c->position.y;
+    n[2] = c->position.z;
+    vkr_quat_to_euler(c->rotation, &n[3], &n[4], &n[5]);
+    for (uint32_t axis = 3; axis < 6; ++axis) {
+      n[axis] *= 57.2957795f;
+    }
+    n[6] = c->half_extent.x;
+    n[7] = c->half_extent.y;
+    n[8] = c->half_extent.z;
+    n[9] = c->radius;
+    n[10] = c->half_height;
+    n[11] = c->scale.x;
+    n[12] = c->scale.y;
+    n[13] = c->scale.z;
+  }
+  float32_t *attachment = &numbers[PHYSICS_ATTACHMENT_BASE];
+  attachment[0] = body->attachment.position.x;
+  attachment[1] = body->attachment.position.y;
+  attachment[2] = body->attachment.position.z;
+  vkr_quat_to_euler(body->attachment.rotation, &attachment[3], &attachment[4],
+                    &attachment[5]);
+  for (uint32_t i = 3; i < 6; ++i) {
+    attachment[i] *= 57.2957795f;
+  }
+  for (uint32_t i = 0; i < body->joint_count; ++i) {
+    const VkrSceneJointConfig *joint = &body->joints[i];
+    const Vec3 vectors[] = {joint->anchor_a, joint->anchor_b, joint->axis_a,
+                            joint->axis_b,   joint->normal_a, joint->normal_b};
+    float32_t *values = &numbers[PHYSICS_JOINT_BASE + i * 22u];
+    for (uint32_t j = 0; j < ArrayCount(vectors); ++j) {
+      values[j * 3u] = vectors[j].x;
+      values[j * 3u + 1u] = vectors[j].y;
+      values[j * 3u + 2u] = vectors[j].z;
+    }
+    values[18] = joint->min_limit;
+    values[19] = joint->max_limit;
+    values[20] = joint->swing_normal_limit;
+    values[21] = joint->swing_plane_limit;
+  }
+  for (uint32_t i = 0; i < PHYSICS_NUMBER_COUNT; ++i) {
+    snprintf(p->physics_numbers[i], sizeof(p->physics_numbers[i]), "%.7g",
+             numbers[i]);
+  }
+  MemCopy(p->physics_original_numbers, p->physics_numbers,
+          sizeof(p->physics_numbers));
+}
+
+static bool8_t physics_numbers_parse(VkrEditorScenePanels *p,
+                                     VkrScenePhysicsSnapshot *body) {
+  for (uint32_t i = 0; i < 8u + body->collider_count * PHYSICS_COLLIDER_STRIDE;
+       ++i) {
+    if (!strcmp(p->physics_numbers[i], p->physics_original_numbers[i])) {
+      continue;
+    }
+    char *end;
+    float32_t value = strtof(p->physics_numbers[i], &end);
+    if (end == p->physics_numbers[i] || *end || !isfinite(value)) {
+      snprintf(p->error, sizeof(p->error),
+               "Physics values must be finite numbers.");
+      return false_v;
+    }
+    if (i < 6) {
+      float32_t *fields[] = {&body->mass,           &body->friction,
+                             &body->restitution,    &body->gravity_factor,
+                             &body->linear_damping, &body->angular_damping};
+      *fields[i] = value;
+      continue;
+    }
+    if (i < 8) {
+      if (value < 0 || value > UINT16_MAX || floorf(value) != value) {
+        snprintf(p->error, sizeof(p->error),
+                 "Collision bits must be integers from 0 to 65535.");
+        return false_v;
+      }
+      if (i == 6) {
+        body->collision_layer = (uint16_t)value;
+      } else {
+        body->collision_mask = (uint16_t)value;
+      }
+      continue;
+    }
+    VkrSceneColliderConfig *c =
+        &body->colliders[(i - 8u) / PHYSICS_COLLIDER_STRIDE];
+    const uint32_t field = (i - 8u) % PHYSICS_COLLIDER_STRIDE;
+    if (field < 3) {
+      (&c->position.x)[field] = value;
+    } else if (field < 6) {
+      /* Convert all edited Euler axes together below. */
+    } else if (field < 9) {
+      (&c->half_extent.x)[field - 6u] = value;
+    } else if (field == 9) {
+      c->radius = value;
+    } else if (field == 10) {
+      c->half_height = value;
+    } else {
+      (&c->scale.x)[field - 11u] = value;
+    }
+  }
+  for (uint32_t i = 0; i < body->collider_count; ++i) {
+    const uint32_t offset = 8u + i * PHYSICS_COLLIDER_STRIDE + 3u;
+    bool8_t changed = false_v;
+    float32_t angles[3];
+    vkr_quat_to_euler(body->colliders[i].rotation, &angles[0], &angles[1],
+                      &angles[2]);
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      if (strcmp(p->physics_numbers[offset + axis],
+                 p->physics_original_numbers[offset + axis])) {
+        angles[axis] =
+            strtof(p->physics_numbers[offset + axis], NULL) * 0.0174532925f;
+        changed = true_v;
+      }
+    }
+    if (changed) {
+      body->colliders[i].rotation =
+          vkr_quat_from_euler(angles[0], angles[1], angles[2]);
+    }
+  }
+  float32_t attachment_angles[3];
+  vkr_quat_to_euler(body->attachment.rotation, &attachment_angles[0],
+                    &attachment_angles[1], &attachment_angles[2]);
+  bool8_t attachment_rotation_changed = false_v;
+  for (uint32_t i = PHYSICS_ATTACHMENT_BASE;
+       i < PHYSICS_JOINT_BASE + body->joint_count * 22u; ++i) {
+    if (!strcmp(p->physics_numbers[i], p->physics_original_numbers[i])) {
+      continue;
+    }
+    char *end;
+    const float32_t value = strtof(p->physics_numbers[i], &end);
+    if (end == p->physics_numbers[i] || *end || !isfinite(value)) {
+      snprintf(p->error, sizeof(p->error),
+               "Attachment and joint values must be finite.");
+      return false_v;
+    }
+    if (i < PHYSICS_JOINT_BASE) {
+      const uint32_t field = i - PHYSICS_ATTACHMENT_BASE;
+      if (field < 3) {
+        (&body->attachment.position.x)[field] = value;
+      } else {
+        attachment_angles[field - 3u] = value * 0.0174532925f;
+        attachment_rotation_changed = true_v;
+      }
+      continue;
+    }
+    VkrSceneJointConfig *joint = &body->joints[(i - PHYSICS_JOINT_BASE) / 22u];
+    const uint32_t field = (i - PHYSICS_JOINT_BASE) % 22u;
+    if (field < 18) {
+      Vec3 *vectors[] = {&joint->anchor_a, &joint->anchor_b, &joint->axis_a,
+                         &joint->axis_b,   &joint->normal_a, &joint->normal_b};
+      (&vectors[field / 3u]->x)[field % 3u] = value;
+    } else {
+      float32_t *limits[] = {&joint->min_limit, &joint->max_limit,
+                             &joint->swing_normal_limit,
+                             &joint->swing_plane_limit};
+      *limits[field - 18u] = value;
+    }
+  }
+  if (attachment_rotation_changed) {
+    body->attachment.rotation = vkr_quat_from_euler(
+        attachment_angles[0], attachment_angles[1], attachment_angles[2]);
+  }
+  return true_v;
+}
+
 static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
+  if (p->physics_focused_id && f->ui->focused_id == p->physics_focused_id) {
+    f->ui->focused_id = 0;
+  }
+  if (p->physics_focused_id && f->ui->active_id == p->physics_focused_id) {
+    f->ui->active_id = 0;
+  }
+  p->physics_focused_id = 0;
   (void)vkr_scene_edit_read(f->scene, f->selected_entity, &p->values);
+  physics_numbers_read(p);
+  for (uint32_t i = 0; i < 6; ++i) {
+    snprintf(p->impulse_numbers[i], sizeof(p->impulse_numbers[i]), "%u",
+             i == 1 ? 5u : 0u);
+  }
   float32_t rotation[3];
   vkr_quat_to_euler(p->values.rotation, &rotation[0], &rotation[1],
                     &rotation[2]);
@@ -649,9 +858,24 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
                    sizeof(out->rectangle_light)))
       out->fields |= VKR_SCENE_EDIT_RECTANGLE_LIGHT;
   }
+  out->physics = p->values.physics;
+  if (!physics_numbers_parse(p, &out->physics)) {
+    return false_v;
+  }
+  if (MemCompare(&out->physics, &p->original_values.physics,
+                 sizeof(out->physics))) {
+    out->fields |= VKR_SCENE_EDIT_PHYSICS;
+  }
+  const char *physics_error = NULL;
+  if ((out->fields & VKR_SCENE_EDIT_PHYSICS) &&
+      !vkr_scene_physics_snapshot_validate(&out->physics, &physics_error)) {
+    snprintf(p->error, sizeof(p->error), "%s",
+             physics_error ? physics_error : "Invalid physics values.");
+    return false_v;
+  }
   if (out->fields && !vkr_scene_edit_validate(out)) {
     snprintf(p->error, sizeof(p->error),
-             "Scale must be nonzero; light values must be valid.");
+             "Invalid transform, light or physics values.");
     return false_v;
   }
   return true_v;
@@ -704,6 +928,948 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
   (void)vkr_ui_pop_id(ui);
 }
 
+static bool8_t physics_number_widget(VkrEditorScenePanels *p, VkrUiSystem *ui,
+                                     float32_t w, float32_t *y,
+                                     const char *label, uint32_t index,
+                                     bool8_t disabled) {
+  (void)vkr_ui_push_id_u64(ui, index);
+  VkrUiWidgetConfig c = widget_at(5, *y, w * 0.53f - 6, 24);
+  vkr_ui_label(ui, string8_lit("label"),
+               string8_create((uint8_t *)label, strlen(label)), &c);
+  c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
+  c.disabled = disabled;
+  vkr_editor_field_style(&c);
+  VkrUiTextEditBuffer buffer = {(uint8_t *)p->physics_numbers[index],
+                                (uint32_t)strlen(p->physics_numbers[index]),
+                                sizeof(p->physics_numbers[index])};
+  p->changed |= vkr_ui_text_field(ui, string8_lit("number"), &buffer, &c);
+  bool8_t focused = ui->focused_id == vkr_ui_id_stack_widget_label(
+                                          &ui->id_stack, string8_lit("number"));
+  if (focused) {
+    p->physics_focused_id = ui->focused_id;
+  }
+  (void)vkr_ui_pop_id(ui);
+  *y += 26;
+  return focused;
+}
+
+static uint64_t physics_next_collider_id(const VkrScenePhysicsSnapshot *body) {
+  /* At most 32 IDs are live. Searching this bounded range avoids overflow
+     when a loaded collider uses UINT64_MAX. */
+  for (uint64_t candidate = 1;
+       candidate <= VKR_SCENE_PHYSICS_MAX_COLLIDERS + 1u; ++candidate) {
+    bool8_t used = false_v;
+    for (uint32_t i = 0; i < body->collider_count; ++i) {
+      used |= body->colliders[i].authored_id == candidate;
+    }
+    if (!used) {
+      return candidate;
+    }
+  }
+  return 0;
+}
+
+static bool8_t physics_fit_collider(VkrEditorScenePanels *p,
+                                    const VkrSampleUiFrame *f,
+                                    VkrSceneColliderConfig *collider) {
+  const SceneTransform *root = vkr_entity_get_component(
+      f->scene->world, f->selected_entity, f->scene->comp_transform);
+  if (!root || !f->assets) {
+    return false_v;
+  }
+  const Mat4 inverse = mat4_inverse_affine(root->world);
+  Vec3 lower = {0}, upper = {0};
+  bool8_t found = false_v;
+  for (uint32_t i = 0; i < f->scene->topo_count; ++i) {
+    VkrEntityId candidate = f->scene->topo_order[i];
+    VkrEntityId ancestor = candidate;
+    while (ancestor.u64 && ancestor.u64 != f->selected_entity.u64) {
+      const SceneTransform *transform = vkr_entity_get_component(
+          f->scene->world, ancestor, f->scene->comp_transform);
+      ancestor = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+    }
+    if (!ancestor.u64) {
+      continue;
+    }
+    const SceneMeshRenderer *mesh = vkr_entity_get_component(
+        f->scene->world, candidate, f->scene->comp_mesh_renderer);
+    const VkrMeshInstance *instance =
+        mesh ? vkr_mesh_manager_get_instance(&f->assets->mesh_manager,
+                                             mesh->instance)
+             : NULL;
+    if (!instance || !instance->bounds_valid ||
+        !isfinite(instance->bounds_world_radius) ||
+        instance->bounds_world_radius <= 0) {
+      continue;
+    }
+    const Vec3 center_world = instance->bounds_world_center;
+    const Vec4 center_local = mat4_mul_vec4(
+        inverse, vec4_new(center_world.x, center_world.y, center_world.z, 1));
+    const Vec3 center = {center_local.x, center_local.y, center_local.z};
+    const float32_t r = instance->bounds_world_radius;
+    const Vec3 radius = {
+        r * sqrtf(inverse.elements[0] * inverse.elements[0] +
+                  inverse.elements[4] * inverse.elements[4] +
+                  inverse.elements[8] * inverse.elements[8]),
+        r * sqrtf(inverse.elements[1] * inverse.elements[1] +
+                  inverse.elements[5] * inverse.elements[5] +
+                  inverse.elements[9] * inverse.elements[9]),
+        r * sqrtf(inverse.elements[2] * inverse.elements[2] +
+                  inverse.elements[6] * inverse.elements[6] +
+                  inverse.elements[10] * inverse.elements[10])};
+    const Vec3 lo = vec3_sub(center, radius), hi = vec3_add(center, radius);
+    lower = found ? vec3_new(Min(lower.x, lo.x), Min(lower.y, lo.y),
+                             Min(lower.z, lo.z))
+                  : lo;
+    upper = found ? vec3_new(Max(upper.x, hi.x), Max(upper.y, hi.y),
+                             Max(upper.z, hi.z))
+                  : hi;
+    found = true_v;
+  }
+  if (!found) {
+    snprintf(p->error, sizeof(p->error), "No loaded render bounds to fit.");
+    return false_v;
+  }
+  collider->position = vec3_scale(vec3_add(lower, upper), 0.5f);
+  collider->rotation = vkr_quat_identity();
+  collider->scale = vec3_one();
+  collider->half_extent = vec3_scale(vec3_sub(upper, lower), 0.5f);
+  collider->radius =
+      collider->shape == VKR_PHYSICS_CAPSULE
+          ? hypotf(collider->half_extent.x, collider->half_extent.z)
+          : vec3_length(collider->half_extent);
+  collider->half_height = collider->half_extent.y;
+  return true_v;
+}
+
+static bool8_t physics_source_equal(const SceneSourceIdentity *a,
+                                    const SceneSourceIdentity *b) {
+  return a->scene_entity_index == b->scene_entity_index &&
+         a->gltf_node_index == b->gltf_node_index &&
+         a->source_fingerprint == b->source_fingerprint;
+}
+
+static VkrEntityId physics_source_entity(const VkrScene *scene,
+                                         const SceneSourceIdentity *source) {
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    const VkrEntityId entity = scene->topo_order[i];
+    const SceneSourceIdentity *identity = vkr_entity_get_component(
+        scene->world, entity, scene->comp_source_identity);
+    if (identity && physics_source_equal(source, identity)) {
+      return entity;
+    }
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+static VkrEntityId physics_next_reference(const VkrScene *scene,
+                                          VkrEntityId current,
+                                          VkrEntityId exclude,
+                                          bool8_t animation) {
+  uint32_t start = 0;
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    if (scene->topo_order[i].u64 == current.u64) {
+      start = i + 1u;
+      break;
+    }
+  }
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    const VkrEntityId entity =
+        scene->topo_order[(start + i) % scene->topo_count];
+    if (entity.u64 == exclude.u64 ||
+        !vkr_entity_get_component(scene->world, entity,
+                                  scene->comp_source_identity)) {
+      continue;
+    }
+    VkrScenePhysicsSnapshot body;
+    if (animation
+            ? vkr_scene_animation_get_player(scene, entity) != NULL
+            : vkr_scene_physics_read(scene, entity, &body) && body.present) {
+      return entity;
+    }
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+static void physics_layer_widgets(VkrEditorScenePanels *p,
+                                  const VkrSampleUiFrame *f, float32_t w,
+                                  float32_t *y, bool8_t disabled) {
+  VkrUiSystem *ui = f->ui;
+  VkrScenePhysicsSnapshot *body = &p->values.physics;
+  VkrSceneCollisionLayers settings;
+  vkr_scene_collision_layers_read(f->scene, &settings);
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  if (vkr_ui_button(ui, string8_lit("layers.expand"),
+                    p->show_collision_layers
+                        ? string8_lit("Hide layers and presets")
+                        : string8_lit("Layers and presets"),
+                    &c)) {
+    p->show_collision_layers = !p->show_collision_layers;
+  }
+  *y += 26;
+  if (!p->show_collision_layers) {
+    return;
+  }
+  if (settings.preset_count) {
+    p->preset_index = Min(p->preset_index, settings.preset_count - 1u);
+    c = widget_at(5, *y, w - 10, 24);
+    if (vkr_ui_button(
+            ui, string8_lit("preset.next"),
+            string8_create_formatted(ui->frame_allocator, "Preset: %s (next)",
+                                     settings.presets[p->preset_index].name),
+            &c)) {
+      p->preset_index = (p->preset_index + 1u) % settings.preset_count;
+    }
+    *y += 26;
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    if (vkr_ui_button(ui, string8_lit("preset.apply"),
+                      string8_lit("Copy preset to draft"), &c) &&
+        physics_numbers_parse(p, body)) {
+      const VkrSceneCollisionPreset *preset =
+          &settings.presets[p->preset_index];
+      body->collision_layer = preset->membership;
+      body->collision_mask = preset->mask;
+      body->sensor = preset->sensor;
+      physics_numbers_read(p);
+      p->changed = true_v;
+    }
+    *y += 26;
+  }
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    for (uint32_t mask = 0; mask < 2; ++mask) {
+      (void)vkr_ui_push_id_u64(ui, mask);
+      uint16_t *bits = mask ? &body->collision_mask : &body->collision_layer;
+      bool8_t checked = (*bits & (1u << i)) != 0;
+      c = widget_at(5 + mask * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
+      c.disabled = disabled;
+      if (vkr_ui_checkbox(ui, string8_lit("layer.bit"),
+                          string8_create_formatted(ui->frame_allocator, "%s %s",
+                                                   mask ? "Hits" : "Is",
+                                                   settings.names[i]),
+                          &checked, &c)) {
+        *bits = checked ? *bits | (uint16_t)(1u << i)
+                        : *bits & (uint16_t)~(1u << i);
+        p->changed = true_v;
+      }
+      (void)vkr_ui_pop_id(ui);
+    }
+    (void)vkr_ui_pop_id(ui);
+    *y += 26;
+  }
+}
+
+static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
+                                          const VkrSampleUiFrame *f,
+                                          float32_t w, float32_t *y,
+                                          bool8_t disabled) {
+  VkrUiSystem *ui = f->ui;
+  VkrScenePhysicsAttachment *attachment = &p->values.physics.attachment;
+  bool8_t focused = false_v;
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  if (vkr_ui_button(ui, string8_lit("attachment.expand"),
+                    p->show_attachment ? string8_lit("Hide bone attachment")
+                                       : string8_lit("Bone attachment"),
+                    &c)) {
+    p->show_attachment = !p->show_attachment;
+  }
+  *y += 26;
+  if (!p->show_attachment) {
+    return false_v;
+  }
+  (void)vkr_ui_push_id_label(ui, string8_lit("attachment"));
+  VkrEntityId wrapper =
+      physics_source_entity(f->scene, &attachment->animation_source);
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = disabled;
+  if (vkr_ui_checkbox(ui, string8_lit("enabled"),
+                      string8_lit("Attach to evaluated bone"),
+                      &attachment->enabled, &c)) {
+    if (attachment->enabled && !wrapper.u64) {
+      wrapper = physics_next_reference(f->scene, VKR_ENTITY_ID_INVALID,
+                                       VKR_ENTITY_ID_INVALID, true_v);
+      const SceneSourceIdentity *source = vkr_entity_get_component(
+          f->scene->world, wrapper, f->scene->comp_source_identity);
+      if (source) {
+        attachment->animation_source = *source;
+      }
+      attachment->position = vec3_zero();
+      attachment->rotation = vkr_quat_identity();
+      physics_numbers_read(p);
+    }
+    p->changed = true_v;
+  }
+  *y += 26;
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = disabled;
+  const String8 wrapper_name = wrapper.u64
+                                   ? vkr_scene_get_name(f->scene, wrapper)
+                                   : string8_lit("Choose animation");
+  if (vkr_ui_button(
+          ui, string8_lit("owner.next"),
+          string8_create_formatted(ui->frame_allocator, "%.*s (next owner)",
+                                   (int)wrapper_name.length, wrapper_name.str),
+          &c)) {
+    wrapper = physics_next_reference(f->scene, wrapper, VKR_ENTITY_ID_INVALID,
+                                     true_v);
+    const SceneSourceIdentity *source = vkr_entity_get_component(
+        f->scene->world, wrapper, f->scene->comp_source_identity);
+    if (source) {
+      attachment->animation_source = *source;
+      attachment->source_node = 0;
+      p->changed = true_v;
+    }
+  }
+  *y += 26;
+  const VkrAnimationAsset *asset = vkr_animation_player_asset(
+      vkr_scene_animation_get_player(f->scene, wrapper));
+  const String8 name = asset && attachment->source_node < asset->node_count
+                           ? asset->nodes[attachment->source_node].name
+                           : string8_lit("Missing bone");
+  c = widget_at(5, *y, w - 10, 24);
+  vkr_ui_label(ui, string8_lit("bone.name"),
+               string8_create_formatted(ui->frame_allocator, "Bone %u: %.*s",
+                                        attachment->source_node,
+                                        (int)name.length, name.str),
+               &c);
+  *y += 26;
+  for (uint32_t next = 0; next < 2; ++next) {
+    c = widget_at(5 + next * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
+    c.disabled = disabled || !asset || !asset->node_count;
+    (void)vkr_ui_push_id_u64(ui, next);
+    if (vkr_ui_button(ui, string8_lit("bone.choose"),
+                      next ? string8_lit("Next bone")
+                           : string8_lit("Previous bone"),
+                      &c)) {
+      attachment->source_node =
+          (attachment->source_node + (next ? 1u : asset->node_count - 1u)) %
+          asset->node_count;
+      p->changed = true_v;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  *y += 26;
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = disabled || !asset;
+  c.tooltip =
+      string8_lit("Search bones by name; up to 16 matching nodes are shown.");
+  vkr_editor_field_style(&c);
+  VkrUiTextEditBuffer filter = {(uint8_t *)p->bone_filter,
+                                (uint32_t)strlen(p->bone_filter),
+                                sizeof(p->bone_filter)};
+  (void)vkr_ui_text_field(ui, string8_lit("bone.filter"), &filter, &c);
+  if (ui->focused_id ==
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("bone.filter"))) {
+    p->physics_focused_id = ui->focused_id;
+    focused = true_v;
+  }
+  *y += 26;
+  uint32_t matches = 0;
+  for (uint32_t i = 0;
+       asset && p->bone_filter[0] && i < asset->node_count && matches < 16;
+       ++i) {
+    if (!contains(asset->nodes[i].name, p->bone_filter)) {
+      continue;
+    }
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("bone.match"), asset->nodes[i].name,
+                      &c)) {
+      attachment->source_node = i;
+      p->changed = true_v;
+    }
+    (void)vkr_ui_pop_id(ui);
+    *y += 26;
+    matches++;
+  }
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = disabled;
+  p->changed |=
+      vkr_ui_checkbox(ui, string8_lit("drive"),
+                      string8_lit("Drive bone from Dynamic body (ragdoll)"),
+                      &attachment->drive_bone, &c);
+  *y += 26;
+  const char *labels[] = {"Bone offset X",         "Bone offset Y",
+                          "Bone offset Z",         "Bone rotation X (deg)",
+                          "Bone rotation Y (deg)", "Bone rotation Z (deg)"};
+  for (uint32_t i = 0; i < ArrayCount(labels); ++i) {
+    focused |= physics_number_widget(p, ui, w, y, labels[i],
+                                     PHYSICS_ATTACHMENT_BASE + i, disabled);
+  }
+  (void)vkr_ui_pop_id(ui);
+  return focused;
+}
+
+static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
+                                     const VkrSampleUiFrame *f, float32_t w,
+                                     float32_t *y, bool8_t disabled) {
+  VkrUiSystem *ui = f->ui;
+  VkrScenePhysicsSnapshot *body = &p->values.physics;
+  bool8_t focused = false_v;
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  if (vkr_ui_button(ui, string8_lit("joints.expand"),
+                    string8_create_formatted(
+                        ui->frame_allocator, "%s joints (%u)",
+                        p->show_joints ? "Hide" : "Edit", body->joint_count),
+                    &c)) {
+    p->show_joints = !p->show_joints;
+  }
+  *y += 26;
+  if (!p->show_joints) {
+    return false_v;
+  }
+  const VkrEntityId next_target = physics_next_reference(
+      f->scene, VKR_ENTITY_ID_INVALID, f->selected_entity, false_v);
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = disabled || body->joint_count == VKR_SCENE_PHYSICS_MAX_JOINTS ||
+               !next_target.u64;
+  if (vkr_ui_button(ui, string8_lit("joint.add"),
+                    string8_lit("Add joint to another body"), &c) &&
+      physics_numbers_parse(p, body)) {
+    uint64_t id = 1;
+    for (;;) {
+      bool8_t used = false_v;
+      for (uint32_t i = 0; i < body->joint_count; ++i) {
+        used |= body->joints[i].authored_id == id;
+      }
+      if (!used) {
+        break;
+      }
+      id++;
+    }
+    const SceneSourceIdentity *target = vkr_entity_get_component(
+        f->scene->world, next_target, f->scene->comp_source_identity);
+    body->joints[body->joint_count++] =
+        (VkrSceneJointConfig){.authored_id = id,
+                              .target_source = *target,
+                              .type = VKR_PHYSICS_JOINT_FIXED,
+                              .axis_a = {1, 0, 0},
+                              .axis_b = {1, 0, 0},
+                              .normal_a = {0, 1, 0},
+                              .normal_b = {0, 1, 0},
+                              .min_limit = -0.7853982f,
+                              .max_limit = 0.7853982f,
+                              .swing_normal_limit = 0.7853982f,
+                              .swing_plane_limit = 0.7853982f,
+                              .enabled = true_v};
+    p->open_joint = id;
+    p->changed = true_v;
+    physics_numbers_read(p);
+  }
+  *y += 26;
+  const char *types[] = {"Fixed", "Hinge", "Distance", "Swing / twist"};
+  for (uint32_t i = 0; i < body->joint_count; ++i) {
+    VkrSceneJointConfig *joint = &body->joints[i];
+    (void)vkr_ui_push_id_u64(ui, joint->authored_id);
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    p->changed |= vkr_ui_checkbox(
+        ui, string8_lit("joint.enabled"),
+        string8_create_formatted(ui->frame_allocator, "Joint %llu enabled",
+                                 (unsigned long long)joint->authored_id),
+        &joint->enabled, &c);
+    *y += 26;
+    const VkrEntityId resolved_target =
+        physics_source_entity(f->scene, &joint->target_source);
+    VkrScenePhysicsSnapshot target_body;
+    bool8_t target_available =
+        resolved_target.u64 &&
+        vkr_scene_physics_read(f->scene, resolved_target, &target_body) &&
+        target_body.present && target_body.enabled;
+    bool8_t target_has_shape = false_v;
+    if (target_available) {
+      for (uint32_t shape = 0; shape < target_body.collider_count; ++shape) {
+        target_has_shape |= target_body.colliders[shape].enabled;
+      }
+    }
+    if (!target_available || !target_has_shape ||
+        vkr_scene_physics_body_is_disabled(f->scene, resolved_target)) {
+      c = widget_at(5, *y, w - 10, 24);
+      vkr_ui_label(ui, string8_lit("joint.suspended"),
+                   string8_lit("Suspended: target body unavailable"), &c);
+      *y += 26;
+    }
+    c = widget_at(5, *y, w - 10, 24);
+    if (vkr_ui_button(ui, string8_lit("joint.open"),
+                      p->open_joint == joint->authored_id
+                          ? string8_lit("Hide joint settings")
+                          : string8_lit("Edit joint settings"),
+                      &c)) {
+      p->open_joint =
+          p->open_joint == joint->authored_id ? 0 : joint->authored_id;
+    }
+    *y += 26;
+    if (p->open_joint != joint->authored_id) {
+      (void)vkr_ui_pop_id(ui);
+      continue;
+    }
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    if (vkr_ui_button(ui, string8_lit("joint.type"),
+                      string8_create_formatted(ui->frame_allocator,
+                                               "%s (next type)",
+                                               types[joint->type]),
+                      &c)) {
+      joint->type =
+          (VkrPhysicsJointType)((joint->type + 1u) % ArrayCount(types));
+      if (joint->type == VKR_PHYSICS_JOINT_DISTANCE) {
+        joint->min_limit = 0;
+        joint->max_limit = 1;
+      }
+      physics_numbers_read(p);
+      p->changed = true_v;
+    }
+    *y += 26;
+    const VkrEntityId target_entity =
+        physics_source_entity(f->scene, &joint->target_source);
+    const String8 target_name =
+        target_entity.u64 ? vkr_scene_get_name(f->scene, target_entity)
+                          : string8_lit("Missing target");
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    if (vkr_ui_button(
+            ui, string8_lit("joint.target"),
+            string8_create_formatted(ui->frame_allocator, "%.*s (next target)",
+                                     (int)target_name.length, target_name.str),
+            &c)) {
+      const VkrEntityId target = physics_next_reference(
+          f->scene, target_entity, f->selected_entity, false_v);
+      const SceneSourceIdentity *source = vkr_entity_get_component(
+          f->scene->world, target, f->scene->comp_source_identity);
+      if (source) {
+        joint->target_source = *source;
+        p->changed = true_v;
+      }
+    }
+    *y += 26;
+    const char *labels[] = {"Anchor A X",
+                            "Anchor A Y",
+                            "Anchor A Z",
+                            "Anchor B X",
+                            "Anchor B Y",
+                            "Anchor B Z",
+                            "Axis A X",
+                            "Axis A Y",
+                            "Axis A Z",
+                            "Axis B X",
+                            "Axis B Y",
+                            "Axis B Z",
+                            "Normal A X",
+                            "Normal A Y",
+                            "Normal A Z",
+                            "Normal B X",
+                            "Normal B Y",
+                            "Normal B Z",
+                            "Min limit (rad / m)",
+                            "Max limit (rad / m)",
+                            "Swing normal (rad)",
+                            "Swing plane (rad)"};
+    for (uint32_t j = 0; j < ArrayCount(labels); ++j) {
+      focused |= physics_number_widget(
+          p, ui, w, y, labels[j], PHYSICS_JOINT_BASE + i * 22u + j, disabled);
+    }
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    bool8_t removed = false_v;
+    if (vkr_ui_button(ui, string8_lit("joint.remove"),
+                      string8_lit("Remove joint"), &c) &&
+        physics_numbers_parse(p, body)) {
+      MemCopy(joint, joint + 1, (body->joint_count - i - 1u) * sizeof(*joint));
+      body->joint_count--;
+      MemZero(&body->joints[body->joint_count], sizeof(*joint));
+      physics_numbers_read(p);
+      p->changed = true_v;
+      removed = true_v;
+    }
+    *y += 26;
+    (void)vkr_ui_pop_id(ui);
+    if (removed) {
+      break;
+    }
+  }
+  return focused;
+}
+
+static void physics_ragdoll_widgets(VkrEditorScenePanels *p,
+                                    const VkrSampleUiFrame *f, float32_t w,
+                                    float32_t *y) {
+  if (!vkr_scene_animation_get_player(f->scene, f->selected_entity)) {
+    return;
+  }
+  VkrUiSystem *ui = f->ui;
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  vkr_ui_label(ui, string8_lit("ragdoll.title"),
+               string8_lit("Ragdoll from skin joints"), &c);
+  *y += 26;
+  const char *actions[] = {"Create ragdoll", "Enable ragdoll",
+                           "Disable ragdoll", "Delete ragdoll"};
+  for (uint32_t i = 0; i < ArrayCount(actions); ++i) {
+    if (i == 2) {
+      *y += 26;
+    }
+    c = widget_at(5 + (i % 2u) * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
+    c.disabled = p->changed || !vkr_scene_physics_is_paused(f->scene);
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("ragdoll.action"),
+                      string8_create((uint8_t *)actions[i], strlen(actions[i])),
+                      &c)) {
+      uint32_t count = 0;
+      const char *error = NULL;
+      if (!vkr_scene_physics_ragdoll_plan(f->scene, f->selected_entity,
+                                          (VkrSceneRagdollOperation)i, NULL, 0,
+                                          &count, &error) ||
+          !count || count > VKR_SCENE_PHYSICS_MAX_BODIES) {
+        snprintf(p->error, sizeof(p->error), "%s",
+                 error ? error : "No matching ragdoll bodies.");
+      } else {
+        VkrScenePhysicsChange *changes = vkr_allocator_alloc(
+            ui->frame_allocator, count * sizeof(*changes), PANEL_TAG);
+        if (changes &&
+            vkr_scene_physics_ragdoll_plan(f->scene, f->selected_entity,
+                                           (VkrSceneRagdollOperation)i, changes,
+                                           count, &count, &error)) {
+          *f->scene_edit = (VkrSceneEditRequest){
+              .action = VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH,
+              .physics_batch = changes,
+              .physics_batch_count = count};
+        } else {
+          snprintf(p->error, sizeof(p->error), "%s",
+                   error ? error : "Ragdoll draft allocation failed.");
+        }
+      }
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  *y += 26;
+}
+
+static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
+                                       const VkrSampleUiFrame *f, float32_t w,
+                                       float32_t *y, VkrFontHandle heading) {
+  VkrUiSystem *ui = f->ui;
+  VkrScenePhysicsSnapshot *body = &p->values.physics;
+  const bool8_t paused = vkr_scene_physics_is_paused(f->scene);
+  bool8_t focused = false_v;
+  (void)vkr_ui_push_id_label(ui, string8_lit("physics"));
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  c.text.font = heading;
+  vkr_ui_label(ui, string8_lit("title"), string8_lit("Physics body (m, kg, s)"),
+               &c);
+  *y += 26;
+  const SceneTransform *transform = vkr_entity_get_component(
+      f->scene->world, f->selected_entity, f->scene->comp_transform);
+  const bool8_t eligible = transform && transform->trs_editable;
+  c = widget_at(5, *y, w - 10, 44);
+  const char *error = NULL;
+  (void)vkr_scene_physics_validate(f->scene, f->selected_entity, body, &error);
+  uint32_t enabled_colliders = 0;
+  for (uint32_t i = 0; i < body->collider_count; ++i) {
+    enabled_colliders += body->colliders[i].enabled;
+  }
+  const char *status =
+      !eligible            ? "Physics requires an editable TRS transform."
+      : !paused            ? "Pause simulation to edit physics."
+      : error              ? error
+      : !body->present     ? "No body. Add a shape to create one."
+      : !body->enabled     ? "Disabled: body excluded from simulation."
+      : !enabled_colliders ? "No enabled colliders: body suspended."
+                           : "Collider children form one compound body.";
+  vkr_ui_label(ui, string8_lit("status"),
+               string8_create((uint8_t *)status, strlen(status)), &c);
+  *y += 46;
+  const bool8_t disabled = !paused || !eligible;
+  if (body->present) {
+    const bool8_t muted =
+        vkr_scene_physics_body_is_disabled(f->scene, f->selected_entity);
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = !f->physics_request;
+    c.tooltip = string8_lit("Temporary simulation/query mute. Not saved; "
+                            "authored Body enabled is unchanged.");
+    if (vkr_ui_button(ui, string8_lit("session.mute"),
+                      muted ? string8_lit("Resume body (session)")
+                            : string8_lit("Mute body (session)"),
+                      &c)) {
+      *f->physics_request =
+          (VkrSamplePhysicsRequest){.entity = f->selected_entity,
+                                    .set_body_disabled = true_v,
+                                    .body_disabled = !muted};
+    }
+    *y += 26;
+    const char *motions[] = {"Static", "Kinematic", "Dynamic"};
+    for (uint32_t i = 0; i < ArrayCount(motions); ++i) {
+      c = widget_at(5 + i * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
+      c.disabled = disabled || body->motion == (VkrPhysicsMotion)i;
+      (void)vkr_ui_push_id_u64(ui, i);
+      if (vkr_ui_button(
+              ui, string8_lit("motion"),
+              string8_create((uint8_t *)motions[i], strlen(motions[i])), &c)) {
+        body->motion = (VkrPhysicsMotion)i;
+        p->changed = true_v;
+      }
+      (void)vkr_ui_pop_id(ui);
+    }
+    *y += 26;
+    bool8_t *flags[] = {&body->enabled, &body->sensor, &body->allow_sleep,
+                        &body->continuous};
+    const char *labels[] = {"Body enabled", "Sensor (Static / Kinematic)",
+                            "Allow sleep", "Continuous collision"};
+    for (uint32_t i = 0; i < ArrayCount(flags); ++i) {
+      c = widget_at(5, *y, w - 10, 24);
+      c.disabled = disabled;
+      (void)vkr_ui_push_id_u64(ui, i);
+      p->changed |= vkr_ui_checkbox(
+          ui, string8_lit("flag"),
+          string8_create((uint8_t *)labels[i], strlen(labels[i])), flags[i],
+          &c);
+      (void)vkr_ui_pop_id(ui);
+      *y += 26;
+    }
+    const char *labels_numeric[] = {"Mass (kg)",
+                                    "Friction",
+                                    "Restitution",
+                                    "Gravity factor",
+                                    "Linear damping",
+                                    "Angular damping",
+                                    "Layer bits (0..65535)",
+                                    "Mask bits (0..65535)"};
+    for (uint32_t i = 0; i < 6; ++i) {
+      focused |=
+          physics_number_widget(p, ui, w, y, labels_numeric[i], i, disabled);
+    }
+    physics_layer_widgets(p, f, w, y, disabled);
+    focused |= physics_attachment_widgets(p, f, w, y, disabled);
+    focused |= physics_joint_widgets(p, f, w, y, disabled);
+  }
+  physics_ragdoll_widgets(p, f, w, y);
+  const char *shapes[] = {"+ Box", "+ Sphere", "+ Capsule", "+ Convex",
+                          "+ Mesh"};
+  for (uint32_t i = 0; i < ArrayCount(shapes); ++i) {
+    if (i == 3) {
+      *y += 26;
+    }
+    c = widget_at(5 + (i % 3u) * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
+    c.disabled =
+        disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("add"),
+                      string8_create((uint8_t *)shapes[i], strlen(shapes[i])),
+                      &c) &&
+        physics_numbers_parse(p, body)) {
+      if (!body->present) {
+        *body = vkr_scene_physics_default();
+        body->present = true_v;
+        body->motion = VKR_PHYSICS_STATIC;
+        body->collider_count = 0;
+        MemZero(body->colliders, sizeof(body->colliders));
+      }
+      const uint64_t id = physics_next_collider_id(body);
+      body->colliders[body->collider_count++] =
+          (VkrSceneColliderConfig){.authored_id = id,
+                                   .shape = (VkrPhysicsShape)i,
+                                   .rotation = vkr_quat_identity(),
+                                   .scale = {1, 1, 1},
+                                   .half_extent = {0.5f, 0.5f, 0.5f},
+                                   .radius = 0.5f,
+                                   .half_height = 0.5f,
+                                   .enabled = true_v};
+      p->open_collider = id;
+      physics_numbers_read(p);
+      p->changed = true_v;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  *y += 26;
+  for (uint32_t i = 0; i < body->collider_count; ++i) {
+    VkrSceneColliderConfig *shape = &body->colliders[i];
+    (void)vkr_ui_push_id_u64(ui, shape->authored_id);
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    p->changed |= vkr_ui_checkbox(
+        ui, string8_lit("enabled"),
+        string8_create_formatted(ui->frame_allocator, "%s %llu enabled",
+                                 shapes[shape->shape] + 2,
+                                 (unsigned long long)shape->authored_id),
+        &shape->enabled, &c);
+    *y += 26;
+    c = widget_at(5, *y, w - 10, 24);
+    if (vkr_ui_button(ui, string8_lit("expand"),
+                      p->open_collider == shape->authored_id
+                          ? string8_lit("Hide shape settings")
+                          : string8_lit("Edit shape settings"),
+                      &c)) {
+      p->open_collider =
+          p->open_collider == shape->authored_id ? 0 : shape->authored_id;
+    }
+    *y += 26;
+    if (p->open_collider != shape->authored_id) {
+      (void)vkr_ui_pop_id(ui);
+      continue;
+    }
+    if (shape->shape >= VKR_PHYSICS_CONVEX_HULL) {
+      c = widget_at(5, *y, w - 10, 24);
+      vkr_ui_label(ui, string8_lit("asset.label"),
+                   string8_lit("Cooked collision asset (.vkc)"), &c);
+      *y += 26;
+      c = widget_at(5, *y, w - 10, 24);
+      c.disabled = disabled;
+      vkr_editor_field_style(&c);
+      c.tooltip = string8_lit("Workspace-relative .vkc path (legacy projects: "
+                              "repository-relative). "
+                              "Triangle meshes require Static or Kinematic "
+                              "bodies. Cook geometry in Bakery.");
+      VkrUiTextEditBuffer path = {(uint8_t *)shape->asset_path,
+                                  (uint32_t)strlen(shape->asset_path),
+                                  sizeof(shape->asset_path)};
+      p->changed |= vkr_ui_text_field(ui, string8_lit("asset.path"), &path, &c);
+      if (ui->focused_id == vkr_ui_id_stack_widget_label(
+                                &ui->id_stack, string8_lit("asset.path"))) {
+        p->physics_focused_id = ui->focused_id;
+        focused = true_v;
+      }
+      *y += 26;
+    }
+    const char *labels[] = {"Offset X",
+                            "Offset Y",
+                            "Offset Z",
+                            "Rotation X (deg)",
+                            "Rotation Y (deg)",
+                            "Rotation Z (deg)",
+                            "Half width",
+                            "Half height",
+                            "Half depth",
+                            "Radius",
+                            "Cylinder half height",
+                            "Shape scale X",
+                            "Shape scale Y",
+                            "Shape scale Z"};
+    for (uint32_t j = 0; j < ArrayCount(labels); ++j) {
+      if ((j >= 6 && j <= 8 && shape->shape != VKR_PHYSICS_BOX) ||
+          (j == 9 && shape->shape != VKR_PHYSICS_SPHERE &&
+           shape->shape != VKR_PHYSICS_CAPSULE) ||
+          (j == 10 && shape->shape != VKR_PHYSICS_CAPSULE)) {
+        continue;
+      }
+      focused |=
+          physics_number_widget(p, ui, w, y, labels[j],
+                                8u + i * PHYSICS_COLLIDER_STRIDE + j, disabled);
+    }
+    if (shape->shape < VKR_PHYSICS_CONVEX_HULL) {
+      c = widget_at(5, *y, w - 10, 24);
+      c.disabled = disabled;
+      if (vkr_ui_button(ui, string8_lit("fit"),
+                        string8_lit("Fit loaded bounds (approx.)"), &c) &&
+          physics_numbers_parse(p, body) && physics_fit_collider(p, f, shape)) {
+        physics_numbers_read(p);
+        p->changed = true_v;
+      }
+      *y += 26;
+    }
+    c = widget_at(5, *y, (w - 10) / 2 - 3, 24);
+    c.disabled =
+        disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
+    if (vkr_ui_button(ui, string8_lit("duplicate"), string8_lit("Duplicate"),
+                      &c) &&
+        physics_numbers_parse(p, body)) {
+      const uint64_t id = physics_next_collider_id(body);
+      body->colliders[body->collider_count] = *shape;
+      body->colliders[body->collider_count++].authored_id = id;
+      physics_numbers_read(p);
+      p->changed = true_v;
+    }
+    c = widget_at(w / 2, *y, w / 2 - 5, 24);
+    c.disabled = disabled;
+    bool8_t removed = false_v;
+    if (vkr_ui_button(ui, string8_lit("remove"), string8_lit("Remove"), &c) &&
+        physics_numbers_parse(p, body)) {
+      MemCopy(shape, shape + 1,
+              (body->collider_count - i - 1u) * sizeof(*shape));
+      body->collider_count--;
+      MemZero(&body->colliders[body->collider_count], sizeof(*shape));
+      physics_numbers_read(p);
+      p->changed = true_v;
+      removed = true_v;
+    }
+    *y += 28;
+    (void)vkr_ui_pop_id(ui);
+    if (removed) {
+      break;
+    }
+  }
+  if (body->present) {
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    if (vkr_ui_button(ui, string8_lit("remove.body"),
+                      string8_lit("Remove body and colliders"), &c)) {
+      *body = vkr_scene_physics_default();
+      body->present = false_v;
+      body->collider_count = 0;
+      physics_numbers_read(p);
+      p->changed = true_v;
+    }
+    *y += 28;
+  }
+  if (body->present && body->motion == VKR_PHYSICS_DYNAMIC &&
+      f->physics_request) {
+    c = widget_at(5, *y, w - 10, 24);
+    vkr_ui_label(ui, string8_lit("impulse.title"),
+                 string8_lit("Test impulse (N s; unsaved)"), &c);
+    *y += 26;
+    c = widget_at(5, *y, w - 10, 24);
+    (void)vkr_ui_checkbox(ui, string8_lit("impulse.at.point"),
+                          string8_lit("Apply at world point"),
+                          &p->impulse_at_point, &c);
+    *y += 26;
+    const char *labels[] = {"Impulse X",     "Impulse Y",     "Impulse Z",
+                            "World point X", "World point Y", "World point Z"};
+    for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
+      (void)vkr_ui_push_id_u64(ui, i);
+      c = widget_at(5, *y, w * 0.53f - 6, 24);
+      vkr_ui_label(ui, string8_lit("impulse.label"),
+                   string8_create((uint8_t *)labels[i], strlen(labels[i])), &c);
+      c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
+      vkr_editor_field_style(&c);
+      VkrUiTextEditBuffer buffer = {(uint8_t *)p->impulse_numbers[i],
+                                    (uint32_t)strlen(p->impulse_numbers[i]),
+                                    sizeof(p->impulse_numbers[i])};
+      (void)vkr_ui_text_field(ui, string8_lit("impulse.value"), &buffer, &c);
+      if (ui->focused_id == vkr_ui_id_stack_widget_label(
+                                &ui->id_stack, string8_lit("impulse.value"))) {
+        p->physics_focused_id = ui->focused_id;
+      }
+      (void)vkr_ui_pop_id(ui);
+      *y += 26;
+    }
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = p->changed || !body->enabled;
+    if (vkr_ui_button(ui, string8_lit("impulse.apply"),
+                      string8_lit("Apply test impulse"), &c)) {
+      float32_t values[6] = {0};
+      bool8_t valid = true_v;
+      for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
+        char *end;
+        values[i] = strtof(p->impulse_numbers[i], &end);
+        valid &= end != p->impulse_numbers[i] && !*end && isfinite(values[i]);
+      }
+      if (valid) {
+        *f->physics_request = (VkrSamplePhysicsRequest){
+            .entity = f->selected_entity,
+            .impulse = {values[0], values[1], values[2]},
+            .world_point = {values[3], values[4], values[5]},
+            .apply_impulse = true_v,
+            .at_point = p->impulse_at_point};
+      } else {
+        snprintf(p->error, sizeof(p->error),
+                 "Impulse and world point must be finite.");
+      }
+    }
+    *y += 28;
+  }
+  (void)vkr_ui_pop_id(ui);
+  return focused;
+}
+
 void vkr_editor_inspector_build(VkrEditorScenePanels *p,
                                 const VkrSampleUiFrame *f, VkrUiRect rect,
                                 VkrFontHandle heading) {
@@ -743,6 +1909,22 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
       inspector_clear_focus(ui);
     }
   }
+  VkrEntityId physics_owner =
+      vkr_scene_physics_owner(f->scene, f->selected_entity);
+  if (physics_owner.u64 && physics_owner.u64 != f->selected_entity.u64) {
+    c = widget_at(5, 5, w - 10, 70);
+    vkr_ui_label(ui, string8_lit("collider.owner.info"),
+                 string8_lit("Collider child. Edit its shape and placement\nin "
+                             "the owning body's collider list."),
+                 &c);
+    c = widget_at(5, 80, w - 10, 26);
+    if (vkr_ui_button(ui, string8_lit("collider.owner.select"),
+                      string8_lit("Edit owning body"), &c)) {
+      *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT,
+                                             .entity = physics_owner};
+    }
+    return;
+  }
   const SceneTransform *tr = vkr_entity_get_component(
       f->scene->world, f->selected_entity, f->scene->comp_transform);
   if (!p->changed && tr && tr->trs_editable &&
@@ -752,6 +1934,36 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
     inspector_read(p, f);
   float32_t content_height =
       5 + 27 + 29 + 27 + 30 + 26 + 9 * 26 + 29 + 30 + 44 + 88;
+  content_height += 140 + (p->values.physics.present ? 418 : 0);
+  if (p->values.physics.present) {
+    if (p->show_collision_layers) {
+      content_height += 18 * 26;
+    }
+    if (p->show_attachment) {
+      content_height += 12 * 26 + (p->bone_filter[0] ? 16 * 26 : 0);
+    }
+    if (p->show_joints) {
+      content_height += 26 + p->values.physics.joint_count * 78;
+      for (uint32_t i = 0; i < p->values.physics.joint_count; ++i) {
+        if (p->values.physics.joints[i].authored_id == p->open_joint) {
+          content_height += 650;
+        }
+      }
+    }
+  }
+  if (vkr_scene_animation_get_player(f->scene, f->selected_entity)) {
+    content_height += 78;
+  }
+  if (p->values.physics.present &&
+      p->values.physics.motion == VKR_PHYSICS_DYNAMIC) {
+    content_height += 80 + (p->impulse_at_point ? 6 : 3) * 26;
+  }
+  for (uint32_t i = 0; i < p->values.physics.collider_count; ++i) {
+    content_height += 52;
+    if (p->values.physics.colliders[i].authored_id == p->open_collider) {
+      content_height += 400;
+    }
+  }
   const bool8_t point = (p->values.fields & VKR_SCENE_EDIT_POINT_LIGHT) != 0;
   const bool8_t directional =
       (p->values.fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) != 0;
@@ -979,6 +2191,7 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
       y += 26;
     }
   }
+  field_focus |= physics_inspector_build(p, f, w, &y, heading);
   field_focus &=
       !ui->mouse_captured && ui->keyboard_input_layer == ui->input_layer;
   c = widget_at(5, y, w / 3 - 7, 25);
@@ -1064,10 +2277,9 @@ bool8_t vkr_editor_scene_panels_write_json(const VkrEditorScenePanels *panels,
          vkr_json_writer_name(writer, string8_lit("version")) &&
          vkr_json_writer_u64(writer, 1) &&
          vkr_json_writer_name(writer, string8_lit("search")) &&
-         vkr_json_writer_string(writer,
-                                string8_create_from_cstr(
-                                    (const uint8_t *)panels->search,
-                                    strlen(panels->search))) &&
+         vkr_json_writer_string(
+             writer, string8_create_from_cstr((const uint8_t *)panels->search,
+                                              strlen(panels->search))) &&
          vkr_json_writer_name(writer, string8_lit("inspector_scroll")) &&
          vkr_json_writer_f64(writer, panels->inspector_scroll) &&
          vkr_json_writer_end_object(writer);

@@ -1133,6 +1133,8 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
        project_json_text(writer, "mesh", VKR_EDITOR_MESH_COOKER_PATH) &&
        project_json_text(writer, "animation",
                          VKR_EDITOR_ANIMATION_COOKER_PATH) &&
+       project_json_text(writer, "collision",
+                         VKR_EDITOR_COLLISION_COOKER_PATH) &&
        project_json_text(writer, "font", VKR_EDITOR_FONT_COOKER_PATH) &&
        project_json_text(writer, "texture", VKR_EDITOR_TEXTURE_COOKER_PATH) &&
        project_json_text(writer, "harness", VKR_EDITOR_HARNESS_PATH) &&
@@ -1544,6 +1546,7 @@ static void project_job_complete(VkrEditorProjects *projects,
       .select = true_v,
       .path = project_string(projects->runtime_path),
       .sidecar_path = project_string(projects->edit_path),
+      .asset_root = project_string(projects->workspace.root),
       .discard_edits = projects->discard_edits};
   projects->discard_edits = false_v;
   projects->job_id = 0;

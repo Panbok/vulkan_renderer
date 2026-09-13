@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "editor_physics.h"
 #include "editor_projects.h"
 
 #include "renderer/systems/vkr_editor_viewport.h"
@@ -53,6 +54,9 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_point = true_v,
       .windows =
           {
+              [VKR_EDITOR_WINDOW_PHYSICS] =
+                  {.position_pt = {180.0f, 80.0f}, .size_pt = {760.0f, 620.0f},
+                   .z_order = 6u, .visible = false_v},
               [VKR_EDITOR_WINDOW_GRAPHICS] =
                   {
                       .position_pt = {250.0f, 76.0f},
@@ -188,6 +192,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   const bool8_t preparing_scene =
       frame->scene_backdrop_blur && *frame->scene_backdrop_blur;
   if (!preparing_scene) {
+    vkr_editor_physics_build(editor, frame);
     vkr_editor_labels_build(editor, frame);
   }
   vkr_editor_windows_build_navigation(editor, frame);
