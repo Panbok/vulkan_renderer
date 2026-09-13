@@ -33,6 +33,13 @@ void vkr_editor_projects_scene_action(VkrEditorProjects *projects,
                                       VkrEditorUi *editor,
                                       const VkrSampleUiFrame *frame);
 
+bool8_t vkr_editor_projects_can_add_entity(const VkrEditorProjects *projects,
+                                           VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame);
+void vkr_editor_projects_add_entity(VkrEditorProjects *projects,
+                                    VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame);
+
 bool8_t vkr_editor_projects_flush(VkrEditorProjects *projects,
                                   VkrEditorUi *editor,
                                   const VkrUiDockTree *dock);

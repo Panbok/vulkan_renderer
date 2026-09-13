@@ -27,6 +27,7 @@ typedef enum ProjectView {
   PROJECT_VIEW_CHOOSER,
   PROJECT_VIEW_CREATE,
   PROJECT_VIEW_ADD_SCENE,
+  PROJECT_VIEW_ADD_ENTITY,
   PROJECT_VIEW_SCENES,
   PROJECT_VIEW_PROGRESS,
   PROJECT_VIEW_CONFIRM,
@@ -131,6 +132,9 @@ struct VkrEditorProjects {
   ProjectLightDraft lights[PROJECT_LIGHT_COUNT];
   uint32_t light_count;
   uint32_t light_selected;
+  bool8_t adding_model;
+  uint32_t added_scene_entity;
+  bool8_t select_added_entity;
   uint32_t active_scene;
   uint32_t pending_scene;
   char scene_id[37];
@@ -908,6 +912,53 @@ static void project_reset_scene_draft(VkrEditorProjects *projects) {
   projects->message[0] = '\0';
 }
 
+static bool8_t project_write_lights(VkrEditorProjects *projects,
+                                    VkrJsonWriter *writer) {
+  bool8_t ok = vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < projects->light_count; ++i) {
+    const ProjectLightDraft *light = &projects->lights[i];
+    ok = vkr_json_writer_begin_object(writer) &&
+         project_json_text(writer, "name", light->name) &&
+         vkr_json_writer_name(writer, string8_lit("transform")) &&
+         vkr_json_writer_begin_object(writer) &&
+         project_json_vec3(writer, "pos", light->position) &&
+         vkr_json_writer_end_object(writer) &&
+         vkr_json_writer_name(
+             writer, project_string(light->kind == 0   ? "directional_light"
+                                    : light->kind == 3 ? "rectangle_light"
+                                                       : "point_light")) &&
+         vkr_json_writer_begin_object(writer) &&
+         project_json_bool(writer, "enabled", true_v) &&
+         project_json_vec3(writer, "color", light->color);
+    if (light->kind == 3) {
+      ok = ok && project_json_number(writer, "radiance", light->intensity) &&
+           vkr_json_writer_name(writer, string8_lit("size")) &&
+           vkr_json_writer_begin_array(writer) &&
+           vkr_json_writer_f64(writer, light->size.x) &&
+           vkr_json_writer_f64(writer, light->size.y) &&
+           vkr_json_writer_end_array(writer);
+    } else {
+      ok = ok && project_json_number(writer, "intensity", light->intensity);
+    }
+    if (light->kind == 0 || light->kind == 2) {
+      ok = ok && project_json_vec3(writer, "direction_local", light->direction);
+    }
+    if (light->kind == 1 || light->kind == 2) {
+      ok = ok && project_json_number(writer, "range", light->range) &&
+           project_json_bool(writer, "casts_shadow", light->casts_shadow);
+    }
+    if (light->kind == 2) {
+      ok =
+          ok && project_json_number(writer, "kind", 2) &&
+          project_json_number(writer, "inner_cone_angle", light->inner_angle) &&
+          project_json_number(writer, "outer_cone_angle", light->outer_angle);
+    }
+    ok = ok && vkr_json_writer_end_object(writer) &&
+         vkr_json_writer_end_object(writer);
+  }
+  ok = ok && vkr_json_writer_end_array(writer);
+  return ok;
+}
 static bool8_t project_write_job(VkrEditorProjects *projects,
                                  const VkrSampleUiFrame *frame,
                                  bool8_t create_scene) {
@@ -998,51 +1049,7 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
                              projects->environment_specular) &&
          vkr_json_writer_end_object(writer) &&
          vkr_json_writer_name(writer, string8_lit("lights")) &&
-         vkr_json_writer_begin_array(writer);
-    for (uint32_t i = 0; ok && i < projects->light_count; ++i) {
-      const ProjectLightDraft *light = &projects->lights[i];
-      ok = vkr_json_writer_begin_object(writer) &&
-           project_json_text(writer, "name", light->name) &&
-           vkr_json_writer_name(writer, string8_lit("transform")) &&
-           vkr_json_writer_begin_object(writer) &&
-           project_json_vec3(writer, "pos", light->position) &&
-           vkr_json_writer_end_object(writer) &&
-           vkr_json_writer_name(
-               writer, project_string(light->kind == 0   ? "directional_light"
-                                      : light->kind == 3 ? "rectangle_light"
-                                                         : "point_light")) &&
-           vkr_json_writer_begin_object(writer) &&
-           project_json_bool(writer, "enabled", true_v) &&
-           project_json_vec3(writer, "color", light->color);
-      if (light->kind == 3) {
-        ok = ok && project_json_number(writer, "radiance", light->intensity) &&
-             vkr_json_writer_name(writer, string8_lit("size")) &&
-             vkr_json_writer_begin_array(writer) &&
-             vkr_json_writer_f64(writer, light->size.x) &&
-             vkr_json_writer_f64(writer, light->size.y) &&
-             vkr_json_writer_end_array(writer);
-      } else {
-        ok = ok && project_json_number(writer, "intensity", light->intensity);
-      }
-      if (light->kind == 0 || light->kind == 2) {
-        ok = ok &&
-             project_json_vec3(writer, "direction_local", light->direction);
-      }
-      if (light->kind == 1 || light->kind == 2) {
-        ok = ok && project_json_number(writer, "range", light->range) &&
-             project_json_bool(writer, "casts_shadow", light->casts_shadow);
-      }
-      if (light->kind == 2) {
-        ok =
-            ok && project_json_text(writer, "kind", "spot") &&
-            project_json_number(writer, "inner_cone_angle",
-                                light->inner_angle) &&
-            project_json_number(writer, "outer_cone_angle", light->outer_angle);
-      }
-      ok = ok && vkr_json_writer_end_object(writer) &&
-           vkr_json_writer_end_object(writer);
-    }
-    ok = ok && vkr_json_writer_end_array(writer);
+         project_write_lights(projects, writer);
     if (projects->reflection_enabled && !projects->import_scene) {
       ok = ok &&
            vkr_json_writer_name(writer, string8_lit("reflection_probes")) &&
@@ -1085,6 +1092,16 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
                      projects->project->scenes[projects->pending_scene].id) &&
            project_json_text(writer, "scene_path", scene_path);
     }
+  }
+  if (!strcmp(projects->operation, "add_entities")) {
+    ok = ok && vkr_json_writer_name(writer, string8_lit("models")) &&
+         vkr_json_writer_begin_array(writer);
+    if (projects->adding_model) {
+      ok = ok && vkr_json_writer_string(writer, project_string(projects->models[0]));
+    }
+    ok = ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_name(writer, string8_lit("lights")) &&
+         project_write_lights(projects, writer);
   }
   if (strcmp(projects->operation, "bake_scene") == 0) {
     ok = ok && vkr_json_writer_name(writer, string8_lit("bakes")) &&
@@ -1338,6 +1355,15 @@ static void project_job_complete(VkrEditorProjects *projects,
     return;
   }
   const bool8_t unbuilt = strcmp(status, "unbuilt") == 0;
+  projects->select_added_entity = false_v;
+  if (!strcmp(projects->operation, "add_entities")) {
+    VkrJsonReader reader = vkr_json_reader_from_string(result);
+    int32_t index = -1;
+    if (vkr_json_get_int(&reader, "added_scene_entity", &index) && index >= 0) {
+      projects->added_scene_entity = (uint32_t)index;
+      projects->select_added_entity = true_v;
+    }
+  }
   if (!strcmp(projects->operation, "delete_scene")) {
     projects->job_id = 0;
     projects->operation[0] = '\0';
@@ -1516,6 +1542,10 @@ static void project_job_complete(VkrEditorProjects *projects,
   projects->discard_edits = false_v;
   projects->job_id = 0;
   projects->waiting_activation = true_v;
+  if (!strcmp(projects->operation, "add_entities")) {
+    /* A load retry must prepare the published scene, never append twice. */
+    projects->operation[0] = '\0';
+  }
   projects->view = PROJECT_VIEW_EDITOR;
   (void)vkr_ui_keyboard_layer_set(frame->ui, 0);
 }
@@ -1717,6 +1747,42 @@ bool8_t vkr_editor_projects_modal(const VkrEditorProjects *projects) {
          projects->view != PROJECT_VIEW_PROGRESS;
 }
 
+bool8_t vkr_editor_projects_can_add_entity(const VkrEditorProjects *projects,
+                                           VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame) {
+  return projects && projects->project && !projects->read_only &&
+         projects->view == PROJECT_VIEW_EDITOR && !projects->dropdown &&
+         projects->active_scene < projects->project->scene_count &&
+         frame->scene && !frame->scene_loading && !projects->job_id &&
+         !projects->waiting_activation &&
+         !vkr_editor_bakery_busy(editor->bakery);
+}
+
+void vkr_editor_projects_add_entity(VkrEditorProjects *projects,
+                                    VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame) {
+  if (!vkr_editor_projects_can_add_entity(projects, editor, frame)) {
+    return;
+  }
+  project_reset_scene_draft(projects);
+  projects->adding_model = false_v;
+  projects->light_count = 1;
+  projects->lights[0] = (ProjectLightDraft){.name = "Light",
+                                            .kind = 1,
+                                            .position = {0, 2, 0},
+                                            .color = {1, 1, 1},
+                                            .intensity = 5,
+                                            .range = 10,
+                                            .direction = {0, -1, 0},
+                                            .size = {1, 1},
+                                            .inner_angle = .35f,
+                                            .outer_angle = .6f,
+                                            .casts_shadow = true_v};
+  projects->models[0][0] = '\0';
+  projects->pending_scene = projects->active_scene;
+  projects->view = PROJECT_VIEW_ADD_ENTITY;
+}
+
 void vkr_editor_projects_update(VkrEditorProjects *projects,
                                 VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
@@ -1835,7 +1901,13 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       return;
     } else if (status == VKR_EDITOR_PROJECT_JOB_FAILED ||
                status == VKR_EDITOR_PROJECT_JOB_CANCELLED) {
-      if (!strcmp(projects->operation, "delete_scene")) {
+      if (!strcmp(projects->operation, "add_entities")) {
+        projects->job_id = 0;
+        projects->view = PROJECT_VIEW_ADD_ENTITY;
+        snprintf(projects->message, sizeof(projects->message),
+                 "Entity was not added. Check the model and dependencies, or "
+                 "light settings. See Bakery for details; correct the form or cancel.");
+      } else if (!strcmp(projects->operation, "delete_scene")) {
         snprintf(projects->message, sizeof(projects->message),
                  "Scene removed from project; file deletion is incomplete. "
                  "Retry to finish. See Bakery for details.");
@@ -1870,6 +1942,24 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       }
       (void)vkr_editor_scene_panels_read_scene_json(
           editor->scene_panels, frame, project_member(recall, "hierarchy"));
+      if (projects->select_added_entity) {
+        for (uint32_t i = 0; i < frame->scene->world->dir.capacity; ++i) {
+          if (!frame->scene->world->dir.records[i].chunk) {
+            continue;
+          }
+          const VkrEntityId entity = vkr_entity_id_from_index(frame->scene->world, i);
+          VkrSampleEntityIdentity identity;
+          if (vkr_sample_entity_identity(frame->scene, entity, &identity) &&
+              identity.scene_entity == projects->added_scene_entity &&
+              identity.gltf_node == UINT32_MAX) {
+            frame->editor_state_request->apply_recall = true_v;
+            frame->editor_state_request->recall.selection_valid = true_v;
+            frame->editor_state_request->recall.selection = identity;
+            break;
+          }
+        }
+        projects->select_added_entity = false_v;
+      }
       projects->waiting_activation = false_v;
       projects->view = PROJECT_VIEW_EDITOR;
     } else if (!frame->scene_loading && frame->scene_status.length &&
@@ -2030,6 +2120,116 @@ static void project_build_chooser(VkrEditorProjects *projects,
   }
 }
 
+static void project_build_light_form(VkrUiSystem *ui, ProjectLightDraft *light,
+                                     float32_t x, float32_t y,
+                                     float32_t width) {
+  project_field(ui, "light.name", light->name, sizeof(light->name), x, y,
+                width * .65f);
+  static const char *const kinds[] = {"Directional", "Point", "Spot",
+                                      "Rectangle"};
+  if (project_button(ui, "light.kind", kinds[light->kind], x + width * .68f, y,
+                     width * .32f, false_v)) {
+    light->kind = (light->kind + 1) % ArrayCount(kinds);
+  }
+  project_slider(ui, "light.x", "Position X", &light->position.x, -100, 100, x,
+                 y + 38, width);
+  project_slider(ui, "light.y", "Position Y", &light->position.y, -100, 100, x,
+                 y + 70, width);
+  project_slider(ui, "light.z", "Position Z", &light->position.z, -100, 100, x,
+                 y + 102, width);
+  project_slider(ui, "light.intensity", "Intensity", &light->intensity, 0, 100,
+                 x, y + 134, width);
+  project_slider(ui, "light.range", "Range", &light->range, .1f, 100, x,
+                 y + 166, width);
+  project_slider(ui, "light.red", "Red", &light->color.x, 0, 1, x, y + 198,
+                 width);
+  project_slider(ui, "light.green", "Green", &light->color.y, 0, 1, x, y + 230,
+                 width);
+  project_slider(ui, "light.blue", "Blue", &light->color.z, 0, 1, x, y + 262,
+                 width);
+}
+
+static void project_build_entity_form(VkrEditorProjects *projects,
+                                      const VkrSampleUiFrame *frame,
+                                      float32_t width) {
+  VkrUiSystem *ui = frame->ui;
+  const float32_t x = 12;
+  width -= 24;
+  if (project_button(ui, "entity.light", "Light", x, 0, width * .48f,
+                     false_v)) {
+    projects->adding_model = false_v;
+    projects->light_count = 1;
+  }
+  if (project_button(ui, "entity.model", "Model", x + width * .51f, 0,
+                     width * .49f, false_v)) {
+    projects->adding_model = true_v;
+    projects->light_count = 0;
+  }
+  if (projects->adding_model) {
+    project_label(ui, "entity.model.label",
+                  "Model / GLTF, GLB, OBJ or cooked VKB", x, 44, width);
+    project_field(ui, "entity.model.path", projects->models[0],
+                  sizeof(projects->models[0]), x, 80, width - 90);
+    if (project_button(ui, "entity.model.browse", "Browse", x + width - 82, 80,
+                       82, false_v)) {
+      static const char *const extensions[] = {"gltf", "glb", "obj", "vkb"};
+      project_browse(projects, frame, "Add model to scene", extensions,
+                     ArrayCount(extensions), false_v, projects->models[0],
+                     sizeof(projects->models[0]));
+      return;
+    }
+    project_label(ui, "entity.model.hint",
+                  "The model and its dependencies are copied into this scene. "
+                  "Adjust its transform in Inspector after adding.",
+                  x, 124, width);
+  } else {
+    ProjectLightDraft *light = &projects->lights[0];
+    project_build_light_form(ui, light, x, 44, width);
+    if (light->kind == 0 || light->kind == 2) {
+      project_slider(ui, "light.dx", "Direction X", &light->direction.x, -1, 1,
+                     x, 342, width);
+      project_slider(ui, "light.dy", "Direction Y", &light->direction.y, -1, 1,
+                     x, 374, width);
+      project_slider(ui, "light.dz", "Direction Z", &light->direction.z, -1, 1,
+                     x, 406, width);
+    }
+    if (light->kind == 1 || light->kind == 2) {
+      project_check(ui, "light.shadow", "Cast shadows", &light->casts_shadow, x,
+                    438, width);
+    }
+    if (light->kind == 2) {
+      project_slider(ui, "light.inner", "Inner angle (radians)",
+                     &light->inner_angle, 0, 1.55f, x, 474, width);
+      project_slider(ui, "light.outer", "Outer angle (radians)",
+                     &light->outer_angle, .01f, 1.56f, x, 506, width);
+    }
+    if (light->kind == 3) {
+      project_slider(ui, "light.width", "Width", &light->size.x, .01f, 100, x,
+                     342, width);
+      project_slider(ui, "light.height", "Height", &light->size.y, .01f, 100, x,
+                     374, width);
+    }
+  }
+}
+
+static bool8_t project_entity_draft_valid(const VkrEditorProjects *projects) {
+  if (projects->adding_model) {
+    return projects->models[0][0] != '\0';
+  }
+  const ProjectLightDraft *light = &projects->lights[0];
+  if (!light->name[0]) {
+    return false_v;
+  }
+  if ((light->kind == 0 || light->kind == 2) &&
+      light->direction.x * light->direction.x +
+              light->direction.y * light->direction.y +
+              light->direction.z * light->direction.z <
+          1e-8f) {
+    return false_v;
+  }
+  return light->kind != 2 || light->outer_angle > light->inner_angle + .001f;
+}
+
 static void project_build_scene_form(VkrEditorProjects *projects,
                                      const VkrSampleUiFrame *frame, float32_t x,
                                      float32_t width) {
@@ -2150,30 +2350,7 @@ static void project_build_scene_form(VkrEditorProjects *projects,
   }
   if (projects->light_count) {
     ProjectLightDraft *light = &projects->lights[projects->light_selected];
-    project_field(ui, "light.name", light->name, sizeof(light->name), x, 646,
-                  width * .65f);
-    static const char *const kinds[] = {"Directional", "Point", "Spot",
-                                        "Rectangle"};
-    if (project_button(ui, "light.kind", kinds[light->kind], x + width * .68f,
-                       646, width * .32f, false_v)) {
-      light->kind = (light->kind + 1) % ArrayCount(kinds);
-    }
-    project_slider(ui, "light.x", "Position X", &light->position.x, -100, 100,
-                   x, 684, width);
-    project_slider(ui, "light.y", "Position Y", &light->position.y, -100, 100,
-                   x, 716, width);
-    project_slider(ui, "light.z", "Position Z", &light->position.z, -100, 100,
-                   x, 748, width);
-    project_slider(ui, "light.intensity", "Intensity", &light->intensity, 0,
-                   100, x, 780, width);
-    project_slider(ui, "light.range", "Range", &light->range, .1f, 100, x, 812,
-                   width);
-    project_slider(ui, "light.red", "Red", &light->color.x, 0, 1, x, 844,
-                   width);
-    project_slider(ui, "light.green", "Green", &light->color.y, 0, 1, x, 876,
-                   width);
-    project_slider(ui, "light.blue", "Blue", &light->color.z, 0, 1, x, 908,
-                   width);
+    project_build_light_form(ui, light, x, 646, width);
     if (project_button(ui, "light.previous", "Previous light", x, 948,
                        width * .48f, projects->light_count < 2)) {
       projects->light_selected =
@@ -2438,7 +2615,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       (void)vkr_ui_panel_end(ui);
     }
   }
-  const float32_t width = Min(1040.0f, Max(280.0f, total_width - 40));
+  const float32_t width = Min(projects->view == PROJECT_VIEW_ADD_ENTITY ? 620.0f : 1040.0f,
+                              Max(280.0f, total_width - 40));
   const float32_t height = Min(740.0f, Max(240.0f, total_height - 40));
   VkrUiPanelConfig modal = vkr_ui_panel_config_default();
   modal.placement.column = 0;
@@ -2464,6 +2642,7 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       projects->view == PROJECT_VIEW_CHOOSER     ? "Projects"
       : projects->view == PROJECT_VIEW_CREATE    ? "Create project"
       : projects->view == PROJECT_VIEW_ADD_SCENE ? "Add scene"
+      : projects->view == PROJECT_VIEW_ADD_ENTITY ? "Add entity"
       : projects->view == PROJECT_VIEW_SCENES    ? "Scenes"
       : projects->view == PROJECT_VIEW_RENAME    ? "Rename"
       : projects->view == PROJECT_VIEW_DELETE    ? "Delete scene permanently?"
@@ -2480,6 +2659,7 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       .value = projects->view == PROJECT_VIEW_CREATE ||
                        projects->view == PROJECT_VIEW_ADD_SCENE
                    ? 2110
+                   : projects->view == PROJECT_VIEW_ADD_ENTITY ? 550
                    : Max(height - 175, projects->card_count * 70.0f + 160)};
   VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
   scroll.placement.column = 0;
@@ -2497,6 +2677,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
     const float32_t body_width = width - 46;
     if (projects->view == PROJECT_VIEW_CHOOSER) {
       project_build_chooser(projects, editor, frame, body_width);
+    } else if (projects->view == PROJECT_VIEW_ADD_ENTITY) {
+      project_build_entity_form(projects, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_CREATE ||
                projects->view == PROJECT_VIEW_ADD_SCENE) {
       const bool8_t creating = projects->view == PROJECT_VIEW_CREATE;
@@ -2686,10 +2868,29 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
     (void)vkr_ui_scroll_area_end(ui);
   }
   if (!projects->dialog_closed) {
+    if (projects->view == PROJECT_VIEW_ADD_ENTITY) {
+      const float32_t button_width = Min(180.0f, (width - 60) * .5f);
+      if (project_button(ui, "entity.submit", "Add to scene", width - 36 - button_width,
+                         height - 65, button_width,
+                         projects->read_only || !project_entity_draft_valid(projects) ||
+                             frame->scene_loading || projects->job_id ||
+                             vkr_editor_bakery_busy(editor->bakery))) {
+        snprintf(projects->operation, sizeof(projects->operation), "add_entities");
+        if (frame->edits->revision != frame->edits->saved_revision) {
+          projects->resume_view = PROJECT_VIEW_SCENES;
+          projects->view = PROJECT_VIEW_CONFIRM;
+        } else {
+          project_start_job(projects, editor, frame, false_v);
+        }
+      }
+    }
     project_label(ui, "projects.message",
                   projects->read_only && !projects->message[0]
                       ? "Read-only workspace: another editor currently owns "
                         "the write lease."
+                  : projects->view == PROJECT_VIEW_ADD_ENTITY &&
+                          !projects->message[0]
+                      ? "Add saves the entity and reloads this scene."
                       : projects->message,
                   12, height - 108, width - 48);
     const bool8_t drafting = projects->view == PROJECT_VIEW_CREATE ||
@@ -2708,17 +2909,32 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       projects->view = PROJECT_VIEW_ADD_SCENE;
     }
     if (project_button(ui, "projects.back",
-                       projects->view == PROJECT_VIEW_CONFIRM ||
+                       projects->view == PROJECT_VIEW_ADD_ENTITY ||
+                               projects->view == PROJECT_VIEW_CONFIRM ||
                                projects->view == PROJECT_VIEW_DELETE
                            ? "Cancel"
                        : projects->project && !projects->unpublished_project
                            ? "Back to editor"
                            : "Back",
-                       12, height - 65, 148,
+                       12, height - 65,
+                       projects->view == PROJECT_VIEW_ADD_ENTITY
+                           ? Min(148.0f, (width - 60) * .5f)
+                           : 148.0f,
                        projects->delete_waiting_unload ||
                            (projects->view == PROJECT_VIEW_CHOOSER &&
                             !projects->project))) {
-      if (projects->view == PROJECT_VIEW_DELETE) {
+      if ((projects->view == PROJECT_VIEW_ADD_ENTITY ||
+           (projects->view == PROJECT_VIEW_CONFIRM &&
+            !strcmp(projects->operation, "add_entities"))) &&
+          !projects->closing) {
+        projects->operation[0] = '\0';
+        projects->message[0] = '\0';
+        if (!frame->scene && !frame->scene_loading) {
+          project_start_job(projects, editor, frame, false_v);
+        } else {
+          projects->view = PROJECT_VIEW_EDITOR;
+        }
+      } else if (projects->view == PROJECT_VIEW_DELETE) {
         projects->view = PROJECT_VIEW_SCENES;
         projects->delete_waiting_unload = false_v;
         projects->operation[0] = '\0';

@@ -2,6 +2,7 @@
 #include "core/vkr_json.h"
 #include "editor_internal.h"
 #include "editor_project_store.h"
+#include "editor_projects.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -241,15 +242,26 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
   return true_v;
 }
 
-void vkr_editor_hierarchy_build(VkrEditorScenePanels *p,
+void vkr_editor_hierarchy_build(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame, VkrUiRect rect,
                                 VkrFontHandle heading) {
+  VkrEditorScenePanels *p = editor->scene_panels;
   VkrUiSystem *ui = frame->ui;
   float32_t w = rect.width / ui->content_scale,
             h = rect.height / ui->content_scale;
   if (w < 32 || h < 60)
     return;
-  VkrUiWidgetConfig c = widget_at(6, 5, w - 12, 24);
+  VkrUiWidgetConfig c = widget_at(6, 5, w - 12, 26);
+  vkr_editor_action_style(&c, heading);
+  c.disabled =
+      !vkr_editor_projects_can_add_entity(editor->projects, editor, frame);
+  c.tooltip =
+      string8_lit("Add a model or light to the loaded, writable project scene");
+  if (vkr_ui_button(ui, string8_lit("hierarchy.add"),
+                    string8_lit("+ Add entity"), &c)) {
+    vkr_editor_projects_add_entity(editor->projects, editor, frame);
+  }
+  c = widget_at(6, 39, w - 12, 24);
   c.tooltip = string8_lit("Search scene nodes (matches keep their ancestors)");
   vkr_editor_field_style(&c);
   VkrUiTextEditBuffer search = {(uint8_t *)p->search,
@@ -266,10 +278,10 @@ void vkr_editor_hierarchy_build(VkrEditorScenePanels *p,
                  string8_lit("Search nodes"), &c);
   }
   if (!frame->scene) {
-    c = widget_at(6, 36, w - 12, 40);
+    c = widget_at(6, 70, w - 12, 40);
     vkr_ui_label(ui, string8_lit("no.scene"), string8_lit("No scene loaded."),
                  &c);
-    c = widget_at(6, 80, w - 12, 28);
+    c = widget_at(6, 114, w - 12, 28);
     vkr_editor_action_style(&c, heading);
     c.disabled = frame->scene_loading;
     if (vkr_ui_button(ui, string8_lit("load.scene"), string8_lit("Load scene"),
@@ -290,7 +302,7 @@ void vkr_editor_hierarchy_build(VkrEditorScenePanels *p,
         break;
       }
   }
-  float32_t page = Max(0.0f, h - 58.0f);
+  float32_t page = Max(0.0f, h - 92.0f);
   const uint32_t selected_row = p->selected_row;
   if (frame->selected_entity.u64 != p->revealed.u64) {
     if (selected_row != NO_ROW) {
@@ -310,7 +322,7 @@ void vkr_editor_hierarchy_build(VkrEditorScenePanels *p,
   uint32_t end = Min(p->row_count, first + Min(TREE_VISIBLE_SLOTS,
                                                (uint32_t)(page / 23.0f) + 2u));
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
-  c = widget_at(0, 34, w, page);
+  c = widget_at(0, 68, w, page);
   list.placement = c.placement;
   list.style.min_size_pt = c.style.min_size_pt;
   list.style.max_size_pt = c.style.max_size_pt;

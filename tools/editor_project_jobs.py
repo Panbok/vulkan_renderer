@@ -1073,6 +1073,41 @@ class Job:
             entity['id'] = str(uuid.uuid4())
         return scene
 
+    def append_entities(self, scene):
+        models = self.request.get('models', [])
+        lights = self.request.get('lights', [])
+        if not isinstance(models, list) or not isinstance(lights, list):
+            raise JobError('Models and lights must be arrays')
+        first = len(scene.setdefault('entities', []))
+        if first + len(models) + len(lights) > 65536:
+            raise JobError('Adding entities exceeds the scene entity limit')
+        for model in models:
+            source = source_file(model['source'] if isinstance(model, dict) else model)
+            if source.suffix.lower() == '.vkb':
+                reference = self.import_cooked_mesh(source)
+            elif source.suffix.lower() in ('.obj', '.gltf', '.glb'):
+                reference = self.import_model(source)
+            else:
+                raise JobError('Models must be OBJ, glTF, GLB or cooked VKB files')
+            entity = {'id': str(uuid.uuid4()), 'name': source.stem, 'parent': None,
+                      'transform': {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
+                      'mesh': {'asset': reference, 'pipeline_domain': 'world'}}
+            if isinstance(model, dict) and model.get('transform'):
+                entity['transform'] = copy.deepcopy(model['transform'])
+            scene['entities'].append(entity)
+        for light in lights:
+            kinds = ('point_light', 'spot_light', 'directional_light', 'rectangle_light')
+            if not isinstance(light, dict) or sum(kind in light for kind in kinds) != 1:
+                raise JobError('Each light requires exactly one light component')
+            if any(component in light for component in ('mesh', 'shape', 'text3d')):
+                raise JobError('New light entities cannot contain model, shape or text components')
+            entity = copy.deepcopy(light)
+            if 'spot_light' in entity:
+                entity['point_light'] = {**entity.pop('spot_light'), 'kind': 2}
+            entity['id'] = str(uuid.uuid4())
+            scene['entities'].append(entity)
+        return first
+
     def create(self):
         if self.final.exists():
             raise JobError('Scene identifier already exists')
@@ -1085,24 +1120,7 @@ class Job:
         else:
             scene = {'version': 3, 'entities': [], 'environment': {'enabled': False},
                      'reflection_probes': []}
-        for model in self.request.get('models', []):
-            path = model['source'] if isinstance(model, dict) else model
-            entity = {'id': str(uuid.uuid4()), 'name': Path(path).stem, 'parent': None,
-                      'transform': {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
-                      'mesh': {'asset': self.import_model(path), 'pipeline_domain': 'world'}}
-            if isinstance(model, dict) and model.get('transform'):
-                entity['transform'] = model['transform']
-            scene.setdefault('entities', []).append(entity)
-        for light in self.request.get('lights', []):
-            if not any(kind in light for kind in ('point_light', 'spot_light', 'directional_light', 'rectangle_light')):
-                raise JobError('New entities are limited to lights')
-            entity = copy.deepcopy(light)
-            if 'spot_light' in entity:
-                if 'point_light' in entity:
-                    raise JobError('A light cannot contain both spot and point components')
-                entity['point_light'] = {**entity.pop('spot_light'), 'kind': 2}
-            entity['id'] = str(uuid.uuid4())
-            scene.setdefault('entities', []).append(entity)
+        self.append_entities(scene)
         environment = self.request.get('environment') or {}
         if environment.get('source'):
             scene['environment'] = {key: environment[key] for key in
@@ -1755,7 +1773,13 @@ class Job:
         staging.mkdir(parents=True, exist_ok=True)
         self.stage = Path(tempfile.mkdtemp(prefix=self.scene_id + '-assets-', dir=staging))
         operation = self.request['operation']
-        if operation == 'import_assets':
+        added_entity = None
+        if operation == 'add_entities':
+            if not self.request.get('models') and not self.request.get('lights'):
+                raise JobError('Select a model or light to add')
+            added_entity = self.append_entities(scene)
+            self.validate_semantics(scene)
+        elif operation == 'import_assets':
             sources = [*self.request.get('models', []), *self.request.get('sources', [])]
             if not sources:
                 raise JobError('Select at least one asset to import')
@@ -1884,6 +1908,8 @@ class Job:
         validate_managed_document(scene)
         self.published_builds.clear()
         atomic_json(path, scene)
+        if added_entity is not None:
+            result['added_scene_entity'] = added_entity
         return result
 
     def delete_scene(self):
@@ -1962,7 +1988,7 @@ class Job:
                 result = self.prepare_unbuilt(path, migrate_source_references(load_json(path), path))
             elif self.request.get('operation') == 'prepare_scene':
                 result = self.prepare(self.request['scene_path'])
-            elif self.request.get('operation') in ('import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset'):
+            elif self.request.get('operation') in ('add_entities', 'import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset'):
                 result = self.edit_assets()
             else:
                 raise JobError('Unknown project job operation')

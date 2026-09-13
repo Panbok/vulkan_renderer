@@ -198,7 +198,7 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     if (vkr_ui_panel_begin(ui, string8_lit("dock.content"), &content)) {
       switch (content_tab.panel_kind) {
       case VKR_UI_DOCK_PANEL_HIERARCHY:
-        vkr_editor_hierarchy_build(editor->scene_panels, frame, rect,
+        vkr_editor_hierarchy_build(editor, frame, rect,
                                    heading_font);
         break;
       case VKR_UI_DOCK_PANEL_INSPECTOR:
