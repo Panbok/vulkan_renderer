@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-13
 authority: adr
 ---
 
@@ -15,6 +15,19 @@ Accepted.
 Sharing C frame inputs or shader source does not prove native binaries use the
 same bindings, layouts, dispatches or numerical meaning. Resource references differ
 between Metal and Vulkan.
+
+## Animation evidence state
+
+Compute skinning and the independent animation preview are **UNALIGNED** while
+native Vulkan validation and bilateral numeric comparisons are pending. The
+focused Metal API-validation Bistro run passes without diagnostics, and Release
+snapshots exercise deformed color, normals and motion; see ADR-071. Both production
+roots consume decoded bind vertices, four influences and asset-space joint
+palettes. Current output is a 32-byte record; prepared instances append current
+and compatible previous deformation addresses. The selected temporal producer,
+instance/geometry generations and discontinuity determine previous-position
+eligibility. [ADR-071](071-animation-bank-and-reference-pose.md) owns the feature,
+capacity and editor behavior. Source integration is not native parity evidence.
 
 ## Anisotropy evidence state
 
@@ -71,12 +84,13 @@ with forward `-Z`; depth is `[0,1]` and projection/viewport Y lowering is backen
 aware. Rounded dispatches retain guards required for valid edges. Material
 normal decode reconstructs positive tangent Z; output transfer follows ADR-043.
 
-The frame input's source instance remains 80 bytes. Native publication/upload
-lowers it once into a 128-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
+The frame input's source instance is 96 bytes, including a CPU skinning index. Native publication/upload
+lowers it once into a 144-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
 columns. Their common positive scale preserves inverse-transpose direction under
 normalization; the first column's w carries model handedness for mirrored tangent
 bases. The second column's w carries an outward-rounded conservative affine
-sphere stretch; source and prepared instance sizes remain 80 and 128 bytes.
+sphere stretch. Current and previous deformation addresses occupy bytes 128 and
+136 of the prepared record; zero selects static geometry.
 Eight raster buckets partition material state by reflection parity; the shared
 compaction record is 144 bytes. Direct draws preserve order through contiguous
 parity runs. Shaders transform tangents with the model's linear part and normals with
@@ -335,6 +349,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Domain | Shared source | Metal production | Vulkan production |
 |---|---|---|---|
 | Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
+| Compute skinning | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
 | Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |

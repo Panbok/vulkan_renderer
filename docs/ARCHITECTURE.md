@@ -116,7 +116,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Selected implementation | Native resources/pipelines, graph realization, record/submit/cancel, targets | `renderer/src/metal/`, `vulkan/` |
 | Shared graph | JSON realization, dependency order, culling, subresource barriers | `renderer/src/vkr_rg_json.c`, `vkr_rg_compile.c` |
 | GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `renderer/src/vkr_gpu_*`, `vkr_capture_ring.*` |
-| Render assets | Geometry, textures, materials, meshes, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
+| Render assets | Geometry, textures, materials, meshes, animation banks, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
 | Production shaders | Shared math and native bindings/entry points | `renderer/src/shaders/` |
 | Offline tools/harness | Asset cooking, cases, captures, comparisons and profiles | `tools/` |
 
@@ -290,6 +290,24 @@ Frame inputs are not standalone replay recordings. See
 
 ## Scene extraction and publication
 
+The standalone animation cooker produces `.vka` rig/clip banks. Shared asset code
+validates and samples these banks on the CPU, including hierarchy and skin-palette
+evaluation. Skinned mesh version 18 preserves four-influence data through cooking
+and exposes it in the loader result arena; static version 17 remains supported.
+Optional scene animation bindings retain mesh and `.vka` resource requests and
+advance per-wrapper CPU poses after authored transform propagation. Optional inline
+controllers evaluate weighted blend graphs, 1D/2D blend spaces and conditional state
+transitions before hierarchy/palette publication. Clip crossfades and graph mixtures
+blend local TRS; the existing compute pass consumes the resulting palette. Evaluated
+poses remain separate from authored ECS transforms. Both backends consume them
+through per-instance compute skinning, including geometry reconstruction, motion
+and shadow consumers. Conservative joint influence boxes supply current bounds.
+The movable Animation editor has an independent player, graph/sequence controls
+and a graph-owned model preview. Static geometry remains shared. Native bilateral
+animation evidence remains pending; no performance claim is established.
+[ADR-071](adr/071-animation-bank-and-reference-pose.md) owns this partial integration
+contract and the scene configuration.
+
 The standard scene runtime owns `VkrRenderAssets` independently of `VkrRenderer`.
 Assets own
 geometry, texture, material, mesh and font systems, persistent world resources,
@@ -318,7 +336,7 @@ transforms, resource references, punctual and rectangle lights, environment/prob
 one scene-owned baked diffuse-volume binding, analytic fog, text and render IDs.
 glTF nodes retain local matrices, names and source identities; source geometry is
 shared across node instances, with decal variants where world-offset corrections
-differ. Cooked mesh v17 retains the same source hierarchy. Source fingerprints
+differ. Cooked mesh v17 and v18 retain the same source hierarchy. Source fingerprints
 protect editor sidecar overrides against reimport conflicts. Inspector supports
 TRS where the authored matrix is decomposable; sheared matrices remain exact and
 read-only. The runtime owns selection and a bounded undo journal. UI borrows
@@ -485,8 +503,9 @@ no selectable 24-byte float16-UV mode. See
 Source instances remain 80 bytes; native publication/upload prepares 128-byte
 instances with inverse-transpose normal directions and mirror handedness.
 Tangents retain model-linear transport. glTF geometry remains local and node
-matrices apply through the same instance contract. Cooked mesh version 17
-retains source hierarchy metadata and rejects older flattened artifacts. See
+matrices apply through the same instance contract. Cooked mesh versions 17 and 18
+retain source hierarchy metadata and reject older flattened artifacts. Version 18
+also carries CPU skin influences; the published geometry remains static. See
 [ADR-044](adr/044-shader-cross-backend-contract.md) and
 [ADR-030](adr/030-offline-mesh-optimization-and-cooking.md).
 

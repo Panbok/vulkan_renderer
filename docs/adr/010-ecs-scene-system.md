@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-13
 authority: adr
 ---
 # ADR-010: ECS-owned scene state with a retained render mirror
@@ -43,9 +43,12 @@ Imported local matrices remain exact. A reconstruction check determines whether
 TRS controls can represent the matrix; shear and degenerate matrices remain
 read-only in those controls. An explicit supported TRS edit replaces the matrix
 while preserving the parent. Punctual lights attach to their source nodes.
-Camera and skin references and the source animation count are retained metadata;
-this import path does not activate glTF cameras or implement skeletal/animation
-playback. `structure_revision` identifies create, destroy, rename and reparent
+Camera references remain metadata. Optional `.vka` scene bindings retain mesh
+and animation requests and advance independent CPU poses after authored transform
+propagation. Render synchronization binds those palettes to compute deformation
+and actor-space bounds without writing sampled values into authored ECS transforms.
+This avoids persisting a sampled animation frame through editor save. [ADR-071](071-animation-bank-and-reference-pose.md) owns playback,
+request lifetime and binding invalidation. `structure_revision` identifies create, destroy, rename and reparent
 changes for editor hierarchy rebuilding.
 
 ## Consequences

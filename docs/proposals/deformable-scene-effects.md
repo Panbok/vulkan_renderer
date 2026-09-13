@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-05
+updated: 2026-09-13
 authority: proposal
 ---
 
@@ -27,8 +27,10 @@ effect must not treat compute support as a prerequisite.
 
 ## Proposed gap
 
-Investigate one authored vertex-deformation pilot, such as a wind-driven cloth
-asset, before adding an effect registry or a general tag vocabulary. The pilot
+The [compute animation proposal](compute-animation-and-editor.md) supplies a
+skeletal player pilot, including its asset data, compute stages, motion history,
+and editor. Resolve and validate that pilot before adding an effect registry or
+a general tag vocabulary. Any later cloth or procedural deformation pilot
 must define its data owner, source geometry, output buffer lifetime, and the
 common deformed input used by visibility, shadow, deferred resolve, temporal
 motion, and picking. It must preserve GPU completion before a deformed buffer

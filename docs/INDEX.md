@@ -99,6 +99,18 @@ their Release variants. Explicit toolchain and triplet settings take
 precedence. Use a fresh build directory when changing either setting.
 
 `build_run.sh` and `build_editor_run.sh` also launch their respective targets.
+The standalone animation cooker builds and writes an explicitly selected bank:
+
+```sh
+./tools/cook_vkr_animations.sh --input /path/to/player.gltf --output /path/to/player.vka
+./build_release/tools/vkr_animation_cooker --inspect --input /path/to/player.vka --clip 0 --time 0.5
+```
+
+On Windows, use `tools/cook_vkr_animations.bat` with the same arguments.
+Managed model import and Rebuild publish matching mesh and animation banks.
+Scene bindings evaluate per-wrapper poses and blend controllers for compute skinning; see
+[ADR-071](adr/071-animation-bank-and-reference-pose.md).
+
 For profiles, captures, and baselines, use the
 [harness workflow](../.codex/skills/vkr-harness/SKILL.md). Use normal Release
 with graphics validation variables unset for performance and baseline evidence;
@@ -131,7 +143,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [027](adr/027-immediate-mode-grid-ui.md) | Grid UI, scene light labels and controls, dock stacks, Console and Bakery | implemented |
 | [028](adr/028-gpu-driven-deferred-visibility-buffer.md) | One GPU-driven world topology | implemented |
 | [029](adr/029-retained-graph-resources.md) | Retain submitted image contents per subresource | implemented |
-| [030](adr/030-offline-mesh-optimization-and-cooking.md) | Versioned meshoptimizer artifacts preserving glTF nodes and shared geometry | implemented |
+| [030](adr/030-offline-mesh-optimization-and-cooking.md) | Versioned meshoptimizer artifacts preserving glTF nodes, shared geometry and CPU skin influences | implemented |
 | [031](adr/031-versioned-packed-static-geometry-abi.md) | One 32-byte packed static vertex ABI | implemented |
 | [032](adr/032-two-phase-confirmed-visibility.md) | Keep exact one-phase visibility gates | declined |
 | [033](adr/033-occupied-depth-sdsm-feedback.md) | Optional occupied-depth shadow fitting | implemented |
@@ -170,6 +182,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [068](adr/068-profiled-surface-diffusion.md) | Optional RGB surface diffusion and offline transport | implemented |
 | [069](adr/069-editor-projects-and-workspaces.md) | Portable workspaces, background preference publication, managed imports, entity addition, scene publication and deletion | implemented |
 | [070](adr/070-portable-path-boundaries.md) | Native UTF-8 I/O, managed reference grammar, format boundaries and path regression gates | implemented |
+| [071](adr/071-animation-bank-and-reference-pose.md) | Animation banks, CPU playback, compute deformation and the movable graph/sequence preview editor | partial |
 
 ## Proposals
 
@@ -183,6 +196,7 @@ decisions before dependent implementation.
 | [Conditional D3D12 backend evaluation](proposals/d3d12-backend-evaluation.md) | Conditions for considering a third backend. |
 | [Dedicated transfer queue](proposals/dedicated-transfer-queue.md) | Independent upload submission and completion-safe publication. |
 | [Deformable scene effects](proposals/deformable-scene-effects.md) | A bounded deformation pilot with shared pass and history inputs. |
+| [Animation graph and baking extensions](proposals/compute-animation-and-editor.md) | Managed controller/sequence assets, fixed-step control, baking, GPU pose evaluation and preview extensions. |
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
 | [Editor Projects](proposals/editor-projects.md) | Remaining Projects workflow, native-platform, inspection, retirement and frame-budget acceptance; implemented contracts are in ADR-069. |
 | [Portable path contract](proposals/portable-path-contract.md) | Remaining macOS, network-share and interactive scene-selection evidence gates; implemented contract is in ADR-070. |

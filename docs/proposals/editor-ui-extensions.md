@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-12
+updated: 2026-09-13
 authority: proposal
 ---
 # Editor UI extensions
@@ -10,8 +10,10 @@ authority: proposal
 The immediate UI supports panels, labels, buttons, checkboxes, sliders, scroll
 areas, and text fields with stable IDs, mouse layers, retained focus, and text
 input. The dock tree supports bounded in-window splits and tabs with persisted
-layout. The editor also has three application-specific draggable floating
-metric/help windows; they are not dock-tree panels and are not persisted.
+layout. The editor also has four application-specific draggable floating windows
+for Graphics, Draws, Memory, and Help. Their geometry, visibility, and z order are
+persisted by [workspace settings](../../editor/src/editor_projects.c); they are
+not dock-tree panels.
 
 ## Decision boundary: advanced components and accessibility
 
@@ -19,6 +21,11 @@ metric/help windows; they are not dock-tree panels and are not persisted.
 creation progress and content grid, including their keyboard and focus behavior.
 This proposal retains the broader accessibility and floating-panel decisions;
 Projects does not depend on native detachable windows or a general widget layer.
+
+[Compute animation and editor](compute-animation-and-editor.md) proposes a
+concrete node canvas, sequence timeline, and live model preview in a movable
+in-window editor. It owns that feature's interactions and second-view rendering;
+this document retains general panel detachment and accessibility scope.
 
 Choose a specific missing interaction before adding a generic component layer.
 The first accepted component must use the immediate API and retained-ID state,

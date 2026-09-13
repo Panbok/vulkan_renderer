@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-13
 authority: adr
 ---
 # ADR-030: Versioned meshoptimizer-cooked mesh artifacts
@@ -62,6 +62,38 @@ sidecars. The loader preserves those files and rejects conflicting overrides;
 they must be reapplied against the updated source identity.
 Version 16 artifacts must be recooked because their vertices contain flattened
 node transforms and cannot reconstruct the original shared meshes faithfully.
+
+Skinned sources now emit version 18; static sources continue emitting version 17,
+and the reader accepts both. Version 18 keeps the packed geometry layout and
+adds a little-endian skin extension after source metadata, covered by the metadata
+checksum. It contains the animation fingerprint, skin and vertex counts, per-skin
+joint counts, then four uint32 joint indices and four float32 weights per vertex.
+This CPU asset representation does not establish the eventual GPU influence ABI.
+
+The importer supports paired `JOINTS_0` and `WEIGHTS_0`, including sparse/strided
+accessors and normalized unsigned-byte/unsigned-short weights. It rejects extra
+sets, missing pairs, invalid values and zero total weight. Weights are normalized
+once; zero-weight lanes use joint zero. Static vertices in a mixed asset have an
+all-zero influence record. Deduplication compares influences as well as visible
+attributes, corner splitting copies both, and meshoptimizer fetch reorders a
+combined temporary record before splitting the two streams again.
+
+Existing node skin references select palette-relative joint indices per instance;
+shared geometry is validated against every node's applicable skin. The animation
+fingerprint matches the `.vka` JSON/buffer identity before decal recipe changes.
+It does not replace the existing scene fingerprint. Version 18 metadata variants
+preserve the skin extension and reject changes to mesh/skin bindings or mesh spans.
+Transform and light patches still require the existing same-size source contract.
+
+The runtime decoder validates extension counts/size before allocation and rejects
+invalid weights and joint bindings before success. Skin arrays share the loader
+result arena and are exposed through `VkrMeshLoaderResult.skin`; they are released
+with that result and excluded from static mesh upload metrics. Scene animators
+retain mesh and bank requests; frame skinning jobs upload the influences with
+current palettes. Managed imports and rebuilds publish a matching `.vka` in the
+same immutable mesh revision when the source has skins and clips.
+[ADR-071](071-animation-bank-and-reference-pose.md) owns animation playback and
+deformation.
 
 The glTF importer emits mesh-local geometry once per referenced source mesh.
 Each primitive retains a range; material merging never crosses source mesh
