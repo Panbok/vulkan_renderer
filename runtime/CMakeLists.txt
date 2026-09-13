@@ -1,3 +1,4 @@
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_physics.cmake")
 file(GLOB_RECURSE VKR_RUNTIME_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h)
 # Shared reader targets also serve the offline tools without linking runtime.
 list(FILTER VKR_RUNTIME_SOURCES EXCLUDE REGEX "/src/assets/")
@@ -13,7 +14,7 @@ add_library(vkr_runtime STATIC ${VKR_RUNTIME_SOURCES})
 vkr_configure_library(vkr_runtime)
 target_include_directories(vkr_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(vkr_runtime PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
-target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats PRIVATE vkr_ktx_read vkr_image_decode)
+target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats vkr_physics PRIVATE vkr_ktx_read vkr_image_decode)
 if(APPLE)
     target_link_libraries(vkr_runtime PRIVATE "-framework Cocoa" "-framework GameController" "-framework UniformTypeIdentifiers")
 elseif(WIN32)

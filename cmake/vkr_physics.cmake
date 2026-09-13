@@ -1,0 +1,42 @@
+# Jolt v5.5.0, gitlink 23dadd0e603f1b321142d4c74df07fce85064989.
+# Scope upstream's generic option names to a function, not the VKR cache.
+function(vkr_add_physics)
+    set(OVERRIDE_CXX_FLAGS OFF)
+    set(INTERPROCEDURAL_OPTIMIZATION OFF)
+    set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF)
+    set(CPP_EXCEPTIONS_ENABLED ON)
+    set(CPP_RTTI_ENABLED OFF)
+    set(OBJECT_LAYER_BITS 32)
+    set(ENABLE_ALL_WARNINGS OFF)
+    set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF)
+    set(PROFILER_IN_DEBUG_AND_RELEASE OFF)
+    set(ENABLE_OBJECT_STREAM OFF)
+    set(ENABLE_INSTALL OFF)
+    set(TARGET_UNIT_TESTS OFF)
+    set(TARGET_HELLO_WORLD OFF)
+    set(TARGET_PERFORMANCE_TEST OFF)
+    set(TARGET_SAMPLES OFF)
+    set(TARGET_VIEWER OFF)
+    set(USE_AVX OFF)
+    set(USE_AVX2 OFF)
+    set(USE_AVX512 OFF)
+    set(USE_SSE4_1 OFF)
+    set(USE_SSE4_2 OFF)
+    set(USE_LZCNT OFF)
+    set(USE_TZCNT OFF)
+    set(USE_F16C OFF)
+    set(USE_FMADD OFF)
+    add_subdirectory("${CMAKE_SOURCE_DIR}/vendor/JoltPhysics/Build"
+                     "${CMAKE_BINARY_DIR}/vendor/JoltPhysics" EXCLUDE_FROM_ALL)
+    # VKR optimizes vendors with NDEBUG even in Debug. Keep Jolt inline
+    # declarations/layout consistent in its consumer without changing VKR asserts.
+    target_compile_definitions(Jolt PUBLIC JPH_NO_DEBUG)
+    add_library(vkr_physics STATIC
+        "${CMAKE_SOURCE_DIR}/runtime/src/physics/vkr_physics.cpp")
+    vkr_configure_library(vkr_physics)
+    target_compile_features(vkr_physics PRIVATE cxx_std_17)
+    target_include_directories(vkr_physics PUBLIC "${CMAKE_SOURCE_DIR}/runtime/src"
+                                                "${CMAKE_SOURCE_DIR}/lib/src")
+    target_link_libraries(vkr_physics PRIVATE Jolt)
+endfunction()
+vkr_add_physics()

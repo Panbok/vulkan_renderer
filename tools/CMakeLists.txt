@@ -198,6 +198,22 @@ vkr_require_declared_c_functions(vkr_mesh_cooker)
 vkr_configure_cooker_target(vkr_mesh_cooker)
 target_link_libraries(vkr_mesh_cooker PRIVATE vkr_asset_cooking)
 
+if(NOT TARGET Jolt)
+    include("${CMAKE_SOURCE_DIR}/cmake/vkr_physics.cmake")
+endif()
+add_library(vkr_collision_cooking STATIC
+    assets/vkr_collision_import.c assets/vkr_collision_hull.cpp)
+vkr_configure_library(vkr_collision_cooking)
+vkr_configure_cooker_target(vkr_collision_cooking)
+target_include_directories(vkr_collision_cooking PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+    PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
+target_compile_features(vkr_collision_cooking PRIVATE cxx_std_17)
+target_link_libraries(vkr_collision_cooking PUBLIC vkr_asset_cooking PRIVATE Jolt)
+add_executable(vkr_collision_cooker vkr_collision_cooker.c)
+vkr_require_declared_c_functions(vkr_collision_cooker)
+vkr_configure_cooker_target(vkr_collision_cooker)
+target_link_libraries(vkr_collision_cooker PRIVATE vkr_collision_cooking)
+
 add_executable(vkr_animation_cooker vkr_animation_cooker.c)
 vkr_require_declared_c_functions(vkr_animation_cooker)
 vkr_configure_cooker_target(vkr_animation_cooker)

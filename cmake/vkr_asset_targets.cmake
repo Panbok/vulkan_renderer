@@ -1,5 +1,6 @@
 # Cooked formats are shared by offline producers and runtime consumers.
 add_library(vkr_asset_formats STATIC
+    "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_collision_cooked.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_skin.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_animation.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_animation_cooked.c"
