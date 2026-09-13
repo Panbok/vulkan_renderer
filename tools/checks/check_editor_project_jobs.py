@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--font-cooker')
     parser.add_argument('--texture-packer', required=True)
     parser.add_argument('--diffuse-baker')
+    parser.add_argument('--collision-cooker')
     args = parser.parse_args()
     module_path = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
     spec = importlib.util.spec_from_file_location('editor_project_jobs', module_path)
@@ -44,6 +45,8 @@ def main():
                    'scene_id': str(uuid.uuid4()), 'scene_name': 'Copied import',
                    'models': [str(model)], 'bakes': {},
                    'tools': {'mesh': str(Path(args.mesh_cooker).resolve()), 'texture': str(Path(args.texture_packer).resolve())}}
+        if args.collision_cooker:
+            request['tools']['collision'] = str(Path(args.collision_cooker).resolve())
         result_path = root / 'result.json'
         assert jobs.Job(request, result_path).execute() == 0
         result = jobs.load_json(result_path)
@@ -116,6 +119,90 @@ def main():
                 '--bounds', '-1', '-1', '-1', '10', '10', '10'], capture_output=True, text=True)
             assert check.returncode == 0, check.stdout + check.stderr
             assert 'lights=1 ' in check.stdout, 'Source punctual was duplicated or edited light omitted'
+
+        # Physics journals preserve nested identities and own their cooked closure.
+        for version in (2, 3):
+            journal = jobs.load_json(node_root / 'edits' / 'node.json')
+            journal['version'] = version
+            jobs.atomic_json(node_root / 'edits' / 'node.json', journal)
+            node_job.effective_bake_runtime(node_scene, node_root)
+        if args.collision_cooker:
+            import subprocess
+            cooked = workspace / 'shared-shape.vkc'
+            check = subprocess.run([request['tools']['collision'], '--input', str(gltf_path),
+                '--output', str(cooked), '--kind', 'mesh'], capture_output=True, text=True)
+            assert check.returncode == 0, check.stdout + check.stderr
+            cooked_bytes = cooked.read_bytes()
+            journal = {'version': 3, 'collision_settings': {'version': 1, 'names': ['Layer ' + str(i) for i in range(16)], 'matrix': [65535] * 16}, 'overrides': [{
+                'scene_entity': 0, 'gltf_node': 0, 'source_fingerprint': node_hash,
+                'fields': 0, 'physics': {
+                    'attachment': {'enabled': True, 'source': {
+                        'scene_entity': 0, 'gltf_node': 1, 'fingerprint': node_hash}},
+                    'joints': [{'enabled': True, 'target': {
+                        'scene_entity': 0, 'gltf_node': 1, 'fingerprint': node_hash}}],
+                    'colliders': [{'shape': 4, 'asset': 'shared-shape.vkc'}]}}]}
+            jobs.atomic_json(node_root / 'edits' / 'node.json', journal)
+            jobs.atomic_json(node_root / 'scene.json', node_scene)
+            clone = dict(request, scene_id=str(uuid.uuid4()), models=[],
+                         source_scene=str(node_root / 'scene.json'))
+            assert jobs.Job(clone, result_path).execute() == 0, result_path.read_text()
+            clone_result = jobs.load_json(result_path)
+            clone_path = Path(clone_result['scene_path'])
+            clone_scene = jobs.load_json(clone_path)
+            cloned = jobs.load_json(clone_path.parent / clone_scene['edit_overlay'])
+            assert cloned['version'] == 3 and cloned['collision_settings'] == journal['collision_settings']
+            record = cloned['overrides'][0]
+            clone_hash = jobs.Job.mesh_identity(jobs.source_fingerprint(clone['scene_id'].encode()), node_info['fingerprint'])
+            assert record['source_fingerprint'] == clone_hash
+            assert record['physics']['attachment']['source']['fingerprint'] == clone_hash
+            assert record['physics']['joints'][0]['target']['fingerprint'] == clone_hash
+            copied_asset = record['physics']['colliders'][0]['asset']
+            assert copied_asset.startswith(f'projects/{project.name}/scenes/{clone["scene_id"]}/builds/collisions/')
+            assert (workspace / copied_asset).read_bytes() == cooked_bytes
+            assert jobs.load_json(node_root / 'edits' / 'node.json') == journal
+            # Legacy collider paths use the runtime project root, not scene-file location.
+            legacy_physics = source / 'legacy-physics.json'
+            jobs.atomic_json(legacy_physics, {'version': 2, 'source_identity': 'physics-legacy',
+                'entities': [{'mesh': {'path': str(node_mesh)}}]})
+            legacy_journal = json.loads(json.dumps(journal))
+            legacy_hash = jobs.Job.mesh_identity(jobs.source_fingerprint(b'physics-legacy'), node_info['fingerprint'])
+            for reference, field, required in jobs.Job.overlay_references(legacy_journal['overrides'][0]):
+                reference[field] = legacy_hash
+            jobs.atomic_json(Path(str(legacy_physics) + '.editor.json'), legacy_journal)
+            legacy_clone = dict(clone, scene_id=str(uuid.uuid4()), source_scene=str(legacy_physics),
+                                legacy_root=str(workspace))
+            assert jobs.Job(legacy_clone, result_path).execute() == 0, result_path.read_text()
+            legacy_result = jobs.load_json(result_path)
+            legacy_scene = jobs.load_json(legacy_result['scene_path'])
+            legacy_overlay = jobs.load_json(Path(legacy_result['scene_path']).parent / legacy_scene['edit_overlay'])
+            assert (workspace / legacy_overlay['overrides'][0]['physics']['colliders'][0]['asset']).read_bytes() == cooked_bytes
+            # Corrupt native geometry fails atomically before a destination appears.
+            damaged = bytearray(cooked_bytes)
+            damaged[-1] ^= 1
+            cooked.write_bytes(damaged)
+            bad_clone = dict(clone, scene_id=str(uuid.uuid4()))
+            assert jobs.Job(bad_clone, result_path).execute() == 1
+            assert not (project / 'scenes' / bad_clone['scene_id']).exists()
+            assert not list((project / '.staging').iterdir())
+            cooked.write_bytes(cooked_bytes)
+            journal['overrides'][0]['physics']['joints'][0]['target']['fingerprint'] = '0123456789abcdef'
+            jobs.atomic_json(node_root / 'edits' / 'node.json', journal)
+            bad_clone = dict(clone, scene_id=str(uuid.uuid4()))
+            assert jobs.Job(bad_clone, result_path).execute() == 1
+            assert not (project / 'scenes' / bad_clone['scene_id']).exists()
+            # Detaching a cloned scene must not need the original workspace.
+            detached = root / 'detached-scene'
+            shutil.copytree(clone_path.parent, detached)
+            cooked.unlink()
+            detached_clone = dict(clone, scene_id=str(uuid.uuid4()), source_scene=str(detached / 'scene.json'))
+            assert jobs.Job(detached_clone, result_path).execute() == 0, result_path.read_text()
+            detached_result = jobs.load_json(result_path)
+            detached_scene = jobs.load_json(detached_result['scene_path'])
+            detached_overlay = jobs.load_json(Path(detached_result['scene_path']).parent / detached_scene['edit_overlay'])
+            assert (workspace / detached_overlay['overrides'][0]['physics']['colliders'][0]['asset']).read_bytes() == cooked_bytes
+            # Restore the source journal for independent relocation checks below.
+            node_scene.pop('edit_overlay')
+            jobs.atomic_json(node_root / 'scene.json', node_scene)
 
         model.unlink()
         assert any((scene_path.parent / 'sources').rglob('source.obj'))

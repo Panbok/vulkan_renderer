@@ -332,6 +332,7 @@ typedef struct VkrHarnessRendererConfig {
   float32_t motion_blur_entity_velocity_x;
   float32_t motion_blur_entity_velocity_y;
   float32_t motion_blur_entity_velocity_z;
+  bool8_t physics_fixture;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

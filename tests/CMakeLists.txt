@@ -27,7 +27,7 @@ endif()
 
 # The harness core exports renderer_lib transitively.
 find_package(Vulkan REQUIRED)
-target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_harness_core vkr_asset_cooking ktx Vulkan::Vulkan)
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_harness_core vkr_collision_cooking ktx Vulkan::Vulkan)
 
 target_include_directories(vulkan_renderer_tester
     PRIVATE

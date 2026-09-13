@@ -8,6 +8,9 @@
 #include "animation_graph_tests.h"
 #include "animation_loader_tests.h"
 #include "scene_animation_tests.h"
+#include "physics_test.h"
+#include "collision_asset_test.h"
+#include "scene_physics_test.h"
 
 bool32_t run_path_io_tests(void);
 bool32_t run_process_path_tests(void);
@@ -18,6 +21,9 @@ bool32_t run_local_shadow_tests(void);
 typedef bool32_t (*VkrTestSuite)(void);
 
 static const VkrTestSuite VKR_TEST_SUITES[] = {
+    run_physics_tests,
+    run_collision_asset_tests,
+    run_scene_physics_tests,
     run_allocator_tests,
     run_atomic_tests,
     run_metrics_tests,

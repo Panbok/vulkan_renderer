@@ -192,6 +192,9 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
         case_manifest->renderer.editor_resume_frame);
   ADD("renderer.skybox", "%u", case_manifest->renderer.skybox);
   ADD("renderer.text_fixture", "%u", case_manifest->renderer.text_fixture);
+  if (case_manifest->renderer.physics_fixture) {
+    ADD("renderer.physics_fixture", "%u", 1u);
+  }
   ADD("renderer.taa_enabled", "%u", case_manifest->renderer.taa_enabled);
   /* Preserve fingerprints for manifests authored before these default-on
      controls existed. Only non-default state changes the workload identity. */

@@ -1,4 +1,5 @@
 #include "scene_animation_tests.h"
+#include "renderer/systems/vkr_scene_physics.h"
 
 #include "assets/vkr_animation_encode.h"
 #include "assets/vkr_animation_import.h"
@@ -475,6 +476,70 @@ bool32_t run_scene_animation_tests(void) {
   assert(vkr_scene_animation_apply_graph(&scene, wrappers[0], NULL, &error));
   assert(!vkr_scene_animation_get_graph(&scene, wrappers[0]));
 
+  /* A solved bone drives the existing inverse-bind skin palette without
+   * overwriting imported node TRS or the sampled local animation pose. */
+  vkr_scene_physics_set_paused(&scene, true_v);
+  VkrScenePhysicsChange ragdoll[1];
+  uint32_t ragdoll_count = 0;
+  assert(vkr_scene_physics_ragdoll_plan(&scene, wrappers[0],
+                                        VKR_SCENE_RAGDOLL_CREATE, ragdoll, 1,
+                                        &ragdoll_count, &error));
+  assert(ragdoll_count == 1 && ragdoll[0].entity.u64 == nodes[0].u64);
+  assert(vkr_scene_physics_apply(&scene, ragdoll[0].entity,
+                                 &ragdoll[0].snapshot, &error));
+  assert(vkr_scene_physics_reset(&scene, &error));
+  assert(vkr_animation_player_time(a) == 0.0);
+  for (uint32_t tick = 0; tick < 30; ++tick) {
+    assert(vkr_scene_physics_step(&scene, &error));
+  }
+  assert(fabs(vkr_animation_player_time(a) - 0.5) < 1e-9);
+  VkrPhysicsPose solved;
+  assert(vkr_scene_physics_get_pose(&scene, nodes[0], &solved));
+  const Mat4 *palette = vkr_animation_player_skin_palette(a, 0);
+  assert(palette && solved.position[1] < -1.0f);
+  assert(fabsf(palette[0].elements[13] - solved.position[1]) < 0.001f);
+  assert(MemCompare(&local, &vkr_scene_get_transform(&scene, nodes[0])->local,
+                    sizeof(local)) == 0);
+  assert(vkr_scene_physics_reset(&scene, &error));
+  assert(vkr_animation_player_time(a) == 0.0);
+  /* A failure after seek-to-zero must retain the prior published slot and
+   * fade/controller state. Simulate an invalid external ECS ancestor write;
+   * native reset validation rejects it after all players have sought. */
+  assert(vkr_animation_player_crossfade(a, 0, true_v, 1.0));
+  assert(vkr_animation_player_advance(a, 0.1));
+  graph.nodes[0].clip = 0;
+  assert(vkr_scene_animation_apply_graph(&scene, wrappers[1], &graph, &error));
+  assert(vkr_scene_animation_seek(&scene, wrappers[1], 0.7));
+  const float64_t saved_time = vkr_animation_player_time(a);
+  const float64_t saved_fade = vkr_animation_player_crossfade_progress(a);
+  const uint64_t saved_generation = vkr_animation_player_generation(a);
+  const Mat4 saved_palette = vkr_animation_player_skin_palette(a, 0)[0];
+  const Mat4 saved_global = vkr_animation_player_global_pose(a)[0];
+  const float64_t saved_graph_time =
+      vkr_scene_animation_get_graph(&scene, wrappers[1])->time;
+  SceneTransform *reset_wrapper = vkr_scene_get_transform(&scene, wrappers[0]);
+  const SceneTransform saved_wrapper = *reset_wrapper;
+  reset_wrapper->scale.x = -1.0f;
+  assert(vkr_scene_physics_set_body_disabled(&scene, nodes[0], true_v, &error));
+  assert(vkr_scene_physics_set_disabled(&scene, true_v, &error));
+  assert(!vkr_scene_physics_reset(&scene, &error));
+  assert(vkr_scene_physics_is_disabled(&scene));
+  assert(vkr_scene_physics_body_is_disabled(&scene, nodes[0]));
+  *reset_wrapper = saved_wrapper;
+  assert(vkr_animation_player_time(a) == saved_time);
+  assert(vkr_animation_player_crossfade_active(a));
+  assert(vkr_animation_player_crossfade_progress(a) == saved_fade);
+  assert(vkr_animation_player_generation(a) == saved_generation);
+  assert(MemCompare(&saved_palette, vkr_animation_player_skin_palette(a, 0),
+                    sizeof(saved_palette)) == 0);
+  assert(MemCompare(&saved_global, vkr_animation_player_global_pose(a),
+                    sizeof(saved_global)) == 0);
+  assert(vkr_scene_animation_get_graph(&scene, wrappers[1])->time ==
+         saved_graph_time);
+  assert(vkr_scene_physics_set_disabled(&scene, false_v, &error));
+  assert(vkr_scene_animation_apply_graph(&scene, wrappers[1], NULL, &error));
+  assert(vkr_scene_physics_apply(&scene, nodes[0], NULL, &error));
+
   VkrResourceHandleInfo wrong_mesh = {0};
   VkrResourceHandleInfo wrong_bank = {0};
   scene_animation_test_requests(&scratch, s_wrong_path, &wrong_mesh,
@@ -507,7 +572,13 @@ bool32_t run_scene_animation_tests(void) {
   assert(vkr_allocator_get_global_statistics().total_allocated <
          live_before_detach);
   assert(vkr_scene_animation_get_player(&scene, wrappers[1]) == b);
+  assert(vkr_scene_physics_ragdoll_plan(&scene, wrappers[1],
+                                        VKR_SCENE_RAGDOLL_CREATE, ragdoll, 1,
+                                        &ragdoll_count, &error));
+  assert(vkr_scene_physics_apply(&scene, ragdoll[0].entity,
+                                 &ragdoll[0].snapshot, &error));
   vkr_scene_destroy_entity(&scene, wrappers[1]);
+  assert(vkr_scene_physics_body_count(&scene) == 0);
   assert(!vkr_scene_animation_get_player(&scene, wrappers[1]));
   assert(pool.pool.allocated == 0);
 

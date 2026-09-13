@@ -1969,6 +1969,160 @@ _Static_assert(offsetof(VkrHarnessCaseV9Fixture, renderer) ==
                    offsetof(VkrHarnessCase, renderer),
                "Version-9 harness case fixture prefix drift");
 
+/* Frozen version-14 bytes prove the appended physics flag does not shift
+ * historical camera, capture, workspace or profile fields on read. */
+typedef struct VkrHarnessRendererConfigV14Fixture {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  /** Whether temporal reconstruction and camera jitter are enabled. */
+  bool8_t taa_enabled;
+  bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  /** Effective receiver tap count after the optional case field is resolved. */
+  uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
+  char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  /** Measure-relative frame that explicitly resets automatic adaptation. */
+  uint32_t exposure_reset_frame;
+  /** Bloom is opt-in for deterministic cases; production defaults do not leak
+   * into a harness workload. */
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  /** GTAO is opt-in and must carry its complete deterministic control tuple. */
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
+  uint32_t shadow_debug_mode;
+  /** Cold probe-count control used by the SH scaling fixture. UINT32_MAX means
+   * "do not clamp". */
+  uint32_t ibl_probe_limit;
+  /** Whether the fullscreen ACES tonemap stage is enabled. */
+  bool8_t tonemap_enabled;
+  /** Whether the fullscreen FXAA stage is enabled. */
+  bool8_t fxaa_enabled;
+  /** Enables the capture-only fifth transmission peel on every case frame. */
+  bool8_t transmission_depth_diagnostic_enabled;
+  /** Internal renderer resolution relative to the present target. */
+  float32_t render_scale;
+  /** Renderer-reported scene extent. Output-only; manifests cannot author it.
+   */
+  uint32_t render_width;
+  uint32_t render_height;
+  /** Reconstruction implementation: `spatial`, `metalfx_temporal`, or `fsr31`.
+   */
+  char upscaler[24];
+  /** Completion-driven MetalFX resolution policy. FSR 3.1 uses fixed scale. */
+  bool8_t dynamic_resolution;
+  float32_t dynamic_resolution_min_scale;
+  float32_t dynamic_resolution_max_scale;
+  float32_t dynamic_resolution_target_frame_ms;
+  /** Authored case-frame indices including warmup, excluding bootstrap.
+   * UINT32_MAX disables the action. Stop at zero also stops bootstrap, before
+   * the first scene frame. Resume must follow the configured stop. */
+  uint32_t editor_stop_frame;
+  uint32_t editor_resume_frame;
+  /** Image-space sharpness after reconstruction. Zero disables the control. */
+  float32_t image_sharpness;
+  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
+  char display_transform[16];
+  float32_t white_balance_temperature;
+  float32_t white_balance_tint;
+  float32_t color_contrast;
+  float32_t color_saturation;
+  /** Half-resolution opaque reflections; opt-in for deterministic cases. */
+  bool8_t ssr_enabled;
+  bool8_t ssgi_enabled;
+  /** Requested presentation policy; offscreen targets remain SDR. */
+  char display_output[24];
+  /** Opaque-depth depth of field. Disabled cases leave scene color unchanged.
+   */
+  bool8_t dof_enabled;
+  /** Focus plane distance in metres. */
+  float32_t dof_focus_distance;
+  /** Photographic aperture denominator. */
+  float32_t dof_f_stop;
+  /** Optional velocity-based opaque motion blur. */
+  bool8_t motion_blur_enabled;
+  /** Shutter interval in degrees; zero bypasses motion blur. */
+  float32_t motion_blur_shutter_angle;
+  /** Optional scene entity translated deterministically before each frame. */
+  char motion_blur_entity[VKR_HARNESS_ID_MAX];
+  /** Entity translation velocity in metres per second. */
+  float32_t motion_blur_entity_velocity_x;
+  float32_t motion_blur_entity_velocity_y;
+  float32_t motion_blur_entity_velocity_z;
+} VkrHarnessRendererConfigV14Fixture;
+
+typedef struct VkrHarnessCaseV14Fixture {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV14Fixture renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
+  float32_t content_scale;
+  VkrHarnessAssetContext asset_context;
+} VkrHarnessCaseV14Fixture;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV14Fixture {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV14Fixture case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV14Fixture;
+
 vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   printf("  Running test_harness_capture_summary_legacy_compatibility...\n");
 #if !defined(_WIN32)
@@ -1979,6 +2133,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   char legacy_v4_path[VKR_HARNESS_PATH_MAX];
   char legacy_v6_path[VKR_HARNESS_PATH_MAX];
   char legacy_v9_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v14_path[VKR_HARNESS_PATH_MAX];
   char current_path[VKR_HARNESS_PATH_MAX];
   snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
   snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
@@ -1989,6 +2144,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
            directory);
   snprintf(legacy_v9_path, sizeof(legacy_v9_path), "%s/legacy-v9.bin",
            directory);
+  snprintf(legacy_v14_path, sizeof(legacy_v14_path), "%s/legacy-v14.bin", directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3Fixture *legacy = calloc(1u, sizeof(*legacy));
   assert(legacy);
@@ -2221,6 +2377,30 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.motion_blur_entity_velocity_x = 1.25f;
   report.case_manifest.renderer.motion_blur_entity_velocity_y = -0.5f;
   report.case_manifest.renderer.motion_blur_entity_velocity_z = 0.75f;
+  report.case_manifest.renderer.physics_fixture = true_v;
+  VkrHarnessCaptureSummaryHeaderV14Fixture *legacy_v14 = calloc(1u, sizeof(*legacy_v14));
+  assert(legacy_v14);
+  MemCopy(legacy_v14->magic, magic, sizeof(magic));
+  legacy_v14->version = 14u;
+  legacy_v14->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v14->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy_v14->case_manifest.renderer.motion_blur_entity_velocity_z = 3.25f;
+  legacy_v14->case_manifest.renderer.shadow_cascades = 3u;
+  legacy_v14->case_manifest.camera.far_plane = 432.0f;
+  legacy_v14->case_manifest.content_scale = 1.75f;
+  legacy_v14->case_manifest.asset_context = VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
+  string_copy(legacy_v14->profile.id, "legacy.v14.profile");
+  assert(vkr_harness_atomic_write(legacy_v14_path, legacy_v14, sizeof(*legacy_v14), &error));
+  free(legacy_v14);
+  assert(vkr_harness_capture_summary_read(legacy_v14_path, arena, &summary));
+  assert(!summary.case_manifest.renderer.physics_fixture);
+  assert(summary.case_manifest.renderer.motion_blur_entity_velocity_z == 3.25f);
+  assert(summary.case_manifest.renderer.shadow_cascades == 3u);
+  assert(summary.case_manifest.camera.far_plane == 432.0f);
+  assert(summary.case_manifest.content_scale == 1.75f);
+  assert(summary.case_manifest.asset_context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
+  assert(strcmp(summary.profile.id, "legacy.v14.profile") == 0);
+
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -2230,9 +2410,10 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 14u);
+  assert(current_version == 15u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
+  assert(summary.case_manifest.renderer.physics_fixture);
   assert(summary.case_manifest.asset_context ==
          VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
   assert(summary.case_manifest.renderer.editor_stop_frame == 1u);
@@ -2278,6 +2459,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(unlink(legacy_v4_path) == 0);
   assert(unlink(legacy_v6_path) == 0);
   assert(unlink(legacy_v9_path) == 0);
+  assert(unlink(legacy_v14_path) == 0);
   assert(unlink(current_path) == 0);
   assert(rmdir(directory) == 0);
   arena_destroy(arena);

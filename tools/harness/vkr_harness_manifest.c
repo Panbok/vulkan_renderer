@@ -468,6 +468,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "editor_resume_frame",
       "skybox",
       "text_fixture",
+      "physics_fixture",
       "taa_enabled",
       "tonemap_enabled",
       "fxaa_enabled",
@@ -605,6 +606,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
                                  &renderer->skybox, error) ||
       !vkr_harness_manifest_bool(doc, token, "text_fixture", false_v,
                                  &renderer->text_fixture, error) ||
+      !vkr_harness_manifest_bool(doc, token, "physics_fixture", false_v,
+                                 &renderer->physics_fixture, error) ||
       !vkr_harness_manifest_bool(doc, token, "taa_enabled", false_v,
                                  &renderer->taa_enabled, error) ||
       !vkr_harness_manifest_bool(doc, token, "tonemap_enabled", false_v,
@@ -1351,6 +1354,15 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
   }
   out_case->warmup_frames = (uint32_t)warmup;
   out_case->measure_frames = (uint32_t)measure;
+  if (out_case->renderer.physics_fixture &&
+      (!string_equals(out_case->scene, "assets/scenes/bistro.scene.json") ||
+       out_case->warmup_frames < 300u ||
+       fabs(out_case->fixed_delta_seconds - 1.0 / 60.0) > 1e-12)) {
+    vkr_harness_error_set(
+        out_error, "case.physics_fixture", "$.renderer.physics_fixture",
+        "The physics fixture requires Bistro, 300 warmup frames and 60 Hz fixed delta");
+    return false_v;
+  }
   if (!vkr_harness_manifest_field(&doc, 0, "resize_round_trip", false_v,
                                   &resize_round_trip, out_error)) {
     return false_v;

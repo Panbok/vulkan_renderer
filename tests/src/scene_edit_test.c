@@ -16,6 +16,23 @@ static void edit_test_write(const char *path, const char *bytes, size_t size) {
   assert(fclose(file) == 0);
 }
 
+static void edit_test_replace(const char *path, const char *bytes,
+                              size_t length, const char *needle,
+                              const char *replacement) {
+  const char *match = strstr(bytes, needle);
+  assert(match);
+  FILE *file = file_fopen(path, "wb");
+  assert(file);
+  const size_t prefix = (size_t)(match - bytes);
+  const size_t needle_length = strlen(needle);
+  assert(fwrite(bytes, 1, prefix, file) == prefix);
+  assert(fwrite(replacement, 1, strlen(replacement), file) ==
+         strlen(replacement));
+  const size_t suffix = length - prefix - needle_length;
+  assert(fwrite(match + needle_length, 1, suffix, file) == suffix);
+  assert(fclose(file) == 0);
+}
+
 static VkrEntityId edit_test_entity(VkrScene *scene, uint32_t node,
                                     const char *name) {
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
@@ -171,6 +188,239 @@ bool32_t run_scene_edit_tests(void) {
   assert(vkr_scene_get_transform(&scene, child)->position.x == 2);
   assert(vkr_scene_edit_undo(&state, &scene, true_v));
   assert(vkr_scene_get_transform(&scene, child)->position.x == 9);
+  /* Structural undo must restore authored IDs even though recreated ECS
+     children receive new generation handles. A malformed later record must
+     discard the staged replacement without deleting the old compound. */
+  vkr_scene_physics_set_paused(&scene, true_v);
+  VkrSceneEditValues physics = {.fields = VKR_SCENE_EDIT_PHYSICS};
+  physics.physics = vkr_scene_physics_default();
+  physics.physics.present = true_v;
+  physics.physics.motion = VKR_PHYSICS_DYNAMIC;
+  physics.physics.collider_count = 2;
+  physics.physics.colliders[0] =
+      (VkrSceneColliderConfig){.authored_id = UINT64_C(0xfedcba9876543210),
+                               .shape = VKR_PHYSICS_BOX,
+                               .scale = {1, 1, 1},
+                               .rotation = vkr_quat_identity(),
+                               .half_extent = {1, 2, 3},
+                               .radius = 0.5f,
+                               .half_height = 0.5f,
+                               .enabled = true_v};
+  physics.physics.colliders[1] = physics.physics.colliders[0];
+  physics.physics.colliders[1].authored_id = 42;
+  physics.physics.colliders[1].shape = VKR_PHYSICS_SPHERE;
+  physics.physics.colliders[1].position.x = 4;
+  assert(vkr_scene_edit_apply(&state, &scene, parent, &physics));
+  VkrEntityId collider = vkr_scene_physics_collider_entity(&scene, parent, 42);
+  assert(collider.u64 &&
+         vkr_scene_physics_owner(&scene, collider).u64 == parent.u64);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(vkr_scene_edit_read(&scene, parent, &read) && !read.physics.present);
+  assert(!vkr_scene_entity_alive(&scene, collider));
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(vkr_scene_edit_read(&scene, parent, &read));
+  assert(read.physics.collider_count == 2 &&
+         read.physics.colliders[1].authored_id == 42);
+  assert(read.physics.colliders[0].authored_id == UINT64_C(0xfedcba9876543210));
+  physics.physics.collider_count = 1;
+  assert(vkr_scene_edit_apply(&state, &scene, parent, &physics));
+  assert(!vkr_scene_physics_collider_entity(&scene, parent, 42).u64);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64);
+  state.sidecar_conflict = false_v;
+  assert(vkr_scene_edit_save(&state, &scene, file_path));
+  char physics_saved[8192];
+  file = file_fopen(path, "rb");
+  assert(file);
+  size_t physics_saved_size =
+      fread(physics_saved, 1, sizeof(physics_saved) - 1u, file);
+  assert(physics_saved_size &&
+         physics_saved_size < sizeof(physics_saved) - 1u && feof(file));
+  fclose(file);
+  physics_saved[physics_saved_size] = 0;
+  char *saved_id = strstr(physics_saved, "000000000000002a");
+  assert(saved_id);
+  MemCopy(saved_id, "fedcba9876543210", 16);
+  edit_test_write(path, physics_saved, physics_saved_size);
+  collider = vkr_scene_physics_collider_entity(&scene, parent, 42);
+  assert(!vkr_scene_edit_load(&state, &scene, file_path));
+  assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64 ==
+         collider.u64);
+  MemCopy(saved_id, "000000000000002a", 16);
+  edit_test_write(path, physics_saved, physics_saved_size);
+  VkrScenePhysicsSnapshot absent = {0};
+  assert(vkr_scene_physics_apply(&scene, parent, &absent, NULL));
+  assert(vkr_scene_edit_load(&state, &scene, file_path));
+  assert(vkr_scene_edit_read(&scene, parent, &read));
+  assert(read.physics.collider_count == 2 &&
+         read.physics.motion == VKR_PHYSICS_DYNAMIC);
+  assert(read.physics.colliders[0].half_extent.y == 2);
+  assert(read.physics.colliders[0].authored_id == UINT64_C(0xfedcba9876543210));
+  assert(read.physics.colliders[1].position.x == 4);
+  const char *bad_physics =
+      "{\"version\":2,\"overrides\":[{\"scene_entity\":7,\"gltf_node\":0,"
+      "\"source_fingerprint\":\"1122334455667788\",\"fields\":64,\"physics\":{"
+      "\"version\":1,\"present\":false,\"motion\":0,\"layer\":1,\"mask\":65535,"
+      "\"parameters\":[1,0.5,0,1,"
+      "0,0],"
+      "\"enabled\":true,\"sleep\":true,\"continuous\":false,\"sensor\":false,"
+      "\"colliders\":[]}},"
+      "{\"scene_entity\":7,\"gltf_node\":1,\"source_fingerprint\":"
+      "\"0000000000000000\","
+      "\"fields\":2,\"name\":\"bad\"}]}";
+  edit_test_write(path, bad_physics, strlen(bad_physics));
+  collider = vkr_scene_physics_collider_entity(&scene, parent, 42);
+  assert(!vkr_scene_edit_load(&state, &scene, file_path));
+  assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64 ==
+         collider.u64);
+  assert(vkr_scene_edit_read(&scene, parent, &read) &&
+         read.physics.collider_count == 2);
+  physics.physics = read.physics;
+  physics.physics.colliders[1].authored_id =
+      physics.physics.colliders[0].authored_id;
+  assert(!vkr_scene_edit_apply(&state, &scene, parent, &physics));
+  assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64 ==
+         collider.u64);
+  physics.physics = read.physics;
+  physics.fields = VKR_SCENE_EDIT_PHYSICS | VKR_SCENE_EDIT_TRANSFORM;
+  physics.position = vec3_new(10000001.0f, 0, 0);
+  physics.rotation = vkr_quat_identity();
+  physics.scale = vec3_one();
+  assert(!vkr_scene_edit_apply(&state, &scene, parent, &physics));
+  assert(vkr_scene_get_transform(&scene, parent)->position.x == 10);
+  const char *invalid_physics_pose =
+      "{\"version\":2,\"overrides\":[{\"scene_entity\":7,\"gltf_node\":0,"
+      "\"source_fingerprint\":\"1122334455667788\",\"fields\":65,"
+      "\"position\":[10000001,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1],"
+      "\"physics\":{\"version\":1,\"present\":true,\"motion\":2,\"layer\":1,"
+      "\"mask\":65535,\"parameters\":[1,0.5,0,1,0,0],\"enabled\":true,"
+      "\"sleep\":true,\"continuous\":false,\"sensor\":false,\"colliders\":[]}}]"
+      "}";
+  edit_test_write(path, invalid_physics_pose, strlen(invalid_physics_pose));
+  assert(!vkr_scene_edit_load(&state, &scene, file_path));
+  assert(vkr_scene_get_transform(&scene, parent)->position.x == 10);
+  assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64 ==
+         collider.u64);
+  /* Named settings affect all bodies atomically and occupy one journal entry
+     independently of owner snapshots. Symmetry is checked at the input
+     boundary. */
+  VkrSceneCollisionLayers layers = vkr_scene_collision_layers_default();
+  MemCopy(layers.names[0], "World", sizeof("World"));
+  MemCopy(layers.names[1], "Actors", sizeof("Actors"));
+  layers.matrix[0] &= (uint16_t)~2u;
+  layers.matrix[1] &= (uint16_t)~1u;
+  uint32_t undo_before = state.undo_cursor;
+  assert(vkr_scene_edit_apply_collision_layers(&state, &scene, &layers));
+  assert(state.undo_cursor == undo_before + 1u);
+  assert(vkr_scene_collision_layers_effective_mask(&scene, 1, UINT16_MAX) ==
+         65533);
+  assert(vkr_scene_collision_layers_effective_mask(&scene, 2, UINT16_MAX) ==
+         65534);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  VkrSceneCollisionLayers settings_read;
+  vkr_scene_collision_layers_read(&scene, &settings_read);
+  assert(!strcmp(settings_read.names[0], "Layer 1"));
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  vkr_scene_collision_layers_read(&scene, &settings_read);
+  assert(!strcmp(settings_read.names[0], "World"));
+  VkrSceneCollisionLayers asymmetric = layers;
+  asymmetric.matrix[0] |= 2u;
+  assert(!vkr_scene_edit_apply_collision_layers(&state, &scene, &asymmetric));
+  assert(vkr_scene_collision_layers_effective_mask(&scene, 1, UINT16_MAX) ==
+         65533);
+
+  /* A joint may refer to a body introduced later in the same batch. Undo and
+     redo must restore both owners together, including the previously absent
+     body. */
+  const VkrEntityId target = edit_test_entity(&scene, 2, "joint_target");
+  const SceneSourceIdentity target_source =
+      *(const SceneSourceIdentity *)vkr_entity_get_component(
+          scene.world, target, scene.comp_source_identity);
+  VkrScenePhysicsChange changes[2] = {{.entity = parent}, {.entity = target}};
+  assert(vkr_scene_physics_read(&scene, parent, &changes[0].snapshot));
+  changes[0].snapshot.joint_count = 1;
+  changes[0].snapshot.joints[0] =
+      (VkrSceneJointConfig){.authored_id = 11,
+                            .target_source = target_source,
+                            .type = VKR_PHYSICS_JOINT_FIXED,
+                            .axis_a = {1, 0, 0},
+                            .axis_b = {1, 0, 0},
+                            .normal_a = {0, 1, 0},
+                            .normal_b = {0, 1, 0},
+                            .enabled = true_v};
+  changes[1].snapshot = vkr_scene_physics_default();
+  undo_before = state.undo_cursor;
+  assert(vkr_scene_edit_apply_physics_batch(&state, &scene, changes, 2));
+  assert(state.undo_cursor == undo_before + 1u);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  VkrScenePhysicsSnapshot target_read;
+  assert(vkr_scene_physics_read(&scene, target, &target_read) &&
+         !target_read.present);
+  assert(vkr_scene_physics_read(&scene, parent, &target_read) &&
+         target_read.joint_count == 0);
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(vkr_scene_physics_read(&scene, target, &target_read) &&
+         target_read.present);
+  state.sidecar_conflict = false_v;
+  assert(vkr_scene_edit_save(&state, &scene, file_path));
+  char advanced_saved[16384];
+  file = file_fopen(path, "rb");
+  assert(file);
+  const size_t advanced_size =
+      fread(advanced_saved, 1, sizeof(advanced_saved) - 1u, file);
+  assert(advanced_size && advanced_size < sizeof(advanced_saved) - 1u &&
+         feof(file));
+  fclose(file);
+  advanced_saved[advanced_size] = 0;
+  assert(strstr(advanced_saved, "\"version\":3"));
+  assert(vkr_scene_edit_load(&state, &scene, file_path));
+  vkr_scene_collision_layers_read(&scene, &settings_read);
+  assert(!strcmp(settings_read.names[1], "Actors"));
+  assert(vkr_scene_physics_read(&scene, parent, &target_read) &&
+         target_read.joint_count == 1);
+  assert(target_read.joints[0].target_source.gltf_node_index == 2);
+  assert(target_read.colliders[0].scale.x == 1);
+  edit_test_replace(path, advanced_saved, advanced_size, "\"matrix\":[65533",
+                    "\"matrix\":[65535");
+  assert(!vkr_scene_edit_load(&state, &scene, file_path));
+  assert(vkr_scene_collision_layers_effective_mask(&scene, 1, UINT16_MAX) ==
+         65533);
+  assert(vkr_scene_physics_read(&scene, parent, &target_read) &&
+         target_read.joint_count == 1);
+  /* Missing cooked data is an acquisition failure before any old shape is
+     released. No library success mock can detect this lost-reference defect. */
+  assert(vkr_scene_edit_read(&scene, parent, &physics));
+  physics.fields = VKR_SCENE_EDIT_PHYSICS;
+  physics.physics.colliders[0].shape = VKR_PHYSICS_CONVEX_HULL;
+  MemCopy(physics.physics.colliders[0].asset_path,
+          "missing_collision_fixture.vkc",
+          sizeof("missing_collision_fixture.vkc"));
+  collider = vkr_scene_physics_collider_entity(&scene, parent, 42);
+  assert(!vkr_scene_edit_apply(&state, &scene, parent, &physics));
+  assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64 ==
+         collider.u64);
+  /* Unresolved endpoints remain authored suspended links, so removing a
+     referenced owner does not silently erase a joint. Undo restores its
+     previously resolved source identity. */
+  physics.physics = target_read;
+  physics.physics.joints[0].target_source.source_fingerprint = UINT64_MAX;
+  assert(vkr_scene_edit_apply(&state, &scene, parent, &physics));
+  assert(vkr_scene_physics_read(&scene, parent, &target_read));
+  assert(target_read.joints[0].target_source.source_fingerprint == UINT64_MAX);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(vkr_scene_physics_read(&scene, parent, &target_read));
+  assert(target_read.joints[0].target_source.source_fingerprint ==
+         target_source.source_fingerprint);
+  /* A self-joint fails only after resolving the staged graph. The old native
+     compound must survive this later failure unchanged. */
+  physics.physics = target_read;
+  physics.physics.joints[0].target_source =
+      *(const SceneSourceIdentity *)vkr_entity_get_component(
+          scene.world, parent, scene.comp_source_identity);
+  collider = vkr_scene_physics_collider_entity(&scene, parent, 42);
+  assert(!vkr_scene_edit_apply(&state, &scene, parent, &physics));
+  assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64 ==
+         collider.u64);
   FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_remove(&saved_path) == FILE_ERROR_NONE);
   vkr_scene_edit_reset(&state, &allocator, 0);

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.physics.stack",
+  "suite": "local",
+  "description": "Bistro collision fixture: scaled parented cooked convex cubes settle on a cooked triangle-mesh platform; asserts resting heights, velocities, contact callbacks, authored TRS preservation and evaluated render-pose agreement.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [960, 720],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666666666666666,
+  "repetitions": 2,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {"warmup": 300, "measure": 60},
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "physics_fixture": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 500,
+    "position": [-22.5, 14.5, 11.9],
+    "yaw": 236.30993,
+    "pitch": -20.2933
+  },
+  "captures": [{"at_frame": 59, "channels": ["final_color"]}]
+}

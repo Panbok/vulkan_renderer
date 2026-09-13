@@ -16,6 +16,9 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "renderer/systems/vkr_scene_physics.h"
+#include "memory/vkr_arena_allocator.h"
+#include <math.h>
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "vkr_gtao.h"
@@ -175,6 +178,11 @@ typedef struct VkrHarnessChildContext {
   bool8_t resize_restore_requested;
   bool8_t resize_round_trip_complete;
   bool8_t text_fixture;
+  bool8_t physics_fixture_ready;
+  bool8_t physics_fixture_verified;
+  uint32_t physics_contact_begins;
+  uint32_t physics_contact_persists;
+  VkrEntityId physics_fixture_bodies[4];
   uint32_t resize_outbound_pixel_width;
   uint32_t resize_outbound_pixel_height;
   uint32_t resize_restore_pixel_width;
@@ -538,6 +546,175 @@ vkr_harness_child_drain_events(VkrStandardSceneRuntime *application) {
  * reaches a successful terminal state, its material texture streams settle,
  * and the selected backend has ordered every accepted publication.
  */
+/* Dimensions are shared by authored render geometry and collision shapes.
+ * The oracle uses independent unit-cube support heights and checks that native
+ * body poses reach the evaluated render matrices without changing authored TRS.
+ */
+vkr_internal void vkr_harness_physics_contacts(
+    const VkrPhysicsContactEvent *events, uint32_t count, void *context) {
+  VkrHarnessChildContext *child = context;
+  for (uint32_t i = 0; i < count; ++i) {
+    child->physics_contact_begins += events[i].phase == VKR_PHYSICS_CONTACT_BEGIN;
+    child->physics_contact_persists += events[i].phase == VKR_PHYSICS_CONTACT_PERSIST;
+  }
+}
+
+/* Cold, analytic fixture assets exercise the same validated file reader as
+ * Bakery output. Their unit-cube surface is independent of native hull cooking. */
+vkr_internal bool8_t vkr_harness_physics_assets(char paths[2][256]) {
+  static const float32_t positions[] = {
+      -.5f, -.5f, -.5f, .5f, -.5f, -.5f, -.5f, .5f, -.5f, .5f, .5f, -.5f,
+      -.5f, -.5f, .5f, .5f, -.5f, .5f, -.5f, .5f, .5f, .5f, .5f, .5f};
+  static const uint32_t indices[] = {
+      0,2,1, 1,2,3, 4,5,6, 5,7,6, 0,4,2, 2,4,6,
+      1,3,5, 3,7,5, 0,1,4, 1,5,4, 2,6,3, 3,6,7};
+  Arena *arena = arena_create(KB(16), KB(16));
+  if (!arena) {
+    return false_v;
+  }
+  VkrAllocator allocator = {.ctx = arena};
+  bool8_t ok = vkr_allocator_arena(&allocator);
+  const char *error = NULL;
+  for (uint32_t i = 0; ok && i < 2; ++i) {
+    const int32_t length = snprintf(paths[i], 256, "%s/fixture-%s.vkc",
+                                    g_harness_child->run_dir, i ? "hull" : "mesh");
+    VkrCollisionGeometry geometry = {
+        .kind = i ? VKR_COLLISION_CONVEX_HULL : VKR_COLLISION_TRIANGLE_MESH,
+        .positions = positions, .vertex_count = 8,
+        .indices = indices, .index_count = ArrayCount(indices),
+        .source_fingerprint = UINT64_C(0x7068797369637302)};
+    uint8_t *bytes = NULL;
+    uint64_t size = 0;
+    VkrHarnessError write_error = {0};
+    ok = length > 0 && length < 256 &&
+         vkr_collision_cooked_encode(&allocator, &geometry, &bytes, &size, &error) &&
+         vkr_harness_atomic_write(paths[i], bytes, size, &write_error);
+  }
+  vkr_allocator_release_global_accounting(&allocator);
+  arena_destroy(arena);
+  if (!ok) {
+    vkr_harness_stderr("Physics fixture asset failed: %s\n", error ? error : "file publication");
+  }
+  return ok;
+}
+
+vkr_internal bool8_t
+vkr_harness_child_create_physics_fixture(VkrStandardSceneRuntime *application) {
+  VkrHarnessChildContext *child = g_harness_child;
+  if (!child->case_manifest->renderer.physics_fixture ||
+      child->physics_fixture_ready) {
+    return true_v;
+  }
+  VkrScene *scene = application->active_scene;
+  vkr_scene_physics_set_paused(scene, true_v);
+  const Vec4 colors[4] = {{0.15f, 0.2f, 0.28f, 1.0f},
+                          {0.85f, 0.15f, 0.08f, 1.0f},
+                          {0.12f, 0.7f, 0.24f, 1.0f},
+                          {0.08f, 0.3f, 0.9f, 1.0f}};
+  const char *error = NULL;
+  char assets[2][256];
+  const VkrEntityId parent = vkr_scene_create_entity(scene, NULL);
+  if (!vkr_harness_physics_assets(assets) || !parent.u64 ||
+      !vkr_scene_set_transform(scene, parent, (Vec3){-28.5f, 0, 2.9f},
+                               vkr_quat_identity(), (Vec3){2, 2, 2})) {
+    return false_v;
+  }
+  vkr_scene_physics_set_contact_callback(scene, vkr_harness_physics_contacts, child);
+  for (uint32_t i = 0; i < ArrayCount(child->physics_fixture_bodies); ++i) {
+    VkrEntityId entity = vkr_scene_create_entity(scene, NULL);
+    child->physics_fixture_bodies[i] = entity;
+    const Vec3 dimensions = i == 0 ? vec3_new(5.0f, 0.5f, 5.0f) : vec3_one();
+    const Vec3 position =
+        vec3_new(0, (i == 0 ? 9.0f : 8.8f + 1.6f * i) * 0.5f, 0);
+    VkrSceneShapeConfig visual = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
+    visual.dimensions = dimensions;
+    visual.color = colors[i];
+    VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
+    body.motion = i == 0 ? VKR_PHYSICS_STATIC : VKR_PHYSICS_DYNAMIC;
+    body.friction = 0.7f;
+    body.colliders[0].shape = i == 0 ? VKR_PHYSICS_TRIANGLE_MESH : VKR_PHYSICS_CONVEX_HULL;
+    body.colliders[0].scale = dimensions;
+    snprintf(body.colliders[0].asset_path, sizeof(body.colliders[0].asset_path),
+             "%s", assets[i != 0]);
+    if (entity.u64 == VKR_ENTITY_ID_INVALID.u64 ||
+        !vkr_scene_set_transform(scene, entity, position, vkr_quat_identity(),
+                                 (Vec3){0.5f, 0.5f, 0.5f})) {
+      return false_v;
+    }
+    vkr_scene_set_parent(scene, entity, parent);
+    if (vkr_scene_get_transform(scene, entity)->parent.u64 != parent.u64 ||
+        !vkr_scene_set_name(scene, entity,
+                            i == 0 ? string8_lit("Physics platform")
+                                   : string8_lit("Physics cube")) ||
+        !vkr_scene_set_shape(scene, &application->assets, entity, &visual,
+                             NULL) ||
+        !vkr_scene_physics_apply(scene, entity, &body, &error)) {
+      vkr_harness_stderr("Physics fixture creation failed: %s\n",
+                         error ? error : "scene geometry");
+      return false_v;
+    }
+    vkr_scene_set_visibility(scene, entity, true_v, true_v);
+  }
+  child->physics_fixture_ready = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t
+vkr_harness_child_check_physics_fixture(VkrStandardSceneRuntime *application) {
+  VkrHarnessChildContext *child = g_harness_child;
+  if (!child->case_manifest->renderer.physics_fixture ||
+      !child->phase_started) {
+    return true_v;
+  }
+  VkrScene *scene = application->active_scene;
+  if (vkr_scene_physics_error(scene)) {
+    vkr_harness_stderr("Physics fixture step failed: %s\n",
+                       vkr_scene_physics_error(scene));
+    return false_v;
+  }
+  if (child->completed_frames < child->case_manifest->warmup_frames) {
+    return true_v;
+  }
+  for (uint32_t i = 1; i < ArrayCount(child->physics_fixture_bodies); ++i) {
+    VkrEntityId entity = child->physics_fixture_bodies[i];
+    VkrPhysicsPose pose;
+    const SceneTransform *transform = vkr_scene_get_transform(scene, entity);
+    const float32_t expected_y = 8.75f + (float32_t)i;
+    if (!transform || !vkr_scene_physics_get_pose(scene, entity, &pose)) {
+      return false_v;
+    }
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      if (!isfinite(pose.position[axis]) ||
+          !isfinite(pose.linear_velocity[axis]) ||
+          fabsf(pose.linear_velocity[axis]) > 0.05f ||
+          fabsf(transform->world.elements[12 + axis] - pose.position[axis]) >
+              0.0001f) {
+        return false_v;
+      }
+    }
+    if (fabsf(pose.position[1] - expected_y) > 0.08f ||
+        fabsf(pose.position[0] + 28.5f) > 0.08f ||
+        fabsf(pose.position[2] - 2.9f) > 0.08f ||
+        transform->position.y != (8.8f + 1.6f * i) * 0.5f) {
+      vkr_harness_stderr("Physics fixture body %u: y=%.6f expected=%.6f\n", i,
+                         (double)pose.position[1], (double)expected_y);
+      return false_v;
+    }
+  }
+  if (!child->physics_contact_begins || !child->physics_contact_persists) {
+    return false_v;
+  }
+  if (!child->physics_fixture_verified) {
+    vkr_harness_stderr(
+        "Physics fixture assertions passed: three stacked bodies at "
+        "y=9.75/10.75/11.75; finite resting velocities; rendered world matches "
+        "native pose; parented scaled cooked hulls on triangle mesh; authored "
+        "positions preserved; contact BEGIN/PERSIST delivered.\n");
+    child->physics_fixture_verified = true_v;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t
 vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
@@ -593,6 +770,10 @@ vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
     }
     child->motion_blur_entity_origin = transform->position;
     child->motion_blur_entity_ready = true_v;
+  }
+  if (!vkr_harness_child_create_physics_fixture(application)) {
+    vkr_harness_child_fail(application, "physics.fixture_create_failed");
+    return false_v;
   }
   application->scene_generation = application->scene_generation == UINT64_MAX
                                       ? 1u
@@ -1019,6 +1200,17 @@ vkr_internal void vkr_harness_child_update(void *state,
         return;
       }
     }
+    if (child->case_manifest->renderer.physics_fixture) {
+      const char *error = NULL;
+      vkr_scene_physics_set_paused(scene, true_v);
+      if (!vkr_scene_physics_reset(scene, &error)) {
+        vkr_harness_stderr("Physics fixture phase reset failed: %s\n",
+                           error ? error : "unknown");
+        vkr_harness_child_fail(application, "physics.phase_reset_failed");
+        return;
+      }
+      vkr_scene_physics_set_paused(scene, false_v);
+    }
     vkr_renderer_invalidate_temporal_history(&application->renderer);
     child->phase_started = true_v;
     child->phase_first_frame_index = next_frame;
@@ -1068,6 +1260,10 @@ vkr_internal void vkr_harness_child_update(void *state,
   }
   vkr_scene_handle_update_and_sync(child->scene_resource.as.scene,
                                    &application->assets, delta);
+  if (!vkr_harness_child_check_physics_fixture(application)) {
+    vkr_harness_child_fail(application, "physics.fixture_assertion_failed");
+    return;
+  }
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   /* Determinism rule 2: the pose is a function of the case-frame index and the
