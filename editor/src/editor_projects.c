@@ -348,6 +348,8 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
   }
   ok = ok && vkr_json_writer_end_array(&writer) &&
        vkr_json_writer_end_object(&writer) &&
+       vkr_json_writer_name(&writer, string8_lit("animation")) &&
+       vkr_editor_animation_write_settings(&editor->animation, &writer) &&
        vkr_json_writer_name(&writer, string8_lit("content")) &&
        vkr_editor_content_write_settings(editor->content, &writer) &&
        vkr_json_writer_end_object(&writer) && vkr_json_writer_complete(&writer);
@@ -664,6 +666,8 @@ static void project_restore_settings(VkrEditorProjects *projects,
       }
     }
   }
+  vkr_editor_animation_read_settings(&editor->animation,
+                                     project_member(settings, "animation"));
   vkr_editor_content_restore_settings(editor->content,
                                       project_member(settings, "content"));
   vkr_editor_bakery_read_settings(editor->bakery,
@@ -1127,6 +1131,8 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   ok = ok && vkr_json_writer_name(writer, string8_lit("tools")) &&
        vkr_json_writer_begin_object(writer) &&
        project_json_text(writer, "mesh", VKR_EDITOR_MESH_COOKER_PATH) &&
+       project_json_text(writer, "animation",
+                         VKR_EDITOR_ANIMATION_COOKER_PATH) &&
        project_json_text(writer, "font", VKR_EDITOR_FONT_COOKER_PATH) &&
        project_json_text(writer, "texture", VKR_EDITOR_TEXTURE_COOKER_PATH) &&
        project_json_text(writer, "harness", VKR_EDITOR_HARNESS_PATH) &&

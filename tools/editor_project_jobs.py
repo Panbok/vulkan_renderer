@@ -637,6 +637,39 @@ class Job:
             'unsupported_features': list(self.warnings)}
         return destination
 
+    def cook_model_animation(self, record, source, mesh):
+        """Publish mesh and compatible bank in one immutable asset revision."""
+        info = self.inspect_mesh(mesh)
+        if not info.get('skin_count') or not info.get('animation_count'):
+            return
+        bank = Path(mesh).parent / 'animation.vka'
+        self.run_tool('animation', ['--input', source, '--output', bank], 'Cooking animations')
+        if not bank.is_file():
+            raise JobError('Animation cooker did not publish its bank')
+        record['artifacts'].append({'role': 'animation',
+            'path': managed_reference(bank, self.stage), 'version': 1,
+            'fingerprint': 'sha256:' + digest(bank)})
+        record['animation_count'] = info['animation_count']
+
+    @staticmethod
+    def bind_model_animations(scene, inventories):
+        for entity in scene.get('entities', []):
+            reference = entity.get('mesh', {}).get('asset')
+            if not isinstance(reference, dict):
+                continue
+            _, records = inventories.get(reference.get('scope'), (None, []))
+            record = next((item for item in records if item.get('id') == reference.get('id')), None)
+            if record is None:
+                continue
+            bank = {**reference, 'role': 'animation'}
+            products = [item for item in record.get('artifacts', []) if item.get('role') == 'animation']
+            animation = entity.get('animation')
+            if products and animation is None:
+                entity['animation'] = {'asset': bank}
+            elif not products and isinstance(animation, dict) and animation.get('asset') == bank:
+                # A reimport can legitimately replace an animated model with a static one.
+                entity.pop('animation')
+
     def import_model(self, source):
         import_id = str(uuid.uuid4())
         snapshot = self.snapshot_model(source, import_id)
@@ -654,6 +687,7 @@ class Job:
         self.run_tool('mesh', ['--input', snapshot, '--output', mesh,
                               '--bundle-root', bundle, '--import-id', import_id], 'Cooking model')
         reference = self.artifact('mesh', Path(source).stem, mesh, import_id=import_id, source=snapshot)
+        self.cook_model_animation(self.assets[-1], snapshot, mesh)
         self.index_bundle(bundle, import_id)
         manifest = self.sources[import_id]
         manifest['artifacts'] = [record for record in self.assets if record.get('import_id') == import_id]
@@ -1503,6 +1537,7 @@ class Job:
             editor_manifest = self.workspace / 'editor' / 'bundle.json'
         if editor_manifest.is_file():
             inventories['editor'] = (editor_manifest.parent, load_json(editor_manifest).get('assets', []))
+        self.bind_model_animations(scene, inventories)
         for _, (owner, records) in inventories.items():
             visited = set()
             ids = set()
@@ -1601,7 +1636,8 @@ class Job:
                 volume['path'] = str(asset(volume.pop('asset'), 'volume')[0])
         for entity in runtime.get('entities', []):
             entity.pop('id', None)
-            for component, role in ((entity.get('mesh'), 'mesh'), (entity.get('shape', {}).get('material'), 'material')):
+            for component, role in ((entity.get('mesh'), 'mesh'), (entity.get('animation'), 'animation'),
+                                    (entity.get('shape', {}).get('material'), 'material')):
                 if not component:
                     continue
                 if 'path' in component:
@@ -1609,7 +1645,21 @@ class Job:
                 if 'asset' not in component:
                     raise JobError(f'Managed {role} requires a typed asset reference')
                 if 'asset' in component:
-                    component['path'] = str(asset(component.pop('asset'), role)[0])
+                    resolved, record, _ = asset(component.pop('asset'), role)
+                    if role == 'animation':
+                        if set(component) - {'clip', 'rate', 'loop', 'playing', 'controller'}:
+                            raise JobError('Animation has unknown playback fields')
+                        if 'controller' in component and not isinstance(component['controller'], dict):
+                            raise JobError('Animation controller must be a versioned object')
+                        clip = component.get('clip', 0)
+                        if not isinstance(clip, int) or isinstance(clip, bool) or clip < 0 or clip >= record.get('animation_count', 0):
+                            raise JobError('Animation clip is unavailable in the rebuilt bank; select a valid clip')
+                        rate = component.get('rate', 1)
+                        if not isinstance(rate, (int, float)) or isinstance(rate, bool) or not math.isfinite(rate):
+                            raise JobError('Animation playback rate must be finite')
+                        if any(not isinstance(component.get(key, True), bool) for key in ('loop', 'playing')):
+                            raise JobError('Animation loop and playing must be boolean')
+                    component['path'] = str(resolved)
             if isinstance(entity.get('text3d'), dict):
                 entity['text3d']['font'] = font(entity['text3d'].get('font'))
         # Register the selected scene font before any scene text is instantiated.
@@ -1735,6 +1785,8 @@ class Job:
                                    'path': managed_reference(output, self.stage), 'version': 1}]
             record['fingerprint'] = 'sha256:' + digest(output)
             record.pop('closure', None)
+            if record['kind'] == 'mesh':
+                self.cook_model_animation(record, source, output)
         scene['assets'] = self.assets
         self.validate_semantics(scene)
         builds = path.parent / 'builds'
@@ -1880,6 +1932,9 @@ class Job:
                 reimport_status='source_snapshot', artifacts=[{'role': role,
                     'path': managed_reference(output, self.stage), 'version': 1}],
                 fingerprint='sha256:' + digest(output))
+            record.pop('animation_count', None)
+            if record['kind'] == 'mesh':
+                self.cook_model_animation(record, source, output)
             atomic_json(self.stage / 'imports' / (import_id + '-' + revision + '.json'), {
                 'version': 1, 'id': import_id, 'revision': revision,
                 'source': record['source'], 'asset': copy.deepcopy(record),

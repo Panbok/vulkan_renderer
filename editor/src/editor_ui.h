@@ -1,5 +1,6 @@
 #pragma once
 
+#include "editor_animation.h"
 #include "editor_bakery.h"
 #include "editor_console.h"
 #include "editor_content.h"
@@ -20,6 +21,7 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_DRAWS,
   VKR_EDITOR_WINDOW_MEMORY,
   VKR_EDITOR_WINDOW_HELP,
+  VKR_EDITOR_WINDOW_ANIMATION,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -37,6 +39,8 @@ typedef struct VkrEditorWindowState {
   Vec2 size_pt;
   uint32_t z_order;
   bool8_t visible;
+  bool8_t dragging;
+  Vec2 drag_grab_pt;
 } VkrEditorWindowState;
 
 typedef struct VkrEditorLabelAnchor {
@@ -81,6 +85,7 @@ typedef struct VkrEditorUi {
   bool8_t toolbar_initialized;
   bool8_t toolbar_dragging;
   VkrEditorGraphicsTab graphics_tab;
+  VkrEditorAnimation animation;
 
   VkrEditorWindowState windows[VKR_EDITOR_WINDOW_COUNT];
 } VkrEditorUi;

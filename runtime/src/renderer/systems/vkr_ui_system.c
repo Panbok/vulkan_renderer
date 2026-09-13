@@ -20,6 +20,7 @@ typedef enum VkrUiNodeKind {
   VKR_UI_NODE_SCROLL,
   VKR_UI_NODE_TEXT_FIELD,
   VKR_UI_NODE_IMAGE,
+  VKR_UI_NODE_BEZIER,
 } VkrUiNodeKind;
 
 struct VkrUiRetainedState {
@@ -59,6 +60,8 @@ struct VkrUiFrameNode {
   VkrUiIcon icon;
   VkrUiTextureRef image;
   Vec2 image_size;
+  Vec2 bezier_points[4];
+  float32_t bezier_width;
   float32_t icon_size_px;
   bool8_t disabled;
   bool8_t focusable;
@@ -893,6 +896,30 @@ void vkr_ui_image(VkrUiSystem *system, String8 id_label,
                               &node->style);
 }
 
+void vkr_ui_bezier(VkrUiSystem *system, String8 id_label, const Vec2 points[4],
+                   float32_t width_pt, const VkrUiWidgetConfig *source_config) {
+  if (!system || !system->frame_open || !points || !isfinite(width_pt) ||
+      width_pt <= 0) {
+    return;
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (!isfinite(points[i].x) || !isfinite(points[i].y)) {
+      return;
+    }
+  }
+  const VkrUiWidgetConfig fallback = vkr_ui_widget_config_default();
+  const VkrUiWidgetConfig *config = source_config ? source_config : &fallback;
+  const VkrUiId id = vkr_ui_id_stack_widget_label(&system->id_stack, id_label);
+  uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_BEZIER,
+                                   config->placement, &config->style);
+  if (index == VKR_UI_NODE_NONE) {
+    return;
+  }
+  VkrUiFrameNode *node = &system->frame_nodes[index];
+  MemCopy(node->bezier_points, points, sizeof(node->bezier_points));
+  node->bezier_width = width_pt;
+}
+
 bool8_t vkr_ui_checkbox(VkrUiSystem *system, String8 id_label, String8 content,
                         bool8_t *value,
                         const VkrUiWidgetConfig *source_config) {
@@ -1462,6 +1489,12 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
   hash = vkr_ui_hash_bytes(hash, &node->style, sizeof(node->style));
   hash = vkr_ui_hash_bytes(hash, &node->image, sizeof(node->image));
   hash = vkr_ui_hash_bytes(hash, &node->image_size, sizeof(node->image_size));
+  if (node->kind == VKR_UI_NODE_BEZIER) {
+    hash = vkr_ui_hash_bytes(hash, node->bezier_points,
+                             sizeof(node->bezier_points));
+    hash = vkr_ui_hash_bytes(hash, &node->bezier_width,
+                             sizeof(node->bezier_width));
+  }
   hash = vkr_ui_hash_bytes(hash, &node->intrinsic_size,
                            sizeof(node->intrinsic_size));
   hash = vkr_ui_hash_bytes(hash, &system->content_scale,
@@ -2245,6 +2278,40 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   vkr_ui_emit_rect(buffer, background_rect, background, background_radii);
   const VkrUiRect content = vkr_ui_style_content_rect(node->rect, &node->style);
   switch (node->kind) {
+  case VKR_UI_NODE_BEZIER: {
+    Vec2 previous = node->bezier_points[0];
+    const float32_t scale = system->content_scale;
+    const float32_t half_width = node->bezier_width * scale * 0.5f;
+    const Vec4 color = vkr_ui_linear_color(node->style.text_color);
+    for (uint32_t segment = 1; segment <= 24; ++segment) {
+      const float32_t t = (float32_t)segment / 24;
+      const float32_t u = 1 - t;
+      const float32_t weights[4] = {u * u * u, 3 * u * u * t, 3 * u * t * t,
+                                    t * t * t};
+      Vec2 next = {0};
+      for (uint32_t i = 0; i < 4; ++i) {
+        next.x += weights[i] * node->bezier_points[i].x;
+        next.y += weights[i] * node->bezier_points[i].y;
+      }
+      const float32_t dx = (next.x - previous.x) * scale;
+      const float32_t dy = (next.y - previous.y) * scale;
+      const float32_t length = sqrtf(dx * dx + dy * dy);
+      if (length > 0.001f) {
+        const Vec2 normal = {-dy * half_width / length,
+                             dx * half_width / length};
+        const Vec2 a = {content.x + previous.x * scale,
+                        content.y + previous.y * scale};
+        const Vec2 b = {content.x + next.x * scale, content.y + next.y * scale};
+        const Vec2 corners[4] = {{a.x + normal.x, a.y + normal.y},
+                                 {b.x + normal.x, b.y + normal.y},
+                                 {b.x - normal.x, b.y - normal.y},
+                                 {a.x - normal.x, a.y - normal.y}};
+        (void)vkr_ui_draw_buffer_polygon(buffer, corners, color);
+      }
+      previous = next;
+    }
+    break;
+  }
   case VKR_UI_NODE_IMAGE: {
     const float32_t scale = Min(content.width / node->image_size.x,
                                 content.height / node->image_size.y);
@@ -2472,7 +2539,9 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
   uint64_t estimate = 0u;
   for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
     const VkrUiFrameNode *node = &system->frame_nodes[i];
-    estimate += node->kind == VKR_UI_NODE_IMAGE ? 26u : 9u;
+    estimate += node->kind == VKR_UI_NODE_IMAGE    ? 26u
+                : node->kind == VKR_UI_NODE_BEZIER ? 33u
+                                                   : 9u;
     if (node->icon != VKR_UI_ICON_NONE)
       estimate += 20u;
     if (node->retained->text_live) {

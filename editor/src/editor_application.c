@@ -110,6 +110,7 @@ cleanup:
   if (editor->ui.label_font.id)
     vkr_font_system_release_by_handle(ui->fonts, editor->ui.label_font);
   vkr_editor_bakery_destroy(editor->ui.bakery);
+  vkr_editor_animation_shutdown(&editor->ui.animation);
   vkr_editor_scene_panels_destroy(editor->ui.scene_panels);
   vkr_editor_console_shutdown(&editor->ui.console);
   editor->ui.bakery = NULL;
@@ -170,6 +171,7 @@ static bool8_t editor_application_shutdown(void *state,
   editor->ui.bakery = NULL;
   (void)vkr_editor_projects_destroy(editor->ui.projects, &editor->ui, dock);
   editor->ui.projects = NULL;
+  vkr_editor_animation_shutdown(&editor->ui.animation);
   vkr_editor_scene_panels_destroy(editor->ui.scene_panels);
   vkr_editor_console_shutdown(&editor->ui.console);
   vkr_font_system_release_by_handle(ui->fonts, editor->ui.heading_font);

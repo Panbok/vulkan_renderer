@@ -260,6 +260,10 @@ bool8_t vkr_ui_button(VkrUiSystem *system, String8 id_label, String8 content,
 void vkr_ui_image(VkrUiSystem *system, String8 id_label,
                   VkrUiTextureRef texture, Vec2 source_size,
                   const VkrUiWidgetConfig *config);
+/* Noninteractive cubic wire. Control points are in widget-local points;
+ * text_color supplies stroke color. Retained damage includes the curve. */
+void vkr_ui_bezier(VkrUiSystem *system, String8 id_label, const Vec2 points[4],
+                   float32_t width_pt, const VkrUiWidgetConfig *config);
 bool8_t vkr_ui_checkbox(VkrUiSystem *system, String8 id_label, String8 content,
                         bool8_t *value, const VkrUiWidgetConfig *config);
 bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,

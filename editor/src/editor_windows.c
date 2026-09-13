@@ -559,8 +559,8 @@ static VkrUiRect editor_menu_popup_rect(const VkrEditorUi *editor,
   const float32_t width = Min(settings ? 180.0f : (debug ? 230.0f : 210.0f),
                               target_width);
   const float32_t height = Min(
-      settings ? 36.0f : (debug ? (editor->labels_expanded ? 184.0f : 50.0f)
-                                : 94.0f),
+      settings ? 66.0f
+               : (debug ? (editor->labels_expanded ? 184.0f : 50.0f) : 94.0f),
       Max(0.0f, target_height - VKR_EDITOR_NAVIGATION_HEIGHT_PT));
   const float32_t x =
       Min(settings ? VKR_EDITOR_SETTINGS_MENU_X_PT
@@ -599,8 +599,8 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
   popup.columns = &one_track;
   popup.column_count = 1u;
   popup.rows = rows;
-  popup.row_count = settings ? 1u : (debug ? (editor->labels_expanded ? 5u : 1u)
-                                             : 3u);
+  popup.row_count =
+      settings ? 2u : (debug ? (editor->labels_expanded ? 5u : 1u) : 3u);
   popup.style = vkr_editor_glass_style();
   popup.style.background_color.w = 0.98f;
   popup.style.min_size_pt =
@@ -622,6 +622,12 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
     if (vkr_ui_button(ui, string8_lit("graphics"), string8_lit("Graphics"),
                       &item)) {
       editor_window_raise(editor, VKR_EDITOR_WINDOW_GRAPHICS);
+      editor->menu = VKR_EDITOR_MENU_NONE;
+    }
+    item.placement.row = 1u;
+    if (vkr_ui_button(ui, string8_lit("animation"), string8_lit("Animation"),
+                      &item)) {
+      editor_window_raise(editor, VKR_EDITOR_WINDOW_ANIMATION);
       editor->menu = VKR_EDITOR_MENU_NONE;
     }
     (void)vkr_ui_panel_end(ui);
@@ -753,13 +759,16 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
       editor_point_in_rect(ui->mouse_x, ui->mouse_y,
                            editor_menu_popup_rect(editor, ui));
   if (ui->mouse_pressed && !popup_contains_pointer) {
+    int32_t press_x = 0;
+    int32_t press_y = 0;
+    input_get_button_press_position(ui->input, BUTTON_LEFT, &press_x, &press_y);
     uint32_t top_z = 0u;
     VkrEditorWindowKind top_kind = VKR_EDITOR_WINDOW_COUNT;
     for (uint32_t i = 0u; i < VKR_EDITOR_WINDOW_COUNT; ++i) {
       VkrEditorWindowState *window = &editor->windows[i];
       editor_window_clamp(ui, window);
       if (window->visible && window->z_order > top_z &&
-          editor_point_in_rect(ui->mouse_x, ui->mouse_y,
+          editor_point_in_rect(press_x, press_y,
                                editor_window_rect(ui, window))) {
         top_z = window->z_order;
         top_kind = (VkrEditorWindowKind)i;
@@ -789,6 +798,9 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   String8 body_text = {0};
   float32_t font_size_pt = 10.0f;
   switch (kind) {
+  case VKR_EDITOR_WINDOW_ANIMATION:
+    title_text = string8_lit("ANIMATION");
+    break;
   case VKR_EDITOR_WINDOW_GRAPHICS:
     title_text = string8_lit("GRAPHICS");
     break;
@@ -815,6 +827,43 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     return;
   }
 
+  if (ui->mouse_pressed && !frame->mouse_captured && !editor->commands_open &&
+      editor->menu == VKR_EDITOR_MENU_NONE) {
+    int32_t press_x = 0;
+    int32_t press_y = 0;
+    input_get_button_press_position(input, BUTTON_LEFT, &press_x, &press_y);
+    const Vec2 press = {press_x / ui->content_scale,
+                        press_y / ui->content_scale};
+    bool8_t occluded = false_v;
+    for (uint32_t i = 0; i < VKR_EDITOR_WINDOW_COUNT; ++i) {
+      const VkrEditorWindowState *other = &editor->windows[i];
+      if (other->visible && other->z_order > window->z_order &&
+          editor_point_in_rect(press_x, press_y,
+                               editor_window_rect(ui, other))) {
+        occluded = true_v;
+      }
+    }
+    if (!occluded && press.x >= window->position_pt.x &&
+        press.x < window->position_pt.x + window->size_pt.x - 30 &&
+        press.y >= window->position_pt.y &&
+        press.y < window->position_pt.y + 28) {
+      window->dragging = true_v;
+      window->drag_grab_pt = (Vec2){press.x - window->position_pt.x,
+                                    press.y - window->position_pt.y};
+    }
+  }
+  const bool8_t down = input_is_button_down(input, BUTTON_LEFT);
+  if (window->dragging && !frame->mouse_captured &&
+      (down || ui->mouse_released)) {
+    /* Include the final endpoint when press and release share one UI frame. */
+    window->position_pt =
+        (Vec2){ui->mouse_x / ui->content_scale - window->drag_grab_pt.x,
+               ui->mouse_y / ui->content_scale - window->drag_grab_pt.y};
+    ui->capture.mouse = true_v;
+  }
+  if (!down || frame->mouse_captured) {
+    window->dragging = false_v;
+  }
   editor_window_clamp(ui, window);
   (void)vkr_ui_input_layer_set(ui, window->z_order + 1u);
   (void)vkr_ui_push_id_u64(ui, kind);
@@ -890,17 +939,7 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     drag.style.text_color = (Vec4){0.43f, 0.80f, 1.0f, 1.0f};
     drag.style.font_size_pt = 11.0f;
     drag.text.font = editor->heading_font;
-    const VkrUiId drag_id =
-        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("drag"));
     (void)vkr_ui_button(ui, string8_lit("drag"), title_text, &drag);
-    if (ui->active_id == drag_id && input_is_button_down(input, BUTTON_LEFT)) {
-      int32_t dx = 0;
-      int32_t dy = 0;
-      input_get_mouse_delta(input, &dx, &dy);
-      window->position_pt.x += (float32_t)dx / ui->content_scale;
-      window->position_pt.y += (float32_t)dy / ui->content_scale;
-      editor_window_clamp(ui, window);
-    }
 
     VkrUiWidgetConfig close = vkr_ui_widget_config_default();
     close.placement = (VkrUiPlacement){
@@ -923,7 +962,9 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
 
   if (kind == VKR_EDITOR_WINDOW_GRAPHICS)
     vkr_editor_graphics_build(editor, frame);
-  else {
+  else if (kind == VKR_EDITOR_WINDOW_ANIMATION) {
+    vkr_editor_animation_build(editor, frame);
+  } else {
     VkrUiWidgetConfig body = vkr_editor_text_config(
         font_size_pt, (Vec4){0.84f, 0.87f, 0.92f, 1.0f});
     body.placement = (VkrUiPlacement){
@@ -967,6 +1008,7 @@ typedef enum EditorCommand {
   CMD_CONSOLE,
   CMD_BAKERY,
   CMD_CONTENT,
+  CMD_ANIMATION,
   CMD_RESET_LAYOUT,
   CMD_SIM_START,
   CMD_SIM_PAUSE,
@@ -987,6 +1029,7 @@ static const char *s_command_names[CMD_COUNT] = {"Load scene",
                                                  "Show Console",
                                                  "Show Bakery",
                                                  "Show Content",
+                                                 "Show Animation Editor",
                                                  "Reset panel layout",
                                                  "Start / resume simulation",
                                                  "Pause simulation",
@@ -1022,7 +1065,7 @@ static bool8_t editor_command_enabled(EditorCommand command,
   }
 }
 
-static void editor_command_execute(EditorCommand command,
+static void editor_command_execute(EditorCommand command, VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame) {
   const VkrSceneEditAction actions[] = {
       VKR_SCENE_EDIT_LOAD, VKR_SCENE_EDIT_RELOAD, VKR_SCENE_EDIT_UNLOAD,
@@ -1048,6 +1091,9 @@ static void editor_command_execute(EditorCommand command,
     break;
   case CMD_CONTENT:
     vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
+    break;
+  case CMD_ANIMATION:
+    editor_window_raise(editor, VKR_EDITOR_WINDOW_ANIMATION);
     break;
   case CMD_RESET_LAYOUT:
     vkr_ui_dock_default_editor_layout(frame->dock);
@@ -1320,7 +1366,7 @@ void vkr_editor_commands_build(VkrEditorUi *editor,
       editor_command_enabled(matches[editor->commands_cursor], frame))
     execute = matches[editor->commands_cursor];
   if (execute != CMD_COUNT)
-    editor_command_execute(execute, frame);
+    editor_command_execute(execute, editor, frame);
   if (execute != CMD_COUNT ||
       input_key_just_pressed(frame->input, KEY_ESCAPE)) {
     editor->commands_open = false_v;

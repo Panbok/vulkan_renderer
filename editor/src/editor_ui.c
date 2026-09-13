@@ -74,6 +74,13 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                       .z_order = 2u,
                       .visible = false_v,
                   },
+              [VKR_EDITOR_WINDOW_ANIMATION] =
+                  {
+                      .position_pt = {190.0f, 95.0f},
+                      .size_pt = {880.0f, 660.0f},
+                      .z_order = 5u,
+                      .visible = false_v,
+                  },
               [VKR_EDITOR_WINDOW_HELP] =
                   {
                       .position_pt = {280.0f, 105.0f},
@@ -157,6 +164,7 @@ static void vkr_editor_ui_build_camera(VkrUiSystem *ui, bool8_t scene_only,
 VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame) {
   VkrUiDockInputCapture dock_capture = {0};
+  vkr_editor_animation_update(editor, frame);
   vkr_editor_bakery_update(editor->bakery);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_windows_register_input_layers(editor, frame->ui);
