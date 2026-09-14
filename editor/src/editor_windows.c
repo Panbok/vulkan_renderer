@@ -245,8 +245,11 @@ static void editor_scene_resolution_build(const VkrEditorUi *editor,
   const float32_t width = Min(320.0f, viewport.z / scale - 16.0f);
   const bool8_t incomplete =
       frame->texture_pending_count || frame->texture_demanded_missing_count;
-  const float32_t height =
-      (fallback ? 58.0f : 42.0f) + 114.0f + (incomplete ? 28.0f : 0.0f);
+  const bool8_t gameplay = frame->scene && frame->scene->player_entity.u64 &&
+                           frame->simulation_running;
+  const float32_t height = (fallback ? 58.0f : 42.0f) + 114.0f +
+                           (incomplete ? 28.0f : 0.0f) +
+                           (gameplay ? 76.0f : 0.0f);
   const float32_t left = viewport.x / scale + 8.0f;
   const float32_t right = (viewport.x + viewport.z) / scale - width - 8.0f;
   const float32_t top =
@@ -256,8 +259,8 @@ static void editor_scene_resolution_build(const VkrEditorUi *editor,
   if (width < 100.0f || top > bottom)
     return;
   const VkrUiRect candidates[] = {
-      {right, bottom, width, height},
-      {left, bottom, width, height},
+      {gameplay ? left : right, bottom, width, height},
+      {gameplay ? right : left, bottom, width, height},
       {right, top, width, height},
       {left, top, width, height},
   };
@@ -308,6 +311,11 @@ static void editor_scene_resolution_build(const VkrEditorUi *editor,
                                   (int32_t)text.length, text.str,
                                   (int32_t)frame->text.system.length,
                                   frame->text.system.str);
+  if (gameplay) {
+    text = string8_create_formatted(
+        ui->frame_allocator, "%.*s\n%.*s", (int32_t)text.length, text.str,
+        (int32_t)frame->text.camera.length, frame->text.camera.str);
+  }
   if (incomplete)
     text = string8_create_formatted(
         ui->frame_allocator, "%.*s\nTexture wait: %u\nMissing: %u",

@@ -23,6 +23,7 @@
 #include "math/vkr_quat.h"
 #include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/systems/vkr_scene_simulation.h"
 
 // Forward declarations
 struct VkrRenderAssets;
@@ -93,6 +94,11 @@ typedef struct SceneTransform {
   bool8_t trs_editable;
   uint8_t flags; // Bitmask of SCENE_TRANSFORM_DIRTY_* flags
 } SceneTransform;
+
+/* Transient presentation override; authored transforms remain unchanged. */
+typedef struct SceneEvaluatedTransform {
+  Mat4 world;
+} SceneEvaluatedTransform;
 
 /* Stable within a source revision; names and ECS entity slots are not keys. */
 typedef struct SceneSourceIdentity {
@@ -367,6 +373,7 @@ typedef struct VkrSceneCollisionLayers VkrSceneCollisionLayers;
 
 typedef struct VkrScene {
   VkrScenePhysics *physics;
+  VkrSceneSimulation simulation;
   VkrSceneCollisionLayers *collision_layers;
   VkrSceneCollisionLayers *collision_layers_pending;
   uint64_t collision_layers_revision;
@@ -382,10 +389,17 @@ typedef struct VkrScene {
   uint64_t structure_revision;
   uint16_t world_id; // Copied into entity IDs
 
+  // Optional authored player binding; invalid entity means no player.
+  VkrEntityId player_entity;
+  float32_t player_yaw; // Initial look yaw in radians.
+  VkrEntityId player_weapon_entity;
+  uint32_t player_weapon_bone; // Source node in the player animation skeleton.
+
   // Component type IDs (cached after registration)
   VkrComponentTypeId comp_source_identity;
   VkrComponentTypeId comp_name;
   VkrComponentTypeId comp_transform;
+  VkrComponentTypeId comp_evaluated_transform;
   VkrComponentTypeId comp_mesh_renderer;
   VkrComponentTypeId comp_visibility;
   VkrComponentTypeId comp_render_id;
@@ -492,6 +506,9 @@ bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
  * @param dt Delta time (currently unused, reserved for future animation)
  */
 void vkr_scene_update(VkrScene *scene, float64_t dt);
+
+/* Propagate authored/evaluated transforms without advancing simulation time. */
+void vkr_scene_update_transforms(VkrScene *scene);
 
 // ============================================================================
 // Scene Runtime Handle API (preferred for renderer/resource integration)
@@ -939,5 +956,9 @@ VkrEntityId vkr_scene_find_entity_by_name(const VkrScene *scene, String8 name);
  */
 bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,
                                    Mat4 local);
+
+/* Publish an evaluated world pose; NULL removes the transient override. */
+bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,
+                                          const Mat4 *world);
 bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
                                       const SceneSourceIdentity *identity);

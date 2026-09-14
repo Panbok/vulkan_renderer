@@ -1365,7 +1365,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
 
   if (camera &&
       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
-      !application->config->disable_camera_controller) {
+      !application->config->disable_camera_controller &&
+      !(application->active_scene &&
+        application->active_scene->player_entity.u64 &&
+        application->editor_viewport.simulation_running)) {
     vkr_camera_controller_update(&application->camera_controller, delta,
                                  application->ui_capture.mouse ||
                                      application->ui_capture.keyboard);

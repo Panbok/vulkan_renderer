@@ -11,6 +11,13 @@
 #include "physics_test.h"
 #include "collision_asset_test.h"
 #include "scene_physics_test.h"
+#include "scene_simulation_test.h"
+#include "weapon_test.h"
+#include "camera_rig_test.h"
+#include "gameplay_input_test.h"
+#include "gameplay_player_test.h"
+#include "player_animation_test.h"
+#include "character_test.h"
 
 bool32_t run_path_io_tests(void);
 bool32_t run_process_path_tests(void);
@@ -24,6 +31,13 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_physics_tests,
     run_collision_asset_tests,
     run_scene_physics_tests,
+    run_scene_simulation_tests,
+    run_weapon_tests,
+    run_camera_rig_tests,
+    run_gameplay_input_tests,
+    run_gameplay_player_tests,
+    run_player_animation_tests,
+    run_character_tests,
     run_allocator_tests,
     run_atomic_tests,
     run_metrics_tests,

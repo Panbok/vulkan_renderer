@@ -227,6 +227,13 @@ vkr_internal void scene_invalidate_queries(VkrScene *scene) {
   if (!scene) {
     return;
   }
+  VkrQueryCompiled *queries[] = {
+      &scene->query_transforms,        &scene->query_renderables,
+      &scene->query_directional_light, &scene->query_point_lights,
+      &scene->query_rectangle_lights,  &scene->query_shapes};
+  for (uint32_t i = 0; i < ArrayCount(queries); ++i) {
+    vkr_entity_query_compiled_destroy(scene->alloc, queries[i]);
+  }
   scene->queries_valid = false_v;
   scene->child_index_valid = false_v;
 }
@@ -894,8 +901,13 @@ vkr_internal void scene_rebuild_topo_order(VkrScene *scene) {
  * @brief Compile scene queries.
  */
 vkr_internal bool8_t scene_compile_queries(VkrScene *scene) {
-  if (scene->queries_valid)
-    return true;
+  if (scene->queries_valid && !vkr_entity_query_compiled_is_current(
+                                  scene->world, &scene->query_transforms)) {
+    scene_invalidate_queries(scene);
+  }
+  if (scene->queries_valid) {
+    return true_v;
+  }
 
   // Build transform query
   VkrQuery q_transforms;
@@ -1057,6 +1069,9 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   scene->comp_transform = vkr_entity_register_component_once(
       scene->world, "SceneTransform", sizeof(SceneTransform),
       AlignOf(SceneTransform));
+  scene->comp_evaluated_transform = vkr_entity_register_component_once(
+      scene->world, "SceneEvaluatedTransform", sizeof(SceneEvaluatedTransform),
+      AlignOf(SceneEvaluatedTransform));
   scene->comp_mesh_renderer = vkr_entity_register_component_once(
       scene->world, "SceneMeshRenderer", sizeof(SceneMeshRenderer),
       AlignOf(SceneMeshRenderer));
@@ -1084,6 +1099,7 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       scene->comp_source_identity == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_name == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_transform == VKR_COMPONENT_TYPE_INVALID ||
+      scene->comp_evaluated_transform == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_mesh_renderer == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_visibility == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_render_id == VKR_COMPONENT_TYPE_INVALID ||
@@ -1350,17 +1366,33 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
 }
 
 void vkr_scene_update(VkrScene *scene, float64_t dt) {
-  if (!vkr_scene_physics_mutations_allowed(scene)) {
+  if (!scene || scene->simulation.active ||
+      !vkr_scene_physics_mutations_allowed(scene)) {
+    return;
+  }
+  // Refresh at the boundary before gameplay borrows any compiled scene query.
+  if (!scene_compile_queries(scene)) {
     return;
   }
   vkr_scene_physics_update(scene, dt);
-  // Compile queries if needed
-  if (!scene->queries_valid) {
-    if (!scene_compile_queries(scene)) {
-      return;
-    }
+  // Paused authored physics synchronization may have introduced archetypes.
+  if (!scene_compile_queries(scene)) {
+    return;
   }
 
+  vkr_scene_update_transforms(scene);
+  if (!vkr_scene_physics_body_count(scene) && !scene->simulation.enabled) {
+    vkr_scene_animation_update(scene, dt);
+  } else {
+    vkr_scene_physics_animation_delta(scene, 0.0);
+    vkr_scene_physics_publish_bones(scene, true_v, NULL);
+  }
+}
+
+void vkr_scene_update_transforms(VkrScene *scene) {
+  if (!scene || scene->simulation.active || !scene_compile_queries(scene)) {
+    return;
+  }
   // Rebuild topo order if hierarchy changed
   if (scene->hierarchy_dirty) {
     scene_rebuild_topo_order(scene);
@@ -1417,9 +1449,16 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
     }
 
     Mat4 physics_world;
-    bool8_t physics_override =
-        scene->physics &&
-        vkr_scene_physics_world_matrix(scene, entity, &physics_world);
+    const SceneEvaluatedTransform *evaluated =
+        vkr_entity_get_component_if_alive_const(
+            world, entity, scene->comp_evaluated_transform);
+    bool8_t physics_override = evaluated != NULL;
+    if (evaluated) {
+      physics_world = evaluated->world;
+    } else if (scene->physics) {
+      physics_override =
+          vkr_scene_physics_world_matrix(scene, entity, &physics_world);
+    }
     if (physics_override &&
         MemCompare(&transform->world, &physics_world, sizeof(physics_world))) {
       transform->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
@@ -1444,12 +1483,6 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
 
     // Mark for render sync
     scene_mark_render_dirty(scene, entity);
-  }
-  if (!vkr_scene_physics_body_count(scene)) {
-    vkr_scene_animation_update(scene, dt);
-  } else {
-    vkr_scene_physics_animation_delta(scene, 0.0);
-    vkr_scene_physics_publish_bones(scene, true_v, NULL);
   }
 }
 
@@ -1478,8 +1511,9 @@ VkrEntityId vkr_scene_create_entity(VkrScene *scene, VkrSceneError *out_error) {
 }
 
 void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
-  if (!scene || !scene->world)
+  if (!scene || !scene->world || !vkr_scene_physics_mutations_allowed(scene)) {
     return;
+  }
   bool8_t had_mesh =
       vkr_entity_has_component(scene->world, entity, scene->comp_mesh_renderer);
   bool8_t had_rectangle_light = vkr_entity_has_component(
@@ -1489,6 +1523,12 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
     return;
   }
   vkr_scene_animation_entity_destroying(scene, entity);
+  if (scene->player_entity.u64 == entity.u64) {
+    scene->player_entity = VKR_ENTITY_ID_INVALID;
+  }
+  if (scene->player_weapon_entity.u64 == entity.u64) {
+    scene->player_weapon_entity = VKR_ENTITY_ID_INVALID;
+  }
 
   VkrEntityId old_parent = VKR_ENTITY_ID_INVALID;
   const SceneTransform *t = (const SceneTransform *)vkr_entity_get_component(
@@ -1558,8 +1598,9 @@ bool8_t vkr_scene_entity_alive(const VkrScene *scene, VkrEntityId entity) {
 // ============================================================================
 
 bool8_t vkr_scene_set_name(VkrScene *scene, VkrEntityId entity, String8 name) {
-  if (!scene || !scene->world)
-    return false;
+  if (!scene || !scene->world || !vkr_scene_physics_mutations_allowed(scene)) {
+    return false_v;
+  }
 
   SceneName *existing = (SceneName *)vkr_entity_get_component_mut(
       scene->world, entity, scene->comp_name);
@@ -1615,6 +1656,47 @@ String8 vkr_scene_get_name(const VkrScene *scene, VkrEntityId entity) {
     return (String8){0};
 
   return comp->name;
+}
+
+bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,
+                                          const Mat4 *matrix) {
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+    return false_v;
+  }
+  if (matrix) {
+    for (uint32_t i = 0; i < 16; ++i) {
+      if (!isfinite(matrix->elements[i])) {
+        return false_v;
+      }
+    }
+    if (matrix->elements[3] != 0 || matrix->elements[7] != 0 ||
+        matrix->elements[11] != 0 || matrix->elements[15] != 1) {
+      return false_v;
+    }
+  }
+  SceneEvaluatedTransform *value = vkr_entity_get_component_if_alive(
+      scene->world, entity, scene->comp_evaluated_transform);
+  if (matrix && value) {
+    value->world = *matrix;
+  } else if (matrix) {
+    const SceneEvaluatedTransform initial = {.world = *matrix};
+    if (!vkr_entity_add_component(scene->world, entity,
+                                  scene->comp_evaluated_transform, &initial)) {
+      return false_v;
+    }
+    scene_invalidate_queries(scene);
+  } else if (value) {
+    if (!vkr_entity_remove_component(scene->world, entity,
+                                     scene->comp_evaluated_transform)) {
+      return false_v;
+    }
+    scene_invalidate_queries(scene);
+  }
+  SceneTransform *transform = vkr_scene_get_transform(scene, entity);
+  if (transform) {
+    transform->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
+  }
+  return true_v;
 }
 
 bool8_t vkr_scene_set_transform(VkrScene *scene, VkrEntityId entity,
@@ -1703,6 +1785,9 @@ void vkr_scene_set_scale(VkrScene *scene, VkrEntityId entity, Vec3 scale) {
 
 void vkr_scene_set_parent(VkrScene *scene, VkrEntityId entity,
                           VkrEntityId parent) {
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return;
+  }
   SceneTransform *t = vkr_scene_get_transform(scene, entity);
   if (!t)
     return;
@@ -1807,6 +1892,10 @@ void vkr_scene_set_visibility(VkrScene *scene, VkrEntityId entity,
   SceneVisibility *existing = (SceneVisibility *)vkr_entity_get_component_mut(
       scene->world, entity, scene->comp_visibility);
   if (existing) {
+    if (existing->visible == visible &&
+        existing->inherit_parent == inherit_parent) {
+      return;
+    }
     *existing = comp;
   } else {
     if (vkr_entity_add_component(scene->world, entity, scene->comp_visibility,

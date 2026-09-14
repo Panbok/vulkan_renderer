@@ -30,6 +30,15 @@ typedef struct ScenePhysicsBodyComponent {
   ScenePhysicsBody *body;
 } ScenePhysicsBodyComponent;
 
+typedef struct ScenePhysicsCharacter {
+  VkrEntityId entity;
+  VkrPhysicsCharacter native;
+  VkrPhysicsCharacterDesc settings;
+  VkrPhysicsCharacterState previous;
+  VkrPhysicsCharacterState current;
+  uint64_t last_step_tick;
+} ScenePhysicsCharacter;
+
 typedef struct PhysicsStagedJoints {
   struct PhysicsStagedJoints *next;
   ScenePhysicsBody *body;
@@ -48,11 +57,9 @@ struct s_VkrScenePhysics {
   VkrPhysicsContactCallback contact_callback;
   void *contact_context;
   uint32_t body_count;
+  VkrComponentTypeId character_component;
+  ScenePhysicsCharacter characters[VKR_PHYSICS_MAX_CHARACTERS];
   uint32_t staged_additions;
-  float64_t accumulator;
-  uint64_t completed_ticks;
-  uint64_t animation_ticks;
-  uint32_t overload_updates;
   bool8_t editing;
   bool8_t faulted;
   bool8_t resetting;
@@ -109,6 +116,20 @@ static ScenePhysicsBody *physics_body(const VkrScene *scene,
       vkr_entity_get_component_if_alive(scene->world, entity,
                                         scene->comp_physics_body);
   return component ? component->body : NULL;
+}
+
+static ScenePhysicsCharacter *physics_character(const VkrScene *scene,
+                                                VkrEntityId entity) {
+  if (!scene || !scene->physics) {
+    return NULL;
+  }
+  const uint32_t *index = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->physics->character_component);
+  if (!index || *index >= ArrayCount(scene->physics->characters)) {
+    return NULL;
+  }
+  ScenePhysicsCharacter *character = &scene->physics->characters[*index];
+  return character->entity.u64 == entity.u64 ? character : NULL;
 }
 
 typedef struct PhysicsTransformOverride {
@@ -208,6 +229,16 @@ static bool8_t physics_entity_matrix(const VkrScene *scene, VkrEntityId entity,
     }
     if (depth && evaluated &&
         (!override || override->entity.u64 != cursor.u64)) {
+      ScenePhysicsCharacter *parent_character =
+          physics_character(scene, cursor);
+      if (parent_character) {
+        const float32_t *position = parent_character->current.foot_position;
+        const Mat4 parent =
+            physics_trs(vec3_new(position[0], position[1], position[2]),
+                        transform->rotation, vec3_one());
+        *matrix = mat4_mul(parent, *matrix);
+        return true_v;
+      }
       ScenePhysicsBody *parent_body = physics_body(scene, cursor);
       if (parent_body && parent_body->authored.motion == VKR_PHYSICS_DYNAMIC &&
           parent_body->body != VKR_PHYSICS_BODY_INVALID) {
@@ -528,7 +559,159 @@ static bool8_t physics_ensure(VkrScene *scene, const char **error) {
     vkr_dmemory_destroy(&memory);
     return physics_fail(error, "Physics world creation failed");
   }
+  physics->character_component =
+      vkr_entity_register_component_once(scene->world, "ScenePhysicsCharacter",
+                                         sizeof(uint32_t), AlignOf(uint32_t));
+  if (physics->character_component == VKR_COMPONENT_TYPE_INVALID) {
+    vkr_physics_world_destroy(physics->world);
+    vkr_dmemory_destroy(&memory);
+    return physics_fail(error, "Character component registration failed");
+  }
   scene->physics = physics;
+  return true_v;
+}
+
+static bool8_t physics_character_authored(const VkrScene *scene,
+                                          VkrEntityId entity,
+                                          VkrPhysicsCharacterDesc *settings,
+                                          const char **error) {
+  const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->comp_transform);
+  if (!transform || transform->parent.u64 || physics_body(scene, entity)) {
+    return physics_fail(error,
+                        "Character needs a root transform and no rigid body");
+  }
+  const Mat4 local = transform->matrix_authored
+                         ? transform->local
+                         : physics_trs(transform->position, transform->rotation,
+                                       transform->scale);
+  Vec3 position, scale;
+  VkrQuat rotation;
+  if (!physics_decompose(local, &position, &rotation, &scale, error) ||
+      fabsf(scale.x - 1) > 1e-5f || fabsf(scale.y - 1) > 1e-5f ||
+      fabsf(scale.z - 1) > 1e-5f) {
+    return physics_fail(error, "Character transform must have unit scale");
+  }
+  settings->entity_id = entity.u64;
+  settings->foot_position[0] = position.x;
+  settings->foot_position[1] = position.y;
+  settings->foot_position[2] = position.z;
+  return true_v;
+}
+
+bool8_t vkr_scene_character_create(VkrScene *scene, VkrEntityId entity,
+                                   const VkrPhysicsCharacterDesc *settings,
+                                   const char **error) {
+  if (!scene || !settings || !scene->physics_paused ||
+      scene->simulation.active || !vkr_scene_physics_mutations_allowed(scene) ||
+      (scene->physics && scene->physics->prepared)) {
+    return physics_fail(error, "Create characters at a paused scene boundary");
+  }
+  VkrPhysicsCharacterDesc desc = *settings;
+  if (!physics_character_authored(scene, entity, &desc, error) ||
+      !physics_ensure(scene, error)) {
+    return false_v;
+  }
+  if (physics_character(scene, entity)) {
+    return physics_fail(error, "Entity already owns a character");
+  }
+  uint32_t index = 0;
+  while (index < ArrayCount(scene->physics->characters) &&
+         scene->physics->characters[index].entity.u64) {
+    ++index;
+  }
+  if (index == ArrayCount(scene->physics->characters)) {
+    return physics_fail(error, "Scene character capacity exceeded");
+  }
+  ScenePhysicsCharacter prepared = {.entity = entity, .settings = desc};
+  if (!vkr_physics_character_create(scene->physics->world, &desc,
+                                    &prepared.native) ||
+      !vkr_physics_character_get_state(scene->physics->world, prepared.native,
+                                       &prepared.current)) {
+    if (prepared.native) {
+      vkr_physics_character_destroy(scene->physics->world, prepared.native);
+    }
+    return physics_fail(error, vkr_physics_last_error(scene->physics->world));
+  }
+  prepared.previous = prepared.current;
+  if (!vkr_entity_add_component(scene->world, entity,
+                                scene->physics->character_component, &index)) {
+    vkr_physics_character_destroy(scene->physics->world, prepared.native);
+    return physics_fail(error, "Character component attachment failed");
+  }
+  scene->physics->characters[index] = prepared;
+  scene->render_full_sync_needed = true_v;
+  return true_v;
+}
+
+bool8_t vkr_scene_character_destroy(VkrScene *scene, VkrEntityId entity,
+                                    const char **error) {
+  ScenePhysicsCharacter *character = physics_character(scene, entity);
+  if (!character || !scene->physics_paused || scene->simulation.active ||
+      !vkr_scene_physics_mutations_allowed(scene) || scene->physics->prepared) {
+    return physics_fail(error, "Destroy characters at a paused scene boundary");
+  }
+  VkrPhysicsCharacterState state;
+  if (!vkr_physics_character_get_state(scene->physics->world, character->native,
+                                       &state)) {
+    return physics_fail(error, vkr_physics_last_error(scene->physics->world));
+  }
+  if (!vkr_entity_remove_component(scene->world, entity,
+                                   scene->physics->character_component)) {
+    return physics_fail(error, "Character component removal failed");
+  }
+  if (!vkr_physics_character_destroy(scene->physics->world,
+                                     character->native)) {
+    return physics_fail(error, vkr_physics_last_error(scene->physics->world));
+  }
+  *character = (ScenePhysicsCharacter){0};
+  SceneTransform *transform =
+      vkr_entity_get_component_mut(scene->world, entity, scene->comp_transform);
+  if (transform) {
+    transform->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
+  }
+  scene->render_full_sync_needed = true_v;
+  return true_v;
+}
+
+bool8_t vkr_scene_character_step(VkrScene *scene, VkrEntityId entity,
+                                 const VkrPhysicsCharacterInput *input,
+                                 VkrPhysicsCharacterState *state,
+                                 const char **error) {
+  ScenePhysicsCharacter *character = physics_character(scene, entity);
+  if (!character || !input || !state || !scene->simulation.in_callback ||
+      scene->simulation.phase != VKR_SCENE_SIMULATION_BEFORE_PHYSICS ||
+      !scene->simulation.active || scene->physics_disabled ||
+      scene->physics->dispatching || scene->physics->prepared ||
+      input->dt != (float32_t)VKR_SCENE_PHYSICS_FIXED_DT ||
+      character->last_step_tick == scene->simulation.completed_ticks + 1) {
+    return physics_fail(
+        error, "Character must advance once in its before-physics tick");
+  }
+  VkrPhysicsCharacterState result;
+  if (!vkr_physics_character_step(scene->physics->world, character->native,
+                                  input, &result)) {
+    scene->physics->faulted = true_v;
+    return physics_fail(error, vkr_physics_last_error(scene->physics->world));
+  }
+  character->previous = character->current;
+  character->current = result;
+  character->last_step_tick = scene->simulation.completed_ticks + 1;
+  *state = result;
+  return true_v;
+}
+
+bool8_t vkr_scene_character_get_state(VkrScene *scene, VkrEntityId entity,
+                                      VkrPhysicsCharacterState *state,
+                                      const char **error) {
+  ScenePhysicsCharacter *character = physics_character(scene, entity);
+  if (!character || !state || scene->physics->faulted) {
+    return physics_fail(error, "No valid scene character state");
+  }
+  if (!vkr_physics_character_get_state(scene->physics->world, character->native,
+                                       state)) {
+    return physics_fail(error, vkr_physics_last_error(scene->physics->world));
+  }
   return true_v;
 }
 
@@ -811,8 +994,12 @@ bool8_t vkr_scene_physics_prepare(VkrScene *scene, VkrEntityId entity,
       !vkr_scene_physics_validate(scene, entity, snapshot, error)) {
     return false_v;
   }
-  if (!scene->physics_paused) {
+  if (!scene->physics_paused || scene->simulation.active) {
     return physics_fail(error, "Pause simulation before editing physics");
+  }
+  if (snapshot && snapshot->present && physics_character(scene, entity)) {
+    return physics_fail(error,
+                        "A character entity cannot also own a rigid body");
   }
   if (!physics_ensure(scene, error)) {
     return false_v;
@@ -1255,9 +1442,12 @@ VkrEntityId vkr_scene_physics_body_at(const VkrScene *scene, uint32_t index) {
 
 void vkr_scene_physics_set_paused(VkrScene *scene, bool8_t paused) {
   if (scene && vkr_scene_physics_mutations_allowed(scene)) {
-    if (!paused && scene->physics_paused && scene->physics) {
-      scene->physics->overload_updates = 0;
-      if (!scene->physics->faulted) {
+    if (!paused && scene->physics_paused) {
+      scene->simulation.overload_updates = 0;
+      if (!scene->simulation.faulted) {
+        scene->simulation.error = NULL;
+      }
+      if (scene->physics && !scene->physics->faulted) {
         scene->physics->error = NULL;
       }
     }
@@ -1332,9 +1522,21 @@ static bool8_t physics_sync_authored(VkrScene *scene, const char **error) {
   return true_v;
 }
 
-static bool8_t physics_tick(VkrScene *scene, const char **error) {
+bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error) {
   VkrScenePhysics *physics = scene->physics;
+  if (physics) {
+    for (uint32_t i = 0; i < ArrayCount(physics->characters); ++i) {
+      ScenePhysicsCharacter *character = &physics->characters[i];
+      if (character->entity.u64 &&
+          character->last_step_tick != scene->simulation.completed_ticks + 1) {
+        character->previous = character->current;
+      }
+    }
+  }
   if (!physics || !physics->body_count || scene->physics_disabled) {
+    if (scene->simulation.enabled && !scene->physics_disabled) {
+      vkr_scene_animation_update(scene, VKR_SCENE_PHYSICS_FIXED_DT);
+    }
     return true_v;
   }
   if (physics->prepared) {
@@ -1381,7 +1583,6 @@ static bool8_t physics_tick(VkrScene *scene, const char **error) {
                                 &body->current_pose);
     }
   }
-  physics->completed_ticks++;
   if (!vkr_scene_physics_publish_bones(scene, false_v, error)) {
     return false_v;
   }
@@ -1402,7 +1603,22 @@ bool8_t vkr_scene_physics_step(VkrScene *scene, const char **error) {
   if (!scene || !scene->physics_paused) {
     return physics_fail(error, "Single step requires paused simulation");
   }
-  bool8_t success = physics_tick(scene, error);
+  if (!vkr_scene_physics_mutations_allowed(scene)) {
+    return physics_fail(error,
+                        "Cannot single step during simulation callbacks");
+  }
+  if (scene->physics && scene->physics->prepared) {
+    return physics_fail(error,
+                        "Complete prepared physics edits before stepping");
+  }
+  if (scene->physics && scene->physics->faulted) {
+    return physics_fail(error,
+                        "Reset the faulted physics simulation before stepping");
+  }
+  if (scene->physics && !physics_sync_authored(scene, error)) {
+    return false_v;
+  }
+  bool8_t success = vkr_scene_simulation_tick(scene, error);
   if (!success && scene->physics) {
     scene->physics->error = error ? *error : "Physics step failed";
   }
@@ -1410,62 +1626,32 @@ bool8_t vkr_scene_physics_step(VkrScene *scene, const char **error) {
 }
 
 void vkr_scene_physics_update(VkrScene *scene, float64_t dt) {
+  if (!scene || scene->simulation.active) {
+    return;
+  }
   VkrScenePhysics *physics = scene->physics;
-  if (!physics || !physics->body_count) {
-    return;
-  }
-  if (physics->prepared) {
-    physics->error =
-        "Complete prepared physics edits before updating simulation";
-    return;
-  }
-  const char *error = NULL;
-  if (!physics_sync_authored(scene, &error)) {
-    physics->error = error;
-    scene->physics_paused = true_v;
-    return;
-  }
-  if (scene->physics_paused || scene->physics_disabled || !isfinite(dt) ||
-      dt < 0) {
-    return;
-  }
-  /* Cap work, not elapsed time. Retain debt so hitches cannot drop simulation.
-   */
-  const float64_t elapsed = physics->accumulator + dt;
-  if (!isfinite(elapsed)) {
-    physics->error = "Physics elapsed-time accumulator overflow";
-    scene->physics_paused = true_v;
-    return;
-  }
-  physics->accumulator = elapsed;
-  for (uint32_t tick = 0;
-       tick < 8u && physics->accumulator + 1e-12 >= VKR_SCENE_PHYSICS_FIXED_DT;
-       ++tick) {
-    if (!physics_tick(scene, &error)) {
+  if (physics && physics->body_count) {
+    if (physics->prepared) {
+      physics->error =
+          "Complete prepared physics edits before updating simulation";
+      return;
+    }
+    const char *error = NULL;
+    if (!physics_sync_authored(scene, &error)) {
       physics->error = error;
       scene->physics_paused = true_v;
       return;
     }
-    physics->accumulator =
-        Max(0.0, physics->accumulator - VKR_SCENE_PHYSICS_FIXED_DT);
   }
-  if (physics->accumulator + 1e-12 >= VKR_SCENE_PHYSICS_FIXED_DT) {
-    physics->overload_updates++;
-    if (physics->overload_updates >= 60u) {
-      scene->physics_paused = true_v;
-      physics->error = "Physics paused after 60 overloaded updates; "
-                       "elapsed-time debt retained. Reset or resume.";
-    }
-  } else {
-    physics->overload_updates = 0;
-  }
+  vkr_scene_simulation_update(scene, dt);
 }
 
 bool8_t vkr_scene_physics_reset(VkrScene *scene, const char **error) {
   if (error) {
     *error = NULL;
   }
-  if (!scene || !scene->physics_paused) {
+  if (!scene || !scene->physics_paused || scene->simulation.active ||
+      !vkr_scene_physics_mutations_allowed(scene)) {
     return physics_fail(error, "Pause simulation before resetting physics");
   }
   if (!scene->physics) {
@@ -1476,6 +1662,7 @@ bool8_t vkr_scene_physics_reset(VkrScene *scene, const char **error) {
     }
     vkr_scene_animation_reset_finish(reset, true_v);
     scene->physics_disabled = false_v;
+    vkr_scene_simulation_reset_state(scene);
     return true_v;
   }
   VkrScenePhysics *physics = scene->physics;
@@ -1490,6 +1677,8 @@ bool8_t vkr_scene_physics_reset(VkrScene *scene, const char **error) {
     return physics_fail(error, "Physics reset world allocation failed");
   }
   VkrPhysicsWorld *old_world = physics->world;
+  VkrPhysicsCharacter reset_characters[VKR_PHYSICS_MAX_CHARACTERS] = {0};
+  VkrPhysicsCharacterState reset_states[VKR_PHYSICS_MAX_CHARACTERS];
   VkrSceneAnimationReset *animation_reset =
       vkr_scene_animation_reset_begin(scene, error);
   if (!animation_reset) {
@@ -1524,6 +1713,23 @@ bool8_t vkr_scene_physics_reset(VkrScene *scene, const char **error) {
       goto cleanup;
     }
   }
+  for (uint32_t i = 0; i < ArrayCount(physics->characters); ++i) {
+    ScenePhysicsCharacter *character = &physics->characters[i];
+    if (!character->entity.u64) {
+      continue;
+    }
+    VkrPhysicsCharacterDesc desc = character->settings;
+    if (!physics_character_authored(scene, character->entity, &desc, error)) {
+      goto cleanup;
+    }
+    if (!vkr_physics_character_create(replacement, &desc,
+                                      &reset_characters[i]) ||
+        !vkr_physics_character_get_state(replacement, reset_characters[i],
+                                         &reset_states[i])) {
+      physics_fail(error, vkr_physics_last_error(replacement));
+      goto cleanup;
+    }
+  }
   vkr_scene_animation_reset_finish(animation_reset, true_v);
   vkr_physics_world_destroy(old_world);
   while (physics->bodies) {
@@ -1540,15 +1746,20 @@ bool8_t vkr_scene_physics_reset(VkrScene *scene, const char **error) {
     component->body = body;
   }
   physics->resetting = false_v;
+  for (uint32_t i = 0; i < ArrayCount(physics->characters); ++i) {
+    if (reset_characters[i]) {
+      physics->characters[i].native = reset_characters[i];
+      physics->characters[i].current = reset_states[i];
+      physics->characters[i].previous = reset_states[i];
+      physics->characters[i].last_step_tick = 0;
+    }
+  }
   physics_publish_joint_graph(scene);
-  physics->accumulator = 0;
-  physics->completed_ticks = 0;
-  physics->animation_ticks = 0;
-  physics->overload_updates = 0;
   physics->faulted = false_v;
   physics->error = NULL;
   scene->physics_disabled = false_v;
   scene->render_full_sync_needed = true_v;
+  vkr_scene_simulation_reset_state(scene);
   return true_v;
 cleanup: {
   const char *message = error && *error ? *error : "Physics reset failed";
@@ -1581,8 +1792,9 @@ bool8_t vkr_scene_physics_set_disabled(VkrScene *scene, bool8_t disabled,
   if (!scene) {
     return physics_fail(error, "No scene");
   }
-  if (scene->physics &&
-      (scene->physics->prepared || scene->physics->dispatching)) {
+  if (scene->simulation.active ||
+      (scene->physics &&
+       (scene->physics->prepared || scene->physics->dispatching))) {
     return physics_fail(
         error, "Complete prepared physics edits before disabling simulation");
   }
@@ -1666,6 +1878,29 @@ bool8_t vkr_scene_physics_get_pose(const VkrScene *scene, VkrEntityId entity,
 
 bool8_t vkr_scene_physics_world_matrix(VkrScene *scene, VkrEntityId entity,
                                        Mat4 *matrix) {
+  ScenePhysicsCharacter *character = physics_character(scene, entity);
+  if (character) {
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, entity, scene->comp_transform);
+    if (!transform || !matrix) {
+      return false_v;
+    }
+    const float32_t alpha =
+        scene->physics_paused || scene->physics_disabled
+            ? 1.0f
+            : (float32_t)Min(1.0, scene->simulation.accumulator /
+                                      VKR_SCENE_PHYSICS_FIXED_DT);
+    const Vec3 previous = vec3_new(character->previous.foot_position[0],
+                                   character->previous.foot_position[1],
+                                   character->previous.foot_position[2]);
+    const Vec3 current = vec3_new(character->current.foot_position[0],
+                                  character->current.foot_position[1],
+                                  character->current.foot_position[2]);
+    *matrix = physics_trs(
+        vec3_add(previous, vec3_scale(vec3_sub(current, previous), alpha)),
+        transform->rotation, vec3_one());
+    return true_v;
+  }
   ScenePhysicsBody *body = physics_body(scene, entity);
   if (!body || !body->authored.enabled ||
       body->body == VKR_PHYSICS_BODY_INVALID) {
@@ -1674,7 +1909,7 @@ bool8_t vkr_scene_physics_world_matrix(VkrScene *scene, VkrEntityId entity,
   const float32_t alpha =
       scene->physics_paused || scene->physics_disabled
           ? 1.0f
-          : (float32_t)Min(1.0, scene->physics->accumulator /
+          : (float32_t)Min(1.0, scene->simulation.accumulator /
                                     VKR_SCENE_PHYSICS_FIXED_DT);
   const VkrPhysicsPose *previous = &body->previous_pose;
   const VkrPhysicsPose *current = &body->current_pose;
@@ -1706,27 +1941,30 @@ bool8_t vkr_scene_physics_raycast(VkrScene *scene, Vec3 origin,
 }
 
 const char *vkr_scene_physics_error(const VkrScene *scene) {
-  return scene && scene->physics ? scene->physics->error : NULL;
+  return scene && scene->simulation.error
+             ? scene->simulation.error
+             : (scene && scene->physics ? scene->physics->error : NULL);
 }
 
 float64_t vkr_scene_physics_time(const VkrScene *scene) {
-  return scene && scene->physics
-             ? scene->physics->completed_ticks * VKR_SCENE_PHYSICS_FIXED_DT
-             : 0.0;
+  return scene ? scene->simulation.completed_ticks * VKR_SCENE_PHYSICS_FIXED_DT
+               : 0.0;
 }
 
 float64_t vkr_scene_physics_debt(const VkrScene *scene) {
-  return scene && scene->physics ? scene->physics->accumulator : 0.0;
+  return scene ? scene->simulation.accumulator : 0.0;
 }
 
 float64_t vkr_scene_physics_animation_delta(VkrScene *scene,
                                             float64_t fallback) {
-  if (!scene || !scene->physics || !scene->physics->body_count) {
+  if (!scene ||
+      (!scene->simulation.enabled && !vkr_scene_physics_body_count(scene))) {
     return fallback;
   }
-  VkrScenePhysics *physics = scene->physics;
-  const uint64_t ticks = physics->completed_ticks - physics->animation_ticks;
-  physics->animation_ticks = physics->completed_ticks;
+  VkrSceneSimulation *simulation = &scene->simulation;
+  const uint64_t ticks =
+      simulation->completed_ticks - simulation->animation_ticks;
+  simulation->animation_ticks = simulation->completed_ticks;
   return ticks * VKR_SCENE_PHYSICS_FIXED_DT;
 }
 
@@ -1741,6 +1979,11 @@ bool8_t vkr_scene_physics_transform_validate(const VkrScene *scene,
   }
   if (!scene || !scene->physics || scene->physics->editing) {
     return true_v;
+  }
+  if (physics_character(scene, entity) &&
+      (!scene->physics_paused || parent.u64 || !physics_unit_scale(scale))) {
+    return physics_fail(error, "Character authoring requires pause, root and "
+                               "unit scale; Reset applies pose edits");
   }
   if (vkr_entity_has_component(scene->world, entity,
                                scene->comp_physics_collider)) {
@@ -1851,6 +2094,11 @@ bool8_t vkr_scene_physics_entity_destroying(VkrScene *scene,
   for (uint32_t i = 0; i < count; ++i) {
     vkr_scene_physics_commit(removals[i]);
   }
+  if (physics_character(scene, entity) &&
+      !vkr_scene_character_destroy(scene, entity, &error)) {
+    scene->physics->error = error;
+    return false_v;
+  }
   return true_v;
 cleanup:
   for (uint32_t i = 0; i < count; ++i) {
@@ -1861,7 +2109,8 @@ cleanup:
 }
 
 void vkr_scene_physics_shutdown(VkrScene *scene) {
-  if (!scene || !scene->physics || scene->physics->dispatching) {
+  if (!scene || scene->simulation.active || !scene->physics ||
+      scene->physics->dispatching) {
     return;
   }
   VkrScenePhysics *physics = scene->physics;
@@ -1969,6 +2218,18 @@ vkr_scene_physics_collider_geometry(const VkrScene *scene, VkrEntityId owner,
 
 bool8_t vkr_scene_physics_resolve_world(const VkrScene *scene,
                                         VkrEntityId entity, Mat4 *world) {
+  ScenePhysicsCharacter *character = physics_character(scene, entity);
+  if (character) {
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, entity, scene->comp_transform);
+    if (!transform || !world) {
+      return false_v;
+    }
+    const float32_t *position = character->current.foot_position;
+    *world = physics_trs(vec3_new(position[0], position[1], position[2]),
+                         transform->rotation, vec3_one());
+    return true_v;
+  }
   ScenePhysicsBody *body = physics_body(scene, entity);
   if (body && body->body && body->authored.motion == VKR_PHYSICS_DYNAMIC) {
     const VkrPhysicsPose *pose = &body->current_pose;
@@ -2042,7 +2303,9 @@ bool8_t vkr_scene_physics_publish_bones(VkrScene *scene, bool8_t interpolate,
 void vkr_scene_physics_set_contact_callback(VkrScene *scene,
                                             VkrPhysicsContactCallback callback,
                                             void *context) {
-  if (scene && physics_ensure(scene, NULL) && !scene->physics->dispatching) {
+  if (scene && !scene->simulation.active &&
+      vkr_scene_physics_mutations_allowed(scene) &&
+      physics_ensure(scene, NULL)) {
     scene->physics->contact_callback = callback;
     scene->physics->contact_context = context;
   }
@@ -2259,7 +2522,10 @@ bool8_t vkr_scene_physics_ragdoll_plan(const VkrScene *scene,
 }
 
 bool8_t vkr_scene_physics_mutations_allowed(const VkrScene *scene) {
-  return !scene || !scene->physics || !scene->physics->dispatching;
+  return !scene || (!scene->simulation.in_callback &&
+                    (!scene->world || !scene->world->structural_read_depth ||
+                     scene->simulation.active) &&
+                    (!scene->physics || !scene->physics->dispatching));
 }
 
 bool8_t vkr_scene_physics_matrix_allowed(const VkrScene *scene,
@@ -2267,7 +2533,8 @@ bool8_t vkr_scene_physics_matrix_allowed(const VkrScene *scene,
   if (!vkr_scene_physics_mutations_allowed(scene)) {
     return false_v;
   }
-  if (!scene || !scene->physics || !scene->physics->body_count) {
+  if (!scene || !scene->physics ||
+      (!scene->physics->body_count && !physics_character(scene, entity))) {
     return true_v;
   }
   Vec3 position, scale;
@@ -2291,6 +2558,28 @@ bool8_t vkr_scene_physics_raycast_query(VkrScene *scene, Vec3 origin,
   const float32_t delta[3] = {displacement.x, displacement.y, displacement.z};
   return vkr_physics_raycast_query(scene->physics->world, start, delta, filter,
                                    hit);
+}
+
+bool8_t vkr_scene_physics_sweep_sphere(VkrScene *scene, Vec3 origin,
+                                       Vec3 displacement, float32_t radius,
+                                       const VkrPhysicsQueryFilter *filter,
+                                       VkrPhysicsRayHit *hit, bool8_t *found) {
+  if (!scene || !hit || !found || !physics_vec_finite(origin) ||
+      !physics_vec_finite(displacement) || !isfinite(radius) || radius <= 0 ||
+      radius > VKR_PHYSICS_MAX_COORDINATE ||
+      (filter && (filter->ignored_count > VKR_PHYSICS_MAX_QUERY_IGNORES ||
+                  (filter->ignored_count && !filter->ignored_entities)))) {
+    return false_v;
+  }
+  if (!scene->physics || scene->physics_disabled) {
+    *hit = (VkrPhysicsRayHit){0};
+    *found = false_v;
+    return true_v;
+  }
+  const float32_t start[3] = {origin.x, origin.y, origin.z};
+  const float32_t delta[3] = {displacement.x, displacement.y, displacement.z};
+  return vkr_physics_sweep_sphere(scene->physics->world, start, delta, radius,
+                                  filter, hit, found);
 }
 
 bool8_t vkr_scene_physics_sweep(VkrScene *scene, VkrEntityId owner,

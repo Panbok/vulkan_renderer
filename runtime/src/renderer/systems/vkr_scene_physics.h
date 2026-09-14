@@ -8,7 +8,28 @@
 #define VKR_SCENE_PHYSICS_MAX_BODIES 1024u
 #define VKR_SCENE_PHYSICS_MAX_JOINTS 16u
 #define VKR_SCENE_COLLISION_ASSET_PATH_MAX 256u
-#define VKR_SCENE_PHYSICS_FIXED_DT (1.0 / 60.0)
+#define VKR_SCENE_PHYSICS_FIXED_DT VKR_SCENE_SIMULATION_FIXED_DT
+
+/* One character per root entity with unit scale and no rigid body. Creation
+ * copies settings but takes foot_position/entity_id from the authored entity.
+ * Create/destroy require pause and no active callbacks/prepared edits. Reset
+ * transactionally rebuilds native characters from authored root poses while
+ * preserving entity identity. Scene shutdown releases all native characters. */
+bool8_t vkr_scene_character_create(VkrScene *scene, VkrEntityId entity,
+                                   const VkrPhysicsCharacterDesc *settings,
+                                   const char **error);
+bool8_t vkr_scene_character_destroy(VkrScene *scene, VkrEntityId entity,
+                                    const char **error);
+/* Call once from before_physics per tick. Input dt must match the scene fixed
+ * tick; body/character queries are serialized on the scene owner. Translation
+ * publishes through the evaluated scene transform, never authored TRS. */
+bool8_t vkr_scene_character_step(VkrScene *scene, VkrEntityId entity,
+                                 const VkrPhysicsCharacterInput *input,
+                                 VkrPhysicsCharacterState *state,
+                                 const char **error);
+bool8_t vkr_scene_character_get_state(VkrScene *scene, VkrEntityId entity,
+                                      VkrPhysicsCharacterState *state,
+                                      const char **error);
 
 typedef struct VkrSceneColliderConfig {
   uint64_t
@@ -179,6 +200,8 @@ const char *vkr_scene_physics_error(const VkrScene *scene);
 /* Scene-system hooks; physics world and body storage live until shutdown. */
 bool8_t vkr_scene_physics_register(VkrScene *scene);
 void vkr_scene_physics_update(VkrScene *scene, float64_t dt);
+/* One native tick, called only by the shared scene simulation coordinator. */
+bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error);
 void vkr_scene_physics_shutdown(VkrScene *scene);
 bool8_t vkr_scene_physics_entity_destroying(VkrScene *scene,
                                             VkrEntityId entity);
@@ -210,6 +233,10 @@ bool8_t vkr_scene_physics_raycast_query(VkrScene *scene, Vec3 origin,
                                         Vec3 displacement,
                                         const VkrPhysicsQueryFilter *filter,
                                         VkrPhysicsRayHit *hit);
+bool8_t vkr_scene_physics_sweep_sphere(VkrScene *scene, Vec3 origin,
+                                       Vec3 displacement, float32_t radius,
+                                       const VkrPhysicsQueryFilter *filter,
+                                       VkrPhysicsRayHit *hit, bool8_t *found);
 /* Sweep one retained collider geometry at an explicit world pose. Scale
  * includes the body's composed world scale; authored collider offset is not
  * applied. */

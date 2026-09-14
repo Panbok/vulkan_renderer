@@ -140,6 +140,10 @@ typedef struct SceneEntityImport {
   Vec3 scale;
   Mat4 matrix;
   bool8_t has_matrix;
+  bool8_t has_player;
+  float32_t player_yaw;
+  bool8_t has_player_weapon;
+  uint32_t player_weapon_bone;
   bool8_t has_mesh;
   String8 mesh_path;
   bool8_t has_animation;
@@ -2185,6 +2189,106 @@ vkr_internal bool8_t scene_json_parse_transform(
   return true_v;
 }
 
+static bool8_t scene_json_parse_player(const VkrJsonReader *entity_reader,
+                                       SceneEntityImport *out_entity) {
+  VkrJsonReader field = *entity_reader;
+  if (vkr_json_find_field(&field, "player")) {
+    VkrJsonReader player = {0};
+    if (!vkr_json_enter_object(&field, &player) ||
+        !scene_json_read_float_field(&player, "yaw", &out_entity->player_yaw) ||
+        !isfinite(out_entity->player_yaw)) {
+      return false_v;
+    }
+    out_entity->has_player = true_v;
+  }
+  field = *entity_reader;
+  if (vkr_json_find_field(&field, "player_weapon")) {
+    VkrJsonReader weapon = {0};
+    int32_t bone = -1;
+    if (out_entity->has_player || !vkr_json_enter_object(&field, &weapon) ||
+        !scene_json_read_int_field(&weapon, "bone", &bone) || bone < 0) {
+      return false_v;
+    }
+    out_entity->has_player_weapon = true_v;
+    out_entity->player_weapon_bone = (uint32_t)bone;
+  }
+  if (!out_entity->has_player && !out_entity->has_player_weapon) {
+    return true_v;
+  }
+  field = *entity_reader;
+  int32_t parent = -1;
+  if (vkr_json_find_field(&field, "parent") &&
+      (!scene_json_parse_parent_index(&field, &parent) || parent != -1)) {
+    return false_v;
+  }
+
+  // Player transforms are strict even though ordinary scene TRS tolerates
+  // malformed optional fields by retaining defaults.
+  field = *entity_reader;
+  if (vkr_json_find_field(&field, "transform")) {
+    VkrJsonReader transform = {0};
+    if (!vkr_json_enter_object(&field, &transform)) {
+      return false_v;
+    }
+    const char *names[] = {"pos", "rot", "scale"};
+    const uint32_t counts[] = {3, 4, 3};
+    for (uint32_t i = 0; i < ArrayCount(names); ++i) {
+      field = transform;
+      if (!vkr_json_find_field(&field, names[i])) {
+        continue;
+      }
+      float32_t values[4] = {0};
+      if (!scene_json_parse_float_array(&field, values, counts[i])) {
+        return false_v;
+      }
+      float64_t length_squared = 0;
+      for (uint32_t j = 0; j < counts[i]; ++j) {
+        if (!isfinite(values[j])) {
+          return false_v;
+        }
+        length_squared += (float64_t)values[j] * values[j];
+      }
+      if (i == 1 && length_squared < 1e-12) {
+        return false_v;
+      }
+    }
+  }
+  Mat4 matrix = out_entity->matrix;
+  if (!out_entity->has_matrix) {
+    if (fabsf(out_entity->scale.x - 1.0f) > 1e-5f ||
+        fabsf(out_entity->scale.y - 1.0f) > 1e-5f ||
+        fabsf(out_entity->scale.z - 1.0f) > 1e-5f) {
+      return false_v;
+    }
+    const float32_t rotation_length_squared =
+        vec4_length_squared(out_entity->rotation);
+    if (!isfinite(rotation_length_squared) ||
+        fabsf(rotation_length_squared - 1.0f) > 1e-5f) {
+      return false_v;
+    }
+    matrix = vkr_quat_to_mat4(out_entity->rotation);
+  }
+  Vec3 basis[3];
+  for (uint32_t i = 0; i < ArrayCount(basis); ++i) {
+    basis[i] = vec3_new(matrix.elements[i * 4], matrix.elements[i * 4 + 1],
+                        matrix.elements[i * 4 + 2]);
+    const float32_t length_squared = vec3_length_squared(basis[i]);
+    if (!isfinite(length_squared) || fabsf(length_squared - 1.0f) > 1e-5f ||
+        fabsf(matrix.elements[i * 4 + 3]) > 1e-5f) {
+      return false_v;
+    }
+  }
+  if (fabsf(vec3_dot(basis[0], basis[1])) > 1e-5f ||
+      fabsf(vec3_dot(basis[0], basis[2])) > 1e-5f ||
+      fabsf(vec3_dot(basis[1], basis[2])) > 1e-5f ||
+      fabsf(vec3_dot(vec3_cross(basis[0], basis[1]), basis[2]) - 1.0f) >
+          1e-5f ||
+      fabsf(matrix.elements[15] - 1.0f) > 1e-5f) {
+    return false_v;
+  }
+  return true_v;
+}
+
 vkr_internal void scene_json_parse_mesh(const VkrJsonReader *entity_reader,
                                         uint32_t entity_index,
                                         SceneEntityImport *out_entity) {
@@ -2679,6 +2783,13 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
   if (!scene_json_parse_transform(entity_reader, entity_index, out_entity)) {
     return false_v;
   }
+  if (!scene_json_parse_player(entity_reader, out_entity)) {
+    log_error("Scene loader: entity %u player binding requires valid fields "
+              "and a root "
+              "transform with unit scale",
+              entity_index);
+    return false_v;
+  }
   scene_json_parse_mesh(entity_reader, entity_index, out_entity);
   if (!scene_json_parse_animation(entity_reader, out_entity)) {
     log_error("Scene loader: entity %u has invalid animation", entity_index);
@@ -3136,6 +3247,8 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
 
   uint32_t parsed = 0;
   uint32_t rectangle_light_count = 0;
+  uint32_t player_count = 0;
+  uint32_t player_weapon_count = 0;
   while (vkr_json_next_array_element(&entities_reader)) {
     if (parsed >= entity_count) {
       break;
@@ -3149,7 +3262,9 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
       return false_v;
     }
 
-    if (!scene_json_parse_entity(&entity_obj, parsed, &imports[parsed])) {
+    if (!scene_json_parse_entity(&entity_obj, parsed, &imports[parsed]) ||
+        (imports[parsed].has_player && ++player_count > 1) ||
+        (imports[parsed].has_player_weapon && ++player_weapon_count > 1)) {
       if (out_error)
         *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
       return false_v;
@@ -3171,11 +3286,27 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
     parsed++;
   }
 
+  if (player_weapon_count && !player_count) {
+    if (out_error) {
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    }
+    return false_v;
+  }
+
   if (parsed != entity_count) {
     entity_count = parsed;
   }
 
   for (uint32_t i = 0; i < entity_count; i++) {
+    if ((imports[i].has_player &&
+         scene->player_entity.u64 != VKR_ENTITY_ID_INVALID.u64) ||
+        (imports[i].has_player_weapon &&
+         scene->player_weapon_entity.u64 != VKR_ENTITY_ID_INVALID.u64)) {
+      if (out_error) {
+        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+      }
+      return false_v;
+    }
     VkrSceneError create_err = VKR_SCENE_ERROR_NONE;
     VkrEntityId entity = vkr_scene_create_entity(scene, &create_err);
     if (entity.u64 == VKR_ENTITY_ID_INVALID.u64) {
@@ -3207,6 +3338,14 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
         *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
       log_error("Scene loader: failed to set transform for entity %u", i);
       return false_v;
+    }
+    if (imports[i].has_player) {
+      scene->player_entity = entity;
+      scene->player_yaw = imports[i].player_yaw;
+    }
+    if (imports[i].has_player_weapon) {
+      scene->player_weapon_entity = entity;
+      scene->player_weapon_bone = imports[i].player_weapon_bone;
     }
   }
 
@@ -3593,6 +3732,8 @@ vkr_internal bool8_t scene_loader_parse_json_imports(
 
   uint32_t parsed = 0;
   uint32_t rectangle_light_count = 0;
+  uint32_t player_count = 0;
+  uint32_t player_weapon_count = 0;
   while (vkr_json_next_array_element(&entities_reader)) {
     if (parsed >= entity_count) {
       break;
@@ -3609,7 +3750,9 @@ vkr_internal bool8_t scene_loader_parse_json_imports(
       return false_v;
     }
 
-    if (!scene_json_parse_entity(&entity_obj, parsed, &imports[parsed])) {
+    if (!scene_json_parse_entity(&entity_obj, parsed, &imports[parsed]) ||
+        (imports[parsed].has_player && ++player_count > 1) ||
+        (imports[parsed].has_player_weapon && ++player_weapon_count > 1)) {
       vkr_allocator_free_ts(allocator, imports, import_bytes,
                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
       if (out_error)
@@ -3627,6 +3770,15 @@ vkr_internal bool8_t scene_loader_parse_json_imports(
       return false_v;
     }
     parsed++;
+  }
+
+  if (player_weapon_count && !player_count) {
+    vkr_allocator_free_ts(allocator, imports, import_bytes,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
+    if (out_error) {
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    }
+    return false_v;
   }
 
   entity_count = parsed;
@@ -4598,6 +4750,13 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
       end = async_payload->entity_count;
     }
     for (uint32_t i = async_payload->stage_cursor; i < end; ++i) {
+      if ((async_payload->imports[i].has_player &&
+           scene->player_entity.u64 != VKR_ENTITY_ID_INVALID.u64) ||
+          (async_payload->imports[i].has_player_weapon &&
+           scene->player_weapon_entity.u64 != VKR_ENTITY_ID_INVALID.u64)) {
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
       VkrSceneError create_error = VKR_SCENE_ERROR_NONE;
       VkrEntityId entity = vkr_scene_create_entity(scene, &create_error);
       if (entity.u64 == VKR_ENTITY_ID_INVALID.u64) {
@@ -4639,6 +4798,14 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
       if (!transformed) {
         *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
         return false_v;
+      }
+      if (import->has_player) {
+        scene->player_entity = entity;
+        scene->player_yaw = import->player_yaw;
+      }
+      if (import->has_player_weapon) {
+        scene->player_weapon_entity = entity;
+        scene->player_weapon_bone = import->player_weapon_bone;
       }
     }
 
