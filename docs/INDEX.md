@@ -197,6 +197,8 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [071](adr/071-animation-bank-and-reference-pose.md) | Animation banks, CPU playback, compute deformation and the movable graph/sequence preview editor | partial |
 | [072](adr/072-entity-collision-and-rigid-body-physics.md) | Scene-owned Jolt bodies/joints, cooked collision, bone attachments, queries and transactional editor authoring | implemented |
 
+| [073](adr/073-native-gameplay-foundation.md) | Shared scene ticks, ordered input, C player/weapon client, persisted editor player bindings, action animation, native character stance and camera rigs; general visual/prefab authoring pending | partial |
+
 ## Proposals
 
 These preserve unimplemented scope after removing shipped prerequisites and
@@ -211,6 +213,7 @@ decisions before dependent implementation.
 | [Deformable scene effects](proposals/deformable-scene-effects.md) | A bounded deformation pilot with shared pass and history inputs. |
 | [Animation graph and baking extensions](proposals/compute-animation-and-editor.md) | Managed controller/sequence assets, fixed-step control, baking, GPU pose evaluation and preview extensions. |
 | [Collision extensions and destructibles](proposals/entity-collision-and-physics.md) | Engine/UI research and remaining AVBD/destruction, deforming collision and active-ragdoll work; implemented contracts are in ADR-072. |
+| [Code-first entity behavior and visual authoring](proposals/entity-behavior-system.md) | ECS gameplay with prefab composition/lifecycle, simulation-owned actions/events, weapons, character/camera behavior, visual authoring, native reload and performance acceptance. |
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
 | [Editor Projects](proposals/editor-projects.md) | Remaining Projects workflow, native-platform, inspection, retirement and frame-budget acceptance; implemented contracts are in ADR-069. |
 | [Portable path contract](proposals/portable-path-contract.md) | Remaining macOS, network-share and interactive scene-selection evidence gates; implemented contract is in ADR-070. |

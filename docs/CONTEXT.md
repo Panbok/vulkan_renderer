@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-13
+updated: 2026-09-14
 authority: context
 ---
 # Project vocabulary
@@ -77,6 +77,11 @@ below are starting points for checking a definition, not alternate API specs.
 | Render assets | `VkrRenderAssets` owns asset systems, persistent text, loaders and load scratch; it borrows the longer-lived renderer publisher. | [vkr_render_assets.h](../runtime/src/renderer/systems/vkr_render_assets.h) |
 | Frame globals | Standard-scene-runtime or custom-client-owned `VkrFrameGlobals` settings copied into the authoritative frame input. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |
 | Scene extraction | Conversion of scene/ECS state into renderable candidates and typed frame payloads. | [vkr_scene_system.c](../runtime/src/renderer/systems/vkr_scene_system.c), [vkr_standard_scene_runtime.h](../runtime/src/application/vkr_standard_scene_runtime.h) |
+| Character motor | Scene-owned Jolt CharacterVirtual capsule, stepped from C before physics and published as evaluated root translation. | [ADR-073](adr/073-native-gameplay-foundation.md) |
+| Evaluated transform | Transient world-matrix override used for gameplay presentation; separate from authored TRS and removed with its owning entity/client. | [ADR-073](adr/073-native-gameplay-foundation.md) |
+| Player animation controller | C playback owner mapping accepted actions and motor state to interruptible named clips; the scene advances animation time. | [vkr_player_animation.h](../runtime/src/gameplay/vkr_player_animation.h) |
+| Camera rig | Caller-owned first/third-person or shoulder pose calculation with optional obstruction sweep; target pose and look are supplied separately. | [vkr_camera_rig.h](../runtime/src/gameplay/vkr_camera_rig.h) |
+| Scene simulation | Scene-owned fixed clock and optional C hooks around native animation/physics; distinct from display-frame callbacks. | [ADR-073](adr/073-native-gameplay-foundation.md) |
 | Physics body | Entity owning motion, mass/material settings, sensor role and collision membership/mask; runtime state is separate from authored TRS. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h), [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) |
 | Collider child | Direct child of one physics body, with stable authored ID, primitive/cooked geometry, local pose, positive scale and enable state; enabled children form one compound. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h) |
 | Physics snapshot | Complete authored body/collider value used for staged edits, structural undo and overlay persistence; excludes velocities, solver handles and session mutes. | [vkr_scene_edit.h](../runtime/src/renderer/systems/vkr_scene_edit.h) |

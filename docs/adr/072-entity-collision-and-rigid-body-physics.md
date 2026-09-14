@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-13
+updated: 2026-09-14
 authority: adr
 ---
 
@@ -108,13 +108,18 @@ with the geometric mean, restitution with the maximum, and restitution has a
 1 m/s bounce threshold. CCD selects Jolt's linear-cast motion quality for
 supported solid bodies; it does not make discrete sensors continuous.
 
+CharacterVirtual capsules share the native world and scene lifetime.
+[ADR-073](073-native-gameplay-foundation.md) owns their C interface, reset,
+evaluated-root publication and current interaction limits.
+
 ### Simulation and publication
 
+The [shared scene coordinator](073-native-gameplay-foundation.md) owns timing.
 Simulation runs at 60 Hz, with at most eight ticks per scene update. Excess elapsed
 time remains as debt; overflow fails and pauses the simulation. After 60
 consecutive updates that still owe at least one tick after the eight-tick cap,
 the scene pauses with an overload reason and retains all debt. Resume resets the
-consecutive-overload counter and clears the error unless the native world is
+consecutive-overload counter and clears the error unless the native world or gameplay coordinator is
 faulted. Completed ticks advance the public physics clock. Rendering interpolates previous/current poses
 with `min(debt / fixed_dt, 1)` while playing and uses the exact current pose when
 paused, stepping or globally disabled. Authored position, rotation and scale remain
@@ -126,8 +131,8 @@ Kinematic bone attachments follow the corresponding pose. Scene animation uses
 asset-space global bone transforms, before inverse-bind multiplication. Dynamic
 drive-bone attachments publish solved global transforms through the existing CPU
 pose and skin-palette path. The renderer retains its existing deformation buffers,
-shader layouts and GPU-completion rules. Scenes without bodies use the existing
-elapsed animation path. Root-motion extraction remains separate.
+shader layouts and GPU-completion rules. Scenes without bodies use fixed sampling when gameplay callbacks are configured;
+otherwise they use the existing elapsed animation path. Root-motion extraction remains separate.
 
 Bone attachments resolve an animation wrapper by source identity and a node by
 source index. Their explicit local offset places the body relative to the bone.

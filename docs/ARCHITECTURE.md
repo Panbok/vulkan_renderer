@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-13
+updated: 2026-09-14
 authority: architecture
 ---
 
@@ -351,6 +351,29 @@ scene data for its current build and never keeps ECS component pointers.
 explicit mesh, material, publication and view inputs rather than reading ECS
 archetype arrays directly. This bridge duplicates some retained data.
 
+`VkrSceneSimulation` embeds the shared clock and optional owning-thread C hooks
+before animation/physics and after contact dispatch. Configured scenes tick even
+without rigid bodies; callback failure requires reset before further gameplay.
+ECS query/tick scopes reject structural mutation while rows are borrowed, and
+scene update refreshes cached queries when new archetypes appear. The native
+weapon primitive provides tick-based ammo, reload and independent firing locks
+with reservation before consumption. The sample application installs a C
+player/weapon client with `--gameplay`,
+using ordered input, a Jolt character capsule and first/third-person or shoulder
+camera rig on a training platform in Bistro. Authored `player` and `player_weapon`
+entity fields bind that client to existing managed assets in editor simulation.
+Transient evaluated world matrices turn the avatar and attach its weapon without
+changing authored TRS; presentation propagation does not consume simulation debt.
+Editor pause and saved recall preserve the editing camera. The player selects
+named locomotion, airborne, stance and weapon clips through an interruptible C
+playback controller; animation still advances only on the scene clock. Ctrl
+requests a prebuilt crouch capsule and clearance-checked standing. Adjacent
+same-tick mouse look samples coalesce without crossing discrete actions, and
+simulation faults preserve specific diagnostics. General prefab/action authoring,
+projectile pools and character interaction proxies remain unimplemented.
+[ADR-073](adr/073-native-gameplay-foundation.md) owns their
+contracts and remaining integration boundaries.
+
 Scene physics owns bodies at any supported hierarchy depth and direct collider
 children independently of render visibility. Static, Kinematic and Dynamic bodies
 form compounds from boxes, spheres, capsules and cooked convex hulls; cooked
@@ -359,7 +382,7 @@ and no shear. Sphere/capsule scale is uniform; other shapes allow nonuniform sca
 Dynamic poses remain in world space while Static/Kinematic bodies follow parents.
 Jolt owns contact response, mass/inertia, joints, sleeping and supported solid CCD.
 
-The physics clock runs at 60 Hz with at most eight ticks per update and retained
+The shared scene simulation clock runs at 60 Hz with at most eight ticks per update and retained
 catch-up debt. Sixty consecutive overloaded updates pause simulation. Animation
 samples before each fixed tick; bone attachments use global asset-space node poses,
 and ragdoll bodies publish solved poses into the existing CPU skin-palette path.
