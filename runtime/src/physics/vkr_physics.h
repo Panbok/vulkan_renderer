@@ -15,6 +15,51 @@ typedef uint64_t VkrPhysicsBody;
 #define VKR_PHYSICS_CONTACT_EVENTS_PER_BODY 128
 #define VKR_PHYSICS_JOINTS_PER_BODY 16
 #define VKR_PHYSICS_MAX_QUERY_IGNORES 32
+#define VKR_PHYSICS_MAX_CHARACTERS 64
+#define VKR_PHYSICS_CHARACTER_MAX_HITS 64
+
+typedef uint64_t VkrPhysicsCharacter;
+#define VKR_PHYSICS_CHARACTER_INVALID UINT64_C(0)
+
+typedef struct VkrPhysicsCharacterDesc {
+  uint64_t entity_id;
+  float32_t foot_position[3];
+  float32_t radius;
+  float32_t half_height; // Y-axis capsule cylinder half-height.
+  float32_t max_slope_radians;
+  float32_t step_up;
+  float32_t step_down;
+  float32_t mass;
+  float32_t max_strength;
+  uint16_t collision_layer;
+  uint16_t collision_mask;
+} VkrPhysicsCharacterDesc;
+
+typedef enum VkrPhysicsCharacterGround {
+  VKR_PHYSICS_CHARACTER_ON_GROUND,
+  VKR_PHYSICS_CHARACTER_STEEP_GROUND,
+  VKR_PHYSICS_CHARACTER_UNSUPPORTED,
+  VKR_PHYSICS_CHARACTER_IN_AIR
+} VkrPhysicsCharacterGround;
+
+typedef struct VkrPhysicsCharacterInput {
+  /* Complete desired velocity before gravity, including retained vertical
+   * speed, ground velocity and an optional jump supplied by the controller. */
+  float32_t velocity[3];
+  float32_t gravity[3]; // Added to velocity exactly once as gravity * dt.
+  float32_t dt;
+  bool8_t crouch; // Hold to request a shorter capsule; blocked stand stays crouched.
+} VkrPhysicsCharacterInput;
+
+typedef struct VkrPhysicsCharacterState {
+  float32_t foot_position[3];
+  float32_t velocity[3];
+  float32_t ground_velocity[3];
+  float32_t ground_normal[3];
+  uint64_t ground_entity_id;
+  VkrPhysicsCharacterGround ground;
+  bool8_t crouched; // Actual stance after collision-checked shape change.
+} VkrPhysicsCharacterState;
 
 typedef enum VkrPhysicsMotion {
   VKR_PHYSICS_STATIC,
@@ -170,6 +215,33 @@ typedef struct VkrPhysicsJointDesc {
 VkrPhysicsWorld *vkr_physics_world_create(uint32_t max_bodies);
 void vkr_physics_world_destroy(VkrPhysicsWorld *world);
 const char *vkr_physics_last_error(const VkrPhysicsWorld *world);
+VkrPhysicsCharacterDesc vkr_physics_character_default(void);
+/* Cold world-owned CharacterVirtual lifetime. No inner rigid body: ordinary
+ * rays, sensors and body contacts do not see characters. Character/character
+ * collision is not enabled. Solid-body collision uses bilateral layer/mask
+ * filtering; native character response can push dynamic bodies up to strength.
+ * Standing and crouched capsules are prebuilt with identical foot anchors;
+ * crouched cylinder half-height is 40% of the authored standing half-height.
+ * Handles reject slot reuse and cross-world reuse; generations never wrap.
+ * SDK allocation failure retains the world's existing process-OOM limitation.
+ */
+bool8_t vkr_physics_character_create(VkrPhysicsWorld *world,
+                                     const VkrPhysicsCharacterDesc *desc,
+                                     VkrPhysicsCharacter *character);
+bool8_t vkr_physics_character_destroy(VkrPhysicsWorld *world,
+                                      VkrPhysicsCharacter character);
+/* ExtendedUpdate uses Y-up stairs/floor helpers and explicit caller time.
+ * Stance changes reuse the prebuilt shapes and collision-check expansion;
+ * blocked standing is a successful step whose state remains crouched.
+ * A contact-capacity failure faults the world, preserving no partial-tick
+ * rollback promise. Output changes only on success. */
+bool8_t vkr_physics_character_step(VkrPhysicsWorld *world,
+                                   VkrPhysicsCharacter character,
+                                   const VkrPhysicsCharacterInput *input,
+                                   VkrPhysicsCharacterState *state);
+bool8_t vkr_physics_character_get_state(VkrPhysicsWorld *world,
+                                        VkrPhysicsCharacter character,
+                                        VkrPhysicsCharacterState *state);
 bool8_t vkr_physics_body_create(VkrPhysicsWorld *world,
                                 const VkrPhysicsBodyDesc *desc,
                                 VkrPhysicsBody *out_body);
@@ -236,6 +308,14 @@ vkr_physics_sweep(VkrPhysicsWorld *world, const VkrPhysicsColliderDesc *shape,
                   const float32_t origin[3], const float32_t rotation[4],
                   const float32_t displacement[3],
                   const VkrPhysicsQueryFilter *filter, VkrPhysicsRayHit *hit);
+/* Success with found=false is a miss. Uses a stack sphere and shared native
+ * query machinery; no retained shape is created for camera obstruction. */
+bool8_t vkr_physics_sweep_sphere(VkrPhysicsWorld *world,
+                                 const float32_t origin[3],
+                                 const float32_t displacement[3],
+                                 float32_t radius,
+                                 const VkrPhysicsQueryFilter *filter,
+                                 VkrPhysicsRayHit *hit, bool8_t *found);
 // Drains after a successful tick; no application callbacks run inside Jolt.
 bool8_t vkr_physics_contact_events(VkrPhysicsWorld *world,
                                    VkrPhysicsContactEvent *events,

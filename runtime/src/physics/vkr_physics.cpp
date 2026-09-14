@@ -9,6 +9,7 @@
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
@@ -28,6 +29,7 @@
 #include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -89,10 +91,20 @@ struct s_JointSlot {
   bool8_t collide_connected = false_v;
 };
 
+struct s_CharacterSlot {
+  JPH::Ref<JPH::CharacterVirtual> character;
+  JPH::RefConst<JPH::Shape> standing_shape;
+  JPH::RefConst<JPH::Shape> crouched_shape;
+  VkrPhysicsCharacterDesc desc{};
+  uint32_t generation = 0;
+  bool8_t crouched = false_v;
+};
+
 // Jolt registration is process-wide; the C contract serializes all world calls.
 uint32_t world_count = 0;
 uint64_t next_body_generation = 1;
 uint64_t next_joint_generation = 1;
+uint64_t next_character_generation = 1;
 
 JPH::Vec3 vec(const float32_t *v) { return JPH::Vec3(v[0], v[1], v[2]); }
 JPH::Quat quat(const float32_t *q) {
@@ -163,6 +175,7 @@ struct s_VkrPhysicsWorld {
   std::vector<uint32_t> native_to_slot;
   uint32_t joint_count = 0;
   std::vector<s_JointSlot> joints;
+  std::array<s_CharacterSlot, VKR_PHYSICS_MAX_CHARACTERS> characters;
   std::vector<VkrPhysicsSensorEvent> sensor_pairs;
   std::vector<VkrPhysicsSensorEvent> next_pairs;
   std::vector<VkrPhysicsSensorEvent> events;
@@ -265,6 +278,11 @@ extern "C" void vkr_physics_world_destroy(VkrPhysicsWorld *world) {
   if (!world) {
     return;
   }
+  for (auto &slot : world->characters) {
+    slot.character = nullptr;
+    slot.standing_shape = nullptr;
+    slot.crouched_shape = nullptr;
+  }
   for (auto &joint : world->joints) {
     if (joint.constraint) {
       world->system.RemoveConstraint(joint.constraint);
@@ -290,6 +308,244 @@ extern "C" void vkr_physics_world_destroy(VkrPhysicsWorld *world) {
 
 extern "C" const char *vkr_physics_last_error(const VkrPhysicsWorld *world) {
   return world ? world->error : "Physics world creation failed";
+}
+
+class s_CharacterFilter final : public JPH::ObjectLayerFilter,
+                                public JPH::BodyFilter {
+public:
+  explicit s_CharacterFilter(const VkrPhysicsCharacterDesc &desc)
+      : desc(desc) {}
+  bool ShouldCollide(JPH::ObjectLayer layer) const override {
+    return (desc.collision_mask & layer) != 0 &&
+           (desc.collision_layer & (layer >> 16)) != 0;
+  }
+  bool ShouldCollideLocked(const JPH::Body &body) const override {
+    return !body.IsSensor() && body.GetUserData() != desc.entity_id;
+  }
+  const VkrPhysicsCharacterDesc &desc;
+};
+
+static s_CharacterSlot *character_lookup(VkrPhysicsWorld *world,
+                                         VkrPhysicsCharacter handle) {
+  if (!world || world->faulted || !handle) {
+    fail(world, "Invalid character or faulted physics world");
+    return nullptr;
+  }
+  const uint32_t index = static_cast<uint32_t>(handle) - 1;
+  if (index >= world->characters.size() ||
+      !world->characters[index].character ||
+      world->characters[index].generation !=
+          static_cast<uint32_t>(handle >> 32)) {
+    fail(world, "Stale physics character handle");
+    return nullptr;
+  }
+  return &world->characters[index];
+}
+
+static void character_read(const s_CharacterSlot &slot,
+                           VkrPhysicsCharacterState *state) {
+  const JPH::CharacterVirtual &character = *slot.character;
+  *state = {};
+  state->crouched = slot.crouched;
+  store_vec(character.GetPosition(), state->foot_position);
+  store_vec(character.GetLinearVelocity(), state->velocity);
+  store_vec(character.GetGroundVelocity(), state->ground_velocity);
+  store_vec(character.GetGroundNormal(), state->ground_normal);
+  state->ground_entity_id = character.GetGroundUserData();
+  switch (character.GetGroundState()) {
+  case JPH::CharacterBase::EGroundState::OnGround:
+    state->ground = VKR_PHYSICS_CHARACTER_ON_GROUND;
+    break;
+  case JPH::CharacterBase::EGroundState::OnSteepGround:
+    state->ground = VKR_PHYSICS_CHARACTER_STEEP_GROUND;
+    break;
+  case JPH::CharacterBase::EGroundState::NotSupported:
+    state->ground = VKR_PHYSICS_CHARACTER_UNSUPPORTED;
+    break;
+  case JPH::CharacterBase::EGroundState::InAir:
+    state->ground = VKR_PHYSICS_CHARACTER_IN_AIR;
+    break;
+  }
+}
+
+extern "C" VkrPhysicsCharacterDesc vkr_physics_character_default(void) {
+  VkrPhysicsCharacterDesc desc{};
+  desc.radius = 0.3f;
+  desc.half_height = 0.6f;
+  desc.max_slope_radians = 0.785398163f;
+  desc.step_up = 0.35f;
+  desc.step_down = 0.35f;
+  desc.mass = 70.0f;
+  desc.max_strength = 100.0f;
+  desc.collision_layer = 1;
+  desc.collision_mask = UINT16_MAX;
+  return desc;
+}
+
+extern "C" bool8_t
+vkr_physics_character_create(VkrPhysicsWorld *world,
+                             const VkrPhysicsCharacterDesc *desc,
+                             VkrPhysicsCharacter *out_character) {
+  if (!world || world->faulted || world->dispatching ||
+      world->reserved_destructions || !desc || !out_character ||
+      !desc->entity_id || !finite_vector(desc->foot_position, 3) ||
+      !std::isfinite(desc->radius) || desc->radius <= 0 || desc->radius > 100 ||
+      !std::isfinite(desc->half_height) || desc->half_height <= 0 ||
+      desc->half_height > 100 || !std::isfinite(desc->max_slope_radians) ||
+      desc->max_slope_radians < 0 ||
+      desc->max_slope_radians >= JPH::JPH_PI / 2 ||
+      !std::isfinite(desc->step_up) || desc->step_up < 0 ||
+      desc->step_up > 100 || !std::isfinite(desc->step_down) ||
+      desc->step_down < 0 || desc->step_down > 100 ||
+      !std::isfinite(desc->mass) || desc->mass <= 0 || desc->mass > 10000 ||
+      !std::isfinite(desc->max_strength) || desc->max_strength < 0 ||
+      desc->max_strength > 1.0e7f || !desc->collision_layer ||
+      next_character_generation > UINT32_MAX) {
+    return fail(world,
+                "Invalid character settings, exhausted identity, or world");
+  }
+  uint32_t index = 0;
+  while (index < world->characters.size() &&
+         world->characters[index].character) {
+    ++index;
+  }
+  if (index == world->characters.size()) {
+    return fail(world, "Physics character capacity exceeded");
+  }
+  try {
+    const uint32_t generation =
+        static_cast<uint32_t>(next_character_generation);
+    JPH::CharacterVirtualSettings settings;
+    settings.mID = JPH::CharacterID(generation - 1);
+    // Both shapes belong to this character slot and are released on destruction.
+    // Stance transitions reuse them; only the capsule center offset changes.
+    JPH::RefConst<JPH::Shape> standing_shape =
+        new JPH::CapsuleShape(desc->half_height, desc->radius);
+    JPH::RefConst<JPH::Shape> crouched_shape =
+        new JPH::CapsuleShape(desc->half_height * 0.4f, desc->radius);
+    settings.mShape = standing_shape;
+    settings.mShapeOffset = JPH::Vec3(0, desc->half_height + desc->radius, 0);
+    settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -desc->radius);
+    settings.mMaxSlopeAngle = desc->max_slope_radians;
+    settings.mMass = desc->mass;
+    settings.mMaxStrength = desc->max_strength;
+    settings.mMaxNumHits = VKR_PHYSICS_CHARACTER_MAX_HITS;
+    settings.mBackFaceMode = JPH::EBackFaceMode::IgnoreBackFaces;
+    JPH::Ref<JPH::CharacterVirtual> character = new JPH::CharacterVirtual(
+        &settings, vec(desc->foot_position), JPH::Quat::sIdentity(),
+        desc->entity_id, &world->system);
+    const s_CharacterFilter filter(*desc);
+    character->RefreshContacts({}, filter, filter, {}, world->scratch);
+    if (character->GetMaxHitsExceeded()) {
+      return fail(world, "Character initial contact capacity exceeded");
+    }
+    auto &slot = world->characters[index];
+    slot.character = character;
+    slot.standing_shape = standing_shape;
+    slot.crouched_shape = crouched_shape;
+    slot.desc = *desc;
+    slot.generation = generation;
+    slot.crouched = false_v;
+    ++next_character_generation;
+    *out_character = (static_cast<uint64_t>(generation) << 32) | (index + 1);
+    return true_v;
+  } catch (...) {
+    return fail(world, "Character creation failed");
+  }
+}
+
+extern "C" bool8_t vkr_physics_character_destroy(VkrPhysicsWorld *world,
+                                                 VkrPhysicsCharacter handle) {
+  if (world && (world->dispatching || world->reserved_destructions)) {
+    return fail(world,
+                "Character mutation during dispatch/prepared destruction");
+  }
+  auto *slot = character_lookup(world, handle);
+  if (!slot) {
+    return false_v;
+  }
+  slot->character = nullptr;
+  slot->standing_shape = nullptr;
+  slot->crouched_shape = nullptr;
+  return true_v;
+}
+
+extern "C" bool8_t
+vkr_physics_character_get_state(VkrPhysicsWorld *world,
+                                VkrPhysicsCharacter handle,
+                                VkrPhysicsCharacterState *state) {
+  auto *slot = character_lookup(world, handle);
+  if (!slot || !state) {
+    return fail(world, "Invalid character state query");
+  }
+  slot->character->UpdateGroundVelocity();
+  character_read(*slot, state);
+  return true_v;
+}
+
+extern "C" bool8_t
+vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
+                           const VkrPhysicsCharacterInput *input,
+                           VkrPhysicsCharacterState *state) {
+  if (!world || world->dispatching || world->reserved_destructions || !input ||
+      !state || !finite_vector(input->velocity, 3) ||
+      !finite_vector(input->gravity, 3) || !std::isfinite(input->dt) ||
+      input->dt <= 0 || input->dt > 0.1f) {
+    return fail(world, "Invalid character step or mutation boundary");
+  }
+  auto *slot = character_lookup(world, handle);
+  if (!slot) {
+    return false_v;
+  }
+  try {
+    JPH::CharacterVirtual::ExtendedUpdateSettings settings;
+    settings.mWalkStairsStepUp = JPH::Vec3(0, slot->desc.step_up, 0);
+    settings.mStickToFloorStepDown = JPH::Vec3(0, -slot->desc.step_down, 0);
+    const s_CharacterFilter filter(slot->desc);
+    const bool8_t crouch = input->crouch ? true_v : false_v;
+    if (crouch != slot->crouched) {
+      const JPH::Vec3 previous_offset = slot->character->GetShapeOffset();
+      const float32_t half_height =
+          slot->desc.half_height * (crouch ? 0.4f : 1.0f);
+      slot->character->SetShapeOffset(
+          JPH::Vec3(0, half_height + slot->desc.radius, 0));
+      const JPH::Shape *shape =
+          crouch ? slot->crouched_shape.GetPtr() : slot->standing_shape.GetPtr();
+      const float32_t penetration =
+          1.5f * world->system.GetPhysicsSettings().mPenetrationSlop;
+      if (slot->character->SetShape(shape, penetration, {}, filter, filter, {},
+                                    world->scratch)) {
+        slot->crouched = crouch;
+      } else {
+        // A ceiling is an ordinary rejected stance request, not a world fault.
+        slot->character->SetShapeOffset(previous_offset);
+      }
+    }
+    slot->character->SetLinearVelocity(vec(input->velocity) +
+                                       input->dt * vec(input->gravity));
+    /* Character and rigid updates are serialized and reuse fixed world scratch.
+     * Jolt's retained contact vectors may grow within the 64-hit limit; this is
+     * not a claim that the SDK performs no hot allocation. */
+    slot->character->ExtendedUpdate(input->dt, vec(input->gravity), settings,
+                                    {}, filter, filter, {}, world->scratch);
+    if (slot->character->GetMaxHitsExceeded()) {
+      world->faulted = true_v;
+      return fail(world, "Character contact capacity exceeded; reset required");
+    }
+    VkrPhysicsCharacterState result;
+    character_read(*slot, &result);
+    if (!finite_vector(result.foot_position, 3) ||
+        !finite_vector(result.velocity, 3)) {
+      world->faulted = true_v;
+      return fail(world,
+                  "Character left supported coordinates; reset required");
+    }
+    *state = result;
+    return true_v;
+  } catch (...) {
+    world->faulted = true_v;
+    return fail(world, "Character update failed; reset required");
+  }
 }
 
 static bool8_t create_shape(VkrPhysicsWorld *world,
@@ -1144,6 +1400,41 @@ extern "C" bool8_t vkr_physics_raycast_filtered(VkrPhysicsWorld *world,
   return vkr_physics_raycast_query(world, origin, displacement, &filter, hit);
 }
 
+static bool8_t physics_cast_shape(VkrPhysicsWorld *world,
+                                  const JPH::Shape *shape,
+                                  JPH::RMat44Arg transform,
+                                  const float32_t displacement[3],
+                                  const VkrPhysicsQueryFilter *filter,
+                                  VkrPhysicsRayHit *hit, bool8_t *found) {
+  *hit = {};
+  *found = false_v;
+  auto cast = JPH::RShapeCast::sFromWorldTransform(
+      shape, JPH::Vec3::sReplicate(1), transform, vec(displacement));
+  JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
+  JPH::ShapeCastSettings settings;
+  settings.mReturnDeepestPoint = true;
+  s_QueryFilter layers(filter ? filter->mask : UINT16_MAX);
+  s_QueryBodyFilter bodies(filter);
+  const auto base = transform.GetTranslation();
+  world->system.GetNarrowPhaseQuery().CastShape(cast, settings, base, collector,
+                                                {}, layers, bodies);
+  if (!collector.HadHit()) {
+    return true_v;
+  }
+  const auto &result = collector.mHit;
+  auto &interface = world->system.GetBodyInterface();
+  hit->body = body_handle(world, result.mBodyID2);
+  hit->entity_id = interface.GetUserData(result.mBodyID2);
+  hit->collider_entity_id = interface.GetShape(result.mBodyID2)
+                                ->GetSubShapeUserData(result.mSubShapeID2);
+  hit->fraction = result.mFraction;
+  store_vec(base + result.mContactPointOn2, hit->position);
+  store_vec(-result.mPenetrationAxis.NormalizedOr(JPH::Vec3::sAxisY()),
+            hit->normal);
+  *found = true_v;
+  return true_v;
+}
+
 extern "C" bool8_t
 vkr_physics_sweep(VkrPhysicsWorld *world, const VkrPhysicsColliderDesc *desc,
                   const float32_t origin[3], const float32_t rotation[4],
@@ -1166,32 +1457,34 @@ vkr_physics_sweep(VkrPhysicsWorld *world, const VkrPhysicsColliderDesc *desc,
         JPH::RMat44::sRotationTranslation(quat(rotation), vec(origin)) *
         JPH::Mat44::sRotationTranslation(quat(desc->rotation),
                                          vec(desc->position));
-    auto cast = JPH::RShapeCast::sFromWorldTransform(
-        shape, JPH::Vec3::sReplicate(1), transform, vec(displacement));
-    JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
-    JPH::ShapeCastSettings settings;
-    settings.mReturnDeepestPoint = true;
-    s_QueryFilter layers(filter ? filter->mask : UINT16_MAX);
-    s_QueryBodyFilter bodies(filter);
-    const auto base = transform.GetTranslation();
-    world->system.GetNarrowPhaseQuery().CastShape(
-        cast, settings, base, collector, {}, layers, bodies);
-    if (!collector.HadHit()) {
-      return false_v;
-    }
-    const auto &result = collector.mHit;
-    auto &interface = world->system.GetBodyInterface();
-    hit->body = body_handle(world, result.mBodyID2);
-    hit->entity_id = interface.GetUserData(result.mBodyID2);
-    hit->collider_entity_id = interface.GetShape(result.mBodyID2)
-                                  ->GetSubShapeUserData(result.mSubShapeID2);
-    hit->fraction = result.mFraction;
-    store_vec(base + result.mContactPointOn2, hit->position);
-    store_vec(-result.mPenetrationAxis.NormalizedOr(JPH::Vec3::sAxisY()),
-              hit->normal);
-    return true_v;
+    bool8_t found = false_v;
+    return physics_cast_shape(world, shape, transform, displacement, filter,
+                              hit, &found) &&
+           found;
   } catch (...) {
     return fail(world, "Shape sweep allocation failed");
+  }
+}
+
+extern "C" bool8_t
+vkr_physics_sweep_sphere(VkrPhysicsWorld *world, const float32_t origin[3],
+                         const float32_t displacement[3], float32_t radius,
+                         const VkrPhysicsQueryFilter *filter,
+                         VkrPhysicsRayHit *hit, bool8_t *found) {
+  if (!world || world->faulted || !hit || !found || !finite_vector(origin, 3) ||
+      !finite_vector(displacement, 3) || !std::isfinite(radius) ||
+      radius <= 0 || radius > VKR_PHYSICS_MAX_COORDINATE ||
+      !valid_query_filter(filter)) {
+    return fail(world, "Invalid sphere sweep");
+  }
+  try {
+    JPH::SphereShape sphere(radius);
+    sphere.SetEmbedded();
+    const auto transform = JPH::RMat44::sTranslation(vec(origin));
+    return physics_cast_shape(world, &sphere, transform, displacement, filter,
+                              hit, found);
+  } catch (...) {
+    return fail(world, "Sphere sweep failed");
   }
 }
 
