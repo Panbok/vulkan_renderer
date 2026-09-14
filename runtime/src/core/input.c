@@ -27,6 +27,32 @@ InputState input_init(EventManager *event_manager) {
   return input_state;
 }
 
+bool8_t input_observe(InputState *input, VkrInputObserver observer,
+                      void *context) {
+  if (!input || !observer || input->observer) {
+    return false_v;
+  }
+  input->observer = observer;
+  input->observer_context = context;
+  return true_v;
+}
+
+bool8_t input_unobserve(InputState *input, void *context) {
+  if (!input || input->observer_context != context) {
+    return false_v;
+  }
+  input->observer = NULL;
+  input->observer_context = NULL;
+  return true_v;
+}
+
+static void input_notify(InputState *input, VkrInputTransition transition) {
+  if (input->observer) {
+    transition.time_seconds = vkr_platform_get_absolute_time();
+    input->observer(&transition, input->observer_context);
+  }
+}
+
 void input_shutdown(InputState *input_state) {
   assert_log(input_state != NULL, "Input state is NULL");
 
@@ -35,6 +61,8 @@ void input_shutdown(InputState *input_state) {
       .data = NULL,
       .data_size = 0,
   };
+  input_state->observer = NULL;
+  input_state->observer_context = NULL;
   input_state->is_initialized = false;
   event_manager_dispatch(input_state->event_manager, event);
   log_debug("Input system shutdown");
@@ -154,6 +182,10 @@ void input_process_key(InputState *input_state, Keys key, bool8_t pressed) {
     } else
       input_state->released_keys.keys[key] = true_v;
 
+    input_notify(input_state,
+                 (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_KEY,
+                                      .code = (uint32_t)key,
+                                      .pressed = pressed});
     KeyEventData key_event_data = {
         .key = key,
         .pressed = pressed,
@@ -204,6 +236,10 @@ void input_process_button(InputState *input_state, Buttons button,
     } else
       input_state->released_buttons[button] = true_v;
 
+    input_notify(input_state,
+                 (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_BUTTON,
+                                      .code = (uint32_t)button,
+                                      .pressed = pressed});
     ButtonEventData button_event_data = {
         .button = button,
         .pressed = pressed,
@@ -221,8 +257,14 @@ void input_process_button(InputState *input_state, Buttons button,
 void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y) {
   if (input_state->current_buttons.x != x ||
       input_state->current_buttons.y != y) {
+    const float64_t dx = (float64_t)x - input_state->current_buttons.x;
+    const float64_t dy = (float64_t)y - input_state->current_buttons.y;
     input_state->current_buttons.x = x;
     input_state->current_buttons.y = y;
+    input_notify(input_state,
+                 (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
+                                      .delta_x = dx,
+                                      .delta_y = dy});
 
     MouseMoveEventData mouse_move_event_data = {
         .x = x,

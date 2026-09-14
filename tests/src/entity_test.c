@@ -277,6 +277,154 @@ static void test_query_and_compiled(void) {
   printf("  test_query_and_compiled PASSED\n");
 }
 
+static void test_compiled_query_freshness(void) {
+  printf("  Running test_compiled_query_freshness...\n");
+  setup_suite();
+  VkrWorld *world = create_world(1);
+  VkrWorld *other = create_world(2);
+  assert(world && other);
+  VkrComponentTypeId pos_id = vkr_entity_register_component(
+      world, "Position", sizeof(Position), AlignOf(Position));
+  VkrComponentTypeId vel_id = vkr_entity_register_component(
+      world, "Velocity", sizeof(Velocity), AlignOf(Velocity));
+  VkrQuery query = {0};
+  vkr_entity_query_build(world, &pos_id, 1, NULL, 0, &query);
+  VkrQueryCompiled compiled = {0};
+  assert(!vkr_entity_query_compiled_is_current(world, &compiled));
+  assert(!vkr_entity_query_compiled_is_current(NULL, &compiled));
+  assert(!vkr_entity_query_compiled_is_current(world, NULL));
+  assert(vkr_entity_query_compile(world, &query, &world_alloc, &compiled));
+  assert(vkr_entity_query_compiled_is_current(world, &compiled));
+  assert(!vkr_entity_query_compiled_is_current(other, &compiled));
+  uint32_t count = 0;
+  vkr_entity_query_compiled_each_chunk(&compiled, query_count_chunk, &count);
+  assert(count == 0);
+
+  VkrEntityId first = vkr_entity_create_entity(world);
+  Position position = {0};
+  assert(vkr_entity_add_component(world, first, pos_id, &position));
+  assert(!vkr_entity_query_compiled_is_current(world, &compiled));
+#ifdef NDEBUG
+  vkr_entity_query_compiled_each_chunk(&compiled, query_count_chunk, &count);
+  assert(count == 0);
+#endif
+  vkr_entity_query_compiled_destroy(&world_alloc, &compiled);
+  assert(!vkr_entity_query_compiled_is_current(world, &compiled));
+  assert(vkr_entity_query_compile(world, &query, &world_alloc, &compiled));
+  vkr_entity_query_compiled_each_chunk(&compiled, query_count_chunk, &count);
+  assert(count == 1);
+
+  VkrEntityId second = vkr_entity_create_entity(world);
+  assert(vkr_entity_add_component(world, second, pos_id, &position));
+  assert(vkr_entity_query_compiled_is_current(world, &compiled));
+  Velocity velocity = {0};
+  assert(vkr_entity_add_component(world, second, vel_id, &velocity));
+  assert(!vkr_entity_query_compiled_is_current(world, &compiled));
+#ifdef NDEBUG
+  count = 0;
+  vkr_entity_query_compiled_each_chunk(&compiled, query_count_chunk, &count);
+  assert(count == 0);
+#endif
+  vkr_entity_query_compiled_destroy(&world_alloc, &compiled);
+  assert(vkr_entity_query_compile(world, &query, &world_alloc, &compiled));
+  count = 0;
+  vkr_entity_query_compiled_each_chunk(&compiled, query_count_chunk, &count);
+  assert(count == 2);
+  vkr_entity_query_compiled_destroy(&world_alloc, &compiled);
+  vkr_entity_query_compiled_destroy(&world_alloc, &compiled);
+  assert(!vkr_entity_query_compiled_is_current(world, &compiled));
+  vkr_entity_destroy_world(other);
+  vkr_entity_destroy_world(world);
+  teardown_suite();
+  printf("  test_compiled_query_freshness PASSED\n");
+}
+
+typedef struct StructuralReadTest {
+  VkrWorld *world;
+  VkrQuery *query;
+  VkrEntityId entity;
+  VkrComponentTypeId position;
+  VkrComponentTypeId velocity;
+  uint32_t calls;
+} StructuralReadTest;
+
+static void structural_read_chunk(const VkrArchetype *arch, VkrChunk *chunk,
+                                  void *user) {
+  (void)arch;
+  (void)chunk;
+  StructuralReadTest *test = user;
+  VkrWorld *world = test->world;
+  uint32_t depth = world->structural_read_depth;
+  assert(depth > 0);
+  assert(vkr_entity_create_entity(world).u64 == VKR_ENTITY_ID_INVALID.u64);
+  assert(
+      vkr_entity_create_entity_with_components(world, &test->position, NULL, 1)
+          .u64 == VKR_ENTITY_ID_INVALID.u64);
+  assert(!vkr_entity_destroy_entity(world, test->entity));
+  Velocity velocity = {0};
+  assert(!vkr_entity_add_component(world, test->entity, test->velocity,
+                                   &velocity));
+  assert(!vkr_entity_remove_component(world, test->entity, test->position));
+  assert(vkr_entity_register_component(world, "Blocked", sizeof(Position),
+                                       AlignOf(Position)) ==
+         VKR_COMPONENT_TYPE_INVALID);
+  assert(vkr_entity_register_component_once(world, "Blocked", sizeof(Position),
+                                            AlignOf(Position)) ==
+         VKR_COMPONENT_TYPE_INVALID);
+  assert(vkr_entity_register_component_once(world, "Position", sizeof(Position),
+                                            AlignOf(Position)) ==
+         test->position);
+  Position *position =
+      vkr_entity_get_component_mut(world, test->entity, test->position);
+  assert(position);
+  position->x += 1.0f;
+  vkr_entity_destroy_world(world);
+  assert(vkr_entity_is_alive(world, test->entity));
+  uint32_t count = 0;
+  vkr_entity_query_each_chunk(world, test->query, query_count_chunk, &count);
+  assert(count == 1);
+  assert(world->structural_read_depth == depth);
+  test->calls++;
+}
+
+static void test_query_structural_read(void) {
+  printf("  Running test_query_structural_read...\n");
+  setup_suite();
+  VkrWorld *world = create_world(1);
+  assert(world);
+  VkrComponentTypeId position = vkr_entity_register_component(
+      world, "Position", sizeof(Position), AlignOf(Position));
+  VkrComponentTypeId velocity = vkr_entity_register_component(
+      world, "Velocity", sizeof(Velocity), AlignOf(Velocity));
+  VkrEntityId entity = vkr_entity_create_entity(world);
+  Position initial = {0};
+  assert(vkr_entity_add_component(world, entity, position, &initial));
+  VkrQuery query = {0};
+  vkr_entity_query_build(world, &position, 1, NULL, 0, &query);
+  VkrQueryCompiled compiled = {0};
+  assert(vkr_entity_query_compile(world, &query, &world_alloc, &compiled));
+  StructuralReadTest test = {.world = world,
+                             .query = &query,
+                             .entity = entity,
+                             .position = position,
+                             .velocity = velocity};
+  assert(vkr_entity_structural_read_begin(world));
+  vkr_entity_query_each_chunk(world, &query, structural_read_chunk, &test);
+  vkr_entity_query_compiled_each_chunk(&compiled, structural_read_chunk, &test);
+  assert(test.calls == 2);
+  assert(world->structural_read_depth == 1);
+  vkr_entity_structural_read_end(world);
+  assert(world->structural_read_depth == 0);
+  Position *updated = vkr_entity_get_component_mut(world, entity, position);
+  assert(updated && updated->x == 2.0f);
+  assert(vkr_entity_remove_component(world, entity, position));
+  assert(vkr_entity_destroy_entity(world, entity));
+  vkr_entity_query_compiled_destroy(&world_alloc, &compiled);
+  vkr_entity_destroy_world(world);
+  teardown_suite();
+  printf("  test_query_structural_read PASSED\n");
+}
+
 static void test_world_id_validation(void) {
   printf("  Running test_world_id_validation...\n");
   setup_suite();
@@ -311,6 +459,8 @@ bool32_t run_entity_tests(void) {
   test_create_entity_with_components();
   test_create_many_entities();
   test_query_and_compiled();
+  test_compiled_query_freshness();
+  test_query_structural_read();
   test_world_id_validation();
   printf("--- Entity tests completed. ---\n");
   return true_v;

@@ -592,6 +592,89 @@ static void test_input_quick_edges_and_modifiers(void) {
   printf("  test_input_quick_edges_and_modifiers PASSED\n");
 }
 
+typedef struct InputObservationTest {
+  VkrInputTransition transitions[16];
+  uint32_t count;
+} InputObservationTest;
+
+static void observe_input_transition(const VkrInputTransition *transition,
+                                     void *context) {
+  InputObservationTest *observations = context;
+  assert(observations->count < ArrayCount(observations->transitions));
+  observations->transitions[observations->count++] = *transition;
+}
+
+static void test_input_synchronous_observer(void) {
+  printf("  Running test_input_synchronous_observer...\n");
+  setup_suite();
+  EventManager manager;
+  assert(event_manager_create(&manager));
+  InputState input = input_init(&manager);
+  InputObservationTest observations = {0};
+  InputObservationTest other = {0};
+  assert(!input_observe(&input, NULL, &observations));
+  assert(input_observe(&input, observe_input_transition, &observations));
+  assert(!input_observe(&input, observe_input_transition, &other));
+
+  input_process_key(&input, KEY_W, true_v);
+  assert(observations.count == 1); // Delivery precedes return, without a frame.
+  input_process_key(&input, KEY_W, true_v); // Repeat has no transition.
+  assert(observations.count == 1);
+  input_process_button(&input, BUTTON_LEFT, true_v);
+  input_process_button(&input, BUTTON_LEFT, true_v);
+  input_process_mouse_move(&input, 10, -5);
+  input_process_mouse_move(&input, 10, -5);
+  input_process_key(&input, KEY_W, false_v);
+  input_process_key(&input, KEY_W, true_v);
+  input_process_mouse_move(&input, 7, 4);
+  input_process_button(&input, BUTTON_LEFT, false_v);
+  assert(observations.count == 7);
+  const VkrInputTransition *events = observations.transitions;
+  assert(events[0].kind == VKR_INPUT_TRANSITION_KEY &&
+         events[0].code == KEY_W && events[0].pressed);
+  assert(events[1].kind == VKR_INPUT_TRANSITION_BUTTON &&
+         events[1].code == BUTTON_LEFT && events[1].pressed);
+  assert(events[2].kind == VKR_INPUT_TRANSITION_LOOK &&
+         events[2].delta_x == 10 && events[2].delta_y == -5);
+  assert(events[3].kind == VKR_INPUT_TRANSITION_KEY &&
+         events[3].code == KEY_W && !events[3].pressed);
+  assert(events[4].kind == VKR_INPUT_TRANSITION_KEY &&
+         events[4].code == KEY_W && events[4].pressed);
+  assert(events[5].kind == VKR_INPUT_TRANSITION_LOOK &&
+         events[5].delta_x == -3 && events[5].delta_y == 9);
+  assert(events[6].kind == VKR_INPUT_TRANSITION_BUTTON &&
+         events[6].code == BUTTON_LEFT && !events[6].pressed);
+  assert(input_is_key_down(&input, KEY_W));
+  assert(input_key_just_pressed(&input, KEY_W));
+  assert(input_key_just_released(&input, KEY_W));
+  assert(!input_is_button_down(&input, BUTTON_LEFT));
+  assert(input_button_just_pressed(&input, BUTTON_LEFT));
+  assert(input_button_just_released(&input, BUTTON_LEFT));
+  input_update(&input);
+  assert(observations.count == 7);
+  assert(input_is_key_down(&input, KEY_W));
+  assert(!input_key_just_pressed(&input, KEY_W));
+  assert(!input_key_just_released(&input, KEY_W));
+  assert(!input_button_just_pressed(&input, BUTTON_LEFT));
+  assert(!input_button_just_released(&input, BUTTON_LEFT));
+
+  assert(!input_unobserve(&input, &other));
+  input_process_key(&input, KEY_W, false_v);
+  assert(observations.count == 8 && !events[7].pressed);
+  assert(input_unobserve(&input, &observations));
+  input_process_key(&input, KEY_W, true_v);
+  assert(observations.count == 8);
+  assert(input_observe(&input, observe_input_transition, &other));
+  input_process_key(&input, KEY_W, false_v);
+  assert(other.count == 1 && observations.count == 8);
+  input_shutdown(&input);
+  assert(input.observer == NULL && input.observer_context == NULL);
+  assert(other.count == 1);
+  event_manager_destroy(&manager);
+  teardown_suite();
+  printf("  test_input_synchronous_observer PASSED\n");
+}
+
 bool32_t run_input_tests() {
   printf("--- Running Input System tests... ---\n");
   test_input_init();
@@ -603,6 +686,7 @@ bool32_t run_input_tests() {
   test_input_update_state_copy();
   test_input_character_queue();
   test_input_quick_edges_and_modifiers();
+  test_input_synchronous_observer();
   printf("--- Input System tests completed. ---\n");
   return true;
 }

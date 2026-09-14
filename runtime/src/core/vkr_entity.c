@@ -910,9 +910,26 @@ world_fail:
   return NULL;
 }
 
+bool8_t vkr_entity_structural_read_begin(VkrWorld *world) {
+  if (!world || world->structural_read_depth == UINT32_MAX) {
+    return false_v;
+  }
+  world->structural_read_depth++;
+  return true_v;
+}
+
+void vkr_entity_structural_read_end(VkrWorld *world) {
+  assert_log(world && world->structural_read_depth > 0,
+             "Structural read scope must be active");
+  if (world && world->structural_read_depth > 0) {
+    world->structural_read_depth--;
+  }
+}
+
 void vkr_entity_destroy_world(VkrWorld *world) {
-  if (!world)
+  if (!world || world->structural_read_depth > 0) {
     return;
+  }
 
   // Free archetypes and chunks (if not using arena)
   for (uint32_t i = 0; i < world->arch_count; ++i) {
@@ -988,6 +1005,9 @@ VkrComponentTypeId vkr_entity_register_component(VkrWorld *world,
     return VKR_COMPONENT_TYPE_INVALID;
   }
 
+  if (world->structural_read_depth > 0) {
+    return VKR_COMPONENT_TYPE_INVALID;
+  }
   return vkr_entity_comps_add(world, name, size, align);
 }
 
@@ -1016,6 +1036,9 @@ VkrComponentTypeId vkr_entity_register_component_once(VkrWorld *world,
     return id;
   }
 
+  if (world->structural_read_depth > 0) {
+    return VKR_COMPONENT_TYPE_INVALID;
+  }
   return vkr_entity_comps_add(world, name, size, align);
 }
 
@@ -1046,6 +1069,9 @@ const VkrComponentInfo *vkr_entity_get_component_info(const VkrWorld *world,
 
 VkrEntityId vkr_entity_create_entity(VkrWorld *world) {
   assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0) {
+    return VKR_ENTITY_ID_INVALID;
+  }
 
   // Allocate index
   uint32_t idx = vkr_entity_dir_alloc_index(world);
@@ -1080,6 +1106,10 @@ VkrEntityId vkr_entity_create_entity_with_components(
     VkrWorld *world, const VkrComponentTypeId *types,
     const void *const *init_data, uint32_t count) {
   assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+
   assert_log(types || count == 0, "Types must not be NULL when count > 0");
 
   if (count == 0 || !types) {
@@ -1347,6 +1377,10 @@ vkr_entity_chunk_swap_remove(VkrWorld *world, VkrChunk *chunk, uint32_t slot) {
 
 bool8_t vkr_entity_destroy_entity(VkrWorld *world, VkrEntityId id) {
   assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0) {
+    return false_v;
+  }
+
   if (!vkr_entity_validate_id(world, id))
     return false_v;
 
@@ -1445,6 +1479,9 @@ bool8_t vkr_entity_add_component(VkrWorld *world, VkrEntityId id,
                                  VkrComponentTypeId type,
                                  const void *init_data) {
   assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0) {
+    return false_v;
+  }
 
   if (!vkr_entity_validate_id(world, id)) {
     log_error("add_component: invalid entity id (index=%u, gen=%u)",
@@ -1521,6 +1558,10 @@ bool8_t vkr_entity_add_component(VkrWorld *world, VkrEntityId id,
 bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
                                     VkrComponentTypeId type) {
   assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0) {
+    return false_v;
+  }
+
   if (!vkr_entity_validate_id(world, id))
     return false_v;
   if (!vkr_entity_validate_type(world, type))
@@ -1623,6 +1664,10 @@ void vkr_entity_query_each_chunk(VkrWorld *world, const VkrQuery *query,
   assert_log(query, "Query must not be NULL");
   assert_log(fn, "Callback must not be NULL");
 
+  if (!vkr_entity_structural_read_begin(world)) {
+    return;
+  }
+
   for (uint32_t ai = 0; ai < world->arch_count; ++ai) {
     VkrArchetype *archetype = world->arch_list[ai];
     if (!vkr_entity_sig_contains(&archetype->sig, &query->include))
@@ -1635,6 +1680,7 @@ void vkr_entity_query_each_chunk(VkrWorld *world, const VkrQuery *query,
       fn(archetype, chunk, user);
     }
   }
+  vkr_entity_structural_read_end(world);
 }
 
 bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
@@ -1645,11 +1691,7 @@ bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
   assert_log(allocator, "Allocator must not be NULL");
   assert_log(out_query, "Output query must not be NULL");
 
-  out_query->archetypes = NULL;
-  out_query->archetype_count = 0;
-#ifdef VKR_DEBUG
-  out_query->world_arch_count_at_compile = 0;
-#endif
+  *out_query = (VkrQueryCompiled){0};
 
   uint32_t match_count = 0;
   for (uint32_t ai = 0; ai < world->arch_count; ++ai) {
@@ -1662,9 +1704,8 @@ bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
   }
 
   if (match_count == 0) {
-#ifdef VKR_DEBUG
+    out_query->world = world;
     out_query->world_arch_count_at_compile = world->arch_count;
-#endif
     return true_v;
   }
 
@@ -1686,9 +1727,8 @@ bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
 
   out_query->archetypes = matches;
   out_query->archetype_count = match_count;
-#ifdef VKR_DEBUG
+  out_query->world = world;
   out_query->world_arch_count_at_compile = world->arch_count;
-#endif
   return true_v;
 }
 
@@ -1701,11 +1741,13 @@ void vkr_entity_query_compiled_destroy(VkrAllocator *allocator,
                        query->archetype_count * sizeof(VkrArchetype *),
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  query->archetypes = NULL;
-  query->archetype_count = 0;
-#ifdef VKR_DEBUG
-  query->world_arch_count_at_compile = 0;
-#endif
+  *query = (VkrQueryCompiled){0};
+}
+
+bool8_t vkr_entity_query_compiled_is_current(const VkrWorld *world,
+                                             const VkrQueryCompiled *query) {
+  return world && query && query->world == world &&
+         query->world_arch_count_at_compile == world->arch_count;
 }
 
 void vkr_entity_query_compiled_each_chunk(const VkrQueryCompiled *query,
@@ -1713,21 +1755,20 @@ void vkr_entity_query_compiled_each_chunk(const VkrQueryCompiled *query,
   assert_log(query, "Query must not be NULL");
   assert_log(fn, "Callback must not be NULL");
 
-#ifdef VKR_DEBUG
-  // Debug check: detect stale compiled queries
-  // A query is stale if the world's archetype count increased since compilation
-  if (query->archetype_count > 0 && query->archetypes[0]) {
-    const VkrWorld *world = query->archetypes[0]->world;
-    if (world && world->arch_count > query->world_arch_count_at_compile) {
-      assert_log(
-          false_v,
-          "Compiled query is stale: world archetype count increased "
-          "from %u to %u since compilation. Call vkr_entity_query_compile() "
-          "to update the query.",
-          query->world_arch_count_at_compile, world->arch_count);
-    }
+  if (!query || !fn) {
+    return;
   }
+  if (!vkr_entity_query_compiled_is_current(query->world, query)) {
+#ifndef NDEBUG
+    assert_log(false_v, "Compiled query is stale or uninitialized. Recompile "
+                        "before iteration.");
 #endif
+    return;
+  }
+
+  if (!vkr_entity_structural_read_begin(query->world)) {
+    return;
+  }
 
   for (uint32_t ai = 0; ai < query->archetype_count; ++ai) {
     VkrArchetype *archetype = query->archetypes[ai];
@@ -1739,6 +1780,7 @@ void vkr_entity_query_compiled_each_chunk(const VkrQueryCompiled *query,
       fn(archetype, chunk, user);
     }
   }
+  vkr_entity_structural_read_end(query->world);
 }
 
 // ----------------------

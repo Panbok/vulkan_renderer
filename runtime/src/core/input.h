@@ -362,8 +362,31 @@ typedef enum VkrInputModifier {
 //    API to query by device and to aggregate across devices when needed.
 // Not implementing now; this is a tracked future enhancement.
 
+/* Optional synchronous gameplay observer. Runs on the input producer's owning
+ * thread before asynchronous EventManager delivery. Do not reenter input or
+ * retain the event pointer. Context is borrowed until detached/shutdown. */
+typedef enum VkrInputTransitionKind {
+  VKR_INPUT_TRANSITION_KEY,
+  VKR_INPUT_TRANSITION_BUTTON,
+  VKR_INPUT_TRANSITION_LOOK,
+} VkrInputTransitionKind;
+
+typedef struct VkrInputTransition {
+  float64_t time_seconds;
+  VkrInputTransitionKind kind;
+  uint32_t code;
+  bool8_t pressed;
+  float64_t delta_x;
+  float64_t delta_y;
+} VkrInputTransition;
+
+typedef void (*VkrInputObserver)(const VkrInputTransition *transition,
+                                 void *context);
+
 typedef struct InputState {
   EventManager *event_manager;
+  VkrInputObserver observer;
+  void *observer_context;
   KeysState previous_keys;
   KeysState current_keys;
   ButtonsState previous_buttons;
@@ -410,6 +433,10 @@ void input_shutdown(InputState *input_state);
  * @param input_state Pointer to the `InputState` to update.
  */
 void input_update(InputState *input_state);
+/* One owner, no implicit replacement. Detach with the same context. */
+bool8_t input_observe(InputState *input, VkrInputObserver observer,
+                      void *context);
+bool8_t input_unobserve(InputState *input, void *context);
 
 /**
  * @brief Checks if a specific keyboard key is currently held down.

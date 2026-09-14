@@ -167,6 +167,7 @@ typedef struct VkrWorld {
    */
   VkrAllocator *scratch_alloc;
   uint16_t world_id;
+  uint32_t structural_read_depth;
 
   // Component registry
   VkrComponentInfo *components;
@@ -234,6 +235,18 @@ VkrWorld *vkr_entity_create_world(const VkrWorldCreateInfo *info);
  * @param world World to destroy
  */
 void vkr_entity_destroy_world(VkrWorld *world);
+
+/**
+ * @brief Borrow stable ECS storage while allowing component value writes.
+ *
+ * These nested, single-threaded scopes reject entity creation/destruction,
+ * component addition/removal, new component registration, and world
+ * destruction. Existing component lookup and value writes remain available.
+ * Query iteration holds a scope automatically. Pair each successful begin with
+ * one end; this is not a synchronization primitive for concurrent world access.
+ */
+bool8_t vkr_entity_structural_read_begin(VkrWorld *world);
+void vkr_entity_structural_read_end(VkrWorld *world);
 
 // ================================
 // Components
@@ -640,6 +653,7 @@ typedef struct VkrQuery {
  * **Lifecycle:**
  * - Compile with `vkr_entity_query_compile()` after building the query
  * - Use `vkr_entity_query_compiled_each_chunk()` to iterate
+ * - The borrowed world must remain alive until the query is destroyed
  * - Destroy with `vkr_entity_query_compiled_destroy()` when done
  * - Recompile if archetypes may have changed
  *
@@ -667,17 +681,14 @@ typedef struct VkrQuery {
  * vkr_entity_query_compiled_destroy(allocator, &compiled);
  * ```
  *
- * @note In debug builds, `vkr_entity_query_compiled_each_chunk()` asserts if
- * the query appears stale (world's archetype count increased since
- * compilation).
+ * @note Stale iteration asserts in debug builds and returns without invoking
+ * callbacks in release builds. Check freshness at structural boundaries.
  */
 typedef struct VkrQueryCompiled {
   VkrArchetype **archetypes;
   uint32_t archetype_count;
-#ifdef VKR_DEBUG
-  uint32_t world_arch_count_at_compile; ///< Debug: world's archetype count at
-                                        ///< compile time
-#endif
+  VkrWorld *world; ///< Borrowed until query destruction
+  uint32_t world_arch_count_at_compile;
 } VkrQueryCompiled;
 
 /**
@@ -803,16 +814,24 @@ void vkr_entity_query_compiled_destroy(VkrAllocator *allocator,
                                        VkrQueryCompiled *query);
 
 /**
+ * @brief Check whether a successfully compiled query still covers this world.
+ *
+ * Returns false for null, default, destroyed, wrong-world, or stale queries.
+ * The world must be alive; this does not validate a destroyed world's pointer.
+ */
+bool8_t vkr_entity_query_compiled_is_current(const VkrWorld *world,
+                                             const VkrQueryCompiled *query);
+
+/**
  * @brief Iterate over all chunks in a compiled query.
  *
  * Iterates through all chunks in the archetypes cached by the compiled query.
  * This is faster than `vkr_entity_query_each_chunk()` because it avoids
  * re-evaluating the query against all archetypes each time.
  *
- * **Staleness detection:** In debug builds, this function asserts if the
- * compiled query appears stale (world's archetype count increased since
- * compilation). In release builds, stale queries may silently miss new
- * archetypes.
+ * **Staleness detection:** Stale or uninitialized queries assert in debug
+ * builds and return without invoking callbacks in release builds. Iteration
+ * never allocates or recompiles; validate freshness at structural boundaries.
  *
  * **When to use:** Use compiled queries when:
  * - The query is executed frequently (e.g., every frame in render loops)
