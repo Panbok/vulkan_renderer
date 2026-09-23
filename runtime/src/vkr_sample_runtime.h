@@ -43,6 +43,29 @@ typedef struct VkrSamplePhysicsRequest {
   bool8_t body_disabled;
 } VkrSamplePhysicsRequest;
 
+typedef enum VkrSampleCameraView {
+  VKR_SAMPLE_CAMERA_PERSPECTIVE = 0,
+  VKR_SAMPLE_CAMERA_TOP,
+  VKR_SAMPLE_CAMERA_LEFT,
+  VKR_SAMPLE_CAMERA_RIGHT,
+  VKR_SAMPLE_CAMERA_BOTTOM,
+  VKR_SAMPLE_CAMERA_VIEW_COUNT,
+} VkrSampleCameraView;
+
+/* Runtime-owned viewport controls; the UI submits a copied request. Grid spacing
+ * is in world units. Orthographic selection enables the grid on transition. */
+typedef struct VkrSampleViewState {
+  VkrSampleCameraView camera_view;
+  VkrRenderMode render_mode;
+  float32_t grid_spacing;
+  bool8_t grid_enabled;
+} VkrSampleViewState;
+
+typedef struct VkrSampleViewRequest {
+  VkrSampleViewState value;
+  bool8_t apply;
+} VkrSampleViewRequest;
+
 /* Consumed after UI build. Paths are copied before the frame scratch expires.
  * Selection replaces the old scene only after the dirty-edit decision. */
 typedef struct VkrSampleSceneRequest {
@@ -175,6 +198,8 @@ typedef struct VkrSampleUiFrame {
   uint32_t texture_demanded_missing_count;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
+  VkrSampleViewState view_state;
+  VkrSampleViewRequest *view_request;
   VkrSamplePhysicsRequest *physics_request;
   uint32_t collision_display; /* 0 off, 1 selected body, 2 all (bounded). */
   bool8_t mapping_valid;

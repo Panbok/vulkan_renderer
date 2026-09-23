@@ -356,7 +356,7 @@ static void animation_graph(VkrEditorUi *editor,
   const Vec2 mouse = {ui->mouse_x / ui->content_scale,
                       ui->mouse_y / ui->content_scale};
   const bool8_t down = input_is_button_down(frame->input, BUTTON_LEFT);
-  if (ui->mouse_pressed && ui->mouse_input_layer == window->z_order + 1u &&
+  if (ui->mouse_pressed && ui->mouse_input_layer == window->z_order + 2u &&
       !frame->mouse_captured) {
     int32_t press_x = 0;
     int32_t press_y = 0;
@@ -1093,7 +1093,7 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
   const bool8_t keyboard_scope =
       !ui->focused_is_text &&
       ui->keyboard_input_layer ==
-          editor->windows[VKR_EDITOR_WINDOW_ANIMATION].z_order + 1u;
+          editor->windows[VKR_EDITOR_WINDOW_ANIMATION].z_order + 2u;
   if (keyboard_scope && frame->scene_shortcuts_blocked) {
     *frame->scene_shortcuts_blocked = true_v;
   }
@@ -1164,7 +1164,7 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
   const float32_t mouse_x = ui->mouse_x / ui->content_scale;
   const float32_t mouse_y = ui->mouse_y / ui->content_scale;
   const bool8_t over_preview =
-      ui->mouse_input_layer == window->z_order + 1u &&
+      ui->mouse_input_layer == window->z_order + 2u &&
       mouse_x >= window->position_pt.x + 8 &&
       mouse_x < window->position_pt.x + (window->size_pt.x - 5) * 0.5f &&
       mouse_y >= window->position_pt.y + 36 &&
@@ -1523,7 +1523,7 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
     }
   }
   if (ui->keyboard_input_layer ==
-          editor->windows[VKR_EDITOR_WINDOW_ANIMATION].z_order + 1u &&
+          editor->windows[VKR_EDITOR_WINDOW_ANIMATION].z_order + 2u &&
       !ui->focused_is_text && input_key_just_pressed(frame->input, KEY_SPACE)) {
     animation->playing = !animation->playing;
     ui->capture.keyboard = true_v;

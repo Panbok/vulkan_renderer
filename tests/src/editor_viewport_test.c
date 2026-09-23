@@ -1,6 +1,7 @@
 #include "editor_viewport_test.h"
 
 #include "renderer/systems/vkr_editor_viewport.h"
+#include "renderer/systems/vkr_camera.h"
 #include "vkr_exposure.h"
 #include "vkr_renderer_internal.h"
 
@@ -145,11 +146,37 @@ vkr_internal void test_scene_output_extent_restore(void) {
   printf("  test_scene_output_extent_restore PASSED\n");
 }
 
+static void test_orthographic_resize(void) {
+  VkrCamera camera = {0};
+  vkr_camera_system_orthographic_create(&camera, NULL, -10, 10, -10, 10,
+                                        0.1f, 1000.0f);
+  camera.generation = 1u;
+  assert(vkr_camera_set_basis(&camera, vec3_new(0, 100, 0),
+                              vec3_new(0, -1, 0), vec3_new(0, 0, -1)));
+  VkrCameraSystem system = {0};
+  system.cameras.data = &camera;
+  system.cameras.length = 1u;
+  vkr_camera_registry_resize_all(&system, 800u, 400u);
+  vkr_camera_system_update(&camera);
+  const Mat4 vp = mat4_mul(camera.projection, camera.view);
+  const Vec4 center = mat4_mul_vec4(vp, vec4_new(0, 0, 0, 1));
+  const Vec4 right = mat4_mul_vec4(vp, vec4_new(1, 0, 0, 1));
+  const Vec4 up = mat4_mul_vec4(vp, vec4_new(0, 0, -1, 1));
+  const Vec4 deeper = mat4_mul_vec4(vp, vec4_new(1, -10, 0, 1));
+  // A world-unit square stays square in pixels; distance cannot shrink it.
+  assert(fabsf((right.x - center.x) * 400.0f -
+               fabsf(up.y - center.y) * 200.0f) < 0.001f);
+  assert(right.x == deeper.x && right.w == deeper.w);
+  assert(center.z >= 0.0f && center.z <= 1.0f);
+  assert(camera.top_clip - camera.bottom_clip == 20.0f);
+}
+
 bool32_t run_editor_viewport_tests(void) {
   printf("Running editor viewport tests...\n");
   test_editor_viewport_mapping();
   test_editor_viewport_packet_validation();
   test_scene_output_extent_restore();
+  test_orthographic_resize();
   printf("Editor viewport tests PASSED\n");
   return true_v;
 }

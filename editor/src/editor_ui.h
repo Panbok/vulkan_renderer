@@ -52,6 +52,22 @@ typedef struct VkrEditorLabelAnchor {
 
 typedef struct VkrEditorPhysicsLine VkrEditorPhysicsLine;
 
+#define VKR_EDITOR_GRID_LINE_CAPACITY 96u
+
+typedef struct VkrEditorGridLine {
+  VkrUiId widget;
+  VkrUiId label;
+  Vec3 from;
+  Vec3 to;
+  Vec3 label_offset;
+  Vec2 label_size_pt;
+  /* 1-based screen-order label: numbers left to right on top, letters top to
+   * bottom on the right. Zero leaves the cell unlabeled. */
+  uint32_t ordinal;
+  bool8_t top_label;
+  bool8_t world_axis;
+} VkrEditorGridLine;
+
 typedef struct VkrEditorUi {
   VkrEditorPhysicsLine *physics_lines;
   uint32_t physics_line_count;
@@ -94,6 +110,23 @@ typedef struct VkrEditorUi {
   int8_t toolbar_anchor_y;
   bool8_t toolbar_initialized;
   bool8_t toolbar_dragging;
+  Vec2 view_toolbar_offset_pt;
+  Vec2 view_toolbar_grab_pt;
+  Vec4 view_toolbar_rect_pt;
+  Vec4 view_popup_rect_pt;
+  uint32_t view_popup;
+  bool8_t view_toolbar_initialized;
+  bool8_t view_toolbar_dragging;
+  bool8_t view_toolbar_overflow;
+  VkrUiId grid_panel;
+  uint64_t grid_frame;
+  VkrSampleCameraView grid_camera_view;
+  /* Right-label column width and top-label row height; each axis keeps out of
+   * the other's strip so corner labels never collide. */
+  Vec2 grid_reserved_pt;
+  float32_t grid_spacing; /* Drawn world cell size; zero without a grid. */
+  uint32_t grid_line_count;
+  VkrEditorGridLine grid_lines[VKR_EDITOR_GRID_LINE_CAPACITY];
   VkrEditorGraphicsTab graphics_tab;
   VkrEditorAnimation animation;
 

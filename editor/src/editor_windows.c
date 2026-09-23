@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define EDITOR_COMMAND_LAYER (VKR_EDITOR_WINDOW_COUNT + 3u)
+#define EDITOR_COMMAND_LAYER (VKR_EDITOR_WINDOW_COUNT + 4u)
 
 VkrUiWidgetConfig vkr_editor_menu_button_config(uint32_t column, bool8_t active,
                                                 VkrFontHandle heading_font) {
@@ -103,7 +103,8 @@ void vkr_editor_scene_toolbar_update(VkrEditorUi *editor,
   }
   bool8_t gesture = editor->toolbar_dragging;
   if (ui->mouse_pressed && !frame->mouse_captured && !editor->commands_open &&
-      editor->menu == VKR_EDITOR_MENU_NONE) {
+      editor->menu == VKR_EDITOR_MENU_NONE &&
+      ui->mouse_input_layer <= VKR_EDITOR_SCENE_TOOLBAR_LAYER) {
     int32_t press_x = 0, press_y = 0;
     input_get_button_press_position(frame->input, BUTTON_LEFT, &press_x,
                                     &press_y);
@@ -582,8 +583,8 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
   if (editor->menu == VKR_EDITOR_MENU_NONE)
     return;
 
-  vkr_ui_keyboard_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 2u);
-  (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 2u);
+  vkr_ui_keyboard_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 3u);
+  (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 3u);
   const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack rows[] = {
       {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
@@ -764,8 +765,8 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
     (void)vkr_ui_keyboard_layer_set(ui, 0);
 
   if (editor->menu != VKR_EDITOR_MENU_NONE)
-    vkr_ui_keyboard_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 2u);
-  else if (ui->keyboard_input_layer == VKR_EDITOR_WINDOW_COUNT + 2u)
+    vkr_ui_keyboard_layer_set(ui, VKR_EDITOR_WINDOW_COUNT + 3u);
+  else if (ui->keyboard_input_layer == VKR_EDITOR_WINDOW_COUNT + 3u)
     vkr_ui_keyboard_layer_set(ui, 0u);
   const bool8_t popup_contains_pointer =
       editor->menu != VKR_EDITOR_MENU_NONE &&
@@ -795,11 +796,11 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
     VkrEditorWindowState *window = &editor->windows[i];
     editor_window_clamp(ui, window);
     if (window->visible)
-      (void)vkr_ui_input_layer_register(ui, window->z_order + 1u,
+      (void)vkr_ui_input_layer_register(ui, window->z_order + 2u,
                                         editor_window_rect(ui, window));
   }
   if (editor->menu != VKR_EDITOR_MENU_NONE)
-    (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_WINDOW_COUNT + 2u,
+    (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_WINDOW_COUNT + 3u,
                                       editor_menu_popup_rect(editor, ui));
 }
 
@@ -881,7 +882,7 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     window->dragging = false_v;
   }
   editor_window_clamp(ui, window);
-  (void)vkr_ui_input_layer_set(ui, window->z_order + 1u);
+  (void)vkr_ui_input_layer_set(ui, window->z_order + 2u);
   (void)vkr_ui_push_id_u64(ui, kind);
   const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack rows[] = {

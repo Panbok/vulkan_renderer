@@ -3,6 +3,7 @@
 #include "editor_ui.h"
 
 #define VKR_EDITOR_SCENE_TOOLBAR_LAYER 1u
+#define VKR_EDITOR_VIEW_TOOLBAR_LAYER 2u
 #define VKR_EDITOR_METRICS_MENU_X_PT 110.0f
 #define VKR_EDITOR_SETTINGS_MENU_X_PT 232.0f
 #define VKR_EDITOR_NAVIGATION_HEIGHT_PT VKR_UI_DOCK_TOOLBAR_PT
@@ -24,6 +25,14 @@ void vkr_editor_scene_toolbar_update(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame);
 void vkr_editor_scene_toolbar_build(VkrEditorUi *editor,
                                     const VkrSampleUiFrame *frame);
+void vkr_editor_viewport_update(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame);
+void vkr_editor_viewport_build(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame);
+void vkr_editor_grid_build(VkrEditorUi *editor,
+                           const VkrSampleUiFrame *frame);
+void vkr_editor_grid_project(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame);
 void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
                                               VkrUiSystem *ui);
 void vkr_editor_windows_build_navigation(VkrEditorUi *editor,

@@ -116,6 +116,9 @@ typedef struct State {
   bool8_t gameplay_attempted;
   InputState *input_state;
   bool8_t scene_keyboard_focus;
+  VkrSampleViewState view_state;
+  VkrCamera perspective_camera;
+  bool8_t perspective_camera_saved;
   uint32_t collision_display;
   /* Reused application-owned event buffer; draining the editor's demo events
      prevents an otherwise unconsumed sensor queue from exhausting capacity. */
@@ -2141,6 +2144,84 @@ vkr_internal void vkr_standard_scene_runtime_log_camera_snapshot(
            camera->near_clip, camera->far_clip);
 }
 
+/* Axis views pan in their image plane and zoom by changing the orthographic
+ * span. They never pass through the yaw/pitch controller (top/bottom have
+ * vertical forward vectors). */
+static void sample_orthographic_input(VkrStandardSceneRuntime *application,
+                                      float64_t delta) {
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (!camera || vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+                     application)) {
+    return;
+  }
+  InputState *input = state->input_state;
+  bool8_t captured = vkr_window_is_mouse_captured(&application->host.window);
+  if (captured && (input_is_button_up(input, BUTTON_RIGHT) ||
+                   input_key_just_pressed(input, KEY_ESCAPE))) {
+    vkr_window_set_mouse_capture(&application->host.window, false_v);
+    state->free_camera_held = false_v;
+    captured = false_v;
+  }
+  int32_t x = 0;
+  int32_t y = 0;
+  input_get_mouse_position(input, &x, &y);
+  const VkrViewportHitInfo hit =
+      vkr_standard_scene_runtime_get_viewport_hit_info(application, x, y);
+  const bool8_t hovered = hit.has_target_coords &&
+                         !application->ui_capture.mouse &&
+                         !application->ui_capture.text &&
+                         application->ui_system.mouse_input_layer == 0u;
+  int32_t wheel = 0;
+  input_get_mouse_wheel(input, &wheel);
+  if (wheel != 0 && (hovered || captured)) {
+    const float32_t old_height = camera->top_clip - camera->bottom_clip;
+    const float32_t new_height = vkr_clamp_f32(
+        old_height * expf(-(float32_t)wheel * 0.12f), 0.01f, 100000.0f);
+    const float32_t ratio = new_height / old_height;
+    camera->left_clip *= ratio;
+    camera->right_clip *= ratio;
+    camera->bottom_clip *= ratio;
+    camera->top_clip *= ratio;
+    camera->projection_dirty = true_v;
+  }
+  if (!captured && hovered &&
+      input_button_just_pressed(input, BUTTON_RIGHT) &&
+      input_is_button_down(input, BUTTON_RIGHT)) {
+    vkr_window_set_mouse_capture(&application->host.window, true_v);
+    state->free_camera_held = true_v;
+    state->scene_keyboard_focus = true_v;
+    return;
+  }
+  if (!captured) {
+    return;
+  }
+  application->ui_system.focused_id = VKR_UI_ID_NONE;
+  application->ui_system.focused_is_text = false_v;
+  application->ui_capture = (VkrUiInputCapture){0};
+  int32_t dx = 0;
+  int32_t dy = 0;
+  input_get_mouse_delta(input, &dx, &dy);
+  VkrViewportMapping mapping = {0};
+  if (!vkr_standard_scene_runtime_editor_viewport_mapping(
+          application, application->ui_system.target_width,
+          application->ui_system.target_height, &mapping)) {
+    return;
+  }
+  const float32_t units_per_pixel =
+      (camera->top_clip - camera->bottom_clip) /
+      Max(1.0f, mapping.image_rect_px.w);
+  float32_t right = -(float32_t)dx * units_per_pixel;
+  float32_t up = -(float32_t)dy * units_per_pixel;
+  const float32_t step = camera->speed * (float32_t)delta;
+  right += ((float32_t)input_is_key_down(input, KEY_D) -
+            (float32_t)input_is_key_down(input, KEY_A)) * step;
+  up += ((float32_t)input_is_key_down(input, KEY_W) -
+         (float32_t)input_is_key_down(input, KEY_S)) * step;
+  vkr_camera_translate(camera, vec3_add(vec3_scale(camera->right, right),
+                                       vec3_scale(camera->up, up)));
+}
+
 vkr_internal void
 vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
                                         float64_t delta_time) {
@@ -2236,6 +2317,12 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
   if (input_is_key_up(input_state, KEY_G) &&
       input_was_key_down(input_state, KEY_G)) {
     vkr_standard_scene_runtime_log_camera_snapshot(application);
+  }
+
+  if (application->editor_viewport.enabled &&
+      state->view_state.camera_view != VKR_SAMPLE_CAMERA_PERSPECTIVE) {
+    sample_orthographic_input(application, delta_time);
+    return;
   }
 
   if (state->gameplay_enabled ||
@@ -2917,6 +3004,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     const bool8_t focused =
         !state->modal && !application->ui_capture.keyboard &&
         !application->ui_capture.mouse &&
+        state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
         vkr_window_is_mouse_captured(&application->host.window);
     const float64_t gameplay_dt = vkr_gameplay_player_frame(
         &state->player, vkr_platform_get_absolute_time(), focused);
@@ -2932,6 +3020,8 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     }
     vkr_scene_set_visibility(scene, state->player_visual,
                              !application->editor_viewport.simulation_running ||
+                                 state->view_state.camera_view !=
+                                     VKR_SAMPLE_CAMERA_PERSPECTIVE ||
                                  state->player.camera.mode !=
                                      VKR_CAMERA_RIG_FIRST_PERSON,
                              true_v);
@@ -2946,6 +3036,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
       state->player_camera_active = false_v;
     }
     if (camera && application->editor_viewport.simulation_running &&
+        state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
         have_pose) {
       if (!state->player_camera_active) {
         state->editor_camera_position = camera->position;
@@ -2957,7 +3048,10 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
                           state->player.render_yaw * 57.2957795131f,
                           pose.pitch * 57.2957795131f);
     }
-    sample_gameplay_visuals(application, have_pose ? &pose : NULL);
+    sample_gameplay_visuals(
+        application, have_pose && state->view_state.camera_view ==
+                                       VKR_SAMPLE_CAMERA_PERSPECTIVE
+                         ? &pose : NULL);
     vkr_scene_handle_sync(state->scene_resource.as.scene, &application->assets);
   } else {
     vkr_scene_handle_update_and_sync(state->scene_resource.as.scene,
@@ -3434,6 +3528,101 @@ vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
   }
 }
 
+static void sample_view_apply(VkrStandardSceneRuntime *application,
+                               const VkrSampleViewRequest *request) {
+  if (!request->apply || !application->editor_viewport.enabled) {
+    return;
+  }
+  VkrSampleViewState next = request->value;
+  if ((uint32_t)next.camera_view >= VKR_SAMPLE_CAMERA_VIEW_COUNT ||
+      (uint32_t)next.render_mode >= VKR_RENDER_MODE_COUNT ||
+      !isfinite(next.grid_spacing) || next.grid_spacing <= 0.0f) {
+    return;
+  }
+  next.grid_spacing = vkr_clamp_f32(next.grid_spacing, 0.001f, 10000.0f);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (camera && next.camera_view != state->view_state.camera_view) {
+    vkr_standard_scene_runtime_finish_gizmo_edit(application);
+    vkr_standard_scene_runtime_cancel_gizmo_pick(application);
+    if (next.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE) {
+      if (state->perspective_camera_saved) {
+        const uint32_t width = camera->cached_window_width;
+        const uint32_t height = camera->cached_window_height;
+        const float32_t speed = camera->speed;
+        const float32_t sensitivity = camera->sensitivity;
+        *camera = state->perspective_camera;
+        camera->cached_window_width = width;
+        camera->cached_window_height = height;
+        camera->speed = speed;
+        camera->sensitivity = sensitivity;
+        camera->projection_dirty = true_v;
+        camera->view_dirty = true_v;
+      }
+    } else {
+      Vec3 target = vec3_zero();
+      float32_t half_height = 25.0f;
+      if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
+        if (state->player_camera_active) {
+          vkr_camera_set_pose(camera, state->editor_camera_position,
+                              state->editor_camera_yaw,
+                              state->editor_camera_pitch);
+          state->player_camera_active = false_v;
+        }
+        state->perspective_camera = *camera;
+        state->perspective_camera_saved = true_v;
+        const SceneTransform *selected = application->active_scene &&
+                                                 state->has_selection
+            ? vkr_scene_get_transform(application->active_scene,
+                                       state->selected_entity)
+            : NULL;
+        if (selected) {
+          target = mat4_position(selected->world);
+        } else {
+          const Vec3 ahead = vec3_add(camera->position,
+                                      vec3_scale(camera->forward, 25.0f));
+          target = ahead;
+        }
+      } else {
+        half_height = 0.5f * (camera->top_clip - camera->bottom_clip);
+        target = vec3_add(camera->position,
+                          vec3_scale(camera->forward,
+                                     0.5f * (camera->near_clip +
+                                             camera->far_clip)));
+      }
+      static const Vec3 forwards[VKR_SAMPLE_CAMERA_VIEW_COUNT] = {
+          {0, 0, -1}, {0, -1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}};
+      static const Vec3 ups[VKR_SAMPLE_CAMERA_VIEW_COUNT] = {
+          {0, 1, 0}, {0, 0, -1}, {0, 1, 0}, {0, 1, 0}, {0, 0, 1}};
+      const Vec3 forward = forwards[next.camera_view];
+      const float32_t distance =
+          0.5f * (camera->near_clip + camera->far_clip);
+      (void)vkr_camera_set_basis(
+          camera, vec3_sub(target, vec3_scale(forward, distance)), forward,
+          ups[next.camera_view]);
+      camera->type = VKR_CAMERA_TYPE_ORTHOGRAPHIC;
+      const float32_t aspect = (float32_t)camera->cached_window_width /
+                               Max(1.0f, (float32_t)camera->cached_window_height);
+      camera->left_clip = -half_height * aspect;
+      camera->right_clip = half_height * aspect;
+      camera->bottom_clip = -half_height;
+      camera->top_clip = half_height;
+      camera->projection_dirty = true_v;
+      next.grid_enabled = true_v;
+    }
+    vkr_camera_system_update(camera);
+    application->camera_controller.frame_move_forward = 0.0f;
+    application->camera_controller.frame_move_right = 0.0f;
+    application->camera_controller.frame_move_world_up = 0.0f;
+    application->camera_controller.frame_yaw_delta = 0.0f;
+    application->camera_controller.frame_pitch_delta = 0.0f;
+    vkr_window_set_mouse_capture(&application->host.window, false_v);
+    state->free_camera_held = false_v;
+  }
+  state->view_state = next;
+  application->globals.render_mode = next.render_mode;
+}
+
 vkr_internal void
 vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                                      float64_t delta) {
@@ -3518,6 +3707,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                                strlen(state->graphics_message));
   VkrGraphicsSettingsRequest graphics_request = {0};
   VkrSampleTransportAction transport_action = VKR_SAMPLE_TRANSPORT_NONE;
+  VkrSampleViewRequest view_request = {0};
+  state->view_state.render_mode = application->globals.render_mode;
   VkrSamplePhysicsRequest physics_request = {0};
   VkrSceneEditRequest scene_edit = {0};
   VkrSampleSceneRequest scene_request = {0};
@@ -3536,6 +3727,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       .assets = &application->assets,
       .dock = &application->editor_viewport.dock,
       .input = state->input_state,
+      .view_projection =
+          mat4_mul(application->globals.projection, application->globals.view),
       .text =
           {
               .camera =
@@ -3573,6 +3766,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       .graphics = &state->graphics,
       .graphics_request = &graphics_request,
       .transport_action = &transport_action,
+      .view_state = state->view_state,
+      .view_request = &view_request,
       .physics_request = &physics_request,
       .collision_display = state->collision_display,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
@@ -3609,6 +3804,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   application->ui_capture = vkr_ui_end(&application->ui_system);
   sample_graphics_request(application, &graphics_request);
   sample_editor_state_apply(application, &editor_state_request);
+  sample_view_apply(application, &view_request);
   if (close_response != VKR_SAMPLE_CLOSE_NONE) {
     vkr_window_resolve_close(&application->host.window,
                              close_response == VKR_SAMPLE_CLOSE_CONFIRM);
@@ -3785,6 +3981,15 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
         float32_t half_angle =
             atanf(tanf(camera->zoom * 0.0087266463f) * Min(1.0f, aspect));
         float32_t distance = radius / Max(0.01f, sinf(half_angle)) * 1.1f;
+        if (camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC) {
+          const float32_t half_height = radius * 1.1f / Min(1.0f, aspect);
+          camera->left_clip = -half_height * aspect;
+          camera->right_clip = half_height * aspect;
+          camera->bottom_clip = -half_height;
+          camera->top_clip = half_height;
+          camera->projection_dirty = true_v;
+          distance = 0.5f * (camera->near_clip + camera->far_clip);
+        }
         camera->position =
             vec3_sub(target, vec3_scale(camera->forward, distance));
         camera->view_dirty = true_v;
@@ -3907,6 +4112,7 @@ vkr_standard_scene_runtime_project_ui(VkrStandardSceneRuntime *application,
                                       const VkrViewportMapping *mapping) {
   const VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
+      .view_state = state->view_state,
       .mapping = *mapping,
       .mapping_valid = true_v,
       .view_projection =
@@ -4201,6 +4407,11 @@ int vkr_sample_runtime_run(int argc, char **argv,
   VkrAllocator app_alloc = {.ctx = application.app_arena};
   vkr_allocator_arena(&app_alloc);
   state->input_state = &application.host.window.input_state;
+  state->view_state = (VkrSampleViewState){
+      .camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE,
+      .render_mode = application.globals.render_mode,
+      .grid_spacing = 1.0f,
+  };
   state->app_arena = application.app_arena;
   state->event_arena = application.host.events.arena;
   state->event_manager = &application.host.events;
@@ -4770,6 +4981,10 @@ sample_recall_snapshot(VkrStandardSceneRuntime *application) {
   VkrSampleSceneRecall result = {0};
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
+  if (camera && camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC &&
+      state->perspective_camera_saved) {
+    camera = &state->perspective_camera;
+  }
   if (camera && camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
     result.camera_valid = true_v;
     result.position = state->player_camera_active
@@ -4816,6 +5031,10 @@ sample_editor_state_apply(VkrStandardSceneRuntime *application,
   if (request->apply_recall && sample_recall_valid(&request->recall)) {
     const VkrSampleSceneRecall *value = &request->recall;
     if (camera && value->camera_valid) {
+      camera->type = VKR_CAMERA_TYPE_PERSPECTIVE;
+      state->view_state.camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE;
+      state->perspective_camera_saved = false_v;
+      state->player_camera_active = false_v;
       vkr_camera_set_pose(camera, value->position, value->yaw, value->pitch);
       (void)vkr_camera_set_perspective_lens(
           camera, value->field_of_view, value->near_plane, value->far_plane,

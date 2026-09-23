@@ -172,6 +172,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_bakery_update(editor->bakery);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_windows_register_input_layers(editor, frame->ui);
+  vkr_editor_viewport_update(editor, frame);
   vkr_editor_scene_toolbar_update(editor, frame);
   if (frame->mapping_valid) {
     if (!frame->scene_only) {
@@ -191,6 +192,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
   const bool8_t preparing_scene =
       frame->scene_backdrop_blur && *frame->scene_backdrop_blur;
+  vkr_editor_grid_build(editor, frame);
   if (!preparing_scene) {
     vkr_editor_physics_build(editor, frame);
     vkr_editor_labels_build(editor, frame);
@@ -198,6 +200,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_windows_build_navigation(editor, frame);
   if (!preparing_scene) {
     vkr_editor_scene_toolbar_build(editor, frame);
+    vkr_editor_viewport_build(editor, frame);
   }
   if (!preparing_scene && frame->scene_only && frame->mapping.target_width > 0u)
     vkr_editor_ui_build_camera(frame->ui, frame->scene_only,
