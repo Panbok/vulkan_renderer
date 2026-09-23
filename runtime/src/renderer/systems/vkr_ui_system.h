@@ -171,7 +171,7 @@ typedef struct VkrUiSystem {
   float64_t delta_time;
   int32_t mouse_x;
   int32_t mouse_y;
-  int8_t mouse_wheel;
+  int32_t mouse_wheel;
   bool8_t mouse_captured;
   bool8_t mouse_pressed;
   bool8_t mouse_released;

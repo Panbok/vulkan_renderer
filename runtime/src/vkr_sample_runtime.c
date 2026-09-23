@@ -185,8 +185,6 @@ typedef struct State {
 
   bool8_t free_camera_use_gamepad;
   bool8_t free_camera_held;
-  bool8_t free_camera_wheel_initialized;
-  int8_t free_camera_prev_wheel_delta;
 
   // Scene system demo
   VkrResourceHandleInfo scene_resource;
@@ -2279,7 +2277,6 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
     if (camera_captured)
       vkr_window_set_mouse_capture(&application->host.window, false_v);
     state->free_camera_held = false_v;
-    state->free_camera_wheel_initialized = false_v;
     camera_captured = false_v;
   }
   bool8_t camera_started = false_v;
@@ -2299,7 +2296,6 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
     vkr_window_set_mouse_capture(&application->host.window, !camera_captured);
     state->free_camera_held = false_v;
     camera_started = !camera_captured;
-    state->free_camera_wheel_initialized = false_v;
     state->free_camera_use_gamepad = false_v;
   }
 
@@ -2337,7 +2333,6 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
       vkr_window_set_mouse_capture(&application->host.window, true_v);
       state->free_camera_held = true_v;
       state->free_camera_use_gamepad = false_v;
-      state->free_camera_wheel_initialized = false_v;
       state->scene_keyboard_focus = true_v;
       application->ui_system.focused_id = VKR_UI_ID_NONE;
       application->ui_system.focused_is_text = false_v;
@@ -2376,13 +2371,6 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
   VkrCameraController *controller = &application->camera_controller;
   controller->camera = camera;
 
-  if (!state->free_camera_wheel_initialized) {
-    int8_t wheel_delta = 0;
-    input_get_mouse_wheel(input_state, &wheel_delta);
-    state->free_camera_prev_wheel_delta = wheel_delta;
-    state->free_camera_wheel_initialized = true_v;
-  }
-
   bool8_t should_rotate = false_v;
   float32_t yaw_input = 0.0f;
   float32_t pitch_input = 0.0f;
@@ -2401,12 +2389,11 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
       vkr_camera_controller_move_right(controller, -1.0f);
     }
 
-    int8_t wheel_delta = 0;
+    int32_t wheel_delta = 0;
     input_get_mouse_wheel(input_state, &wheel_delta);
-    if (wheel_delta != state->free_camera_prev_wheel_delta) {
+    if (wheel_delta != 0) {
       float32_t zoom_delta = -(float32_t)wheel_delta * 0.1f;
       vkr_camera_zoom(camera, zoom_delta);
-      state->free_camera_prev_wheel_delta = wheel_delta;
     }
 
     int32_t x = 0;
@@ -3475,7 +3462,6 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
         (command && input_key_just_pressed(state->input_state, KEY_P))) {
       vkr_window_set_mouse_capture(&application->host.window, false_v);
       state->free_camera_held = false_v;
-      state->free_camera_wheel_initialized = false_v;
       state->free_camera_use_gamepad = false_v;
     }
     if (escape) {
@@ -3869,7 +3855,6 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     if (vkr_window_is_mouse_captured(&application->host.window))
       vkr_window_set_mouse_capture(&application->host.window, false_v);
     state->free_camera_held = false_v;
-    state->free_camera_wheel_initialized = false_v;
     state->free_camera_use_gamepad = false_v;
     vkr_picking_cancel(&application->picking);
     state->gizmo_drag.active = false_v;
@@ -3886,7 +3871,6 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       vkr_window_set_mouse_capture(&application->host.window, !captured);
       state->free_camera_held = false_v;
       state->scene_keyboard_focus = true_v;
-      state->free_camera_wheel_initialized = false_v;
       state->free_camera_use_gamepad = false_v;
     }
     break;
@@ -4271,8 +4255,6 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->world_text_update_clock = vkr_clock_create();
   state->free_camera_use_gamepad = false_v;
   state->free_camera_held = false_v;
-  state->free_camera_wheel_initialized = false_v;
-  state->free_camera_prev_wheel_delta = 0;
   state->last_picked_object_id = 0;
   state->selected_entity = VKR_ENTITY_ID_INVALID;
   state->has_selection = false_v;

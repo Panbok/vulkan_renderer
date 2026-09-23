@@ -314,8 +314,7 @@ typedef struct MouseMoveEventData {
 
 /**
  * @brief Data associated with a mouse wheel scroll event.
- * Dispatched as part of an `Event` when `input_process_mouse_wheel` detects a
- * change.
+ * Dispatched for each nonzero platform wheel event, including identical deltas.
  */
 typedef struct MouseWheelEventData {
   int8_t delta; /**< The amount the mouse wheel was scrolled. Positive for
@@ -330,7 +329,7 @@ typedef struct ButtonsState {
   bool8_t buttons[BUTTON_MAX_BUTTONS];
   int32_t x;
   int32_t y;
-  int8_t wheel;
+  int32_t wheel;
 } ButtonsState;
 
 typedef struct GamepadAxes {
@@ -610,15 +609,14 @@ void input_get_mouse_delta(const InputState *input_state, int32_t *dx,
                            int32_t *dy);
 
 /**
- * @brief Retrieves the last processed mouse wheel delta.
- * Note: The concept of a "previous" mouse wheel delta is not explicitly stored
- * across frames in the same way as position or button states. This function
- * returns the most recent delta processed by `input_process_mouse_wheel`.
+ * @brief Retrieves accumulated wheel movement for the current frame.
+ * Each event contributes its signed delta. input_update clears the accumulator
+ * after frame consumers finish; accumulation saturates at the int32_t limits.
  * @param input_state Pointer to the `InputState` to query.
- * @param[out] delta Pointer to store the last mouse wheel delta. Positive for
+ * @param[out] delta Pointer to store the frame's mouse wheel delta. Positive for
  * up/forward, negative for down/backward.
  */
-void input_get_mouse_wheel(InputState *input_state, int8_t *delta);
+void input_get_mouse_wheel(InputState *input_state, int32_t *delta);
 
 /**
  * @brief Processes a mouse button event.
@@ -647,9 +645,8 @@ void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y);
 /**
  * @brief Processes a mouse wheel scroll event.
  * Called by the platform layer when the mouse wheel is scrolled.
- * Updates the internal mouse wheel state and dispatches an
- * `EVENT_TYPE_MOUSE_WHEEL` event via the `EventManager` if the delta is
- * non-zero or changed from the previous non-zero delta.
+ * Accumulates the signed delta for this frame and dispatches an
+ * `EVENT_TYPE_MOUSE_WHEEL` event via the `EventManager` for each nonzero delta.
  * @param input_state Pointer to the `InputState` to modify.
  * @param delta The amount the wheel was scrolled. Positive for up/forward,
  * negative for down/backward.

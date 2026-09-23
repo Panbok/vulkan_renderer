@@ -37,6 +37,7 @@ static bool8_t mouse_move_event_received = false;
 static MouseMoveEventData last_mouse_move_event_data;
 
 static bool8_t mouse_wheel_event_received = false;
+static uint32_t mouse_wheel_event_count;
 static MouseWheelEventData last_mouse_wheel_event_data;
 
 // --- Helper event handlers for detailed event testing ---
@@ -60,6 +61,7 @@ static bool8_t on_mouse_move_event(Event *event, UserData user_data) {
 
 static bool8_t on_mouse_wheel_event(Event *event, UserData user_data) {
   mouse_wheel_event_received = true;
+  mouse_wheel_event_count++;
   last_mouse_wheel_event_data = *(MouseWheelEventData *)event->data;
   return true;
 }
@@ -79,6 +81,7 @@ static void reset_event_trackers() {
   mouse_move_event_received = false;
   MemZero(&last_mouse_move_event_data, sizeof(MouseMoveEventData));
   mouse_wheel_event_received = false;
+  mouse_wheel_event_count = 0;
   MemZero(&last_mouse_wheel_event_data, sizeof(MouseWheelEventData));
 }
 
@@ -341,7 +344,7 @@ static void test_input_mouse_wheel() {
   assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
                                  on_mouse_wheel_event, NULL));
   InputState input_state = input_init(&manager);
-  int8_t current_delta;
+  int32_t current_delta;
 
   // Initial wheel movement (scroll up)
   input_process_mouse_wheel(&input_state, 1);
@@ -356,12 +359,20 @@ static void test_input_mouse_wheel() {
          "Incorrect data in mouse wheel event");
   reset_event_trackers();
 
-  // Subsequent wheel movement (scroll down)
+  // Identical notches are separate movement and separate event notifications.
+  input_process_mouse_wheel(&input_state, 1);
+  input_process_mouse_wheel(&input_state, 1);
+  event_test_wait_idle(&manager);
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == 3 && mouse_wheel_event_count == 2);
+  reset_event_trackers();
+
+  // Opposite movement cancels only its own contribution within the frame.
   input_process_mouse_wheel(&input_state, -1);
   event_test_wait_idle(&manager);
 
   input_get_mouse_wheel(&input_state, &current_delta);
-  assert(current_delta == -1 &&
+  assert(current_delta == 2 &&
          "Mouse wheel delta not updated correctly on second scroll");
   assert(mouse_wheel_event_received &&
          "Mouse wheel event not received on second scroll");
@@ -369,29 +380,44 @@ static void test_input_mouse_wheel() {
          "Incorrect data in second mouse wheel event");
   reset_event_trackers();
 
-  // No event if wheel delta is the same (though input_process_mouse_wheel will
-  // always fire if delta != current_buttons.wheel) So, let's ensure that if we
-  // process the *same* delta again, it still fires, as current_buttons.wheel is
-  // updated. This is different from keys/buttons/mouse_move where state is
-  // compared before firing. However, if we call it with 0 after it was
-  // non-zero, that should be a change.
-
-  input_process_mouse_wheel(&input_state, 0); // Reset wheel to 0
-  event_test_wait_idle(&manager);
-
-  input_get_mouse_wheel(&input_state, &current_delta);
-  assert(current_delta == 0 && "Mouse wheel delta not reset to 0");
-  assert(mouse_wheel_event_received &&
-         "Mouse wheel event for 0 delta not received");
-  assert(last_mouse_wheel_event_data.delta == 0 &&
-         "Incorrect data for 0 delta event");
-  reset_event_trackers();
-
-  // Test no event if delta is already 0 and we process 0 again
+  // Zero is no movement, not a request to erase this frame's movement.
   input_process_mouse_wheel(&input_state, 0);
   event_test_wait_idle(&manager);
-  assert(mouse_wheel_event_received == false &&
-         "Mouse wheel event received when delta did not change from 0");
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == 2 && !mouse_wheel_event_received);
+
+  // End-of-frame retirement prevents idle frames from repeating a scroll.
+  input_update(&input_state);
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == 0 && input_state.previous_buttons.wheel == 2);
+  input_process_mouse_wheel(&input_state, -1);
+  input_process_mouse_wheel(&input_state, -1);
+  input_process_mouse_wheel(&input_state, 1);
+  event_test_wait_idle(&manager);
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == -1 && mouse_wheel_event_count == 3);
+  input_update(&input_state);
+  input_update(&input_state);
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == 0);
+
+  // Per-event int8 deltas must not narrow the accumulated frame total.
+  reset_event_trackers();
+  for (uint32_t i = 0; i < 256; ++i) {
+    input_process_mouse_wheel(&input_state, 1);
+  }
+  event_test_wait_idle(&manager);
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == 256 && mouse_wheel_event_count == 256);
+
+  input_state.current_buttons.wheel = INT32_MAX - 1;
+  input_process_mouse_wheel(&input_state, 127);
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == INT32_MAX);
+  input_state.current_buttons.wheel = INT32_MIN + 1;
+  input_process_mouse_wheel(&input_state, -128);
+  input_get_mouse_wheel(&input_state, &current_delta);
+  assert(current_delta == INT32_MIN);
 
   input_shutdown(&input_state);
   event_manager_destroy(&manager);

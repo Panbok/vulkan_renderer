@@ -75,6 +75,7 @@ void input_update(InputState *input_state) {
           sizeof(KeysState));
   MemCopy(&input_state->previous_buttons, &input_state->current_buttons,
           sizeof(ButtonsState));
+  input_state->current_buttons.wheel = 0;
   MemZero(&input_state->pressed_keys, sizeof(input_state->pressed_keys));
   MemZero(&input_state->released_keys, sizeof(input_state->released_keys));
   MemZero(input_state->pressed_buttons, sizeof(input_state->pressed_buttons));
@@ -281,20 +282,21 @@ void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y) {
 }
 
 void input_process_mouse_wheel(InputState *input_state, int8_t delta) {
-  if (input_state->current_buttons.wheel != delta) {
-    input_state->current_buttons.wheel = delta;
-
-    MouseWheelEventData mouse_wheel_event_data = {
-        .delta = delta,
-    };
-
-    Event event = {
-        .type = EVENT_TYPE_MOUSE_WHEEL,
-        .data = (void *)&mouse_wheel_event_data,
-        .data_size = sizeof(MouseWheelEventData),
-    };
-    event_manager_dispatch(input_state->event_manager, event);
+  if (!delta) {
+    return;
   }
+  const int64_t accumulated =
+      (int64_t)input_state->current_buttons.wheel + delta;
+  input_state->current_buttons.wheel =
+      (int32_t)Clamp(accumulated, INT32_MIN, INT32_MAX);
+
+  MouseWheelEventData mouse_wheel_event_data = {.delta = delta};
+  Event event = {
+      .type = EVENT_TYPE_MOUSE_WHEEL,
+      .data = &mouse_wheel_event_data,
+      .data_size = sizeof(mouse_wheel_event_data),
+  };
+  event_manager_dispatch(input_state->event_manager, event);
 }
 
 void input_get_button_press_position(const InputState *input_state,
@@ -330,7 +332,7 @@ void input_get_mouse_delta(const InputState *input_state, int32_t *dx,
   *dy = current_y - previous_y;
 }
 
-void input_get_mouse_wheel(InputState *input_state, int8_t *delta) {
+void input_get_mouse_wheel(InputState *input_state, int32_t *delta) {
   *delta = input_state->current_buttons.wheel;
 }
 
