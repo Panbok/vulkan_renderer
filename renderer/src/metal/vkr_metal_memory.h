@@ -63,13 +63,6 @@ vkr_metal_memory_collect(VkrMetalMemoryCore *memory,
 void vkr_metal_memory_record_native_failure(VkrMetalMemoryCore *memory);
 void vkr_metal_memory_get_metrics(VkrMetalMemoryCore *memory,
                                   VkrMetalMemoryMetrics *out_metrics);
-void vkr_metal_memory_owner_record_allocate(
-    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
-    VkrGpuAllocationOwner owner, uint64_t size);
-bool8_t vkr_metal_memory_owner_record_release(
-    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
-    VkrGpuAllocationOwner owner, uint64_t size);
-
 typedef VkrGpuSubmitRingSlot VkrMetalSubmitRingSlot;
 typedef VkrGpuSubmitRing VkrMetalSubmitRing;
 typedef VkrGpuRingSlice VkrMetalRingSlice;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "vkr_renderer.h"
 
 typedef struct VkrGpuMemoryCore VkrGpuMemoryCore;
 
@@ -129,3 +130,14 @@ void vkr_gpu_memory_metrics_accumulate(VkrGpuMemoryMetrics *total,
                                        const VkrGpuMemoryMetrics *addition);
 
 const char *vkr_gpu_memory_status_string(VkrGpuMemoryStatus status);
+
+/** Records one native allocation in its owner's live, peak and total counts.
+ */
+void vkr_gpu_memory_owner_record_allocate(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);
+
+/** Records one native release; false when the owner holds no such bytes. */
+bool8_t vkr_gpu_memory_owner_record_release(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);

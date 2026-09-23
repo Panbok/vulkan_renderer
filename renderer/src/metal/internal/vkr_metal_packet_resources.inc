@@ -179,18 +179,18 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
     [encoder barrierAfterQueueStages:MTLStageBlit
                         beforeStages:MTLStageBlit
                    visibilityOptions:MTL4VisibilityOptionDevice];
-    if (mega->vertex_high_water)
+    if (mega->accounting.vertex_high_water)
       [encoder copyFromBuffer:(id<MTLBuffer>)mega->vertices.metal_buffer
                  sourceOffset:0u
                      toBuffer:(id<MTLBuffer>)vertices.metal_buffer
             destinationOffset:0u
-                         size:mega->vertex_high_water];
-    if (mega->index_high_water)
+                         size:mega->accounting.vertex_high_water];
+    if (mega->accounting.index_high_water)
       [encoder copyFromBuffer:(id<MTLBuffer>)mega->indices.metal_buffer
                  sourceOffset:0u
                      toBuffer:(id<MTLBuffer>)indices.metal_buffer
             destinationOffset:0u
-                         size:mega->index_high_water];
+                         size:mega->accounting.index_high_water];
     /* New publications may reuse holes covered by this preservation copy. */
     [encoder barrierAfterStages:MTLStageBlit
               beforeQueueStages:MTLStageBlit
@@ -215,7 +215,7 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
                                            retire_value);
       return false_v;
     }
-    mega->generation_replacements++;
+    mega->accounting.generation_replacements++;
   }
 
   mega->vertices = vertices;
@@ -359,7 +359,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
                 "(offsets=%u capacity=%u vertices=%u indices=%u)",
                 offsets_valid, capacity_ready, vertices_uploaded,
                 indices_uploaded);
-      mega->rejected_publications++;
+      mega->accounting.rejected_publications++;
       /* Earlier chunks or a backing growth copy may already be submitted. */
       if (offsets_valid) {
         if (!vkr_geometry_ranges_retire(&renderer->geometry_ranges, ranges,
@@ -422,16 +422,8 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
                          (unsigned long long)ranges.index_offset,
                          (unsigned long long)ranges.vertex_end,
                          (unsigned long long)ranges.index_end);
-    mega->vertex_high_water = Max(mega->vertex_high_water, ranges.vertex_end);
-    mega->index_high_water = Max(mega->index_high_water, ranges.index_end);
-    mega->vertex_live_bytes += vertex_bytes;
-    mega->index_live_bytes += index_bytes;
-    mega->decode_metadata_live_bytes += decode_bytes;
-    mega->vertex_uploaded_bytes_total += vertex_bytes;
-    mega->index_uploaded_bytes_total += index_bytes;
-    mega->decode_metadata_uploaded_bytes_total += decode_bytes;
-    mega->decode_metadata_high_water =
-        Max(mega->decode_metadata_high_water, mega->decode_metadata_live_bytes);
+    vkr_geometry_megabuffer_account_publish(
+        &mega->accounting, &ranges, vertex_bytes, index_bytes, decode_bytes);
     vkr_metal_packet_geometry_ranges_diagnostic(renderer,
                                                 "geometry_ranges_published");
     *out_handle = (VkrMeshHandle){.id = i + 1, .generation = slot->generation};
@@ -439,8 +431,8 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
         renderer, "mesh_publish",
         "handle=%u:%u ranges=%u vertex_high_water=%llu index_high_water=%llu",
         out_handle->id, out_handle->generation, slot->submesh_count,
-        (unsigned long long)mega->vertex_high_water,
-        (unsigned long long)mega->index_high_water);
+        (unsigned long long)mega->accounting.vertex_high_water,
+        (unsigned long long)mega->accounting.index_high_water);
     return true_v;
   }
   return false_v;
@@ -654,11 +646,9 @@ bool8_t vkr_metal_packet_renderer_destroy_mesh(VkrMetalPacketRenderer *renderer,
     const uint64_t vertex_bytes =
         (uint64_t)slot->vertex_count * sizeof(VkrPackedStaticVertex);
     const uint64_t index_bytes = (uint64_t)slot->index_count * sizeof(uint32_t);
-    mega->vertex_live_bytes -= Min(mega->vertex_live_bytes, vertex_bytes);
-    mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
-    mega->decode_metadata_live_bytes -=
-        Min(mega->decode_metadata_live_bytes,
-            (uint64_t)slot->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
+    vkr_geometry_megabuffer_account_retire(
+        &mega->accounting, vertex_bytes, index_bytes,
+        (uint64_t)slot->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
     slot->live = false_v;
     slot->generation =
         slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
@@ -675,41 +665,6 @@ bool8_t vkr_metal_packet_renderer_destroy_mesh(VkrMetalPacketRenderer *renderer,
                                                 "geometry_ranges_unpublished");
     return true_v;
   }
-}
-
-vkr_internal Vec4 vkr_metal_packet_anisotropy(float32_t strength,
-                                               float32_t rotation) {
-  const float32_t normalized_rotation =
-      remainderf(rotation, 6.28318530717958647692f);
-  return (Vec4){strength, cosf(normalized_rotation),
-                sinf(normalized_rotation), 0.0f};
-}
-
-vkr_internal bool8_t vkr_metal_packet_diffuse_extensions_valid(
-    const VkrMaterial *material) {
-  const VkrPbrProperties *pbr = &material->pbr;
-  const float32_t strength = pbr->diffuse_transmission_strength;
-  const Vec3 tint = pbr->diffuse_transmission_color;
-  if (!isfinite(strength) || !isfinite(tint.x) || !isfinite(tint.y) ||
-      !isfinite(tint.z) || strength < 0.0f || strength > 1.0f ||
-      tint.x < 0.0f || tint.x > 1.0f || tint.y < 0.0f || tint.y > 1.0f ||
-      tint.z < 0.0f || tint.z > 1.0f)
-    return false_v;
-  if (strength > 0.0f &&
-      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
-       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
-       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f))
-    return false_v;
-  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
-      pbr->subsurface_strength > 1.0f || pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT)
-    return false_v;
-  if (pbr->subsurface_strength > 0.0f &&
-      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
-       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
-       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
-       pbr->diffuse_transmission_strength > 0.0f))
-    return false_v;
-  return true_v;
 }
 
 bool8_t vkr_metal_packet_renderer_create_material(
@@ -817,27 +772,27 @@ bool8_t vkr_metal_packet_renderer_create_material(
                        create_info->pbr.clearcoat_roughness,
                        create_info->pbr.clearcoat_normal_scale, 0.0f},
                   .sheen_color_texture_id = slot->textures[9].resource_id,
-                  .sheen_roughness_texture_id =
-                      slot->textures[10].resource_id,
+                  .sheen_roughness_texture_id = slot->textures[10].resource_id,
                   .sheen_color_sampler_id = material_sampler_id,
                   .sheen_roughness_sampler_id = material_sampler_id,
-                  .material_sheen =
-                      {create_info->pbr.sheen_color.x,
-                       create_info->pbr.sheen_color.y,
-                       create_info->pbr.sheen_color.z,
-                       create_info->pbr.sheen_roughness},
-                  .material_anisotropy = vkr_metal_packet_anisotropy(
+                  .material_sheen = {create_info->pbr.sheen_color.x,
+                                     create_info->pbr.sheen_color.y,
+                                     create_info->pbr.sheen_color.z,
+                                     create_info->pbr.sheen_roughness},
+                  .material_anisotropy = vkr_gpu_material_anisotropy(
                       create_info->pbr.anisotropy_strength,
                       create_info->pbr.anisotropy_rotation),
                   .anisotropy_texture_id = slot->textures[11].resource_id,
                   .anisotropy_sampler_id = material_sampler_id,
-                  .material_diffuse_transmission = {
-                      create_info->pbr.diffuse_transmission_color.x,
-                      create_info->pbr.diffuse_transmission_color.y,
-                      create_info->pbr.diffuse_transmission_color.z,
-                      create_info->pbr.diffuse_transmission_strength},
-                  .material_subsurface = {create_info->pbr.subsurface_strength,
-                      (float32_t)create_info->pbr.subsurface_profile, 0.0f, 0.0f},
+                  .material_diffuse_transmission =
+                      {create_info->pbr.diffuse_transmission_color.x,
+                       create_info->pbr.diffuse_transmission_color.y,
+                       create_info->pbr.diffuse_transmission_color.z,
+                       create_info->pbr.diffuse_transmission_strength},
+                  .material_subsurface =
+                      {create_info->pbr.subsurface_strength,
+                       (float32_t)create_info->pbr.subsurface_profile, 0.0f,
+                       0.0f},
               },
           .transmission =
               {
@@ -943,7 +898,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
         handle.generation == VKR_INVALID_ID || material->id != handle.id ||
         material->generation != handle.generation)
       return false_v;
-    if (!vkr_metal_packet_diffuse_extensions_valid(material))
+    if (!vkr_gpu_material_extensions_valid(material))
       return false_v;
     if (!@available(macOS 26.0, *))
       return false_v;
@@ -1067,35 +1022,34 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                 .clearcoat_texture_id = textures[6]->resource.resource_id,
                 .clearcoat_roughness_texture_id =
                     textures[7]->resource.resource_id,
-                .clearcoat_normal_texture_id = textures[8]->resource.resource_id,
+                .clearcoat_normal_texture_id =
+                    textures[8]->resource.resource_id,
                 .clearcoat_sampler_id = textures[6]->sampler_resource_id,
                 .clearcoat_roughness_sampler_id =
                     textures[7]->sampler_resource_id,
-                .clearcoat_normal_sampler_id =
-                    textures[8]->sampler_resource_id,
-                .material_clearcoat =
-                    {pbr.clearcoat_factor, pbr.clearcoat_roughness,
-                     pbr.clearcoat_normal_scale, 0.0f},
+                .clearcoat_normal_sampler_id = textures[8]->sampler_resource_id,
+                .material_clearcoat = {pbr.clearcoat_factor,
+                                       pbr.clearcoat_roughness,
+                                       pbr.clearcoat_normal_scale, 0.0f},
                 .sheen_color_texture_id = textures[9]->resource.resource_id,
                 .sheen_roughness_texture_id =
                     textures[10]->resource.resource_id,
                 .sheen_color_sampler_id = textures[9]->sampler_resource_id,
-                .sheen_roughness_sampler_id =
-                    textures[10]->sampler_resource_id,
-                .material_sheen =
-                    {pbr.sheen_color.x, pbr.sheen_color.y, pbr.sheen_color.z,
-                     pbr.sheen_roughness},
-                .material_anisotropy = vkr_metal_packet_anisotropy(
+                .sheen_roughness_sampler_id = textures[10]->sampler_resource_id,
+                .material_sheen = {pbr.sheen_color.x, pbr.sheen_color.y,
+                                   pbr.sheen_color.z, pbr.sheen_roughness},
+                .material_anisotropy = vkr_gpu_material_anisotropy(
                     pbr.anisotropy_strength, pbr.anisotropy_rotation),
                 .anisotropy_texture_id = textures[11]->resource.resource_id,
                 .anisotropy_sampler_id = textures[11]->sampler_resource_id,
-                .material_diffuse_transmission = {
-                    pbr.diffuse_transmission_color.x,
-                    pbr.diffuse_transmission_color.y,
-                    pbr.diffuse_transmission_color.z,
-                    pbr.diffuse_transmission_strength},
-                  .material_subsurface = {pbr.subsurface_strength,
-                      (float32_t)pbr.subsurface_profile, 0.0f, 0.0f},
+                .material_diffuse_transmission =
+                    {pbr.diffuse_transmission_color.x,
+                     pbr.diffuse_transmission_color.y,
+                     pbr.diffuse_transmission_color.z,
+                     pbr.diffuse_transmission_strength},
+                .material_subsurface = {pbr.subsurface_strength,
+                                        (float32_t)pbr.subsurface_profile, 0.0f,
+                                        0.0f},
             },
         .transmission =
             {
@@ -2645,14 +2599,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
              .data[renderer->graph->execution_order.data[order]];
     if (pass->culled || !world)
       continue;
-    if (vkr_metal_packet_graph_pass_is(
-            pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND)) {
+    if (vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_WORLD_BLEND)) {
       direct_pass_count++;
       /* One frame root and one temporal draw-state record. */
       direct_auxiliary_root_cells += 2u;
     } else if (packet->input.picking && packet->input.picking->pending &&
-               vkr_metal_packet_graph_pass_is(
-                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING)) {
+               vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_PICKING)) {
       direct_pass_count++;
       direct_auxiliary_root_cells++;
     }
@@ -2725,18 +2677,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
              .data[renderer->graph->execution_order.data[order]];
     if (pass->culled)
       continue;
-    if (vkr_metal_packet_graph_pass_is(
-            pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING) ||
-        vkr_metal_packet_graph_pass_is(
-            pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE)) {
+    if (vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_LIGHTING_DEFERRED) ||
+        vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_TRANSMISSION_SHADE)) {
       ++frame_root_count;
     } else if (renderer->prepared_frame.ssgi_enabled &&
-               vkr_metal_packet_graph_pass_is(
-                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_COMPOSITE)) {
+               vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_SSGI_COMPOSITE)) {
       ++frame_root_count;
     } else if (renderer->prepared_frame.ssr_enabled &&
-               vkr_metal_packet_graph_pass_is(
-                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TEMPORAL)) {
+               vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_SSR_TEMPORAL)) {
       /* The 128-byte camera payload has one cell beside the ordinary
        * 448-byte temporal root. Receiver material shading belongs to composite.
        */
@@ -2744,25 +2692,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
         return false_v;
       ++root_count;
     } else if (renderer->prepared_frame.ssr_enabled &&
-               vkr_metal_packet_graph_pass_is(
-                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_COMPOSITE)) {
+               vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_SSR_COMPOSITE)) {
       ++frame_root_count;
     } else if (packet->froxel_fog.grid_dimensions_cell_pixels[0] > 0u &&
-               (vkr_metal_packet_graph_pass_is(
-                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INJECT) ||
-                vkr_metal_packet_graph_pass_is(
-                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INTEGRATE) ||
-                vkr_metal_packet_graph_pass_is(
-                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_APPLY))) {
+               (vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_FROXEL_INJECT) ||
+                vkr_render_graph_pass_is(pass,
+                                         VKR_RG_EXECUTOR_FROXEL_INTEGRATE) ||
+                vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_FROXEL_APPLY))) {
       ++frame_root_count;
     } else if (source_gpu_draw_count > 0u &&
-               vkr_metal_packet_graph_pass_is(
-                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE)) {
+               vkr_render_graph_pass_is(pass,
+                                        VKR_RG_EXECUTOR_GPU_DRAW_ENCODE)) {
       frame_root_count += frame_root_gpu_draw_view_count;
     } else if (source_transmission_gpu_draw_count > 0u &&
-               vkr_metal_packet_graph_pass_is(
-                   pass,
-                   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE)) {
+               vkr_render_graph_pass_is(
+                   pass, VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE)) {
       ++frame_root_count;
     }
   }

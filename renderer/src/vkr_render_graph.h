@@ -655,6 +655,19 @@ typedef struct VkrRenderGraphResourceStats {
 } VkrRenderGraphResourceStats;
 
 /**
+ * @brief Adds live instances of one graph image. Bytes cover every mip, layer
+ * and sample; block-compressed or unknown formats are not counted.
+ */
+void vkr_render_graph_resource_stats_add_image(
+    VkrRenderGraphResourceStats *stats, const VkrRgImageDesc *desc,
+    uint32_t instance_count);
+
+/** @brief Adds live instances of one graph buffer. */
+void vkr_render_graph_resource_stats_add_buffer(
+    VkrRenderGraphResourceStats *stats, const VkrRgBufferDesc *desc,
+    uint32_t instance_count);
+
+/**
  * @brief Creates a new render graph.
  * @param allocator Allocator for all graph-owned data; must outlive the graph
  * @return New graph, or NULL on allocation failure

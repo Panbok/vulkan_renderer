@@ -2545,17 +2545,7 @@ typedef struct VkrVulkanGeometryMegabuffer {
   uint64_t copy_vertex_size;
   uint64_t copy_index_size;
   VkrVulkanRetiredGeometryMegabuffer retired[4];
-  uint64_t vertex_live_bytes;
-  uint64_t index_live_bytes;
-  uint64_t vertex_high_water;
-  uint64_t index_high_water;
-  uint64_t vertex_uploaded_bytes_total;
-  uint64_t index_uploaded_bytes_total;
-  uint64_t decode_metadata_live_bytes;
-  uint64_t decode_metadata_high_water;
-  uint64_t decode_metadata_uploaded_bytes_total;
-  uint64_t rejected_publications;
-  uint64_t generation_replacements;
+  VkrGeometryMegabufferAccounting accounting;
   uint32_t generation;
   bool8_t live;
   bool8_t copy_pending;
@@ -2932,7 +2922,6 @@ void vkr_vk_mark_graph_images_submitted(VkrVulkanRenderer *renderer,
                                         uint64_t submit_value);
 void vkr_vk_mark_graph_buffers_submitted(VkrVulkanRenderer *renderer,
                                          uint64_t submit_value);
-bool8_t vkr_vk_register_graph_executors(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle);
 bool8_t vkr_vk_asset_unpublish_material(void *state, VkrMaterialHandle handle);

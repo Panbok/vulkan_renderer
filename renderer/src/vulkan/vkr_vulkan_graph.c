@@ -1,97 +1,12 @@
 #include "math/vkr_frustum.h"
+#include "vkr_render_graph_frame.h"
 #include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
-typedef enum VkrVulkanGraphExecutorKind {
-  VKR_VULKAN_GRAPH_EXECUTOR_SHADOW = 0,
-  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW,
-  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0,
-  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1,
-  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
-  VKR_VULKAN_GRAPH_EXECUTOR_PICKING,
-  VKR_VULKAN_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
-  VKR_VULKAN_GRAPH_EXECUTOR_PICKING_RESOLVE,
-  VKR_VULKAN_GRAPH_EXECUTOR_PICKING_READBACK,
-  VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE,
-  VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD,
-  VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
-  VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
-  VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
-  VKR_VULKAN_GRAPH_EXECUTOR_SKINNING,
-  VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_DEPTH_SEED,
-  VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE,
-  VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION,
-  VKR_VULKAN_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
-  VKR_VULKAN_GRAPH_EXECUTOR_LIGHTING_DEFERRED,
-  VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_RESOLVE,
-  VKR_VULKAN_GRAPH_EXECUTOR_FSR31_PREPARE,
-  VKR_VULKAN_GRAPH_EXECUTOR_FSR31_UPSCALE,
-  VKR_VULKAN_GRAPH_EXECUTOR_FSR31_STABILIZE,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
-  VKR_VULKAN_GRAPH_EXECUTOR_HZB_BUILD,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_BASE,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_MIP,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSR_TRACE,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSR_TEMPORAL,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSR_COMPOSITE,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_BASE,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_MIP,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TRACE,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TEMPORAL,
-  VKR_VULKAN_GRAPH_EXECUTOR_SSGI_COMPOSITE,
-  VKR_VULKAN_GRAPH_EXECUTOR_FOG_APPLY,
-  VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INJECT,
-  VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INTEGRATE,
-  VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_APPLY,
-  VKR_VULKAN_GRAPH_EXECUTOR_SDSM_REDUCE,
-  VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
-  VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
-  VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND,
-  VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM,
-  VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_RESOLVE,
-  VKR_VULKAN_GRAPH_EXECUTOR_SUBSURFACE_GATHER,
-  VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX,
-  VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX,
-  VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT,
-  VKR_VULKAN_GRAPH_EXECUTOR_DOF_COC,
-  VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL,
-  VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL,
-  VKR_VULKAN_GRAPH_EXECUTOR_DOF_PREFILTER,
-  VKR_VULKAN_GRAPH_EXECUTOR_DOF_GATHER,
-  VKR_VULKAN_GRAPH_EXECUTOR_DOF_COMPOSITE,
-  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_PREFILTER,
-  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
-  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
-  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE,
-  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE,
-  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER,
-  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_MIP,
-  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_EVALUATE,
-  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DENOISE,
-  VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP,
-  VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE,
-  VKR_VULKAN_GRAPH_EXECUTOR_EDITOR,
-  VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR,
-  VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY,
-  VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING,
-  VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW,
-  VKR_VULKAN_GRAPH_EXECUTOR_UI,
-  VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STAGE,
-  VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL,
-  VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STABILIZE,
-  VKR_VULKAN_GRAPH_EXECUTOR_COUNT,
-} VkrVulkanGraphExecutorKind;
 
 enum { VKR_VULKAN_FULLSCREEN_ACES_FITTED = 1u << 4u };
 
 struct VkrVulkanPreparedGraphPass {
-  VkrVulkanGraphExecutorKind kind;
+  VkrRgExecutorKind kind;
   VkDependencyInfo dependencies;
   VkRenderingInfo rendering;
   VkRenderingAttachmentInfo colors[8];
@@ -115,126 +30,6 @@ struct VkrVulkanPreparedGraphPass {
   VkImageCopy2 transfer_region;
 };
 
-typedef struct VkrVulkanGraphExecutorSpec {
-  const char *name;
-  VkrRgPassType type;
-} VkrVulkanGraphExecutorSpec;
-
-vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
-    {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.local_shadow", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.local_shadow.transmission0", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.local_shadow.transmission1", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.local_shadow.transmission_overflow", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.animation.skinning", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.temporal.transform_history", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.vbuffer.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.vbuffer.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.temporal.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.fsr31.prepare", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.fsr31.upscale", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.fsr31.stabilize", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssr.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssr.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssr.trace", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssr.temporal", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssr.composite", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssgi.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssgi.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssgi.trace", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssgi.temporal", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ssgi.composite", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.fog.apply", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.froxel.inject", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.froxel.integrate", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.froxel.apply", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.sdsm.reduce", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.subsurface.gather", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.motion_blur.tile_max", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.motion_blur.neighbor_max", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.motion_blur.reconstruct", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.dof.coc", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.dof.dilate_horizontal", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.dof.dilate_vertical", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.dof.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.dof.gather", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.dof.composite", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.bloom.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.bloom.combine", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.transmission.downsample", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.gtao.depth_prefilter", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.gtao.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.gtao.evaluate", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.gtao.denoise", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.tonemap.prepare", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.editor.clear", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.editor.overlay.picking", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.animation.preview", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
-    // Bind the shared graph before its conditions are evaluated. These names
-    // are recognized, but active MetalFX passes are rejected by validation.
-    {"pass.metalfx.stage", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.metalfx.temporal", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.metalfx.stabilize", VKR_RG_PASS_TYPE_COMPUTE},
-};
-_Static_assert(ArrayCount(s_vk_graph_executors) ==
-                   VKR_VULKAN_GRAPH_EXECUTOR_COUNT,
-               "Vulkan graph executor table is incomplete");
-
-vkr_internal bool8_t vkr_vk_graph_executor_kind(
-    const VkrRgPass *pass, VkrVulkanGraphExecutorKind *out_kind) {
-  const uint32_t encoded = pass->desc.executor_id;
-  if (!encoded || encoded > VKR_VULKAN_GRAPH_EXECUTOR_COUNT)
-    return false_v;
-  *out_kind = (VkrVulkanGraphExecutorKind)(encoded - 1u);
-  return true_v;
-}
-
-bool8_t vkr_vk_register_graph_executors(VkrVulkanRenderer *renderer) {
-  for (uint32_t i = 0; i < ArrayCount(s_vk_graph_executors); ++i) {
-    const VkrVulkanGraphExecutorSpec *spec = &s_vk_graph_executors[i];
-    const VkrRgPassExecutor executor = {
-        .name = string8_create_from_cstr((const uint8_t *)spec->name,
-                                         string_length(spec->name)),
-        .id = i + 1u,
-        .type = spec->type,
-    };
-    if (!vkr_rg_executor_registry_register(&renderer->executors, &executor))
-      return false_v;
-  }
-  return true_v;
-}
-
 bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
   for (uint64_t order = 0; order < renderer->graph->execution_order.length;
        ++order) {
@@ -242,34 +37,35 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
         *vector_get_uint32_t(&renderer->graph->execution_order, order);
     const VkrRgPass *pass =
         vector_get_VkrRgPass(&renderer->graph->passes, pass_index);
-    VkrVulkanGraphExecutorKind kind;
-    if (!vkr_vk_graph_executor_kind(pass, &kind)) {
+    VkrRgExecutorKind kind;
+    if (!vkr_render_graph_executor_kind(pass, &kind)) {
       log_error("Vulkan graph pass '%.*s' has no executor kind",
                 (int)pass->desc.name.length, pass->desc.name.str);
       return false_v;
     }
-    const VkrVulkanGraphExecutorSpec *executor = &s_vk_graph_executors[kind];
-    if ((kind == VKR_VULKAN_GRAPH_EXECUTOR_FSR31_PREPARE ||
-         kind == VKR_VULKAN_GRAPH_EXECUTOR_FSR31_UPSCALE ||
-         kind == VKR_VULKAN_GRAPH_EXECUTOR_FSR31_STABILIZE) &&
+    const char *executor_name = vkr_render_graph_executor_name(kind);
+    const VkrRgPassType executor_type = vkr_render_graph_executor_type(kind);
+    if ((kind == VKR_RG_EXECUTOR_FSR31_PREPARE ||
+         kind == VKR_RG_EXECUTOR_FSR31_UPSCALE ||
+         kind == VKR_RG_EXECUTOR_FSR31_STABILIZE) &&
         !renderer->config.fsr31_enabled) {
       log_error("FSR 3.1 graph work requires an FSR-enabled Vulkan device");
       return false_v;
     }
-    if (kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STAGE ||
-        kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL ||
-        kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STABILIZE) {
+    if (kind == VKR_RG_EXECUTOR_METALFX_STAGE ||
+        kind == VKR_RG_EXECUTOR_METALFX_TEMPORAL ||
+        kind == VKR_RG_EXECUTOR_METALFX_STABILIZE) {
       log_error(
           "Vulkan graph pass '%.*s' requires unsupported MetalFX executor '%s'",
-          (int)pass->desc.name.length, pass->desc.name.str, executor->name);
+          (int)pass->desc.name.length, pass->desc.name.str, executor_name);
       return false_v;
     }
-    if (pass->desc.type != executor->type) {
+    if (pass->desc.type != executor_type) {
       log_error("Vulkan graph pass '%.*s' has type %u; executor '%s' "
                 "requires type %u",
                 (int)pass->desc.name.length, pass->desc.name.str,
-                (uint32_t)pass->desc.type, executor->name,
-                (uint32_t)executor->type);
+                (uint32_t)pass->desc.type, executor_name,
+                (uint32_t)executor_type);
       return false_v;
     }
     for (uint64_t i = 0; i < pass->pre_image_barriers.length; ++i) {
@@ -1388,23 +1184,23 @@ vkr_internal bool8_t vkr_vk_graph_fullscreen_source(VkrVulkanRenderer *renderer,
 
 vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
-    const VkrRgPass *pass, VkrVulkanGraphExecutorKind kind,
-    uint32_t target_width, uint32_t target_height) {
+    const VkrRgPass *pass, VkrRgExecutorKind kind, uint32_t target_width,
+    uint32_t target_height) {
   const VkrPreparedFrame *packet = renderer->graph->packet;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   if (!packet)
     return false_v;
   switch (kind) {
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
     return vkr_vk_prepare_local_shadow_transmission(
         renderer, &prepared->raster, pass,
-        kind == VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW);
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
-  case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW: {
-    if (kind == VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW) {
+        kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW);
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW:
+  case VKR_RG_EXECUTOR_SHADOW: {
+    if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
       const uint32_t layer = pass->desc.depth_attachment.desc.slice.base_layer;
       if (!packet->input.local_shadow ||
           layer >= packet->input.local_shadow->view_count)
@@ -1429,7 +1225,7 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
                                           true_v, false_v, false_v);
   }
-  case VKR_VULKAN_GRAPH_EXECUTOR_PICKING: {
+  case VKR_RG_EXECUTOR_PICKING: {
     if (!packet->input.picking || !packet->input.picking->pending)
       return true_v;
     const Mat4 view_projection =
@@ -1446,13 +1242,13 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                                       view_projection, target_width,
                                       target_height, false_v));
   }
-  case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
+  case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
                                           false_v, false_v, false_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
+  case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
                                           false_v, true_v, false_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND: {
+  case VKR_RG_EXECUTOR_WORLD_BLEND: {
     if (!packet->input.world)
       return true_v;
     const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
@@ -1476,12 +1272,12 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                packet->input.world->text_draw_count, view_projection,
                target_width, target_height, false_v);
   }
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
     return vkr_vk_prepare_editor_overlay(
         renderer, &prepared->overlay,
-        kind == VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING);
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR: {
+        kind == VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING);
+  case VKR_RG_EXECUTOR_EDITOR: {
     /* The retained sRGB texture already contains exposure, tonemap and FXAA.
        Decode/sample/re-encode it without applying those operations again. */
     uint32_t texture_index = 0u;
@@ -1513,10 +1309,10 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
       return false_v;
     return true_v;
   }
-  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
-  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP: {
+  case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
+  case VKR_RG_EXECUTOR_TONEMAP: {
     const bool8_t prepare_display_linear =
-        kind == VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE;
+        kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE;
     const bool8_t source_display_linear =
         vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u) != NULL;
     uint32_t texture_index = 0u;
@@ -1555,11 +1351,11 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                 (unsigned long long)slot->frame_upload.size);
     return recorded;
   }
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
+  case VKR_RG_EXECUTOR_EDITOR_CLEAR:
     return true_v;
-  case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
+  case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
     return vkr_vk_prepare_animation_preview(renderer, &prepared->preview);
-  case VKR_VULKAN_GRAPH_EXECUTOR_UI: {
+  case VKR_RG_EXECUTOR_UI: {
     if (!packet->input.ui)
       return true_v;
     return vkr_vk_prepare_ui_draw_list(renderer, &prepared->ui,
@@ -1573,7 +1369,7 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
 
 vkr_internal bool8_t vkr_vk_prepare_graph_graphics_pass(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
-    const VkrRgPass *pass, VkrVulkanGraphExecutorKind kind) {
+    const VkrRgPass *pass, VkrRgExecutorKind kind) {
   enum { VKR_VULKAN_GRAPH_COLOR_ATTACHMENT_MAX = 8 };
   if (pass->desc.color_attachments.length >
       VKR_VULKAN_GRAPH_COLOR_ATTACHMENT_MAX)
@@ -1716,30 +1512,30 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
        ++order) {
     const uint32_t index = renderer->graph->execution_order.data[order];
     const VkrRgPass *pass = &renderer->graph->passes.data[index];
-    VkrVulkanGraphExecutorKind kind;
-    if (!vkr_vk_graph_executor_kind(pass, &kind))
+    VkrRgExecutorKind kind;
+    if (!vkr_render_graph_executor_kind(pass, &kind))
       return VKR_VULKAN_FRAME_UPLOAD_SIZE;
     // Reserve fixed-root alignment/headroom separately from view arrays and
     // variable draw data. Local shadows can add sixteen perspective views.
     bytes += 4096u;
     switch (kind) {
-    case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY:
+    case VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY:
       bytes += (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
                           renderer->prepared_frame.local_shadow_view_count +
                           renderer->prepared_frame
                               .local_shadow_transmission_view_count) *
                (sizeof(Mat4) + VKR_FRUSTUM_PLANE_COUNT * sizeof(Vec4));
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
+    case VKR_RG_EXECUTOR_PICKING:
       if (!renderer->graph->packet->input.picking ||
           !renderer->graph->packet->input.picking->pending)
         break;
       bytes += direct_draw_bytes + text_bytes;
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
+    case VKR_RG_EXECUTOR_WORLD_BLEND:
       bytes += direct_draw_bytes + text_bytes;
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
+    case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
       if (renderer->graph->packet->input.animation_preview) {
         bytes +=
             (uint64_t)
@@ -1747,10 +1543,10 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
             256u;
       }
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_UI:
+    case VKR_RG_EXECUTOR_UI:
       bytes += ui_root_bytes;
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE:
+    case VKR_RG_EXECUTOR_IBL_BAKE:
       bytes +=
           (uint64_t)renderer->pending_ibl_bake_count *
           ((VKR_VULKAN_TEXTURE_MIP_MAX + 1u) * sizeof(VkrVulkanIblRoot) +
@@ -1817,8 +1613,8 @@ vkr_internal bool8_t vkr_vk_prepare_fsr31_dispatch(
 vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
     const VkrRgPass *pass) {
-  VkrVulkanGraphExecutorKind kind;
-  if (!vkr_vk_graph_executor_kind(pass, &kind)) {
+  VkrRgExecutorKind kind;
+  if (!vkr_render_graph_executor_kind(pass, &kind)) {
     log_error("Vulkan graph pass '%.*s' has no executor kind",
               (int)pass->desc.name.length, pass->desc.name.str);
     return false_v;
@@ -1826,45 +1622,45 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
 
   prepared->kind = kind;
   switch (kind) {
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
-  case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
-  case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
-  case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
-  case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
-  case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
-  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
-  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
-  case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
-  case VKR_VULKAN_GRAPH_EXECUTOR_UI:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW:
+  case VKR_RG_EXECUTOR_SHADOW:
+  case VKR_RG_EXECUTOR_PICKING:
+  case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
+  case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
+  case VKR_RG_EXECUTOR_WORLD_BLEND:
+  case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
+  case VKR_RG_EXECUTOR_TONEMAP:
+  case VKR_RG_EXECUTOR_EDITOR:
+  case VKR_RG_EXECUTOR_EDITOR_CLEAR:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
+  case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
+  case VKR_RG_EXECUTOR_UI:
     return vkr_vk_prepare_graph_graphics_pass(renderer, prepared, pass, kind);
-  case VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE:
+  case VKR_RG_EXECUTOR_IBL_BAKE:
     return vkr_vk_prepare_ibl_bakes(renderer, &prepared->ibl);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD:
+  case VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD:
     return vkr_vk_prepare_deferred_upload(renderer, &prepared->upload, pass,
                                           false_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD:
     return vkr_vk_prepare_deferred_upload(renderer, &prepared->upload, pass,
                                           true_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY:
+  case VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY:
     return vkr_vk_prepare_deferred_cull(renderer, &prepared->compute, pass,
                                         VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY,
                                         false_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_PREFIX:
+  case VKR_RG_EXECUTOR_GPU_DRAW_PREFIX:
     return vkr_vk_prepare_deferred_cull(renderer, &prepared->compute, pass,
                                         VKR_VULKAN_DEFERRED_PIPELINE_PREFIX,
                                         false_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
+  case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE:
     return vkr_vk_prepare_deferred_cull(renderer, &prepared->compute, pass,
                                         VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
                                         false_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SKINNING: {
+  case VKR_RG_EXECUTOR_SKINNING: {
     VkrVulkanFrameSlot *slot =
         &renderer->frame_slots[renderer->active_frame_slot];
     const VkrWorldPassPayload *world = renderer->graph->packet->input.world;
@@ -1887,140 +1683,140 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     }
     return true_v;
   }
-  case VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM:
+  case VKR_RG_EXECUTOR_TEMPORAL_TRANSFORM:
     return vkr_vk_prepare_temporal_transform(renderer, &prepared->compute,
                                              pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY:
     return vkr_vk_prepare_deferred_cull(renderer, &prepared->compute, pass,
                                         VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY,
                                         true_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX:
     return vkr_vk_prepare_deferred_cull(renderer, &prepared->compute, pass,
                                         VKR_VULKAN_DEFERRED_PIPELINE_PREFIX,
                                         true_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE:
     return vkr_vk_prepare_deferred_cull(renderer, &prepared->compute, pass,
                                         VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
                                         true_v);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
+  case VKR_RG_EXECUTOR_GBUFFER_RESOLVE:
     return vkr_vk_prepare_deferred_gbuffer(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_LIGHTING_DEFERRED:
+  case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
     return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_RESOLVE:
+  case VKR_RG_EXECUTOR_TEMPORAL_RESOLVE:
     return vkr_vk_prepare_temporal_resolve(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_FSR31_PREPARE:
+  case VKR_RG_EXECUTOR_FSR31_PREPARE:
     return vkr_vk_prepare_fsr31_inputs(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_FSR31_STABILIZE:
+  case VKR_RG_EXECUTOR_FSR31_STABILIZE:
     return vkr_vk_prepare_fsr31_stabilize(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_FSR31_UPSCALE:
+  case VKR_RG_EXECUTOR_FSR31_UPSCALE:
     return vkr_vk_prepare_fsr31_dispatch(renderer, &prepared->fsr31, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_HZB_BUILD:
+  case VKR_RG_EXECUTOR_HZB_BUILD:
     return vkr_vk_prepare_deferred_hzb(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_BASE:
+  case VKR_RG_EXECUTOR_SSR_DEPTH_BASE:
     return vkr_vk_prepare_ssr_depth_base(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_DEPTH_MIP:
+  case VKR_RG_EXECUTOR_SSR_DEPTH_MIP:
     return vkr_vk_prepare_ssr_depth_mip(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_TRACE:
+  case VKR_RG_EXECUTOR_SSR_TRACE:
     return vkr_vk_prepare_ssr_trace(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_TEMPORAL:
+  case VKR_RG_EXECUTOR_SSR_TEMPORAL:
     return vkr_vk_prepare_ssr_temporal(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSR_COMPOSITE:
+  case VKR_RG_EXECUTOR_SSR_COMPOSITE:
     return vkr_vk_prepare_ssr_composite(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_BASE:
+  case VKR_RG_EXECUTOR_SSGI_DEPTH_BASE:
     return vkr_vk_prepare_ssgi_depth_base(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_DEPTH_MIP:
+  case VKR_RG_EXECUTOR_SSGI_DEPTH_MIP:
     return vkr_vk_prepare_ssgi_depth_mip(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TRACE:
+  case VKR_RG_EXECUTOR_SSGI_TRACE:
     return vkr_vk_prepare_ssgi_trace(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_TEMPORAL:
+  case VKR_RG_EXECUTOR_SSGI_TEMPORAL:
     return vkr_vk_prepare_ssgi_temporal(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SSGI_COMPOSITE:
+  case VKR_RG_EXECUTOR_SSGI_COMPOSITE:
     return vkr_vk_prepare_ssgi_composite(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_FOG_APPLY:
+  case VKR_RG_EXECUTOR_FOG_APPLY:
     return vkr_vk_prepare_fog_apply(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INJECT:
+  case VKR_RG_EXECUTOR_FROXEL_INJECT:
     return vkr_vk_prepare_froxel_inject(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_INTEGRATE:
+  case VKR_RG_EXECUTOR_FROXEL_INTEGRATE:
     return vkr_vk_prepare_froxel_integrate(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_FROXEL_APPLY:
+  case VKR_RG_EXECUTOR_FROXEL_APPLY:
     return vkr_vk_prepare_froxel_apply(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SDSM_REDUCE:
+  case VKR_RG_EXECUTOR_SDSM_REDUCE:
     return vkr_vk_prepare_deferred_sdsm(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
+  case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
     return vkr_vk_prepare_exposure_histogram(renderer, &prepared->compute,
                                              pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
+  case VKR_RG_EXECUTOR_EXPOSURE_RESOLVE:
     return vkr_vk_prepare_exposure_resolve(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_SUBSURFACE_GATHER:
+  case VKR_RG_EXECUTOR_SUBSURFACE_GATHER:
     return vkr_vk_prepare_subsurface(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX:
+  case VKR_RG_EXECUTOR_MOTION_BLUR_TILE_MAX:
     return vkr_vk_prepare_motion_blur(
         renderer, &prepared->compute, pass,
         VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_TILE_MAX);
-  case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX:
+  case VKR_RG_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX:
     return vkr_vk_prepare_motion_blur(
         renderer, &prepared->compute, pass,
         VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_NEIGHBOR_MAX);
-  case VKR_VULKAN_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT:
+  case VKR_RG_EXECUTOR_MOTION_BLUR_RECONSTRUCT:
     return vkr_vk_prepare_motion_blur(
         renderer, &prepared->compute, pass,
         VKR_VULKAN_DEFERRED_PIPELINE_MOTION_BLUR_RECONSTRUCT);
-  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_COC:
+  case VKR_RG_EXECUTOR_DOF_COC:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_COC);
-  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL:
+  case VKR_RG_EXECUTOR_DOF_DILATE_HORIZONTAL:
     return vkr_vk_prepare_dof(
         renderer, &prepared->compute, pass,
         VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_HORIZONTAL);
-  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL:
+  case VKR_RG_EXECUTOR_DOF_DILATE_VERTICAL:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_DILATE_VERTICAL);
-  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_PREFILTER:
+  case VKR_RG_EXECUTOR_DOF_PREFILTER:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_PREFILTER);
-  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_GATHER:
+  case VKR_RG_EXECUTOR_DOF_GATHER:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_GATHER);
-  case VKR_VULKAN_GRAPH_EXECUTOR_DOF_COMPOSITE:
+  case VKR_RG_EXECUTOR_DOF_COMPOSITE:
     return vkr_vk_prepare_dof(renderer, &prepared->compute, pass,
                               VKR_VULKAN_DEFERRED_PIPELINE_DOF_COMPOSITE);
-  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_PREFILTER:
+  case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
     return vkr_vk_prepare_bloom_prefilter(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE:
+  case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:
     return vkr_vk_prepare_bloom_downsample(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_UPSAMPLE:
+  case VKR_RG_EXECUTOR_BLOOM_UPSAMPLE:
     return vkr_vk_prepare_bloom_upsample(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE:
+  case VKR_RG_EXECUTOR_BLOOM_COMBINE:
     return vkr_vk_prepare_bloom_combine(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE:
     return vkr_vk_prepare_transmission_downsample(renderer, &prepared->compute,
                                                   pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER:
+  case VKR_RG_EXECUTOR_GTAO_DEPTH_PREFILTER:
     return vkr_vk_prepare_gtao_depth_prefilter(renderer, &prepared->compute,
                                                pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_MIP:
+  case VKR_RG_EXECUTOR_GTAO_DEPTH_MIP:
     return vkr_vk_prepare_gtao_depth_mip(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_EVALUATE:
+  case VKR_RG_EXECUTOR_GTAO_EVALUATE:
     return vkr_vk_prepare_gtao_evaluate(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DENOISE:
+  case VKR_RG_EXECUTOR_GTAO_DENOISE:
     return vkr_vk_prepare_gtao_denoise(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
     return vkr_vk_prepare_deferred_transmission(renderer, &prepared->compute,
                                                 pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:
-  case VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_DEPTH_SEED:
-  case VKR_VULKAN_GRAPH_EXECUTOR_PICKING_DEPTH_SEED:
+  case VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:
+  case VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
+  case VKR_RG_EXECUTOR_TRANSMISSION_DEPTH_SEED:
+  case VKR_RG_EXECUTOR_PICKING_DEPTH_SEED:
     return vkr_vk_prepare_graph_transfer_pass(renderer, prepared, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_PICKING_RESOLVE:
+  case VKR_RG_EXECUTOR_PICKING_RESOLVE:
     return vkr_vk_prepare_deferred_picking(renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_COVERAGE:
     return vkr_vk_prepare_deferred_transmission_coverage(
         renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COMPACT:
+  case VKR_RG_EXECUTOR_TRANSMISSION_COMPACT:
     return vkr_vk_prepare_deferred_transmission_compact(
         renderer, &prepared->compute, pass);
-  case VKR_VULKAN_GRAPH_EXECUTOR_PICKING_READBACK:
+  case VKR_RG_EXECUTOR_PICKING_READBACK:
     // The one-pixel copy is recorded after capture selection in
     // record_frame_commands().
     return true_v;
@@ -2142,39 +1938,39 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
   vkCmdSetFrontFace(command, VK_FRONT_FACE_COUNTER_CLOCKWISE);
   switch (prepared->kind) {
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
-  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
-  case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW:
+  case VKR_RG_EXECUTOR_SHADOW:
     vkCmdSetDepthBias(command, prepared->depth_bias.depth_bias_constant,
                       prepared->depth_bias.depth_bias_clamp,
                       prepared->depth_bias.depth_bias_slope);
     if (prepared->raster.indices)
       vkr_vk_record_prepared_raster(renderer, command, &prepared->raster);
     break;
-  case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
-  case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
+  case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
+  case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
     vkr_vk_record_prepared_raster(renderer, command, &prepared->raster);
     break;
-  case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
-  case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
+  case VKR_RG_EXECUTOR_PICKING:
+  case VKR_RG_EXECUTOR_WORLD_BLEND:
     vkr_vk_record_world_draws(renderer, command, &prepared->world);
     vkr_vk_record_text(renderer, command, &prepared->text);
     break;
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
     vkr_vk_record_editor_overlay(renderer, command, &prepared->overlay);
     break;
-  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
-  case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
-  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
+  case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
+  case VKR_RG_EXECUTOR_TONEMAP:
+  case VKR_RG_EXECUTOR_EDITOR:
     vkr_vk_record_fullscreen(renderer, command, &prepared->fullscreen);
     break;
-  case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
+  case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
     vkr_vk_record_animation_preview(renderer, command, &prepared->preview);
     break;
-  case VKR_VULKAN_GRAPH_EXECUTOR_UI:
+  case VKR_RG_EXECUTOR_UI:
     vkr_vk_record_ui(renderer, command, &prepared->ui);
     break;
   default:
@@ -2209,42 +2005,42 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
         prepared->dependencies.bufferMemoryBarrierCount)
       vkCmdPipelineBarrier2(command, &prepared->dependencies);
     switch (prepared->kind) {
-    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
-    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
-    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
-    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
-    case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
-    case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
-    case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
-    case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
-    case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
-    case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP_PREPARE:
-    case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
-    case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
-    case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
-    case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
-    case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
-    case VKR_VULKAN_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
-    case VKR_VULKAN_GRAPH_EXECUTOR_UI:
+    case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+    case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+    case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
+    case VKR_RG_EXECUTOR_LOCAL_SHADOW:
+    case VKR_RG_EXECUTOR_SHADOW:
+    case VKR_RG_EXECUTOR_PICKING:
+    case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
+    case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
+    case VKR_RG_EXECUTOR_WORLD_BLEND:
+    case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
+    case VKR_RG_EXECUTOR_TONEMAP:
+    case VKR_RG_EXECUTOR_EDITOR:
+    case VKR_RG_EXECUTOR_EDITOR_CLEAR:
+    case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
+    case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
+    case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
+    case VKR_RG_EXECUTOR_UI:
       vkr_vk_record_graph_graphics_pass(renderer, command, prepared);
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE:
+    case VKR_RG_EXECUTOR_IBL_BAKE:
       vkr_vk_record_ibl_bakes(renderer, command, &prepared->ibl);
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD:
-    case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD:
+    case VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD:
+    case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD:
       vkr_vk_record_prepared_upload(command, &prepared->upload);
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_PICKING_DEPTH_SEED:
-    case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_DEPTH_SEED:
-    case VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:
-    case VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
+    case VKR_RG_EXECUTOR_PICKING_DEPTH_SEED:
+    case VKR_RG_EXECUTOR_TRANSMISSION_DEPTH_SEED:
+    case VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:
+    case VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
       if (prepared->transfer.regionCount)
         vkCmdCopyImage2(command, &prepared->transfer);
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_PICKING_READBACK:
+    case VKR_RG_EXECUTOR_PICKING_READBACK:
       break;
-    case VKR_VULKAN_GRAPH_EXECUTOR_FSR31_UPSCALE: {
+    case VKR_RG_EXECUTOR_FSR31_UPSCALE: {
 #if VKR_HAS_FSR3_UPSCALER
       VkrVulkanFsrSdkDispatch dispatch = prepared->fsr31;
       dispatch.command_buffer = command;
@@ -2268,7 +2064,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       return false_v;
 #endif
     }
-    case VKR_VULKAN_GRAPH_EXECUTOR_SKINNING:
+    case VKR_RG_EXECUTOR_SKINNING:
       for (uint32_t skin = 0u; skin < prepared->skinning_count; ++skin) {
         vkr_vk_record_prepared_compute(renderer, command,
                                        &slot->skinning_dispatches[skin]);

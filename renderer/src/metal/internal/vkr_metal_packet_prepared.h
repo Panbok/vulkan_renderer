@@ -83,7 +83,7 @@ typedef struct VkrMetalPacketTransferPass {
 
 typedef struct VkrMetalPacketPreparedPass {
   const VkrRgPass *source;
-  VkrMetalPacketGraphExecutorKind kind;
+  VkrRgExecutorKind kind;
   NSString *label;
   uint32_t index;
   float64_t preparation_cpu_ms;

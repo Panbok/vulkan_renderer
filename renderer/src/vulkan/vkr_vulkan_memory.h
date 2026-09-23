@@ -104,13 +104,6 @@ bool8_t vkr_vulkan_memory_block_size(uint64_t configured_size,
                                      uint64_t resource_size, uint64_t alignment,
                                      uint64_t *out_size);
 
-void vkr_vulkan_memory_owner_record_allocate(
-    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
-    VkrGpuAllocationOwner owner, uint64_t size);
-bool8_t vkr_vulkan_memory_owner_record_release(
-    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
-    VkrGpuAllocationOwner owner, uint64_t size);
-
 bool8_t vkr_vulkan_memory_pool_create(const VkrVulkanMemoryPoolConfig *config,
                                       VkrVulkanMemoryPoolManager **out_manager);
 void vkr_vulkan_memory_pool_destroy(VkrVulkanMemoryPoolManager *manager);

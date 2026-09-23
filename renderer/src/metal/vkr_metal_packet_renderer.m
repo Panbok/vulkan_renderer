@@ -24,20 +24,21 @@
 #include "metal/vkr_metal_dependency.h"
 #include "metal/vkr_metal_diagnostics.h"
 #include "metal/vkr_metal_packet_abi.h"
+#include "vkr_anisotropy_lut.h"
 #include "vkr_candidate_residency.h"
 #include "vkr_capture_ring.h"
 #include "vkr_dfg_lut.h"
-#include "vkr_anisotropy_lut.h"
-#include "vkr_ltc_lut.h"
-#include "vkr_sheen_lut.h"
 #include "vkr_geometry_ranges.h"
 #include "vkr_geometry_upload.h"
 #include "vkr_ibl_math.h"
 #include "vkr_ibl_sh_pool.h"
+#include "vkr_ltc_lut.h"
 #include "vkr_packet_constants.h"
+#include "vkr_render_graph_frame.h"
 #include "vkr_render_graph_internal.h"
 #include "vkr_renderer_metrics.h"
 #include "vkr_rg_json.h"
+#include "vkr_sheen_lut.h"
 #include "vkr_visibility.h"
 
 #include <math.h>
@@ -231,17 +232,7 @@ typedef struct VkrMetalPacketMesh {
 typedef struct VkrMetalPacketGeometryMegabuffer {
   VkrMetalBufferResource vertices;
   VkrMetalBufferResource indices;
-  uint64_t vertex_live_bytes;
-  uint64_t index_live_bytes;
-  uint64_t vertex_high_water;
-  uint64_t index_high_water;
-  uint64_t vertex_uploaded_bytes_total;
-  uint64_t index_uploaded_bytes_total;
-  uint64_t decode_metadata_live_bytes;
-  uint64_t decode_metadata_high_water;
-  uint64_t decode_metadata_uploaded_bytes_total;
-  uint64_t rejected_publications;
-  uint64_t generation_replacements;
+  VkrGeometryMegabufferAccounting accounting;
   uint32_t generation;
   bool8_t live;
 } VkrMetalPacketGeometryMegabuffer;
@@ -1000,28 +991,15 @@ bool8_t vkr_metal_packet_renderer_graph_resource_stats(
     const VkrMetalPacketImage *image = &renderer->images[i];
     if (!image->live || image->external)
       continue;
-    VkrTextureFormatInfo format = {0};
-    if (!vkr_texture_format_get_info(image->desc.format, &format) ||
-        format.block_width != 1u || format.block_height != 1u)
-      continue;
-    uint64_t texels = 0u;
-    for (uint32_t mip = 0u; mip < Max(image->desc.mip_levels, 1u); ++mip) {
-      texels += (uint64_t)Max(image->desc.width >> mip, 1u) *
-                Max(image->desc.height >> mip, 1u) *
-                Max(image->desc.depth >> mip, 1u);
-    }
-    const uint64_t bytes_per_image = texels * Max(image->desc.layers, 1u) *
-                                     Max(image->desc.samples, 1u) *
-                                     format.bytes_per_block;
-    out_stats->live_image_textures += image->instance_count;
-    out_stats->live_image_bytes += bytes_per_image * image->instance_count;
+    vkr_render_graph_resource_stats_add_image(out_stats, &image->desc,
+                                              image->instance_count);
   }
   for (uint32_t i = 0u; i < renderer->max_images; ++i) {
     const VkrMetalPacketGraphBuffer *buffer = &renderer->graph_buffers[i];
     if (!buffer->live)
       continue;
-    out_stats->live_buffers += buffer->instance_count;
-    out_stats->live_buffer_bytes += buffer->desc.size * buffer->instance_count;
+    vkr_render_graph_resource_stats_add_buffer(out_stats, &buffer->desc,
+                                               buffer->instance_count);
   }
   out_stats->peak_image_textures = out_stats->live_image_textures;
   out_stats->peak_image_bytes = out_stats->live_image_bytes;

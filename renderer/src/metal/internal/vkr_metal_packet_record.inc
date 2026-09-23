@@ -13,7 +13,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SKINNING:
+  case VKR_RG_EXECUTOR_SKINNING:
     for (uint32_t i = 0u; i < pass->skinning.count; ++i) {
       const VkrMetalPacketDispatch dispatch = {
           .pipeline = renderer->skinning_pipeline,
@@ -24,15 +24,15 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
       vkr_metal_packet_record_dispatch(renderer, encoder, &dispatch);
     }
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE:
+  case VKR_RG_EXECUTOR_METALFX_STABILIZE:
     // MetalFX owns its encoders; its final write is published through this
     // fence.
     [encoder waitForFence:renderer->metalfx_temporal_scaler.fence
         beforeEncoderStages:MTLStageDispatch];
     vkr_metal_packet_record_dispatch(renderer, encoder, &pass->dispatch);
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE: {
+  case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE: {
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
       for (uint32_t view = 0u; view < group->view_count; ++view)
@@ -62,7 +62,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     }
     break;
   }
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE:
+  case VKR_RG_EXECUTOR_IBL_BAKE:
     for (uint32_t mip = 0u; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
       const uint32_t extent = Max(1u, VKR_IBL_PREFILTER_SIZE >> mip);
       const VkrMetalPacketDispatch dispatch = {
@@ -85,7 +85,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
                        visibilityOptions:MTL4VisibilityOptionDevice];
     }
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
     [renderer->argument_table setAddress:pass->transmission.root atIndex:0u];
     [encoder setArgumentTable:renderer->argument_table];
     [encoder setComputePipelineState:pass->transmission.pipeline];
@@ -97,7 +97,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
       [encoder dispatchThreads:pass->transmission.threads
           threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT:
+  case VKR_RG_EXECUTOR_TRANSMISSION_COMPACT:
     [renderer->argument_table setAddress:pass->compact.root atIndex:0u];
     [encoder
         setComputePipelineState:renderer->transmission_compact_clear_pipeline];
@@ -118,7 +118,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
         threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
+  case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
     [renderer->argument_table setAddress:pass->histogram.root atIndex:0u];
     [encoder setComputePipelineState:renderer->exposure_clear_pipeline];
     [encoder setArgumentTable:renderer->argument_table];
@@ -133,7 +133,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     [encoder dispatchThreadgroups:pass->histogram.groups
             threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK:
+  case VKR_RG_EXECUTOR_PICKING_READBACK:
     [encoder copyFromTexture:pass->picking_readback.source
                      sourceSlice:0u
                      sourceLevel:0u
@@ -155,7 +155,7 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   const VkrMetalPacketIndirectPass *draw = &pass->indirect;
-  if (pass->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION) {
+  if (pass->kind == VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION) {
     [renderer->argument_table setAddress:draw->peel_root atIndex:2u];
     [renderer->argument_table setAddress:draw->draw_root atIndex:0u];
     [renderer->argument_table setAddress:draw->draw_root atIndex:1u];
@@ -164,7 +164,7 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   }
   [encoder setViewport:draw->viewport];
   [encoder setDepthStencilState:renderer->depth_write_state];
-  if (pass->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW)
+  if (pass->kind == VKR_RG_EXECUTOR_SHADOW)
     [encoder setDepthBias:draw->depth_bias.depth_bias_constant
                slopeScale:draw->depth_bias.depth_bias_slope
                     clamp:draw->depth_bias.depth_bias_clamp];
@@ -193,17 +193,17 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
+  case VKR_RG_EXECUTOR_SHADOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
+  case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
+  case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
     vkr_metal_packet_record_indirect_pass(renderer, encoder, pass);
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING: {
+  case VKR_RG_EXECUTOR_WORLD_BLEND:
+  case VKR_RG_EXECUTOR_PICKING: {
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
     if (direct->count)
       vkr_metal_packet_record_prepared_draws(
@@ -216,9 +216,9 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
           text->root_gpu, text->count, text->width, text->height);
     break;
   }
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_ANIMATION_PREVIEW:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING: {
+  case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING: {
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
     if (direct->count)
       vkr_metal_packet_record_prepared_draws(
@@ -226,22 +226,22 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
           direct->count, direct->width, direct->height, direct->root_gpu);
     break;
   }
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_UI:
+  case VKR_RG_EXECUTOR_UI:
     if (pass->ui.count)
       vkr_metal_packet_record_prepared_ui_draws(
           renderer, encoder, pass->ui.root_cpu, pass->ui.root_gpu,
           pass->ui.count, pass->ui.width, pass->ui.height);
     break;
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR:
+  case VKR_RG_EXECUTOR_TONEMAP:
+  case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
+  case VKR_RG_EXECUTOR_EDITOR:
     [renderer->argument_table setAddress:pass->tonemap.root atIndex:1u];
     [encoder setViewport:pass->tonemap.viewport];
     [encoder setScissorRect:pass->tonemap.scissor];
-    [encoder setRenderPipelineState:
-                 pass->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE
-                     ? renderer->display_linear_pipeline
-                     : renderer->tonemap_pipeline];
+    [encoder
+        setRenderPipelineState:pass->kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE
+                                   ? renderer->display_linear_pipeline
+                                   : renderer->tonemap_pipeline];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageFragment];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle

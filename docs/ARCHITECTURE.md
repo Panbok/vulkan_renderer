@@ -502,9 +502,11 @@ compiler for dependencies, ordering, culling and barriers.
 `vkr_render_graph_prepare_frame()` derives portable conditions, shadow counts,
 HZB/transmission/bloom/GTAO mip counts and GTAO constants once from the prepared
 frame. Native formats, resource instances and history/completion selection remain
-with each backend. Native executor registries bind the authored operations,
-including conditional MetalFX and Vulkan FSR 3.1 declarations. Vulkan rejects
-active MetalFX passes; Metal ignores inactive FSR declarations. Disabled
+with each backend. Both native registries load one executor catalog from
+`vkr_render_graph_frame.c`, so every authored operation, including the
+conditional MetalFX and Vulkan FSR 3.1 declarations, resolves to the same
+executor id and pass type on either backend. Vulkan rejects active MetalFX
+passes; Metal ignores inactive FSR declarations. Disabled
 declarations do not block startup. There is one GPU-driven world topology;
 no retained-forward/legacy world branch remains.
 

@@ -540,3 +540,36 @@ const char *vkr_gpu_memory_status_string(VkrGpuMemoryStatus status) {
   }
   return "unknown";
 }
+
+void vkr_gpu_memory_owner_record_allocate(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size) {
+  if (!owners || !size) {
+    return;
+  }
+  VkrGpuAllocationOwnerTotals *totals =
+      &owners[vkr_gpu_allocation_owner_normalize(owner)];
+  totals->live_bytes += size;
+  totals->peak_bytes = Max(totals->peak_bytes, totals->live_bytes);
+  totals->total_bytes += size;
+  totals->live_allocation_count++;
+  totals->peak_allocation_count =
+      Max(totals->peak_allocation_count, totals->live_allocation_count);
+  totals->total_allocation_count++;
+}
+
+bool8_t vkr_gpu_memory_owner_record_release(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size) {
+  if (!owners || !size) {
+    return false_v;
+  }
+  VkrGpuAllocationOwnerTotals *totals =
+      &owners[vkr_gpu_allocation_owner_normalize(owner)];
+  if (!totals->live_allocation_count || totals->live_bytes < size) {
+    return false_v;
+  }
+  totals->live_bytes -= size;
+  totals->live_allocation_count--;
+  return true_v;
+}

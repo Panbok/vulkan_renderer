@@ -1179,3 +1179,30 @@ bool8_t vkr_rg_export_buffer(VkrRenderGraph *graph, VkrRgBufferHandle buffer) {
   }
   return true_v;
 }
+
+void vkr_render_graph_resource_stats_add_image(
+    VkrRenderGraphResourceStats *stats, const VkrRgImageDesc *desc,
+    uint32_t instance_count) {
+  VkrTextureFormatInfo format = {0};
+  if (!vkr_texture_format_get_info(desc->format, &format) ||
+      format.block_width != 1u || format.block_height != 1u) {
+    return;
+  }
+  uint64_t texels = 0u;
+  for (uint32_t mip = 0u; mip < Max(desc->mip_levels, 1u); ++mip) {
+    texels += (uint64_t)Max(desc->width >> mip, 1u) *
+              Max(desc->height >> mip, 1u) * Max(desc->depth >> mip, 1u);
+  }
+  const uint64_t bytes_per_image = texels * Max(desc->layers, 1u) *
+                                   Max(desc->samples, 1u) *
+                                   format.bytes_per_block;
+  stats->live_image_textures += instance_count;
+  stats->live_image_bytes += bytes_per_image * instance_count;
+}
+
+void vkr_render_graph_resource_stats_add_buffer(
+    VkrRenderGraphResourceStats *stats, const VkrRgBufferDesc *desc,
+    uint32_t instance_count) {
+  stats->live_buffers += instance_count;
+  stats->live_buffer_bytes += desc->size * instance_count;
+}

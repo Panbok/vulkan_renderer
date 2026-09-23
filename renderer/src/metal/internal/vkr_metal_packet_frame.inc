@@ -589,7 +589,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
     uint32_t target_height, const Vec4 *editor_rect)
     API_AVAILABLE(macos(26.0)) {
   const bool8_t prepare_display_linear =
-      prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE;
+      prepared->kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE;
   const VkrRgImageUse *cached = vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
   const VkrRgImageUse *read = cached;
   if (!read) {
@@ -841,24 +841,22 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   if (!renderer || !pass || !packet || !prepared || !upload)
     return false_v;
-  VkrMetalPacketGraphExecutorKind kind;
-  if (!vkr_metal_packet_graph_executor_kind(pass, &kind))
+  VkrRgExecutorKind kind;
+  if (!vkr_render_graph_executor_kind(pass, &kind))
     return false_v;
   const bool8_t classify =
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY;
-  const bool8_t prefix =
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX;
-  const bool8_t encode =
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE;
+      kind == VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY ||
+      kind == VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY;
+  const bool8_t prefix = kind == VKR_RG_EXECUTOR_GPU_DRAW_PREFIX ||
+                         kind == VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX;
+  const bool8_t encode = kind == VKR_RG_EXECUTOR_GPU_DRAW_ENCODE ||
+                         kind == VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE;
   if (!classify && !prefix && !encode)
     return false_v;
   const bool8_t transmission =
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE;
+      kind == VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY ||
+      kind == VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX ||
+      kind == VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE;
   const uint32_t candidate_count = transmission
                                        ? renderer->transmission_gpu_draw_count
                                        : renderer->gpu_draw_count;
@@ -1322,12 +1320,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
 vkr_internal bool8_t vkr_metal_packet_prepare_gtao(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload,
-    VkrMetalPacketGraphExecutorKind kind) API_AVAILABLE(macos(26.0)) {
+    VkrRgExecutorKind kind) API_AVAILABLE(macos(26.0)) {
   if (!renderer->prepared_frame.gtao_enabled)
     return false_v;
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_MIP) {
+  if (kind == VKR_RG_EXECUTOR_GTAO_DEPTH_PREFILTER ||
+      kind == VKR_RG_EXECUTOR_GTAO_DEPTH_MIP) {
     const VkrRgImageUse *source_use =
         vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
     const VkrRgImageUse *destination_use =
@@ -1337,7 +1335,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gtao(
     id<MTLTexture> destination =
         vkr_metal_packet_subresource_texture(renderer, destination_use);
     id<MTLComputePipelineState> pipeline =
-        kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER
+        kind == VKR_RG_EXECUTOR_GTAO_DEPTH_PREFILTER
             ? renderer->gtao_depth_prefilter_pipeline
             : renderer->gtao_depth_mip_pipeline;
     if (!source || !destination || !pipeline || source.width == 0u ||
@@ -1370,7 +1368,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gtao(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_EVALUATE) {
+  if (kind == VKR_RG_EXECUTOR_GTAO_EVALUATE) {
     id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> view_depth =
         vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1413,7 +1411,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gtao(
     return true_v;
   }
 
-  if (kind != VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE)
+  if (kind != VKR_RG_EXECUTOR_GTAO_DENOISE)
     return false_v;
   id<MTLTexture> source = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> edges = vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1453,13 +1451,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gtao(
 vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
+    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
     API_AVAILABLE(macos(26.0)) {
   if (!renderer || !pass || !packet || !prepared || !upload ||
       !renderer->prepared_frame.ssgi_enabled)
     return false_v;
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_BASE) {
+  if (kind == VKR_RG_EXECUTOR_SSGI_DEPTH_BASE) {
     id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> vbuffer =
         vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1495,7 +1493,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_MIP) {
+  if (kind == VKR_RG_EXECUTOR_SSGI_DEPTH_MIP) {
     const VkrRgImageUse *source_use =
         vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
     const VkrRgImageUse *destination_use =
@@ -1535,7 +1533,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TRACE) {
+  if (kind == VKR_RG_EXECUTOR_SSGI_TRACE) {
     id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> vbuffer =
         vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1579,7 +1577,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TEMPORAL) {
+  if (kind == VKR_RG_EXECUTOR_SSGI_TEMPORAL) {
     id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> vbuffer =
         vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1664,7 +1662,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
     return true_v;
   }
 
-  if (kind != VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_COMPOSITE)
+  if (kind != VKR_RG_EXECUTOR_SSGI_COMPOSITE)
     return false_v;
   id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> history = vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1752,13 +1750,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
 vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
+    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
     API_AVAILABLE(macos(26.0)) {
   if (!renderer || !pass || !packet || !prepared || !upload ||
       !renderer->prepared_frame.ssr_enabled)
     return false_v;
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_BASE) {
+  if (kind == VKR_RG_EXECUTOR_SSR_DEPTH_BASE) {
     id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> vbuffer =
         vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1789,7 +1787,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_MIP) {
+  if (kind == VKR_RG_EXECUTOR_SSR_DEPTH_MIP) {
     const VkrRgImageUse *source_use =
         vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
     const VkrRgImageUse *destination_use =
@@ -1829,7 +1827,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TRACE) {
+  if (kind == VKR_RG_EXECUTOR_SSR_TRACE) {
     id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> vbuffer =
         vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -1877,7 +1875,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TEMPORAL) {
+  if (kind == VKR_RG_EXECUTOR_SSR_TEMPORAL) {
     id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> vbuffer =
         vkr_metal_packet_pass_texture(renderer, pass, 2u);
@@ -1999,7 +1997,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
     return true_v;
   }
 
-  if (kind != VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_COMPOSITE)
+  if (kind != VKR_RG_EXECUTOR_SSR_COMPOSITE)
     return false_v;
   id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> history = vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -2113,7 +2111,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_fog(
 vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
+    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
     API_AVAILABLE(macos(26.0)) {
   if (!renderer || !pass || !packet || !prepared || !upload)
     return false_v;
@@ -2140,7 +2138,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
           false_v, &frame_gpu, &frame_flags))
     return false_v;
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INJECT) {
+  if (kind == VKR_RG_EXECUTOR_FROXEL_INJECT) {
     id<MTLTexture> output = vkr_metal_packet_pass_texture(renderer, pass, 1u);
     VkrMetalPacketImage *history_slot =
         vkr_metal_packet_named_image_slot(renderer, "froxel_scattering_history");
@@ -2180,7 +2178,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
     return true_v;
   }
 
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INTEGRATE) {
+  if (kind == VKR_RG_EXECUTOR_FROXEL_INTEGRATE) {
     id<MTLTexture> scattering =
         vkr_metal_packet_pass_texture(renderer, pass, 0u);
     id<MTLTexture> integrated =
@@ -2214,7 +2212,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
     return true_v;
   }
 
-  if (kind != VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_APPLY)
+  if (kind != VKR_RG_EXECUTOR_FROXEL_APPLY)
     return false_v;
   id<MTLTexture> target = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -3229,11 +3227,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_subsurface(
 vkr_internal bool8_t vkr_metal_packet_prepare_motion_blur(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
+    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
     API_AVAILABLE(macos(26.0)) {
   static const uint32_t source_counts[] = {3u, 1u, 5u};
-  const uint32_t stage =
-      kind - VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX;
+  const uint32_t stage = kind - VKR_RG_EXECUTOR_MOTION_BLUR_TILE_MAX;
   uint64_t sources[5] = {0};
   for (uint32_t i = 0u; i < source_counts[stage]; ++i) {
     id<MTLTexture> texture = vkr_metal_packet_subresource_texture(
@@ -3282,11 +3279,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_motion_blur(
 vkr_internal bool8_t vkr_metal_packet_prepare_dof(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
+    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
     API_AVAILABLE(macos(26.0)) {
   static const uint32_t source_counts[] = {1u, 1u, 1u, 3u, 4u, 5u};
   static const uint32_t destination_counts[] = {1u, 1u, 1u, 2u, 2u, 1u};
-  const uint32_t stage = kind - VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_COC;
+  const uint32_t stage = kind - VKR_RG_EXECUTOR_DOF_COC;
   uint64_t sources[5] = {0};
   uint64_t destinations[2] = {0};
   id<MTLTexture> destination = nil;
@@ -3350,7 +3347,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_dof(
 vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
+    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
     API_AVAILABLE(macos(26.0)) {
   const VkrRgImageUse *source_use =
       vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
@@ -3367,9 +3364,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
     return false_v;
 
   id<MTLTexture> coarse = source;
-  const bool8_t upsample =
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_UPSAMPLE;
-  const bool8_t combine = kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE;
+  const bool8_t upsample = kind == VKR_RG_EXECUTOR_BLOOM_UPSAMPLE;
+  const bool8_t combine = kind == VKR_RG_EXECUTOR_BLOOM_COMBINE;
   if (upsample || combine) {
     uint32_t binding = 2u;
     if (upsample) {
@@ -3391,13 +3387,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
     pipeline = renderer->bloom_combine_pipeline;
   } else if (upsample) {
     pipeline = renderer->bloom_upsample_pipeline;
-  } else if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE) {
+  } else if (kind == VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE) {
     /* Both filters are resident; the cold configuration selects which one this
        build measures. Neither is a fallback for the other. */
     pipeline = renderer->bloom_config.filter == VKR_BLOOM_FILTER_BOX_4
                    ? renderer->bloom_downsample_box4_pipeline
                    : renderer->bloom_downsample_tent13_pipeline;
-  } else if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE) {
+  } else if (kind == VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE) {
     pipeline = renderer->bloom_downsample_box4_pipeline;
   }
   if (!pipeline)
@@ -3439,8 +3435,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketGraphBufferInstance *state =
       vkr_metal_packet_pass_buffer(renderer, pass, 2u);
-  const bool8_t transmission = vkr_metal_packet_graph_pass_is(
-      pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION);
+  const bool8_t transmission =
+      vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION);
   const uint32_t candidate_count = transmission
                                        ? renderer->transmission_gpu_draw_count
                                        : renderer->gpu_draw_count;
@@ -3533,10 +3529,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   }
   if (!target)
     return false_v;
-  VkrMetalPacketGraphExecutorKind kind;
-  if (!vkr_metal_packet_graph_executor_kind(pass, &kind))
+  VkrRgExecutorKind kind;
+  if (!vkr_render_graph_executor_kind(pass, &kind))
     return false_v;
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW) {
+  if (kind == VKR_RG_EXECUTOR_SHADOW) {
     if (!packet->input.shadow)
       return true_v;
     const uint32_t cascade = pass->desc.repeat_index;
@@ -3549,7 +3545,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         packet->input.shadow->config_override, (uint32_t)target.width,
         (uint32_t)target.height, result);
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW) {
+  if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
     const uint32_t face = pass->desc.repeat_index;
     if (!packet->input.world || renderer->gpu_draw_count == 0u)
       return true_v;
@@ -3558,14 +3554,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         1u + renderer->prepared_frame.shadow_cascade_count + face, NULL,
         (uint32_t)target.width, (uint32_t)target.height, result);
   }
-  if (kind >= VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0 &&
-      kind <=
-          VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW) {
+  if (kind >= VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0 &&
+      kind <= VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW) {
     if (!packet->input.world || renderer->gpu_draw_count == 0u)
       return true_v;
     const uint32_t layer =
-        (uint32_t)kind -
-        VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0;
+        (uint32_t)kind - VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0;
     const uint32_t view = 1u + renderer->prepared_frame.shadow_cascade_count +
                           renderer->prepared_frame.local_shadow_view_count +
                           pass->desc.repeat_index;
@@ -3578,15 +3572,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     prepared->indirect.opaque_pipeline = nil;
     return true_v;
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE)
+  if (kind == VKR_RG_EXECUTOR_VBUFFER_OPAQUE)
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, packet, prepared, renderer->vbuffer_pipeline,
         renderer->vbuffer_opaque_pipeline, upload);
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION)
+  if (kind == VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION)
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, packet, prepared,
         renderer->transmission_vbuffer_pipeline, nil, upload);
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND) {
+  if (kind == VKR_RG_EXECUTOR_WORLD_BLEND) {
     prepared->active = true_v;
     if (!packet->input.world)
       return true_v;
@@ -3608,7 +3602,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         (uint32_t)target.height, view_projection, false_v, upload,
         &result->text_draw_count, result);
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING) {
+  if (kind == VKR_RG_EXECUTOR_PICKING) {
     prepared->active = true_v;
     if (!packet->input.picking || !packet->input.picking->pending)
       return true_v;
@@ -3635,15 +3629,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
       return false_v;
     return true_v;
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_ANIMATION_PREVIEW) {
+  if (kind == VKR_RG_EXECUTOR_ANIMATION_PREVIEW) {
     return vkr_metal_packet_prepare_animation_preview(renderer, prepared,
                                                       packet, upload, result);
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING) {
+  if (kind == VKR_RG_EXECUTOR_EDITOR_OVERLAY ||
+      kind == VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING) {
     prepared->active = true_v;
     prepared->world.direct = (VkrMetalPacketDirectPass){
-        .pipeline = kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY
+        .pipeline = kind == VKR_RG_EXECUTOR_EDITOR_OVERLAY
                         ? renderer->editor_overlay_pipeline
                         : renderer->editor_overlay_picking_pipeline,
         .depth = nil,
@@ -3656,21 +3650,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     result->indexed_draw_count += upload->overlay_draw_count;
     return true_v;
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP ||
-      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE) {
+  if (kind == VKR_RG_EXECUTOR_TONEMAP ||
+      kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE) {
     return vkr_metal_packet_prepare_tonemap(renderer, pass, packet, prepared,
                                             upload, (uint32_t)target.width,
                                             (uint32_t)target.height, NULL);
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR)
+  if (kind == VKR_RG_EXECUTOR_EDITOR)
     return vkr_metal_packet_prepare_tonemap(
         renderer, pass, packet, prepared, upload, (uint32_t)target.width,
         (uint32_t)target.height, &packet->editor_image_rect_px);
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_CLEAR) {
+  if (kind == VKR_RG_EXECUTOR_EDITOR_CLEAR) {
     prepared->active = true_v;
     return true_v;
   }
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_UI) {
+  if (kind == VKR_RG_EXECUTOR_UI) {
     prepared->active = true_v;
     if (!packet->input.ui)
       return true_v;
@@ -3699,115 +3693,115 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
     return vkr_metal_packet_prepare_transfer(renderer, pass, prepared, upload);
   switch (prepared->kind) {
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE:
+  case VKR_RG_EXECUTOR_IBL_BAKE:
     return vkr_metal_packet_prepare_ibl(renderer, packet, prepared, upload,
                                         result);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL:
+  case VKR_RG_EXECUTOR_METALFX_TEMPORAL:
     return vkr_metal_packet_prepare_metalfx_temporal(renderer, pass, packet,
                                                      prepared);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE:
+  case VKR_RG_EXECUTOR_METALFX_STABILIZE:
     return vkr_metal_packet_prepare_metalfx_stabilize(renderer, pass, packet,
                                                       prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SKINNING:
+  case VKR_RG_EXECUTOR_SKINNING:
     return vkr_metal_packet_prepare_skinning(renderer, prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM:
+  case VKR_RG_EXECUTOR_TEMPORAL_TRANSFORM:
     return vkr_metal_packet_prepare_temporal_transform(renderer, pass, packet,
                                                        prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
+  case VKR_RG_EXECUTOR_GBUFFER_RESOLVE:
     return vkr_metal_packet_prepare_gbuffer_resolve(renderer, pass, packet,
                                                     prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING:
+  case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
     return vkr_metal_packet_prepare_deferred_lighting(renderer, pass, packet,
                                                       prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FOG:
+  case VKR_RG_EXECUTOR_FOG_APPLY:
     return vkr_metal_packet_prepare_fog(renderer, pass, packet, prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INJECT:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INTEGRATE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_APPLY:
+  case VKR_RG_EXECUTOR_FROXEL_INJECT:
+  case VKR_RG_EXECUTOR_FROXEL_INTEGRATE:
+  case VKR_RG_EXECUTOR_FROXEL_APPLY:
     return vkr_metal_packet_prepare_froxel(renderer, pass, packet, prepared,
                                            upload, prepared->kind);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_BASE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_MIP:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TRACE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TEMPORAL:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_COMPOSITE:
+  case VKR_RG_EXECUTOR_SSGI_DEPTH_BASE:
+  case VKR_RG_EXECUTOR_SSGI_DEPTH_MIP:
+  case VKR_RG_EXECUTOR_SSGI_TRACE:
+  case VKR_RG_EXECUTOR_SSGI_TEMPORAL:
+  case VKR_RG_EXECUTOR_SSGI_COMPOSITE:
     return vkr_metal_packet_prepare_ssgi(renderer, pass, packet, prepared,
                                          upload, prepared->kind);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_BASE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_MIP:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TRACE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TEMPORAL:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_COMPOSITE:
+  case VKR_RG_EXECUTOR_SSR_DEPTH_BASE:
+  case VKR_RG_EXECUTOR_SSR_DEPTH_MIP:
+  case VKR_RG_EXECUTOR_SSR_TRACE:
+  case VKR_RG_EXECUTOR_SSR_TEMPORAL:
+  case VKR_RG_EXECUTOR_SSR_COMPOSITE:
     return vkr_metal_packet_prepare_ssr(renderer, pass, packet, prepared,
                                         upload, prepared->kind);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE:
+  case VKR_RG_EXECUTOR_TEMPORAL_RESOLVE:
     return vkr_metal_packet_prepare_temporal_resolve(renderer, pass, packet,
                                                      prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
+  case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
     return vkr_metal_packet_prepare_exposure_histogram(renderer, pass, packet,
                                                        prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
+  case VKR_RG_EXECUTOR_EXPOSURE_RESOLVE:
     return vkr_metal_packet_prepare_exposure_resolve(renderer, pass, packet,
                                                      prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
     return vkr_metal_packet_prepare_transmission_shade(renderer, pass, packet,
                                                        prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_RESOLVE:
+  case VKR_RG_EXECUTOR_PICKING_RESOLVE:
     return vkr_metal_packet_prepare_picking_resolve(renderer, pass, packet,
                                                     prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_COVERAGE:
     return vkr_metal_packet_prepare_transmission_coverage(renderer, pass,
                                                           prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT:
+  case VKR_RG_EXECUTOR_TRANSMISSION_COMPACT:
     return vkr_metal_packet_prepare_transmission_compact(renderer, pass,
                                                          prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD:
+  case VKR_RG_EXECUTOR_HZB_BUILD:
     return vkr_metal_packet_prepare_hzb_build(renderer, pass, prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE:
+  case VKR_RG_EXECUTOR_SDSM_REDUCE:
     return vkr_metal_packet_prepare_sdsm_reduce(renderer, pass, prepared,
                                                 upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_MIP:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_EVALUATE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE:
+  case VKR_RG_EXECUTOR_GTAO_DEPTH_PREFILTER:
+  case VKR_RG_EXECUTOR_GTAO_DEPTH_MIP:
+  case VKR_RG_EXECUTOR_GTAO_EVALUATE:
+  case VKR_RG_EXECUTOR_GTAO_DENOISE:
     return vkr_metal_packet_prepare_gtao(renderer, pass, prepared, upload,
                                          prepared->kind);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SUBSURFACE_GATHER:
+  case VKR_RG_EXECUTOR_SUBSURFACE_GATHER:
     return vkr_metal_packet_prepare_subsurface(renderer, pass, packet, prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT:
+  case VKR_RG_EXECUTOR_MOTION_BLUR_TILE_MAX:
+  case VKR_RG_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX:
+  case VKR_RG_EXECUTOR_MOTION_BLUR_RECONSTRUCT:
     return vkr_metal_packet_prepare_motion_blur(renderer, pass, packet,
                                                  prepared, upload, prepared->kind);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_COC:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_PREFILTER:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_GATHER:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_COMPOSITE:
+  case VKR_RG_EXECUTOR_DOF_COC:
+  case VKR_RG_EXECUTOR_DOF_DILATE_HORIZONTAL:
+  case VKR_RG_EXECUTOR_DOF_DILATE_VERTICAL:
+  case VKR_RG_EXECUTOR_DOF_PREFILTER:
+  case VKR_RG_EXECUTOR_DOF_GATHER:
+  case VKR_RG_EXECUTOR_DOF_COMPOSITE:
     return vkr_metal_packet_prepare_dof(renderer, pass, packet, prepared,
                                          upload, prepared->kind);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_PREFILTER:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_UPSAMPLE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE:
+  case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
+  case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:
+  case VKR_RG_EXECUTOR_BLOOM_UPSAMPLE:
+  case VKR_RG_EXECUTOR_BLOOM_COMBINE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE:
     return vkr_metal_packet_prepare_bloom(renderer, pass, packet, prepared,
                                           upload, prepared->kind);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE:
+  case VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY:
+  case VKR_RG_EXECUTOR_GPU_DRAW_PREFIX:
+  case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX:
+  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE:
     return vkr_metal_packet_prepare_gpu_draw_compute(renderer, pass, packet,
                                                      prepared, upload);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK:
+  case VKR_RG_EXECUTOR_PICKING_READBACK:
     return vkr_metal_packet_prepare_picking_readback(
         renderer, pass, packet, prepared, readback, readback_offset);
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_PREPARE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_UPSCALE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_STABILIZE:
+  case VKR_RG_EXECUTOR_FSR31_PREPARE:
+  case VKR_RG_EXECUTOR_FSR31_UPSCALE:
+  case VKR_RG_EXECUTOR_FSR31_STABILIZE:
     log_error("FSR 3.1 requires the Vulkan backend");
     return false_v;
   default:
@@ -4438,38 +4432,37 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       };
       if (pass->culled)
         continue;
-      if (!vkr_metal_packet_graph_executor_kind(pass, &prepared->kind) ||
+      if (!vkr_render_graph_executor_kind(pass, &prepared->kind) ||
           !vkr_metal_packet_prepare_pass(
               renderer, packet, prepared, &frame_upload,
               (id<MTLBuffer>)readback_object,
-              readback_slice.offset + readback_layout.picking,
-              out_result)) {
+              readback_slice.offset + readback_layout.picking, out_result)) {
         failed_pass = pass;
         passed = false_v;
         break;
       }
       switch (prepared->kind) {
-      case VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
+      case VKR_RG_EXECUTOR_GBUFFER_RESOLVE:
         if (deferred_diagnostics)
           deferred_state = vkr_metal_packet_pass_buffer(renderer, pass, 7u);
         break;
-      case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+      case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
         if (deferred_diagnostics)
           transmission_deferred_state =
               vkr_metal_packet_pass_buffer(renderer, pass, 3u);
         break;
-      case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
+      case VKR_RG_EXECUTOR_TRANSMISSION_COVERAGE:
         if (transmission_coverage)
           transmission_deferred_state =
               vkr_metal_packet_pass_buffer(renderer, pass, 1u);
         break;
-      case VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE:
+      case VKR_RG_EXECUTOR_SDSM_REDUCE:
         sdsm_reduce_state = vkr_metal_packet_pass_buffer(renderer, pass, 2u);
         break;
-      case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
+      case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
         exposure_histogram = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
         break;
-      case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
+      case VKR_RG_EXECUTOR_EXPOSURE_RESOLVE:
         exposure_state = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
         break;
       default:
@@ -4559,7 +4552,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       if (pass->culled)
         continue;
       const bool8_t metalfx_pass =
-          prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL;
+          prepared->kind == VKR_RG_EXECUTOR_METALFX_TEMPORAL;
       const bool8_t encoder_timing_pass =
           pass_timing_requested &&
           pass->desc.type != VKR_RG_PASS_TYPE_TRANSFER && !metalfx_pass;
@@ -4591,7 +4584,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           vkr_metal_dependency_encode_producer(encoder, &capture_barrier);
           out_result->dependency_count++;
         }
-        if (prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW &&
+        if (prepared->kind == VKR_RG_EXECUTOR_SHADOW &&
             pass->desc.repeat_index + 1u ==
                 renderer->prepared_frame.shadow_cascade_count) {
           vkr_metal_dependency_encode_producer(encoder,
@@ -4640,8 +4633,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         vkr_metal_packet_record_producers(encoder, prepared);
         out_result->dependency_count +=
             prepared->consumer_count + prepared->producer_count;
-        if (ibl_bake &&
-            prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE) {
+        if (ibl_bake && prepared->kind == VKR_RG_EXECUTOR_IBL_BAKE) {
           vkr_metal_dependency_encode_producer(encoder, &ibl_capture_barrier);
           out_result->dependency_count++;
         }

@@ -2,6 +2,8 @@
 
 #include "vkr_buffer.h"
 #include "vkr_color_grading.h"
+#include "vkr_render_resources.h"
+#include "vkr_subsurface.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -262,3 +264,41 @@ bool8_t vkr_gpu_abi_validate_host(void) {
 
 #undef VKR_GPU_ABI_RECORD
 #undef VKR_GPU_ABI_FIELD
+
+Vec4 vkr_gpu_material_anisotropy(float32_t strength, float32_t rotation) {
+  const float32_t normalized_rotation =
+      remainderf(rotation, 6.28318530717958647692f);
+  return (Vec4){strength, cosf(normalized_rotation), sinf(normalized_rotation),
+                0.0f};
+}
+
+bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {
+  const VkrPbrProperties *pbr = &material->pbr;
+  const float32_t strength = pbr->diffuse_transmission_strength;
+  const Vec3 tint = pbr->diffuse_transmission_color;
+  if (!isfinite(strength) || !isfinite(tint.x) || !isfinite(tint.y) ||
+      !isfinite(tint.z) || strength < 0.0f || strength > 1.0f ||
+      tint.x < 0.0f || tint.x > 1.0f || tint.y < 0.0f || tint.y > 1.0f ||
+      tint.z < 0.0f || tint.z > 1.0f) {
+    return false_v;
+  }
+  if (strength > 0.0f &&
+      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f)) {
+    return false_v;
+  }
+  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
+      pbr->subsurface_strength > 1.0f ||
+      pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT) {
+    return false_v;
+  }
+  if (pbr->subsurface_strength > 0.0f &&
+      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
+       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
+       pbr->diffuse_transmission_strength > 0.0f)) {
+    return false_v;
+  }
+  return true_v;
+}

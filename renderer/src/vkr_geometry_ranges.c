@@ -150,3 +150,66 @@ void vkr_geometry_ranges_metrics(const VkrGeometryRanges *ranges,
   metrics->retired_range_count =
       vertices.retired_allocations + indices.retired_allocations;
 }
+
+void vkr_geometry_megabuffer_account_publish(
+    VkrGeometryMegabufferAccounting *accounting,
+    const VkrGeometryRangeAllocation *ranges, uint64_t vertex_bytes,
+    uint64_t index_bytes, uint64_t decode_bytes) {
+  accounting->vertex_high_water =
+      Max(accounting->vertex_high_water, ranges->vertex_end);
+  accounting->index_high_water =
+      Max(accounting->index_high_water, ranges->index_end);
+  accounting->vertex_live_bytes += vertex_bytes;
+  accounting->index_live_bytes += index_bytes;
+  accounting->decode_metadata_live_bytes += decode_bytes;
+  accounting->vertex_uploaded_bytes_total += vertex_bytes;
+  accounting->index_uploaded_bytes_total += index_bytes;
+  accounting->decode_metadata_uploaded_bytes_total += decode_bytes;
+  accounting->decode_metadata_high_water =
+      Max(accounting->decode_metadata_high_water,
+          accounting->decode_metadata_live_bytes);
+}
+
+void vkr_geometry_megabuffer_account_retire(
+    VkrGeometryMegabufferAccounting *accounting, uint64_t vertex_bytes,
+    uint64_t index_bytes, uint64_t decode_bytes) {
+  accounting->vertex_live_bytes -=
+      Min(accounting->vertex_live_bytes, vertex_bytes);
+  accounting->index_live_bytes -=
+      Min(accounting->index_live_bytes, index_bytes);
+  accounting->decode_metadata_live_bytes -=
+      Min(accounting->decode_metadata_live_bytes, decode_bytes);
+}
+
+void vkr_geometry_megabuffer_metrics(
+    const VkrGeometryMegabufferAccounting *accounting,
+    uint64_t vertex_capacity_bytes, uint64_t index_capacity_bytes,
+    uint32_t generation, const VkrGeometryRanges *ranges,
+    VkrGeometryMegabufferMetrics *out_metrics) {
+  *out_metrics = (VkrGeometryMegabufferMetrics){
+      .vertex_capacity_bytes = vertex_capacity_bytes,
+      .index_capacity_bytes = index_capacity_bytes,
+      .vertex_live_bytes = accounting->vertex_live_bytes,
+      .index_live_bytes = accounting->index_live_bytes,
+      .decode_metadata_live_bytes = accounting->decode_metadata_live_bytes,
+      .live_bytes = accounting->vertex_live_bytes +
+                    accounting->index_live_bytes +
+                    accounting->decode_metadata_live_bytes,
+      .high_water_bytes =
+          accounting->vertex_high_water + accounting->index_high_water,
+      .vertex_high_water_bytes = accounting->vertex_high_water,
+      .index_high_water_bytes = accounting->index_high_water,
+      .vertex_uploaded_bytes_total = accounting->vertex_uploaded_bytes_total,
+      .index_uploaded_bytes_total = accounting->index_uploaded_bytes_total,
+      .decode_metadata_high_water_bytes =
+          accounting->decode_metadata_high_water,
+      .decode_metadata_uploaded_bytes_total =
+          accounting->decode_metadata_uploaded_bytes_total,
+      .rejected_publications = accounting->rejected_publications,
+      .generation_replacements = accounting->generation_replacements,
+      .generation = generation,
+  };
+  out_metrics->fragmentation_bytes =
+      out_metrics->high_water_bytes - out_metrics->live_bytes;
+  vkr_geometry_ranges_metrics(ranges, out_metrics);
+}

@@ -262,30 +262,9 @@ void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
   if (!renderer)
     return;
   const VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
-  out_metrics->vertex_capacity_bytes = mega->vertices.length;
-  out_metrics->index_capacity_bytes = mega->indices.length;
-  out_metrics->vertex_live_bytes = mega->vertex_live_bytes;
-  out_metrics->index_live_bytes = mega->index_live_bytes;
-  out_metrics->decode_metadata_live_bytes = mega->decode_metadata_live_bytes;
-  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes +
-                            mega->decode_metadata_live_bytes;
-  out_metrics->fragmentation_bytes = mega->vertex_high_water +
-                                     mega->index_high_water -
-                                     out_metrics->live_bytes;
-  out_metrics->high_water_bytes =
-      mega->vertex_high_water + mega->index_high_water;
-  out_metrics->vertex_high_water_bytes = mega->vertex_high_water;
-  out_metrics->index_high_water_bytes = mega->index_high_water;
-  out_metrics->vertex_uploaded_bytes_total = mega->vertex_uploaded_bytes_total;
-  out_metrics->index_uploaded_bytes_total = mega->index_uploaded_bytes_total;
-  out_metrics->decode_metadata_high_water_bytes =
-      mega->decode_metadata_high_water;
-  out_metrics->decode_metadata_uploaded_bytes_total =
-      mega->decode_metadata_uploaded_bytes_total;
-  out_metrics->rejected_publications = mega->rejected_publications;
-  out_metrics->generation_replacements = mega->generation_replacements;
-  out_metrics->generation = mega->generation;
-  vkr_geometry_ranges_metrics(&renderer->geometry_ranges, out_metrics);
+  vkr_geometry_megabuffer_metrics(&mega->accounting, mega->vertices.length,
+                                  mega->indices.length, mega->generation,
+                                  &renderer->geometry_ranges, out_metrics);
 }
 
 bool8_t vkr_metal_packet_renderer_get_and_reset_upload_wait_count(

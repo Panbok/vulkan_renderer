@@ -1,219 +1,6 @@
 /* Render-graph resources, dependency lowering, pass descriptors, and capture
  * plans. */
-typedef enum VkrMetalPacketGraphExecutorKind {
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW = 0,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_RESOLVE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SKINNING,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DEPTH_SEED,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_MIP,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_EVALUATE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_BASE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_DEPTH_MIP,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TRACE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_TEMPORAL,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSGI_COMPOSITE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_BASE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_DEPTH_MIP,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TRACE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_TEMPORAL,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SSR_COMPOSITE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_FOG,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INJECT,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_INTEGRATE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_FROXEL_APPLY,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STAGE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STABILIZE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SUBSURFACE_GATHER,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_TILE_MAX,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_MOTION_BLUR_RECONSTRUCT,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_COC,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_DILATE_HORIZONTAL,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_DILATE_VERTICAL,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_PREFILTER,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_GATHER,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_DOF_COMPOSITE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_PREFILTER,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP_PREPARE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_CLEAR,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_ANIMATION_PREVIEW,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_UI,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_PREPARE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_UPSCALE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_FSR31_STABILIZE,
-  VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT,
-} VkrMetalPacketGraphExecutorKind;
-
 #include "metal/internal/vkr_metal_packet_prepared.h"
-
-typedef struct VkrMetalPacketGraphExecutorSpec {
-  const char *name;
-  VkrRgPassType type;
-} VkrMetalPacketGraphExecutorSpec;
-
-vkr_global const VkrMetalPacketGraphExecutorSpec
-    s_metal_packet_graph_executors[] = {
-        {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.local_shadow", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.local_shadow.transmission0", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.local_shadow.transmission1", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.local_shadow.transmission_overflow", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.animation.skinning", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.temporal.transform_history", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.vbuffer.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.vbuffer.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.gtao.depth_prefilter", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.gtao.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.gtao.evaluate", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.gtao.denoise", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssgi.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssgi.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssgi.trace", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssgi.temporal", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssgi.composite", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssr.depth_base", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssr.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssr.trace", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssr.temporal", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.ssr.composite", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.fog.apply", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.froxel.inject", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.froxel.integrate", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.froxel.apply", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.temporal.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.metalfx.stage", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.metalfx.temporal", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.metalfx.stabilize", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.subsurface.gather", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.motion_blur.tile_max", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.motion_blur.neighbor_max", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.motion_blur.reconstruct", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.dof.coc", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.dof.dilate_horizontal", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.dof.dilate_vertical", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.dof.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.dof.gather", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.dof.composite", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.bloom.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.bloom.combine", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.downsample", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.sdsm.reduce", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.tonemap.prepare", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.editor.clear", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.editor.overlay.picking", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.animation.preview", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.fsr31.prepare", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.fsr31.upscale", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.fsr31.stabilize", VKR_RG_PASS_TYPE_COMPUTE},
-};
-_Static_assert(ArrayCount(s_metal_packet_graph_executors) ==
-                   VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT,
-               "Metal graph executor table is incomplete");
-
-vkr_internal bool8_t vkr_metal_packet_graph_executor_kind(
-    const VkrRgPass *pass, VkrMetalPacketGraphExecutorKind *out_kind) {
-  if (!pass || !out_kind || pass->desc.executor_id == 0u ||
-      pass->desc.executor_id > VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT)
-    return false_v;
-  *out_kind = (VkrMetalPacketGraphExecutorKind)(pass->desc.executor_id - 1u);
-  return true_v;
-}
-
-vkr_internal bool8_t vkr_metal_packet_graph_pass_is(
-    const VkrRgPass *pass, VkrMetalPacketGraphExecutorKind kind) {
-  return pass && pass->desc.executor_id == (uint32_t)kind + 1u;
-}
-
-vkr_internal bool8_t
-vkr_metal_packet_register_executors(VkrMetalPacketRenderer *renderer) {
-  for (uint32_t i = 0; i < ArrayCount(s_metal_packet_graph_executors); ++i) {
-    const VkrMetalPacketGraphExecutorSpec *spec =
-        &s_metal_packet_graph_executors[i];
-    VkrRgPassExecutor entry = {
-        .name = string8_create_from_cstr((const uint8_t *)spec->name,
-                                         string_length(spec->name)),
-        .id = i + 1u,
-        .type = spec->type,
-    };
-    if (!vkr_rg_executor_registry_register(&renderer->executors, &entry))
-      return false_v;
-  }
-  return true_v;
-}
 
 vkr_internal MTLPixelFormat
 vkr_metal_packet_pixel_format(VkrTextureFormat format) {
@@ -2923,12 +2710,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
     VkrMetalPacketPreparedPass *prepared,
     const VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketTransferPass *transfer = &prepared->transfer;
-  const bool8_t opaque =
-      prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD;
+  const bool8_t opaque = prepared->kind == VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD;
   const bool8_t transmission =
-      prepared->kind ==
-      VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD;
-  if (prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_STAGE) {
+      prepared->kind == VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD;
+  if (prepared->kind == VKR_RG_EXECUTOR_METALFX_STAGE) {
     for (uint32_t binding = 0u; binding < 3u; ++binding) {
       const VkrRgImageUse *read =
           vkr_rg_pass_find_image_use(&pass->desc, binding, 0u);
@@ -3097,8 +2882,7 @@ vkr_metal_packet_record_transfer(id<MTL4ComputeCommandEncoder> encoder,
 
 vkr_internal bool8_t
 vkr_metal_packet_is_picking_readback(const VkrRgPass *pass) {
-  return vkr_metal_packet_graph_pass_is(
-      pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK);
+  return vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_PICKING_READBACK);
 }
 
 vkr_internal bool8_t vkr_metal_packet_prepare_picking_readback(

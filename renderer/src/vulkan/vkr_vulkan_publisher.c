@@ -2,41 +2,6 @@
 
 #include <math.h>
 
-vkr_internal Vec4 vkr_vk_material_anisotropy(float32_t strength,
-                                             float32_t rotation) {
-  const float32_t normalized_rotation =
-      remainderf(rotation, 6.28318530717958647692f);
-  return (Vec4){strength, cosf(normalized_rotation), sinf(normalized_rotation),
-                0.0f};
-}
-
-vkr_internal bool8_t
-vkr_vk_material_diffuse_extensions_valid(const VkrMaterial *material) {
-  const VkrPbrProperties *pbr = &material->pbr;
-  const float32_t strength = pbr->diffuse_transmission_strength;
-  const Vec3 tint = pbr->diffuse_transmission_color;
-  if (!isfinite(strength) || !isfinite(tint.x) || !isfinite(tint.y) ||
-      !isfinite(tint.z) || strength < 0.0f || strength > 1.0f ||
-      tint.x < 0.0f || tint.x > 1.0f || tint.y < 0.0f || tint.y > 1.0f ||
-      tint.z < 0.0f || tint.z > 1.0f)
-    return false_v;
-  if (strength > 0.0f &&
-      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
-       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
-       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f))
-    return false_v;
-  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
-      pbr->subsurface_strength > 1.0f ||
-      pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT)
-    return false_v;
-  if (pbr->subsurface_strength > 0.0f &&
-      (material->material_type != VKR_MATERIAL_TYPE_PBR ||
-       material->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
-       pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
-       pbr->diffuse_transmission_strength > 0.0f))
-    return false_v;
-  return true_v;
-}
 void vkr_vk_advance_radiance_revision(VkrVulkanRenderer *renderer) {
   if (renderer->radiance_revision == UINT64_MAX) {
     renderer->terminal_failure = true_v;
@@ -1768,10 +1733,10 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
   if (mega->live) {
     mega->copy_source_vertices = mega->vertices;
     mega->copy_source_indices = mega->indices;
-    mega->copy_vertex_size = mega->vertex_high_water;
-    mega->copy_index_size = mega->index_high_water;
+    mega->copy_vertex_size = mega->accounting.vertex_high_water;
+    mega->copy_index_size = mega->accounting.index_high_water;
     mega->copy_pending = true_v;
-    mega->generation_replacements++;
+    mega->accounting.generation_replacements++;
   }
   mega->vertices = vertices;
   mega->indices = indices;
@@ -1934,7 +1899,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
           &renderer->geometry_ranges, geometry->vertex_count,
           geometry->decode_count, geometry->index_count, mega->vertices.size,
           mega->indices.size, &ranges)) {
-    mega->rejected_publications++;
+    mega->accounting.rejected_publications++;
     return false_v;
   }
   const uint64_t vertex_offset = ranges.vertex_offset;
@@ -1942,7 +1907,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
   const uint64_t index_offset = ranges.index_offset;
   if (!vkr_vk_ensure_geometry_megabuffer(renderer, ranges.vertex_end,
                                          ranges.index_end)) {
-    mega->rejected_publications++;
+    mega->accounting.rejected_publications++;
     vkr_vk_release_unused_geometry_ranges(renderer, ranges);
     return false_v;
   }
@@ -2033,16 +1998,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
   };
   pending.live = true_v;
   *record = pending;
-  mega->vertex_live_bytes += vertex_size;
-  mega->index_live_bytes += index_size;
-  mega->decode_metadata_live_bytes += decode_size;
-  mega->vertex_uploaded_bytes_total += vertex_size;
-  mega->index_uploaded_bytes_total += index_size;
-  mega->decode_metadata_uploaded_bytes_total += decode_size;
-  mega->vertex_high_water = Max(mega->vertex_high_water, ranges.vertex_end);
-  mega->index_high_water = Max(mega->index_high_water, ranges.index_end);
-  mega->decode_metadata_high_water =
-      Max(mega->decode_metadata_high_water, mega->decode_metadata_live_bytes);
+  vkr_geometry_megabuffer_account_publish(&mega->accounting, &ranges,
+                                          vertex_size, index_size, decode_size);
   renderer->pending_buffer_initializations
       [renderer->pending_buffer_initialization_count++] = initializations[0];
   renderer->pending_buffer_initializations
@@ -2436,11 +2393,9 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   const uint64_t vertex_bytes =
       (uint64_t)record->vertex_count * sizeof(VkrPackedStaticVertex);
   const uint64_t index_bytes = (uint64_t)record->index_count * sizeof(uint32_t);
-  mega->vertex_live_bytes -= Min(mega->vertex_live_bytes, vertex_bytes);
-  mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
-  mega->decode_metadata_live_bytes -=
-      Min(mega->decode_metadata_live_bytes,
-          (uint64_t)record->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
+  vkr_geometry_megabuffer_account_retire(
+      &mega->accounting, vertex_bytes, index_bytes,
+      (uint64_t)record->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
   record->live = false_v;
   record->pending_retire = true_v;
   record->last_use_submit_value = last_use;
@@ -2591,7 +2546,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
       handle.id > renderer->config.material_record_capacity ||
       material->id != handle.id || material->generation != handle.generation)
     return false_v;
-  if (!vkr_vk_material_diffuse_extensions_valid(material))
+  if (!vkr_gpu_material_extensions_valid(material))
     return false_v;
   VkrVulkanPublishedMaterial *record =
       &renderer->published_materials[handle.id - 1u];
@@ -2711,7 +2666,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
                   sampler_indices[VKR_TEXTURE_SLOT_SHEEN_COLOR],
               .sheen_roughness_sampler =
                   sampler_indices[VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS],
-              .material_anisotropy = vkr_vk_material_anisotropy(
+              .material_anisotropy = vkr_gpu_material_anisotropy(
                   pbr.anisotropy_strength, pbr.anisotropy_rotation),
               .anisotropy_texture =
                   texture_indices[VKR_TEXTURE_SLOT_ANISOTROPY],

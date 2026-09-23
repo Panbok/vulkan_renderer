@@ -337,3 +337,17 @@ typedef struct VkrGpuAbiRecord {
 
 const VkrGpuAbiRecord *vkr_gpu_abi_record(VkrGpuAbiRecordId id);
 bool8_t vkr_gpu_abi_validate_host(void);
+
+struct VkrMaterial;
+
+/** Material-row anisotropy {strength, cos(rotation), sin(rotation), 0}. The
+ * rotation is reduced to one turn before the trigonometry. */
+Vec4 vkr_gpu_material_anisotropy(float32_t strength, float32_t rotation);
+
+/**
+ * Validates the diffuse-transmission and subsurface extensions a material row
+ * carries. Each is finite and within [0, 1]; a nonzero strength requires a
+ * PBR material without blending, specular transmission or volume thickness,
+ * and subsurface also excludes diffuse transmission.
+ */
+bool8_t vkr_gpu_material_extensions_valid(const struct VkrMaterial *material);

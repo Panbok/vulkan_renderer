@@ -2862,7 +2862,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                                             config->fragment_msl_path) &&
           vkr_rg_executor_registry_init(&renderer->executors,
                                         renderer->allocator) &&
-          vkr_metal_packet_register_executors(renderer) &&
+          vkr_render_graph_register_executors(&renderer->executors) &&
           vkr_rg_json_load_file(renderer->allocator, config->graph_path,
                                 &renderer->json_graph) &&
           vkr_rg_json_bind_executors(&renderer->json_graph,

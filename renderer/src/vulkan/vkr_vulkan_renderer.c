@@ -215,7 +215,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
       vkr_allocator_arena(&renderer->graph_frame_allocator) &&
       vkr_rg_executor_registry_init(&renderer->executors,
                                     renderer->allocator) &&
-      vkr_vk_register_graph_executors(renderer) &&
+      vkr_render_graph_register_executors(&renderer->executors) &&
       vkr_rg_json_load_file(renderer->allocator, renderer->config.graph_path,
                             &renderer->json_graph) &&
       vkr_rg_json_bind_executors(&renderer->json_graph, &renderer->executors);
@@ -1594,30 +1594,9 @@ void vkr_vulkan_renderer_geometry_megabuffer_metrics(
   if (!renderer)
     return;
   const VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
-  out_metrics->vertex_capacity_bytes = mega->vertices.size;
-  out_metrics->index_capacity_bytes = mega->indices.size;
-  out_metrics->vertex_live_bytes = mega->vertex_live_bytes;
-  out_metrics->index_live_bytes = mega->index_live_bytes;
-  out_metrics->decode_metadata_live_bytes = mega->decode_metadata_live_bytes;
-  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes +
-                            mega->decode_metadata_live_bytes;
-  out_metrics->fragmentation_bytes = mega->vertex_high_water +
-                                     mega->index_high_water -
-                                     out_metrics->live_bytes;
-  out_metrics->high_water_bytes =
-      mega->vertex_high_water + mega->index_high_water;
-  out_metrics->vertex_high_water_bytes = mega->vertex_high_water;
-  out_metrics->index_high_water_bytes = mega->index_high_water;
-  out_metrics->vertex_uploaded_bytes_total = mega->vertex_uploaded_bytes_total;
-  out_metrics->index_uploaded_bytes_total = mega->index_uploaded_bytes_total;
-  out_metrics->decode_metadata_high_water_bytes =
-      mega->decode_metadata_high_water;
-  out_metrics->decode_metadata_uploaded_bytes_total =
-      mega->decode_metadata_uploaded_bytes_total;
-  out_metrics->rejected_publications = mega->rejected_publications;
-  out_metrics->generation_replacements = mega->generation_replacements;
-  out_metrics->generation = mega->generation;
-  vkr_geometry_ranges_metrics(&renderer->geometry_ranges, out_metrics);
+  vkr_geometry_megabuffer_metrics(&mega->accounting, mega->vertices.size,
+                                  mega->indices.size, mega->generation,
+                                  &renderer->geometry_ranges, out_metrics);
 }
 
 void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
@@ -1795,24 +1774,20 @@ bool8_t vkr_vulkan_renderer_graph_resource_stats(
     const VkrVulkanGraphImage *image = &renderer->graph_images[i];
     if (!image->live || image->external_swapchain)
       continue;
-    VkrTextureFormatInfo format = {0};
-    if (!vkr_texture_format_get_info(image->desc.format, &format) ||
-        format.block_width != 1u || format.block_height != 1u)
+    vkr_render_graph_resource_stats_add_image(out_stats, &image->desc,
+                                              image->instance_count);
+  }
+  for (uint32_t i = 0u; i < renderer->config.max_graph_buffers; ++i) {
+    const VkrVulkanGraphBuffer *buffer = &renderer->graph_buffers[i];
+    if (!buffer->live)
       continue;
-    uint64_t texels = 0u;
-    for (uint32_t mip = 0u; mip < Max(image->desc.mip_levels, 1u); ++mip) {
-      texels += (uint64_t)Max(image->desc.width >> mip, 1u) *
-                Max(image->desc.height >> mip, 1u) *
-                Max(image->desc.depth >> mip, 1u);
-    }
-    const uint64_t bytes_per_image = texels * Max(image->desc.layers, 1u) *
-                                     Max(image->desc.samples, 1u) *
-                                     format.bytes_per_block;
-    out_stats->live_image_textures += image->instance_count;
-    out_stats->live_image_bytes += bytes_per_image * image->instance_count;
+    vkr_render_graph_resource_stats_add_buffer(out_stats, &buffer->desc,
+                                               buffer->instance_count);
   }
   out_stats->peak_image_textures = out_stats->live_image_textures;
   out_stats->peak_image_bytes = out_stats->live_image_bytes;
+  out_stats->peak_buffers = out_stats->live_buffers;
+  out_stats->peak_buffer_bytes = out_stats->live_buffer_bytes;
   return true_v;
 }
 

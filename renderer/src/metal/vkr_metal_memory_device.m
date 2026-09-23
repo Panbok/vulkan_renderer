@@ -596,12 +596,12 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
     [memory->residency addAllocation:memory->readback_buffer];
     [memory->residency commit];
     [memory->residency requestResidency];
-    vkr_metal_memory_owner_record_allocate(memory->owners,
-                                           VKR_GPU_ALLOCATION_OWNER_STAGING,
-                                           config->upload_ring_size);
-    vkr_metal_memory_owner_record_allocate(memory->owners,
-                                           VKR_GPU_ALLOCATION_OWNER_READBACK,
-                                           config->readback_ring_size);
+    vkr_gpu_memory_owner_record_allocate(memory->owners,
+                                         VKR_GPU_ALLOCATION_OWNER_STAGING,
+                                         config->upload_ring_size);
+    vkr_gpu_memory_owner_record_allocate(memory->owners,
+                                         VKR_GPU_ALLOCATION_OWNER_READBACK,
+                                         config->readback_ring_size);
     vkr_metal_memory_snapshot(memory, "memory.create");
     *out_device = memory;
     return VKR_METAL_MEMORY_STATUS_OK;
@@ -641,8 +641,8 @@ VkrMetalMemoryStatus vkr_metal_memory_device_create_buffer(
     return VKR_METAL_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED;
   }
   device->logical_owners[handle.index] = normalized_owner;
-  vkr_metal_memory_owner_record_allocate(device->owners, normalized_owner,
-                                         size_align.size);
+  vkr_gpu_memory_owner_record_allocate(device->owners, normalized_owner,
+                                       size_align.size);
   device->native_resources[handle.index] = buffer;
   device->logical_lengths[handle.index] = length;
   device->native_live_resources++;
@@ -696,8 +696,8 @@ VkrMetalMemoryStatus vkr_metal_memory_device_create_texture(
     return VKR_METAL_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED;
   }
   device->logical_owners[handle.index] = normalized_owner;
-  vkr_metal_memory_owner_record_allocate(device->owners, normalized_owner,
-                                         size_align.size);
+  vkr_gpu_memory_owner_record_allocate(device->owners, normalized_owner,
+                                       size_align.size);
   device->native_resources[handle.index] = texture;
   device->native_live_resources++;
   *out_texture =
@@ -773,8 +773,8 @@ vkr_metal_memory_device_retire(VkrMetalMemoryDevice *device,
   status = vkr_metal_memory_retire(device->core, handle, last_use_submit_value);
   if (status != VKR_METAL_MEMORY_STATUS_OK)
     return status;
-  status = vkr_metal_memory_owner_record_release(device->owners, owner,
-                                                 placement.resource_size)
+  status = vkr_gpu_memory_owner_record_release(device->owners, owner,
+                                               placement.resource_size)
                ? VKR_METAL_MEMORY_STATUS_OK
                : VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
   if (device->diagnostics && device->diagnostics->enabled)
@@ -942,8 +942,8 @@ VkrMetalMemoryStatus vkr_metal_memory_device_grow_ring(
     [device->residency removeAllocation:*buffer];
     [device->residency commit];
     vkr_metal_memory_release(*buffer);
-    (void)vkr_metal_memory_owner_record_release(device->owners, owner,
-                                                old_total_size);
+    (void)vkr_gpu_memory_owner_record_release(device->owners, owner,
+                                              old_total_size);
   }
   *buffer = nil;
   *addresses = (VkrMetalAddressPair){0};
@@ -965,7 +965,7 @@ VkrMetalMemoryStatus vkr_metal_memory_device_grow_ring(
   [device->residency commit];
   *buffer = replacement;
   device->transfer_ring_allocated_size += replacement_size;
-  vkr_metal_memory_owner_record_allocate(device->owners, owner, total_size);
+  vkr_gpu_memory_owner_record_allocate(device->owners, owner, total_size);
   const uint64_t acquires = ring->acquires;
   const uint64_t reuses = ring->reuses;
   const uint64_t busy_failures = ring->busy_failures;

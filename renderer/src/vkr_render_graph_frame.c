@@ -181,3 +181,194 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                 packet->temporal.enabled)
           : (VkrGtaoGpuParams){0};
 }
+
+typedef struct VkrRgExecutorSpec {
+  const char *name;
+  VkrRgPassType type;
+} VkrRgExecutorSpec;
+
+vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
+    [VKR_RG_EXECUTOR_SHADOW] = {"pass.shadow.cascade",
+                                VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_LOCAL_SHADOW] = {"pass.local_shadow",
+                                      VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0] =
+        {"pass.local_shadow.transmission0", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1] =
+        {"pass.local_shadow.transmission1", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW] =
+        {"pass.local_shadow.transmission_overflow", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_PICKING] = {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_PICKING_DEPTH_SEED] = {"pass.picking.depth_seed",
+                                            VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_PICKING_RESOLVE] = {"pass.picking.resolve",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_PICKING_READBACK] = {"pass.picking.readback",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_IBL_BAKE] = {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD] = {"pass.gpu_draw_upload",
+                                         VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY] = {"pass.gpu_draw_classify",
+                                           VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GPU_DRAW_PREFIX] = {"pass.gpu_draw_prefix",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GPU_DRAW_ENCODE] = {"pass.gpu_draw_encode",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SKINNING] = {"pass.animation.skinning",
+                                  VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TEMPORAL_TRANSFORM] = {"pass.temporal.transform_history",
+                                            VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD] =
+        {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY] =
+        {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX] =
+        {"pass.transmission.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE] =
+        {"pass.transmission.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_DEPTH_SEED] = {"pass.transmission.depth_seed",
+                                                 VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_VBUFFER_OPAQUE] = {"pass.vbuffer.opaque",
+                                        VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION] = {"pass.vbuffer.transmission",
+                                              VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_GBUFFER_RESOLVE] = {"pass.gbuffer.resolve",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GTAO_DEPTH_PREFILTER] = {"pass.gtao.depth_prefilter",
+                                              VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GTAO_DEPTH_MIP] = {"pass.gtao.depth_mip",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GTAO_EVALUATE] = {"pass.gtao.evaluate",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GTAO_DENOISE] = {"pass.gtao.denoise",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_LIGHTING_DEFERRED] = {"pass.lighting.deferred",
+                                           VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSGI_DEPTH_BASE] = {"pass.ssgi.depth_base",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSGI_DEPTH_MIP] = {"pass.ssgi.depth_mip",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSGI_TRACE] = {"pass.ssgi.trace",
+                                    VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSGI_TEMPORAL] = {"pass.ssgi.temporal",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSGI_COMPOSITE] = {"pass.ssgi.composite",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSR_DEPTH_BASE] = {"pass.ssr.depth_base",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSR_DEPTH_MIP] = {"pass.ssr.depth_mip",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSR_TRACE] = {"pass.ssr.trace", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSR_TEMPORAL] = {"pass.ssr.temporal",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SSR_COMPOSITE] = {"pass.ssr.composite",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FOG_APPLY] = {"pass.fog.apply", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FROXEL_INJECT] = {"pass.froxel.inject",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FROXEL_INTEGRATE] = {"pass.froxel.integrate",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FROXEL_APPLY] = {"pass.froxel.apply",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TEMPORAL_RESOLVE] = {"pass.temporal.resolve",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_METALFX_STAGE] = {"pass.metalfx.stage",
+                                       VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_METALFX_TEMPORAL] = {"pass.metalfx.temporal",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_METALFX_STABILIZE] = {"pass.metalfx.stabilize",
+                                           VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM] = {"pass.exposure.histogram",
+                                            VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_EXPOSURE_RESOLVE] = {"pass.exposure.resolve",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SUBSURFACE_GATHER] = {"pass.subsurface.gather",
+                                           VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_MOTION_BLUR_TILE_MAX] = {"pass.motion_blur.tile_max",
+                                              VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_MOTION_BLUR_NEIGHBOR_MAX] =
+        {"pass.motion_blur.neighbor_max", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_MOTION_BLUR_RECONSTRUCT] = {"pass.motion_blur.reconstruct",
+                                                 VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DOF_COC] = {"pass.dof.coc", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DOF_DILATE_HORIZONTAL] = {"pass.dof.dilate_horizontal",
+                                               VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DOF_DILATE_VERTICAL] = {"pass.dof.dilate_vertical",
+                                             VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DOF_PREFILTER] = {"pass.dof.prefilter",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DOF_GATHER] = {"pass.dof.gather",
+                                    VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DOF_COMPOSITE] = {"pass.dof.composite",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_BLOOM_PREFILTER] = {"pass.bloom.prefilter",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE] = {"pass.bloom.downsample",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_BLOOM_UPSAMPLE] = {"pass.bloom.upsample",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_BLOOM_COMBINE] = {"pass.bloom.combine",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE] = {"pass.transmission.downsample",
+                                                 VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_SHADE] = {"pass.transmission.shade",
+                                            VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_COVERAGE] = {"pass.transmission.coverage",
+                                               VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TRANSMISSION_COMPACT] = {"pass.transmission.compact",
+                                              VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SDSM_REDUCE] = {"pass.sdsm.reduce",
+                                     VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_HZB_BUILD] = {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN] =
+        {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR] =
+        {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_WORLD_BLEND] = {"pass.world.blend",
+                                     VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_TONEMAP] = {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_TONEMAP_PREPARE] = {"pass.tonemap.prepare",
+                                         VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_EDITOR] = {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_EDITOR_CLEAR] = {"pass.editor.clear",
+                                      VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_EDITOR_OVERLAY] = {"pass.editor.overlay",
+                                        VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING] = {"pass.editor.overlay.picking",
+                                                VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_ANIMATION_PREVIEW] = {"pass.animation.preview",
+                                           VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_UI] = {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_FSR31_PREPARE] = {"pass.fsr31.prepare",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FSR31_UPSCALE] = {"pass.fsr31.upscale",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FSR31_STABILIZE] = {"pass.fsr31.stabilize",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
+};
+
+bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {
+  for (uint32_t kind = 0; kind < VKR_RG_EXECUTOR_COUNT; ++kind) {
+    const VkrRgExecutorSpec *spec = &s_rg_executors[kind];
+    assert_log(spec->name != NULL, "Executor catalog entry is missing");
+    const VkrRgPassExecutor entry = {
+        .name = string8_create_from_cstr((const uint8_t *)spec->name,
+                                         string_length(spec->name)),
+        .id = kind + 1u,
+        .type = spec->type,
+    };
+    if (!vkr_rg_executor_registry_register(registry, &entry)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+const char *vkr_render_graph_executor_name(VkrRgExecutorKind kind) {
+  return kind < VKR_RG_EXECUTOR_COUNT ? s_rg_executors[kind].name : "unknown";
+}
+
+VkrRgPassType vkr_render_graph_executor_type(VkrRgExecutorKind kind) {
+  assert_log(kind < VKR_RG_EXECUTOR_COUNT, "Executor kind is out of range");
+  return s_rg_executors[kind].type;
+}

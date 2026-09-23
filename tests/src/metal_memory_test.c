@@ -75,31 +75,31 @@ static void test_metal_memory_alignment_and_balance(void) {
 static void test_metal_memory_owner_accounting(void) {
   printf("  Running test_metal_memory_owner_accounting...\n");
   VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT] = {0};
-  vkr_metal_memory_owner_record_allocate(owners,
-                                         VKR_GPU_ALLOCATION_OWNER_TEXTURE, 64u);
-  vkr_metal_memory_owner_record_allocate(owners,
-                                         VKR_GPU_ALLOCATION_OWNER_TEXTURE, 32u);
+  vkr_gpu_memory_owner_record_allocate(owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+                                       64u);
+  vkr_gpu_memory_owner_record_allocate(owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+                                       32u);
   VkrGpuAllocationOwnerTotals *texture =
       &owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE];
   assert(texture->live_bytes == 96u && texture->peak_bytes == 96u &&
          texture->total_bytes == 96u && texture->live_allocation_count == 2u &&
          texture->peak_allocation_count == 2u &&
          texture->total_allocation_count == 2u);
-  assert(vkr_metal_memory_owner_record_release(
+  assert(vkr_gpu_memory_owner_record_release(
       owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 64u));
-  vkr_metal_memory_owner_record_allocate(owners,
-                                         VKR_GPU_ALLOCATION_OWNER_TEXTURE, 16u);
+  vkr_gpu_memory_owner_record_allocate(owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+                                       16u);
   assert(texture->live_bytes == 48u && texture->peak_bytes == 96u &&
          texture->total_bytes == 112u && texture->live_allocation_count == 2u &&
          texture->peak_allocation_count == 2u &&
          texture->total_allocation_count == 3u);
-  assert(vkr_metal_memory_owner_record_release(
+  assert(vkr_gpu_memory_owner_record_release(
       owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 32u));
-  assert(vkr_metal_memory_owner_record_release(
+  assert(vkr_gpu_memory_owner_record_release(
       owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 16u));
-  assert(!vkr_metal_memory_owner_record_release(
+  assert(!vkr_gpu_memory_owner_record_release(
       owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 1u));
-  vkr_metal_memory_owner_record_allocate(
+  vkr_gpu_memory_owner_record_allocate(
       owners, (VkrGpuAllocationOwner)VKR_GPU_ALLOCATION_OWNER_COUNT, 7u);
   assert(owners[VKR_GPU_ALLOCATION_OWNER_UNKNOWN].live_bytes == 7u);
   printf("  test_metal_memory_owner_accounting PASSED\n");
