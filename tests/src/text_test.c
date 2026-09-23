@@ -6,6 +6,8 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "vkr_frame_input.h"
 
+#include <float.h>
+
 vkr_global Arena *arena = NULL;
 vkr_global VkrAllocator allocator = {0};
 vkr_global const uint64_t ARENA_SIZE = MB(1);
@@ -537,6 +539,151 @@ vkr_internal void test_ui_system_scale_revision_and_offsets(void) {
   vkr_ui_system_shutdown(&system);
   teardown_suite();
   printf("  test_ui_system_scale_revision_and_offsets PASSED\n");
+}
+
+vkr_internal void test_ui_text_widgets_size_to_content(void) {
+  printf("  Running test_ui_text_widgets_size_to_content...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
+  InputState input = {0};
+  const float32_t scales[] = {1.0f, 1.25f, 2.0f};
+  enum { LABEL, BUTTON, FIELD, CHECKBOX, DEFAULT_FIELD, PANEL, SCROLL };
+  // The fixture's A advances 6pt at 10pt/em; its line is 12.5pt high.
+  // Padding adds 6x4pt, borders add 2x2pt, and a field reserves a 1pt caret.
+  const struct {
+    uint32_t kind;
+    const char *content;
+    Vec2 minimum;
+    Vec2 maximum;
+    Vec2 expected;
+    bool8_t icon;
+    bool8_t align_end;
+  } cases[] = {
+      {.kind = LABEL, .content = "A", .expected = {14, 18.5f}},
+      {.kind = BUTTON, .content = "AA", .expected = {20, 18.5f}},
+      {.kind = FIELD, .content = "A", .expected = {15, 18.5f}},
+      {.kind = FIELD, .content = "", .expected = {9, 18.5f}},
+      {.kind = LABEL,
+       .content = "A",
+       .minimum = {40, 0},
+       .expected = {40, 18.5f}},
+      {.kind = FIELD, .content = "A", .minimum = {0, 30}, .expected = {15, 30}},
+      {.kind = BUTTON,
+       .content = "A",
+       .minimum = {40, 0},
+       .expected = {40, 20},
+       .icon = true_v},
+      {.kind = CHECKBOX,
+       .content = "A",
+       .minimum = {40, 0},
+       .expected = {40, 22}},
+      {.kind = LABEL,
+       .content = "A",
+       .maximum = {10, 14},
+       .expected = {10, 14}},
+      {.kind = LABEL,
+       .content = "A",
+       .minimum = {500, 500},
+       .expected = {200, 100}},
+      {.kind = LABEL, .content = "", .expected = {8, 6}},
+      {.kind = LABEL,
+       .content = "A",
+       .expected = {14, 18.5f},
+       .align_end = true_v},
+      {.kind = DEFAULT_FIELD, .content = "", .expected = {13, 25.5f}},
+      {.kind = PANEL, .content = "", .expected = {200, 100}},
+      {.kind = SCROLL, .content = "", .expected = {200, 100}},
+  };
+  for (uint32_t scale = 0; scale < ArrayCount(scales); ++scale) {
+    vkr_ui_system_set_offscreen_content_scale(&system, scales[scale]);
+    for (uint32_t i = 0; i < ArrayCount(cases); ++i) {
+      VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+      assert(vkr_allocator_scope_is_valid(&scope));
+      assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input,
+                          false_v, 1.0 / 60.0, NULL));
+      assert(vkr_ui_push_id_u64(&system, i));
+      VkrUiWidgetConfig widget = vkr_ui_widget_config_default();
+      widget.text.font_size = 10;
+      widget.style.padding_pt = (VkrUiEdges){2, 3, 2, 3};
+      widget.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+      widget.style.background_color = (Vec4){1, 0, 0, 1};
+      widget.style.border_color = widget.style.background_color;
+      widget.style.min_size_pt = cases[i].minimum;
+      widget.style.max_size_pt = cases[i].maximum;
+      widget.icon = cases[i].icon ? VKR_UI_ICON_PLAY : VKR_UI_ICON_NONE;
+      if (cases[i].align_end) {
+        widget.placement.justify = VKR_UI_ALIGN_CENTER;
+        widget.placement.align = VKR_UI_ALIGN_END;
+      }
+      const String8 content = {.str = (uint8_t *)cases[i].content,
+                                .length = strlen(cases[i].content)};
+      const String8 id = string8_lit("content-size");
+      if (cases[i].kind == LABEL) {
+        vkr_ui_label(&system, id, content, &widget);
+      } else if (cases[i].kind == BUTTON) {
+        (void)vkr_ui_button(&system, id, content, &widget);
+      } else if (cases[i].kind == CHECKBOX) {
+        bool8_t checked = false_v;
+        (void)vkr_ui_checkbox(&system, id, content, &checked, &widget);
+      } else if (cases[i].kind == FIELD || cases[i].kind == DEFAULT_FIELD) {
+        uint8_t bytes[8] = {0};
+        MemCopy(bytes, content.str, content.length);
+        VkrUiTextEditBuffer edit = {bytes, (uint32_t)content.length,
+                                    sizeof(bytes)};
+        (void)vkr_ui_text_field(&system, id, &edit,
+                                cases[i].kind == FIELD ? &widget : NULL);
+      } else {
+        VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+        panel.style.background_color = widget.style.background_color;
+        if (cases[i].kind == PANEL) {
+          assert(vkr_ui_panel_begin(&system, id, &panel));
+          assert(vkr_ui_panel_end(&system));
+        } else {
+          assert(vkr_ui_scroll_area_begin(&system, id, &panel));
+          assert(vkr_ui_scroll_area_end(&system));
+        }
+      }
+      assert(vkr_ui_pop_id(&system));
+      (void)vkr_ui_end(&system);
+      VkrPreparedUiDrawList draw_list = {0};
+      assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                             &draw_list));
+      Vec2 minimum = {FLT_MAX, FLT_MAX}, maximum = {-FLT_MAX, -FLT_MAX};
+      for (uint32_t vertex = 0; vertex < draw_list.vertex_count; ++vertex) {
+        const VkrUiVertex *item = &draw_list.vertices[vertex];
+        if (cases[i].kind != DEFAULT_FIELD &&
+            (item->color.x <= 0 || item->color.y != 0 || item->color.z != 0)) {
+          continue;
+        }
+        minimum.x = Min(minimum.x, item->position.x);
+        minimum.y = Min(minimum.y, 100.0f - item->position.y);
+        maximum.x = Max(maximum.x, item->position.x);
+        maximum.y = Max(maximum.y, 100.0f - item->position.y);
+      }
+      const float32_t width = Min(200.0f, cases[i].expected.x * scales[scale]);
+      const float32_t height = Min(100.0f, cases[i].expected.y * scales[scale]);
+      assert_f32_eq(maximum.x - minimum.x, width, 0.001f,
+                    "text boxes take only content/minimum width");
+      assert_f32_eq(maximum.y - minimum.y, height, 0.001f,
+                    "text boxes take only content/minimum height");
+      assert_f32_eq(minimum.x, cases[i].align_end ? (200 - width) * 0.5f : 0,
+                    0.001f, "compact text preserves horizontal alignment");
+      assert_f32_eq(minimum.y, cases[i].align_end ? 100 - height : 0, 0.001f,
+                    "compact text preserves vertical alignment");
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+  }
+  vkr_ui_system_shutdown(&system);
+  teardown_suite();
+  printf("  test_ui_text_widgets_size_to_content PASSED\n");
 }
 
 vkr_internal void test_ui_label_baseline_is_content_independent(void) {
@@ -1103,7 +1250,7 @@ vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
     if (keys[frame] != KEY_MAX_KEYS)
       input_process_key(&input, keys[frame], true_v);
     if (frame == 7u) {
-      input_process_mouse_move(&input, 10, 30);
+      input_process_mouse_move(&input, 4, 30);
       input_process_button(&input, BUTTON_LEFT, true_v);
     } else if (frame == 8u) {
       input_process_button(&input, BUTTON_LEFT, false_v);
@@ -1252,6 +1399,7 @@ bool32_t run_text_tests(void) {
   test_window_content_scale_snapshot();
   test_ui_text_content_scale_contract();
   test_ui_system_scale_revision_and_offsets();
+  test_ui_text_widgets_size_to_content();
   test_ui_label_baseline_is_content_independent();
   test_ui_system_reuses_unchanged_draw_geometry();
   test_ui_text_field_character_input_and_repeat();

@@ -492,6 +492,20 @@ vkr_internal uint32_t vkr_ui_add_node(VkrUiSystem *system, VkrUiId id,
   return index;
 }
 
+vkr_internal float32_t vkr_ui_text_line_height(const VkrUiText *text) {
+  if (text->layout.line_count) {
+    return text->bounds.size.y / text->layout.line_count;
+  }
+  const float32_t font_size = text->config.font_size > 0.0f
+                                  ? text->config.font_size
+                                  : (float32_t)text->resolved_font->size;
+  VkrTextStyle style = vkr_text_style_new(
+      text->config.font, font_size * text->content_scale, text->config.color);
+  style = vkr_text_style_with_font_data(&style, text->resolved_font);
+  const VkrText line = vkr_text_from_view(string8_lit(" "), &style);
+  return vkr_text_measure(&line).size.y;
+}
+
 vkr_internal bool8_t vkr_ui_text_prepare(VkrUiSystem *system,
                                          VkrUiFrameNode *node, String8 content,
                                          const VkrUiTextConfig *source_config) {
@@ -519,7 +533,12 @@ vkr_internal bool8_t vkr_ui_text_prepare(VkrUiSystem *system,
   if (!has_geometry && content.length > 0u)
     return false_v;
   node->content = retained->text.content;
-  const VkrTextBounds bounds = vkr_ui_text_get_bounds(&retained->text);
+  VkrTextBounds bounds = vkr_ui_text_get_bounds(&retained->text);
+  if (node->kind == VKR_UI_NODE_TEXT_FIELD) {
+    bounds.size.x += Max(1.0f, system->content_scale);
+    bounds.size.y =
+        Max(bounds.size.y, vkr_ui_text_line_height(&retained->text));
+  }
   node->intrinsic_size = (Vec2){
       bounds.size.x + node->style.padding_px.left +
           node->style.padding_px.right + node->style.border_px.left +
@@ -528,8 +547,6 @@ vkr_internal bool8_t vkr_ui_text_prepare(VkrUiSystem *system,
           node->style.padding_px.bottom + node->style.border_px.top +
           node->style.border_px.bottom,
   };
-  node->intrinsic_size =
-      vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
   return true_v;
 }
 
@@ -558,6 +575,8 @@ vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
             node->icon_size_px + node->style.padding_px.top +
                 node->style.padding_px.bottom + node->style.border_px.top +
                 node->style.border_px.bottom);
+  }
+  if (node->kind != VKR_UI_NODE_CHECKBOX) {
     node->intrinsic_size =
         vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
   }
@@ -938,6 +957,10 @@ bool8_t vkr_ui_checkbox(VkrUiSystem *system, String8 id_label, String8 content,
   VkrUiFrameNode *node = &system->frame_nodes[index];
   const float32_t box = 16.0f * system->content_scale;
   node->intrinsic_size.x += box + 6.0f * system->content_scale;
+  node->intrinsic_size.y =
+      Max(node->intrinsic_size.y,
+          box + node->style.padding_px.top + node->style.padding_px.bottom +
+              node->style.border_px.top + node->style.border_px.bottom);
   node->intrinsic_size =
       vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
   const bool8_t changed = vkr_ui_interact(system, node, true_v);
@@ -1149,12 +1172,6 @@ vkr_internal bool8_t vkr_ui_text_edit_insert(VkrUiTextEditBuffer *buffer,
   return true_v;
 }
 
-vkr_internal float32_t vkr_ui_text_line_height(const VkrUiText *text) {
-  return text->layout.line_count
-             ? text->bounds.size.y / text->layout.line_count
-             : Max(1.0f, text->config.font_size * text->content_scale);
-}
-
 vkr_internal Vec2 vkr_ui_text_cursor_position(const VkrUiText *text,
                                               uint32_t byte_offset) {
   Vec2 caret = {0};
@@ -1227,7 +1244,6 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
   buffer->data[buffer->length] = 0u;
   VkrUiWidgetConfig fallback = vkr_ui_widget_config_default();
   fallback.style.padding_pt = (VkrUiEdges){4.0f, 6.0f, 4.0f, 6.0f};
-  fallback.style.min_size_pt = (Vec2){120.0f, 24.0f};
   fallback.style.background_color = (Vec4){0.08f, 0.09f, 0.11f, 1.0f};
   const VkrUiWidgetConfig *config = source_config ? source_config : &fallback;
   const VkrUiId id = vkr_ui_id_stack_widget_label(&system->id_stack, id_label);
@@ -1442,6 +1458,8 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
   const String8 content = {.str = buffer->data, .length = buffer->length};
   if (changed && !vkr_ui_text_prepare(system, node, content, &config->text))
     return false_v;
+  node->intrinsic_size =
+      vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
   const VkrUiRect box =
       vkr_ui_style_content_rect(retained->last_rect, &node->style);
   const VkrUiText *text = &retained->text;
@@ -1576,13 +1594,21 @@ vkr_internal VkrUiGridItem vkr_ui_grid_item_from_node(VkrUiSystem *system,
       .bottom = placement.margin_pt.bottom * system->content_scale,
       .left = placement.margin_pt.left * system->content_scale,
   };
+  const bool8_t text_widget = child->kind == VKR_UI_NODE_LABEL ||
+                              child->kind == VKR_UI_NODE_BUTTON ||
+                              child->kind == VKR_UI_NODE_CHECKBOX ||
+                              child->kind == VKR_UI_NODE_TEXT_FIELD;
   return (VkrUiGridItem){
       .column = placement.column,
       .row = placement.row,
       .column_span = Min(placement.column_span, columns),
       .row_span = Min(placement.row_span, rows),
-      .justify = placement.justify,
-      .align = placement.align,
+      .justify = text_widget && placement.justify == VKR_UI_ALIGN_STRETCH
+                     ? VKR_UI_ALIGN_START
+                     : placement.justify,
+      .align = text_widget && placement.align == VKR_UI_ALIGN_STRETCH
+                   ? VKR_UI_ALIGN_START
+                   : placement.align,
       .intrinsic_size_px = child->intrinsic_size,
       .max_size_px = child->style.max_size_px,
       .margin_px = vkr_ui_edges_add(placement_margin, child->style.margin_px),
@@ -2647,8 +2673,8 @@ vkr_internal uint32_t vkr_ui_tooltip_prepare(VkrUiSystem *system,
       VKR_UI_NODE_LABEL, config.placement, &config.style);
   system->container_count = containers;
   if (index == VKR_UI_NODE_NONE ||
-      !vkr_ui_text_prepare(system, &system->frame_nodes[index], text,
-                           &config.text))
+      !vkr_ui_widget_prepare(system, &system->frame_nodes[index], text,
+                             &config))
     return VKR_UI_NODE_NONE;
   *out_source = source;
   return index;

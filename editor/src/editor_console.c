@@ -581,6 +581,7 @@ void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
   }
   if (detail_height > 0.0f) {
     VkrUiWidgetConfig detail = console_widget(0u, 2u);
+    detail.style.min_size_pt = (Vec2){width, detail_height};
     detail.read_only = true_v;
     detail.text.layout.word_wrap = true_v;
     detail.text.layout.max_width = Max(1.0f, width - 12.0f);

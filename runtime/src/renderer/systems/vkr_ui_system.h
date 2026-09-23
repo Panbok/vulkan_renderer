@@ -100,7 +100,12 @@ typedef enum VkrUiIcon {
   VKR_UI_ICON_COUNT,
 } VkrUiIcon;
 
-/** Shared placement, style, and text settings for leaf widgets. */
+/** Shared placement, style, and text settings for leaf widgets.
+ * Labels, buttons, checkboxes and text fields use content plus padding and
+ * borders, bounded by style min/max sizes and available space. STRETCH places
+ * these text widgets at START without enlarging them; set min_size_pt to reserve
+ * more space. Icons and field carets are included in their content size.
+ * Structural panels and scroll containers retain normal stretch behavior. */
 typedef struct VkrUiWidgetConfig {
   VkrUiPlacement placement;
   VkrUiStyle style;
