@@ -4,6 +4,7 @@
 #include "vkr_harness.h"
 #include "vkr_harness_json.h"
 #include "vkr_harness_runtime.h"
+#include "vkr_harness_summary_layout.h"
 
 #include <assert.h>
 #include <math.h>
@@ -1622,626 +1623,6 @@ vkr_internal void test_harness_platform_process_primitives(void) {
   printf("  test_harness_platform_process_primitives PASSED\n");
 }
 
-typedef struct VkrHarnessRendererConfigV3Fixture {
-  bool8_t editor;
-  bool8_t skybox;
-  bool8_t text_fixture;
-  bool8_t taa_enabled;
-  bool8_t shadow_pcf_early_out;
-  bool8_t shadow_sdsm;
-  char backend[16];
-  char shadow_preset[32];
-  uint32_t shadow_cascades;
-  uint32_t shadow_pcf_samples;
-  uint32_t shadow_map_size;
-  float32_t shadow_split_lambda;
-  char render_mode[24];
-  char exposure_mode[16];
-  float32_t manual_exposure;
-  float32_t exposure_compensation_ev;
-  uint32_t exposure_reset_frame;
-  bool8_t bloom_enabled;
-  float32_t bloom_threshold;
-  float32_t bloom_knee;
-  float32_t bloom_intensity;
-  uint32_t shadow_debug_mode;
-} VkrHarnessRendererConfigV3Fixture;
-
-typedef struct VkrHarnessCaseV3Fixture {
-  uint32_t schema_version;
-  char manifest_path[VKR_HARNESS_PATH_MAX];
-  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char id[VKR_HARNESS_ID_MAX];
-  char suite[64];
-  char description[VKR_HARNESS_TEXT_MAX];
-  char scene[VKR_HARNESS_PATH_MAX];
-  uint64_t seed;
-  uint32_t width;
-  uint32_t height;
-  bool8_t resize_round_trip;
-  uint32_t resize_width;
-  uint32_t resize_height;
-  VkrHarnessBootProfile boot;
-  VkrHarnessTarget target;
-  VkrHarnessPresentMode present;
-  uint32_t target_image_count;
-  VkrHarnessCacheMode cache;
-  float64_t fixed_delta_seconds;
-  uint32_t warmup_frames;
-  uint32_t measure_frames;
-  uint32_t repetitions;
-  uint32_t repetition_timeout_ms;
-  uint32_t asset_ready_timeout_ms;
-  VkrHarnessRendererConfigV3Fixture renderer;
-  VkrHarnessCamera camera;
-  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
-  uint32_t capture_count;
-  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
-  uint32_t assertion_count;
-  VkrHarnessCompareConfig compare;
-} VkrHarnessCaseV3Fixture;
-
-typedef struct VkrHarnessRendererConfigV4Fixture {
-  bool8_t editor;
-  bool8_t skybox;
-  bool8_t text_fixture;
-  bool8_t taa_enabled;
-  bool8_t shadow_pcf_early_out;
-  bool8_t shadow_sdsm;
-  char backend[16];
-  char shadow_preset[32];
-  uint32_t shadow_cascades;
-  uint32_t shadow_pcf_samples;
-  uint32_t shadow_map_size;
-  float32_t shadow_split_lambda;
-  char render_mode[24];
-  char exposure_mode[16];
-  float32_t manual_exposure;
-  float32_t exposure_compensation_ev;
-  uint32_t exposure_reset_frame;
-  bool8_t bloom_enabled;
-  float32_t bloom_threshold;
-  float32_t bloom_knee;
-  float32_t bloom_intensity;
-  bool8_t gtao_enabled;
-  float32_t gtao_radius;
-  float32_t gtao_power;
-  uint32_t shadow_debug_mode;
-  uint32_t ibl_probe_limit;
-  bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
-  bool8_t transmission_depth_diagnostic_enabled;
-} VkrHarnessRendererConfigV4Fixture;
-
-typedef struct VkrHarnessCaseV4Fixture {
-  uint32_t schema_version;
-  char manifest_path[VKR_HARNESS_PATH_MAX];
-  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char id[VKR_HARNESS_ID_MAX];
-  char suite[64];
-  char description[VKR_HARNESS_TEXT_MAX];
-  char scene[VKR_HARNESS_PATH_MAX];
-  uint64_t seed;
-  uint32_t width;
-  uint32_t height;
-  bool8_t resize_round_trip;
-  uint32_t resize_width;
-  uint32_t resize_height;
-  VkrHarnessBootProfile boot;
-  VkrHarnessTarget target;
-  VkrHarnessPresentMode present;
-  uint32_t target_image_count;
-  VkrHarnessCacheMode cache;
-  float64_t fixed_delta_seconds;
-  uint32_t warmup_frames;
-  uint32_t measure_frames;
-  uint32_t repetitions;
-  uint32_t repetition_timeout_ms;
-  uint32_t asset_ready_timeout_ms;
-  VkrHarnessRendererConfigV4Fixture renderer;
-  VkrHarnessCamera camera;
-  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
-  uint32_t capture_count;
-  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
-  uint32_t assertion_count;
-  VkrHarnessCompareConfig compare;
-} VkrHarnessCaseV4Fixture;
-
-_Static_assert(sizeof(VkrHarnessRendererConfigV4Fixture) ==
-                   offsetof(VkrHarnessRendererConfig, render_scale),
-               "Version-4 renderer fixture drift");
-_Static_assert(offsetof(VkrHarnessCaseV4Fixture, renderer) ==
-                   offsetof(VkrHarnessCase, renderer),
-               "Version-4 case fixture drift");
-typedef struct VkrHarnessProfileV2Fixture {
-  uint32_t schema_version;
-  char manifest_path[VKR_HARNESS_PATH_MAX];
-  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char id[VKR_HARNESS_ID_MAX];
-  char description[VKR_HARNESS_TEXT_MAX];
-  bool8_t authoritative;
-  bool8_t allow_dirty;
-  VkrHarnessTarget target;
-  VkrHarnessPresentMode required_present;
-  bool8_t require_actual_present;
-  bool8_t gpu_timing;
-  bool8_t event_subjects;
-  uint32_t minimum_repetitions;
-  uint32_t warmup_stability_window;
-  float64_t warmup_max_drift_ratio;
-  bool8_t require_warmup_stability;
-  bool8_t require_exclusive_gpu_lane;
-  char required_os[64];
-  char required_cpu[128];
-  char required_gpu[128];
-  char required_driver[128];
-  uint32_t required_gpu_vendor_id;
-  uint32_t required_gpu_device_id;
-  char required_power_mode[32];
-  char required_thermal_state[32];
-  int32_t required_process_priority;
-  bool8_t has_required_process_priority;
-  char required_metrics[VKR_HARNESS_MAX_REQUIRED_METRICS][128];
-  uint32_t required_metric_count;
-} VkrHarnessProfileV2Fixture;
-
-typedef struct VkrHarnessCaptureSummaryHeaderV2Fixture {
-  uint8_t magic[8];
-  uint32_t version;
-  uint32_t capture_count;
-  uint32_t artifact_count;
-  uint32_t tool;
-  uint32_t exit_code;
-  bool8_t authoritative;
-  bool8_t profile_compatible;
-  uint8_t reserved[2];
-  char status[24];
-  char case_id[VKR_HARNESS_ID_MAX];
-  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char profile_id[VKR_HARNESS_ID_MAX];
-  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCaseV3Fixture case_manifest;
-  VkrHarnessProfileV2Fixture profile;
-  VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV2Fixture;
-
-typedef struct VkrHarnessCaptureSummaryHeaderV3Fixture {
-  uint8_t magic[8];
-  uint32_t version;
-  uint32_t capture_count;
-  uint32_t artifact_count;
-  uint32_t tool;
-  uint32_t exit_code;
-  bool8_t authoritative;
-  bool8_t profile_compatible;
-  uint8_t reserved[2];
-  char status[24];
-  char case_id[VKR_HARNESS_ID_MAX];
-  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char profile_id[VKR_HARNESS_ID_MAX];
-  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCaseV3Fixture case_manifest;
-  VkrHarnessProfile profile;
-  VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV3Fixture;
-
-typedef struct VkrHarnessCaptureSummaryHeaderV4Fixture {
-  uint8_t magic[8];
-  uint32_t version;
-  uint32_t capture_count;
-  uint32_t artifact_count;
-  uint32_t tool;
-  uint32_t exit_code;
-  bool8_t authoritative;
-  bool8_t profile_compatible;
-  uint8_t reserved[2];
-  char status[24];
-  char case_id[VKR_HARNESS_ID_MAX];
-  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char profile_id[VKR_HARNESS_ID_MAX];
-  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCaseV4Fixture case_manifest;
-  VkrHarnessProfile profile;
-  VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV4Fixture;
-
-/* Frozen pre-transport layout from the version-6 writer. Sentinel values
- * after renderer detect shifted fields; omitted controls must remain disabled.
- */
-typedef struct VkrHarnessRendererConfigV6Fixture {
-  bool8_t editor;
-  bool8_t skybox;
-  bool8_t text_fixture;
-  /** Whether temporal reconstruction and camera jitter are enabled. */
-  bool8_t taa_enabled;
-  bool8_t shadow_pcf_early_out;
-  bool8_t shadow_sdsm;
-  char backend[16];
-  char shadow_preset[32];
-  uint32_t shadow_cascades;
-  /** Effective receiver tap count after the optional case field is resolved. */
-  uint32_t shadow_pcf_samples;
-  uint32_t shadow_map_size;
-  float32_t shadow_split_lambda;
-  char render_mode[24];
-  char exposure_mode[16];
-  float32_t manual_exposure;
-  float32_t exposure_compensation_ev;
-  /** Measure-relative frame that explicitly resets automatic adaptation. */
-  uint32_t exposure_reset_frame;
-  /** Bloom is opt-in for deterministic cases; production defaults do not leak
-   * into a harness workload. */
-  bool8_t bloom_enabled;
-  float32_t bloom_threshold;
-  float32_t bloom_knee;
-  float32_t bloom_intensity;
-  /** GTAO is opt-in and must carry its complete deterministic control tuple. */
-  bool8_t gtao_enabled;
-  float32_t gtao_radius;
-  float32_t gtao_power;
-  uint32_t shadow_debug_mode;
-  /** Cold probe-count control used by the SH scaling fixture. UINT32_MAX means
-   * "do not clamp". */
-  uint32_t ibl_probe_limit;
-  /** Whether the fullscreen ACES tonemap stage is enabled. */
-  bool8_t tonemap_enabled;
-  /** Whether the fullscreen FXAA stage is enabled. */
-  bool8_t fxaa_enabled;
-  /** Enables the capture-only fifth transmission peel on every case frame. */
-  bool8_t transmission_depth_diagnostic_enabled;
-  /** Internal renderer resolution relative to the present target. */
-  float32_t render_scale;
-  /** Renderer-reported scene extent. Output-only; manifests cannot author it.
-   */
-  uint32_t render_width;
-  uint32_t render_height;
-  /** Reconstruction implementation: `spatial` or `metalfx_temporal`. */
-  char upscaler[24];
-  /** Completion-driven MetalFX resolution policy. */
-  bool8_t dynamic_resolution;
-  float32_t dynamic_resolution_min_scale;
-  float32_t dynamic_resolution_max_scale;
-  float32_t dynamic_resolution_target_frame_ms;
-} VkrHarnessRendererConfigV6Fixture;
-
-typedef struct VkrHarnessCaseV6Fixture {
-  uint32_t schema_version;
-  char manifest_path[VKR_HARNESS_PATH_MAX];
-  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char id[VKR_HARNESS_ID_MAX];
-  char suite[64];
-  char description[VKR_HARNESS_TEXT_MAX];
-  char scene[VKR_HARNESS_PATH_MAX];
-  uint64_t seed;
-  uint32_t width;
-  uint32_t height;
-  bool8_t resize_round_trip;
-  uint32_t resize_width;
-  uint32_t resize_height;
-  VkrHarnessBootProfile boot;
-  VkrHarnessTarget target;
-  VkrHarnessPresentMode present;
-  uint32_t target_image_count;
-  VkrHarnessCacheMode cache;
-  float64_t fixed_delta_seconds;
-  uint32_t warmup_frames;
-  uint32_t measure_frames;
-  uint32_t repetitions;
-  uint32_t repetition_timeout_ms;
-  uint32_t asset_ready_timeout_ms;
-  VkrHarnessRendererConfigV6Fixture renderer;
-  VkrHarnessCamera camera;
-  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
-  uint32_t capture_count;
-  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
-  uint32_t assertion_count;
-  VkrHarnessCompareConfig compare;
-  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
-  float32_t content_scale;
-} VkrHarnessCaseV6Fixture;
-
-typedef struct VkrHarnessCaptureSummaryHeaderV6Fixture {
-  uint8_t magic[8];
-  uint32_t version;
-  uint32_t capture_count;
-  uint32_t artifact_count;
-  uint32_t tool;
-  uint32_t exit_code;
-  bool8_t authoritative;
-  bool8_t profile_compatible;
-  uint8_t reserved[2];
-  char status[24];
-  char case_id[VKR_HARNESS_ID_MAX];
-  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char profile_id[VKR_HARNESS_ID_MAX];
-  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCaseV6Fixture case_manifest;
-  VkrHarnessProfile profile;
-  VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV6Fixture;
-
-/* Frozen version-9 layout. Version 10 appended `ssr_enabled`; this fixture
- * proves that a version-9 capture keeps its grading controls while its missing
- * SSR control is disabled by the migration path. */
-typedef struct VkrHarnessRendererConfigV9Fixture {
-  bool8_t editor;
-  bool8_t skybox;
-  bool8_t text_fixture;
-  bool8_t taa_enabled;
-  bool8_t shadow_pcf_early_out;
-  bool8_t shadow_sdsm;
-  char backend[16];
-  char shadow_preset[32];
-  uint32_t shadow_cascades;
-  uint32_t shadow_pcf_samples;
-  uint32_t shadow_map_size;
-  float32_t shadow_split_lambda;
-  char render_mode[24];
-  char exposure_mode[16];
-  float32_t manual_exposure;
-  float32_t exposure_compensation_ev;
-  uint32_t exposure_reset_frame;
-  bool8_t bloom_enabled;
-  float32_t bloom_threshold;
-  float32_t bloom_knee;
-  float32_t bloom_intensity;
-  bool8_t gtao_enabled;
-  float32_t gtao_radius;
-  float32_t gtao_power;
-  uint32_t shadow_debug_mode;
-  uint32_t ibl_probe_limit;
-  bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
-  bool8_t transmission_depth_diagnostic_enabled;
-  float32_t render_scale;
-  uint32_t render_width;
-  uint32_t render_height;
-  char upscaler[24];
-  bool8_t dynamic_resolution;
-  float32_t dynamic_resolution_min_scale;
-  float32_t dynamic_resolution_max_scale;
-  float32_t dynamic_resolution_target_frame_ms;
-  uint32_t editor_stop_frame;
-  uint32_t editor_resume_frame;
-  float32_t image_sharpness;
-  char display_transform[16];
-  float32_t white_balance_temperature;
-  float32_t white_balance_tint;
-  float32_t color_contrast;
-  float32_t color_saturation;
-} VkrHarnessRendererConfigV9Fixture;
-
-typedef struct VkrHarnessCaseV9Fixture {
-  uint32_t schema_version;
-  char manifest_path[VKR_HARNESS_PATH_MAX];
-  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char id[VKR_HARNESS_ID_MAX];
-  char suite[64];
-  char description[VKR_HARNESS_TEXT_MAX];
-  char scene[VKR_HARNESS_PATH_MAX];
-  uint64_t seed;
-  uint32_t width;
-  uint32_t height;
-  bool8_t resize_round_trip;
-  uint32_t resize_width;
-  uint32_t resize_height;
-  VkrHarnessBootProfile boot;
-  VkrHarnessTarget target;
-  VkrHarnessPresentMode present;
-  uint32_t target_image_count;
-  VkrHarnessCacheMode cache;
-  float64_t fixed_delta_seconds;
-  uint32_t warmup_frames;
-  uint32_t measure_frames;
-  uint32_t repetitions;
-  uint32_t repetition_timeout_ms;
-  uint32_t asset_ready_timeout_ms;
-  VkrHarnessRendererConfigV9Fixture renderer;
-  VkrHarnessCamera camera;
-  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
-  uint32_t capture_count;
-  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
-  uint32_t assertion_count;
-  VkrHarnessCompareConfig compare;
-  float32_t content_scale;
-} VkrHarnessCaseV9Fixture;
-
-typedef struct VkrHarnessCaptureSummaryHeaderV9Fixture {
-  uint8_t magic[8];
-  uint32_t version;
-  uint32_t capture_count;
-  uint32_t artifact_count;
-  uint32_t tool;
-  uint32_t exit_code;
-  bool8_t authoritative;
-  bool8_t profile_compatible;
-  uint8_t reserved[2];
-  char status[24];
-  char case_id[VKR_HARNESS_ID_MAX];
-  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char profile_id[VKR_HARNESS_ID_MAX];
-  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCaseV9Fixture case_manifest;
-  VkrHarnessProfile profile;
-  VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV9Fixture;
-
-_Static_assert(sizeof(VkrHarnessRendererConfigV9Fixture) ==
-                   offsetof(VkrHarnessRendererConfig, ssr_enabled),
-               "Version-9 harness renderer fixture drift");
-_Static_assert(offsetof(VkrHarnessCaseV9Fixture, renderer) ==
-                   offsetof(VkrHarnessCase, renderer),
-               "Version-9 harness case fixture prefix drift");
-
-/* Frozen version-14 bytes prove the appended physics flag does not shift
- * historical camera, capture, workspace or profile fields on read. */
-typedef struct VkrHarnessRendererConfigV14Fixture {
-  bool8_t editor;
-  bool8_t skybox;
-  bool8_t text_fixture;
-  /** Whether temporal reconstruction and camera jitter are enabled. */
-  bool8_t taa_enabled;
-  bool8_t shadow_pcf_early_out;
-  bool8_t shadow_sdsm;
-  char backend[16];
-  char shadow_preset[32];
-  uint32_t shadow_cascades;
-  /** Effective receiver tap count after the optional case field is resolved. */
-  uint32_t shadow_pcf_samples;
-  uint32_t shadow_map_size;
-  float32_t shadow_split_lambda;
-  char render_mode[24];
-  char exposure_mode[16];
-  float32_t manual_exposure;
-  float32_t exposure_compensation_ev;
-  /** Measure-relative frame that explicitly resets automatic adaptation. */
-  uint32_t exposure_reset_frame;
-  /** Bloom is opt-in for deterministic cases; production defaults do not leak
-   * into a harness workload. */
-  bool8_t bloom_enabled;
-  float32_t bloom_threshold;
-  float32_t bloom_knee;
-  float32_t bloom_intensity;
-  /** GTAO is opt-in and must carry its complete deterministic control tuple. */
-  bool8_t gtao_enabled;
-  float32_t gtao_radius;
-  float32_t gtao_power;
-  uint32_t shadow_debug_mode;
-  /** Cold probe-count control used by the SH scaling fixture. UINT32_MAX means
-   * "do not clamp". */
-  uint32_t ibl_probe_limit;
-  /** Whether the fullscreen ACES tonemap stage is enabled. */
-  bool8_t tonemap_enabled;
-  /** Whether the fullscreen FXAA stage is enabled. */
-  bool8_t fxaa_enabled;
-  /** Enables the capture-only fifth transmission peel on every case frame. */
-  bool8_t transmission_depth_diagnostic_enabled;
-  /** Internal renderer resolution relative to the present target. */
-  float32_t render_scale;
-  /** Renderer-reported scene extent. Output-only; manifests cannot author it.
-   */
-  uint32_t render_width;
-  uint32_t render_height;
-  /** Reconstruction implementation: `spatial`, `metalfx_temporal`, or `fsr31`.
-   */
-  char upscaler[24];
-  /** Completion-driven MetalFX resolution policy. FSR 3.1 uses fixed scale. */
-  bool8_t dynamic_resolution;
-  float32_t dynamic_resolution_min_scale;
-  float32_t dynamic_resolution_max_scale;
-  float32_t dynamic_resolution_target_frame_ms;
-  /** Authored case-frame indices including warmup, excluding bootstrap.
-   * UINT32_MAX disables the action. Stop at zero also stops bootstrap, before
-   * the first scene frame. Resume must follow the configured stop. */
-  uint32_t editor_stop_frame;
-  uint32_t editor_resume_frame;
-  /** Image-space sharpness after reconstruction. Zero disables the control. */
-  float32_t image_sharpness;
-  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
-  char display_transform[16];
-  float32_t white_balance_temperature;
-  float32_t white_balance_tint;
-  float32_t color_contrast;
-  float32_t color_saturation;
-  /** Half-resolution opaque reflections; opt-in for deterministic cases. */
-  bool8_t ssr_enabled;
-  bool8_t ssgi_enabled;
-  /** Requested presentation policy; offscreen targets remain SDR. */
-  char display_output[24];
-  /** Opaque-depth depth of field. Disabled cases leave scene color unchanged.
-   */
-  bool8_t dof_enabled;
-  /** Focus plane distance in metres. */
-  float32_t dof_focus_distance;
-  /** Photographic aperture denominator. */
-  float32_t dof_f_stop;
-  /** Optional velocity-based opaque motion blur. */
-  bool8_t motion_blur_enabled;
-  /** Shutter interval in degrees; zero bypasses motion blur. */
-  float32_t motion_blur_shutter_angle;
-  /** Optional scene entity translated deterministically before each frame. */
-  char motion_blur_entity[VKR_HARNESS_ID_MAX];
-  /** Entity translation velocity in metres per second. */
-  float32_t motion_blur_entity_velocity_x;
-  float32_t motion_blur_entity_velocity_y;
-  float32_t motion_blur_entity_velocity_z;
-} VkrHarnessRendererConfigV14Fixture;
-
-typedef struct VkrHarnessCaseV14Fixture {
-  uint32_t schema_version;
-  char manifest_path[VKR_HARNESS_PATH_MAX];
-  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char id[VKR_HARNESS_ID_MAX];
-  char suite[64];
-  char description[VKR_HARNESS_TEXT_MAX];
-  char scene[VKR_HARNESS_PATH_MAX];
-  uint64_t seed;
-  uint32_t width;
-  uint32_t height;
-  bool8_t resize_round_trip;
-  uint32_t resize_width;
-  uint32_t resize_height;
-  VkrHarnessBootProfile boot;
-  VkrHarnessTarget target;
-  VkrHarnessPresentMode present;
-  uint32_t target_image_count;
-  VkrHarnessCacheMode cache;
-  float64_t fixed_delta_seconds;
-  uint32_t warmup_frames;
-  uint32_t measure_frames;
-  uint32_t repetitions;
-  uint32_t repetition_timeout_ms;
-  uint32_t asset_ready_timeout_ms;
-  VkrHarnessRendererConfigV14Fixture renderer;
-  VkrHarnessCamera camera;
-  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
-  uint32_t capture_count;
-  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
-  uint32_t assertion_count;
-  VkrHarnessCompareConfig compare;
-  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
-  float32_t content_scale;
-  VkrHarnessAssetContext asset_context;
-} VkrHarnessCaseV14Fixture;
-
-typedef struct VkrHarnessCaptureSummaryHeaderV14Fixture {
-  uint8_t magic[8];
-  uint32_t version;
-  uint32_t capture_count;
-  uint32_t artifact_count;
-  uint32_t tool;
-  uint32_t exit_code;
-  bool8_t authoritative;
-  bool8_t profile_compatible;
-  uint8_t reserved[2];
-  char status[24];
-  char case_id[VKR_HARNESS_ID_MAX];
-  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char profile_id[VKR_HARNESS_ID_MAX];
-  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
-  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCaseV14Fixture case_manifest;
-  VkrHarnessProfile profile;
-  VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV14Fixture;
-
 vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   printf("  Running test_harness_capture_summary_legacy_compatibility...\n");
 #if !defined(_WIN32)
@@ -2266,7 +1647,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   snprintf(legacy_v14_path, sizeof(legacy_v14_path), "%s/legacy-v14.bin",
            directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
-  VkrHarnessCaptureSummaryHeaderV3Fixture *legacy = calloc(1u, sizeof(*legacy));
+  VkrHarnessCaptureSummaryHeaderV3 *legacy = calloc(1u, sizeof(*legacy));
   assert(legacy);
   const uint8_t magic[8] = {'V', 'K', 'R', 'C', 'A', 'P', '0', '1'};
   MemCopy(legacy->magic, magic, sizeof(magic));
@@ -2291,8 +1672,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   VkrHarnessError error = {0};
   assert(
       vkr_harness_atomic_write(legacy_path, legacy, sizeof(*legacy), &error));
-  VkrHarnessCaptureSummaryHeaderV2Fixture *legacy_v2 =
-      calloc(1u, sizeof(*legacy_v2));
+  VkrHarnessCaptureSummaryHeaderV2 *legacy_v2 = calloc(1u, sizeof(*legacy_v2));
   assert(legacy_v2);
   MemCopy(legacy_v2->magic, magic, sizeof(magic));
   legacy_v2->version = 2u;
@@ -2308,8 +1688,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
            "local.legacy.v2");
   assert(vkr_harness_atomic_write(legacy_v2_path, legacy_v2, sizeof(*legacy_v2),
                                   &error));
-  VkrHarnessCaptureSummaryHeaderV4Fixture *legacy_v4 =
-      calloc(1u, sizeof(*legacy_v4));
+  VkrHarnessCaptureSummaryHeaderV4 *legacy_v4 = calloc(1u, sizeof(*legacy_v4));
   assert(legacy_v4);
   MemCopy(legacy_v4->magic, magic, sizeof(magic));
   legacy_v4->version = 4u;
@@ -2338,8 +1717,9 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
            "local.legacy.v4");
   assert(vkr_harness_atomic_write(legacy_v4_path, legacy_v4, sizeof(*legacy_v4),
                                   &error));
-  VkrHarnessCaptureSummaryHeaderV6Fixture *legacy_v6 =
-      calloc(1u, sizeof(*legacy_v6));
+  /* Sentinels after the version-6 renderer detect shifted fields; controls
+   * the version predates must remain disabled. */
+  VkrHarnessCaptureSummaryHeaderV6 *legacy_v6 = calloc(1u, sizeof(*legacy_v6));
   assert(legacy_v6);
   MemCopy(legacy_v6->magic, magic, sizeof(magic));
   legacy_v6->version = 6u;
@@ -2360,8 +1740,9 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   VKR_STRING_COPY_LITERAL(legacy_v6->profile.id, "local.legacy.v6");
   assert(vkr_harness_atomic_write(legacy_v6_path, legacy_v6, sizeof(*legacy_v6),
                                   &error));
-  VkrHarnessCaptureSummaryHeaderV9Fixture *legacy_v9 =
-      calloc(1u, sizeof(*legacy_v9));
+  /* Version 9 keeps its grading controls; the SSR and DoF controls it
+   * predates read back disabled at their manifest defaults. */
+  VkrHarnessCaptureSummaryHeaderV9 *legacy_v9 = calloc(1u, sizeof(*legacy_v9));
   assert(legacy_v9);
   MemCopy(legacy_v9->magic, magic, sizeof(magic));
   legacy_v9->version = 9u;
@@ -2460,6 +1841,9 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.white_balance_tint == -0.125f);
   assert(summary.case_manifest.renderer.color_contrast == 1.125f);
   assert(summary.case_manifest.renderer.color_saturation == 0.875f);
+  assert(!summary.case_manifest.renderer.dof_enabled);
+  assert(summary.case_manifest.renderer.dof_focus_distance == 5.0f);
+  assert(summary.case_manifest.renderer.dof_f_stop == 2.8f);
   assert(strcmp(summary.profile.id, "local.legacy.v9") == 0);
   VkrHarnessReport report = {.tool = VKR_HARNESS_TOOL_SNAPSHOT};
   assert(vkr_harness_report_init_storage(&report, arena, 1u, 0u));
@@ -2502,7 +1886,9 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.motion_blur_entity_velocity_y = -0.5f;
   report.case_manifest.renderer.motion_blur_entity_velocity_z = 0.75f;
   report.case_manifest.renderer.physics_fixture = true_v;
-  VkrHarnessCaptureSummaryHeaderV14Fixture *legacy_v14 =
+  /* The version-15 physics flag must not shift historical camera, capture,
+   * workspace or profile fields on read. */
+  VkrHarnessCaptureSummaryHeaderV14 *legacy_v14 =
       calloc(1u, sizeof(*legacy_v14));
   assert(legacy_v14);
   MemCopy(legacy_v14->magic, magic, sizeof(magic));
