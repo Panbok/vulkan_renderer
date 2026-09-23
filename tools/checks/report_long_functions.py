@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Report first-party C, C++ and Objective-C functions by length.
 
-The scan is lexical: a definition starts at a column-zero signature line that
-ends with `{` and closes at the next column-zero `}`. Treat the result as a
+The scan is lexical: a definition starts at a column-zero signature, which may
+wrap over up to eight lines until one ends with `{`, and closes at the next
+column-zero `}`. Treat the result as a
 readability diagnostic, not a parsed fact. `--max-lines` turns the report into
 a check for production sources (everything outside `tests/`).
 
@@ -36,20 +37,53 @@ def sources():
             yield relative
 
 
+SIGNATURE_START = re.compile(r'^[A-Za-z_][\w\s\*\(\),\[\]&:<>]*\($')
+SIGNATURE_LINES = 8
+NOT_FUNCTIONS = ('typedef', 'struct', 'enum', 'union', 'extern "C"')
+
+
+def signature_end(lines, index):
+    """Returns the line that opens the body of a signature starting here."""
+    line = lines[index]
+    if line.startswith(NOT_FUNCTIONS) or not line or line[0] in ' \t#/{}':
+        return None
+    if SIGNATURE.match(line):
+        return index
+    # A signature may wrap its parameters or put its name on the next line.
+    if '(' not in line and not re.match(r'^[A-Za-z_][\w\s\*]*$', line):
+        return None
+    joined = line
+    for next_index in range(index + 1,
+                            min(index + SIGNATURE_LINES, len(lines))):
+        following = lines[next_index]
+        if not following.startswith((' ', '\t')) and '(' in joined:
+            return None
+        joined += ' ' + following.strip()
+        if ';' in following or '=' in following.split('(')[0]:
+            return None
+        if SIGNATURE.match(joined):
+            return next_index
+    return None
+
+
 def functions(relative):
     lines = (ROOT / relative).read_text(encoding='utf-8',
                                         errors='replace').split('\n')
     start = None
-    for index, line in enumerate(lines):
+    index = 0
+    while index < len(lines):
         if start is None:
-            if (SIGNATURE.match(line) and
-                    not line.startswith(('typedef', 'struct', 'enum',
-                                         'union', 'extern "C"'))):
+            end = signature_end(lines, index)
+            if end is not None:
                 start = index
+                index = end + 1
+                continue
+            index += 1
             continue
-        if line.startswith('}'):
+        if lines[index].startswith('}'):
             yield index - start + 1, start + 1, line_signature(lines, start)
             start = None
+        index += 1
 
 
 def line_signature(lines, start):
