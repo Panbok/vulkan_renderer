@@ -192,6 +192,47 @@ vkr_internal void test_harness_current_frame_work_metrics(void) {
   printf("  test_harness_current_frame_work_metrics PASSED\n");
 }
 
+vkr_internal bool8_t harness_parse_assertions(const char *assertions,
+                                              VkrHarnessCase *out_case,
+                                              VkrHarnessError *out_error) {
+  const char *static_camera =
+      "{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,\"pitch\":-5}";
+  char tail[512];
+  snprintf(tail, sizeof(tail), ",\"assertions\":%s", assertions);
+  char json[8192];
+  snprintf(json, sizeof(json), HARNESS_CASE_FORMAT, 64u, 64u, "offscreen",
+           "none", static_camera, tail);
+  return vkr_harness_case_parse(json, strlen(json), "memory", out_case,
+                                out_error);
+}
+
+vkr_internal void test_harness_case_assertion_limits(void) {
+  printf("  Running test_harness_case_assertion_limits...\n");
+  VkrHarnessCase parsed = {0};
+  VkrHarnessError error = {0};
+  assert(harness_parse_assertions(
+      "[{\"metric\":\"draw.calls_issued\",\"max\":4}]", &parsed, &error));
+  assert(parsed.assertion_count == 1u);
+  assert(parsed.assertions[0].operation == VKR_HARNESS_ASSERT_MAX);
+  assert(parsed.assertions[0].limit == 4.0);
+
+  // Every assertion needs exactly one of max, min and equals.
+  assert(!harness_parse_assertions("[{\"metric\":\"draw.calls_issued\"}]",
+                                   &parsed, &error));
+  assert(strcmp(error.code, "assertion.operator") == 0);
+  assert(!harness_parse_assertions(
+      "[{\"metric\":\"draw.calls_issued\",\"max\":4,\"min\":1}]", &parsed,
+      &error));
+  assert(strcmp(error.code, "assertion.operator") == 0);
+
+  // A repeated limit key is rejected rather than read from either copy.
+  assert(!harness_parse_assertions(
+      "[{\"metric\":\"draw.calls_issued\",\"max\":4,\"max\":5}]", &parsed,
+      &error));
+  assert(strcmp(error.code, "manifest.duplicate_field") == 0);
+  printf("  test_harness_case_assertion_limits PASSED\n");
+}
+
 vkr_internal void test_harness_case_parser(void) {
   printf("  Running test_harness_case_parser...\n");
   const char *static_camera =
@@ -3473,6 +3514,7 @@ bool32_t run_harness_tests(void) {
   test_harness_hash_and_statistics();
   test_harness_current_frame_work_metrics();
   test_harness_case_parser();
+  test_harness_case_assertion_limits();
   test_harness_editor_diagnostic_manifests();
   test_harness_camera_float_range_boundary();
   test_harness_orthographic_camera();

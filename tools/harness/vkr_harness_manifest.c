@@ -1121,13 +1121,15 @@ vkr_internal bool8_t vkr_harness_parse_assertions(
     }
     const bool8_t stat_found =
         vkr_harness_statistic_from_name(statistic, &assertion->statistic);
-    int32_t limit_tokens[3];
+    int32_t limit_tokens[3] = {-1, -1, -1};
     uint32_t present_count = 0;
     for (uint32_t i = 0; i < ArrayCount(limit_tokens); ++i) {
       const char *limit_name =
           vkr_harness_operator_name((VkrHarnessAssertionOperator)i);
-      (void)vkr_harness_manifest_field(doc, item, limit_name, false_v,
-                                       &limit_tokens[i], error);
+      if (!vkr_harness_manifest_field(doc, item, limit_name, false_v,
+                                      &limit_tokens[i], error)) {
+        return false_v;
+      }
       if (limit_tokens[i] >= 0) {
         present_count++;
         assertion->operation = (VkrHarnessAssertionOperator)i;
