@@ -29,8 +29,11 @@ if(MSVC)
 else()
     target_compile_options(vulkan_renderer_tester PRIVATE -UNDEBUG)
 endif()
+# Allocator statistics assertions must see the libraries' setting: only Debug
+# libraries record statistics (vkr_configure_library).
 target_compile_definitions(vulkan_renderer_tester PRIVATE
-    $<IF:$<CONFIG:Debug>,VKR_TEST_LIBRARIES_NDEBUG=0,VKR_TEST_LIBRARIES_NDEBUG=1>)
+    $<IF:$<CONFIG:Debug>,VKR_TEST_LIBRARIES_NDEBUG=0,VKR_TEST_LIBRARIES_NDEBUG=1>
+    $<IF:$<CONFIG:Debug>,VKR_ALLOCATOR_DISABLE_STATS=0,VKR_ALLOCATOR_DISABLE_STATS=1>)
 
 # The harness core exports renderer_lib transitively.
 find_package(Vulkan REQUIRED)

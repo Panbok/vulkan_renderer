@@ -1,4 +1,5 @@
 #include "animation_tests.h"
+#include "test_stats.h"
 
 #include "assets/vkr_animation.h"
 #include "memory/vkr_arena_allocator.h"
@@ -27,7 +28,7 @@ static void animation_test_valid(VkrAnimationAsset *asset,
   const char *error = "not cleared";
   assert(vkr_animation_validate(asset, scratch, &error));
   assert(!error);
-  assert(scratch->stats.total_allocated == bytes);
+  VKR_TEST_ASSERT_STATS(scratch->stats.total_allocated == bytes);
   assert(scratch->scope_depth == depth);
 }
 
@@ -37,7 +38,7 @@ static void animation_test_invalid(VkrAnimationAsset *asset,
   const char *error = NULL;
   assert(!vkr_animation_validate(asset, scratch, &error));
   assert(error);
-  assert(scratch->stats.total_allocated == bytes);
+  VKR_TEST_ASSERT_STATS(scratch->stats.total_allocated == bytes);
 }
 
 /* Uneven source times distinguish elapsed-time sampling from key indexing;
@@ -304,7 +305,7 @@ bool32_t run_animation_tests(void) {
   animation_test_sampling(&scratch);
   animation_test_hierarchy(&scratch);
   animation_test_malformed_channels(&scratch);
-  assert(scratch.stats.total_allocated == 0);
+  VKR_TEST_ASSERT_STATS(scratch.stats.total_allocated == 0);
   vkr_allocator_release_global_accounting(&scratch);
   arena_destroy(arena);
   printf("Animation reference tests PASSED\n");

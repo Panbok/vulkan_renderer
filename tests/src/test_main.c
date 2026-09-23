@@ -28,91 +28,98 @@ bool32_t run_local_shadow_tests(void);
 
 typedef bool32_t (*VkrTestSuite)(void);
 
-static const VkrTestSuite VKR_TEST_SUITES[] = {
-    run_physics_tests,
-    run_collision_asset_tests,
-    run_scene_physics_tests,
-    run_scene_simulation_tests,
-    run_weapon_tests,
-    run_camera_rig_tests,
-    run_gameplay_input_tests,
-    run_gameplay_player_tests,
-    run_player_animation_tests,
-    run_character_tests,
-    run_hash_tests,
-    run_allocator_tests,
-    run_atomic_tests,
-    run_metrics_tests,
-    run_arena_tests,
-    run_array_tests,
-    run_vector_tests,
-    run_queue_tests,
-    run_event_data_buffer_tests,
-    run_threads_tests,
-    run_job_system_tests,
-    run_input_tests,
-    run_debug_overlay_tests,
-    run_json_tests,
-    run_json_writer_tests,
-    run_harness_tests,
-    run_event_tests,
-    run_math_tests,
-    run_vec_tests,
-    run_mat_tests,
-    run_quat_tests,
-    run_transform_tests,
-    run_simd_tests,
-    run_string_tests,
-    run_text_tests,
-    run_font_cooked_tests,
-    run_texture_format_tests,
-    run_texture_hdr_tests,
-    run_texture_lifetime_tests,
-    run_ibl_math_tests,
-    run_lighting_system_tests,
-    run_local_shadow_tests,
-    run_texture_vkt_tests,
-    run_renderer_impl_tests,
-    run_vulkan_tests,
-    run_packet_constants_tests,
-    run_temporal_tests,
-    run_exposure_tests,
-    run_bloom_tests,
-    run_gtao_tests,
-    run_visibility_tests,
-    run_editor_viewport_tests,
-    run_ui_layout_tests,
-    run_shadow_system_tests,
-    run_render_graph_barrier_tests,
-    run_resource_async_state_tests,
-    run_scene_loader_tests,
-    run_scene_edit_tests,
-    run_editor_project_store_tests,
-    run_gltf_importer_tests,
-    run_animation_tests,
-    run_animation_cooked_tests,
-    run_animation_import_tests,
-    run_mesh_skin_tests,
-    run_animation_player_tests,
-    run_animation_graph_tests,
-    run_animation_loader_tests,
-    run_scene_animation_tests,
-    run_material_pbr_tests,
-    run_mesh_cooked_tests,
-    run_filesystem_tests,
-    run_asset_path_tests,
-    run_path_io_tests,
-    run_process_path_tests,
-    run_hashtable_tests,
-    run_freelist_tests,
-    run_metal_memory_tests,
-    run_metal_diagnostics_tests,
-    run_metal_packet_abi_tests,
-    run_metal_capture_ring_tests,
-    run_metal_material_tests,
-    run_pool_tests,
-    run_dmemory_tests,
-    run_entity_tests,
+typedef struct VkrTestSuiteEntry {
+  const char *name;
+  VkrTestSuite run;
+} VkrTestSuiteEntry;
+
+#define VKR_TEST_SUITE(fn) {#fn, fn}
+
+static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
+    VKR_TEST_SUITE(run_physics_tests),
+    VKR_TEST_SUITE(run_collision_asset_tests),
+    VKR_TEST_SUITE(run_scene_physics_tests),
+    VKR_TEST_SUITE(run_scene_simulation_tests),
+    VKR_TEST_SUITE(run_weapon_tests),
+    VKR_TEST_SUITE(run_camera_rig_tests),
+    VKR_TEST_SUITE(run_gameplay_input_tests),
+    VKR_TEST_SUITE(run_gameplay_player_tests),
+    VKR_TEST_SUITE(run_player_animation_tests),
+    VKR_TEST_SUITE(run_character_tests),
+    VKR_TEST_SUITE(run_hash_tests),
+    VKR_TEST_SUITE(run_allocator_tests),
+    VKR_TEST_SUITE(run_atomic_tests),
+    VKR_TEST_SUITE(run_metrics_tests),
+    VKR_TEST_SUITE(run_arena_tests),
+    VKR_TEST_SUITE(run_array_tests),
+    VKR_TEST_SUITE(run_vector_tests),
+    VKR_TEST_SUITE(run_queue_tests),
+    VKR_TEST_SUITE(run_event_data_buffer_tests),
+    VKR_TEST_SUITE(run_threads_tests),
+    VKR_TEST_SUITE(run_job_system_tests),
+    VKR_TEST_SUITE(run_input_tests),
+    VKR_TEST_SUITE(run_debug_overlay_tests),
+    VKR_TEST_SUITE(run_json_tests),
+    VKR_TEST_SUITE(run_json_writer_tests),
+    VKR_TEST_SUITE(run_harness_tests),
+    VKR_TEST_SUITE(run_event_tests),
+    VKR_TEST_SUITE(run_math_tests),
+    VKR_TEST_SUITE(run_vec_tests),
+    VKR_TEST_SUITE(run_mat_tests),
+    VKR_TEST_SUITE(run_quat_tests),
+    VKR_TEST_SUITE(run_transform_tests),
+    VKR_TEST_SUITE(run_simd_tests),
+    VKR_TEST_SUITE(run_string_tests),
+    VKR_TEST_SUITE(run_text_tests),
+    VKR_TEST_SUITE(run_font_cooked_tests),
+    VKR_TEST_SUITE(run_texture_format_tests),
+    VKR_TEST_SUITE(run_texture_hdr_tests),
+    VKR_TEST_SUITE(run_texture_lifetime_tests),
+    VKR_TEST_SUITE(run_ibl_math_tests),
+    VKR_TEST_SUITE(run_lighting_system_tests),
+    VKR_TEST_SUITE(run_local_shadow_tests),
+    VKR_TEST_SUITE(run_texture_vkt_tests),
+    VKR_TEST_SUITE(run_renderer_impl_tests),
+    VKR_TEST_SUITE(run_vulkan_tests),
+    VKR_TEST_SUITE(run_packet_constants_tests),
+    VKR_TEST_SUITE(run_temporal_tests),
+    VKR_TEST_SUITE(run_exposure_tests),
+    VKR_TEST_SUITE(run_bloom_tests),
+    VKR_TEST_SUITE(run_gtao_tests),
+    VKR_TEST_SUITE(run_visibility_tests),
+    VKR_TEST_SUITE(run_editor_viewport_tests),
+    VKR_TEST_SUITE(run_ui_layout_tests),
+    VKR_TEST_SUITE(run_shadow_system_tests),
+    VKR_TEST_SUITE(run_render_graph_barrier_tests),
+    VKR_TEST_SUITE(run_resource_async_state_tests),
+    VKR_TEST_SUITE(run_scene_loader_tests),
+    VKR_TEST_SUITE(run_scene_edit_tests),
+    VKR_TEST_SUITE(run_editor_project_store_tests),
+    VKR_TEST_SUITE(run_gltf_importer_tests),
+    VKR_TEST_SUITE(run_animation_tests),
+    VKR_TEST_SUITE(run_animation_cooked_tests),
+    VKR_TEST_SUITE(run_animation_import_tests),
+    VKR_TEST_SUITE(run_mesh_skin_tests),
+    VKR_TEST_SUITE(run_animation_player_tests),
+    VKR_TEST_SUITE(run_animation_graph_tests),
+    VKR_TEST_SUITE(run_animation_loader_tests),
+    VKR_TEST_SUITE(run_scene_animation_tests),
+    VKR_TEST_SUITE(run_material_pbr_tests),
+    VKR_TEST_SUITE(run_mesh_cooked_tests),
+    VKR_TEST_SUITE(run_filesystem_tests),
+    VKR_TEST_SUITE(run_asset_path_tests),
+    VKR_TEST_SUITE(run_path_io_tests),
+    VKR_TEST_SUITE(run_process_path_tests),
+    VKR_TEST_SUITE(run_hashtable_tests),
+    VKR_TEST_SUITE(run_freelist_tests),
+    VKR_TEST_SUITE(run_metal_memory_tests),
+    VKR_TEST_SUITE(run_metal_diagnostics_tests),
+    VKR_TEST_SUITE(run_metal_packet_abi_tests),
+    VKR_TEST_SUITE(run_metal_capture_ring_tests),
+    VKR_TEST_SUITE(run_metal_material_tests),
+    VKR_TEST_SUITE(run_pool_tests),
+    VKR_TEST_SUITE(run_dmemory_tests),
+    VKR_TEST_SUITE(run_entity_tests),
 };
 
 int main(int argc, char **argv) {
@@ -126,10 +133,25 @@ int main(int argc, char **argv) {
   Arena *log_arena = arena_create(MB(1), MB(1));
   assert(log_init(log_arena));
 
+  // `--suite <text>` runs only the suites whose registered name contains it.
+  const char *filter =
+      argc == 3 && strcmp(argv[1], "--suite") == 0 ? argv[2] : NULL;
   bool32_t all_passed = true;
+  uint32_t suites_run = 0u;
   for (uint32_t i = 0u; i < ArrayCount(VKR_TEST_SUITES); ++i) {
-    all_passed &= VKR_TEST_SUITES[i]();
-    printf("\n");
+    const VkrTestSuiteEntry *suite = &VKR_TEST_SUITES[i];
+    if (filter && !strstr(suite->name, filter)) {
+      continue;
+    }
+    const float64_t start = vkr_platform_get_absolute_time();
+    all_passed &= suite->run();
+    printf("[suite] %s %.3f s\n\n", suite->name,
+           vkr_platform_get_absolute_time() - start);
+    ++suites_run;
+  }
+  if (filter && suites_run == 0u) {
+    printf("No test suite matches '%s'\n", filter);
+    all_passed = false;
   }
 
   vkr_platform_shutdown();

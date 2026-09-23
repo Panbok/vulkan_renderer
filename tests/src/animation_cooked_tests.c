@@ -1,4 +1,5 @@
 #include "animation_cooked_tests.h"
+#include "test_stats.h"
 
 #include "assets/vkr_animation_cooked.h"
 #include "assets/vkr_animation_encode.h"
@@ -66,7 +67,7 @@ static void test_rejected(VkrAllocator *result, VkrAllocator *scratch,
                                       &error));
   VkrAnimationAsset zero = {0};
   assert(MemCompare(&output, &zero, sizeof(output)) == 0);
-  assert(result->stats.total_allocated == before);
+  VKR_TEST_ASSERT_STATS(result->stats.total_allocated == before);
   assert(error != NULL);
 }
 

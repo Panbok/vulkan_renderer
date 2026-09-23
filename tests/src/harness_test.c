@@ -1,6 +1,7 @@
 #include "harness_test.h"
 #include "core/vkr_subsystem_plan.h"
 
+#include "test_temp_dir.h"
 #include "vkr_harness.h"
 #include "vkr_harness_json.h"
 #include "vkr_harness_runtime.h"
@@ -1037,7 +1038,7 @@ vkr_internal void test_harness_scene_manifest_tracks_transitive_content(void) {
   printf(
       "  Running test_harness_scene_manifest_tracks_transitive_content...\n");
   char root[] = "/tmp/vkr_scene_manifest_XXXXXX";
-  assert(mkdtemp(root));
+  assert(vkr_test_temp_dir_create(root));
   VkrHarnessError error = {0};
   char scenes[VKR_HARNESS_PATH_MAX];
   char models[VKR_HARNESS_PATH_MAX];
@@ -1374,7 +1375,7 @@ vkr_internal void test_harness_report_shape(void) {
   printf("  Running test_harness_report_shape...\n");
 #if !defined(_WIN32)
   char directory[] = "/tmp/vkr-harness-report-XXXXXX";
-  assert(mkdtemp(directory));
+  assert(vkr_test_temp_dir_create(directory));
   char path[512];
   snprintf(path, sizeof(path), "%s/report.json", directory);
   VkrHarnessReport report = {
@@ -1576,7 +1577,7 @@ vkr_internal void test_harness_safe_paths(void) {
   assert(!vkr_harness_path_is_safe_relative("a//b"));
 #if !defined(_WIN32)
   char root[] = "/tmp/vkr-harness-test-XXXXXX";
-  assert(mkdtemp(root));
+  assert(vkr_test_temp_dir_create(root));
   char link_path[512];
   snprintf(link_path, sizeof(link_path), "%s/escape", root);
   assert(symlink("/tmp", link_path) == 0);
@@ -1627,7 +1628,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   printf("  Running test_harness_capture_summary_legacy_compatibility...\n");
 #if !defined(_WIN32)
   char directory[] = "/tmp/vkr-capture-summary-legacy-XXXXXX";
-  assert(mkdtemp(directory));
+  assert(vkr_test_temp_dir_create(directory));
   char legacy_path[VKR_HARNESS_PATH_MAX];
   char legacy_v2_path[VKR_HARNESS_PATH_MAX];
   char legacy_v4_path[VKR_HARNESS_PATH_MAX];
@@ -2150,7 +2151,8 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
 #if !defined(_WIN32)
   char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";
   char second_dir[] = "/tmp/vkr-capture-second-XXXXXX";
-  assert(mkdtemp(first_dir) && mkdtemp(second_dir));
+  assert(vkr_test_temp_dir_create(first_dir) &&
+         vkr_test_temp_dir_create(second_dir));
   Arena *persistent = arena_create(MB(1), MB(1));
   Arena *transient = arena_create(MB(1), MB(1));
   assert(persistent && transient);
@@ -2563,32 +2565,6 @@ vkr_internal void test_harness_cross_backend_baseline_compatibility(void) {
 }
 
 #if !defined(_WIN32)
-vkr_internal bool8_t harness_remove_tree(const char *path) {
-  struct stat status;
-  if (lstat(path, &status) != 0) {
-    return true_v;
-  }
-  if (!S_ISDIR(status.st_mode)) {
-    return unlink(path) == 0;
-  }
-  DIR *directory = opendir(path);
-  if (!directory) {
-    return false_v;
-  }
-  bool8_t ok = true_v;
-  struct dirent *entry = NULL;
-  while (ok && (entry = readdir(directory)) != NULL) {
-    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-      continue;
-    }
-    char child[VKR_HARNESS_PATH_MAX];
-    snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
-    ok = harness_remove_tree(child);
-  }
-  closedir(directory);
-  return ok && rmdir(path) == 0;
-}
-
 vkr_internal bool8_t harness_find_only_child(const char *path, char out[64]) {
   DIR *directory = opendir(path);
   if (!directory) {
@@ -2614,7 +2590,7 @@ vkr_internal void test_harness_guarded_baseline_accept(void) {
   printf("  test_harness_guarded_baseline_accept SKIPPED (POSIX fixture)\n");
 #else
   char root[] = "/tmp/vkr-harness-baseline-XXXXXX";
-  assert(mkdtemp(root));
+  assert(vkr_test_temp_dir_create(root));
   VkrHarnessError error = {0};
   char source[VKR_HARNESS_PATH_MAX];
   char captures[VKR_HARNESS_PATH_MAX];
@@ -2733,7 +2709,7 @@ vkr_internal void test_harness_guarded_baseline_accept(void) {
   arena_destroy(compare_arena);
   arena_destroy(load_arena);
   arena_destroy(arena);
-  assert(harness_remove_tree(root));
+  assert(vkr_test_remove_tree(root));
   printf("  test_harness_guarded_baseline_accept PASSED\n");
 #endif
 }
@@ -2820,7 +2796,7 @@ vkr_internal void test_harness_editor_diagnostic_manifests(void) {
 static void test_harness_managed_workspace_closure(void) {
   printf("  Running test_harness_managed_workspace_closure...\n");
   char root[] = "/tmp/vkr_managed_manifest_XXXXXX";
-  assert(mkdtemp(root));
+  assert(vkr_test_temp_dir_create(root));
   VkrHarnessError error = {0};
   char jobs[VKR_HARNESS_PATH_MAX];
   snprintf(jobs, sizeof(jobs), "%s/jobs", root);

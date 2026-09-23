@@ -1,5 +1,6 @@
 #include "font_cooked_tests.h"
 #include "core/vkr_hash.h"
+#include "test_stats.h"
 
 #include "assets/vkr_font_encode.h"
 #include "filesystem/filesystem.h"
@@ -498,8 +499,8 @@ static void test_font_cooked_production_coverage(void) {
   assert(fallback && fallback->glyph_id == decoded.fallback_glyph_id);
 
 #if !VKR_ALLOCATOR_DISABLE_STATS
-  assert(allocator.stats.peak_temp_bytes > size);
-  assert(allocator.stats.peak_temp_bytes < size + KB(64));
+  VKR_TEST_ASSERT_STATS(allocator.stats.peak_temp_bytes > size);
+  VKR_TEST_ASSERT_STATS(allocator.stats.peak_temp_bytes < size + KB(64));
   printf("    production decode peak temporary bytes: %llu\n",
          (unsigned long long)allocator.stats.peak_temp_bytes);
 #endif

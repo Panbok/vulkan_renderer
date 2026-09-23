@@ -1,4 +1,5 @@
 #include "metal_diagnostics_test.h"
+#include "test_temp_dir.h"
 
 #include "metal/vkr_metal_diagnostics.h"
 
@@ -60,7 +61,7 @@ vkr_internal bool8_t metal_diagnostics_test_contains(const char *path,
 vkr_internal void test_metal_diagnostics_json_and_rotation(void) {
   printf("  Running test_metal_diagnostics_json_and_rotation...\n");
   char root[] = "/tmp/vkr-metal-diagnostics-XXXXXX";
-  assert(mkdtemp(root));
+  assert(vkr_test_temp_dir_create(root));
   char directory[1024];
   const int directory_length =
       snprintf(directory, sizeof(directory), "%s/log", root);

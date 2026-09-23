@@ -1,4 +1,5 @@
 #include "animation_player_tests.h"
+#include "test_stats.h"
 
 #include "animation/vkr_animation_player.h"
 #include "memory/vkr_arena_allocator.h"
@@ -365,7 +366,7 @@ bool32_t run_animation_player_tests(void) {
   assert(error);
   player_test_weighted_trs(&scratch);
   player_test_crossfades(&asset, &scratch);
-  assert(scratch.stats.total_allocated == 0);
+  VKR_TEST_ASSERT_STATS(scratch.stats.total_allocated == 0);
   vkr_allocator_release_global_accounting(&scratch);
   arena_destroy(arena);
   printf("Animation player tests PASSED\n");

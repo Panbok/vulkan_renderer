@@ -1,4 +1,5 @@
 #include "animation_loader_tests.h"
+#include "test_stats.h"
 
 #include "assets/vkr_animation_encode.h"
 #include "memory/vkr_arena_allocator.h"
@@ -152,7 +153,7 @@ bool32_t run_animation_loader_tests(void) {
     assert(first.as.animation->source_path.length == name.length);
     assert(MemCompare(first.as.animation->source_path.str, name.str,
                       name.length) == 0);
-    assert(scratch.stats.total_allocated == scratch_bytes);
+    VKR_TEST_ASSERT_STATS(scratch.stats.total_allocated == scratch_bytes);
     loader.unload(&loader, &first, name);
     assert(second.as.animation->asset.node_count == 1u);
     assert(second.as.animation->asset.nodes[0].name.length == 4u);
@@ -160,9 +161,10 @@ bool32_t run_animation_loader_tests(void) {
                       4u) == 0);
     loader.unload(&loader, &second, name);
     const VkrAllocatorStatistics after = vkr_allocator_get_global_statistics();
-    assert(after.total_allocated == baseline.total_allocated);
+    VKR_TEST_ASSERT_STATS(after.total_allocated == baseline.total_allocated);
     for (uint32_t tag = 0u; tag < VKR_ALLOCATOR_MEMORY_TAG_MAX; ++tag) {
-      assert(after.tagged_allocs[tag] == baseline.tagged_allocs[tag]);
+      VKR_TEST_ASSERT_STATS(after.tagged_allocs[tag] ==
+                            baseline.tagged_allocs[tag]);
     }
   }
   /* Truncation after the header reaches decode cleanup; an undersized header
@@ -176,9 +178,10 @@ bool32_t run_animation_loader_tests(void) {
     assert(!loader.load(&loader, name, &scratch, &handle, &load_error));
     assert(load_error != VKR_RENDERER_ERROR_NONE);
     assert(handle.type == VKR_RESOURCE_TYPE_UNKNOWN && !handle.as.animation);
-    assert(scratch.stats.total_allocated == scratch_bytes);
-    assert(vkr_allocator_get_global_statistics().total_allocated ==
-           baseline.total_allocated);
+    VKR_TEST_ASSERT_STATS(scratch.stats.total_allocated == scratch_bytes);
+    VKR_TEST_ASSERT_STATS(
+        vkr_allocator_get_global_statistics().total_allocated ==
+        baseline.total_allocated);
   }
   animation_loader_test_write(path, bytes, size);
   animation_loader_test_async(name, &scratch);
@@ -189,8 +192,8 @@ bool32_t run_animation_loader_tests(void) {
   VkrRendererError missing_error = VKR_RENDERER_ERROR_NONE;
   assert(!loader.load(&loader, name, &scratch, &missing, &missing_error));
   assert(missing_error == VKR_RENDERER_ERROR_FILE_NOT_FOUND);
-  assert(vkr_allocator_get_global_statistics().total_allocated ==
-         missing_baseline);
+  VKR_TEST_ASSERT_STATS(vkr_allocator_get_global_statistics().total_allocated ==
+                        missing_baseline);
   vkr_allocator_release_global_accounting(&scratch);
   arena_destroy(arena);
   return true_v;

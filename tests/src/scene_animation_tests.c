@@ -1,5 +1,6 @@
 #include "scene_animation_tests.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "test_stats.h"
 
 #include "assets/vkr_animation_encode.h"
 #include "assets/vkr_animation_import.h"
@@ -340,8 +341,10 @@ static void scene_animation_test_async(VkrAllocator *allocator,
   vkr_job_system_shutdown(&jobs);
   vkr_resource_system_shutdown();
   assert(pool->pool.allocated == 0);
-  assert(assets.scene_async_allocator.stats.total_allocated == 0);
-  assert(mesh_context.async_allocator.stats.total_allocated == 0);
+  VKR_TEST_ASSERT_STATS(assets.scene_async_allocator.stats.total_allocated ==
+                        0);
+  VKR_TEST_ASSERT_STATS(mesh_context.async_allocator.stats.total_allocated ==
+                        0);
   vkr_mutex_destroy(allocator, &mesh_context.async_mutex);
   vkr_mutex_destroy(allocator, &assets.scene_async_mutex);
   vkr_dmemory_allocator_destroy(&mesh_context.async_allocator);
@@ -569,8 +572,8 @@ bool32_t run_scene_animation_tests(void) {
   vkr_scene_update(&scene, 0);
   assert(!vkr_scene_animation_get_player(&scene, wrappers[0]));
   assert(pool.pool.allocated == 1);
-  assert(vkr_allocator_get_global_statistics().total_allocated <
-         live_before_detach);
+  VKR_TEST_ASSERT_STATS(vkr_allocator_get_global_statistics().total_allocated <
+                        live_before_detach);
   assert(vkr_scene_animation_get_player(&scene, wrappers[1]) == b);
   assert(vkr_scene_physics_ragdoll_plan(&scene, wrappers[1],
                                         VKR_SCENE_RAGDOLL_CREATE, ragdoll, 1,

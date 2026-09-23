@@ -1,4 +1,5 @@
 #include "pool_test.h"
+#include "test_stats.h"
 #include <stdint.h>
 
 static void test_pool_create(void) {
@@ -115,16 +116,22 @@ static void test_pool_allocator_adapter(void) {
   VkrAllocatorStatistics global_after = vkr_allocator_get_global_statistics();
   VkrAllocatorStatistics local_after = vkr_allocator_get_statistics(&allocator);
 
-  assert(global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY] ==
-         global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]);
-  assert(global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING] ==
-         global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]);
-  assert(local_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY] ==
-         local_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]);
-  assert(local_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING] ==
-         local_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]);
-  assert(global_after.total_allocated == global_before.total_allocated);
-  assert(local_after.total_allocated == local_before.total_allocated);
+  VKR_TEST_ASSERT_STATS(
+      global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY] ==
+      global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]);
+  VKR_TEST_ASSERT_STATS(
+      global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING] ==
+      global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]);
+  VKR_TEST_ASSERT_STATS(
+      local_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY] ==
+      local_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]);
+  VKR_TEST_ASSERT_STATS(
+      local_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING] ==
+      local_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]);
+  VKR_TEST_ASSERT_STATS(global_after.total_allocated ==
+                        global_before.total_allocated);
+  VKR_TEST_ASSERT_STATS(local_after.total_allocated ==
+                        local_before.total_allocated);
 
   vkr_pool_allocator_destroy(&allocator);
   printf("  test_pool_allocator_adapter PASSED\n");
@@ -161,10 +168,12 @@ static void test_arena_pool_result_storage(void) {
   const VkrAllocatorStatistics global_after =
       vkr_allocator_get_global_statistics();
   assert(vkr_pool_free_chunks(&pool.pool) == free_before);
-  assert(global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING] ==
-         global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]);
-  assert(global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY] ==
-         global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]);
+  VKR_TEST_ASSERT_STATS(
+      global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING] ==
+      global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]);
+  VKR_TEST_ASSERT_STATS(
+      global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY] ==
+      global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]);
 
   VkrArenaPool uninitialized = {0};
   assert(!vkr_arena_pool_acquire_arena(&uninitialized, &chunk, &arena,
