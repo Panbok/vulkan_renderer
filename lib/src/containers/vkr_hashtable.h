@@ -27,6 +27,17 @@ typedef enum VkrOccupancyState {
 // invalidates borrowed value pointers.
 #define VkrHashTable(type) VkrHashTableConstructor(type, type)
 
+/* FNV-1a over a String8 view; equals the stored C-string key's hash. */
+vkr_internal INLINE VKR_MAYBE_UNUSED uint64_t
+vkr_hash_table_string8_index(String8 key, uint64_t capacity) {
+  uint64_t hash = VKR_HASH_TABLE_FNV_OFFSET_BASIS;
+  for (uint64_t i = 0; i < key.length; ++i) {
+    hash ^= (uint64_t)key.str[i];
+    hash *= VKR_HASH_TABLE_FNV_PRIME;
+  }
+  return hash % capacity;
+}
+
 #define VkrHashTableConstructor(type, name)                                    \
   typedef struct VkrHashEntry_##name {                                         \
     const char *key;                                                           \
@@ -205,6 +216,31 @@ typedef enum VkrOccupancyState {
     while (table->entries[index].occupied != VKR_EMPTY) {                      \
       if (table->entries[index].occupied == VKR_OCCUPIED &&                    \
           string_equals(table->entries[index].key, key)) {                     \
+        return &table->entries[index].value;                                   \
+      }                                                                        \
+      index = (index + 1) % table->capacity;                                   \
+      probes++;                                                                \
+      if (probes >= VKR_HASH_TABLE_MAX_PROBES || probes >= table->capacity) {  \
+        return NULL;                                                           \
+      }                                                                        \
+    }                                                                          \
+    return NULL;                                                               \
+  }                                                                            \
+                                                                               \
+  /* The view need not be null-terminated; stored keys still are. */           \
+  vkr_internal INLINE                                                          \
+      VKR_MAYBE_UNUSED type *vkr_hash_table_get_string8_##name(                \
+          const VkrHashTable_##name *table, String8 key) {                     \
+    assert_log(table != NULL, "Table must not be NULL");                       \
+    if (!table->entries || !key.str) {                                         \
+      return NULL;                                                             \
+    }                                                                          \
+                                                                               \
+    uint64_t index = vkr_hash_table_string8_index(key, table->capacity);       \
+    uint64_t probes = 0;                                                       \
+    while (table->entries[index].occupied != VKR_EMPTY) {                      \
+      if (table->entries[index].occupied == VKR_OCCUPIED &&                    \
+          vkr_string8_equals_cstr(&key, table->entries[index].key)) {          \
         return &table->entries[index].value;                                   \
       }                                                                        \
       index = (index + 1) % table->capacity;                                   \

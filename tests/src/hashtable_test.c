@@ -146,6 +146,33 @@ static void test_hash_table_collision_linear_probing(void) {
   printf("  test_hash_table_collision_linear_probing PASSED\n");
 }
 
+static void test_hash_table_get_string8_view(void) {
+  printf("  Running test_hash_table_get_string8_view...\n");
+  setup_suite();
+
+  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 16);
+  assert(vkr_hash_table_insert_uint8_t(&table, "textures/a.png", 1));
+  assert(vkr_hash_table_insert_uint8_t(&table, "textures/a", 2));
+
+  // Views into a longer request are not terminated at their length; a C-string
+  // lookup on the same bytes would read the query and miss.
+  char request[] = "textures/a.png?cs=srgb";
+  uint8_t *value = vkr_hash_table_get_string8_uint8_t(
+      &table, string8_create((uint8_t *)request, 14));
+  assert(value && *value == 1);
+  value = vkr_hash_table_get_string8_uint8_t(
+      &table, string8_create((uint8_t *)request, 10));
+  assert(value && *value == 2);
+  assert(!vkr_hash_table_get_string8_uint8_t(
+      &table, string8_create((uint8_t *)request, 12)));
+  assert(!vkr_hash_table_get_string8_uint8_t(&table, string8_lit(request)));
+  assert(!vkr_hash_table_get_string8_uint8_t(&table, (String8){0}));
+
+  vkr_hash_table_destroy_uint8_t(&table);
+  teardown_suite();
+  printf("  test_hash_table_get_string8_view PASSED\n");
+}
+
 static void test_hash_table_resize_behavior(void) {
   printf("  Running test_hash_table_resize_behavior...\n");
   setup_suite();
@@ -344,6 +371,7 @@ bool32_t run_hashtable_tests() {
   test_hash_table_insert_get_contains_remove();
   test_hash_table_reset_and_empty();
   test_hash_table_collision_linear_probing();
+  test_hash_table_get_string8_view();
   test_hash_table_resize_behavior();
   test_hash_table_update_and_remove_reuse();
   printf("--- HashTable Tests Completed ---\n");

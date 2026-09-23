@@ -463,8 +463,10 @@ bool8_t vkr_texture_transcode_cache_store(
   if (!temp_path.str) {
     return false_v;
   }
-  VkrTextureTranscodeCacheRegion *stored_regions = malloc(
-      (size_t)record->region_count * sizeof(VkrTextureTranscodeCacheRegion));
+  VkrTextureTranscodeCacheRegion *stored_regions = vkr_allocator_alloc(
+      scratch,
+      (uint64_t)record->region_count * sizeof(VkrTextureTranscodeCacheRegion),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!stored_regions) {
     return false_v;
   }
@@ -547,7 +549,6 @@ bool8_t vkr_texture_transcode_cache_store(
          written == record->data_size;
   }
   file_close(&file);
-  free(stored_regions);
   if (!ok || file_rename(&temp_fp, &cache_fp, true_v) != FILE_ERROR_NONE) {
     vkr_texture_cache_remove(temp_path);
     return false_v;

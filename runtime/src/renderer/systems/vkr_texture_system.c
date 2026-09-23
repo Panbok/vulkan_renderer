@@ -1496,6 +1496,31 @@ void vkr_texture_system_shutdown(VkrTextureSystem *system) {
   MemZero(system, sizeof(*system));
 }
 
+/* Requests may carry `?cs=...` metadata that the map key omits, so a miss
+ * retries the query-less path. `out_key`, when given, receives the view that
+ * matched. */
+vkr_internal VkrTextureEntry *
+vkr_texture_system_find_entry(VkrTextureSystem *system, String8 name,
+                              String8 *out_key) {
+  VkrTextureEntry *entry =
+      vkr_hash_table_get_string8_VkrTextureEntry(&system->texture_map, name);
+  String8 key = name;
+  if (!entry) {
+    String8 query = {0};
+    key = string8_split_query(name, &query);
+    if (!key.str || key.length == 0 || key.length >= name.length) {
+      return NULL;
+    }
+    entry =
+        vkr_hash_table_get_string8_VkrTextureEntry(&system->texture_map, key);
+  }
+
+  if (entry && out_key) {
+    *out_key = key;
+  }
+  return entry;
+}
+
 VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
                                             String8 texture_name,
                                             bool8_t auto_release,
@@ -1504,26 +1529,8 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
   assert_log(out_error != NULL, "Out error is NULL");
 
   texture_name = vkr_texture_strip_resource_key_prefix(texture_name);
-  const char *texture_key = (const char *)texture_name.str;
   VkrTextureEntry *entry =
-      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
-  char *queryless_key = NULL;
-  if (!entry) {
-    String8 query = {0};
-    String8 queryless_name = string8_split_query(texture_name, &query);
-    if (queryless_name.str && queryless_name.length > 0 &&
-        queryless_name.length < texture_name.length) {
-      queryless_key = (char *)malloc((size_t)queryless_name.length + 1);
-      if (queryless_key) {
-        MemCopy(queryless_key, queryless_name.str,
-                (size_t)queryless_name.length);
-        queryless_key[queryless_name.length] = '\0';
-        entry = vkr_hash_table_get_VkrTextureEntry(&system->texture_map,
-                                                   queryless_key);
-      }
-    }
-  }
-
+      vkr_texture_system_find_entry(system, texture_name, NULL);
   if (entry) {
     if (entry->ref_count == 0) {
       entry->auto_release = auto_release;
@@ -1533,20 +1540,13 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
     VkrTexture *texture = &system->textures.data[entry->index];
     VkrTextureHandle handle = {.id = texture->description.id,
                                .generation = texture->description.generation};
-    if (queryless_key) {
-      free(queryless_key);
-    }
     return handle;
-  }
-
-  if (queryless_key) {
-    free(queryless_key);
   }
 
   // Async loading intentionally exposes not-ready states; keep this diagnostic
   // low-noise to avoid flooding logs while dependencies converge.
-  log_debug("Texture '%s' not yet loaded, use resource system to load first",
-            string8_cstr(&texture_name));
+  log_debug("Texture '%.*s' not yet loaded, use resource system to load first",
+            (int)texture_name.length, texture_name.str);
   *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
   return VKR_TEXTURE_HANDLE_INVALID;
 }
@@ -1566,11 +1566,11 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   }
 
   // Check for duplicate name before allocating resources
-  const char *texture_key = (const char *)name.str;
   VkrTextureEntry *existing_entry =
-      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
+      vkr_hash_table_get_string8_VkrTextureEntry(&system->texture_map, name);
   if (existing_entry) {
-    log_error("Texture with name '%s' already exists", texture_key);
+    log_error("Texture with name '%.*s' already exists", (int)name.length,
+              name.str);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -1699,59 +1699,30 @@ bool8_t vkr_texture_system_release(VkrTextureSystem *system,
   assert_log(texture_name.str != NULL, "Name is NULL");
 
   texture_name = vkr_texture_strip_resource_key_prefix(texture_name);
-  const char *texture_key = (const char *)texture_name.str;
+  String8 texture_key = texture_name;
   VkrTextureEntry *entry =
-      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
-  char *queryless_key = NULL;
-  if (!entry) {
-    String8 query = {0};
-    String8 queryless_name = string8_split_query(texture_name, &query);
-    if (queryless_name.str && queryless_name.length > 0 &&
-        queryless_name.length < texture_name.length) {
-      queryless_key = (char *)malloc((size_t)queryless_name.length + 1);
-      if (queryless_key) {
-        MemCopy(queryless_key, queryless_name.str,
-                (size_t)queryless_name.length);
-        queryless_key[queryless_name.length] = '\0';
-        entry = vkr_hash_table_get_VkrTextureEntry(&system->texture_map,
-                                                   queryless_key);
-        if (entry) {
-          texture_key = queryless_key;
-        }
-      }
-    }
-  }
-
+      vkr_texture_system_find_entry(system, texture_name, &texture_key);
   if (!entry) {
     /*
      * Async load/cancel/release ordering can legitimately race texture
      * teardown, so a missing key here is not a correctness failure.
      */
-    log_debug("Texture '%s' already released before texture-system release",
-              texture_key);
-    if (queryless_key) {
-      free(queryless_key);
-    }
+    log_debug("Texture '%.*s' already released before texture-system release",
+              (int)texture_key.length, texture_key.str);
     return true_v;
   }
 
   if (entry->ref_count > 0) {
     entry->ref_count--;
   } else if (!entry->auto_release) {
-    log_warn("Over-release detected for texture '%s'", texture_key);
-    if (queryless_key) {
-      free(queryless_key);
-    }
+    log_warn("Over-release detected for texture '%.*s'",
+             (int)texture_key.length, texture_key.str);
     return false_v;
   }
 
   bool8_t released = true_v;
   if (entry->ref_count == 0 && entry->auto_release)
     released = vkr_texture_system_destroy_unreferenced(system, entry);
-
-  if (queryless_key) {
-    free(queryless_key);
-  }
   return released;
 }
 
@@ -1984,6 +1955,8 @@ vkr_texture_system_get_default_emissive_handle(VkrTextureSystem *system) {
  * @param error The error code
  * @param success True if the texture was loaded successfully
  */
+/* `decoded_pixels` pairs with stbi_image_free. Upload bytes follow the
+ * VkrTexturePreparedLoad heap contract. */
 typedef struct VkrTextureDecodeResult {
   uint8_t *decoded_pixels;
   uint8_t *upload_data;
@@ -3436,8 +3409,8 @@ bool8_t vkr_texture_system_finalize_prepared_load(
     return false_v;
   }
 
-  VkrTextureEntry *existing_entry = vkr_hash_table_get_VkrTextureEntry(
-      &system->texture_map, (const char *)name.str);
+  VkrTextureEntry *existing_entry =
+      vkr_hash_table_get_string8_VkrTextureEntry(&system->texture_map, name);
   if (existing_entry) {
     /* The loader retains this canonical result for its request. Direct
        texture-system callers acquire their own reference separately. */
