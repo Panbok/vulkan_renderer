@@ -202,6 +202,7 @@ typedef enum FileError {
   FILE_ERROR_INVALID_SPIR_V, /**< Invalid SPIR-V file */
   FILE_ERROR_FILE_EMPTY,     /**< File is empty */
   FILE_ERROR_ALREADY_EXISTS, /**< Destination already exists */
+  FILE_ERROR_OUT_OF_MEMORY,  /**< An allocation for the result failed */
   FILE_ERROR_COUNT,          /**< Total number of error types */
 } FileError;
 
@@ -257,7 +258,8 @@ typedef struct FileStats {
  * empty.
  * @param allocator Allocator to allocate the file path from. Must not be NULL.
  * @param type Whether the path is relative or absolute.
- * @return A new `FilePath` structure containing the path information.
+ * @return A new `FilePath` structure containing the path information. If the
+ * allocation fails, the returned path has a null `str`.
  */
 FilePath file_path_create(const char *path, VkrAllocator *allocator,
                           FilePathType type);
@@ -538,7 +540,11 @@ FileError file_sync(FileHandle *handle);
 /** Removes one file. Missing files report FILE_ERROR_NOT_FOUND. */
 FileError file_remove(const FilePath *path);
 
-/** Atomically renames a file on the same filesystem. */
+/**
+ * Atomically renames a file on the same filesystem. Without `overwrite`, an
+ * existing destination fails with FILE_ERROR_ALREADY_EXISTS as part of the same
+ * operation, so no concurrent writer can be replaced.
+ */
 FileError file_rename(const FilePath *source, const FilePath *destination,
                       bool8_t overwrite);
 
@@ -565,8 +571,8 @@ bool8_t file_path_starts_with(const char *path, const char *prefix);
  * @param allocator Allocator to allocate the result string from. Must not be
  * NULL.
  * @param path The file path to extract directory from.
- * @return A new string containing the directory portion, or empty string if
- * none found.
+ * @return A new string containing the directory portion, or an empty string
+ * (null `str`) if none is found or the allocation fails.
  */
 String8 file_path_get_directory(VkrAllocator *allocator, String8 path);
 
@@ -580,7 +586,8 @@ String8 file_path_get_directory(VkrAllocator *allocator, String8 path);
  * NULL.
  * @param dir The directory path.
  * @param file The filename to append.
- * @return A new string containing the joined path.
+ * @return A new string containing the joined path, or an empty string (null
+ * `str`) if the allocation fails.
  */
 String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file);
 

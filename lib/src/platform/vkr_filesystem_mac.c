@@ -19,79 +19,6 @@ vkr_internal int fs_file_descriptor(const FileHandle *handle) {
   return (int)(intptr_t)handle->handle - 1;
 }
 
-vkr_internal String8 fs_string_duplicate(VkrAllocator *allocator,
-                                         const String8 *src) {
-  if (!src || !src->str || src->length == 0)
-    return (String8){0};
-  uint8_t *mem = vkr_allocator_alloc(allocator, src->length + 1,
-                                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  MemCopy(mem, src->str, src->length);
-  mem[src->length] = '\0';
-  return (String8){.str = mem, .length = src->length};
-}
-
-FilePath file_path_create(const char *path, VkrAllocator *allocator,
-                          FilePathType type) {
-  if (type == FILE_PATH_TYPE_RELATIVE) {
-    const char *root = PROJECT_SOURCE_DIR;
-    uint64_t root_len = string_length(root);
-    uint64_t path_len = string_length(path);
-    uint64_t full_len = root_len + path_len;
-
-    uint8_t *buf = vkr_allocator_alloc(allocator, full_len + 1,
-                                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    MemCopy(buf, root, root_len);
-    MemCopy(buf + root_len, path, path_len);
-    buf[full_len] = '\0';
-
-    return (FilePath){.path = (String8){.str = buf, .length = full_len},
-                      .type = type};
-  } else {
-    uint64_t len = string_length(path);
-    uint8_t *buf = vkr_allocator_alloc(allocator, len + 1,
-                                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    MemCopy(buf, path, len);
-    buf[len] = '\0';
-    return (FilePath){.path = (String8){.str = buf, .length = len},
-                      .type = type};
-  }
-}
-
-String8 file_path_get_directory(VkrAllocator *allocator, String8 path) {
-  if (!path.str || path.length == 0)
-    return (String8){0};
-  uint64_t last_slash = path.length;
-  for (uint64_t i = path.length; i > 0; --i) {
-    if (path.str[i - 1] == '/') {
-      last_slash = i;
-      break;
-    }
-  }
-  if (last_slash == path.length)
-    return (String8){0};
-  String8 dir = {.str = path.str, .length = last_slash};
-  return fs_string_duplicate(allocator, &dir);
-}
-
-String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
-  if (!dir.str || dir.length == 0)
-    return fs_string_duplicate(allocator, &file);
-  if (!file.str || file.length == 0)
-    return fs_string_duplicate(allocator, &dir);
-  bool8_t needs_sep = (dir.str[dir.length - 1] != '/');
-  uint64_t len = dir.length + (needs_sep ? 1 : 0) + file.length;
-  uint8_t *buf =
-      vkr_allocator_alloc(allocator, len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  uint64_t offset = 0;
-  MemCopy(buf, dir.str, dir.length);
-  offset += dir.length;
-  if (needs_sep)
-    buf[offset++] = '/';
-  MemCopy(buf + offset, file.str, file.length);
-  buf[len] = '\0';
-  return (String8){.str = buf, .length = len};
-}
-
 bool8_t file_exists(const FilePath *path) {
   if (!path || !path->path.str || !path->path.length) {
     return false_v;
@@ -342,7 +269,7 @@ FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
       size ? vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE)
            : NULL;
   if (!buffer && size > 0u)
-    return FILE_ERROR_IO_ERROR;
+    return FILE_ERROR_OUT_OF_MEMORY;
   FileError error = file_read_into(handle, buffer, size, bytes_read);
   if (error != FILE_ERROR_NONE) {
     if (buffer)
@@ -388,6 +315,31 @@ FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
   return error;
 }
 
+FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
+                           String8 *out_data) {
+  *out_data = (String8){0};
+  uint64_t size = 0;
+  FileError error = fs_remaining_size(handle, &size);
+  if (error != FILE_ERROR_NONE)
+    return error;
+  if (size == UINT64_MAX)
+    return FILE_ERROR_IO_ERROR;
+  uint8_t *buffer =
+      vkr_allocator_alloc(allocator, size + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!buffer)
+    return FILE_ERROR_OUT_OF_MEMORY;
+  uint64_t bytes_read = 0;
+  error = file_read_into(handle, buffer, size, &bytes_read);
+  if (error != FILE_ERROR_NONE || bytes_read != size) {
+    vkr_allocator_free(allocator, buffer, size + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    return error != FILE_ERROR_NONE ? error : FILE_ERROR_IO_ERROR;
+  }
+  buffer[bytes_read] = '\0';
+  *out_data = (String8){.str = buffer, .length = bytes_read};
+  return FILE_ERROR_NONE;
+}
+
 FileError file_sync(FileHandle *handle) {
   if (!handle || !handle->handle) {
     return FILE_ERROR_INVALID_HANDLE;
@@ -411,13 +363,19 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
   if (!source || !source->path.str || !destination || !destination->path.str) {
     return FILE_ERROR_INVALID_PATH;
   }
-  if (!overwrite && file_exists(destination)) {
+  const char *from = (const char *)source->path.str;
+  const char *to = (const char *)destination->path.str;
+  // RENAME_EXCL makes the existence check part of the rename, so a concurrent
+  // writer cannot create the destination between a check and the move.
+  const int result =
+      overwrite ? rename(from, to) : renamex_np(from, to, RENAME_EXCL);
+  if (result == 0) {
+    return FILE_ERROR_NONE;
+  }
+  if (errno == EEXIST) {
     return FILE_ERROR_ALREADY_EXISTS;
   }
-  return rename((const char *)source->path.str,
-                (const char *)destination->path.str) == 0
-             ? FILE_ERROR_NONE
-             : FILE_ERROR_IO_ERROR;
+  return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;
 }
 
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
@@ -438,7 +396,7 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
   uint8_t *result_buf = vkr_allocator_alloc(target_alloc, max_line_length + 1,
                                             VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!result_buf)
-    return FILE_ERROR_IO_ERROR;
+    return FILE_ERROR_OUT_OF_MEMORY;
 
   while (total_len < max_line_length) {
     // Record start position of this chunk read
@@ -515,97 +473,4 @@ FileError file_write_line(FileHandle *handle, const String8 *text) {
   return file_write(handle, 1, (const uint8_t *)"\n", &written);
 }
 
-FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
-                           String8 *out_data) {
-  *out_data = (String8){0};
-  uint64_t size = 0;
-  FileError error = fs_remaining_size(handle, &size);
-  if (error != FILE_ERROR_NONE)
-    return error;
-  if (size == UINT64_MAX)
-    return FILE_ERROR_IO_ERROR;
-  uint8_t *buffer =
-      vkr_allocator_alloc(allocator, size + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!buffer)
-    return FILE_ERROR_IO_ERROR;
-  uint64_t bytes_read = 0;
-  error = file_read_into(handle, buffer, size, &bytes_read);
-  if (error != FILE_ERROR_NONE || bytes_read != size) {
-    vkr_allocator_free(allocator, buffer, size + 1,
-                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    return error != FILE_ERROR_NONE ? error : FILE_ERROR_IO_ERROR;
-  }
-  buffer[bytes_read] = '\0';
-  *out_data = (String8){.str = buffer, .length = bytes_read};
-  return FILE_ERROR_NONE;
-}
-
-String8 file_get_error_string(FileError error) {
-  switch (error) {
-  case FILE_ERROR_NONE:
-    return string8_lit("No error");
-  case FILE_ERROR_NOT_FOUND:
-    return string8_lit("File not found");
-  case FILE_ERROR_ACCESS_DENIED:
-    return string8_lit("Access denied");
-  case FILE_ERROR_IO_ERROR:
-    return string8_lit("I/O error");
-  case FILE_ERROR_EOF:
-    return string8_lit("End of file");
-  case FILE_ERROR_LINE_TOO_LONG:
-    return string8_lit("Line too long");
-  case FILE_ERROR_INVALID_MODE:
-    return string8_lit("Invalid mode");
-  case FILE_ERROR_INVALID_PATH:
-    return string8_lit("Invalid path");
-  case FILE_ERROR_OPEN_FAILED:
-    return string8_lit("Open failed");
-  case FILE_ERROR_INVALID_HANDLE:
-    return string8_lit("Invalid handle");
-  case FILE_ERROR_INVALID_SPIR_V:
-    return string8_lit("Invalid SPIR-V file format");
-  case FILE_ERROR_FILE_EMPTY:
-    return string8_lit("File is empty");
-  case FILE_ERROR_ALREADY_EXISTS:
-    return string8_lit("Already exists");
-  default:
-    return string8_lit("Unknown error");
-  }
-}
-
-FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
-                                 uint8_t **out_data, uint64_t *out_size) {
-  *out_data = NULL;
-  *out_size = 0;
-  FileHandle handle;
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-
-  if (file_open(path, mode, &handle) != FILE_ERROR_NONE)
-    return FILE_ERROR_OPEN_FAILED;
-
-  FileError err = file_read_all(&handle, allocator, out_data, out_size);
-  file_close(&handle);
-  if (err != FILE_ERROR_NONE)
-    return err;
-
-  if ((uintptr_t)(*out_data) % 4 != 0) {
-    uint8_t *old_buffer = *out_data;
-    uint8_t *aligned = vkr_allocator_alloc_aligned(
-        allocator, *out_size, 4, VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    if (!aligned) {
-      vkr_allocator_free(allocator, old_buffer, *out_size,
-                         VKR_ALLOCATOR_MEMORY_TAG_FILE);
-      *out_data = NULL;
-      *out_size = 0;
-      return FILE_ERROR_IO_ERROR;
-    }
-    MemCopy(aligned, old_buffer, *out_size);
-    vkr_allocator_free(allocator, old_buffer, *out_size,
-                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    *out_data = aligned;
-  }
-  return err;
-}
 #endif

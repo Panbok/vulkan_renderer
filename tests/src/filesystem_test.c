@@ -1,5 +1,7 @@
 #include "filesystem_test.h"
 
+#include "container_test_allocator.h"
+
 #include "containers/str.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
@@ -438,7 +440,24 @@ vkr_internal void test_file_portable_publication_primitives(void) {
                            sizeof(resolved_directory)) == FILE_ERROR_NONE);
   assert(file_path_equals(resolved, resolved));
   assert(file_path_starts_with(resolved, resolved_directory));
-  assert(file_rename(&source, &destination, true_v) == FILE_ERROR_NONE);
+  // Without overwrite, an existing destination fails and both files stay.
+  String8 occupied_text = string8_create_formatted(
+      &allocator, "%s/occupied.bin", (const char *)directory_text.str);
+  FilePath occupied = {.path = occupied_text, .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_open(&occupied, write_mode, &file) == FILE_ERROR_NONE);
+  const uint8_t occupant[] = {1u};
+  assert(file_write(&file, sizeof(occupant), occupant, &bytes_written) ==
+         FILE_ERROR_NONE);
+  file_close(&file);
+  assert(file_rename(&source, &occupied, false_v) == FILE_ERROR_ALREADY_EXISTS);
+  assert(file_exists(&source));
+  FileStats occupied_stats = {0};
+  assert(file_stats(&occupied, &occupied_stats) == FILE_ERROR_NONE);
+  assert(occupied_stats.size == sizeof(occupant));
+  assert(file_remove(&occupied) == FILE_ERROR_NONE);
+  assert(file_rename(&occupied, &destination, false_v) == FILE_ERROR_NOT_FOUND);
+
+  assert(file_rename(&source, &destination, false_v) == FILE_ERROR_NONE);
   assert(!file_exists(&source));
   assert(file_exists(&destination));
 
@@ -521,6 +540,50 @@ static void test_file_io_failures_release_owned_outputs(void) {
   arena_destroy(arena);
 }
 
+// Every allocation failure yields an empty result or an out-of-memory error.
+static void test_file_allocation_failures(void) {
+  printf("  Running test_file_allocation_failures...\n");
+  ContainerTestAllocator failing_state = {.fail = true_v};
+  VkrAllocator failing = container_test_allocator(&failing_state);
+
+  FilePath created =
+      file_path_create("tests/tmp", &failing, FILE_PATH_TYPE_RELATIVE);
+  assert(created.path.str == NULL && created.path.length == 0);
+  assert(created.type == FILE_PATH_TYPE_RELATIVE);
+  String8 directory = file_path_get_directory(&failing, string8_lit("/a/b"));
+  assert(directory.str == NULL && directory.length == 0);
+  String8 joined =
+      file_path_join(&failing, string8_lit("/a"), string8_lit("b.bin"));
+  assert(joined.str == NULL && joined.length == 0);
+
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator paths = {.ctx = arena};
+  assert(vkr_allocator_arena(&paths));
+  FilePath source = file_path_create("tests/src/test_main.c", &paths,
+                                     FILE_PATH_TYPE_RELATIVE);
+  FileMode read_mode = bitset8_create();
+  bitset8_set(&read_mode, FILE_MODE_READ);
+  bitset8_set(&read_mode, FILE_MODE_BINARY);
+  FileHandle handle = {0};
+  assert(file_open(&source, read_mode, &handle) == FILE_ERROR_NONE);
+  uint8_t *bytes = NULL;
+  uint64_t count = 0;
+  assert(file_read_all(&handle, &failing, &bytes, &count) ==
+         FILE_ERROR_OUT_OF_MEMORY);
+  assert(bytes == NULL && count == 0);
+  String8 line = {0};
+  assert(file_read_line(&handle, &failing, &failing, 64u, &line) ==
+         FILE_ERROR_OUT_OF_MEMORY);
+  assert(line.str == NULL);
+  file_close(&handle);
+  assert(failing_state.live_bytes == 0);
+  assert(
+      strcmp((const char *)file_get_error_string(FILE_ERROR_OUT_OF_MEMORY).str,
+             "Out of memory") == 0);
+  arena_destroy(arena);
+  printf("  test_file_allocation_failures PASSED\n");
+}
+
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
   g_fs_test_counter = 0;
@@ -536,6 +599,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_get_error_strings();
   test_file_portable_publication_primitives();
   test_file_io_failures_release_owned_outputs();
+  test_file_allocation_failures();
 
   printf("--- Filesystem Tests Completed ---\n");
   return true;
