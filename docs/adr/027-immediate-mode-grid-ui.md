@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-23
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -55,6 +55,13 @@ consumption. These counters can overlap on unified memory and are not
 additive. Unavailable queries display unavailable. App output is the native
 presentation extent; editor output is the Scene image extent.
 
+Text labels, buttons, checkboxes and text fields size to measured content plus
+padding and borders. A caller's explicit minimum applies on each axis; a stretch
+track does not enlarge the text box by itself. Text fields have no implicit
+120-by-24-point minimum. Panels and scroll containers still fill their tracks;
+intentional fixed interaction regions, including Console detail, declare their
+minimum dimensions. Maximum dimensions bound overflow and wrapping.
+
 App debug panels use content-derived dimensions instead of fixed minima. Text
 line bounds, row gaps, padding and borders determine their size. The performance
 block receives its wrapping width before measurement, capped by the panel's
@@ -71,7 +78,36 @@ Scene load/unload, simulation, rendering and camera controls are icon-only
 with tooltips in a floating Scene toolbar. Its grip supports dragging; releasing
 near a viewport edge anchors that edge, and resize clamps the toolbar inside the
 Scene. Narrow panes wrap the controls. Floating windows and popups have input
-priority above the toolbar.
+priority above both toolbars.
+
+A separate draggable viewport bar groups the current camera view, rendering mode
+and grid controls in dropdowns. Narrow Scene panes replace these groups with a
+Viewport overflow menu. This grouping follows the user-requested
+[Unreal Engine 5.6 viewport toolbar](https://dev.epicgames.com/documentation/en-us/unreal-engine/viewport-toolbar?application_version=5.6)
+as design inspiration. Controls use the existing retained input rectangles and
+submit `VkrSampleViewRequest`; the runtime owns validated state. The view bar
+has input priority above transport and below floating windows and menus.
+Camera/projection and rendering behavior belong to
+[ADR-046](046-editor-viewport-mapping-and-picking.md) and
+[ADR-044](044-shader-cross-backend-contract.md#editor-inspection-views).
+
+The optional world grid lies on XZ at y=0 in Perspective, Top and Bottom, and YZ
+at x=0 in Left and Right. Cell spacing is in world units. Labels identify the
+visible cells in screen order: numbers 1..N left to right along the Scene's top
+edge and letters A.. top to bottom along its right edge, continuing through Z,
+AA, AZ, BA and AAA. Each label sits at its cell center, so panning or zooming
+renumbers the visible cells; labels are viewport references, not world
+coordinates. Orthographic views coarsen the drawn cell size by powers of two
+until every visible cell holds a label and at most 44 cells per axis remain; the
+Grid button reports that drawn size, while Smaller/Larger change the requested
+size. Each edge reserves the other's corner strip, so no visible orthographic
+cell loses its label to a collision. Perspective uses a bounded patch around its
+visible center; labels sit where cell-center lines meet the top/right edge or at
+the patch end nearest it, and crowded perspective labels are omitted before
+numbering. The editor numbers labels with the UI-time camera and projects at
+most 96 lines through the final unjittered camera, clipped to the Scene image.
+The grid is a UI overlay and has no depth-occlusion or scene-picking ownership.
+
 Inspector, Console and Bakery use bordered field surfaces and bold action
 buttons; read-only fields, disabled actions, severity and follow-tail states
 retain distinct styling.
@@ -87,7 +123,9 @@ capture has separate state from Tab/F3/toolbar toggles. Camera capture clears
 widget focus and consumes editor input even when its virtual pointer crosses
 an overlay. The capture-entry frame consumes no mouse motion.
 Window input retains press/release edges, button press positions and press-time
-shortcut modifiers until frame completion. Docking consumes final movement before
+shortcut modifiers until frame completion. Wheel deltas accumulate within the
+frame and clear at frame completion, so a single notch cannot repeat on idle
+frames. Docking consumes final movement before
 releasing its drag, including a complete gesture received in one event drain.
 The input module selects the platform shortcut modifier for all callers.
 Scroll containers capture hover and wheel input while child controls own clicks.
@@ -307,6 +345,7 @@ layout behavior grids cannot express.
 - [grid solver](../../runtime/src/core/ui/vkr_ui_grid.c)
 - [dock tree](../../runtime/src/core/ui/vkr_ui_dock.c)
 - [editor UI caller](../../editor/src/editor_ui.c)
+- [viewport controls and world grid](../../editor/src/editor_viewport.c)
 
 - [editor scene panels](../../editor/src/editor_scene_panels.c)
 - [edit journal and sidecars](../../runtime/src/renderer/systems/vkr_scene_edit.c)

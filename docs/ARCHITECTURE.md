@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-14
+updated: 2026-09-22
 authority: architecture
 ---
 
@@ -131,7 +131,17 @@ dock composition and startup `--scene-only` mode. Neither executable imports the
 other's source. `core/vkr_subsystem_plan` resolves application boot dependencies;
 the GPU renderer does not own that subsystem policy. The editor has tab stacking, layout persistence, keyboard focus and icon-only
 independent simulation/render controls in a draggable Scene toolbar, alongside
-load/unload and camera entry. Scene focus routes Tab to camera capture; panel
+load/unload and camera entry. A second draggable bar groups camera, rendering
+mode and grid dropdowns, with overflow in narrow panes. The runtime applies typed
+view requests; Perspective restores its saved editor camera, and Top/Left/Right/
+Bottom use explicit orthographic bases, image-plane panning and span zoom.
+Orthographic selection enables the numbered/lettered world grid. The editor
+projects at most 96 grid lines, skips intermediate lines in dense views and
+suppresses overlapping labels; [ADR-027](adr/027-immediate-mode-grid-ui.md) owns
+its display contract. Orthographic frames use spatial reconstruction and bypass
+perspective-only effects while preserving the user's perspective settings; see
+[ADR-046](adr/046-editor-viewport-mapping-and-picking.md).
+Scene focus routes Tab to camera capture; panel
 focus routes it to widgets. Hierarchy reads the authoritative scene
 through a virtualized tree; Inspector sends typed selection and edit requests to
 the runtime. Debug > Labels controls selectable directional, spot and point
@@ -369,7 +379,10 @@ named locomotion, airborne, stance and weapon clips through an interruptible C
 playback controller; animation still advances only on the scene clock. Ctrl
 requests a prebuilt crouch capsule and clearance-checked standing. Adjacent
 same-tick mouse look samples coalesce without crossing discrete actions, and
-simulation faults preserve specific diagnostics. General prefab/action authoring,
+simulation faults preserve specific diagnostics. Losing gameplay input focus
+clears held/pending commands while the simulation clock continues. Pause, disabled
+physics and faults stop elapsed-time admission; focus changes do not reset its
+epoch. General prefab/action authoring,
 projectile pools and character interaction proxies remain unimplemented.
 [ADR-073](adr/073-native-gameplay-foundation.md) owns their
 contracts and remaining integration boundaries.
@@ -439,6 +452,10 @@ indexed/scissored stream. Text/font systems own glyph layout resources and
 cooked VKFA font loading; canonical derivative MTSDF coverage and DPI-derived
 pre-layout sizing are shared contracts. Immediate labels and buttons use common
 font line metrics and align their baseline to physical pixels after DPI resolution.
+Text boxes use measured content, padding and borders; explicit per-axis minima
+can enlarge them. Stretch tracks alone do not expand text leaves, while panels
+and scroll containers retain their fill behavior. Wheel input accumulates per
+frame and clears after its consumers run.
 Icon polygons carry a one-physical-pixel alpha fringe in the shared UI stream.
 The regular/bold bootstrap atlases use a 16-texel distance range at 64 texels/em,
 providing at least a two-pixel reconstruction range for text at 8 physical pixels/em.
@@ -508,6 +525,13 @@ with explicit native barriers and completion ownership. See [ADR-002](adr/002-re
 [ADR-029](adr/029-retained-graph-resources.md).
 
 ## Rendering pipeline
+
+Editor inspection adds Detail lighting, Lighting only and visible-edge Wireframe
+to Lit and Unlit. The two lighting views use neutral material response; Detail
+lighting retains mapped normals and Lighting only uses interpolated vertex normals.
+Both native shader roots consume shared inspection helpers through the existing
+render-mode field. Their exact material, edge and evidence contracts are in
+[ADR-044](adr/044-shader-cross-backend-contract.md#editor-inspection-views).
 
 The active graph conditions select direct or editor presentation, optional picking,
 post controls and the temporal consumer. The main dataflow is:
@@ -1025,6 +1049,11 @@ See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-
 ## Remaining implementation and evidence boundaries
 
 These are limits of current code or retained acceptance, not scheduled promises:
+
+- New viewport camera/grid controls, text sizing and inspection modes pass the
+  Release editor build with both production shader compilers. Focused CPU/native
+  Bistro evidence is pending. Inspection shaders remain **UNALIGNED** until native
+  Vulkan diagnostics and matched bilateral captures pass. No timing claim is made.
 
 - Physics authoring includes cooked convex/triangle collision, parented bodies,
   bone attachments/ragdolls, joints, sweeps, contacts and named layer matrices.

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-22
 authority: adr
 ---
 # ADR-046: One editor viewport mapping for scene presentation and interaction
@@ -54,7 +54,39 @@ that cannot support the drag are excluded at the interaction boundary.
 
 Simulation and Scene rendering have independent runtime states. The editor starts
 with simulation paused; pausing passes zero scene delta while allowing dirty scene
-synchronization. The scene update currently has no animation or physics simulation.
+synchronization. The shared 60 Hz scene clock advances animation, physics and
+native gameplay when simulation runs; [ADR-073](073-native-gameplay-foundation.md)
+owns its input and focus contract.
+
+The runtime owns `VkrSampleViewState` and applies editor requests after UI build.
+Camera choices are Perspective and orthographic Top, Left, Right and Bottom.
+Entering an orthographic view saves the editor perspective camera, frames the
+selection or a point ahead of that camera, and enables the grid. Switching axis
+views preserves the target and vertical span; returning to Perspective restores
+the saved camera with current output dimensions and controller preferences.
+Basis vectors are explicit, avoiding yaw/pitch singularities in vertical views:
+
+| View | Forward | Up |
+|---|---|---|
+| Top | -Y | -Z |
+| Left | +X | +Y |
+| Right | -X | +Y |
+| Bottom | +Y | +Z |
+
+Holding RMB pans in the image plane; W/A/S/D translate along that plane while
+captured. Wheel input changes the orthographic span. Scene aspect changes update
+horizontal bounds while preserving vertical span. Picking and grid projection
+use the same unjittered matrix; projection changes finish the current gizmo edit
+and invalidate pending picks. General matrix inversion uses a relative
+singularity criterion so a valid wide orthographic projection does not silently
+become identity because its absolute determinant is small.
+
+Orthographic frames use spatial reconstruction and bypass the perspective-only
+analytic/froxel fog, SSGI, SSR, GTAO, subsurface diffusion, depth of field and motion
+blur paths. Temporal reconstruction and its SDK scalers are disabled for those
+frames. The runtime preserves the user's perspective graphics settings and
+restores their use when Perspective returns. This is an explicit capability
+boundary until those effects support orthographic depth and rays.
 
 `VkrEditorPassPayload.scene_rendering_stopped` suspends Scene extraction and graph
 passes while keeping UI submission active. Running editor frames resolve post-tonemap
@@ -177,6 +209,16 @@ picks while retaining active edits; stopping Scene rendering commits the current
 edit. Escape explicitly restores the pre-drag transform.
 
 ## Verification and limits
+
+The orthographic views and inspection modes pass the Release editor build with
+both production shader compilers and the CPU suite, including orthographic
+resize/projection, wide-projection inversion and harness orthographic camera
+tests. On Apple M1 Pro with Metal, the `smoke.bistro.editor.views` Release
+snapshot passes. The Release Bistro editor was driven through the view bar:
+Top, Left, Perspective recall, Wireframe and grid scaling rendered with numbered
+and lettered labels. Live Perspective grid labels, native Vulkan execution and
+same-revision bilateral comparisons remain unverified; compilation does not
+establish them. No performance result is claimed.
 
 The standalone-app extension passes normal Release Bistro checks on Apple M1 Pro
 with a 3024×1898 physical target and the unchanged 4 GiB cap. The MetalFX case
@@ -387,3 +429,5 @@ that cannot be expressed by the existing panel-to-target mapping.
 - [picking lifecycle](../../runtime/src/renderer/systems/vkr_picking_system.c)
 - [gizmo IDs](../../runtime/src/renderer/systems/vkr_gizmo_system.h)
 - [editor interaction caller](../../runtime/src/vkr_sample_runtime.c)
+- [camera basis and projection](../../runtime/src/renderer/systems/vkr_camera.c)
+- [viewport controls and grid](../../editor/src/editor_viewport.c)

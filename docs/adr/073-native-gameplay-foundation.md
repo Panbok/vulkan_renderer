@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-14
+updated: 2026-09-22
 authority: adr
 ---
 
@@ -119,10 +119,18 @@ unconsumed tick if floating-point wall-clock subtraction placed it behind that
 boundary; serialized/replay command admission remains strict. Late/reordered
 commands, discrete overflow and invalid values fault admission with a specific
 reason instead of losing releases. The coordinator copies callback diagnostics
-into scene-owned storage before publishing a fault, and the editor reports it. Pause, focus loss and
-reset cancel pending/held actions; resume establishes a new wall-to-simulation
-mapping and requires fresh presses. Commands have serializable fields but no
-network/wire encoding or cross-platform deterministic replay guarantee.
+into scene-owned storage before publishing a fault, and the editor reports it.
+Pause, focus loss and reset cancel pending/held actions and require fresh presses.
+Input focus controls command admission only: losing Scene/gameplay focus does not
+stop elapsed time while simulation is running. `VkrGameplayPlayer.clock_running`
+tracks simulation separately from `active` input focus. Pause, disabled physics
+or a simulation fault stops clock admission; resume establishes a new wall-to-
+simulation epoch from completed time plus retained debt. Focus changes preserve
+that epoch, keeping animation and physics advancing when editor focus moves to
+controls. Discrete overflow remains a visible
+fault requiring reset; adjacent LOOK coalescing remains the queue-pressure rule.
+Commands have serializable fields but no network/wire encoding or cross-platform
+deterministic replay guarantee.
 
 [VkrGameplayPlayer](../../runtime/src/gameplay/vkr_gameplay_player.h) demonstrates
 composition on an existing root entity: `VkrPlayerState` stores weapon, inventory,

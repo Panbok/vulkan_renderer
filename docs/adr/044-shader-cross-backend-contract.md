@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-13
+updated: 2026-09-22
 authority: adr
 ---
 
@@ -52,6 +52,40 @@ owns the split, input restrictions and offline transport. Native Metal checks
 pass for front/back energy, tint, black absorption, sun/point/rectangle lighting,
 shadow occlusion, cutout coverage, layered SSR/SSGI and API-validated resize.
 The zero-strength witness preserves all eight captured channels byte-for-byte.
+
+## Editor inspection views
+
+`VkrRenderMode` retains Lit (`DEFAULT`, 0) and Unlit (3), and adds Detail lighting
+(10), Lighting only (11) and Wireframe (12). The existing render-mode word carries
+these choices; no native root layout or resource binding changes. Both forward
+and visibility/deferred consumers use
+[`shared/editor_view.slangh`](../../renderer/src/shaders/shared/editor_view.slangh).
+
+Detail lighting evaluates the scene lights and environment with neutral linear 0.5
+albedo, dielectric F0 0.04, metallic 0 and perceptual roughness 0.5, retaining
+mapped shading normals. Lighting only uses the same neutral material with
+interpolated vertex normals and no normal map, matching the common editor split
+between geometry-only and detail lighting. Material emissive, sheen, clearcoat and anisotropy do not
+color these neutral views. Wireframe computes visible triangle-edge coverage from
+barycentric derivatives with a one-pixel edge and one-pixel coverage ramp. It
+preserves scene visibility and alpha coverage; hidden edges are not drawn through
+opaque surfaces. The forward path reconstructs barycentrics from the triangle
+and world position; the visibility path consumes its triangle reconstruction.
+
+The three inspection modes bypass bloom, analytic/froxel fog, SSGI, SSR,
+subsurface diffusion, depth of field and motion blur. Wireframe also bypasses
+temporal reconstruction and GTAO. Orthographic frames have a separate per-frame spatial
+capability boundary recorded in
+[ADR-046](046-editor-viewport-mapping-and-picking.md).
+
+These modes are **UNALIGNED** pending native Vulkan validation and matched native
+Metal/Vulkan captures. The Release editor build compiles both production shader
+paths. On Apple M1 Pro, the Release Metal snapshot
+`smoke.bistro.editor.views` (orthographic top view, `local-offscreen`) passes and
+captures final color, detail lighting, lighting only and wireframe. That capture
+exposed black foliage cards when Lighting only used triangle face normals; it now
+uses interpolated vertex normals. Shared source and compilation establish no
+bilateral image or frame-budget claim.
 
 ## Decision
 
@@ -348,6 +382,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 
 | Domain | Shared source | Metal production | Vulkan production |
 |---|---|---|---|
+| Editor inspection views (UNALIGNED) | `shared/editor_view.slangh` | `metal/msl/world/default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
 | Compute skinning | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |

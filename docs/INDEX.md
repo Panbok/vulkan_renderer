@@ -152,7 +152,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [023](adr/023-vulkan-1-4-bindless-capability-profile.md) | One explicit Vulkan capability floor | implemented |
 | [024](adr/024-shared-bindless-gpu-cores.md) | Shared allocation/completion cores and bounded Metal heap residency | implemented |
 | [025](adr/025-selected-renderer-implementation-strategy.md) | Procedural renderer and prepared native commands | implemented |
-| [027](adr/027-immediate-mode-grid-ui.md) | Grid UI, scene light labels and controls, dock stacks, Console and Bakery | implemented |
+| [027](adr/027-immediate-mode-grid-ui.md) | Content-sized grid UI, viewport bars/world grid, dock stacks, Console and Bakery | implemented |
 | [028](adr/028-gpu-driven-deferred-visibility-buffer.md) | One GPU-driven world topology | implemented |
 | [029](adr/029-retained-graph-resources.md) | Retain submitted image contents per subresource | implemented |
 | [030](adr/030-offline-mesh-optimization-and-cooking.md) | Versioned meshoptimizer artifacts preserving glTF nodes, shared geometry and CPU skin influences | implemented |
@@ -169,9 +169,9 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [041](adr/041-retained-cascaded-shadows.md) | Stable fits and retained directional shadow cascades | implemented |
 | [042](adr/042-scene-linear-post-processing.md) | Scene-linear exposure with completed-history time, bloom and directional ambient visibility | implemented |
 | [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation, color transfer and image sharpness | implemented |
-| [044](adr/044-shader-cross-backend-contract.md) | Portable shader semantics with native ABI validation | implemented |
+| [044](adr/044-shader-cross-backend-contract.md) | Portable shader semantics, editor inspection modes and native ABI validation | implemented |
 | [045](adr/045-resource-prepare-and-render-thread-finalize.md) | Worker preparation and render-thread resource finalization | implemented |
-| [046](adr/046-editor-viewport-mapping-and-picking.md) | Editor viewport mapping, transform gizmos, picking and retained Scene presentation | implemented |
+| [046](adr/046-editor-viewport-mapping-and-picking.md) | Perspective/orthographic viewport mapping, gizmos, picking and retained Scene presentation | implemented |
 | [047](adr/047-event-payload-and-resize-mailbox-lifetimes.md) | Event callback payload lifetime and coalesced resize handoff | implemented |
 | [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs, reconstructed HDR diagnostics and reviewed capture baselines | implemented |
 | [052](adr/052-vulkan-fsr31-upscaling.md) | Vulkan FSR 3.1 temporal upscaling | implemented |
@@ -197,7 +197,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [071](adr/071-animation-bank-and-reference-pose.md) | Animation banks, CPU playback, compute deformation and the movable graph/sequence preview editor | partial |
 | [072](adr/072-entity-collision-and-rigid-body-physics.md) | Scene-owned Jolt bodies/joints, cooked collision, bone attachments, queries and transactional editor authoring | implemented |
 
-| [073](adr/073-native-gameplay-foundation.md) | Shared scene ticks, ordered input, C player/weapon client, persisted editor player bindings, action animation, native character stance and camera rigs; general visual/prefab authoring pending | partial |
+| [073](adr/073-native-gameplay-foundation.md) | Shared scene ticks independent of input focus, ordered input, C player/weapon client, persisted editor player bindings, action animation, native character stance and camera rigs; general visual/prefab authoring pending | partial |
 
 ## Proposals
 
