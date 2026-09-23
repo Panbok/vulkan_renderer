@@ -82,6 +82,12 @@ assumption. The CPU tester undefines `NDEBUG` in every configuration so its
 assertions always run; `VKR_TEST_LIBRARIES_NDEBUG` reports whether the linked
 libraries were compiled with `NDEBUG`.
 
+`VKR_TARGET_ARCH` selects the instruction-set baseline for C code and for the
+renderer, CPU tester and application targets. It defaults to `native` for
+GCC/Clang (`-march=native`), which tunes binaries for the build host, and to
+`AVX2` for MSVC (`/arch:AVX2`). Binaries meant for other machines need a
+portable value such as `x86-64-v3` or `armv8.2-a`.
+
 [Root CMake configuration](../CMakeLists.txt) maps imported Debug,
 RelWithDebInfo and MinSizeRel dependencies to Release. Windows uses the Release
 CRT and `_ITERATOR_DEBUG_LEVEL=0` across configurations to match those libraries;

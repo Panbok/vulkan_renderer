@@ -12,11 +12,7 @@ function(vkr_configure_application_target target)
                      "${CMAKE_SOURCE_DIR}")
     endif()
 
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /arch:AVX2)
-    else()
-        target_compile_options(${target} PRIVATE -march=native)
-    endif()
+    target_compile_options(${target} PRIVATE ${VKR_ARCH_FLAG})
 
     target_link_libraries(${target} PRIVATE vkr_sample_runtime)
     target_compile_definitions(${target} PRIVATE

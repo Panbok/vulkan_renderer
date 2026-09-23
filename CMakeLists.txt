@@ -51,6 +51,22 @@ else()
     add_compile_definitions(VKR_METRICS_ENABLED=0)
 endif()
 
+# Instruction-set baseline. `native` tunes GCC/Clang output for the build host
+# and is the developer default; a distributable build selects a portable level
+# such as x86-64-v3 or armv8.2-a. MSVC takes an /arch value such as AVX2.
+if(MSVC)
+    set(VKR_TARGET_ARCH_DEFAULT AVX2)
+else()
+    set(VKR_TARGET_ARCH_DEFAULT native)
+endif()
+set(VKR_TARGET_ARCH "${VKR_TARGET_ARCH_DEFAULT}" CACHE STRING
+    "Instruction set: -march value (GCC/Clang) or /arch value (MSVC)")
+if(MSVC)
+    set(VKR_ARCH_FLAG "/arch:${VKR_TARGET_ARCH}")
+else()
+    set(VKR_ARCH_FLAG "-march=${VKR_TARGET_ARCH}")
+endif()
+
 if(MSVC)
     # /RTC is incompatible with the optimized cookers and vendor libraries.
     foreach(language C CXX)
@@ -58,10 +74,8 @@ if(MSVC)
                "${CMAKE_${language}_FLAGS_DEBUG}")
     endforeach()
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Zi -W4 /FC")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /arch:AVX2")
-else()
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
 endif()
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${VKR_ARCH_FLAG}")
 
 include(cmake/vkr_build_policy.cmake)
 

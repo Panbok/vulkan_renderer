@@ -19,11 +19,7 @@ if(CMAKE_GENERATOR MATCHES "Xcode")
     set_property(TARGET vulkan_renderer_tester PROPERTY XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 
-if(MSVC)
-    target_compile_options(vulkan_renderer_tester PRIVATE /arch:AVX2)
-else()
-    target_compile_options(vulkan_renderer_tester PRIVATE -march=native)
-endif()
+target_compile_options(vulkan_renderer_tester PRIVATE ${VKR_ARCH_FLAG})
 
 # Test assertions are the oracle, so they stay active in every configuration.
 # Tests that check release-only library behavior use VKR_TEST_LIBRARIES_NDEBUG,
