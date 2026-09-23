@@ -4,6 +4,11 @@ setlocal EnableDelayedExpansion
 rem Ensure compile steps are run within the repository directory
 pushd "%~dp0" || exit /b 1
 
+python tools/checks/check_format.py
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
 python tools/checks/check_path_boundaries.py
 if errorlevel 1 (
     popd
