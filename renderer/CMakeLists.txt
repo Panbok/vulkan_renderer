@@ -331,6 +331,7 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/editor_view.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/normal_map_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/transmission_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/punctual_light_kernel.slangh"
         # VkrShL2Packed and its evaluation are referenced by the deferred
         # lighting path and by the IBL projection kernel, so the shared header
         # precedes both.

@@ -1022,41 +1022,13 @@ VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
             float4 p3 = light.p3;
             if ((point_mask[word] & (1u << bit)) == 0u)
                 continue;
-            uint kind = uint(p2.w + 0.5f);
-            float3 to_light = p0.xyz - world_position;
-            float distance_squared = dot(to_light, to_light);
-            if (kind != 0u && p2.z > 0.0f && distance_squared >= p2.z * p2.z)
+            VkrPunctualLightTerm term =
+                vkr_punctual_light_term(p0, p1, p2, p3, world_position);
+            if (!term.in_range || term.cone <= 0.0f)
                 continue;
-            float distance = sqrt(distance_squared);
-            float3 light_direction =
-                distance > 1e-6f ? to_light / distance : float3(0.0f);
-            float attenuation = 0.0f;
-            if (kind == 0u)
-            {
-                attenuation = 1.0f / max(max(p0.w, 1.0f) + p1.w * distance +
-                                             p2.y * distance_squared,
-                                         1e-6f);
-            }
-            else
-            {
-                float range_attenuation = 1.0f;
-                if (p2.z > 0.0f)
-                {
-                    float ratio = distance / p2.z;
-                    range_attenuation =
-                        saturate(1.0f - ratio * ratio * ratio * ratio);
-                    range_attenuation *= range_attenuation;
-                }
-                attenuation = range_attenuation / max(distance_squared, 1e-4f);
-                if (kind == 2u)
-                {
-                    float cone = dot(-light_direction, normalize(p3.xyz));
-                    float cone_attenuation = smoothstep(p1.w, p0.w, cone);
-                    if (cone_attenuation <= 0.0f)
-                        continue;
-                    attenuation *= cone_attenuation;
-                }
-            }
+            uint kind = term.kind;
+            float3 light_direction = term.direction;
+            float attenuation = term.attenuation * term.cone;
             float3 visibility = packet_local_shadow(frame, light, kind, world_position,
                 vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy));
             VkrVulkanDirectResult direct = packet_direct(
@@ -1139,41 +1111,13 @@ float3 packet_punctual_specular(VkrVulkanPacketFrameRoot *frame,
             float4 p3 = light.p3;
             if ((point_mask[word] & (1u << bit)) == 0u)
                 continue;
-            uint kind = uint(p2.w + 0.5f);
-            float3 to_light = p0.xyz - world_position;
-            float distance_squared = dot(to_light, to_light);
-            if (kind != 0u && p2.z > 0.0f && distance_squared >= p2.z * p2.z)
+            VkrPunctualLightTerm term =
+                vkr_punctual_light_term(p0, p1, p2, p3, world_position);
+            if (!term.in_range || term.cone <= 0.0f)
                 continue;
-            float distance = sqrt(distance_squared);
-            float3 light_direction =
-                distance > 1e-6f ? to_light / distance : float3(0.0f);
-            float attenuation = 0.0f;
-            if (kind == 0u)
-            {
-                attenuation = 1.0f / max(max(p0.w, 1.0f) + p1.w * distance +
-                                             p2.y * distance_squared,
-                                         1e-6f);
-            }
-            else
-            {
-                float range_attenuation = 1.0f;
-                if (p2.z > 0.0f)
-                {
-                    float ratio = distance / p2.z;
-                    range_attenuation =
-                        saturate(1.0f - ratio * ratio * ratio * ratio);
-                    range_attenuation *= range_attenuation;
-                }
-                attenuation = range_attenuation / max(distance_squared, 1e-4f);
-                if (kind == 2u)
-                {
-                    float cone = dot(-light_direction, normalize(p3.xyz));
-                    float cone_attenuation = smoothstep(p1.w, p0.w, cone);
-                    if (cone_attenuation <= 0.0f)
-                        continue;
-                    attenuation *= cone_attenuation;
-                }
-            }
+            uint kind = term.kind;
+            float3 light_direction = term.direction;
+            float attenuation = term.attenuation * term.cone;
             float3 visibility = packet_local_shadow(frame, light, kind, world_position, normal);
             result += packet_direct_specular(
                 normal, view, light_direction, p1.rgb * p2.x * attenuation * visibility,
@@ -1207,41 +1151,13 @@ float3 packet_punctual_sheen(VkrVulkanPacketFrameRoot *frame,
             float4 p1 = light.p1;
             float4 p2 = light.p2;
             float4 p3 = light.p3;
-            uint kind = uint(p2.w + 0.5f);
-            float3 to_light = p0.xyz - world_position;
-            float distance_squared = dot(to_light, to_light);
-            if (kind != 0u && p2.z > 0.0f && distance_squared >= p2.z * p2.z)
+            VkrPunctualLightTerm term =
+                vkr_punctual_light_term(p0, p1, p2, p3, world_position);
+            if (!term.in_range || term.cone <= 0.0f)
                 continue;
-            float distance = sqrt(distance_squared);
-            float3 light_direction =
-                distance > 1e-6f ? to_light / distance : float3(0.0f);
-            float attenuation;
-            if (kind == 0u)
-            {
-                attenuation = 1.0f / max(max(p0.w, 1.0f) + p1.w * distance +
-                                             p2.y * distance_squared,
-                                         1e-6f);
-            }
-            else
-            {
-                float range_attenuation = 1.0f;
-                if (p2.z > 0.0f)
-                {
-                    float ratio = distance / p2.z;
-                    range_attenuation =
-                        saturate(1.0f - ratio * ratio * ratio * ratio);
-                    range_attenuation *= range_attenuation;
-                }
-                attenuation = range_attenuation / max(distance_squared, 1e-4f);
-                if (kind == 2u)
-                {
-                    float cone = dot(-light_direction, normalize(p3.xyz));
-                    float cone_attenuation = smoothstep(p1.w, p0.w, cone);
-                    if (cone_attenuation <= 0.0f)
-                        continue;
-                    attenuation *= cone_attenuation;
-                }
-            }
+            uint kind = term.kind;
+            float3 light_direction = term.direction;
+            float attenuation = term.attenuation * term.cone;
             float3 visibility = packet_local_shadow(frame, light, kind,
                                                 world_position, normal);
             result += packet_sheen_direct(

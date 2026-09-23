@@ -386,13 +386,13 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
 | Compute skinning | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
-| Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | Shadow receiver (UNALIGNED) | `shared/shadow_kernel.slangh`, `local_shadow.slangh`, `local_shadow_transmission.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
 | Baked diffuse volumes (UNALIGNED) | `shared/diffuse_volume_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Rectangle LTC (UNALIGNED) | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Analytic fog (UNALIGNED) | `shared/fog_kernel.slangh` | `metal/msl/post/fog.metal` | `vulkan/slang/post/fog.slang` |
-| Froxel volumetric fog (UNALIGNED) | `shared/froxel_fog_kernel.slangh` | `metal/msl/post/froxel_fog.metal` | `vulkan/slang/post/default.slang` |
+| Froxel volumetric fog (UNALIGNED) | `shared/froxel_fog_kernel.slangh`, `punctual_light_kernel.slangh` | `metal/msl/post/froxel_fog.metal` | `vulkan/slang/post/froxel_fog.slang` |
 | IBL and SH | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Opaque SSR (UNALIGNED) | `shared/ssr_kernel.slangh` | `metal/msl/post/ssr.metal` | `vulkan/slang/world/deferred.slang` |
 | Opaque SSGI (UNALIGNED) | `shared/ssgi_kernel.slangh` | `metal/msl/post/ssgi.metal` | `vulkan/slang/post/ssgi.slang` |

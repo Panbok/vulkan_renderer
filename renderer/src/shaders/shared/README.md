@@ -20,6 +20,12 @@ both Slang libraries. Metal's native deferred library mirrors that row in
 `../metal/msl/common/draw.metalh`; host and shader reflection validate both
 representations.
 
+`punctual_light_kernel.slangh` owns the falloff of that row: the legacy
+constant/linear/quadratic point, the windowed range and the spot cone. It takes
+the row's four vectors rather than the struct, so the Vulkan Slang library and
+the concatenated native Metal library compile the same function; forward,
+deferred, transmission and froxel lighting on both backends call it.
+
 `sh_l2_kernel.slangh` owns the L2 diffuse basis, packing, evaluation, and exact
 cubemap texel solid angle for ADR-038. `renderer/vkr_ibl_math.h` defines the host
 coefficient layout and slot constants. The kernel is included by the Vulkan

@@ -1,0 +1,65 @@
+// Portable falloff for one punctual light stored as the four-vector
+// VkrGpuPointLightRow. Native code owns the row load, light selection, shadow
+// visibility and the BRDF that consumes the returned term.
+//
+// Row fields used here: p0.xyz position, p2.w kind (0 legacy point, 1 ranged
+// point, 2 spot). Kind 0 attenuates by the constant p0.w (at least one),
+// linear p1.w and quadratic p2.y terms. Kinds 1 and 2 use p2.z as a windowed
+// range, where zero means unbounded; a spot light fades between the cone
+// cosines p1.w (outer) and p0.w (inner) around the direction p3.xyz.
+#ifndef VKR_SHADER_PUNCTUAL_LIGHT_KERNEL_SLANGH
+#define VKR_SHADER_PUNCTUAL_LIGHT_KERNEL_SLANGH
+
+struct VkrPunctualLightTerm
+{
+    // Unit vector toward the light; zero at the light position.
+    float3 direction;
+    // Distance and range falloff, excluding the spot cone.
+    float attenuation;
+    // Spot cone factor in [0, 1]; one for point lights.
+    float cone;
+    uint kind;
+    // False beyond a bounded range, where the light contributes nothing.
+    bool in_range;
+};
+
+VkrPunctualLightTerm vkr_punctual_light_term(float4 p0, float4 p1, float4 p2,
+                                             float4 p3, float3 world_position)
+{
+    VkrPunctualLightTerm term;
+    term.kind = uint(p2.w + 0.5f);
+    term.direction = float3(0.0f);
+    term.attenuation = 0.0f;
+    term.cone = 1.0f;
+    float3 to_light = p0.xyz - world_position;
+    float distance_squared = dot(to_light, to_light);
+    term.in_range = !(term.kind != 0u && p2.z > 0.0f &&
+                      distance_squared >= p2.z * p2.z);
+    if (!term.in_range)
+        return term;
+    float distance = sqrt(distance_squared);
+    term.direction = distance > 1e-6f ? to_light / distance : float3(0.0f);
+    if (term.kind == 0u)
+    {
+        term.attenuation = 1.0f / max(max(p0.w, 1.0f) + p1.w * distance +
+                                          p2.y * distance_squared,
+                                      1e-6f);
+        return term;
+    }
+    float range_attenuation = 1.0f;
+    if (p2.z > 0.0f)
+    {
+        float ratio = distance / p2.z;
+        range_attenuation = saturate(1.0f - ratio * ratio * ratio * ratio);
+        range_attenuation *= range_attenuation;
+    }
+    term.attenuation = range_attenuation / max(distance_squared, 1e-4f);
+    if (term.kind == 2u)
+    {
+        float cone_cosine = dot(-term.direction, normalize(p3.xyz));
+        term.cone = smoothstep(p1.w, p0.w, cone_cosine);
+    }
+    return term;
+}
+
+#endif

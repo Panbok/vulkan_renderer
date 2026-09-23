@@ -238,35 +238,13 @@ static float4 vkr_metal_packet_shade(
       float4 p3 = light.p3;
       if ((point_mask[word] & (1u << bit)) == 0u)
         continue;
-      uint kind = uint(p2.w + 0.5);
-      float3 to_light = p0.xyz - input.world_position;
-      float distance_squared = dot(to_light, to_light);
-      if (kind != 0u && p2.z > 0.0 && distance_squared >= p2.z * p2.z)
+      VkrPunctualLightTerm term =
+          vkr_punctual_light_term(p0, p1, p2, p3, input.world_position);
+      if (!term.in_range || term.cone <= 0.0f)
         continue;
-      float distance = sqrt(distance_squared);
-      float3 light_direction =
-          distance > 1e-6 ? to_light / distance : float3(0.0);
-      float attenuation = 0.0;
-      if (kind == 0u) {
-        attenuation = 1.0 / max(max(p0.w, 1.0) + p1.w * distance +
-                                    p2.y * distance_squared,
-                                1e-6);
-      } else {
-        float range_attenuation = 1.0;
-        if (p2.z > 0.0) {
-          float ratio = distance / p2.z;
-          range_attenuation = saturate(1.0 - ratio * ratio * ratio * ratio);
-          range_attenuation *= range_attenuation;
-        }
-        attenuation = range_attenuation / max(distance_squared, 1e-4);
-        if (kind == 2u) {
-          float cone = dot(-light_direction, normalize(p3.xyz));
-          float cone_attenuation = smoothstep(p1.w, p0.w, cone);
-          if (cone_attenuation <= 0.0)
-            continue;
-          attenuation *= cone_attenuation;
-        }
-      }
+      uint kind = term.kind;
+      float3 light_direction = term.direction;
+      float attenuation = term.attenuation * term.cone;
       bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                       dot(normal, light_direction) < 0.0f;
       float3 base_attenuation =
