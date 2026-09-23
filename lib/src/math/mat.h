@@ -874,10 +874,6 @@ static INLINE Mat4 mat4_inverse_orthogonal(Mat4 m) { return mat4_transpose(m); }
  * ```
  */
 static INLINE Mat4 mat4_inverse_affine(Mat4 m) {
-  Vec4 row0 = vec4_new(m.m00, m.m01, m.m02, 0.0f);
-  Vec4 row1 = vec4_new(m.m10, m.m11, m.m12, 0.0f);
-  Vec4 row2 = vec4_new(m.m20, m.m21, m.m22, 0.0f);
-
   Vec4 cross0 =
       vec4_new(m.m11 * m.m22 - m.m12 * m.m21, m.m12 * m.m20 - m.m10 * m.m22,
                m.m10 * m.m21 - m.m11 * m.m20, 0.0f);

@@ -612,7 +612,9 @@ static void test_quat_edge_cases(void) {
   // Test very small quaternion normalization
   VkrQuat tiny_q = vkr_quat_new(1e-10f, 1e-10f, 1e-10f, 1e-10f);
   VkrQuat tiny_norm = vkr_quat_normalize(tiny_q);
-  // Should not crash and should produce some valid result
+  assert(isfinite(tiny_norm.x) && isfinite(tiny_norm.y) &&
+         isfinite(tiny_norm.z) && isfinite(tiny_norm.w) &&
+         "vkr_quat_normalize of a tiny quaternion produced non-finite values");
 
   // Test gimbal lock scenarios in Euler conversion
   // Create a quaternion that represents 90° pitch directly

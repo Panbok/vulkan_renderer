@@ -322,6 +322,8 @@ static void test_dmemory_free_pattern(void) {
   }
 
   uint64_t free_after_allocs = vkr_dmemory_get_free_space(&dmemory);
+  assert(free_after_allocs + 1024u + 2048u + 512u + 4096u + 256u <=
+         dmemory.total_size);
 
   // Free in non-sequential order
   assert(vkr_dmemory_free(&dmemory, ptrs[2], sizes[2])); // Free middle

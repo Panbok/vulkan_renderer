@@ -42,6 +42,8 @@ add_compile_definitions(PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}/")
 
 option(VKR_EDITOR_LOGGING "Capture all editor log levels with runtime filtering" OFF)
 option(VKR_METRICS_ENABLED "Compile renderer metrics instrumentation" ON)
+# The shell wrappers enable this on macOS, where every VKR target is compiled.
+option(VKR_WARNINGS_AS_ERRORS "Treat warnings in VKR-owned targets as errors" OFF)
 
 if(VKR_METRICS_ENABLED)
     add_compile_definitions(VKR_METRICS_ENABLED=1)

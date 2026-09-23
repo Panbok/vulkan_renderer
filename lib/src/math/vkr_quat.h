@@ -199,7 +199,7 @@ vkr_internal INLINE VkrQuat vkr_quat_inverse(VkrQuat q) {
  *
  * Uses straightforward SIMD approach for better readability and correctness
  */
-vkr_internal VkrQuat vkr_quat_mul(VkrQuat a, VkrQuat b) {
+vkr_internal INLINE VkrQuat vkr_quat_mul(VkrQuat a, VkrQuat b) {
   // Calculate w: a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
   Vec4 a_for_w = vkr_simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
   Vec4 b_for_w = vkr_simd_shuffle_f32x4(b, 3, 0, 1, 2); // [b.w, b.x, b.y, b.z]

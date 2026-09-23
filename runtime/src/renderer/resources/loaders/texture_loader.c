@@ -59,12 +59,6 @@ typedef struct VkrTextureLoaderAsyncPayload {
   VkrTexturePreparedLoad prepared;
 } VkrTextureLoaderAsyncPayload;
 
-vkr_internal bool8_t
-vkr_texture_loader_async_allocator_is_ready(const VkrTextureSystem *system) {
-  return system && system->async_allocator.ctx &&
-         system->async_allocator.alloc && system->async_allocator.free;
-}
-
 vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
                                                  String8 name) {
   assert_log(self != NULL, "Self is NULL");

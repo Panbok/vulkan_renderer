@@ -215,7 +215,6 @@ static void hide_cursor(PlatformState *state);
 static void show_cursor(PlatformState *state);
 static void update_cursor_image(PlatformState *state);
 static void center_cursor_in_window(PlatformState *state);
-static bool8_t cursor_in_content_area(PlatformState *state);
 
 @interface WindowDelegate : NSObject <NSWindowDelegate> {
   PlatformState *state;
@@ -1073,7 +1072,6 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
       state->mouse_captured = true_v;
 
       const NSPoint pos = [state->window mouseLocationOutsideOfEventStream];
-      const NSRect contentRect = [state->view frame];
 
       // Store restore coordinates in window coordinate system (bottom-left
       // origin)
@@ -1171,11 +1169,6 @@ void vkr_window_set_mouse_position(VkrWindow *window, int32_t x, int32_t y) {
  ***************************** Helper Functions ********************************
  ********************************************************************************
  */
-
-bool8_t cursor_in_content_area(PlatformState *state) {
-  const NSPoint pos = [state->window mouseLocationOutsideOfEventStream];
-  return [state->view mouse:pos inRect:[state->view frame]];
-}
 
 void hide_cursor(PlatformState *state) {
   if (!state->cursor_hidden) {

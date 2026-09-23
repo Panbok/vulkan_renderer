@@ -280,44 +280,6 @@ static bool8_t vkr_mesh_cooked_mul_u64(uint64_t lhs, uint64_t rhs,
   return true_v;
 }
 
-static bool8_t vkr_mesh_cooked_writer_bytes(VkrMeshCookedWriter *writer,
-                                            const void *data, uint64_t size) {
-  if (writer->offset > writer->size || size > writer->size - writer->offset) {
-    return false_v;
-  }
-  if (size > 0) {
-    MemCopy(writer->data + writer->offset, data, size);
-  }
-  writer->offset += size;
-  return true_v;
-}
-
-static bool8_t vkr_mesh_cooked_writer_u32(VkrMeshCookedWriter *writer,
-                                          uint32_t value) {
-  value = vkr_mesh_cooked_to_le32(value);
-  return vkr_mesh_cooked_writer_bytes(writer, &value, sizeof(value));
-}
-
-static bool8_t vkr_mesh_cooked_writer_i32(VkrMeshCookedWriter *writer,
-                                          int32_t value) {
-  return vkr_mesh_cooked_writer_u32(writer, (uint32_t)value);
-}
-
-static bool8_t vkr_mesh_cooked_writer_u64(VkrMeshCookedWriter *writer,
-                                          uint64_t value) {
-  value = vkr_mesh_cooked_to_le64(value);
-  return vkr_mesh_cooked_writer_bytes(writer, &value, sizeof(value));
-}
-
-static bool8_t vkr_mesh_cooked_writer_f32(VkrMeshCookedWriter *writer,
-                                          float32_t value) {
-  union {
-    float32_t f32;
-    uint32_t u32;
-  } bits = {.f32 = value};
-  return vkr_mesh_cooked_writer_u32(writer, bits.u32);
-}
-
 static bool8_t vkr_mesh_cooked_reader_bytes(VkrMeshCookedReader *reader,
                                             void *out, uint64_t size) {
   if (reader->offset > reader->size || size > reader->size - reader->offset) {
@@ -374,34 +336,6 @@ static bool8_t vkr_mesh_cooked_reader_f32(VkrMeshCookedReader *reader,
   return true_v;
 }
 
-static bool8_t vkr_mesh_cooked_path_is_absolute(String8 path) {
-  return (path.length > 0 && (path.str[0] == '/' || path.str[0] == '\\')) ||
-         (path.length > 1 && path.str[1] == ':');
-}
-
-static bool8_t vkr_mesh_cooked_read_file(VkrAllocator *allocator, String8 path,
-                                         uint8_t **out_data,
-                                         uint64_t *out_size) {
-  String8 owned_path = string8_duplicate(allocator, &path);
-  if (!owned_path.str) {
-    return false_v;
-  }
-  FilePath file_path = file_path_create(string8_cstr(&owned_path), allocator,
-                                        vkr_mesh_cooked_path_is_absolute(path)
-                                            ? FILE_PATH_TYPE_ABSOLUTE
-                                            : FILE_PATH_TYPE_RELATIVE);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-  FileHandle file = {0};
-  if (file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
-    return false_v;
-  }
-  FileError error = file_read_all(&file, allocator, out_data, out_size);
-  file_close(&file);
-  return error == FILE_ERROR_NONE;
-}
-
 static uint32_t vkr_mesh_cooked_float_bits(float32_t value) {
   union {
     float32_t f32;
@@ -439,49 +373,6 @@ vkr_mesh_cooked_hash_settings(const VkrGeometryQuantizationBudgets *budgets,
   vkr_mesh_cooked_sha256_final(&sha, out_hash);
 }
 
-static bool8_t vkr_mesh_cooked_hash_dependencies(
-    VkrAllocator *scratch_allocator, VkrMeshCookedDependencyBuild *dependencies,
-    uint32_t dependency_count, uint8_t out_hash[32]) {
-  VkrMeshCookedSha256 aggregate;
-  vkr_mesh_cooked_sha256_init(&aggregate);
-  for (uint32_t i = 0; i < dependency_count; ++i) {
-    VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch_allocator);
-    if (!vkr_allocator_scope_is_valid(&scope)) {
-      return false_v;
-    }
-    uint8_t *bytes = NULL;
-    uint64_t size = 0;
-    bool8_t ok = vkr_mesh_cooked_read_file(scratch_allocator,
-                                           dependencies[i].path, &bytes, &size);
-    if (ok) {
-      VkrMeshCookedSha256 file_sha;
-      vkr_mesh_cooked_sha256_init(&file_sha);
-      vkr_mesh_cooked_sha256_update(&file_sha, bytes, size);
-      vkr_mesh_cooked_sha256_final(&file_sha, dependencies[i].hash);
-      dependencies[i].byte_size = size;
-
-      uint64_t path_length_le =
-          vkr_mesh_cooked_to_le64(dependencies[i].path.length);
-      uint64_t byte_size_le = vkr_mesh_cooked_to_le64(size);
-      vkr_mesh_cooked_sha256_update(&aggregate, &path_length_le,
-                                    sizeof(path_length_le));
-      vkr_mesh_cooked_sha256_update(&aggregate, dependencies[i].path.str,
-                                    dependencies[i].path.length);
-      vkr_mesh_cooked_sha256_update(&aggregate, &byte_size_le,
-                                    sizeof(byte_size_le));
-      vkr_mesh_cooked_sha256_update(&aggregate, bytes, size);
-    }
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    if (!ok) {
-      log_error("MeshCooked: failed to read dependency '%.*s'",
-                (int32_t)dependencies[i].path.length, dependencies[i].path.str);
-      return false_v;
-    }
-  }
-  vkr_mesh_cooked_sha256_final(&aggregate, out_hash);
-  return true_v;
-}
-
 static bool8_t vkr_mesh_cooked_string_view(const uint8_t *data,
                                            uint64_t string_offset,
                                            uint64_t string_size,
@@ -506,33 +397,6 @@ static bool8_t vkr_mesh_cooked_string_view(const uint8_t *data,
   return true_v;
 }
 
-static bool8_t vkr_mesh_cooked_string_is_valid(String8 value,
-                                               bool8_t allow_empty) {
-  if (value.length == 0) {
-    return allow_empty;
-  }
-  if (!value.str || value.length > VKR_MESH_COOKED_MAX_STRING_LENGTH) {
-    return false_v;
-  }
-  for (uint64_t i = 0; i < value.length; ++i) {
-    if (value.str[i] == '\0') {
-      return false_v;
-    }
-  }
-  return true_v;
-}
-
-static bool8_t vkr_mesh_cooked_vertex_is_finite(const VkrVertex3d *vertex) {
-  return isfinite(vertex->position.x) && isfinite(vertex->position.y) &&
-         isfinite(vertex->position.z) && isfinite(vertex->normal.x) &&
-         isfinite(vertex->normal.y) && isfinite(vertex->normal.z) &&
-         isfinite(vertex->texcoord.x) && isfinite(vertex->texcoord.y) &&
-         isfinite(vertex->colour.x) && isfinite(vertex->colour.y) &&
-         isfinite(vertex->colour.z) && isfinite(vertex->colour.w) &&
-         isfinite(vertex->tangent.x) && isfinite(vertex->tangent.y) &&
-         isfinite(vertex->tangent.z) && isfinite(vertex->tangent.w);
-}
-
 static bool8_t
 vkr_mesh_cooked_decode_equal(const VkrGpuGeometryDecodeRecord *a,
                              const VkrGpuGeometryDecodeRecord *b) {
@@ -552,34 +416,6 @@ vkr_mesh_cooked_quantization_equal(const VkrGeometryQuantizationMetrics *a,
          a->normal_degrees_max == b->normal_degrees_max &&
          a->tangent_degrees_max == b->tangent_degrees_max &&
          a->uv_max == b->uv_max && a->color_max == b->color_max;
-}
-
-static bool8_t vkr_mesh_cooked_compute_range_bounds(const VkrVertex3d *vertices,
-                                                    uint32_t count,
-                                                    Vec3 *out_center,
-                                                    Vec3 *out_min,
-                                                    Vec3 *out_max) {
-  if (!vertices || count == 0 || !out_center || !out_min || !out_max) {
-    return false_v;
-  }
-  Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-  Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
-  for (uint32_t i = 0; i < count; ++i) {
-    if (!vkr_mesh_cooked_vertex_is_finite(&vertices[i])) {
-      return false_v;
-    }
-    const Vec3 position = vkr_vertex_unpack_vec3(vertices[i].position);
-    min.x = Min(min.x, position.x);
-    min.y = Min(min.y, position.y);
-    min.z = Min(min.z, position.z);
-    max.x = Max(max.x, position.x);
-    max.y = Max(max.y, position.y);
-    max.z = Max(max.z, position.z);
-  }
-  *out_min = min;
-  *out_max = max;
-  *out_center = vec3_scale(vec3_add(min, max), 0.5f);
-  return true_v;
 }
 
 static bool8_t vkr_mesh_cooked_validate_packed_range_vertices(
@@ -888,14 +724,15 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   for (uint32_t i = 0; i < source->nodes.length; ++i) {
     VkrMeshSourceNode *node = &source->nodes.data[i];
     *node = (VkrMeshSourceNode){0};
-    uint32_t flags = 0, name_length = 0;
+    uint32_t node_flags = 0;
+    uint32_t name_length = 0;
     ok = vkr_mesh_cooked_reader_u32(&source_reader, &node->parent) &&
          vkr_mesh_cooked_reader_u32(&source_reader, &node->mesh) &&
          vkr_mesh_cooked_reader_u32(&source_reader, &node->mesh_variant) &&
          vkr_mesh_cooked_reader_u32(&source_reader, &node->camera) &&
          vkr_mesh_cooked_reader_u32(&source_reader, &node->skin) &&
          vkr_mesh_cooked_reader_u32(&source_reader, &node->light) &&
-         vkr_mesh_cooked_reader_u32(&source_reader, &flags);
+         vkr_mesh_cooked_reader_u32(&source_reader, &node_flags);
     for (uint32_t f = 0; f < 16u; ++f)
       ok = ok &&
            vkr_mesh_cooked_reader_f32(&source_reader,
@@ -922,7 +759,8 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         !isfinite(node->punctual.outer_cone))
       return false_v;
     ok = ok && vkr_mesh_cooked_reader_u32(&source_reader, &name_length);
-    if (!ok || flags > 1u || name_length > VKR_MESH_COOKED_MAX_STRING_LENGTH ||
+    if (!ok || node_flags > 1u ||
+        name_length > VKR_MESH_COOKED_MAX_STRING_LENGTH ||
         (node->parent != UINT32_MAX && node->parent >= source->nodes.length) ||
         (node->mesh_variant != UINT32_MAX &&
          node->mesh_variant >= source->meshes.length) ||
@@ -930,7 +768,7 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         source_reader.offset > source_reader.size ||
         name_length > source_reader.size - source_reader.offset)
       return false_v;
-    node->in_scene = (bool8_t)flags;
+    node->in_scene = (bool8_t)node_flags;
     if (name_length) {
       String8 view =
           string8_create((uint8_t *)data + source_reader.offset, name_length);

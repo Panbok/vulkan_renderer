@@ -41,8 +41,8 @@ typedef enum VkrOccupancyState {
     VkrHashEntry_##name *entries;                                              \
   } VkrHashTable_##name;                                                       \
                                                                                \
-  vkr_internal INLINE uint64_t vkr_hash_name_##name(const char *key,           \
-                                                    uint64_t capacity) {       \
+  vkr_internal INLINE VKR_MAYBE_UNUSED uint64_t vkr_hash_name_##name(          \
+      const char *key, uint64_t capacity) {                                    \
     assert_log(key != NULL, "Name must not be NULL");                          \
     uint64_t hash = VKR_HASH_TABLE_FNV_OFFSET_BASIS;                           \
     for (const char *p = key; *p; p++) {                                       \
@@ -53,8 +53,9 @@ typedef enum VkrOccupancyState {
   }                                                                            \
                                                                                \
   /* Internal insert without resizing; expects capacity headroom. */           \
-  vkr_internal INLINE bool32_t vkr_hash_table_insert_internal_##name(          \
-      VkrHashTable_##name *table, const char *key, type value) {               \
+  vkr_internal INLINE VKR_MAYBE_UNUSED bool32_t                                \
+      vkr_hash_table_insert_internal_##name(VkrHashTable_##name *table,        \
+                                            const char *key, type value) {     \
     uint64_t index = vkr_hash_name_##name(key, table->capacity);               \
     uint64_t probes = 0;                                                       \
     uint64_t first_tombstone = UINT64_MAX;                                     \
@@ -90,7 +91,7 @@ typedef enum VkrOccupancyState {
     return true_v;                                                             \
   }                                                                            \
                                                                                \
-  vkr_internal INLINE VKR_MUST_USE                                             \
+  vkr_internal INLINE VKR_MAYBE_UNUSED VKR_MUST_USE                            \
       VkrHashTable_##name vkr_hash_table_create_##name(                        \
           VkrAllocator *allocator, uint64_t capacity) {                        \
     assert_log(allocator != NULL, "Allocator must not be NULL");               \
@@ -106,7 +107,7 @@ typedef enum VkrOccupancyState {
     MemZero(entries, capacity * sizeof(VkrHashEntry_##name));                  \
     return (VkrHashTable_##name){allocator, capacity, 0, entries};             \
   }                                                                            \
-  vkr_internal INLINE void vkr_hash_table_destroy_##name(                      \
+  vkr_internal INLINE VKR_MAYBE_UNUSED void vkr_hash_table_destroy_##name(     \
       VkrHashTable_##name *table) {                                            \
     if (!table) {                                                              \
       return;                                                                  \
@@ -122,8 +123,9 @@ typedef enum VkrOccupancyState {
     table->size = 0;                                                           \
   }                                                                            \
                                                                                \
-  vkr_internal INLINE VkrHashTable_##name vkr_hash_table_rehash_##name(        \
-      const VkrHashTable_##name *table, uint64_t capacity) {                   \
+  vkr_internal INLINE VKR_MAYBE_UNUSED                                         \
+      VkrHashTable_##name vkr_hash_table_rehash_##name(                        \
+          const VkrHashTable_##name *table, uint64_t capacity) {               \
     if (capacity < table->size) {                                              \
       return (VkrHashTable_##name){0};                                         \
     }                                                                          \
@@ -142,8 +144,9 @@ typedef enum VkrOccupancyState {
     }                                                                          \
     return replacement;                                                        \
   }                                                                            \
-  vkr_internal INLINE VKR_MUST_USE bool32_t vkr_hash_table_resize_##name(      \
-      VkrHashTable_##name *table, uint64_t capacity) {                         \
+  vkr_internal INLINE VKR_MAYBE_UNUSED VKR_MUST_USE bool32_t                   \
+      vkr_hash_table_resize_##name(VkrHashTable_##name *table,                 \
+                                   uint64_t capacity) {                        \
     VkrHashTable_##name replacement =                                          \
         vkr_hash_table_rehash_##name(table, capacity);                         \
     if (!replacement.entries) {                                                \
@@ -153,7 +156,7 @@ typedef enum VkrOccupancyState {
     *table = replacement;                                                      \
     return true_v;                                                             \
   }                                                                            \
-  vkr_internal INLINE void vkr_hash_table_reset_##name(                        \
+  vkr_internal INLINE VKR_MAYBE_UNUSED void vkr_hash_table_reset_##name(       \
       VkrHashTable_##name *table) {                                            \
     assert_log(table != NULL, "Table must not be NULL");                       \
     if (table->entries) {                                                      \
@@ -162,7 +165,7 @@ typedef enum VkrOccupancyState {
     table->size = 0;                                                           \
   }                                                                            \
                                                                                \
-  vkr_internal INLINE bool8_t vkr_hash_table_remove_##name(                    \
+  vkr_internal INLINE VKR_MAYBE_UNUSED bool8_t vkr_hash_table_remove_##name(   \
       VkrHashTable_##name *table, const char *key) {                           \
     assert_log(table != NULL, "Table must not be NULL");                       \
     assert_log(key != NULL, "Key must not be NULL");                           \
@@ -189,7 +192,7 @@ typedef enum VkrOccupancyState {
     return false_v;                                                            \
   }                                                                            \
                                                                                \
-  vkr_internal INLINE type *vkr_hash_table_get_##name(                         \
+  vkr_internal INLINE VKR_MAYBE_UNUSED type *vkr_hash_table_get_##name(        \
       const VkrHashTable_##name *table, const char *key) {                     \
     assert_log(table != NULL, "Table must not be NULL");                       \
     assert_log(key != NULL, "Key must not be NULL");                           \
@@ -213,8 +216,9 @@ typedef enum VkrOccupancyState {
     return NULL;                                                               \
   }                                                                            \
                                                                                \
-  vkr_internal INLINE VKR_MUST_USE bool32_t vkr_hash_table_insert_##name(      \
-      VkrHashTable_##name *table, const char *key, type value) {               \
+  vkr_internal INLINE VKR_MAYBE_UNUSED VKR_MUST_USE bool32_t                   \
+      vkr_hash_table_insert_##name(VkrHashTable_##name *table,                 \
+                                   const char *key, type value) {              \
     assert_log(table != NULL, "Table must not be NULL");                       \
     assert_log(table->allocator != NULL, "Allocator must not be NULL");        \
     assert_log(key != NULL, "Key must not be NULL");                           \
@@ -246,12 +250,12 @@ typedef enum VkrOccupancyState {
     *table = replacement;                                                      \
     return true_v;                                                             \
   }                                                                            \
-  vkr_internal INLINE bool8_t vkr_hash_table_contains_##name(                  \
+  vkr_internal INLINE VKR_MAYBE_UNUSED bool8_t vkr_hash_table_contains_##name( \
       const VkrHashTable_##name *table, const char *key) {                     \
     return vkr_hash_table_get_##name(table, key) != NULL ? true_v : false_v;   \
   }                                                                            \
                                                                                \
-  vkr_internal INLINE bool8_t vkr_hash_table_is_empty_##name(                  \
+  vkr_internal INLINE VKR_MAYBE_UNUSED bool8_t vkr_hash_table_is_empty_##name( \
       const VkrHashTable_##name *table) {                                      \
     assert_log(table != NULL, "Table must not be NULL");                       \
     return table->size == 0 ? true_v : false_v;                                \

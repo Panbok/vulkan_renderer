@@ -55,8 +55,9 @@
    * @param length Number of elements to allocate in the array                 \
    * @return Initialized record, or an all-zero record on allocation failure   \
    */                                                                          \
-  static inline VKR_MUST_USE Array_##name array_create_##name(                 \
-      VkrAllocator *allocator, const uint64_t length) {                        \
+  static inline VKR_MAYBE_UNUSED VKR_MUST_USE                                  \
+      Array_##name array_create_##name(VkrAllocator *allocator,                \
+                                       const uint64_t length) {                \
     assert_log(allocator != NULL, "Allocator is NULL");                        \
     if (length == 0 || length > SIZE_MAX / sizeof(type)) {                     \
       return (Array_##name){0};                                                \
@@ -79,8 +80,8 @@
    * @return Pointer to the element at the specified index                     \
    * @note Asserts if index is out of bounds                                   \
    */                                                                          \
-  static inline type *array_get_##name(const Array_##name *array,              \
-                                       const uint64_t index) {                 \
+  static inline VKR_MAYBE_UNUSED type *array_get_##name(                       \
+      const Array_##name *array, const uint64_t index) {                       \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     return (type *)(array->data + index);                                      \
@@ -93,8 +94,8 @@
    * @param value Value to assign to the element                               \
    * @note Asserts if index is out of bounds                                   \
    */                                                                          \
-  static inline void array_set_##name(Array_##name *array,                     \
-                                      const uint64_t index, type value) {      \
+  static inline VKR_MAYBE_UNUSED void array_set_##name(                        \
+      Array_##name *array, const uint64_t index, type value) {                 \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     array->data[index] = value;                                                \
@@ -103,7 +104,8 @@
    * @brief Marks the array as destroyed, sets all members to NULL/0           \
    * @param array Pointer to the array                                         \
    */                                                                          \
-  static inline void array_destroy_##name(Array_##name *array) {               \
+  static inline VKR_MAYBE_UNUSED void array_destroy_##name(                    \
+      Array_##name *array) {                                                   \
     assert_log(array != NULL, "Array is NULL");                                \
     if (array->allocator && array->data) {                                     \
       vkr_allocator_free_aligned(array->allocator, array->data,                \
@@ -119,7 +121,8 @@
    * @param array Pointer to the array                                         \
    * @return True if the array data pointer is NULL, false otherwise           \
    */                                                                          \
-  static inline bool32_t array_is_null_##name(const Array_##name *array) {     \
+  static inline VKR_MAYBE_UNUSED bool32_t array_is_null_##name(                \
+      const Array_##name *array) {                                             \
     assert_log(array != NULL, "Array is NULL");                                \
     return array->data == NULL;                                                \
   }                                                                            \
@@ -128,7 +131,8 @@
    * @param array Pointer to the array                                         \
    * @return True if the array has zero length, false otherwise                \
    */                                                                          \
-  static inline bool32_t array_is_empty_##name(const Array_##name *array) {    \
+  static inline VKR_MAYBE_UNUSED bool32_t array_is_empty_##name(               \
+      const Array_##name *array) {                                             \
     assert_log(array != NULL, "Array is NULL");                                \
     return array->length == 0;                                                 \
   }

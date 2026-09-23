@@ -550,51 +550,6 @@ vkr_internal void scene_mark_children_dirty_cb(const VkrArchetype *arch,
   }
 }
 
-vkr_internal void scene_mark_children_world_dirty(VkrScene *scene,
-                                                  VkrEntityId parent) {
-  if (!scene->queries_valid)
-    return;
-  if (parent.u64 == VKR_ENTITY_ID_INVALID.u64)
-    return;
-
-  if (scene_child_index_ensure_built(scene)) {
-    SceneChildIndexSlot *slot = scene_child_index_get_slot(scene, parent);
-    if (!slot || slot->parent_id.u64 != parent.u64 || !slot->children ||
-        slot->child_count == 0) {
-      return;
-    }
-
-    VkrWorld *world = scene->world;
-    VkrComponentTypeId comp_transform = scene->comp_transform;
-
-    uint32_t i = 0;
-    while (i < slot->child_count) {
-      VkrEntityId child = slot->children[i];
-      // Combined is_alive + has_component + get_component in single call
-      SceneTransform *child_t =
-          (SceneTransform *)vkr_entity_get_component_if_alive(world, child,
-                                                              comp_transform);
-      if (!child_t) {
-        // Entity dead or no transform - remove from index
-        slot->children[i] = slot->children[slot->child_count - 1];
-        slot->child_count--;
-        continue;
-      }
-      child_t->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
-      i++;
-    }
-    return;
-  }
-
-  // Fallback: query scan (e.g., OOM building the index).
-  SceneChildDirtyContext ctx = {
-      .scene = scene,
-      .parent = parent,
-  };
-  vkr_entity_query_compiled_each_chunk(&scene->query_transforms,
-                                       scene_mark_children_dirty_cb, &ctx);
-}
-
 /**
  * @brief Compute local matrix from TRS.
  */

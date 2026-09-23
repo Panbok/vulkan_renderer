@@ -833,12 +833,6 @@ void vkr_allocator_end_scope(VkrAllocatorScope *scope,
            VkrAllocatorTypeNames[allocator->type]);
 #endif
 
-  uint64_t bytes_released = 0;
-  if (allocator->stats.total_allocated > scope->total_allocated_at_start) {
-    bytes_released =
-        allocator->stats.total_allocated - scope->total_allocated_at_start;
-  }
-
   // Call allocator-specific end_scope which handles:
   // - Computing bytes released as (current_bytes - scope_start_bytes)
   // - Adding released bytes to scope_bytes_allocated

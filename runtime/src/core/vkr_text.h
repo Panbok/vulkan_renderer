@@ -412,8 +412,8 @@ void vkr_text_layout_destroy(VkrTextLayout *layout);
  * @param b The second font kerning.
  * @return The comparison result.
  */
-vkr_internal int32_t vkr_font_kerning_qsort_compare(const void *a,
-                                                    const void *b) {
+vkr_internal INLINE int32_t vkr_font_kerning_qsort_compare(const void *a,
+                                                           const void *b) {
   const VkrFontKerning *ka = (const VkrFontKerning *)a;
   const VkrFontKerning *kb = (const VkrFontKerning *)b;
 

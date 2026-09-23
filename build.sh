@@ -57,6 +57,11 @@ if [ -n "${VKR_METRICS_ENABLED:-}" ]; then
   esac
   set -- "$@" -DVKR_METRICS_ENABLED:BOOL="${METRICS_VALUE}"
 fi
+# Every VKR target compiles on macOS, so warnings are errors there. Other
+# hosts keep them as warnings until their platform sources are verified.
+if [ "$(uname -s)" = Darwin ]; then
+  set -- "$@" -DVKR_WARNINGS_AS_ERRORS:BOOL=ON
+fi
 if [ -n "${VKR_EDITOR_LOGGING:-}" ]; then
   set -- "$@" -DVKR_EDITOR_LOGGING:BOOL="${VKR_EDITOR_LOGGING}"
 fi

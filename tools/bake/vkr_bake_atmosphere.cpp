@@ -46,7 +46,6 @@ Vec3 clamp_nonnegative(Vec3 a) {
 }
 
 float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }
-float lerp(float a, float b, float t) { return a + (b - a) * t; }
 Vec3 lerp3(Vec3 a, Vec3 b, float t) { return add(a, scale(sub(b, a), t)); }
 
 float ray_sphere_nearest(Vec3 origin, Vec3 direction, float radius) {

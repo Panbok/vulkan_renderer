@@ -2894,17 +2894,17 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
         return false_v;
       if (!repeat_enabled)
         continue;
-      String8 resolved_name = {0};
-      bool8_t owned_name = false_v;
-      if (!vkr_rg_expand_name(frame_allocator, pass->name, r, &resolved_name,
-                              &owned_name)) {
+      String8 pass_name = {0};
+      bool8_t pass_name_owned = false_v;
+      if (!vkr_rg_expand_name(frame_allocator, pass->name, r, &pass_name,
+                              &pass_name_owned)) {
         log_error("RenderGraph build failed: pass name expansion failed");
         return false_v;
       }
 
       VkrRgPassBuilder pb =
-          vkr_rg_add_pass(rg, (VkrRgPassType)pass->type, resolved_name);
-      vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+          vkr_rg_add_pass(rg, (VkrRgPassType)pass->type, pass_name);
+      vkr_rg_release_name(frame_allocator, pass_name, pass_name_owned);
 
       if (!pb.graph) {
         return false_v;

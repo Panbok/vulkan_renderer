@@ -276,8 +276,11 @@ vkr_internal bool8_t vkr_renderer_backend_command_slot_waits(
     VkrRenderer *renderer, uint64_t *out_wait_count);
 vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
     VkrRenderer *renderer, VkrDeviceMemoryStats *out_stats);
+#if !defined(PLATFORM_APPLE)
+// Metal lowers memory metrics with its submit result; only Vulkan polls them.
 vkr_internal bool8_t vkr_renderer_backend_memory_metrics(
     VkrRenderer *renderer, VkrRendererImplMemoryMetrics *out_metrics);
+#endif
 vkr_internal void vkr_renderer_backend_resize(VkrRenderer *renderer,
                                               uint32_t width, uint32_t height);
 vkr_internal VkrRendererError vkr_renderer_backend_present_target_recreate(
@@ -1259,20 +1262,9 @@ vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
 #endif
 }
 
+#if !defined(PLATFORM_APPLE)
 vkr_internal bool8_t vkr_renderer_backend_memory_metrics(
     VkrRenderer *renderer, VkrRendererImplMemoryMetrics *out_metrics) {
-#if defined(PLATFORM_APPLE)
-  VkrMetalMemoryDeviceMetrics source = {0};
-  if (!vkr_metal_packet_renderer_get_memory_metrics(renderer->metal_renderer,
-                                                    &source)) {
-    return false_v;
-  }
-  VkrMetalPacketResult rich = {.memory = source};
-  VkrRendererImplSubmitResult lowered = {0};
-  vkr_renderer_impl_lower_metal_result(&rich, &lowered);
-  *out_metrics = lowered.memory;
-  return true_v;
-#else
   VkrVulkanMemoryMetrics metrics = {0};
   vkr_vulkan_renderer_memory_metrics(renderer->vulkan_renderer, &metrics);
   const VkrGpuMemoryMetrics *source = &metrics.aggregate;
@@ -1355,8 +1347,8 @@ vkr_internal bool8_t vkr_renderer_backend_memory_metrics(
   out_metrics->residency_allocation_count = metrics.physical_allocations_live;
   out_metrics->native_live_resources = source->live_allocations;
   return true_v;
-#endif
 }
+#endif
 
 vkr_internal void vkr_renderer_backend_resize(VkrRenderer *renderer,
                                               uint32_t width, uint32_t height) {

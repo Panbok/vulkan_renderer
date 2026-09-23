@@ -107,22 +107,6 @@ static void test_arena_simple_alloc() {
   void *ptr1 = arena_alloc(arena, alloc_size1, ARENA_MEMORY_TAG_UNKNOWN);
   assert(ptr1 != NULL && "Allocation 1 failed");
   uint64_t pos_after_alloc1 = arena_pos(arena);
-  uint64_t expected_aligned_pos1 =
-      AlignPow2(pos_before_zero_alloc, MaxAlign()) +
-      alloc_size1; // Assuming 0-byte alloc didn't advance pos meaningfully for
-                   // next alloc start More robust: track pos before ptr1
-                   // specifically
-  uint64_t pos_before_alloc1 =
-      arena->current
-          ->pos; // more direct way to get current block's position before this
-                 // specific alloc if it's the first after 0-byte This still
-                 // relies on current->pos being what we expect. Let's use
-                 // arena_pos() before alloc1 call.
-  pos_before_alloc1 = arena_pos(
-      arena); // Correct place to record this before alloc1 if ptr_zero was
-              // first. The original test structure was: initial_pos -> ptr1 ->
-              // ptr2. With ptr_zero in between: initial_pos -> ptr_zero -> ptr1
-              // -> ptr2 So, ptr1 starts at arena_pos() AFTER ptr_zero.
 
   uint64_t current_arena_pos_before_ptr1 = arena_pos(arena);
   ptr1 = arena_alloc(
@@ -153,23 +137,7 @@ static void test_arena_simple_alloc() {
   assert(*(unsigned char *)ptr1 == 0xAA && "Data verification for ptr1 failed");
   assert(*(unsigned char *)ptr2 == 0xBB && "Data verification for ptr2 failed");
 
-  // Check pointer arithmetic
-  // The start of ptr2 should be at ptr1 + aligned_size_of_ptr1_allocation
-  uint64_t aligned_alloc_size1 = AlignPow2(alloc_size1, MaxAlign());
-  // This isn't quite right, arena_alloc aligns start of alloc, not size itself
-  // internally for next alloc. The position calculation is pos_pre =
-  // AlignPow2(current->pos, MaxAlign()); pos_post = pos_pre + size; So
-  // ptr2 should be at (uint8*)ptr1 + (pos_after_alloc1 -
-  // current_arena_pos_before_ptr1) if there were no internal fragmentations due
-  // to header. Simpler: (uintptr_t)ptr2 should be >= (uintptr_t)ptr1 +
-  // alloc_size1. And more precisely, ptr2 should be exactly at the arena_pos()
-  // recorded after ptr1 was allocated if no alignment padding was added AFTER
-  // ptr1 for ptr2. The test `pos_after_alloc2 >= pos_after_alloc1 +
-  // alloc_size2` already covers this indirectly for arena_pos. Direct check:
-  // The address of ptr2 should be the address of where ptr1 ended (after its
-  // own size) then aligned up for ptr2. This is tricky because ptr1 itself is
-  // aligned. The space between end of ptr1 actual data and start of ptr2 should
-  // be minimal (padding).
+  // The second allocation starts after the first allocation's bytes.
   assert((uintptr_t)ptr2 >= (uintptr_t)ptr1 + alloc_size1);
 
   arena_destroy(arena);
@@ -349,6 +317,7 @@ static void test_arena_reset_to() {
   void *p2 = arena_alloc(arena, 200, ARENA_MEMORY_TAG_UNKNOWN);
   uint64_t pos2 = arena_pos(arena);
   assert(p1 && p2);
+  assert(pos2 >= pos1 + 200 && "Second allocation did not advance");
 
   // Reset to current pos (no-op)
   arena_reset_to(arena, pos2, ARENA_MEMORY_TAG_UNKNOWN);
@@ -416,28 +385,9 @@ static void test_arena_reset_to() {
   Arena *block2_ptr = arena->current;
   uint64_t free_size_before_reset_across = arena->free_size;
   Arena *free_list_before_reset_across = arena->free_last;
-  Arena *block_to_be_freed1 =
-      arena->current; // This is block2_ptr in this scenario
-  Arena *block_to_be_freed2 =
-      arena->current->prev; // This is first_block_after_fill if it was not the
-                            // initial block The loop in reset_to goes:
-                            // current=block_to_be_freed1, then
-                            // prev=current->prev (block_to_be_freed2) until
-                            // current->prev == NULL or base_pos condition.
-                            // block_to_be_freed1 and block_to_be_freed2 (if not
-                            // NULL and base_pos >= pos) will be freed.
-  uint64_t expected_rsv_sum_of_freed_blocks = 0;
-  if (block_to_be_freed1 &&
-      block_to_be_freed1->base_pos >= pos_in_block1_before_spill) {
-    // This check is a bit off, reset_to iterates. block2_ptr IS the one that is
-    // certainly freed if pos_in_block1_before_spill is in
-    // first_block_after_fill.
-  }
-  // For this specific reset: arena_reset_to(arena, pos_in_block1_before_spill,
-  // ...) block2_ptr was current. Its base_pos is > pos_in_block1_before_spill.
-  // So block2_ptr will be freed. Its prev is first_block_after_fill. Loop stops
-  // there.
-  expected_rsv_sum_of_freed_blocks = block2_ptr->rsv_size;
+  // Resetting to a position in block 1 frees block 2, the only block whose
+  // base position lies past the target.
+  uint64_t expected_rsv_sum_of_freed_blocks = block2_ptr->rsv_size;
 
   // Reset to a position in block 1
   arena_reset_to(arena, pos_in_block1_before_spill, ARENA_MEMORY_TAG_UNKNOWN);
@@ -1226,6 +1176,7 @@ static void test_arena_large_pages_reset_and_scratch() {
   void *p2 = arena_alloc(arena, 2048, ARENA_MEMORY_TAG_UNKNOWN);
   uint64_t pos2 = arena_pos(arena);
   assert(p1 && p2 && "Large page allocations for reset test failed");
+  assert(pos2 >= pos1 + 2048 && "Large page allocation did not advance");
 
   arena_reset_to(arena, pos1, ARENA_MEMORY_TAG_UNKNOWN);
   assert(arena_pos(arena) == pos1 && "Large page reset_to failed");
@@ -1462,6 +1413,7 @@ static void test_arena_from_buffer_reset_and_scratch() {
   void *p2 = arena_alloc(arena, 200, ARENA_MEMORY_TAG_UNKNOWN);
   uint64_t pos2 = arena_pos(arena);
   assert(p1 && p2);
+  assert(pos2 >= pos1 + 200 && "Second allocation did not advance");
 
   arena_reset_to(arena, pos1, ARENA_MEMORY_TAG_UNKNOWN);
   assert(arena_pos(arena) == pos1 && "Reset to pos1 failed");

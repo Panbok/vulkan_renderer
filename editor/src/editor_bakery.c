@@ -136,12 +136,6 @@ static const char *editor_bakery_table_output(EditorBakeKind kind) {
   return outputs[kind - EDITOR_BAKE_DFG_TABLE];
 }
 
-static bool8_t editor_bakery_directory(const char *name) {
-  const FilePath path = {.path = editor_bakery_string(name),
-                         .type = FILE_PATH_TYPE_ABSOLUTE};
-  return file_create_directory(&path);
-}
-
 /* The worker borrows one immutable job and fixed path buffers until complete
  * is released. The UI never edits that job while the worker owns it. */
 static bool8_t editor_bakery_is_cancelled(void *context) {

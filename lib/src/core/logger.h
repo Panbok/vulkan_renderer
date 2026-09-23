@@ -59,55 +59,85 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
                   const char *fmt, ...);
 
 #define log_fatal(fmt, ...)                                                    \
-  _log_message(LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
+  do {                                                                         \
+    _log_message(LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__);     \
+  } while (0)
 
-#if ASSERT_LOG
+// A compiled-out log statement still type-checks its arguments behind a
+// short-circuited operand. Values that only feed diagnostics therefore stay
+// "used" in every configuration without being evaluated. The expression form
+// avoids constant-condition warnings on compilers that flag `if (0)`.
+#define VKR_LOG_DISCARD(fmt, ...)                                              \
+  ((void)(0 && (_log_message(LOG_LEVEL_TRACE, __FILE__, __LINE__, fmt,         \
+                             ##__VA_ARGS__),                                   \
+                0)))
+
+#if defined(__clang_analyzer__)
+// Static analysis treats an assertion as the documented precondition it is.
 #define assert_log(expr, message)                                              \
-  if (!(expr)) {                                                               \
-    _log_message(LOG_LEVEL_FATAL, __FILE__, __LINE__,                          \
-                 "Assertion Failure: %s, message: '%s'", #expr, message);      \
-  }
+  do {                                                                         \
+    if (!(expr)) {                                                             \
+      __builtin_unreachable();                                                 \
+    }                                                                          \
+  } while (0)
+#elif ASSERT_LOG
+#define assert_log(expr, message)                                              \
+  do {                                                                         \
+    if (!(expr)) {                                                             \
+      _log_message(LOG_LEVEL_FATAL, __FILE__, __LINE__,                        \
+                   "Assertion Failure: %s, message: '%s'", #expr, message);    \
+    }                                                                          \
+  } while (0)
 #else
-#define assert_log(expr, message)
+// The unevaluated operand keeps assertion-only values referenced.
+#define assert_log(expr, message) ((void)sizeof((expr) ? 1 : 0))
 #endif
 
 #if LOG_LEVEL >= 1
 #define log_error(fmt, ...)                                                    \
-  _log_message(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
+  do {                                                                         \
+    _log_message(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__);     \
+  } while (0)
 #else
-#define log_error(fmt, ...)
+#define log_error(fmt, ...) VKR_LOG_DISCARD(fmt, ##__VA_ARGS__)
 #endif
 
 #if LOG_LEVEL >= 2
 #define log_warn(fmt, ...)                                                     \
-  _log_message(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
+  do {                                                                         \
+    _log_message(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+  } while (0)
 #else
-#define log_warn(fmt, ...)
+#define log_warn(fmt, ...) VKR_LOG_DISCARD(fmt, ##__VA_ARGS__)
 #endif
 
 #if LOG_LEVEL >= 3
 #define log_info(fmt, ...)                                                     \
-  _log_message(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
+  do {                                                                         \
+    _log_message(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+  } while (0)
 #else
-#define log_info(fmt, ...)
+#define log_info(fmt, ...) VKR_LOG_DISCARD(fmt, ##__VA_ARGS__)
 #endif
 
 #if LOG_LEVEL >= 4
 #define log_debug(fmt, ...)                                                    \
   do {                                                                         \
-    if (log_level_enabled(LOG_LEVEL_DEBUG))                                    \
+    if (log_level_enabled(LOG_LEVEL_DEBUG)) {                                  \
       _log_message(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__);   \
-  } while (0);
+    }                                                                          \
+  } while (0)
 #else
-#define log_debug(fmt, ...)
+#define log_debug(fmt, ...) VKR_LOG_DISCARD(fmt, ##__VA_ARGS__)
 #endif
 
 #if LOG_LEVEL >= 5
 #define log_trace(fmt, ...)                                                    \
   do {                                                                         \
-    if (log_level_enabled(LOG_LEVEL_TRACE))                                    \
+    if (log_level_enabled(LOG_LEVEL_TRACE)) {                                  \
       _log_message(LOG_LEVEL_TRACE, __FILE__, __LINE__, fmt, ##__VA_ARGS__);   \
-  } while (0);
+    }                                                                          \
+  } while (0)
 #else
-#define log_trace(fmt, ...)
+#define log_trace(fmt, ...) VKR_LOG_DISCARD(fmt, ##__VA_ARGS__)
 #endif

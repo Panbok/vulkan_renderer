@@ -63,8 +63,9 @@
    * @param capacity Maximum number of elements the queue can hold             \
    * @return Initialized record, or an all-zero record on allocation failure   \
    */                                                                          \
-  static inline VKR_MUST_USE Queue_##name queue_create_##name(                 \
-      VkrAllocator *allocator, uint64_t capacity) {                            \
+  static inline VKR_MAYBE_UNUSED VKR_MUST_USE                                  \
+      Queue_##name queue_create_##name(VkrAllocator *allocator,                \
+                                       uint64_t capacity) {                    \
     assert_log(allocator != NULL, "Allocator is NULL");                        \
     if (capacity == 0 || capacity > SIZE_MAX / sizeof(type)) {                 \
       return (Queue_##name){0};                                                \
@@ -82,7 +83,8 @@
    * @param queue Pointer to the queue to check                                \
    * @return true if the queue is empty, false otherwise                       \
    */                                                                          \
-  static inline bool32_t queue_is_empty_##name(const Queue_##name *queue) {    \
+  static inline VKR_MAYBE_UNUSED bool32_t queue_is_empty_##name(               \
+      const Queue_##name *queue) {                                             \
     assert_log(queue != NULL, "Queue pointer cannot be NULL");                 \
     return queue->size == 0;                                                   \
   }                                                                            \
@@ -91,7 +93,8 @@
    * @param queue Pointer to the queue to check                                \
    * @return true if the queue is full, false otherwise                        \
    */                                                                          \
-  static inline bool32_t queue_is_full_##name(const Queue_##name *queue) {     \
+  static inline VKR_MAYBE_UNUSED bool32_t queue_is_full_##name(                \
+      const Queue_##name *queue) {                                             \
     assert_log(queue != NULL, "Queue pointer cannot be NULL");                 \
     return queue->size == queue->capacity;                                     \
   }                                                                            \
@@ -101,7 +104,8 @@
    * @param data Element to add to the queue                                   \
    * @return true if the element was added, false if the queue is full         \
    */                                                                          \
-  static inline bool32_t queue_enqueue_##name(Queue_##name *q, type data) {    \
+  static inline VKR_MAYBE_UNUSED bool32_t queue_enqueue_##name(                \
+      Queue_##name *q, type data) {                                            \
     assert_log(q != NULL, "Queue is NULL");                                    \
     if (queue_is_full_##name(q)) {                                             \
       return false;                                                            \
@@ -118,7 +122,7 @@
    * NULL                                                                      \
    * @return true if an element was removed, false if the queue is empty       \
    */                                                                          \
-  static inline bool32_t queue_dequeue_##name(                                 \
+  static inline VKR_MAYBE_UNUSED bool32_t queue_dequeue_##name(                \
       Queue_##name *q, type *value_ptr /* optional parameter */) {             \
     assert_log(q != NULL, "Queue is NULL");                                    \
     if (queue_is_empty_##name(q)) {                                            \
@@ -137,7 +141,7 @@
    * @return The element at the front of the queue                             \
    * @note Asserts if the queue is empty                                       \
    */                                                                          \
-  static inline type queue_peek_##name(Queue_##name *q) {                      \
+  static inline VKR_MAYBE_UNUSED type queue_peek_##name(Queue_##name *q) {     \
     assert_log(q != NULL, "Queue is NULL");                                    \
     assert_log(!queue_is_empty_##name(q), "Queue is empty");                   \
     return q->data[q->head];                                                   \
@@ -147,7 +151,7 @@
    * @param q Pointer to the queue                                             \
    * @note This does not deallocate memory, only resets indices                \
    */                                                                          \
-  static inline void queue_clear_##name(Queue_##name *q) {                     \
+  static inline VKR_MAYBE_UNUSED void queue_clear_##name(Queue_##name *q) {    \
     assert_log(q != NULL, "Queue is NULL");                                    \
     q->size = 0;                                                               \
     q->head = 0;                                                               \
@@ -158,7 +162,7 @@
    * @param q Pointer to the queue                                             \
    * @note Releases the buffer through its owning allocator                    \
    */                                                                          \
-  static inline void queue_destroy_##name(Queue_##name *q) {                   \
+  static inline VKR_MAYBE_UNUSED void queue_destroy_##name(Queue_##name *q) {  \
     assert_log(q != NULL, "Queue is NULL");                                    \
     if (q->data) {                                                             \
       vkr_allocator_free(q->allocator, q->data, q->capacity * sizeof(type),    \

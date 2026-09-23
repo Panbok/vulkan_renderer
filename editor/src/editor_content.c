@@ -185,7 +185,9 @@ static void *content_worker(void *context) {
     arguments[count++] = "--harness";
     arguments[count++] = VKR_EDITOR_HARNESS_PATH;
   }
+#if defined(PLATFORM_WINDOWS)
   char reveal_argument[CONTENT_PATH + 16];
+#endif
   if (content->worker_reveal) {
 #if defined(PLATFORM_WINDOWS)
     executable = "explorer.exe";

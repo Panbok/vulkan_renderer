@@ -25,6 +25,17 @@ else()
     target_compile_options(vulkan_renderer_tester PRIVATE -march=native)
 endif()
 
+# Test assertions are the oracle, so they stay active in every configuration.
+# Tests that check release-only library behavior use VKR_TEST_LIBRARIES_NDEBUG,
+# which records whether the linked libraries were compiled with NDEBUG.
+if(MSVC)
+    target_compile_options(vulkan_renderer_tester PRIVATE /UNDEBUG)
+else()
+    target_compile_options(vulkan_renderer_tester PRIVATE -UNDEBUG)
+endif()
+target_compile_definitions(vulkan_renderer_tester PRIVATE
+    $<IF:$<CONFIG:Debug>,VKR_TEST_LIBRARIES_NDEBUG=0,VKR_TEST_LIBRARIES_NDEBUG=1>)
+
 # The harness core exports renderer_lib transitively.
 find_package(Vulkan REQUIRED)
 target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_harness_core vkr_collision_cooking ktx Vulkan::Vulkan)

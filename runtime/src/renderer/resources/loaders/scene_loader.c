@@ -667,36 +667,6 @@ scene_directional_light_import_defaults(void) {
   };
 }
 
-vkr_internal Mat4 scene_loader_entity_import_world_matrix(
-    const SceneEntityImport *imports, uint32_t entity_count,
-    uint32_t entity_index) {
-  uint32_t chain[VKR_TRANSFORM_MAX_DEPTH];
-  uint32_t chain_count = 0;
-  int32_t current = (int32_t)entity_index;
-  while (current >= 0 && (uint32_t)current < entity_count &&
-         chain_count < VKR_TRANSFORM_MAX_DEPTH) {
-    chain[chain_count++] = (uint32_t)current;
-    current = imports[current].parent_index;
-  }
-
-  Mat4 world = mat4_identity();
-  while (chain_count > 0) {
-    const SceneEntityImport *import = &imports[chain[--chain_count]];
-    Mat4 local = mat4_translate(import->position);
-    local = mat4_mul(local, vkr_quat_to_mat4(import->rotation));
-    local = mat4_mul(local, mat4_scale(import->scale));
-    world = mat4_mul(world, import->has_matrix ? import->matrix : local);
-  }
-  return world;
-}
-
-vkr_internal bool8_t scene_json_string_equals_cstr(String8 value,
-                                                   const char *text) {
-  const uint64_t length = text ? string_length(text) : 0u;
-  return value.str && value.length == length &&
-         MemCompare(value.str, text, length) == 0;
-}
-
 vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
   return (SceneEnvironmentImport){
       .has_block = false_v,

@@ -86,27 +86,6 @@ vkr_material_system_material_is_transmissive(const VkrMaterial *material) {
              : false_v;
 }
 
-vkr_internal bool8_t
-vkr_material_system_find_by_name(VkrMaterialSystem *system, const char *name,
-                                 VkrMaterialHandle *out_handle) {
-  VkrMaterialEntry *entry =
-      vkr_hash_table_get_VkrMaterialEntry(&system->material_by_name, name);
-  if (!entry) {
-    return false_v;
-  }
-
-  VkrMaterial *material = &system->materials.data[entry->id];
-  if (material->id == 0) {
-    return false_v;
-  }
-
-  if (out_handle) {
-    *out_handle = (VkrMaterialHandle){.id = material->id,
-                                      .generation = material->generation};
-  }
-  return true_v;
-}
-
 vkr_internal void
 vkr_material_system_reset_texture_slots(VkrMaterial *material) {
   for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {

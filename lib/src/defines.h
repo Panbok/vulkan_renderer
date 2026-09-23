@@ -13,8 +13,12 @@
 
 #if defined(__clang__) || defined(__GNUC__)
 #define VKR_MUST_USE __attribute__((warn_unused_result))
+// Container macros generate one operation set per element type; a translation
+// unit rarely calls every generated operation.
+#define VKR_MAYBE_UNUSED __attribute__((unused))
 #else
 #define VKR_MUST_USE
+#define VKR_MAYBE_UNUSED
 #endif
 
 #define AlignPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))

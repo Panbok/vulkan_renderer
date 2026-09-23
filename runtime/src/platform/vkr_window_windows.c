@@ -62,7 +62,6 @@ static void hide_cursor(PlatformState *state);
 static void show_cursor(PlatformState *state);
 static void update_cursor_image(PlatformState *state);
 static void center_cursor_in_window(PlatformState *state);
-static bool8_t cursor_in_content_area(PlatformState *state);
 static void vkr_win32_refresh_display_output(PlatformState *state);
 
 vkr_internal uint32_t vkr_win32_float_bits(float32_t value) {
@@ -978,19 +977,6 @@ static void center_cursor_in_window(PlatformState *state) {
   // Update tracking position (use client coordinates)
   state->last_cursor_pos_x = client_center_x;
   state->last_cursor_pos_y = client_center_y;
-}
-
-static bool8_t cursor_in_content_area(PlatformState *state) {
-  POINT cursor_pos;
-  GetCursorPos(&cursor_pos);
-  ScreenToClient(state->window, &cursor_pos);
-
-  RECT client_rect;
-  GetClientRect(state->window, &client_rect);
-
-  return (cursor_pos.x >= client_rect.left &&
-          cursor_pos.x < client_rect.right && cursor_pos.y >= client_rect.top &&
-          cursor_pos.y < client_rect.bottom);
 }
 
 static Keys translate_keycode(uint32_t vk_keycode) {

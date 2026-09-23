@@ -315,6 +315,8 @@ class s_CharacterFilter final : public JPH::ObjectLayerFilter,
 public:
   explicit s_CharacterFilter(const VkrPhysicsCharacterDesc &desc)
       : desc(desc) {}
+  // Keep BodyFilter's BodyID overload visible beside the layer override.
+  using JPH::BodyFilter::ShouldCollide;
   bool ShouldCollide(JPH::ObjectLayer layer) const override {
     return (desc.collision_mask & layer) != 0 &&
            (desc.collision_layer & (layer >> 16)) != 0;

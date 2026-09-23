@@ -1465,9 +1465,9 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   (void)vkr_material_system_unpublish(system, material_handle);
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
-    VkrTextureHandle handle = material->textures[tex_slot].handle;
-    if (handle.id != 0) {
-      vkr_texture_system_release_by_handle(system->texture_system, handle);
+    VkrTextureHandle texture = material->textures[tex_slot].handle;
+    if (texture.id != 0) {
+      vkr_texture_system_release_by_handle(system->texture_system, texture);
     }
   }
 

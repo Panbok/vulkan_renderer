@@ -68,6 +68,20 @@ Release additionally enables interprocedural optimization when CMake's compiler
 and linker check succeeds; `VKR_ENABLE_IPO=OFF` disables it. These settings do not
 enable fast-math or establish a frame-time improvement.
 
+The same policy compiles every VKR-owned Clang or GCC target with `-Wall -Wextra
+-Wshadow`. It omits unused parameters, omitted designated-initializer fields,
+sign comparisons and the brace elision used by `(Vec2){x, y}` vector literals.
+Dependency targets are `SYSTEM`, so their headers stay outside the policy.
+`VKR_WARNINGS_AS_ERRORS` adds `-Werror`; the shell and Xcode wrappers enable it
+on macOS, where every VKR target compiles. Windows builds keep warnings
+non-fatal until their platform sources are verified, and MSVC keeps its Debug
+`/W4` level. Disabled log statements still type-check their arguments in
+unreachable code, a compiled-out `assert_log` keeps its expression as an
+unevaluated operand, and the clang static analyzer reads `assert_log` as an
+assumption. The CPU tester undefines `NDEBUG` in every configuration so its
+assertions always run; `VKR_TEST_LIBRARIES_NDEBUG` reports whether the linked
+libraries were compiled with `NDEBUG`.
+
 [Root CMake configuration](../CMakeLists.txt) maps imported Debug,
 RelWithDebInfo and MinSizeRel dependencies to Release. Windows uses the Release
 CRT and `_ITERATOR_DEBUG_LEVEL=0` across configurations to match those libraries;

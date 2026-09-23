@@ -915,10 +915,9 @@ static void test_precision_and_consistency(void) {
   Vec4 fma_result = vec4_muladd(a, b, c);
   Vec4 regular_result = vec4_add(vec4_mul(a, b), c);
 
-  // FMA should be at least as precise as regular operations
-  // (This test mainly ensures API consistency)
-  assert(!vec4_equals(fma_result, vec4_zero(), VKR_FLOAT_EPSILON) &&
-         "FMA result should not be zero");
+  // Fused and separate multiply-add differ only by the product's rounding.
+  assert(vec4_equals(fma_result, regular_result, 1e-5f) &&
+         "FMA result diverged from multiply then add");
 
   // Test dot product consistency between Vec3 and Vec4
   Vec3 v3a = vec3_new(1.0f, 2.0f, 3.0f);

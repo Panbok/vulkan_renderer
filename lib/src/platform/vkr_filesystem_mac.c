@@ -191,7 +191,6 @@ bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
       continue;
     } // Root slash
 
-    char saved = buffer[i];
     buffer[i] = '\0';
 
     // POSIX specific absolute check

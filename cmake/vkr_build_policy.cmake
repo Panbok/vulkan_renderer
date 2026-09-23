@@ -20,6 +20,24 @@ if(VKR_ENABLE_IPO)
     endif()
 endif()
 
+# Warning policy for VKR-owned targets. Unused parameters are routine in
+# callback tables, omitted fields are the designated-initializer idiom, and
+# `(Vec2){x, y}` initializes the anonymous-union vector types through valid
+# brace elision. MSVC keeps its existing Debug /W4 level: this host cannot
+# compile the Windows-only sources, so no stricter MSVC policy is claimed.
+function(vkr_apply_warnings target)
+    if(MSVC)
+        return()
+    endif()
+    target_compile_options(${target} PRIVATE
+        -Wall -Wextra -Wshadow
+        -Wno-unused-parameter -Wno-missing-field-initializers
+        -Wno-sign-compare -Wno-missing-braces)
+    if(VKR_WARNINGS_AS_ERRORS)
+        target_compile_options(${target} PRIVATE -Werror)
+    endif()
+endfunction()
+
 function(vkr_apply_build_policy directory)
     get_property(targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(target IN LISTS targets)
@@ -39,6 +57,9 @@ function(vkr_apply_build_policy directory)
                          "${CMAKE_MSVC_RUNTIME_LIBRARY}")
         endif()
         if(vendor)
+            # Consumers include dependency headers as system headers, so the
+            # VKR warning policy does not apply to third-party code.
+            set_property(TARGET ${target} PROPERTY SYSTEM TRUE)
             # KTX publishes Debug CRT-selection macros to its consumers. Its
             # optimized implementation and all callers use the Release CRT.
             foreach(property COMPILE_DEFINITIONS INTERFACE_COMPILE_DEFINITIONS)
@@ -79,7 +100,7 @@ function(vkr_apply_build_policy directory)
                             APPEND PROPERTY COMPILE_OPTIONS /O2 /U_DEBUG /UDEBUG)
                     else()
                         set_property(SOURCE "${vendor_source}" TARGET_DIRECTORY ${target}
-                            APPEND PROPERTY COMPILE_OPTIONS -O3 -U_DEBUG -UDEBUG)
+                            APPEND PROPERTY COMPILE_OPTIONS -O3 -U_DEBUG -UDEBUG -w)
                         if(NOT VKR_SANITIZE_DEPENDENCIES)
                             set_property(SOURCE "${vendor_source}" TARGET_DIRECTORY ${target}
                                 APPEND PROPERTY COMPILE_OPTIONS -fno-sanitize=all)
@@ -99,6 +120,7 @@ function(vkr_apply_build_policy directory)
                     "$<$<CONFIG:Release,RelWithDebInfo>:-ffunction-sections>"
                     "$<$<CONFIG:Release,RelWithDebInfo>:-fdata-sections>")
             endif()
+            vkr_apply_warnings(${target})
             if(VKR_ENABLE_IPO AND VKR_IPO_SUPPORTED)
                 set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
             endif()

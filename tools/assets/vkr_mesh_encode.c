@@ -348,16 +348,6 @@ static bool8_t vkr_mesh_cooked_reader_u32(VkrMeshCookedReader *reader,
   return true_v;
 }
 
-static bool8_t vkr_mesh_cooked_reader_i32(VkrMeshCookedReader *reader,
-                                          int32_t *out) {
-  uint32_t value = 0;
-  if (!vkr_mesh_cooked_reader_u32(reader, &value)) {
-    return false_v;
-  }
-  *out = (int32_t)value;
-  return true_v;
-}
-
 static bool8_t vkr_mesh_cooked_reader_u64(VkrMeshCookedReader *reader,
                                           uint64_t *out) {
   uint64_t value = 0;
@@ -365,20 +355,6 @@ static bool8_t vkr_mesh_cooked_reader_u64(VkrMeshCookedReader *reader,
     return false_v;
   }
   *out = vkr_mesh_cooked_to_le64(value);
-  return true_v;
-}
-
-static bool8_t vkr_mesh_cooked_reader_f32(VkrMeshCookedReader *reader,
-                                          float32_t *out) {
-  uint32_t bits = 0;
-  if (!vkr_mesh_cooked_reader_u32(reader, &bits)) {
-    return false_v;
-  }
-  union {
-    uint32_t u32;
-    float32_t f32;
-  } value = {.u32 = bits};
-  *out = value.f32;
   return true_v;
 }
 
@@ -490,30 +466,6 @@ static bool8_t vkr_mesh_cooked_hash_dependencies(
   return true_v;
 }
 
-static bool8_t vkr_mesh_cooked_string_view(const uint8_t *data,
-                                           uint64_t string_offset,
-                                           uint64_t string_size,
-                                           uint64_t relative_offset,
-                                           uint32_t length, bool8_t allow_empty,
-                                           String8 *out) {
-  if ((!allow_empty && length == 0) ||
-      length > VKR_MESH_COOKED_MAX_STRING_LENGTH ||
-      relative_offset > string_size || length > string_size - relative_offset) {
-    return false_v;
-  }
-  String8 view = {
-      .str = (uint8_t *)data + string_offset + relative_offset,
-      .length = length,
-  };
-  for (uint32_t i = 0; i < length; ++i) {
-    if (view.str[i] == '\0') {
-      return false_v;
-    }
-  }
-  *out = view;
-  return true_v;
-}
-
 static bool8_t vkr_mesh_cooked_string_is_valid(String8 value,
                                                bool8_t allow_empty) {
   if (value.length == 0) {
@@ -539,27 +491,6 @@ static bool8_t vkr_mesh_cooked_vertex_is_finite(const VkrVertex3d *vertex) {
          isfinite(vertex->colour.z) && isfinite(vertex->colour.w) &&
          isfinite(vertex->tangent.x) && isfinite(vertex->tangent.y) &&
          isfinite(vertex->tangent.z) && isfinite(vertex->tangent.w);
-}
-
-static bool8_t
-vkr_mesh_cooked_decode_equal(const VkrGpuGeometryDecodeRecord *a,
-                             const VkrGpuGeometryDecodeRecord *b) {
-  return a->position_bias[0] == b->position_bias[0] &&
-         a->position_bias[1] == b->position_bias[1] &&
-         a->position_bias[2] == b->position_bias[2] && a->flags == b->flags &&
-         a->position_scale[0] == b->position_scale[0] &&
-         a->position_scale[1] == b->position_scale[1] &&
-         a->position_scale[2] == b->position_scale[2] &&
-         a->reserved == b->reserved;
-}
-
-static bool8_t
-vkr_mesh_cooked_quantization_equal(const VkrGeometryQuantizationMetrics *a,
-                                   const VkrGeometryQuantizationMetrics *b) {
-  return a->position_max == b->position_max &&
-         a->normal_degrees_max == b->normal_degrees_max &&
-         a->tangent_degrees_max == b->tangent_degrees_max &&
-         a->uv_max == b->uv_max && a->color_max == b->color_max;
 }
 
 static bool8_t vkr_mesh_cooked_compute_range_bounds(const VkrVertex3d *vertices,
@@ -588,40 +519,6 @@ static bool8_t vkr_mesh_cooked_compute_range_bounds(const VkrVertex3d *vertices,
   *out_max = max;
   *out_center = vec3_scale(vec3_add(min, max), 0.5f);
   return true_v;
-}
-
-static bool8_t vkr_mesh_cooked_validate_packed_range_vertices(
-    const VkrPackedStaticVertex *vertices, uint32_t count,
-    const VkrGpuGeometryDecodeRecord *decode, Vec3 expected_center,
-    Vec3 expected_min, Vec3 expected_max, float32_t tolerance) {
-  if (!vkr_packed_geometry_vertices_are_valid(vertices, count, decode) ||
-      !isfinite(tolerance) || tolerance < 0.0f) {
-    return false_v;
-  }
-  Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-  Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
-  for (uint32_t i = 0; i < count; ++i) {
-    VkrVertex3d unpacked = {0};
-    vkr_packed_geometry_unpack(&vertices[i], 1u, decode, &unpacked);
-    const Vec3 position = vkr_vertex_unpack_vec3(unpacked.position);
-    min.x = Min(min.x, position.x);
-    min.y = Min(min.y, position.y);
-    min.z = Min(min.z, position.z);
-    max.x = Max(max.x, position.x);
-    max.y = Max(max.y, position.y);
-    max.z = Max(max.z, position.z);
-  }
-  const Vec3 center = vec3_scale(vec3_add(min, max), 0.5f);
-  const float32_t epsilon = tolerance + 1.0e-6f;
-  return fabsf(min.x - expected_min.x) <= epsilon &&
-         fabsf(min.y - expected_min.y) <= epsilon &&
-         fabsf(min.z - expected_min.z) <= epsilon &&
-         fabsf(max.x - expected_max.x) <= epsilon &&
-         fabsf(max.y - expected_max.y) <= epsilon &&
-         fabsf(max.z - expected_max.z) <= epsilon &&
-         fabsf(center.x - expected_center.x) <= epsilon &&
-         fabsf(center.y - expected_center.y) <= epsilon &&
-         fabsf(center.z - expected_center.z) <= epsilon;
 }
 
 static bool8_t vkr_mesh_cooked_source_validate(VkrAllocator *scratch_allocator,
@@ -1174,18 +1071,18 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
   writer.offset = directory_offset;
   for (uint32_t i = 0; ok && i < info->range_count; ++i) {
     const VkrMeshCookedRangeBuild *range = &ranges[i];
-    const VkrGeometryUploadRange *source = range->source;
+    const VkrGeometryUploadRange *upload_range = range->source;
     ok = ok && vkr_mesh_cooked_writer_u32(&writer, i);
     ok = ok && vkr_mesh_cooked_writer_u32(&writer, range->first_index);
     ok = ok && vkr_mesh_cooked_writer_u32(&writer, range->index_count);
     ok = ok && vkr_mesh_cooked_writer_u32(&writer, range->vertex_count);
     ok = ok && vkr_mesh_cooked_writer_i32(&writer, 0);
-    ok = ok && vkr_mesh_cooked_writer_u32(&writer, source->pipeline_domain);
+    ok = ok && vkr_mesh_cooked_writer_u32(&writer, upload_range->pipeline_domain);
     ok = ok && vkr_mesh_cooked_writer_u64(&writer, range->material_offset);
     ok = ok && vkr_mesh_cooked_writer_u32(
-                   &writer, (uint32_t)source->material_name.length);
+                   &writer, (uint32_t)upload_range->material_name.length);
     ok = ok && vkr_mesh_cooked_writer_u32(
-                   &writer, (uint32_t)source->shader_override.length);
+                   &writer, (uint32_t)upload_range->shader_override.length);
     ok = ok && vkr_mesh_cooked_writer_u64(&writer, range->shader_offset);
     ok = ok && vkr_mesh_cooked_writer_u64(&writer, range->vertex_stream_offset);
     ok = ok && vkr_mesh_cooked_writer_u64(&writer, range->encoded_vertex_size);

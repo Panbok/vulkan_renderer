@@ -1197,11 +1197,12 @@ VKR_MAIN(argc, argv) {
       semantic_codepoints.end());
   const auto identity = font_identity(config, source, semantic_codepoints);
   if (!output.parent_path().empty()) {
-    std::error_code error;
-    fs::create_directories(vkr_filesystem_native_path(output.parent_path()), error);
-    if (error) {
-      std::cerr << "Unable to create output directory: " << error.message()
-                << "\n";
+    std::error_code directory_error;
+    fs::create_directories(vkr_filesystem_native_path(output.parent_path()),
+                           directory_error);
+    if (directory_error) {
+      std::cerr << "Unable to create output directory: "
+                << directory_error.message() << "\n";
       return 1;
     }
   }

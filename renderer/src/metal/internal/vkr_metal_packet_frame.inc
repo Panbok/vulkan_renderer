@@ -700,7 +700,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
         vkr_metal_packet_next_root(upload, sizeof(*prefilter_root), &root_gpu);
     if (!prefilter_root)
       return false_v;
-    const uint32_t mip_size = Max(1u, VKR_IBL_PREFILTER_SIZE >> mip);
     *prefilter_root = (VkrMetalPacketPrefilterRoot){
         .source_texture_id = source->resource.resource_id,
         .target_texture_id = renderer->ibl_prefilter.resource_id,

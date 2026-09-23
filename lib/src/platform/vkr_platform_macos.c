@@ -33,8 +33,11 @@ bool8_t vkr_platform_executable_path(char *path, uint32_t capacity) {
 static bool32_t timebase_initialized = false;
 
 bool8_t vkr_platform_init() {
-  kern_return_t kr = mach_timebase_info(&timebase_info);
-  assert(kr == KERN_SUCCESS && "mach_timebase_info failed");
+  // Every clock conversion divides by the timebase denominator.
+  if (mach_timebase_info(&timebase_info) != KERN_SUCCESS ||
+      timebase_info.denom == 0) {
+    return false_v;
+  }
   timebase_initialized = true;
   return true_v;
 }

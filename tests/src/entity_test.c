@@ -304,7 +304,7 @@ static void test_compiled_query_freshness(void) {
   Position position = {0};
   assert(vkr_entity_add_component(world, first, pos_id, &position));
   assert(!vkr_entity_query_compiled_is_current(world, &compiled));
-#ifdef NDEBUG
+#if VKR_TEST_LIBRARIES_NDEBUG
   vkr_entity_query_compiled_each_chunk(&compiled, query_count_chunk, &count);
   assert(count == 0);
 #endif
@@ -320,7 +320,7 @@ static void test_compiled_query_freshness(void) {
   Velocity velocity = {0};
   assert(vkr_entity_add_component(world, second, vel_id, &velocity));
   assert(!vkr_entity_query_compiled_is_current(world, &compiled));
-#ifdef NDEBUG
+#if VKR_TEST_LIBRARIES_NDEBUG
   count = 0;
   vkr_entity_query_compiled_each_chunk(&compiled, query_count_chunk, &count);
   assert(count == 0);

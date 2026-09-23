@@ -1600,9 +1600,9 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
         vkr_quat_conjugate(state->gizmo_drag.parent_rotation),
         state->gizmo_drag.axis);
 
-    VkrQuat delta = vkr_quat_from_axis_angle(local_axis, angle);
+    VkrQuat rotation_delta = vkr_quat_from_axis_angle(local_axis, angle);
     VkrQuat new_rotation =
-        vkr_quat_mul(delta, state->gizmo_drag.start_rotation);
+        vkr_quat_mul(rotation_delta, state->gizmo_drag.start_rotation);
     new_rotation = vkr_quat_normalize(new_rotation);
 
     if (state->gizmo_drag.uses_text_pivot) {
