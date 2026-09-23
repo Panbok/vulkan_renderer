@@ -718,8 +718,8 @@ static INLINE Mat4 mat4_transpose(Mat4 m) {
  * @param m Input matrix to invert
  * @return Inverse matrix M^-1 such that M * M^-1 = I, or identity if not
  * invertible
- * @note Returns identity matrix if determinant is too small (matrix is
- * singular)
+ * @note Returns identity for singular, numerically cancelled or non-finite
+ * inverses. Small projection scale alone does not imply a singular matrix.
  * @example
  * ```c
  * // General transformation with complex scaling and shearing
@@ -753,12 +753,20 @@ static INLINE Mat4 mat4_inverse(Mat4 m) {
 
   float32_t det = m00 * c00 - m01 * c01 + m02 * c02 - m03 * c03;
 
-  // Check if matrix is invertible
-  if (vkr_abs_f32(det) < 1e-6f) {
+  // Compare cancellation against the terms that formed the determinant, not
+  // an absolute world-unit threshold. Wide orthographic projections have small
+  // determinants even though their axes are independent and well conditioned.
+  const float32_t determinant_terms = fabsf(m00 * c00) + fabsf(m01 * c01) +
+                                      fabsf(m02 * c02) + fabsf(m03 * c03);
+  if (!isfinite(det) || !isfinite(determinant_terms) ||
+      fabsf(det) <= 1e-6f * determinant_terms) {
     return mat4_identity();
   }
 
   float32_t inv_det = 1.0f / det;
+  if (!isfinite(inv_det)) {
+    return mat4_identity();
+  }
 
   // Calculate cofactor matrix using optimized method
   Mat4 result;
@@ -810,6 +818,12 @@ static INLINE Mat4 mat4_inverse(Mat4 m) {
   result.m33 =
       inv_det * (m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) +
                  m02 * (m10 * m21 - m11 * m20));
+
+  for (uint32_t i = 0u; i < ArrayCount(result.elements); ++i) {
+    if (!isfinite(result.elements[i])) {
+      return mat4_identity();
+    }
+  }
 
   return result;
 }

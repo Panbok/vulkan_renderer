@@ -489,9 +489,13 @@ static void test_mat4_edge_cases(void) {
   // Test very small scaling (near-zero)
   Mat4 tiny_scale = mat4_scale(vec3_new(1e-10f, 1e-10f, 1e-10f));
   Mat4 tiny_inv = mat4_inverse(tiny_scale);
-  // Should return identity for near-singular matrix
-  assert(mat4_is_identity(tiny_inv, 0.001f) &&
-         "Tiny scale inverse should be identity");
+  assert(mat4_is_identity(mat4_mul(tiny_scale, tiny_inv), 0.001f) &&
+         "Small independent axes remain invertible");
+  const Mat4 wide_ortho =
+      mat4_ortho_zo_yinv(-500, 500, -250, 250, 0.1f, 10000.0f);
+  assert(mat4_is_identity(mat4_mul(wide_ortho, mat4_inverse(wide_ortho)),
+                          0.001f) &&
+         "Wide orthographic projection must unproject picking rays");
 
   // Test coordinate system consistency
   Mat4 transform = mat4_mul(mat4_translate(vec3_new(1.0f, 2.0f, 3.0f)),
