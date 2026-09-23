@@ -384,8 +384,10 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
                   next.grid_spacing * (i == 1 ? 0.5f : 2.0f), 0.001f, 10000.0f);
               next.grid_enabled = true_v;
             }
-            *frame->view_request =
-                (VkrSampleViewRequest){.value = next, .apply = true_v};
+            if (frame->view_request) {
+              *frame->view_request =
+                  (VkrSampleViewRequest){.value = next, .apply = true_v};
+            }
             if (popup != VIEW_POPUP_GRID) {
               editor->view_popup = VIEW_POPUP_NONE;
             }

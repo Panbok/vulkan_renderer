@@ -1241,7 +1241,8 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
     if (vkr_ui_button(ui, string8_lit("bone.choose"),
                       next ? string8_lit("Next bone")
                            : string8_lit("Previous bone"),
-                      &c)) {
+                      &c) &&
+        asset && asset->node_count) {
       attachment->source_node =
           (attachment->source_node + (next ? 1u : asset->node_count - 1u)) %
           asset->node_count;
@@ -1590,7 +1591,8 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
     if (vkr_ui_button(ui, string8_lit("session.mute"),
                       muted ? string8_lit("Resume body (session)")
                             : string8_lit("Mute body (session)"),
-                      &c)) {
+                      &c) &&
+        f->physics_request) {
       *f->physics_request =
           (VkrSamplePhysicsRequest){.entity = f->selected_entity,
                                     .set_body_disabled = true_v,

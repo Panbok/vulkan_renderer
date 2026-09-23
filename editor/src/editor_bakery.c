@@ -35,6 +35,8 @@ static const char *const editor_bakery_kind_names[] = {
     "Mesh",       "Font",    "Texture",        "Texture folder",
     "GGX DFG",    "Charlie", "Anisotropy",     "Diffuse",
     "Reflection", "Hull",    "Collision mesh", "Project"};
+_Static_assert(ArrayCount(editor_bakery_kind_names) == EDITOR_BAKE_PROJECT + 1,
+               "Every bake kind and the project job need a display name");
 
 typedef enum EditorBakeryView {
   EDITOR_BAKERY_SETUP,
@@ -774,6 +776,8 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
         "Static glTF/GLB geometry; cooks triangle collision for static or "
         "kinematic bodies.",
     };
+    _Static_assert(ArrayCount(path_hints) == EDITOR_BAKE_KIND_COUNT,
+                   "Every bake recipe needs a source hint");
     config.tooltip = editor_bakery_string(path_hints[bakery->kind]);
     config.disabled = editor_bakery_is_static_table(bakery->kind);
     VkrUiTextEditBuffer buffer = {.data = bakery->source_paths[bakery->kind],
@@ -902,7 +906,13 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       "Captures six 256px HDR faces at Bistro's selected probe center and "
       "writes a reflection cubemap. Uses the existing 330-second-per-face "
       "recipe.",
+      "Cooks one convex hull from static glTF/GLB geometry into the .vkc "
+      "output.\nSplit detailed sources into subtrees with the CLI.",
+      "Cooks triangle collision from static glTF/GLB geometry into the .vkc "
+      "output.\nUse it for static or kinematic bodies.",
   };
+  _Static_assert(ArrayCount(help) == EDITOR_BAKE_KIND_COUNT,
+                 "Every bake recipe needs help text");
   VkrUiWidgetConfig hint = editor_bakery_widget(3u, 0u);
   hint.text.layout.word_wrap = true_v;
   hint.text.layout.max_width = Max(1.0f, width - 12.0f);
@@ -1024,12 +1034,14 @@ static void editor_bakery_jobs(VkrEditorBakery *bakery, VkrUiSystem *ui,
                                     selected->status != EDITOR_BAKE_QUEUED);
     config.tooltip = string8_lit("Cancel the selected running or queued job");
     if (vkr_ui_button(ui, string8_lit("cancel"), string8_lit("Cancel job"),
-                      &config)) {
-      if (selected->status == EDITOR_BAKE_RUNNING)
+                      &config) &&
+        selected) {
+      if (selected->status == EDITOR_BAKE_RUNNING) {
         vkr_atomic_bool_store(&bakery->cancel_requested, true_v,
                               VKR_MEMORY_ORDER_RELEASE);
-      else
+      } else {
         selected->status = EDITOR_BAKE_CANCELLED;
+      }
       bakery->next_log_read = 0.0;
     }
     config.placement.row = 2u / action_columns;
@@ -1038,7 +1050,8 @@ static void editor_bakery_jobs(VkrEditorBakery *bakery, VkrUiSystem *ui,
     config.tooltip =
         string8_lit("Requeue the selected job with its original settings");
     if (vkr_ui_button(ui, string8_lit("retry"), string8_lit("Retry job"),
-                      &config)) {
+                      &config) &&
+        selected) {
       selected->status = EDITOR_BAKE_QUEUED;
       selected->exit_code = -1;
       selected->timed_out = false_v;

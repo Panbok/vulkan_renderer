@@ -634,7 +634,7 @@ static bool8_t animation_index(VkrEditorAnimation *animation, VkrUiSystem *ui,
                                uint32_t row) {
   char text[96];
   snprintf(text, sizeof(text), "%s: %u >", label, *value);
-  if (!animation_button(ui, id, text, column, row, count < 2)) {
+  if (!animation_button(ui, id, text, column, row, count < 2) || count < 2) {
     return false_v;
   }
   animation_remember(animation);
