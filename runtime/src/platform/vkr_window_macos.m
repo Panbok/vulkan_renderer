@@ -150,6 +150,15 @@ static void vkr_window_refresh_display_output(PlatformState *state) {
       isfinite(potential_headroom) && potential_headroom > 1.0f);
 }
 
+static void vkr_window_dispatch_resize(PlatformState *state, uint32_t width,
+                                       uint32_t height) {
+  VkrWindowResizeEventData resize_data = {.width = width, .height = height};
+  Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
+                 .data = &resize_data,
+                 .data_size = sizeof(VkrWindowResizeEventData)};
+  event_manager_dispatch(state->event_manager, event);
+}
+
 // Key translation
 static Keys translate_keycode(uint32_t ns_keycode);
 
@@ -261,13 +270,8 @@ static void center_cursor_in_window(PlatformState *state);
   // Update Metal layer drawable size for Retina displays
   [state->layer setDrawableSize:framebufferRect.size];
 
-  VkrWindowResizeEventData resize_data = {
-      .width = (uint32_t)framebufferRect.size.width,
-      .height = (uint32_t)framebufferRect.size.height};
-  Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
-                 .data = &resize_data,
-                 .data_size = sizeof(VkrWindowResizeEventData)};
-  event_manager_dispatch(state->event_manager, event);
+  vkr_window_dispatch_resize(state, (uint32_t)framebufferRect.size.width,
+                             (uint32_t)framebufferRect.size.height);
 
   // Re-center cursor if in capture mode after window resize
   if (state->mouse_captured) {
@@ -286,13 +290,8 @@ static void center_cursor_in_window(PlatformState *state);
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
   [state->layer setDrawableSize:framebufferRect.size];
 
-  VkrWindowResizeEventData resize_data = {
-      .width = (uint32_t)framebufferRect.size.width,
-      .height = (uint32_t)framebufferRect.size.height};
-  Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
-                 .data = &resize_data,
-                 .data_size = sizeof(VkrWindowResizeEventData)};
-  event_manager_dispatch(state->event_manager, event);
+  vkr_window_dispatch_resize(state, (uint32_t)framebufferRect.size.width,
+                             (uint32_t)framebufferRect.size.height);
 }
 
 - (void)windowDidChangeScreen:(NSNotification *)notification {
@@ -306,11 +305,7 @@ static void center_cursor_in_window(PlatformState *state);
 }
 
 - (void)windowDidMiniaturize:(NSNotification *)notification {
-  VkrWindowResizeEventData resize_data = {.width = 0, .height = 0};
-  Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
-                 .data = &resize_data,
-                 .data_size = sizeof(VkrWindowResizeEventData)};
-  event_manager_dispatch(state->event_manager, event);
+  vkr_window_dispatch_resize(state, 0u, 0u);
 
   // [state->window miniaturize:nil]; // Redundant, system already miniaturized
 }
@@ -324,13 +319,8 @@ static void center_cursor_in_window(PlatformState *state);
 
   [state->layer setDrawableSize:framebufferRect.size];
 
-  VkrWindowResizeEventData resize_data = {
-      .width = (uint32_t)framebufferRect.size.width,
-      .height = (uint32_t)framebufferRect.size.height};
-  Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
-                 .data = &resize_data,
-                 .data_size = sizeof(VkrWindowResizeEventData)};
-  event_manager_dispatch(state->event_manager, event);
+  vkr_window_dispatch_resize(state, (uint32_t)framebufferRect.size.width,
+                             (uint32_t)framebufferRect.size.height);
 
   // [state->window deminiaturize:nil]; // Redundant, system already
   // deminiaturized
@@ -1207,237 +1197,125 @@ void center_cursor_in_window(PlatformState *state) {
       CGPointMake(globalPoint.x, screenHeight - globalPoint.y - 1));
 }
 
-Keys translate_keycode(uint32_t ns_keycode) {
-  switch (ns_keycode) {
-  case 0x1D:
-    return KEY_NUMPAD0;
-  case 0x12:
-    return KEY_NUMPAD1;
-  case 0x13:
-    return KEY_NUMPAD2;
-  case 0x14:
-    return KEY_NUMPAD3;
-  case 0x15:
-    return KEY_NUMPAD4;
-  case 0x17:
-    return KEY_NUMPAD5;
-  case 0x16:
-    return KEY_NUMPAD6;
-  case 0x1A:
-    return KEY_NUMPAD7;
-  case 0x1C:
-    return KEY_NUMPAD8;
-  case 0x19:
-    return KEY_NUMPAD9;
+/*
+ * macOS virtual keycodes (kVK_*) to VKR keys. Top-row digits share the numpad
+ * keys, as on Windows. Unlisted codes, including apostrophe, backslash, equal,
+ * the brackets, section, menu and the page keys, map to KEY_MAX_KEYS; `Keys`
+ * has no zero value, so zero marks an unlisted code.
+ */
+static const Keys s_macos_keys[128] = {
+    [0x1D] = KEY_NUMPAD0,
+    [0x12] = KEY_NUMPAD1,
+    [0x13] = KEY_NUMPAD2,
+    [0x14] = KEY_NUMPAD3,
+    [0x15] = KEY_NUMPAD4,
+    [0x17] = KEY_NUMPAD5,
+    [0x16] = KEY_NUMPAD6,
+    [0x1A] = KEY_NUMPAD7,
+    [0x1C] = KEY_NUMPAD8,
+    [0x19] = KEY_NUMPAD9,
 
-  case 0x00:
-    return KEY_A;
-  case 0x0B:
-    return KEY_B;
-  case 0x08:
-    return KEY_C;
-  case 0x02:
-    return KEY_D;
-  case 0x0E:
-    return KEY_E;
-  case 0x03:
-    return KEY_F;
-  case 0x05:
-    return KEY_G;
-  case 0x04:
-    return KEY_H;
-  case 0x22:
-    return KEY_I;
-  case 0x26:
-    return KEY_J;
-  case 0x28:
-    return KEY_K;
-  case 0x25:
-    return KEY_L;
-  case 0x2E:
-    return KEY_M;
-  case 0x2D:
-    return KEY_N;
-  case 0x1F:
-    return KEY_O;
-  case 0x23:
-    return KEY_P;
-  case 0x0C:
-    return KEY_Q;
-  case 0x0F:
-    return KEY_R;
-  case 0x01:
-    return KEY_S;
-  case 0x11:
-    return KEY_T;
-  case 0x20:
-    return KEY_U;
-  case 0x09:
-    return KEY_V;
-  case 0x0D:
-    return KEY_W;
-  case 0x07:
-    return KEY_X;
-  case 0x10:
-    return KEY_Y;
-  case 0x06:
-    return KEY_Z;
+    [0x00] = KEY_A,
+    [0x0B] = KEY_B,
+    [0x08] = KEY_C,
+    [0x02] = KEY_D,
+    [0x0E] = KEY_E,
+    [0x03] = KEY_F,
+    [0x05] = KEY_G,
+    [0x04] = KEY_H,
+    [0x22] = KEY_I,
+    [0x26] = KEY_J,
+    [0x28] = KEY_K,
+    [0x25] = KEY_L,
+    [0x2E] = KEY_M,
+    [0x2D] = KEY_N,
+    [0x1F] = KEY_O,
+    [0x23] = KEY_P,
+    [0x0C] = KEY_Q,
+    [0x0F] = KEY_R,
+    [0x01] = KEY_S,
+    [0x11] = KEY_T,
+    [0x20] = KEY_U,
+    [0x09] = KEY_V,
+    [0x0D] = KEY_W,
+    [0x07] = KEY_X,
+    [0x10] = KEY_Y,
+    [0x06] = KEY_Z,
 
-  case 0x27:
-    return KEY_MAX_KEYS; // Apostrophe
-  case 0x2A:
-    return KEY_MAX_KEYS; // Backslash
-  case 0x2B:
-    return KEY_COMMA;
-  case 0x18:
-    return KEY_MAX_KEYS; // Equal
-  case 0x32:
-    return KEY_GRAVE;
-  case 0x21:
-    return KEY_MAX_KEYS; // Left bracket
-  case 0x1B:
-    return KEY_MINUS;
-  case 0x2F:
-    return KEY_PERIOD;
-  case 0x1E:
-    return KEY_MAX_KEYS; // Right bracket
-  case 0x29:
-    return KEY_SEMICOLON;
-  case 0x2C:
-    return KEY_SLASH;
-  case 0x0A:
-    return KEY_MAX_KEYS;
+    [0x2B] = KEY_COMMA,
+    [0x32] = KEY_GRAVE,
+    [0x1B] = KEY_MINUS,
+    [0x2F] = KEY_PERIOD,
+    [0x29] = KEY_SEMICOLON,
+    [0x2C] = KEY_SLASH,
 
-  case 0x33:
-    return KEY_BACKSPACE;
-  case 0x39:
-    return KEY_CAPITAL;
-  case 0x75:
-    return KEY_DELETE;
-  case 0x7D:
-    return KEY_DOWN;
-  case 0x77:
-    return KEY_END;
-  case 0x24:
-    return KEY_ENTER;
-  case 0x35:
-    return KEY_ESCAPE;
-  case 0x7A:
-    return KEY_F1;
-  case 0x78:
-    return KEY_F2;
-  case 0x63:
-    return KEY_F3;
-  case 0x76:
-    return KEY_F4;
-  case 0x60:
-    return KEY_F5;
-  case 0x61:
-    return KEY_F6;
-  case 0x62:
-    return KEY_F7;
-  case 0x64:
-    return KEY_F8;
-  case 0x65:
-    return KEY_F9;
-  case 0x6D:
-    return KEY_F10;
-  case 0x67:
-    return KEY_F11;
-  case 0x6F:
-    return KEY_F12;
-  case 0x69:
-    return KEY_PRINT;
-  case 0x6B:
-    return KEY_F14;
-  case 0x71:
-    return KEY_F15;
-  case 0x6A:
-    return KEY_F16;
-  case 0x40:
-    return KEY_F17;
-  case 0x4F:
-    return KEY_F18;
-  case 0x50:
-    return KEY_F19;
-  case 0x5A:
-    return KEY_F20;
-  case 0x73:
-    return KEY_HOME;
-  case 0x72:
-    return KEY_INSERT;
-  case 0x7B:
-    return KEY_LEFT;
-  case 0x3A:
-    return KEY_LMENU;
-  case 0x3B:
-    return KEY_LCONTROL;
-  case 0x38:
-    return KEY_LSHIFT;
-  case 0x37:
-    return KEY_LWIN;
-  case 0x6E:
-    return KEY_MAX_KEYS; // Menu
-  case 0x47:
-    return KEY_NUMLOCK;
-  case 0x79:
-    return KEY_MAX_KEYS; // Page down
-  case 0x74:
-    return KEY_MAX_KEYS; // Page up
-  case 0x7C:
-    return KEY_RIGHT;
-  case 0x3D:
-    return KEY_RMENU;
-  case 0x3E:
-    return KEY_RCONTROL;
-  case 0x3C:
-    return KEY_RSHIFT;
-  case 0x36:
-    return KEY_RWIN;
-  case 0x31:
-    return KEY_SPACE;
-  case 0x30:
-    return KEY_TAB;
-  case 0x7E:
-    return KEY_UP;
+    [0x33] = KEY_BACKSPACE,
+    [0x39] = KEY_CAPITAL,
+    [0x75] = KEY_DELETE,
+    [0x7D] = KEY_DOWN,
+    [0x77] = KEY_END,
+    [0x24] = KEY_ENTER,
+    [0x35] = KEY_ESCAPE,
+    [0x7A] = KEY_F1,
+    [0x78] = KEY_F2,
+    [0x63] = KEY_F3,
+    [0x76] = KEY_F4,
+    [0x60] = KEY_F5,
+    [0x61] = KEY_F6,
+    [0x62] = KEY_F7,
+    [0x64] = KEY_F8,
+    [0x65] = KEY_F9,
+    [0x6D] = KEY_F10,
+    [0x67] = KEY_F11,
+    [0x6F] = KEY_F12,
+    [0x69] = KEY_PRINT,
+    [0x6B] = KEY_F14,
+    [0x71] = KEY_F15,
+    [0x6A] = KEY_F16,
+    [0x40] = KEY_F17,
+    [0x4F] = KEY_F18,
+    [0x50] = KEY_F19,
+    [0x5A] = KEY_F20,
+    [0x73] = KEY_HOME,
+    [0x72] = KEY_INSERT,
+    [0x7B] = KEY_LEFT,
+    [0x3A] = KEY_LMENU,
+    [0x3B] = KEY_LCONTROL,
+    [0x38] = KEY_LSHIFT,
+    [0x37] = KEY_LWIN,
+    [0x47] = KEY_NUMLOCK,
+    [0x7C] = KEY_RIGHT,
+    [0x3D] = KEY_RMENU,
+    [0x3E] = KEY_RCONTROL,
+    [0x3C] = KEY_RSHIFT,
+    [0x36] = KEY_RWIN,
+    [0x31] = KEY_SPACE,
+    [0x30] = KEY_TAB,
+    [0x7E] = KEY_UP,
 
-  case 0x52:
-    return KEY_NUMPAD0;
-  case 0x53:
-    return KEY_NUMPAD1;
-  case 0x54:
-    return KEY_NUMPAD2;
-  case 0x55:
-    return KEY_NUMPAD3;
-  case 0x56:
-    return KEY_NUMPAD4;
-  case 0x57:
-    return KEY_NUMPAD5;
-  case 0x58:
-    return KEY_NUMPAD6;
-  case 0x59:
-    return KEY_NUMPAD7;
-  case 0x5B:
-    return KEY_NUMPAD8;
-  case 0x5C:
-    return KEY_NUMPAD9;
-  case 0x45:
-    return KEY_ADD;
-  case 0x41:
-    return KEY_DECIMAL;
-  case 0x4B:
-    return KEY_DIVIDE;
-  case 0x4C:
-    return KEY_ENTER;
-  case 0x51:
-    return KEY_NUMPAD_EQUAL;
-  case 0x43:
-    return KEY_MULTIPLY;
-  case 0x4E:
-    return KEY_SUBTRACT;
+    [0x52] = KEY_NUMPAD0,
+    [0x53] = KEY_NUMPAD1,
+    [0x54] = KEY_NUMPAD2,
+    [0x55] = KEY_NUMPAD3,
+    [0x56] = KEY_NUMPAD4,
+    [0x57] = KEY_NUMPAD5,
+    [0x58] = KEY_NUMPAD6,
+    [0x59] = KEY_NUMPAD7,
+    [0x5B] = KEY_NUMPAD8,
+    [0x5C] = KEY_NUMPAD9,
+    [0x45] = KEY_ADD,
+    [0x41] = KEY_DECIMAL,
+    [0x4B] = KEY_DIVIDE,
+    [0x4C] = KEY_ENTER,
+    [0x51] = KEY_NUMPAD_EQUAL,
+    [0x43] = KEY_MULTIPLY,
+    [0x4E] = KEY_SUBTRACT,
+};
 
-  default:
+static Keys translate_keycode(uint32_t ns_keycode) {
+  if (ns_keycode >= ArrayCount(s_macos_keys) || s_macos_keys[ns_keycode] == 0) {
     return KEY_MAX_KEYS;
   }
+  return s_macos_keys[ns_keycode];
 }
 #endif

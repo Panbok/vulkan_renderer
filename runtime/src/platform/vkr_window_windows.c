@@ -979,219 +979,125 @@ static void center_cursor_in_window(PlatformState *state) {
   state->last_cursor_pos_y = client_center_y;
 }
 
+/*
+ * Win32 virtual-key codes to VKR keys. Top-row digits share the numpad keys,
+ * as on macOS. Unlisted codes map to KEY_MAX_KEYS; `Keys` has no zero value,
+ * so zero marks an unlisted code.
+ */
+static const Keys s_win32_keys[256] = {
+    [VK_NUMPAD0] = KEY_NUMPAD0,
+    [VK_NUMPAD1] = KEY_NUMPAD1,
+    [VK_NUMPAD2] = KEY_NUMPAD2,
+    [VK_NUMPAD3] = KEY_NUMPAD3,
+    [VK_NUMPAD4] = KEY_NUMPAD4,
+    [VK_NUMPAD5] = KEY_NUMPAD5,
+    [VK_NUMPAD6] = KEY_NUMPAD6,
+    [VK_NUMPAD7] = KEY_NUMPAD7,
+    [VK_NUMPAD8] = KEY_NUMPAD8,
+    [VK_NUMPAD9] = KEY_NUMPAD9,
+
+    ['A'] = KEY_A,
+    ['B'] = KEY_B,
+    ['C'] = KEY_C,
+    ['D'] = KEY_D,
+    ['E'] = KEY_E,
+    ['F'] = KEY_F,
+    ['G'] = KEY_G,
+    ['H'] = KEY_H,
+    ['I'] = KEY_I,
+    ['J'] = KEY_J,
+    ['K'] = KEY_K,
+    ['L'] = KEY_L,
+    ['M'] = KEY_M,
+    ['N'] = KEY_N,
+    ['O'] = KEY_O,
+    ['P'] = KEY_P,
+    ['Q'] = KEY_Q,
+    ['R'] = KEY_R,
+    ['S'] = KEY_S,
+    ['T'] = KEY_T,
+    ['U'] = KEY_U,
+    ['V'] = KEY_V,
+    ['W'] = KEY_W,
+    ['X'] = KEY_X,
+    ['Y'] = KEY_Y,
+    ['Z'] = KEY_Z,
+
+    ['0'] = KEY_NUMPAD0,
+    ['1'] = KEY_NUMPAD1,
+    ['2'] = KEY_NUMPAD2,
+    ['3'] = KEY_NUMPAD3,
+    ['4'] = KEY_NUMPAD4,
+    ['5'] = KEY_NUMPAD5,
+    ['6'] = KEY_NUMPAD6,
+    ['7'] = KEY_NUMPAD7,
+    ['8'] = KEY_NUMPAD8,
+    ['9'] = KEY_NUMPAD9,
+
+    [VK_OEM_COMMA] = KEY_COMMA,
+    [VK_OEM_MINUS] = KEY_MINUS,
+    [VK_OEM_PERIOD] = KEY_PERIOD,
+    [VK_OEM_1] = KEY_SEMICOLON,
+    [VK_OEM_2] = KEY_SLASH,
+    [VK_OEM_3] = KEY_GRAVE,
+
+    [VK_BACK] = KEY_BACKSPACE,
+    [VK_CAPITAL] = KEY_CAPITAL,
+    [VK_DELETE] = KEY_DELETE,
+    [VK_DOWN] = KEY_DOWN,
+    [VK_END] = KEY_END,
+    [VK_RETURN] = KEY_ENTER,
+    [VK_ESCAPE] = KEY_ESCAPE,
+    [VK_F1] = KEY_F1,
+    [VK_F2] = KEY_F2,
+    [VK_F3] = KEY_F3,
+    [VK_F4] = KEY_F4,
+    [VK_F5] = KEY_F5,
+    [VK_F6] = KEY_F6,
+    [VK_F7] = KEY_F7,
+    [VK_F8] = KEY_F8,
+    [VK_F9] = KEY_F9,
+    [VK_F10] = KEY_F10,
+    [VK_F11] = KEY_F11,
+    [VK_F12] = KEY_F12,
+    [VK_F13] = KEY_F13,
+    [VK_F14] = KEY_F14,
+    [VK_F15] = KEY_F15,
+    [VK_F16] = KEY_F16,
+    [VK_F17] = KEY_F17,
+    [VK_F18] = KEY_F18,
+    [VK_F19] = KEY_F19,
+    [VK_F20] = KEY_F20,
+    [VK_HOME] = KEY_HOME,
+    [VK_INSERT] = KEY_INSERT,
+    [VK_LEFT] = KEY_LEFT,
+    [VK_LMENU] = KEY_LMENU,
+    [VK_LCONTROL] = KEY_LCONTROL,
+    [VK_LSHIFT] = KEY_LSHIFT,
+    [VK_LWIN] = KEY_LWIN,
+    [VK_NUMLOCK] = KEY_NUMLOCK,
+    [VK_PRINT] = KEY_PRINT,
+    [VK_RIGHT] = KEY_RIGHT,
+    [VK_RMENU] = KEY_RMENU,
+    [VK_RCONTROL] = KEY_RCONTROL,
+    [VK_RSHIFT] = KEY_RSHIFT,
+    [VK_RWIN] = KEY_RWIN,
+    [VK_SPACE] = KEY_SPACE,
+    [VK_TAB] = KEY_TAB,
+    [VK_UP] = KEY_UP,
+
+    [VK_ADD] = KEY_ADD,
+    [VK_DECIMAL] = KEY_DECIMAL,
+    [VK_DIVIDE] = KEY_DIVIDE,
+    [VK_MULTIPLY] = KEY_MULTIPLY,
+    [VK_SUBTRACT] = KEY_SUBTRACT,
+};
+
 static Keys translate_keycode(uint32_t vk_keycode) {
-  switch (vk_keycode) {
-  case VK_NUMPAD0:
-    return KEY_NUMPAD0;
-  case VK_NUMPAD1:
-    return KEY_NUMPAD1;
-  case VK_NUMPAD2:
-    return KEY_NUMPAD2;
-  case VK_NUMPAD3:
-    return KEY_NUMPAD3;
-  case VK_NUMPAD4:
-    return KEY_NUMPAD4;
-  case VK_NUMPAD5:
-    return KEY_NUMPAD5;
-  case VK_NUMPAD6:
-    return KEY_NUMPAD6;
-  case VK_NUMPAD7:
-    return KEY_NUMPAD7;
-  case VK_NUMPAD8:
-    return KEY_NUMPAD8;
-  case VK_NUMPAD9:
-    return KEY_NUMPAD9;
-
-  case 'A':
-    return KEY_A;
-  case 'B':
-    return KEY_B;
-  case 'C':
-    return KEY_C;
-  case 'D':
-    return KEY_D;
-  case 'E':
-    return KEY_E;
-  case 'F':
-    return KEY_F;
-  case 'G':
-    return KEY_G;
-  case 'H':
-    return KEY_H;
-  case 'I':
-    return KEY_I;
-  case 'J':
-    return KEY_J;
-  case 'K':
-    return KEY_K;
-  case 'L':
-    return KEY_L;
-  case 'M':
-    return KEY_M;
-  case 'N':
-    return KEY_N;
-  case 'O':
-    return KEY_O;
-  case 'P':
-    return KEY_P;
-  case 'Q':
-    return KEY_Q;
-  case 'R':
-    return KEY_R;
-  case 'S':
-    return KEY_S;
-  case 'T':
-    return KEY_T;
-  case 'U':
-    return KEY_U;
-  case 'V':
-    return KEY_V;
-  case 'W':
-    return KEY_W;
-  case 'X':
-    return KEY_X;
-  case 'Y':
-    return KEY_Y;
-  case 'Z':
-    return KEY_Z;
-
-  case '0':
-    return KEY_NUMPAD0;
-  case '1':
-    return KEY_NUMPAD1;
-  case '2':
-    return KEY_NUMPAD2;
-  case '3':
-    return KEY_NUMPAD3;
-  case '4':
-    return KEY_NUMPAD4;
-  case '5':
-    return KEY_NUMPAD5;
-  case '6':
-    return KEY_NUMPAD6;
-  case '7':
-    return KEY_NUMPAD7;
-  case '8':
-    return KEY_NUMPAD8;
-  case '9':
-    return KEY_NUMPAD9;
-
-  case VK_OEM_COMMA:
-    return KEY_COMMA;
-  case VK_OEM_MINUS:
-    return KEY_MINUS;
-  case VK_OEM_PERIOD:
-    return KEY_PERIOD;
-  case VK_OEM_1:
-    return KEY_SEMICOLON;
-  case VK_OEM_2:
-    return KEY_SLASH;
-  case VK_OEM_3:
-    return KEY_GRAVE;
-
-  case VK_BACK:
-    return KEY_BACKSPACE;
-  case VK_CAPITAL:
-    return KEY_CAPITAL;
-  case VK_DELETE:
-    return KEY_DELETE;
-  case VK_DOWN:
-    return KEY_DOWN;
-  case VK_END:
-    return KEY_END;
-  case VK_RETURN:
-    return KEY_ENTER;
-  case VK_ESCAPE:
-    return KEY_ESCAPE;
-  case VK_F1:
-    return KEY_F1;
-  case VK_F2:
-    return KEY_F2;
-  case VK_F3:
-    return KEY_F3;
-  case VK_F4:
-    return KEY_F4;
-  case VK_F5:
-    return KEY_F5;
-  case VK_F6:
-    return KEY_F6;
-  case VK_F7:
-    return KEY_F7;
-  case VK_F8:
-    return KEY_F8;
-  case VK_F9:
-    return KEY_F9;
-  case VK_F10:
-    return KEY_F10;
-  case VK_F11:
-    return KEY_F11;
-  case VK_F12:
-    return KEY_F12;
-  case VK_F13:
-    return KEY_F13;
-  case VK_F14:
-    return KEY_F14;
-  case VK_F15:
-    return KEY_F15;
-  case VK_F16:
-    return KEY_F16;
-  case VK_F17:
-    return KEY_F17;
-  case VK_F18:
-    return KEY_F18;
-  case VK_F19:
-    return KEY_F19;
-  case VK_F20:
-    return KEY_F20;
-  case VK_HOME:
-    return KEY_HOME;
-  case VK_INSERT:
-    return KEY_INSERT;
-  case VK_LEFT:
-    return KEY_LEFT;
-  case VK_LMENU:
-    return KEY_LMENU;
-  case VK_LCONTROL:
-    return KEY_LCONTROL;
-  case VK_LSHIFT:
-    return KEY_LSHIFT;
-  case VK_LWIN:
-    return KEY_LWIN;
-  case VK_NUMLOCK:
-    return KEY_NUMLOCK;
-  case VK_PRINT:
-    return KEY_PRINT;
-  case VK_RIGHT:
-    return KEY_RIGHT;
-  case VK_RMENU:
-    return KEY_RMENU;
-  case VK_RCONTROL:
-    return KEY_RCONTROL;
-  case VK_RSHIFT:
-    return KEY_RSHIFT;
-  case VK_RWIN:
-    return KEY_RWIN;
-  case VK_SPACE:
-    return KEY_SPACE;
-  case VK_TAB:
-    return KEY_TAB;
-  case VK_UP:
-    return KEY_UP;
-
-  case VK_ADD:
-    return KEY_ADD;
-  case VK_DECIMAL:
-    return KEY_DECIMAL;
-  case VK_DIVIDE:
-    return KEY_DIVIDE;
-  case VK_MULTIPLY:
-    return KEY_MULTIPLY;
-  case VK_SUBTRACT:
-    return KEY_SUBTRACT;
-
-  default:
+  if (vk_keycode >= ArrayCount(s_win32_keys) || s_win32_keys[vk_keycode] == 0) {
     return KEY_MAX_KEYS;
   }
+  return s_win32_keys[vk_keycode];
 }
 
 #endif

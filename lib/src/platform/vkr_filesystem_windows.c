@@ -1,4 +1,5 @@
 #include "filesystem/filesystem.h"
+#include "platform/vkr_filesystem_internal.h"
 
 #if defined(PLATFORM_WINDOWS)
 
@@ -367,29 +368,6 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
   return FILE_ERROR_NONE;
 }
 
-FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
-                    uint64_t *bytes_read, uint8_t **out_buffer) {
-  *out_buffer = NULL;
-  *bytes_read = 0;
-  uint8_t *buffer =
-      size ? vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE)
-           : NULL;
-  if (!buffer && size > 0u) {
-    return FILE_ERROR_OUT_OF_MEMORY;
-  }
-  FileError error = file_read_into(handle, buffer, size, bytes_read);
-  if (error != FILE_ERROR_NONE) {
-    if (buffer) {
-      vkr_allocator_free(allocator, buffer, size,
-                         VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    }
-    *bytes_read = 0;
-    return error;
-  }
-  *out_buffer = buffer;
-  return FILE_ERROR_NONE;
-}
-
 FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
                          uint64_t *bytes_read) {
   if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_read) {
@@ -415,7 +393,7 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
   return FILE_ERROR_NONE;
 }
 
-static FileError fs_remaining_size(FileHandle *handle, uint64_t *out_size) {
+FileError file_remaining_size(FileHandle *handle, uint64_t *out_size) {
   if (!handle || !handle->handle) {
     return FILE_ERROR_INVALID_HANDLE;
   }
@@ -429,54 +407,6 @@ static FileError fs_remaining_size(FileHandle *handle, uint64_t *out_size) {
     return FILE_ERROR_IO_ERROR;
   }
   *out_size = (uint64_t)(size.QuadPart - position.QuadPart);
-  return FILE_ERROR_NONE;
-}
-
-FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
-                        uint8_t **out_buffer, uint64_t *bytes_read) {
-  *out_buffer = NULL;
-  *bytes_read = 0;
-  uint64_t size = 0;
-  FileError error = fs_remaining_size(handle, &size);
-  if (error != FILE_ERROR_NONE) {
-    return error;
-  }
-  error = file_read(handle, allocator, size, bytes_read, out_buffer);
-  if (error == FILE_ERROR_NONE && *bytes_read != size) {
-    vkr_allocator_free(allocator, *out_buffer, size,
-                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    *out_buffer = NULL;
-    *bytes_read = 0;
-    return FILE_ERROR_IO_ERROR;
-  }
-  return error;
-}
-
-FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
-                           String8 *out_data) {
-  *out_data = (String8){0};
-  uint64_t size = 0;
-  FileError error = fs_remaining_size(handle, &size);
-  if (error != FILE_ERROR_NONE) {
-    return error;
-  }
-  if (size == UINT64_MAX) {
-    return FILE_ERROR_IO_ERROR;
-  }
-  uint8_t *buffer =
-      vkr_allocator_alloc(allocator, size + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!buffer) {
-    return FILE_ERROR_OUT_OF_MEMORY;
-  }
-  uint64_t bytes_read = 0;
-  error = file_read_into(handle, buffer, size, &bytes_read);
-  if (error != FILE_ERROR_NONE || bytes_read != size) {
-    vkr_allocator_free(allocator, buffer, size + 1,
-                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    return error != FILE_ERROR_NONE ? error : FILE_ERROR_IO_ERROR;
-  }
-  buffer[bytes_read] = '\0';
-  *out_data = (String8){.str = buffer, .length = bytes_read};
   return FILE_ERROR_NONE;
 }
 
@@ -594,15 +524,6 @@ cleanup:
   vkr_allocator_free(target_alloc, result_buf, max_line_length + 1,
                      VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return error;
-}
-
-FileError file_write_line(FileHandle *handle, const String8 *text) {
-  uint64_t written = 0;
-  FileError error = file_write(handle, text->length, text->str, &written);
-  if (error != FILE_ERROR_NONE) {
-    return error;
-  }
-  return file_write(handle, 1, (const uint8_t *)"\n", &written);
 }
 
 #endif
