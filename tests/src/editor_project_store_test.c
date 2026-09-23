@@ -120,6 +120,23 @@ static void project_test_overlay(VkrAllocator *allocator,
   assert(!vkr_editor_project_save_scene_overlay(manifest, &fingerprint, &edits,
                                                 &scene, allocator, &error));
   assert(edits.saved_revision == saved && edits.revision != saved);
+  // A current manifest without version 3 and an identity is refused before
+  // anything is staged, even when its fingerprint matches.
+  project_test_write(manifest, "{\"id\":\"00000000-0000-4000-8000-"
+                               "000000000003\",\"entities\":[]}");
+  String8 versionless;
+  uint64_t versionless_fingerprint = 0;
+  assert(vkr_editor_project_json_read_file(manifest, allocator, &versionless,
+                                           &versionless_fingerprint, &error));
+  assert(!vkr_editor_project_save_scene_overlay(
+      manifest, &versionless_fingerprint, &edits, &scene, allocator, &error));
+  assert(strstr(error.message, "scene version 3"));
+  assert(edits.saved_revision == saved);
+  String8 unchanged;
+  uint64_t unchanged_fingerprint = 0;
+  assert(vkr_editor_project_json_read_file(manifest, allocator, &unchanged,
+                                           &unchanged_fingerprint, &error));
+  assert(unchanged_fingerprint == versionless_fingerprint);
   FilePath previous_overlay = project_test_path(overlay);
   assert(file_exists(&previous_overlay));
   assert(file_remove(&previous_overlay) == FILE_ERROR_NONE);
@@ -454,6 +471,11 @@ bool32_t run_editor_project_store_tests(void) {
   assert(vkr_editor_project_load(&workspace, s_loaded.id, &allocator,
                                  &s_project, &error));
   assert(s_project.scene_count == 2);
+  // A failed lookup clears its output, including for malformed documents.
+  String8 malformed_member = string8_lit("stale");
+  assert(!vkr_editor_project_json_member(string8_lit("not json"), "version",
+                                         &malformed_member, &error));
+  assert(!malformed_member.str && !malformed_member.length);
   String8 deleted_recall;
   assert(!vkr_editor_project_json_member(s_project.scene_editor_state,
                                          "00000000-0000-4000-8000-000000000011",

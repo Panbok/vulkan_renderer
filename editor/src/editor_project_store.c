@@ -1035,6 +1035,9 @@ cleanup:
 bool8_t vkr_editor_project_json_member(String8 object, const char *name,
                                        String8 *value,
                                        VkrEditorProjectError *error) {
+  if (value) {
+    *value = (String8){0};
+  }
   s_ProjectJson json = {0};
   if (!value || !name || !project_json_parse(&json, object) ||
       json.tokens[0].kind != '{') {
@@ -1043,7 +1046,6 @@ bool8_t vkr_editor_project_json_member(String8 object, const char *name,
   }
   uint32_t field = project_json_field(&json, 0, name);
   if (field == UINT32_MAX) {
-    *value = (String8){0};
     return project_json_finish(
         &json, project_error(error, "JSON member is missing: %s", name));
   }
@@ -1719,7 +1721,7 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
   *separator = '\0';
   String8 document = {0};
   String8 updated = {0};
-  uint64_t original_hash;
+  uint64_t original_hash = 0;
   bool8_t success = false_v;
   bool8_t overlay_published = false_v;
   bool8_t staged_created = false_v;
@@ -1738,8 +1740,8 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
         error, "Scene changed outside this editor; reload before saving edits");
     goto cleanup;
   }
-  char scene_id[37];
-  String8 version;
+  char scene_id[37] = {0};
+  String8 version = {0};
   if (!vkr_editor_project_json_member(document, "version", &version, error) ||
       version.length != 1 || version.str[0] != '3' ||
       !vkr_editor_project_json_string(document, "id", scene_id,
