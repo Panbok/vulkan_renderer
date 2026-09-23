@@ -802,6 +802,7 @@ typedef struct VkrFramePreparation {
 vkr_internal void
 vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
                                 VkrFramePreparation *prepared) {
+  const bool8_t orthographic = packet->globals.projection.m32 == 0.0f;
   prepared->frame.input = *packet;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
@@ -815,7 +816,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.scene_output_width = rf->scene_output_width;
   prepared->frame.scene_output_height = rf->scene_output_height;
   prepared->frame.render_scale = rf->render_scale;
-  prepared->frame.fsr31_enabled = rf->upscale_mode == VKR_UPSCALE_MODE_FSR31;
+  prepared->frame.fsr31_enabled =
+      rf->upscale_mode == VKR_UPSCALE_MODE_FSR31 && !orthographic &&
+      packet->globals.render_mode != VKR_RENDER_MODE_WIREFRAME;
   if (packet->editor) {
     const Vec4 rect = packet->editor->image_rect_px;
     const bool8_t rendering = prepared->frame.scene_rendering;
@@ -875,22 +878,27 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   /* The indirect-diffuse capture channel must contain the environment diffuse
      term and nothing else, so its two frame-coupled post stages are resolved
      off here at the cold boundary rather than branched on per pixel. */
+  const bool8_t editor_inspection =
+      packet->globals.render_mode >= VKR_RENDER_MODE_DETAIL_LIGHTING &&
+      packet->globals.render_mode <= VKR_RENDER_MODE_WIREFRAME;
+  const bool8_t wireframe =
+      packet->globals.render_mode == VKR_RENDER_MODE_WIREFRAME;
   const bool8_t indirect_diffuse_only =
       packet->globals.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE;
   rf->ibl_probes_packed =
       packet->lighting ? packet->lighting->ibl_probe_count : 0u;
   prepared->frame.ssgi_enabled =
-      packet->globals.ssgi_enabled && !rf->ssgi_forced_disabled &&
+      packet->globals.ssgi_enabled && !rf->ssgi_forced_disabled && !orthographic &&
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.fog = vkr_fog_prepare(&packet->globals.fog);
-  prepared->frame.froxel_fog = prepared->frame.scene_rendering
+  prepared->frame.froxel_fog = prepared->frame.scene_rendering && !orthographic
       ? vkr_froxel_fog_prepare(&prepared->frame.input, temporal_width, temporal_height)
       : (VkrFroxelFogGpuParams){0};
   prepared->frame.froxel_fog_signature = vkr_froxel_fog_content_signature(
       &prepared->frame.input, &prepared->frame.froxel_fog);
   if (prepared->frame.froxel_fog.grid_dimensions_cell_pixels[0])
     prepared->frame.fog = (VkrFogGpuParams){0};
-  if (packet->globals.render_mode != VKR_RENDER_MODE_DEFAULT)
+  if (packet->globals.render_mode != VKR_RENDER_MODE_DEFAULT || orthographic)
     prepared->frame.fog = (VkrFogGpuParams){0};
   const bool8_t fog_changed = MemCompare(&rf->submitted_fog,
       &prepared->frame.fog, sizeof(prepared->frame.fog)) != 0 ||
@@ -917,7 +925,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       .explicit_reset_reasons = rf->temporal_reset_reasons |
           ((fog_changed || rf->submitted_ssgi_enabled != prepared->frame.ssgi_enabled)
                ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u),
-      .enabled = rf->temporal_enabled && !indirect_diffuse_only,
+      .enabled = rf->temporal_enabled && !indirect_diffuse_only && !wireframe &&
+                 !orthographic,
   };
   prepared->frame.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);
@@ -948,10 +957,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
      block is a pure function of the validated packet fields. */
   prepared->frame.bloom = vkr_bloom_prepare(
       packet->globals.bloom_enabled && !rf->bloom_forced_disabled &&
-          !indirect_diffuse_only,
+          !indirect_diffuse_only && !editor_inspection,
       packet->globals.bloom_threshold, packet->globals.bloom_knee,
       packet->globals.bloom_intensity);
-  prepared->frame.subsurface_enabled = prepared->frame.scene_rendering &&
+  prepared->frame.subsurface_enabled =
+      prepared->frame.scene_rendering && !orthographic &&
       packet->lighting && packet->lighting->subsurface.profile_count > 0u &&
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   if (prepared->frame.subsurface_enabled) {
@@ -987,10 +997,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   /* GTAO is current-frame spatial state: like bloom, it has no prepare/commit
      history chain. */
   prepared->frame.ssr_enabled =
-      packet->globals.ssr_enabled && !rf->ssr_forced_disabled &&
+      packet->globals.ssr_enabled && !rf->ssr_forced_disabled && !orthographic &&
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.gtao = vkr_gtao_prepare(
-      packet->globals.gtao_enabled && !rf->gtao_forced_disabled,
+      packet->globals.gtao_enabled && !rf->gtao_forced_disabled &&
+          !orthographic && !wireframe,
       packet->globals.gtao_radius, packet->globals.gtao_power);
 }
 

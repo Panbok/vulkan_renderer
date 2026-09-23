@@ -1080,7 +1080,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .point_light_grid = &application->lighting_system.point_light_grid,
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
-      .subsurface = active_scene && !application->disable_subsurface_scattering
+      .subsurface = active_scene && !application->disable_subsurface_scattering &&
+                            application->globals.projection.m33 == 0.0f
                         ? active_scene->subsurface
                         : (VkrSubsurfaceBinding){0},
       .diffuse_volume = active_scene ? active_scene->diffuse_volume
@@ -1140,10 +1141,12 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
               .bloom_threshold = application->globals.bloom_threshold,
               .bloom_knee = application->globals.bloom_knee,
               .bloom_intensity = application->globals.bloom_intensity,
-              .dof_enabled = application->globals.dof_enabled,
+              .dof_enabled = application->globals.dof_enabled &&
+                             application->globals.projection.m33 == 0.0f,
               .dof_focus_distance = application->globals.dof_focus_distance,
               .dof_f_stop = application->globals.dof_f_stop,
-              .motion_blur_enabled = application->globals.motion_blur_enabled,
+              .motion_blur_enabled = application->globals.motion_blur_enabled &&
+                                     application->globals.projection.m33 == 0.0f,
               .motion_blur_shutter_angle =
                   application->globals.motion_blur_shutter_angle,
               .ssr_enabled = application->globals.ssr_enabled,
@@ -1176,7 +1179,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
 
   if (application->disable_fog)
     packet.globals.fog.enabled = false_v;
-  if (application->disable_volumetric_fog)
+  if (application->disable_volumetric_fog ||
+      application->globals.projection.m33 != 0.0f)
     packet.globals.froxel_fog.enabled = false_v;
 
   VkrRendererFrameMetrics metrics = {0};

@@ -885,6 +885,12 @@ typedef enum VkrRenderMode {
    * before environment evaluation and cannot.
    */
   VKR_RENDER_MODE_INDIRECT_DIFFUSE = 9,
+  /** Neutral diffuse/specular material with the authored normal map. */
+  VKR_RENDER_MODE_DETAIL_LIGHTING = 10,
+  /** The same neutral material with vertex normals and no normal map. */
+  VKR_RENDER_MODE_LIGHTING_ONLY = 11,
+  /** Visible triangle edges with a dark filled background. */
+  VKR_RENDER_MODE_WIREFRAME = 12,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 

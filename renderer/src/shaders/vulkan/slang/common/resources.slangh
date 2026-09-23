@@ -371,6 +371,7 @@ struct VkrVulkanVertexOutput
     float3 world_normal : TEXCOORD2;
     nointerpolation uint object_id : TEXCOORD3;
     float4 world_tangent : TEXCOORD4;
+    nointerpolation uint instance_index : TEXCOORD9;
 };
 
 struct VkrVulkanTemporalVertexOutput
@@ -382,6 +383,7 @@ struct VkrVulkanTemporalVertexOutput
     float3 world_normal : TEXCOORD2;
     nointerpolation uint object_id : TEXCOORD3;
     float4 world_tangent : TEXCOORD4;
+    nointerpolation uint instance_index : TEXCOORD9;
     float3 object_position : TEXCOORD5;
     nointerpolation uint temporal_index : TEXCOORD6;
     nointerpolation uint temporal_generation : TEXCOORD7;

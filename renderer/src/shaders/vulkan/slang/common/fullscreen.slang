@@ -7,6 +7,7 @@ VkrVulkanVertexOutput fullscreen_vertex(uint vertex_id : SV_VertexID)
         float2(-1.0f, 3.0f),
     };
     VkrVulkanVertexOutput output;
+    output.instance_index = 0u;
     output.position = float4(positions[vertex_id], 0.0f, 1.0f);
     output.uv = positions[vertex_id] * 0.5f + 0.5f;
     output.color = 1.0f;

@@ -24,6 +24,7 @@
 #include "../../shared/agx_kernel.slangh"
 #include "../../shared/display_output_kernel.slangh"
 #include "../../shared/color_grading_kernel.slangh"
+#include "../../shared/editor_view.slangh"
 #include "../../shared/normal_map_kernel.slangh"
 #include "../../shared/transmission_kernel.slangh"
 // VkrShL2Packed is referenced by the IBL projection kernel and by deferred

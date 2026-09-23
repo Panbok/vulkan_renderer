@@ -633,7 +633,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       .flags =
           (!editor_rect && renderer->tonemap_enabled ? 1u : 0u) |
           (!editor_rect && !prepare_display_linear && renderer->fxaa_enabled &&
-                   !renderer->metalfx_enabled
+                   !renderer->prepared_frame.metalfx_enabled
                ? 2u
                : 0u) |
           (packet->input.globals.display_transform ==
@@ -648,7 +648,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
                        : 0u) |
           (editor_rect && packet->input.editor->scene_backdrop_blur
                ? VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR : 0u) |
-          (renderer->metalfx_enabled
+          (renderer->prepared_frame.metalfx_enabled
                ? VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA
                : 0u),
       .image_sharpness =
@@ -3956,6 +3956,13 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     vkr_render_graph_prepare_frame(
         packet, &renderer->bloom_config, &renderer->gtao_config,
         &renderer->prepared_frame, &renderer->gtao_params);
+    /* Temporal SDK reconstruction accepts perspective depth. Orthographic
+     * editor frames select the existing spatial graph before resource lowering;
+     * the configured scaler stays owned until its normal completion-safe release.
+     */
+    renderer->prepared_frame.metalfx_enabled = renderer->metalfx_enabled &&
+        packet->input.globals.projection.m33 == 0.0f &&
+        packet->input.globals.render_mode != VKR_RENDER_MODE_WIREFRAME;
     renderer->prepared_frame.hzb_build_enabled &= renderer->hzb_enabled;
     VKR_METAL_DIAGNOSTIC(
         renderer, "frame_packet",
@@ -3964,7 +3971,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         (unsigned long long)packet->input.frame.frame_index,
         packet->scene_rendering, packet->editor_image_available,
         packet->editor_image_width, packet->editor_image_height,
-        renderer->metalfx_enabled);
+        renderer->prepared_frame.metalfx_enabled);
     out_result->source_render_scale = renderer->prepared_frame.render_scale;
     out_result->source_render_width = renderer->prepared_frame.viewport_width;
     out_result->source_render_height = renderer->prepared_frame.viewport_height;
@@ -4978,7 +4985,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     vkr_rg_commit_retained_state(renderer->graph);
     if (packet->scene_rendering) {
       VkrMetalPacketImage *colors = vkr_metal_packet_named_image_slot(
-          renderer, renderer->metalfx_enabled ? "metalfx_output_color"
+          renderer, renderer->prepared_frame.metalfx_enabled ? "metalfx_output_color"
                                                : "temporal_history_color");
       if (colors && renderer->history_output_index < colors->instance_count) {
         frame_upload.temporal_scene.signature.eligible =

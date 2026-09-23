@@ -8,6 +8,7 @@ struct VkrMetalPacketVertexData
     float3 world_normal;
     float4 world_tangent;
     uint visible_row_index;
+    uint instance_index;
     float3 object_position;
     uint temporal_index;
     uint temporal_generation;
@@ -48,6 +49,7 @@ vkr_metal_packet_vertex_data(uint vertex_id, uint instance_id,
                              float4(vertex.tangent.xyz, 0.0)).xyz),
                vertex.tangent.w * instance.normal_column0.w);
     output.visible_row_index = visible_row_index;
+    output.instance_index = visible.instance_index + (gpu_draw ? 0u : instance_id);
     // This varying supplies previous-frame object space to the motion fragment.
     output.object_position = vkr_previous_deformed_position(
         vertex.position, instance.previous_deformation_address, vertex_id);
@@ -76,6 +78,7 @@ vkr_metal_packet_vertex(uint vertex_id : SV_VertexID,
     output.world_normal = data.world_normal;
     output.world_tangent = data.world_tangent;
     output.visible_row_index = data.visible_row_index;
+    output.instance_index = data.instance_index;
     return output;
 }
 
@@ -96,6 +99,7 @@ vkr_metal_packet_temporal_vertex(
     output.world_normal = data.world_normal;
     output.world_tangent = data.world_tangent;
     output.visible_row_index = data.visible_row_index;
+    output.instance_index = data.instance_index;
     output.object_position = data.object_position;
     output.temporal_index = data.temporal_index;
     output.temporal_generation = data.temporal_generation;

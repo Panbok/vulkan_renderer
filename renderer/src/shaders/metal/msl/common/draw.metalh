@@ -391,6 +391,7 @@ struct VkrMetalPacketVertexOutput {
   float3 world_normal [[user(TEXCOORD_3)]];
   float4 world_tangent [[user(TEXCOORD_4)]];
   uint visible_row_index [[user(TEXCOORD_5), flat]];
+  uint instance_index [[user(TEXCOORD_10), flat]];
 };
 
 struct VkrMetalPacketTemporalVertexOutput {
@@ -402,6 +403,7 @@ struct VkrMetalPacketTemporalVertexOutput {
   float3 world_normal [[user(TEXCOORD_3)]];
   float4 world_tangent [[user(TEXCOORD_4)]];
   uint visible_row_index [[user(TEXCOORD_5), flat]];
+  uint instance_index [[user(TEXCOORD_10), flat]];
   float3 object_position [[user(TEXCOORD_6)]];
   uint temporal_index [[user(TEXCOORD_7), flat]];
   uint temporal_generation [[user(TEXCOORD_8), flat]];

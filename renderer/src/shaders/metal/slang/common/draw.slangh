@@ -211,6 +211,7 @@ struct VkrMetalPacketVertexOutput
     float3 world_normal : TEXCOORD3;
     float4 world_tangent : TEXCOORD4;
     nointerpolation uint visible_row_index : TEXCOORD5;
+    nointerpolation uint instance_index : TEXCOORD10;
 };
 
 struct VkrMetalPacketTemporalVertexOutput
@@ -223,6 +224,7 @@ struct VkrMetalPacketTemporalVertexOutput
     float3 world_normal : TEXCOORD3;
     float4 world_tangent : TEXCOORD4;
     nointerpolation uint visible_row_index : TEXCOORD5;
+    nointerpolation uint instance_index : TEXCOORD10;
     float3 object_position : TEXCOORD6;
     nointerpolation uint temporal_index : TEXCOORD7;
     nointerpolation uint temporal_generation : TEXCOORD8;

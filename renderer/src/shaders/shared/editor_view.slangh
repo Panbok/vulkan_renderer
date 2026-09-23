@@ -1,0 +1,46 @@
+// Editor inspection modes share the existing render_mode word on both backends.
+// Keep these values synchronized with VkrRenderMode.
+bool vkr_editor_neutral_lighting(uint mode)
+{
+    return mode == 10u || mode == 11u;
+}
+
+// Lighting only keeps interpolated vertex normals and skips normal maps;
+// detail lighting adds the authored normal maps back.
+bool vkr_editor_skip_normal_map(uint mode)
+{
+    return mode == 11u;
+}
+
+// Derivatives are per framebuffer pixel, including perspective-correct
+// reconstruction. The edge is one pixel wide with a one-pixel coverage ramp.
+float3 vkr_editor_wire_color(float3 barycentric, float3 gradient_x,
+                             float3 gradient_y)
+{
+    float3 gradient = sqrt(gradient_x * gradient_x + gradient_y * gradient_y);
+    float3 distance = abs(barycentric) / max(gradient, float3(1e-8f));
+    float nearest_edge = min(distance.x, min(distance.y, distance.z));
+    float coverage = 1.0f - smoothstep(0.5f, 1.5f, nearest_edge);
+    return float3(0.012f) + float3(0.75f, 0.85f, 1.0f) * coverage;
+}
+
+// Forward alpha blending has no visibility-buffer barycentrics. Recover the
+// same affine coordinates from its triangle and interpolated world position.
+float3 vkr_editor_triangle_barycentric(float3 point, float3 a, float3 b,
+                                       float3 c)
+{
+    float3 ab = b - a;
+    float3 ac = c - a;
+    float3 ap = point - a;
+    float aa = dot(ab, ab);
+    float bb = dot(ab, ac);
+    float cc = dot(ac, ac);
+    float denominator = aa * cc - bb * bb;
+    if (denominator <= 1e-20f)
+    {
+        return float3(0.0f);
+    }
+    float u = (cc * dot(ap, ab) - bb * dot(ap, ac)) / denominator;
+    float v = (aa * dot(ap, ac) - bb * dot(ap, ab)) / denominator;
+    return float3(1.0f - u - v, u, v);
+}

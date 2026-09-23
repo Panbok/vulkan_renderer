@@ -1,7 +1,37 @@
+static float3 vkr_metal_packet_forward_wire(
+    VkrMetalPacketVertexOutput input,
+    constant VkrMetalPacketDrawRoot *root, uint primitive_id) {
+  const device VkrGpuVisibleDrawRow &visible =
+      root->visible_rows[input.visible_row_index];
+  const device VkrGpuGeometryRow &geometry =
+      root->geometry_rows[visible.geometry_index];
+  const device VkrMetalPacketInstance &instance =
+      root->frame->instances[input.instance_index];
+  device const uint *indices = reinterpret_cast<device const uint *>(
+      geometry.index_address);
+  device const VkrPackedStaticVertex *vertices =
+      reinterpret_cast<device const VkrPackedStaticVertex *>(geometry.vertex_address);
+  device const VkrGpuGeometryDecodeRecord &decode =
+      reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
+          geometry.decode_address)[visible.decode_index];
+  float3 world[3];
+  for (uint corner = 0u; corner < 3u; ++corner) {
+    uint vertex_index = uint(int(indices[visible.first_index + primitive_id * 3u + corner]) +
+                             visible.vertex_offset);
+    VkrGpuDecodedVertex decoded = vkr_decode_packed_vertex(
+        vertices[geometry.first_vertex + vertex_index], decode);
+    decoded = vkr_apply_deformation(decoded, instance.deformation_address, vertex_index);
+    world[corner] = (instance.model * float4(decoded.position, 1.0f)).xyz;
+  }
+  float3 barycentric = vkr_editor_triangle_barycentric(
+      input.world_position, world[0], world[1], world[2]);
+  return vkr_editor_wire_color(barycentric, dfdx(barycentric), dfdy(barycentric));
+}
+
 static float4 vkr_metal_packet_shade(
     VkrMetalPacketVertexOutput input,
     constant VkrMetalPacketDrawRoot *root,
-    bool front_facing) {
+    bool front_facing, uint primitive_id) {
   constant VkrMetalPacketFrameRoot *frame = root->frame;
   const device VkrGpuVisibleDrawRow &visible =
       root->visible_rows[input.visible_row_index];
@@ -12,13 +42,17 @@ static float4 vkr_metal_packet_shade(
                 material.tint * input.color;
   if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
     discard_fragment();
-  if ((frame->flags & 1u) == 0u)
+  if (frame->render_mode == 12u) {
+    return float4(vkr_metal_packet_forward_wire(input, root, primitive_id), base.a);
+  }
+  bool neutral_lighting = vkr_editor_neutral_lighting(frame->render_mode);
+  if ((frame->flags & 1u) == 0u && !neutral_lighting)
     return base;
 
   float face_sign = front_facing ? 1.0 : -1.0;
   float3 geometric_normal = normalize(input.world_normal) * face_sign;
   float3 normal = geometric_normal;
-  if ((material.flags & 1u) != 0u) {
+  if ((material.flags & 1u) != 0u && !vkr_editor_skip_normal_map(frame->render_mode)) {
     float3 sampled = vkr_normal_map_decode(
         material.normal_texture.sample(material.normal_sampler, input.texcoord)
             .xyz,
@@ -32,7 +66,7 @@ static float4 vkr_metal_packet_shade(
   }
   if (frame->render_mode == 2u)
     return float4(normal * 0.5 + 0.5, 1.0);
-  float3 view = normalize(frame->view_position.xyz - input.world_position);
+  float3 view = vkr_metal_packet_view_direction(frame, input.world_position);
   float no_v = max(dot(normal, view), 0.0);
   float metallic = saturate(material.material_surface.x);
   float roughness = clamp(material.material_surface.y, 0.04, 1.0);
@@ -44,6 +78,13 @@ static float4 vkr_metal_packet_shade(
     ao *= orm.r;
     roughness = clamp(roughness * orm.g, 0.04, 1.0);
     metallic = saturate(metallic * orm.b);
+  }
+  if (neutral_lighting) {
+    base.rgb = float3(0.5f);
+    metallic = 0.0f;
+    roughness = 0.5f;
+    ao = 1.0f;
+    emissive = float3(0.0f);
   }
   float3 normal_dx = dfdx(normal);
   float3 normal_dy = dfdy(normal);
@@ -58,8 +99,9 @@ static float4 vkr_metal_packet_shade(
   if (frame->render_mode == 3u)
     return float4(base.rgb + emissive,
                   material.alpha_mode == 0u ? 1.0 : base.a);
-  float3 f0 = mix(saturate(material.material_dielectric_specular.rgb), base.rgb,
-                  metallic);
+  float3 f0 = mix(neutral_lighting ? float3(0.04f)
+                                    : saturate(material.material_dielectric_specular.rgb),
+                  base.rgb, metallic);
   if (frame->render_mode == 6u)
     return float4(metallic, roughness, max(f0.x, max(f0.y, f0.z)), 1.0);
   if (frame->shadow_debug_mode != 0u) {
@@ -70,7 +112,8 @@ static float4 vkr_metal_packet_shade(
                                                       shadow_sample),
                   1.0);
   }
-  float anisotropy_strength = material.material_anisotropy.x;
+  float anisotropy_strength =
+      neutral_lighting ? 0.0f : material.material_anisotropy.x;
   float3 anisotropy_axis = float3(0.0f);
   if (anisotropy_strength > 0.0f) {
     float3 map = float3(1.0f, 0.5f, 1.0f);
@@ -84,8 +127,11 @@ static float4 vkr_metal_packet_shade(
       vkr_metal_packet_prepare_brdf(frame, no_v, roughness, f0);
   if (anisotropy_strength > 0.0f)
     energy = vkr_metal_prepare_anisotropy(frame, normal, anisotropy_axis, view, roughness, anisotropy_strength, f0);
-    energy = vkr_ggx_diffuse_transmission(energy, material.material_diffuse_transmission);
-  float clearcoat_factor = saturate(material.material_clearcoat.x);
+  energy = vkr_ggx_diffuse_transmission(
+      energy, neutral_lighting ? float4(0.0f)
+                               : material.material_diffuse_transmission);
+  float clearcoat_factor =
+      neutral_lighting ? 0.0f : saturate(material.material_clearcoat.x);
   if (clearcoat_factor > 0.0 && (material.flags & 32u) != 0u)
     clearcoat_factor *= material.clearcoat_texture
                             .sample(material.clearcoat_sampler, input.texcoord)
@@ -118,7 +164,8 @@ static float4 vkr_metal_packet_shade(
         frame, clearcoat_factor, clearcoat_roughness, clearcoat_normal, view);
   }
 
-  float3 sheen_color = max(material.material_sheen.rgb, float3(0.0f));
+  float3 sheen_color =
+      neutral_lighting ? float3(0.0f) : max(material.material_sheen.rgb, float3(0.0f));
   if (vkr_sheen_active(sheen_color) && (material.flags & 256u) != 0u)
     sheen_color *= material.sheen_color_texture
                        .sample(material.sheen_color_sampler, input.texcoord).rgb;
@@ -386,8 +433,9 @@ struct VkrMetalPacketTemporalBlendOutput {
 fragment float4 vkr_metal_packet_opaque_fragment(
     VkrMetalPacketVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
-    bool front_facing [[front_facing]]) {
-  return vkr_metal_packet_shade(input, root, front_facing);
+    bool front_facing [[front_facing]],
+    uint primitive_id [[primitive_id]]) {
+  return vkr_metal_packet_shade(input, root, front_facing, primitive_id);
 }
 
 fragment VkrMetalPacketTemporalBlendOutput
@@ -406,7 +454,8 @@ vkr_metal_packet_temporal_blend_fragment(
   surface.world_normal = input.world_normal;
   surface.world_tangent = input.world_tangent;
   surface.visible_row_index = input.visible_row_index;
-  output.color = vkr_metal_packet_shade(surface, root, front_facing);
+  surface.instance_index = input.instance_index;
+  output.color = vkr_metal_packet_shade(surface, root, front_facing, primitive_id);
   if (output.color.a <= 1e-4)
     discard_fragment();
   if (vkr_froxel_enabled(*root->frame->froxel_fog)) {

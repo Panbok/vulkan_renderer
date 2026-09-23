@@ -1,3 +1,19 @@
+bool packet_is_orthographic(VkrVulkanPacketFrameRoot *frame)
+{
+    float3 clip_w = frame.view_projection[3].xyz;
+    return dot(clip_w, clip_w) < 1e-12f;
+}
+
+float3 packet_view_direction(VkrVulkanPacketFrameRoot *frame,
+                              float3 world_position)
+{
+    if (packet_is_orthographic(frame))
+    {
+        return normalize(frame.view[2].xyz);
+    }
+    return normalize(frame.view_position.xyz - world_position);
+}
+
 [shader("vertex")]
 VkrVulkanVertexOutput world_vertex(uint vertex_id : SV_VertexID,
                                    uint instance_id : SV_InstanceID)
@@ -1507,7 +1523,33 @@ VkrFroxelSample packet_froxel_sample(VkrVulkanPacketFrameRoot *frame,
     return result;
 }
 
-float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
+float3 packet_forward_wire(VkrVulkanVertexOutput input, uint primitive_id)
+{
+    VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();
+    VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
+    VkrGpuGeometryRow geometry = draw.geometry_rows[visible.geometry_index];
+    VkrVulkanInstance instance = draw.frame.instances[input.instance_index];
+    uint *indices = (uint *)geometry.index_address;
+    VkrPackedStaticVertex *vertices = (VkrPackedStaticVertex *)geometry.vertex_address;
+    VkrGpuGeometryDecodeRecord decode =
+        ((VkrGpuGeometryDecodeRecord *)geometry.decode_address)[visible.decode_index];
+    float3 world[3];
+    for (uint corner = 0u; corner < 3u; ++corner)
+    {
+        uint vertex_index = uint(int(indices[visible.first_index + primitive_id * 3u + corner]) +
+                                 visible.vertex_offset);
+        VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
+            vertices[geometry.first_vertex + vertex_index], decode);
+        vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_index);
+        world[corner] = mul(instance.model, float4(vertex.position, 1.0f)).xyz;
+    }
+    float3 barycentric = vkr_editor_triangle_barycentric(
+        input.world_position, world[0], world[1], world[2]);
+    return vkr_editor_wire_color(barycentric, ddx(barycentric), ddy(barycentric));
+}
+
+float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
+                          uint primitive_id)
 {
     VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();
     VkrVulkanPacketFrameRoot *frame = draw.frame;
@@ -1516,13 +1558,18 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
     float4 base = packet_base_color(input);
     if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
         discard;
-    if ((frame.flags & 1u) == 0u)
+    if (frame.render_mode == 12u)
+    {
+        return float4(packet_forward_wire(input, primitive_id), base.a);
+    }
+    bool neutral_lighting = vkr_editor_neutral_lighting(frame.render_mode);
+    if ((frame.flags & 1u) == 0u && !neutral_lighting)
         return base;
 
     float face_sign = front_facing ? 1.0f : -1.0f;
     float3 geometric_normal = normalize(input.world_normal) * face_sign;
     float3 normal = geometric_normal;
-    if ((material.flags & 1u) != 0u)
+    if ((material.flags & 1u) != 0u && !vkr_editor_skip_normal_map(frame.render_mode))
     {
         uint texture_index = NonUniformResourceIndex(material.normal_texture);
         uint sampler_index = NonUniformResourceIndex(material.normal_sampler);
@@ -1541,7 +1588,7 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
     if (frame.render_mode == 2u)
         return float4(normal * 0.5f + 0.5f, 1.0f);
 
-    float3 view = normalize(frame.view_position.xyz - input.world_position);
+    float3 view = packet_view_direction(frame, input.world_position);
     float no_v = max(dot(normal, view), 0.0f);
     float metallic = saturate(material.material_surface.x);
     float roughness = clamp(material.material_surface.y, 0.04f, 1.0f);
@@ -1557,6 +1604,14 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
         ao *= orm.r;
         roughness = clamp(roughness * orm.g, 0.04f, 1.0f);
         metallic = saturate(metallic * orm.b);
+    }
+    if (neutral_lighting)
+    {
+        base.rgb = float3(0.5f);
+        metallic = 0.0f;
+        roughness = 0.5f;
+        ao = 1.0f;
+        emissive = float3(0.0f);
     }
     float3 normal_dx = ddx(normal);
     float3 normal_dy = ddy(normal);
@@ -1575,7 +1630,8 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
         return float4(base.rgb + emissive,
                       material.alpha_mode == 0u ? 1.0f : base.a);
 
-    float3 f0 = lerp(saturate(material.material_dielectric_specular.rgb),
+    float3 f0 = lerp(neutral_lighting ? float3(0.04f)
+                                      : saturate(material.material_dielectric_specular.rgb),
                      base.rgb, metallic);
     if (frame.render_mode == 6u)
         return float4(metallic, roughness, max(f0.x, max(f0.y, f0.z)), 1.0f);
@@ -1589,7 +1645,8 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
             1.0f);
     }
 
-  float anisotropy_strength = material.material_anisotropy.x;
+  float anisotropy_strength =
+      neutral_lighting ? 0.0f : material.material_anisotropy.x;
   float3 anisotropy_axis = float3(0.0f);
   if (anisotropy_strength > 0.0f) {
     float3 map = float3(1.0f, 0.5f, 1.0f);
@@ -1602,8 +1659,11 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
     VkrGgxMaterialEnergy energy = packet_prepare_brdf(frame, no_v, roughness, f0);
   if (anisotropy_strength > 0.0f)
     energy = packet_prepare_anisotropy(frame, normal, anisotropy_axis, view, roughness, anisotropy_strength, f0);
-    energy = vkr_ggx_diffuse_transmission(energy, material.material_diffuse_transmission);
-    float clearcoat_factor = saturate(material.material_clearcoat.x);
+    energy = vkr_ggx_diffuse_transmission(
+        energy, neutral_lighting ? float4(0.0f)
+                                 : material.material_diffuse_transmission);
+    float clearcoat_factor =
+        neutral_lighting ? 0.0f : saturate(material.material_clearcoat.x);
     if (clearcoat_factor > 0.0f && (material.flags & 32u) != 0u)
         clearcoat_factor *= g_textures[NonUniformResourceIndex(material.clearcoat_texture)]
             .Sample(g_samplers[NonUniformResourceIndex(material.clearcoat_sampler)], input.uv).r;
@@ -1631,7 +1691,8 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
         clearcoat = packet_prepare_clearcoat(frame, clearcoat_factor, clearcoat_roughness,
                                               clearcoat_normal, view);
     }
-    float3 sheen_color = max(material.material_sheen.rgb, 0.0f);
+    float3 sheen_color =
+        neutral_lighting ? float3(0.0f) : max(material.material_sheen.rgb, 0.0f);
     if (vkr_sheen_active(sheen_color) && (material.flags & 256u) != 0u)
     {
         sheen_color *= g_textures[NonUniformResourceIndex(material.sheen_color_texture)]
@@ -1787,9 +1848,10 @@ struct VkrVulkanTemporalBlendOutput
 
 [shader("fragment")]
 float4 world_fragment(VkrVulkanVertexOutput input,
-                      bool front_facing : SV_IsFrontFace) : SV_Target0
+                      bool front_facing : SV_IsFrontFace,
+                      uint primitive_id : SV_PrimitiveID) : SV_Target0
 {
-    return packet_world_shade(input, front_facing);
+    return packet_world_shade(input, front_facing, primitive_id);
 }
 
 [shader("fragment")]
@@ -1806,8 +1868,9 @@ world_temporal_fragment(VkrVulkanTemporalVertexOutput input,
     surface.world_position = input.world_position;
     surface.world_normal = input.world_normal;
     surface.object_id = input.object_id;
+    surface.instance_index = input.instance_index;
     surface.world_tangent = input.world_tangent;
-    output.color = packet_world_shade(surface, front_facing);
+    output.color = packet_world_shade(surface, front_facing, primitive_id);
     if (output.color.a <= 1e-4f)
         discard;
     VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();

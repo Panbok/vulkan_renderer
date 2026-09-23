@@ -1,3 +1,18 @@
+bool vkr_metal_packet_is_orthographic(constant VkrMetalPacketFrameRoot *frame) {
+  // Only view_projection uses Slang's transposed draw-root convention.
+  float3 clip_w = frame->view_projection[3].xyz;
+  return dot(clip_w, clip_w) < 1e-12f;
+}
+
+float3 vkr_metal_packet_view_direction(
+    constant VkrMetalPacketFrameRoot *frame, float3 world_position) {
+  if (vkr_metal_packet_is_orthographic(frame)) {
+    return normalize(float3(frame->view[0][2], frame->view[1][2],
+                             frame->view[2][2]));
+  }
+  return normalize(frame->view_position.xyz - world_position);
+}
+
 constant float vkr_metal_packet_pbr_pi = 3.14159265359;
 
 /* Schlick's fifth power as three multiplies. `pow` lowers to exp2/log2, which

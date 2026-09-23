@@ -498,7 +498,7 @@ vkr_internal bool8_t vkr_metal_packet_graph_image_format_supported(
 vkr_internal bool8_t vkr_metal_packet_metalfx_image_contract(
     const VkrMetalPacketRenderer *renderer, const VkrRgImage *image)
     API_AVAILABLE(macos(26.0)) {
-  if (!renderer->metalfx_enabled)
+  if (!renderer->prepared_frame.metalfx_enabled)
     return true_v;
 
   id<MTL4FXTemporalScaler> scaler = renderer->metalfx_temporal_scaler;
@@ -1078,7 +1078,7 @@ vkr_metal_packet_select_temporal_history(VkrMetalPacketRenderer *renderer) {
     return false_v;
   const uint32_t current = renderer->history_output_index;
   uint64_t newest_producer = 0u;
-  if (renderer->metalfx_enabled) {
+  if (renderer->prepared_frame.metalfx_enabled) {
     if (packet->input.frame.frame_index == 0u)
       return true_v;
     const uint64_t previous_frame_index = packet->input.frame.frame_index - 1u;
@@ -2004,7 +2004,7 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
     return;
   VkrMetalPacketImage *slots[] = {
       vkr_metal_packet_named_image_slot(
-          renderer, renderer->metalfx_enabled ? "metalfx_output_color"
+          renderer, renderer->prepared_frame.metalfx_enabled ? "metalfx_output_color"
                                                : "temporal_history_color"),
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_depth"),
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_identity"),
@@ -2488,7 +2488,7 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
     uint32_t source_slice = 0;
     if (string_equals(channel->name, "scene_color") ||
         string_equals(channel->name, "hdr_pre_bloom"))
-      source_name = renderer->metalfx_enabled ? "metalfx_output_color"
+      source_name = renderer->prepared_frame.metalfx_enabled ? "metalfx_output_color"
                                               : "temporal_history_color";
     else if (string_equals(channel->name, "hdr_pre_transmission") &&
              packet->input.frame.editor_enabled)
