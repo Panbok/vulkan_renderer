@@ -14,6 +14,18 @@
 #define VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1 2u
 #define VKR_MESH_COOKED_STREAM_ALIGNMENT 16u
 
+/* Fixed layout and limits of the cooked mesh artifact, shared by the encoder
+ * and the decoder. */
+#define VKR_MESH_COOKED_HEADER_SIZE 272u
+#define VKR_MESH_COOKED_DEPENDENCY_SIZE 64u
+#define VKR_MESH_COOKED_RANGE_SIZE 200u
+#define VKR_MESH_COOKED_MAX_RANGES 1048576u
+#define VKR_MESH_COOKED_MAX_DEPENDENCIES 65536u
+#define VKR_MESH_COOKED_MAX_STRING_LENGTH 65535u
+#define VKR_MESH_COOKED_MAX_FILE_SIZE GB(8)
+#define VKR_MESH_COOKED_HEADER_CRC_OFFSET 184u
+#define VKR_MESH_COOKED_METADATA_CRC_OFFSET 188u
+
 typedef struct VkrMeshCookedDecoded {
   uint64_t source_bytes;
   uint64_t cooked_bytes;
@@ -24,6 +36,18 @@ typedef struct VkrMeshCookedDecoded {
   Array_VkrGeometryUploadRange ranges;
   VkrGeometryQuantizationMetrics quantization;
 } VkrMeshCookedDecoded;
+
+/** Hashes the codec settings that the cooker and the runtime must share. */
+void vkr_mesh_cooked_hash_settings(
+    const VkrGeometryQuantizationBudgets *budgets, uint8_t out_hash[32]);
+
+/**
+ * Validates source node and mesh metadata against `range_count` ranges. The
+ * cooker checks what it writes; the decoder checks what it reads.
+ */
+bool8_t vkr_mesh_cooked_source_validate(VkrAllocator *scratch_allocator,
+                                        const VkrMeshSource *source,
+                                        uint32_t range_count);
 
 /**
  * Validates the complete self-contained artifact and decodes all ranges into

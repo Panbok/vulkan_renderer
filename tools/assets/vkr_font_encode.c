@@ -1,5 +1,8 @@
 #include "assets/vkr_font_encode.h"
 
+#include "core/vkr_byte_io.h"
+#include "core/vkr_hash.h"
+
 #include "containers/bitset.h"
 #include "core/vkr_atomic.h"
 #include "filesystem/filesystem.h"
@@ -11,155 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-_Static_assert(CHAR_BIT == 8, "VKFA requires 8-bit bytes");
-_Static_assert(sizeof(float32_t) == 4u, "VKFA requires 32-bit float32_t");
-_Static_assert(FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128,
-               "VKFA requires binary32 arithmetic");
-
 static VkrAtomicUint64 s_vkr_font_cooked_temporary_counter = 0u;
-
-enum {
-  VKR_FONT_COOKED_H_MAGIC = 0u,
-  VKR_FONT_COOKED_H_VERSION = 4u,
-  VKR_FONT_COOKED_H_ENDIAN = 8u,
-  VKR_FONT_COOKED_H_SIZE = 12u,
-  VKR_FONT_COOKED_H_FLAGS = 16u,
-  VKR_FONT_COOKED_H_FIELD = 20u,
-  VKR_FONT_COOKED_H_FALLBACK = 24u,
-  VKR_FONT_COOKED_H_COOKER = 28u,
-  VKR_FONT_COOKED_H_GLYPHS = 32u,
-  VKR_FONT_COOKED_H_CODEPOINTS = 36u,
-  VKR_FONT_COOKED_H_KERNINGS = 40u,
-  VKR_FONT_COOKED_H_PAGES = 44u,
-  VKR_FONT_COOKED_H_FILE_SIZE = 48u,
-  VKR_FONT_COOKED_H_FACE_SIZE = 56u,
-  VKR_FONT_COOKED_H_IDENTITY = 64u,
-  VKR_FONT_COOKED_H_METRICS = 96u,
-};
-
-typedef struct VkrFontCookedSectionView {
-  uint32_t kind;
-  uint64_t offset;
-  uint64_t size;
-  uint32_t crc;
-} VkrFontCookedSectionView;
-
-typedef struct VkrFontCookedLayout {
-  uint32_t flags;
-  uint32_t field_kind;
-  uint32_t fallback_glyph_id;
-  uint32_t cooker_version;
-  uint32_t glyph_count;
-  uint32_t codepoint_count;
-  uint32_t kerning_count;
-  uint32_t page_count;
-  uint64_t file_size;
-  uint32_t face_size;
-  uint8_t identity[32];
-  VkrFontCookedMetrics metrics;
-  VkrFontCookedSectionView sections[VKR_FONT_COOKED_SECTION_COUNT];
-} VkrFontCookedLayout;
-
-typedef struct VkrFontCookedWriter {
-  uint8_t *data;
-  uint64_t size;
-  uint64_t offset;
-} VkrFontCookedWriter;
-
-static bool8_t vkr_font_cooked_add(uint64_t a, uint64_t b, uint64_t *out) {
-  if (a > UINT64_MAX - b) {
-    return false_v;
-  }
-  *out = a + b;
-  return true_v;
-}
-
-static uint64_t vkr_font_cooked_align(uint64_t value) {
-  const uint64_t mask = VKR_FONT_COOKED_ALIGNMENT - 1u;
-  return (value + mask) & ~mask;
-}
-
-/**
- * VKFA freezes IEEE-754 binary32 bit patterns, not merely C's numeric range.
- * The FLT_* constraints above do not prove the object representation on every
- * conforming C11 implementation, so reject unsupported targets at this cold
- * serialization boundary before copying any float bits.
- */
-static bool8_t vkr_font_cooked_float_representation_supported(void) {
-  const float32_t one = 1.0f;
-  const float32_t negative_half = -0.5f;
-  uint32_t one_bits = 0u;
-  uint32_t negative_half_bits = 0u;
-  MemCopy(&one_bits, &one, sizeof(one_bits));
-  MemCopy(&negative_half_bits, &negative_half, sizeof(negative_half_bits));
-  return one_bits == 0x3f800000u && negative_half_bits == 0xbf000000u;
-}
-
-static uint32_t vkr_font_cooked_crc32(const uint8_t *data, uint64_t size) {
-  uint32_t crc = 0xffffffffu;
-  for (uint64_t i = 0; i < size; ++i) {
-    crc ^= data[i];
-    for (uint32_t bit = 0; bit < 8u; ++bit) {
-      crc = (crc >> 1u) ^ (0xedb88320u & (uint32_t)-(int32_t)(crc & 1u));
-    }
-  }
-  return ~crc;
-}
-
-static void vkr_font_cooked_write_u32(uint8_t *dst, uint32_t value) {
-  dst[0] = (uint8_t)value;
-  dst[1] = (uint8_t)(value >> 8u);
-  dst[2] = (uint8_t)(value >> 16u);
-  dst[3] = (uint8_t)(value >> 24u);
-}
-
-static void vkr_font_cooked_write_u64(uint8_t *dst, uint64_t value) {
-  vkr_font_cooked_write_u32(dst, (uint32_t)value);
-  vkr_font_cooked_write_u32(dst + 4u, (uint32_t)(value >> 32u));
-}
-
-static void vkr_font_cooked_write_f32(uint8_t *dst, float32_t value) {
-  uint32_t bits = 0;
-  MemCopy(&bits, &value, sizeof(bits));
-  vkr_font_cooked_write_u32(dst, bits);
-}
-
-static bool8_t vkr_font_cooked_writer_bytes(VkrFontCookedWriter *writer,
-                                            const void *data, uint64_t size) {
-  if (writer->offset > writer->size || size > writer->size - writer->offset) {
-    return false_v;
-  }
-  if (size != 0u) {
-    MemCopy(writer->data + writer->offset, data, size);
-  }
-  writer->offset += size;
-  return true_v;
-}
-
-static bool8_t vkr_font_cooked_writer_u32(VkrFontCookedWriter *writer,
-                                          uint32_t value) {
-  uint8_t bytes[4];
-  vkr_font_cooked_write_u32(bytes, value);
-  return vkr_font_cooked_writer_bytes(writer, bytes, sizeof(bytes));
-}
-
-static bool8_t vkr_font_cooked_writer_u64(VkrFontCookedWriter *writer,
-                                          uint64_t value) {
-  uint8_t bytes[8];
-  vkr_font_cooked_write_u64(bytes, value);
-  return vkr_font_cooked_writer_bytes(writer, bytes, sizeof(bytes));
-}
-
-static bool8_t vkr_font_cooked_writer_f32(VkrFontCookedWriter *writer,
-                                          float32_t value) {
-  uint8_t bytes[4];
-  vkr_font_cooked_write_f32(bytes, value);
-  return vkr_font_cooked_writer_bytes(writer, bytes, sizeof(bytes));
-}
-
-static bool8_t vkr_font_cooked_finite(float32_t value) {
-  return isfinite(value) ? true_v : false_v;
-}
 
 static bool8_t
 vkr_font_cooked_info_find_glyph(const VkrFontCookedEncodeInfo *info,
@@ -184,8 +39,8 @@ vkr_font_cooked_info_find_glyph(const VkrFontCookedEncodeInfo *info,
 
 static bool8_t
 vkr_font_cooked_validate_info(const VkrFontCookedEncodeInfo *info) {
-  if (!vkr_font_cooked_float_representation_supported() || !info ||
-      !info->face.str || info->face.length == 0u ||
+  if (!vkr_f32_is_binary32() || !info || !info->face.str ||
+      info->face.length == 0u ||
       info->face.length > VKR_FONT_COOKED_MAX_FACE_BYTES ||
       info->cooker_version == 0u ||
       info->field_kind != VKR_FONT_COOKED_FIELD_MTSDF ||
@@ -297,13 +152,14 @@ bool8_t vkr_font_cooked_encode(VkrAllocator *scratch_allocator,
   uint64_t offsets[VKR_FONT_COOKED_SECTION_COUNT];
   uint64_t cursor = VKR_FONT_COOKED_DATA_OFFSET;
   for (uint32_t i = 0; i < VKR_FONT_COOKED_SECTION_COUNT; ++i) {
-    cursor = vkr_font_cooked_align(cursor);
+    cursor = vkr_align_up_u64(cursor, VKR_FONT_COOKED_ALIGNMENT);
     offsets[i] = cursor;
-    if (!vkr_font_cooked_add(cursor, section_sizes[i], &cursor)) {
+    if (!vkr_checked_add_u64(cursor, section_sizes[i], &cursor)) {
       return false_v;
     }
   }
-  const uint64_t file_size = vkr_font_cooked_align(cursor);
+  const uint64_t file_size =
+      vkr_align_up_u64(cursor, VKR_FONT_COOKED_ALIGNMENT);
   if (file_size > VKR_FONT_COOKED_MAX_FILE_SIZE || file_size > SIZE_MAX) {
     return false_v;
   }
@@ -313,111 +169,106 @@ bool8_t vkr_font_cooked_encode(VkrAllocator *scratch_allocator,
     return false_v;
   }
   MemZero(artifact, file_size);
-  vkr_font_cooked_write_u32(artifact + 0u, VKR_FONT_COOKED_MAGIC);
-  vkr_font_cooked_write_u32(artifact + 4u, VKR_FONT_COOKED_VERSION);
-  vkr_font_cooked_write_u32(artifact + 8u, VKR_FONT_COOKED_ENDIAN_TAG);
-  vkr_font_cooked_write_u32(artifact + 12u, VKR_FONT_COOKED_HEADER_SIZE);
-  vkr_font_cooked_write_u32(artifact + 16u, 0u);
-  vkr_font_cooked_write_u32(artifact + 20u, info->field_kind);
-  vkr_font_cooked_write_u32(artifact + 24u, info->fallback_glyph_id);
-  vkr_font_cooked_write_u32(artifact + 28u, info->cooker_version);
-  vkr_font_cooked_write_u32(artifact + 32u, info->glyph_count);
-  vkr_font_cooked_write_u32(artifact + 36u, info->codepoint_count);
-  vkr_font_cooked_write_u32(artifact + 40u, info->kerning_count);
-  vkr_font_cooked_write_u32(artifact + 44u, info->page_count);
-  vkr_font_cooked_write_u64(artifact + 48u, file_size);
-  vkr_font_cooked_write_u32(artifact + 56u, (uint32_t)info->face.length);
+  vkr_store_le_u32(artifact + 0u, VKR_FONT_COOKED_MAGIC);
+  vkr_store_le_u32(artifact + 4u, VKR_FONT_COOKED_VERSION);
+  vkr_store_le_u32(artifact + 8u, VKR_FONT_COOKED_ENDIAN_TAG);
+  vkr_store_le_u32(artifact + 12u, VKR_FONT_COOKED_HEADER_SIZE);
+  vkr_store_le_u32(artifact + 16u, 0u);
+  vkr_store_le_u32(artifact + 20u, info->field_kind);
+  vkr_store_le_u32(artifact + 24u, info->fallback_glyph_id);
+  vkr_store_le_u32(artifact + 28u, info->cooker_version);
+  vkr_store_le_u32(artifact + 32u, info->glyph_count);
+  vkr_store_le_u32(artifact + 36u, info->codepoint_count);
+  vkr_store_le_u32(artifact + 40u, info->kerning_count);
+  vkr_store_le_u32(artifact + 44u, info->page_count);
+  vkr_store_le_u64(artifact + 48u, file_size);
+  vkr_store_le_u32(artifact + 56u, (uint32_t)info->face.length);
   MemCopy(artifact + 64u, info->identity, 32u);
-  vkr_font_cooked_write_f32(artifact + 96u, info->metrics.line_height);
-  vkr_font_cooked_write_f32(artifact + 100u, info->metrics.ascender);
-  vkr_font_cooked_write_f32(artifact + 104u, info->metrics.descender);
-  vkr_font_cooked_write_f32(artifact + 108u, info->metrics.underline_y);
-  vkr_font_cooked_write_f32(artifact + 112u, info->metrics.underline_thickness);
-  vkr_font_cooked_write_f32(artifact + 116u, info->metrics.distance_range);
-  vkr_font_cooked_write_f32(artifact + 120u, info->metrics.atlas_px_per_em);
-  vkr_font_cooked_write_u32(artifact + 124u, info->metrics.units_per_em);
-  VkrFontCookedWriter writer = {
-      .data = artifact, .size = file_size, .offset = 0};
+  vkr_store_le_f32(artifact + 96u, info->metrics.line_height);
+  vkr_store_le_f32(artifact + 100u, info->metrics.ascender);
+  vkr_store_le_f32(artifact + 104u, info->metrics.descender);
+  vkr_store_le_f32(artifact + 108u, info->metrics.underline_y);
+  vkr_store_le_f32(artifact + 112u, info->metrics.underline_thickness);
+  vkr_store_le_f32(artifact + 116u, info->metrics.distance_range);
+  vkr_store_le_f32(artifact + 120u, info->metrics.atlas_px_per_em);
+  vkr_store_le_u32(artifact + 124u, info->metrics.units_per_em);
+  VkrByteWriter writer = {.data = artifact, .size = file_size, .offset = 0};
   for (uint32_t i = 0; i < VKR_FONT_COOKED_SECTION_COUNT; ++i) {
     uint8_t *entry = artifact + VKR_FONT_COOKED_DIRECTORY_OFFSET +
                      i * VKR_FONT_COOKED_SECTION_SIZE;
-    vkr_font_cooked_write_u32(entry, i + 1u);
-    vkr_font_cooked_write_u64(entry + 8u, offsets[i]);
-    vkr_font_cooked_write_u64(entry + 16u, section_sizes[i]);
+    vkr_store_le_u32(entry, i + 1u);
+    vkr_store_le_u64(entry + 8u, offsets[i]);
+    vkr_store_le_u64(entry + 16u, section_sizes[i]);
   }
   writer.offset = offsets[0];
-  if (!vkr_font_cooked_writer_bytes(&writer, info->face.str, info->face.length))
+  if (!vkr_byte_writer_bytes(&writer, info->face.str, info->face.length))
     return false_v;
   writer.offset = offsets[1];
   for (uint32_t i = 0; i < info->glyph_count; ++i) {
     const VkrFontCookedGlyph *g = &info->glyphs[i];
-    if (!vkr_font_cooked_writer_u32(&writer, g->glyph_id) ||
-        !vkr_font_cooked_writer_u32(&writer, g->page_index) ||
-        !vkr_font_cooked_writer_u32(&writer, g->flags) ||
-        !vkr_font_cooked_writer_f32(&writer, g->advance) ||
-        !vkr_font_cooked_writer_f32(&writer, g->plane_left) ||
-        !vkr_font_cooked_writer_f32(&writer, g->plane_bottom) ||
-        !vkr_font_cooked_writer_f32(&writer, g->plane_right) ||
-        !vkr_font_cooked_writer_f32(&writer, g->plane_top) ||
-        !vkr_font_cooked_writer_f32(&writer, g->uv_left) ||
-        !vkr_font_cooked_writer_f32(&writer, g->uv_bottom) ||
-        !vkr_font_cooked_writer_f32(&writer, g->uv_right) ||
-        !vkr_font_cooked_writer_f32(&writer, g->uv_top))
+    if (!vkr_byte_writer_u32(&writer, g->glyph_id) ||
+        !vkr_byte_writer_u32(&writer, g->page_index) ||
+        !vkr_byte_writer_u32(&writer, g->flags) ||
+        !vkr_byte_writer_f32(&writer, g->advance) ||
+        !vkr_byte_writer_f32(&writer, g->plane_left) ||
+        !vkr_byte_writer_f32(&writer, g->plane_bottom) ||
+        !vkr_byte_writer_f32(&writer, g->plane_right) ||
+        !vkr_byte_writer_f32(&writer, g->plane_top) ||
+        !vkr_byte_writer_f32(&writer, g->uv_left) ||
+        !vkr_byte_writer_f32(&writer, g->uv_bottom) ||
+        !vkr_byte_writer_f32(&writer, g->uv_right) ||
+        !vkr_byte_writer_f32(&writer, g->uv_top))
       return false_v;
   }
   writer.offset = offsets[2];
   for (uint32_t i = 0; i < info->codepoint_count; ++i) {
-    if (!vkr_font_cooked_writer_u32(&writer, info->codepoints[i].codepoint) ||
-        !vkr_font_cooked_writer_u32(&writer, info->codepoints[i].glyph_id))
+    if (!vkr_byte_writer_u32(&writer, info->codepoints[i].codepoint) ||
+        !vkr_byte_writer_u32(&writer, info->codepoints[i].glyph_id))
       return false_v;
   }
   writer.offset = offsets[3];
   for (uint32_t i = 0; i < info->kerning_count; ++i) {
     const VkrFontCookedKerning *k = &info->kernings[i];
-    if (!vkr_font_cooked_writer_u32(&writer, k->left_glyph_id) ||
-        !vkr_font_cooked_writer_u32(&writer, k->right_glyph_id) ||
-        !vkr_font_cooked_writer_f32(&writer, k->amount) ||
-        !vkr_font_cooked_writer_u32(&writer, 0u))
+    if (!vkr_byte_writer_u32(&writer, k->left_glyph_id) ||
+        !vkr_byte_writer_u32(&writer, k->right_glyph_id) ||
+        !vkr_byte_writer_f32(&writer, k->amount) ||
+        !vkr_byte_writer_u32(&writer, 0u))
       return false_v;
   }
   writer.offset = offsets[4];
   const VkrFontCookedPage *page = &info->pages[0];
-  if (!vkr_font_cooked_writer_u32(&writer, page->width) ||
-      !vkr_font_cooked_writer_u32(&writer, page->height) ||
-      !vkr_font_cooked_writer_u32(&writer, page->row_stride) ||
-      !vkr_font_cooked_writer_u32(&writer, page->pixel_format) ||
-      !vkr_font_cooked_writer_u64(&writer, offsets[5]) ||
-      !vkr_font_cooked_writer_u64(&writer, page->pixel_size) ||
-      !vkr_font_cooked_writer_u32(
-          &writer, vkr_font_cooked_crc32(page->pixels, page->pixel_size)) ||
-      !vkr_font_cooked_writer_u32(&writer, 0u) ||
-      !vkr_font_cooked_writer_u32(&writer, 0u) ||
-      !vkr_font_cooked_writer_u32(&writer, 0u))
+  if (!vkr_byte_writer_u32(&writer, page->width) ||
+      !vkr_byte_writer_u32(&writer, page->height) ||
+      !vkr_byte_writer_u32(&writer, page->row_stride) ||
+      !vkr_byte_writer_u32(&writer, page->pixel_format) ||
+      !vkr_byte_writer_u64(&writer, offsets[5]) ||
+      !vkr_byte_writer_u64(&writer, page->pixel_size) ||
+      !vkr_byte_writer_u32(&writer,
+                           vkr_crc32(page->pixels, page->pixel_size)) ||
+      !vkr_byte_writer_u32(&writer, 0u) || !vkr_byte_writer_u32(&writer, 0u) ||
+      !vkr_byte_writer_u32(&writer, 0u))
     return false_v;
   writer.offset = offsets[5];
-  if (!vkr_font_cooked_writer_bytes(&writer, page->pixels, page->pixel_size))
+  if (!vkr_byte_writer_bytes(&writer, page->pixels, page->pixel_size))
     return false_v;
   for (uint32_t i = 0; i < VKR_FONT_COOKED_SECTION_COUNT; ++i) {
     uint8_t *entry = artifact + VKR_FONT_COOKED_DIRECTORY_OFFSET +
                      i * VKR_FONT_COOKED_SECTION_SIZE;
-    vkr_font_cooked_write_u32(
-        entry + 24u,
-        vkr_font_cooked_crc32(artifact + offsets[i], section_sizes[i]));
+    vkr_store_le_u32(entry + 24u,
+                     vkr_crc32(artifact + offsets[i], section_sizes[i]));
   }
   const uint32_t directory_crc =
-      vkr_font_cooked_crc32(artifact + VKR_FONT_COOKED_DIRECTORY_OFFSET,
-                            VKR_FONT_COOKED_DIRECTORY_SIZE);
-  vkr_font_cooked_write_u32(artifact + VKR_FONT_COOKED_DIRECTORY_CRC_OFFSET,
-                            directory_crc);
+      vkr_crc32(artifact + VKR_FONT_COOKED_DIRECTORY_OFFSET,
+                VKR_FONT_COOKED_DIRECTORY_SIZE);
+  vkr_store_le_u32(artifact + VKR_FONT_COOKED_DIRECTORY_CRC_OFFSET,
+                   directory_crc);
   const uint32_t payload_crc =
-      vkr_font_cooked_crc32(artifact + VKR_FONT_COOKED_DATA_OFFSET,
-                            file_size - VKR_FONT_COOKED_DATA_OFFSET);
-  vkr_font_cooked_write_u32(artifact + VKR_FONT_COOKED_PAYLOAD_CRC_OFFSET,
-                            payload_crc);
-  vkr_font_cooked_write_u32(artifact + VKR_FONT_COOKED_HEADER_CRC_OFFSET, 0u);
-  vkr_font_cooked_write_u32(
-      artifact + VKR_FONT_COOKED_HEADER_CRC_OFFSET,
-      vkr_font_cooked_crc32(artifact, VKR_FONT_COOKED_HEADER_SIZE));
+      vkr_crc32(artifact + VKR_FONT_COOKED_DATA_OFFSET,
+                file_size - VKR_FONT_COOKED_DATA_OFFSET);
+  vkr_store_le_u32(artifact + VKR_FONT_COOKED_PAYLOAD_CRC_OFFSET, payload_crc);
+  vkr_store_le_u32(artifact + VKR_FONT_COOKED_HEADER_CRC_OFFSET, 0u);
+  vkr_store_le_u32(artifact + VKR_FONT_COOKED_HEADER_CRC_OFFSET,
+                   vkr_crc32(artifact, VKR_FONT_COOKED_HEADER_SIZE));
   *out_data = artifact;
   *out_size = file_size;
   return true_v;

@@ -1,4 +1,5 @@
 #include "font_cooked_tests.h"
+#include "core/vkr_hash.h"
 
 #include "assets/vkr_font_encode.h"
 #include "filesystem/filesystem.h"
@@ -11,17 +12,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
-static uint32_t test_font_crc32(const uint8_t *data, uint64_t size) {
-  uint32_t crc = 0xffffffffu;
-  for (uint64_t i = 0; i < size; ++i) {
-    crc ^= data[i];
-    for (uint32_t bit = 0; bit < 8u; ++bit) {
-      crc = (crc >> 1u) ^ (0xedb88320u & (uint32_t)-(int32_t)(crc & 1u));
-    }
-  }
-  return ~crc;
-}
 
 static uint32_t test_font_read_u32(const uint8_t *data) {
   return (uint32_t)data[0] | ((uint32_t)data[1] << 8u) |
@@ -57,18 +47,17 @@ static void test_font_refresh_checksums(uint8_t *data, uint64_t size) {
                      i * VKR_FONT_COOKED_SECTION_SIZE;
     const uint64_t offset = test_font_read_u64(entry + 8u);
     const uint64_t section_size = test_font_read_u64(entry + 16u);
-    test_font_write_u32(entry + 24u,
-                        test_font_crc32(data + offset, section_size));
+    test_font_write_u32(entry + 24u, vkr_crc32(data + offset, section_size));
   }
   test_font_write_u32(data + VKR_FONT_COOKED_DIRECTORY_CRC_OFFSET,
-                      test_font_crc32(data + VKR_FONT_COOKED_DIRECTORY_OFFSET,
-                                      VKR_FONT_COOKED_DIRECTORY_SIZE));
+                      vkr_crc32(data + VKR_FONT_COOKED_DIRECTORY_OFFSET,
+                                VKR_FONT_COOKED_DIRECTORY_SIZE));
   test_font_write_u32(data + VKR_FONT_COOKED_PAYLOAD_CRC_OFFSET,
-                      test_font_crc32(data + VKR_FONT_COOKED_DATA_OFFSET,
-                                      size - VKR_FONT_COOKED_DATA_OFFSET));
+                      vkr_crc32(data + VKR_FONT_COOKED_DATA_OFFSET,
+                                size - VKR_FONT_COOKED_DATA_OFFSET));
   test_font_write_u32(data + VKR_FONT_COOKED_HEADER_CRC_OFFSET, 0u);
   test_font_write_u32(data + VKR_FONT_COOKED_HEADER_CRC_OFFSET,
-                      test_font_crc32(data, VKR_FONT_COOKED_HEADER_SIZE));
+                      vkr_crc32(data, VKR_FONT_COOKED_HEADER_SIZE));
 }
 
 typedef struct TestFontFixture {
@@ -160,7 +149,7 @@ static void test_font_cooked_round_trip_and_golden(void) {
       vkr_font_cooked_encode(&scratch, &fixture.info, &second, &second_size));
   assert(first_size == second_size &&
          MemCompare(first, second, first_size) == 0);
-  assert(test_font_crc32(first, first_size) == 0xa454970au);
+  assert(vkr_crc32(first, first_size) == 0xa454970au);
   assert(test_font_read_u32(first) == VKR_FONT_COOKED_MAGIC);
   assert(test_font_read_u32(first + 4u) == VKR_FONT_COOKED_VERSION);
   assert(test_font_read_u32(first + 8u) == VKR_FONT_COOKED_ENDIAN_TAG);

@@ -483,23 +483,22 @@ static void
 vkr_harness_scene_manifest_digest(VkrHarnessSceneManifest *manifest) {
   vkr_sort(manifest->assets, manifest->asset_count, sizeof(*manifest->assets),
            vkr_harness_scene_asset_compare);
-  VkrHarnessSha256 hash;
-  vkr_harness_sha256_begin(&hash);
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
   for (uint32_t i = 0; i < manifest->asset_count; ++i) {
     const VkrHarnessSceneAsset *asset = &manifest->assets[i];
     const uint32_t path_length = (uint32_t)string_length(asset->path);
     const uint8_t path_prefix[4] = {
         (uint8_t)(path_length >> 24u), (uint8_t)(path_length >> 16u),
         (uint8_t)(path_length >> 8u), (uint8_t)path_length};
-    vkr_harness_sha256_update(&hash, path_prefix, sizeof(path_prefix));
-    vkr_harness_sha256_update(&hash, asset->path, path_length);
-    vkr_harness_sha256_update(&hash, asset->sha256,
-                              string_length(asset->sha256));
+    vkr_sha256_update(&hash, path_prefix, sizeof(path_prefix));
+    vkr_sha256_update(&hash, asset->path, path_length);
+    vkr_sha256_update(&hash, asset->sha256, string_length(asset->sha256));
     uint8_t size_bytes[8];
     for (uint32_t b = 0; b < 8u; ++b) {
       size_bytes[b] = (uint8_t)(asset->size >> ((7u - b) * 8u));
     }
-    vkr_harness_sha256_update(&hash, size_bytes, sizeof(size_bytes));
+    vkr_sha256_update(&hash, size_bytes, sizeof(size_bytes));
   }
   vkr_harness_sha256_end(&hash, manifest->sha256);
 }

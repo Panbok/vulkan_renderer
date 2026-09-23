@@ -2,6 +2,10 @@
 #include "../assets/vkr_ktx_file.h"
 #include "bake/vkr_bake_material.h"
 
+extern "C" {
+#include "core/vkr_hash.h"
+}
+
 #include <ktx.h>
 #include <vulkan/vulkan_core.h>
 
@@ -49,113 +53,15 @@ constexpr uint32_t k_texture_store_initial_capacity = 64u;
 constexpr uint32_t k_texture_max_dimension = 16384u;
 constexpr uint32_t k_sha256_text_length = 72u;
 
-struct Sha256 {
-  uint32_t state[8];
-  uint64_t bit_length;
-  uint8_t block[64];
-  uint32_t block_length;
-};
-
-uint32_t rotr32(uint32_t value, uint32_t bits) {
-  return (value >> bits) | (value << (32u - bits));
-}
-
-void sha256_transform(Sha256 *hash, const uint8_t block[64]) {
-  static const uint32_t constants[64] = {
-      0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
-      0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
-      0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
-      0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
-      0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
-      0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
-      0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
-      0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
-      0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
-      0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
-      0xa2bfe8a1u, 0x81a664bcu, 0xc24b8b70u, 0xc76c51a3u,
-      0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
-      0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
-      0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
-      0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
-      0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u};
-  uint32_t words[64];
-  for (uint32_t i = 0u; i < 16u; ++i) {
-    words[i] = ((uint32_t)block[i * 4u] << 24u) |
-               ((uint32_t)block[i * 4u + 1u] << 16u) |
-               ((uint32_t)block[i * 4u + 2u] << 8u) |
-               (uint32_t)block[i * 4u + 3u];
-  }
-  for (uint32_t i = 16u; i < 64u; ++i) {
-    const uint32_t s0 = rotr32(words[i - 15u], 7u) ^
-                        rotr32(words[i - 15u], 18u) ^
-                        (words[i - 15u] >> 3u);
-    const uint32_t s1 = rotr32(words[i - 2u], 17u) ^
-                        rotr32(words[i - 2u], 19u) ^
-                        (words[i - 2u] >> 10u);
-    words[i] = words[i - 16u] + s0 + words[i - 7u] + s1;
-  }
-  uint32_t a = hash->state[0], b = hash->state[1], c = hash->state[2];
-  uint32_t d = hash->state[3], e = hash->state[4], f = hash->state[5];
-  uint32_t g = hash->state[6], h = hash->state[7];
-  for (uint32_t i = 0u; i < 64u; ++i) {
-    const uint32_t sum1 = rotr32(e, 6u) ^ rotr32(e, 11u) ^ rotr32(e, 25u);
-    const uint32_t choose = (e & f) ^ ((~e) & g);
-    const uint32_t t1 = h + sum1 + choose + constants[i] + words[i];
-    const uint32_t sum0 = rotr32(a, 2u) ^ rotr32(a, 13u) ^ rotr32(a, 22u);
-    const uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
-    const uint32_t t2 = sum0 + majority;
-    h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
-  }
-  hash->state[0] += a; hash->state[1] += b; hash->state[2] += c;
-  hash->state[3] += d; hash->state[4] += e; hash->state[5] += f;
-  hash->state[6] += g; hash->state[7] += h;
-}
-
-void sha256_begin(Sha256 *hash) {
-  *hash = {{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
-            0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u},
-           0u, {}, 0u};
-}
-
-void sha256_update(Sha256 *hash, const uint8_t *bytes, uint64_t length) {
-  while (length > 0u) {
-    const uint32_t available = 64u - hash->block_length;
-    const uint32_t copied = (uint32_t)((length < available) ? length : available);
-    MemCopy(hash->block + hash->block_length, bytes, copied);
-    hash->block_length += copied;
-    bytes += copied;
-    length -= copied;
-    if (hash->block_length == 64u) {
-      sha256_transform(hash, hash->block);
-      hash->bit_length += 512u;
-      hash->block_length = 0u;
-    }
-  }
-}
-
-void sha256_end(Sha256 *hash, char out[k_sha256_text_length]) {
-  uint32_t index = hash->block_length;
-  hash->block[index++] = 0x80u;
-  if (index > 56u) {
-    while (index < 64u) hash->block[index++] = 0u;
-    sha256_transform(hash, hash->block);
-    index = 0u;
-  }
-  while (index < 56u) hash->block[index++] = 0u;
-  hash->bit_length += (uint64_t)hash->block_length * 8u;
-  for (uint32_t byte = 0u; byte < 8u; ++byte)
-    hash->block[63u - byte] = (uint8_t)(hash->bit_length >> (byte * 8u));
-  sha256_transform(hash, hash->block);
-  static const char hex[] = "0123456789abcdef";
+// Dependency records carry "sha256:" plus the lowercase hexadecimal digest.
+void sha256_text(const std::vector<uint8_t> &bytes,
+                 char out[k_sha256_text_length]) {
+  static_assert(k_sha256_text_length == 7u + VKR_SHA256_HEX_SIZE,
+                "Digest text holds the prefix and one hex digest");
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256(bytes.data(), bytes.size(), digest);
   MemCopy(out, "sha256:", 7u);
-  for (uint32_t word = 0u; word < 8u; ++word) {
-    for (uint32_t byte = 0u; byte < 4u; ++byte) {
-      const uint8_t value = (uint8_t)(hash->state[word] >> (24u - byte * 8u));
-      out[7u + (word * 4u + byte) * 2u] = hex[value >> 4u];
-      out[8u + (word * 4u + byte) * 2u] = hex[value & 15u];
-    }
-  }
-  out[71] = '\0';
+  vkr_sha256_hex(digest, out + 7u);
 }
 
 bool8_t finite_vec3(Vec3 value) {
@@ -658,10 +564,7 @@ bool8_t texture_store_load_cube_rgba16f(VkrBakeTextureStore *store,
     *out_error = VKR_BAKE_MATERIAL_ERROR_IO;
     return false_v;
   }
-  Sha256 hash = {};
-  sha256_begin(&hash);
-  sha256_update(&hash, bytes.data(), bytes.size());
-  sha256_end(&hash, entry.sha256);
+  sha256_text(bytes, entry.sha256);
   entry.byte_count = bytes.size();
   if (!decode_ktx2_cube_rgba16f(store, selected, &entry)) {
     texture_entry_release(store->allocator, &entry);
@@ -734,8 +637,7 @@ bool8_t texture_store_find_or_load(VkrBakeTextureStore *store,
   MemCopy(entry.path, canonical.c_str(), canonical.size() + 1u);
   std::vector<uint8_t> bytes;
   if (!read_file(selected, &bytes)) { texture_entry_release(store->allocator, &entry); *out_error = VKR_BAKE_MATERIAL_ERROR_IO; return false_v; }
-  Sha256 hash = {};
-  sha256_begin(&hash); sha256_update(&hash, bytes.data(), bytes.size()); sha256_end(&hash, entry.sha256);
+  sha256_text(bytes, entry.sha256);
   entry.byte_count = bytes.size();
   const bool8_t decoded = direct_vkt || ascii_lower(selected.extension().u8string()) == ".vkt"
                               ? decode_ktx2(store, selected, &entry)

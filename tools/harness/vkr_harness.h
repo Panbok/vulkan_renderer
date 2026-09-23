@@ -4,6 +4,7 @@
 
 #include "containers/str.h"
 #include "containers/vkr_sort.h"
+#include "core/vkr_hash.h"
 #include "core/vkr_json_writer.h"
 #include "core/vkr_metrics.h"
 #include "core/vkr_threads.h"
@@ -761,18 +762,8 @@ bool8_t vkr_harness_path_parent(const char *path,
  */
 void vkr_harness_path_to_run_root(char *path);
 
-/** Incremental SHA-256 so a hash input never needs a contiguous buffer. */
-typedef struct VkrHarnessSha256 {
-  uint32_t state[8];
-  uint64_t bit_length;
-  uint8_t block[64];
-  uint32_t block_length;
-} VkrHarnessSha256;
-
-void vkr_harness_sha256_begin(VkrHarnessSha256 *hash);
-void vkr_harness_sha256_update(VkrHarnessSha256 *hash, const void *data,
-                               uint64_t length);
-void vkr_harness_sha256_end(VkrHarnessSha256 *hash,
+/** Completes an incremental core SHA-256 as a "sha256:<hex>" report digest. */
+void vkr_harness_sha256_end(VkrSha256 *hash,
                             char out_digest[VKR_HARNESS_DIGEST_MAX]);
 void vkr_harness_sha256_bytes(const void *data, uint64_t length,
                               char out_digest[VKR_HARNESS_DIGEST_MAX]);

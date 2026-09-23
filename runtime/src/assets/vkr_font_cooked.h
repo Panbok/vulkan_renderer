@@ -3,6 +3,10 @@
 #include "containers/str.h"
 #include "memory/vkr_allocator.h"
 
+#include <float.h>
+#include <limits.h>
+#include <math.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,6 +36,37 @@ extern "C" {
 #define VKR_FONT_COOKED_MAX_KERNINGS 1048576u
 #define VKR_FONT_COOKED_MAX_PAGES 16u
 #define VKR_FONT_COOKED_MAX_FACE_BYTES 255u
+
+/* Byte offsets of the fixed header fields, shared by encoder and decoder. */
+enum {
+  VKR_FONT_COOKED_H_MAGIC = 0u,
+  VKR_FONT_COOKED_H_VERSION = 4u,
+  VKR_FONT_COOKED_H_ENDIAN = 8u,
+  VKR_FONT_COOKED_H_SIZE = 12u,
+  VKR_FONT_COOKED_H_FLAGS = 16u,
+  VKR_FONT_COOKED_H_FIELD = 20u,
+  VKR_FONT_COOKED_H_FALLBACK = 24u,
+  VKR_FONT_COOKED_H_COOKER = 28u,
+  VKR_FONT_COOKED_H_GLYPHS = 32u,
+  VKR_FONT_COOKED_H_CODEPOINTS = 36u,
+  VKR_FONT_COOKED_H_KERNINGS = 40u,
+  VKR_FONT_COOKED_H_PAGES = 44u,
+  VKR_FONT_COOKED_H_FILE_SIZE = 48u,
+  VKR_FONT_COOKED_H_FACE_SIZE = 56u,
+  VKR_FONT_COOKED_H_IDENTITY = 64u,
+  VKR_FONT_COOKED_H_METRICS = 96u,
+};
+
+#if !defined(__cplusplus)
+_Static_assert(CHAR_BIT == 8, "VKFA requires 8-bit bytes");
+_Static_assert(sizeof(float32_t) == 4u, "VKFA requires 32-bit float32_t");
+_Static_assert(FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128,
+               "VKFA requires binary32 arithmetic");
+#endif
+
+static inline VKR_MAYBE_UNUSED bool8_t vkr_font_cooked_finite(float32_t value) {
+  return isfinite(value) ? true_v : false_v;
+}
 
 typedef enum VkrFontCookedFieldKind {
   VKR_FONT_COOKED_FIELD_MTSDF = 1,

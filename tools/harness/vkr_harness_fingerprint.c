@@ -15,13 +15,13 @@ vkr_internal int32_t vkr_harness_fingerprint_field_compare(const void *a,
  * canonical buffer would have to be sized from the field struct's capacities
  * and silently overflows the moment either grows.
  */
-vkr_internal void vkr_harness_fingerprint_absorb(VkrHarnessSha256 *hash,
+vkr_internal void vkr_harness_fingerprint_absorb(VkrSha256 *hash,
                                                  const char *text,
                                                  uint32_t length) {
   const uint8_t prefix[4] = {(uint8_t)(length >> 24u), (uint8_t)(length >> 16u),
                              (uint8_t)(length >> 8u), (uint8_t)length};
-  vkr_harness_sha256_update(hash, prefix, sizeof(prefix));
-  vkr_harness_sha256_update(hash, text, length);
+  vkr_sha256_update(hash, prefix, sizeof(prefix));
+  vkr_sha256_update(hash, text, length);
 }
 
 bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
@@ -40,8 +40,8 @@ bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
     vkr_sort(sorted, field_count, sizeof(*sorted),
              vkr_harness_fingerprint_field_compare);
   }
-  VkrHarnessSha256 hash;
-  vkr_harness_sha256_begin(&hash);
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
   for (uint32_t i = 0; i < field_count; ++i) {
     if (sorted[i].name[0] == '\0' ||
         (i > 0 && string_equals(sorted[i - 1u].name, sorted[i].name))) {

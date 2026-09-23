@@ -1,4 +1,5 @@
 #include "mesh_skin_tests.h"
+#include "core/vkr_hash.h"
 
 #include "assets/vkr_animation_import.h"
 #include "assets/vkr_mesh_cook_source.h"
@@ -28,24 +29,13 @@ static void skin_test_write_u32(uint8_t *bytes, uint32_t value) {
   }
 }
 
-static uint32_t skin_test_crc(const uint8_t *bytes, uint64_t size) {
-  uint32_t crc = UINT32_MAX;
-  for (uint64_t i = 0u; i < size; ++i) {
-    crc ^= bytes[i];
-    for (uint32_t bit = 0u; bit < 8u; ++bit) {
-      crc = (crc >> 1u) ^ (0xedb88320u & (uint32_t)-(int32_t)(crc & 1u));
-    }
-  }
-  return ~crc;
-}
-
 static void skin_test_refresh_integrity(uint8_t *bytes) {
   uint64_t directory = skin_test_read_u64(bytes + 48u);
   uint64_t streams = skin_test_read_u64(bytes + 80u);
   skin_test_write_u32(bytes + 188u,
-                      skin_test_crc(bytes + directory, streams - directory));
+                      vkr_crc32(bytes + directory, streams - directory));
   skin_test_write_u32(bytes + 184u, 0u);
-  skin_test_write_u32(bytes + 184u, skin_test_crc(bytes, 272u));
+  skin_test_write_u32(bytes + 184u, vkr_crc32(bytes, 272u));
 }
 
 static VkrVertex3d skin_test_vertex(uint32_t corner) {

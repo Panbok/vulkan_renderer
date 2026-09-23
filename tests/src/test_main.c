@@ -11,6 +11,7 @@
 #include "editor_project_store_test.h"
 #include "gameplay_input_test.h"
 #include "gameplay_player_test.h"
+#include "hash_test.h"
 #include "mesh_skin_tests.h"
 #include "physics_test.h"
 #include "player_animation_test.h"
@@ -38,6 +39,7 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_gameplay_player_tests,
     run_player_animation_tests,
     run_character_tests,
+    run_hash_tests,
     run_allocator_tests,
     run_atomic_tests,
     run_metrics_tests,

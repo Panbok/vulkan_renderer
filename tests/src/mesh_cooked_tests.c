@@ -1,4 +1,5 @@
 #include "mesh_cooked_tests.h"
+#include "core/vkr_hash.h"
 
 #include "assets/vkr_mesh_cook_source.h"
 #include "assets/vkr_mesh_encode.h"
@@ -24,17 +25,6 @@
 #define TEST_VERTEX_CRC_FIELD 72u
 #define TEST_CENTER_X_FIELD 104u
 #define TEST_DECODE_FLAGS_FIELD 180u
-
-static uint32_t test_crc32(const uint8_t *data, uint64_t size) {
-  uint32_t crc = 0xffffffffu;
-  for (uint64_t i = 0; i < size; ++i) {
-    crc ^= data[i];
-    for (uint32_t bit = 0; bit < 8u; ++bit) {
-      crc = (crc >> 1u) ^ (0xedb88320u & (uint32_t)-(int32_t)(crc & 1u));
-    }
-  }
-  return ~crc;
-}
 
 static uint32_t test_read_le32(const uint8_t *data) {
   return (uint32_t)data[0] | ((uint32_t)data[1] << 8u) |
@@ -69,10 +59,10 @@ static void test_refresh_integrity(uint8_t *data) {
   assert(stream_offset >= TEST_HEADER_SIZE);
   test_write_le32(
       data + TEST_METADATA_CRC_FIELD,
-      test_crc32(data + TEST_HEADER_SIZE, stream_offset - TEST_HEADER_SIZE));
+      vkr_crc32(data + TEST_HEADER_SIZE, stream_offset - TEST_HEADER_SIZE));
   test_write_le32(data + TEST_HEADER_CRC_FIELD, 0u);
   test_write_le32(data + TEST_HEADER_CRC_FIELD,
-                  test_crc32(data, TEST_HEADER_SIZE));
+                  vkr_crc32(data, TEST_HEADER_SIZE));
 }
 
 static VkrVertex3d test_vertex(float32_t x, float32_t y, float32_t z) {
@@ -539,7 +529,7 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   mutated[vertex_stream_offset] ^= 0xffu;
   test_write_le32(
       mutated + TEST_HEADER_SIZE + TEST_VERTEX_CRC_FIELD,
-      test_crc32(mutated + vertex_stream_offset, vertex_stream_size));
+      vkr_crc32(mutated + vertex_stream_offset, vertex_stream_size));
   test_refresh_integrity(mutated);
   assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, first_size,
                                  &decoded));

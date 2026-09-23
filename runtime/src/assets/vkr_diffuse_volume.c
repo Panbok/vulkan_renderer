@@ -1,5 +1,8 @@
 #include "assets/vkr_diffuse_volume.h"
 
+#include "core/vkr_byte_io.h"
+#include "core/vkr_hash.h"
+
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -32,89 +35,12 @@ _Static_assert(sizeof(VkrShL2Packed) == VKR_SH_SLOT_BYTES, "DVOL SH ABI drift");
 #define VKR_DIFFUSE_VOLUME_H_RESERVED1 104u
 #define VKR_DIFFUSE_VOLUME_H_RESERVED2 108u
 
-static bool8_t vkr_diffuse_volume_add(uint64_t left, uint64_t right,
-                                      uint64_t *out_result) {
-  if (left > UINT64_MAX - right)
-    return false_v;
-  *out_result = left + right;
-  return true_v;
-}
-
-static bool8_t vkr_diffuse_volume_mul(uint64_t left, uint64_t right,
-                                      uint64_t *out_result) {
-  if (left != 0u && right > UINT64_MAX / left)
-    return false_v;
-  *out_result = left * right;
-  return true_v;
-}
-
-static uint32_t vkr_diffuse_volume_read_u32(const uint8_t *bytes) {
-  return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) |
-         ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
-}
-
-static uint64_t vkr_diffuse_volume_read_u64(const uint8_t *bytes) {
-  return (uint64_t)vkr_diffuse_volume_read_u32(bytes) |
-         ((uint64_t)vkr_diffuse_volume_read_u32(bytes + 4u) << 32u);
-}
-
-static void vkr_diffuse_volume_write_u32(uint8_t *bytes, uint32_t value) {
-  bytes[0] = (uint8_t)value;
-  bytes[1] = (uint8_t)(value >> 8u);
-  bytes[2] = (uint8_t)(value >> 16u);
-  bytes[3] = (uint8_t)(value >> 24u);
-}
-
-static void vkr_diffuse_volume_write_u64(uint8_t *bytes, uint64_t value) {
-  vkr_diffuse_volume_write_u32(bytes, (uint32_t)value);
-  vkr_diffuse_volume_write_u32(bytes + 4u, (uint32_t)(value >> 32u));
-}
-
-static float32_t vkr_diffuse_volume_read_f32(const uint8_t *bytes) {
-  const uint32_t bits = vkr_diffuse_volume_read_u32(bytes);
-  float32_t value = 0.0f;
-  MemCopy(&value, &bits, sizeof(value));
-  return value;
-}
-
-static void vkr_diffuse_volume_write_f32(uint8_t *bytes, float32_t value) {
-  uint32_t bits = 0u;
-  MemCopy(&bits, &value, sizeof(bits));
-  vkr_diffuse_volume_write_u32(bytes, bits);
-}
-
-static bool8_t vkr_diffuse_volume_float_format_supported(void) {
-  const float32_t one = 1.0f;
-  const float32_t negative_half = -0.5f;
-  uint32_t one_bits = 0u;
-  uint32_t negative_half_bits = 0u;
-  MemCopy(&one_bits, &one, sizeof(one_bits));
-  MemCopy(&negative_half_bits, &negative_half, sizeof(negative_half_bits));
-  return FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128 &&
-         one_bits == 0x3f800000u && negative_half_bits == 0xbf000000u;
-}
-
-static uint32_t vkr_diffuse_volume_crc32_update(uint32_t crc,
-                                                const uint8_t *bytes,
-                                                uint64_t size) {
-  for (uint64_t index = 0u; index < size; ++index) {
-    crc ^= bytes[index];
-    for (uint32_t bit = 0u; bit < 8u; ++bit)
-      crc = (crc >> 1u) ^ (0xedb88320u & (uint32_t)-(int32_t)(crc & 1u));
-  }
-  return crc;
-}
-
-static uint32_t vkr_diffuse_volume_crc32(const uint8_t *bytes, uint64_t size) {
-  return ~vkr_diffuse_volume_crc32_update(0xffffffffu, bytes, size);
-}
-
 static uint32_t vkr_diffuse_volume_header_crc(const uint8_t *header) {
-  uint32_t crc = vkr_diffuse_volume_crc32_update(
-      0xffffffffu, header, VKR_DIFFUSE_VOLUME_H_HEADER_CRC);
+  uint32_t crc = vkr_crc32_update(VKR_CRC32_INITIAL, header,
+                                  VKR_DIFFUSE_VOLUME_H_HEADER_CRC);
   const uint8_t zero_crc[4] = {0u, 0u, 0u, 0u};
-  crc = vkr_diffuse_volume_crc32_update(crc, zero_crc, sizeof(zero_crc));
-  crc = vkr_diffuse_volume_crc32_update(
+  crc = vkr_crc32_update(crc, zero_crc, sizeof(zero_crc));
+  crc = vkr_crc32_update(
       crc, header + VKR_DIFFUSE_VOLUME_H_HEADER_CRC + sizeof(zero_crc),
       VKR_DIFFUSE_VOLUME_HEADER_BYTES -
           (VKR_DIFFUSE_VOLUME_H_HEADER_CRC + sizeof(zero_crc)));
@@ -138,12 +64,11 @@ static bool8_t vkr_diffuse_volume_layout(uint32_t dimension_x,
 
   uint64_t probe_count = 0u;
   uint64_t cell_count = 0u;
-  if (!vkr_diffuse_volume_mul(dimension_x, dimension_y, &probe_count) ||
-      !vkr_diffuse_volume_mul(probe_count, dimension_z, &probe_count) ||
+  if (!vkr_checked_mul_u64(dimension_x, dimension_y, &probe_count) ||
+      !vkr_checked_mul_u64(probe_count, dimension_z, &probe_count) ||
       probe_count > VKR_DIFFUSE_VOLUME_MAX_PROBES ||
-      !vkr_diffuse_volume_mul(dimension_x - 1u, dimension_y - 1u,
-                              &cell_count) ||
-      !vkr_diffuse_volume_mul(cell_count, dimension_z - 1u, &cell_count) ||
+      !vkr_checked_mul_u64(dimension_x - 1u, dimension_y - 1u, &cell_count) ||
+      !vkr_checked_mul_u64(cell_count, dimension_z - 1u, &cell_count) ||
       cell_count > UINT32_MAX)
     return false_v;
 
@@ -225,25 +150,24 @@ static bool8_t vkr_diffuse_volume_valid(const VkrDiffuseVolume *volume) {
 
 static void vkr_diffuse_volume_write_probe(uint8_t *bytes,
                                            const VkrDiffuseVolumeProbe *probe) {
-  vkr_diffuse_volume_write_u32(bytes, probe->region_id);
+  vkr_store_le_u32(bytes, probe->region_id);
   bytes += sizeof(uint32_t);
   for (uint32_t vector_index = 0u; vector_index < VKR_SH_PACKED_VECTOR_COUNT;
        ++vector_index)
     for (uint32_t component = 0u; component < 4u; ++component) {
-      vkr_diffuse_volume_write_f32(bytes, probe->sh.v[vector_index][component]);
+      vkr_store_le_f32(bytes, probe->sh.v[vector_index][component]);
       bytes += sizeof(float32_t);
     }
 }
 
 static void vkr_diffuse_volume_read_probe(const uint8_t *bytes,
                                           VkrDiffuseVolumeProbe *out_probe) {
-  out_probe->region_id = vkr_diffuse_volume_read_u32(bytes);
+  out_probe->region_id = vkr_load_le_u32(bytes);
   bytes += sizeof(uint32_t);
   for (uint32_t vector_index = 0u; vector_index < VKR_SH_PACKED_VECTOR_COUNT;
        ++vector_index)
     for (uint32_t component = 0u; component < 4u; ++component) {
-      out_probe->sh.v[vector_index][component] =
-          vkr_diffuse_volume_read_f32(bytes);
+      out_probe->sh.v[vector_index][component] = vkr_load_le_f32(bytes);
       bytes += sizeof(float32_t);
     }
 }
@@ -255,8 +179,7 @@ bool8_t vkr_diffuse_volume_encode(const VkrDiffuseVolume *volume, Arena *arena,
     return false_v;
   *out_bytes = NULL;
   *out_size = 0u;
-  if (!arena || !vkr_diffuse_volume_float_format_supported() ||
-      !vkr_diffuse_volume_valid(volume))
+  if (!arena || !vkr_f32_is_binary32() || !vkr_diffuse_volume_valid(volume))
     return false_v;
 
   uint64_t probe_bytes = 0u;
@@ -264,12 +187,12 @@ bool8_t vkr_diffuse_volume_encode(const VkrDiffuseVolume *volume, Arena *arena,
   uint64_t probe_offset = VKR_DIFFUSE_VOLUME_HEADER_BYTES;
   uint64_t cell_offset = 0u;
   uint64_t file_size = 0u;
-  if (!vkr_diffuse_volume_mul(volume->probe_count,
-                              VKR_DIFFUSE_VOLUME_PROBE_BYTES, &probe_bytes) ||
-      !vkr_diffuse_volume_add(probe_offset, probe_bytes, &cell_offset) ||
-      !vkr_diffuse_volume_mul(volume->cell_count, VKR_DIFFUSE_VOLUME_CELL_BYTES,
-                              &cell_bytes) ||
-      !vkr_diffuse_volume_add(cell_offset, cell_bytes, &file_size))
+  if (!vkr_checked_mul_u64(volume->probe_count, VKR_DIFFUSE_VOLUME_PROBE_BYTES,
+                           &probe_bytes) ||
+      !vkr_checked_add_u64(probe_offset, probe_bytes, &cell_offset) ||
+      !vkr_checked_mul_u64(volume->cell_count, VKR_DIFFUSE_VOLUME_CELL_BYTES,
+                           &cell_bytes) ||
+      !vkr_checked_add_u64(cell_offset, cell_bytes, &file_size))
     return false_v;
 
   uint8_t *bytes =
@@ -277,58 +200,50 @@ bool8_t vkr_diffuse_volume_encode(const VkrDiffuseVolume *volume, Arena *arena,
   if (!bytes)
     return false_v;
   MemZero(bytes, file_size);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_MAGIC,
-                               VKR_DIFFUSE_VOLUME_MAGIC);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_VERSION,
-                               VKR_DIFFUSE_VOLUME_VERSION);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_ENDIAN,
-                               VKR_DIFFUSE_VOLUME_ENDIAN_TAG);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_SIZE,
-                               VKR_DIFFUSE_VOLUME_HEADER_BYTES);
-  vkr_diffuse_volume_write_u64(bytes + VKR_DIFFUSE_VOLUME_H_FILE_SIZE,
-                               file_size);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_X,
-                               volume->dimensions[0]);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Y,
-                               volume->dimensions[1]);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Z,
-                               volume->dimensions[2]);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_COUNT,
-                               volume->probe_count);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_COUNT,
-                               volume->cell_count);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_MAGIC,
+                   VKR_DIFFUSE_VOLUME_MAGIC);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_VERSION,
+                   VKR_DIFFUSE_VOLUME_VERSION);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_ENDIAN,
+                   VKR_DIFFUSE_VOLUME_ENDIAN_TAG);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_SIZE,
+                   VKR_DIFFUSE_VOLUME_HEADER_BYTES);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_FILE_SIZE, file_size);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_X, volume->dimensions[0]);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Y, volume->dimensions[1]);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Z, volume->dimensions[2]);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_COUNT,
+                   volume->probe_count);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_COUNT, volume->cell_count);
   for (uint32_t component = 0u; component < 3u; ++component) {
-    vkr_diffuse_volume_write_f32(bytes + VKR_DIFFUSE_VOLUME_H_ORIGIN +
-                                     component * sizeof(float32_t),
-                                 volume->origin.elements[component]);
-    vkr_diffuse_volume_write_f32(bytes + VKR_DIFFUSE_VOLUME_H_SPACING +
-                                     component * sizeof(float32_t),
-                                 volume->spacing.elements[component]);
+    vkr_store_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_ORIGIN +
+                         component * sizeof(float32_t),
+                     volume->origin.elements[component]);
+    vkr_store_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_SPACING +
+                         component * sizeof(float32_t),
+                     volume->spacing.elements[component]);
   }
-  vkr_diffuse_volume_write_u64(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_OFFSET,
-                               probe_offset);
-  vkr_diffuse_volume_write_u64(bytes + VKR_DIFFUSE_VOLUME_H_CELL_OFFSET,
-                               cell_offset);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_BYTES,
-                               VKR_DIFFUSE_VOLUME_PROBE_BYTES);
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_BYTES,
-                               VKR_DIFFUSE_VOLUME_CELL_BYTES);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_OFFSET, probe_offset);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_CELL_OFFSET, cell_offset);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_BYTES,
+                   VKR_DIFFUSE_VOLUME_PROBE_BYTES);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_BYTES,
+                   VKR_DIFFUSE_VOLUME_CELL_BYTES);
 
   for (uint32_t index = 0u; index < volume->probe_count; ++index)
     vkr_diffuse_volume_write_probe(
         bytes + probe_offset + (uint64_t)index * VKR_DIFFUSE_VOLUME_PROBE_BYTES,
         &volume->probes[index]);
   for (uint32_t index = 0u; index < volume->cell_count; ++index)
-    vkr_diffuse_volume_write_u32(
-        bytes + cell_offset + (uint64_t)index * VKR_DIFFUSE_VOLUME_CELL_BYTES,
-        volume->cell_region_ids[index]);
+    vkr_store_le_u32(bytes + cell_offset +
+                         (uint64_t)index * VKR_DIFFUSE_VOLUME_CELL_BYTES,
+                     volume->cell_region_ids[index]);
 
-  vkr_diffuse_volume_write_u32(
-      bytes + VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC,
-      vkr_diffuse_volume_crc32(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES,
-                               file_size - VKR_DIFFUSE_VOLUME_HEADER_BYTES));
-  vkr_diffuse_volume_write_u32(bytes + VKR_DIFFUSE_VOLUME_H_HEADER_CRC,
-                               vkr_diffuse_volume_header_crc(bytes));
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC,
+                   vkr_crc32(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES,
+                             file_size - VKR_DIFFUSE_VOLUME_HEADER_BYTES));
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_HEADER_CRC,
+                   vkr_diffuse_volume_header_crc(bytes));
   *out_bytes = bytes;
   *out_size = file_size;
   return true_v;
@@ -340,44 +255,40 @@ bool8_t vkr_diffuse_volume_decode(const uint8_t *bytes, uint64_t size,
     return false_v;
   *out_volume = (VkrDiffuseVolume){0};
   if (!bytes || !arena || size < VKR_DIFFUSE_VOLUME_HEADER_BYTES ||
-      !vkr_diffuse_volume_float_format_supported())
+      !vkr_f32_is_binary32())
     return false_v;
-  if (vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_MAGIC) !=
+  if (vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_MAGIC) !=
           VKR_DIFFUSE_VOLUME_MAGIC ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_VERSION) !=
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_VERSION) !=
           VKR_DIFFUSE_VOLUME_VERSION ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_ENDIAN) !=
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_ENDIAN) !=
           VKR_DIFFUSE_VOLUME_ENDIAN_TAG ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_SIZE) !=
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_SIZE) !=
           VKR_DIFFUSE_VOLUME_HEADER_BYTES ||
-      vkr_diffuse_volume_read_u64(bytes + VKR_DIFFUSE_VOLUME_H_FILE_SIZE) !=
-          size ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED0) !=
-          0u ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED1) !=
-          0u ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED2) !=
-          0u ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_HEADER_CRC) !=
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_FILE_SIZE) != size ||
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED0) != 0u ||
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED1) != 0u ||
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED2) != 0u ||
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_HEADER_CRC) !=
           vkr_diffuse_volume_header_crc(bytes))
     return false_v;
 
   const uint32_t dimensions[3] = {
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_X),
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Y),
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Z),
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_X),
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Y),
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Z),
   };
   uint32_t expected_probe_count = 0u;
   uint32_t expected_cell_count = 0u;
   if (!vkr_diffuse_volume_layout(dimensions[0], dimensions[1], dimensions[2],
                                  &expected_probe_count, &expected_cell_count) ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_COUNT) !=
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_COUNT) !=
           expected_probe_count ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_COUNT) !=
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_COUNT) !=
           expected_cell_count ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_BYTES) !=
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_BYTES) !=
           VKR_DIFFUSE_VOLUME_PROBE_BYTES ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_BYTES) !=
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_BYTES) !=
           VKR_DIFFUSE_VOLUME_CELL_BYTES)
     return false_v;
 
@@ -385,30 +296,30 @@ bool8_t vkr_diffuse_volume_decode(const uint8_t *bytes, uint64_t size,
   uint64_t cell_bytes = 0u;
   uint64_t expected_cell_offset = 0u;
   uint64_t expected_file_size = 0u;
-  if (!vkr_diffuse_volume_mul(expected_probe_count,
-                              VKR_DIFFUSE_VOLUME_PROBE_BYTES, &probe_bytes) ||
-      !vkr_diffuse_volume_add(VKR_DIFFUSE_VOLUME_HEADER_BYTES, probe_bytes,
-                              &expected_cell_offset) ||
-      !vkr_diffuse_volume_mul(expected_cell_count,
-                              VKR_DIFFUSE_VOLUME_CELL_BYTES, &cell_bytes) ||
-      !vkr_diffuse_volume_add(expected_cell_offset, cell_bytes,
-                              &expected_file_size) ||
-      vkr_diffuse_volume_read_u64(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_OFFSET) !=
+  if (!vkr_checked_mul_u64(expected_probe_count, VKR_DIFFUSE_VOLUME_PROBE_BYTES,
+                           &probe_bytes) ||
+      !vkr_checked_add_u64(VKR_DIFFUSE_VOLUME_HEADER_BYTES, probe_bytes,
+                           &expected_cell_offset) ||
+      !vkr_checked_mul_u64(expected_cell_count, VKR_DIFFUSE_VOLUME_CELL_BYTES,
+                           &cell_bytes) ||
+      !vkr_checked_add_u64(expected_cell_offset, cell_bytes,
+                           &expected_file_size) ||
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_OFFSET) !=
           VKR_DIFFUSE_VOLUME_HEADER_BYTES ||
-      vkr_diffuse_volume_read_u64(bytes + VKR_DIFFUSE_VOLUME_H_CELL_OFFSET) !=
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_CELL_OFFSET) !=
           expected_cell_offset ||
       expected_file_size != size ||
-      vkr_diffuse_volume_read_u32(bytes + VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC) !=
-          vkr_diffuse_volume_crc32(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES,
-                                   size - VKR_DIFFUSE_VOLUME_HEADER_BYTES))
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC) !=
+          vkr_crc32(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES,
+                    size - VKR_DIFFUSE_VOLUME_HEADER_BYTES))
     return false_v;
 
   Vec3 origin = vec3_zero();
   Vec3 spacing = vec3_zero();
   for (uint32_t component = 0u; component < 3u; ++component) {
-    origin.elements[component] = vkr_diffuse_volume_read_f32(
+    origin.elements[component] = vkr_load_le_f32(
         bytes + VKR_DIFFUSE_VOLUME_H_ORIGIN + component * sizeof(float32_t));
-    spacing.elements[component] = vkr_diffuse_volume_read_f32(
+    spacing.elements[component] = vkr_load_le_f32(
         bytes + VKR_DIFFUSE_VOLUME_H_SPACING + component * sizeof(float32_t));
   }
   if (!vkr_diffuse_volume_finite_vec3(origin) ||
@@ -435,7 +346,7 @@ bool8_t vkr_diffuse_volume_decode(const uint8_t *bytes, uint64_t size,
         bytes + probe_offset + (uint64_t)index * VKR_DIFFUSE_VOLUME_PROBE_BYTES,
         &probes[index]);
   for (uint32_t index = 0u; index < expected_cell_count; ++index)
-    cell_region_ids[index] = vkr_diffuse_volume_read_u32(
+    cell_region_ids[index] = vkr_load_le_u32(
         bytes + cell_offset + (uint64_t)index * VKR_DIFFUSE_VOLUME_CELL_BYTES);
 
   VkrDiffuseVolume volume = {

@@ -1,5 +1,8 @@
 #include "renderer/systems/vkr_texture_transcode_cache.h"
 
+#include "core/vkr_byte_io.h"
+#include "core/vkr_hash.h"
+
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
@@ -117,37 +120,6 @@ static uint32_t vkr_texture_cache_fast_hash32(const void *data, uint64_t size) {
   return (uint32_t)(hash ^ (hash >> 32u));
 }
 
-static uint32_t vkr_texture_cache_crc32(const void *data, uint64_t size) {
-  const uint8_t *bytes = data;
-  uint32_t crc = 0xffffffffu;
-  for (uint64_t i = 0; i < size; ++i) {
-    crc ^= bytes[i];
-    for (uint32_t bit = 0; bit < 8u; ++bit) {
-      const uint32_t mask = (uint32_t)-(int32_t)(crc & 1u);
-      crc = (crc >> 1u) ^ (0xedb88320u & mask);
-    }
-  }
-  return ~crc;
-}
-
-static bool8_t vkr_texture_cache_add_u64(uint64_t a, uint64_t b,
-                                         uint64_t *out) {
-  if (!out || a > UINT64_MAX - b) {
-    return false_v;
-  }
-  *out = a + b;
-  return true_v;
-}
-
-static bool8_t vkr_texture_cache_mul_u64(uint64_t a, uint64_t b,
-                                         uint64_t *out) {
-  if (!out || (a != 0u && b > UINT64_MAX / a)) {
-    return false_v;
-  }
-  *out = a * b;
-  return true_v;
-}
-
 static bool8_t vkr_texture_cache_shape_is_valid(VkrTextureFormat format,
                                                 uint32_t width, uint32_t height,
                                                 uint32_t mip_levels,
@@ -169,8 +141,8 @@ static bool8_t vkr_texture_cache_shape_is_valid(VkrTextureFormat format,
   }
   uint64_t expected_region_count = 0u;
   return mip_levels <= max_mip_levels &&
-         vkr_texture_cache_mul_u64(mip_levels, array_layers,
-                                   &expected_region_count) &&
+         vkr_checked_mul_u64(mip_levels, array_layers,
+                             &expected_region_count) &&
          expected_region_count == region_count &&
          region_count <= VKR_TEXTURE_TRANSCODE_CACHE_MAX_REGIONS;
 }
@@ -185,16 +157,16 @@ static bool8_t vkr_texture_cache_payload_size_is_valid(
         format, Max(1u, width >> mip), Max(1u, height >> mip));
     uint64_t layer_size = 0u;
     if (region_size == 0u ||
-        !vkr_texture_cache_mul_u64(region_size, array_layers, &layer_size) ||
-        !vkr_texture_cache_add_u64(minimum_size, layer_size, &minimum_size)) {
+        !vkr_checked_mul_u64(region_size, array_layers, &layer_size) ||
+        !vkr_checked_add_u64(minimum_size, layer_size, &minimum_size)) {
       return false_v;
     }
   }
   uint64_t alignment_allowance = 0u;
   uint64_t maximum_size = 0u;
-  return vkr_texture_cache_mul_u64(region_count, 7u, &alignment_allowance) &&
-         vkr_texture_cache_add_u64(minimum_size, alignment_allowance,
-                                   &maximum_size) &&
+  return vkr_checked_mul_u64(region_count, 7u, &alignment_allowance) &&
+         vkr_checked_add_u64(minimum_size, alignment_allowance,
+                             &maximum_size) &&
          data_size >= minimum_size && data_size <= maximum_size;
 }
 
@@ -281,8 +253,7 @@ static bool8_t vkr_texture_cache_header_valid(
     uint32_t expected_array_layers) {
   const uint32_t stored_crc = vkr_texture_cache_u32_le(header->header_crc);
   header->header_crc = 0u;
-  const uint32_t observed_crc =
-      vkr_texture_cache_crc32(header, sizeof(*header));
+  const uint32_t observed_crc = vkr_crc32(header, sizeof(*header));
   header->header_crc = vkr_texture_cache_u32_le(stored_crc);
   const uint32_t flags = vkr_texture_cache_u32_le(header->flags);
   return stored_crc == observed_crc &&
@@ -377,11 +348,10 @@ bool8_t vkr_texture_transcode_cache_load(
   uint64_t region_bytes = 0u;
   uint64_t data_offset = 0u;
   uint64_t expected_file_size = 0u;
-  if (!vkr_texture_cache_mul_u64(region_count,
-                                 sizeof(VkrTextureTranscodeCacheRegion),
-                                 &region_bytes) ||
-      !vkr_texture_cache_add_u64(sizeof(header), region_bytes, &data_offset) ||
-      !vkr_texture_cache_add_u64(data_offset, data_size, &expected_file_size) ||
+  if (!vkr_checked_mul_u64(region_count, sizeof(VkrTextureTranscodeCacheRegion),
+                           &region_bytes) ||
+      !vkr_checked_add_u64(sizeof(header), region_bytes, &data_offset) ||
+      !vkr_checked_add_u64(data_offset, data_size, &expected_file_size) ||
       expected_file_size != cache_stats.size) {
     vkr_texture_cache_remove(cache_path);
     return false_v;
@@ -545,8 +515,8 @@ bool8_t vkr_texture_transcode_cache_store(
       .header_crc = 0u,
       .reserved = {0u, 0u, 0u, 0u},
   };
-  header.header_crc = vkr_texture_cache_u32_le(
-      vkr_texture_cache_crc32(&header, sizeof(header)));
+  header.header_crc =
+      vkr_texture_cache_u32_le(vkr_crc32(&header, sizeof(header)));
 
   FilePath temp_fp = file_path_create((const char *)temp_path.str, scratch,
                                       vkr_texture_cache_path_type(temp_path));
