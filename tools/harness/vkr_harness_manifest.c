@@ -559,13 +559,13 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
           ArrayCount(required), "$.renderer", error)) {
     return false_v;
   }
-  string_copy(renderer->render_mode, "default");
-  string_copy(renderer->exposure_mode, "manual");
-  string_copy(renderer->display_transform, "agx");
+  VKR_STRING_COPY_LITERAL(renderer->render_mode, "default");
+  VKR_STRING_COPY_LITERAL(renderer->exposure_mode, "manual");
+  VKR_STRING_COPY_LITERAL(renderer->display_transform, "agx");
   renderer->color_contrast = 1.0f;
   renderer->color_saturation = 1.0f;
-  string_copy(renderer->upscaler, "spatial");
-  string_copy(renderer->display_output, "sdr");
+  VKR_STRING_COPY_LITERAL(renderer->upscaler, "spatial");
+  VKR_STRING_COPY_LITERAL(renderer->display_output, "sdr");
   renderer->taa_enabled = true_v;
   renderer->tonemap_enabled = true_v;
   renderer->fxaa_enabled = true_v;

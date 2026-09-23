@@ -1645,10 +1645,14 @@ VkrEditorProjects *vkr_editor_projects_create(VkrAllocator *allocator, int argc,
   if (vkr_platform_executable_path(projects->bootstrap_directory,
                                    sizeof(projects->bootstrap_directory))) {
     char *separator = strrchr(projects->bootstrap_directory, '/');
-    if (separator &&
-        (uint64_t)(separator - projects->bootstrap_directory) + 24 <
-            sizeof(projects->bootstrap_directory)) {
-      strcpy(separator + 1, "resources/editor");
+    const uint64_t used =
+        separator ? (uint64_t)(separator + 1 - projects->bootstrap_directory)
+                  : 0u;
+    if (!separator ||
+        !vkr_string_copy_bounded(separator + 1,
+                                 sizeof(projects->bootstrap_directory) - used,
+                                 "resources/editor")) {
+      projects->bootstrap_directory[0] = '\0';
     }
   }
   projects->view = PROJECT_VIEW_CHOOSER;

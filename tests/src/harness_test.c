@@ -760,7 +760,7 @@ vkr_internal void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) == 0);
-  string_copy(case_manifest.renderer.exposure_mode, "automatic");
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.exposure_mode, "automatic");
   case_manifest.renderer.manual_exposure = 0.25f;
   case_manifest.renderer.exposure_compensation_ev = 1.0f;
   case_manifest.renderer.exposure_reset_frame = 1u;
@@ -769,7 +769,7 @@ vkr_internal void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
-  string_copy(case_manifest.renderer.exposure_mode, "manual");
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.exposure_mode, "manual");
   case_manifest.renderer.manual_exposure = VKR_DEFAULT_EXPOSURE;
   case_manifest.renderer.exposure_compensation_ev = 0.0f;
   case_manifest.renderer.exposure_reset_frame = UINT32_MAX;
@@ -804,7 +804,7 @@ vkr_internal void test_harness_fingerprints(void) {
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   case_manifest.renderer.render_scale = 1.0f;
-  string_copy(case_manifest.renderer.upscaler, "metalfx_temporal");
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "metalfx_temporal");
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
@@ -821,7 +821,7 @@ vkr_internal void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(metalfx_workload, workload) != 0);
-  string_copy(case_manifest.renderer.upscaler, "spatial");
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "spatial");
   case_manifest.renderer.dynamic_resolution = false_v;
   case_manifest.renderer.dynamic_resolution_min_scale = 0.0f;
   case_manifest.renderer.dynamic_resolution_max_scale = 0.0f;
@@ -939,8 +939,8 @@ vkr_internal void test_harness_fingerprints(void) {
   char saved_ssr_quality[4096] = {0};
   const bool8_t had_ssr_quality = previous_ssr_quality != NULL;
   if (had_ssr_quality) {
-    assert(strlen(previous_ssr_quality) < sizeof(saved_ssr_quality));
-    string_copy(saved_ssr_quality, previous_ssr_quality);
+    assert(vkr_string_copy_bounded(saved_ssr_quality, sizeof(saved_ssr_quality),
+                                   previous_ssr_quality));
   }
   const bool8_t previous_ssr_enabled = case_manifest.renderer.ssr_enabled;
   case_manifest.renderer.ssr_enabled = true_v;
@@ -987,8 +987,8 @@ vkr_internal void test_harness_fingerprints(void) {
   char saved_post_cache[4096] = {0};
   const bool8_t had_post_cache = previous_post_cache != NULL;
   if (had_post_cache) {
-    assert(strlen(previous_post_cache) < sizeof(saved_post_cache));
-    string_copy(saved_post_cache, previous_post_cache);
+    assert(vkr_string_copy_bounded(saved_post_cache, sizeof(saved_post_cache),
+                                   previous_post_cache));
   }
 #if defined(_WIN32)
 #define SET_POST_CACHE(value)                                                  \
@@ -1417,7 +1417,8 @@ vkr_internal void test_harness_report_shape(void) {
   report.case_manifest.renderer.render_scale = 0.5f;
   report.case_manifest.renderer.render_width = 320u;
   report.case_manifest.renderer.render_height = 180u;
-  string_copy(report.case_manifest.renderer.upscaler, "metalfx_temporal");
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.upscaler,
+                          "metalfx_temporal");
   report.case_manifest.renderer.dynamic_resolution = true_v;
   report.case_manifest.renderer.dynamic_resolution_min_scale = 0.5f;
   report.case_manifest.renderer.dynamic_resolution_max_scale = 0.8f;
@@ -2345,7 +2346,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   legacy_v6->tool = VKR_HARNESS_TOOL_SNAPSHOT;
   legacy_v6->exit_code = VKR_HARNESS_EXIT_PASS;
   legacy_v6->profile_compatible = true_v;
-  string_copy(legacy_v6->case_manifest.id, "smoke.legacy.v6");
+  VKR_STRING_COPY_LITERAL(legacy_v6->case_manifest.id, "smoke.legacy.v6");
   legacy_v6->case_manifest.renderer.editor = true_v;
   legacy_v6->case_manifest.renderer.render_scale = 0.75f;
   legacy_v6->case_manifest.renderer.dynamic_resolution_target_frame_ms = 12.5f;
@@ -2356,7 +2357,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   legacy_v6->case_manifest.assertions[0].limit = 17.0;
   legacy_v6->case_manifest.compare.max_pixel_delta = 0.375;
   legacy_v6->case_manifest.content_scale = 1.5f;
-  string_copy(legacy_v6->profile.id, "local.legacy.v6");
+  VKR_STRING_COPY_LITERAL(legacy_v6->profile.id, "local.legacy.v6");
   assert(vkr_harness_atomic_write(legacy_v6_path, legacy_v6, sizeof(*legacy_v6),
                                   &error));
   VkrHarnessCaptureSummaryHeaderV9Fixture *legacy_v9 =
@@ -2367,14 +2368,14 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   legacy_v9->tool = VKR_HARNESS_TOOL_SNAPSHOT;
   legacy_v9->exit_code = VKR_HARNESS_EXIT_PASS;
   legacy_v9->profile_compatible = true_v;
-  string_copy(legacy_v9->case_manifest.id, "smoke.legacy.v9");
-  string_copy(legacy_v9->case_manifest.renderer.display_transform,
-              "aces_fitted");
+  VKR_STRING_COPY_LITERAL(legacy_v9->case_manifest.id, "smoke.legacy.v9");
+  VKR_STRING_COPY_LITERAL(legacy_v9->case_manifest.renderer.display_transform,
+                          "aces_fitted");
   legacy_v9->case_manifest.renderer.white_balance_temperature = 7350.0f;
   legacy_v9->case_manifest.renderer.white_balance_tint = -0.125f;
   legacy_v9->case_manifest.renderer.color_contrast = 1.125f;
   legacy_v9->case_manifest.renderer.color_saturation = 0.875f;
-  string_copy(legacy_v9->profile.id, "local.legacy.v9");
+  VKR_STRING_COPY_LITERAL(legacy_v9->profile.id, "local.legacy.v9");
   assert(vkr_harness_atomic_write(legacy_v9_path, legacy_v9, sizeof(*legacy_v9),
                                   &error));
   Arena *arena = arena_create(MB(2), MB(2));
@@ -2469,7 +2470,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.render_scale = 0.5f;
   report.case_manifest.renderer.render_width = 320u;
   report.case_manifest.renderer.render_height = 180u;
-  string_copy(report.case_manifest.renderer.upscaler, "metalfx_temporal");
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.upscaler,
+                          "metalfx_temporal");
   report.case_manifest.renderer.dynamic_resolution = true_v;
   report.case_manifest.renderer.dynamic_resolution_min_scale = 0.5f;
   report.case_manifest.renderer.dynamic_resolution_max_scale = 0.8f;
@@ -2480,19 +2482,22 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
       VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
   report.case_manifest.renderer.editor_stop_frame = 1u;
   report.case_manifest.renderer.editor_resume_frame = 4u;
-  string_copy(report.case_manifest.renderer.display_transform, "agx");
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.display_transform,
+                          "agx");
   report.case_manifest.renderer.white_balance_temperature = 6400.0f;
   report.case_manifest.renderer.white_balance_tint = 0.0625f;
   report.case_manifest.renderer.color_contrast = 1.05f;
   report.case_manifest.renderer.color_saturation = 0.95f;
   report.case_manifest.renderer.ssr_enabled = true_v;
-  string_copy(report.case_manifest.renderer.display_output, "extended_linear");
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.display_output,
+                          "extended_linear");
   report.case_manifest.renderer.dof_enabled = true_v;
   report.case_manifest.renderer.dof_focus_distance = 4.5f;
   report.case_manifest.renderer.dof_f_stop = 2.8f;
   report.case_manifest.renderer.motion_blur_enabled = true_v;
   report.case_manifest.renderer.motion_blur_shutter_angle = 270.0f;
-  string_copy(report.case_manifest.renderer.motion_blur_entity, "Motion card");
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.motion_blur_entity,
+                          "Motion card");
   report.case_manifest.renderer.motion_blur_entity_velocity_x = 1.25f;
   report.case_manifest.renderer.motion_blur_entity_velocity_y = -0.5f;
   report.case_manifest.renderer.motion_blur_entity_velocity_z = 0.75f;
@@ -2510,7 +2515,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   legacy_v14->case_manifest.content_scale = 1.75f;
   legacy_v14->case_manifest.asset_context =
       VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
-  string_copy(legacy_v14->profile.id, "legacy.v14.profile");
+  VKR_STRING_COPY_LITERAL(legacy_v14->profile.id, "legacy.v14.profile");
   assert(vkr_harness_atomic_write(legacy_v14_path, legacy_v14,
                                   sizeof(*legacy_v14), &error));
   free(legacy_v14);

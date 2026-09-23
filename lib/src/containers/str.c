@@ -466,19 +466,26 @@ char *string_empty(char *str) {
   return str;
 }
 
-char *string_copy(char *dest, const char *source) {
-  assert(dest != NULL && "Destination is NULL");
-  assert(source != NULL && "Source is NULL");
-
-  return strcpy(dest, source);
-}
-
-char *string_ncopy(char *dest, const char *source, int64_t length) {
-  assert(dest != NULL && "Destination is NULL");
-  assert(source != NULL && "Source is NULL");
-  assert(length > 0 && "Length must be positive");
-
-  return strncpy(dest, source, length);
+bool8_t vkr_string_copy_bounded(char *dest, uint64_t capacity,
+                                const char *source) {
+  if (!dest || capacity == 0) {
+    return false_v;
+  }
+  if (!source) {
+    dest[0] = '\0';
+    return false_v;
+  }
+  // Scan at most `capacity` bytes; an unterminated or longer source fails.
+  uint64_t length = 0;
+  while (length < capacity && source[length] != '\0') {
+    length++;
+  }
+  if (length == capacity) {
+    dest[0] = '\0';
+    return false_v;
+  }
+  MemCopy(dest, source, length + 1);
+  return true_v;
 }
 
 char *string_trim(char *str) {

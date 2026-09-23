@@ -4277,11 +4277,13 @@ int vkr_sample_runtime_run(int argc, char **argv,
       return 2;
     }
     char *separator = strrchr(bootstrap_fonts, '/');
-    if (!separator || (uint64_t)(separator - bootstrap_fonts) + 32 >=
-                          sizeof(bootstrap_fonts)) {
+    if (!separator || !vkr_string_copy_bounded(
+                          separator + 1,
+                          sizeof(bootstrap_fonts) -
+                              (uint64_t)(separator + 1 - bootstrap_fonts),
+                          "resources/editor/fonts")) {
       return 2;
     }
-    strcpy(separator + 1, "resources/editor/fonts");
     vkr_standard_scene_runtime_config.bootstrap_font_directory =
         bootstrap_fonts;
   }

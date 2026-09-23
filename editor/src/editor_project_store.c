@@ -795,7 +795,13 @@ bool8_t vkr_editor_project_load(const VkrEditorWorkspace *workspace,
     MemZero(project, sizeof(*project));
     return false_v;
   }
-  strcpy(project->manifest_path, absolute);
+  if (!vkr_string_copy_bounded(project->manifest_path,
+                               sizeof(project->manifest_path), absolute)) {
+    vkr_allocator_free(allocator, bytes.str, bytes.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    MemZero(project, sizeof(*project));
+    return project_error(error, "Project manifest path exceeds capacity");
+  }
   return true_v;
 }
 
@@ -945,7 +951,11 @@ bool8_t vkr_editor_project_save(VkrEditorProject *project,
     return project_error(error,
                          "Project manifest path exceeds supported length");
   }
-  strcpy(lock_directory, project->manifest_path);
+  if (!vkr_string_copy_bounded(lock_directory, sizeof(lock_directory),
+                               project->manifest_path)) {
+    return project_error(error,
+                         "Project manifest path exceeds supported length");
+  }
   char *separator = strrchr(lock_directory, '/');
 #if defined(PLATFORM_WINDOWS)
   char *backslash = strrchr(lock_directory, '\\');
@@ -1087,7 +1097,10 @@ bool8_t vkr_editor_workspace_open(const char *directory, bool8_t create,
     if (!vkr_editor_project_resolve(chosen, ".vkreditor", resolved, error)) {
       return false_v;
     }
-    strcpy(workspace->root, resolved);
+    if (!vkr_string_copy_bounded(workspace->root, sizeof(workspace->root),
+                                 resolved)) {
+      return project_error(error, "Workspace path exceeds supported length");
+    }
   }
   char manifest[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!project_join(manifest, workspace->root, "workspace.json")) {
@@ -1183,7 +1196,9 @@ bool8_t vkr_editor_project_begin(VkrEditorWorkspace *workspace,
   }
   if (!workspace->initialized) {
     char chosen[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-    strcpy(chosen, workspace->root);
+    if (!vkr_string_copy_bounded(chosen, sizeof(chosen), workspace->root)) {
+      return project_error(error, "Workspace path exceeds supported length");
+    }
     char *separator = strrchr(chosen, '/');
 #if defined(PLATFORM_WINDOWS)
     char *backslash = strrchr(chosen, '\\');
@@ -1208,7 +1223,9 @@ bool8_t vkr_editor_project_begin(VkrEditorWorkspace *workspace,
   if (!vkr_editor_project_id_generate(project->id, error)) {
     return false_v;
   }
-  strcpy(project->name, name);
+  if (!vkr_string_copy_bounded(project->name, sizeof(project->name), name)) {
+    return project_error(error, "Project name exceeds supported length");
+  }
   char projects[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!project_directory(workspace->root, "projects", projects, error)) {
     return false_v;
@@ -1349,10 +1366,10 @@ static bool8_t project_locator_path(const char *override,
                                     char path[VKR_EDITOR_PROJECT_PATH_CAPACITY],
                                     VkrEditorProjectError *error) {
   if (override) {
-    if (!override[0] || strlen(override) >= VKR_EDITOR_PROJECT_PATH_CAPACITY) {
+    if (!override[0] || !vkr_string_copy_bounded(
+                            path, VKR_EDITOR_PROJECT_PATH_CAPACITY, override)) {
       return project_error(error, "Invalid local workspace locator path");
     }
-    strcpy(path, override);
     return true_v;
   }
 #if defined(PLATFORM_WINDOWS)
@@ -1451,7 +1468,9 @@ bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
     return project_error(error, "Cannot resolve workspace locator paths");
   }
   char parent[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  strcpy(parent, path);
+  if (!vkr_string_copy_bounded(parent, sizeof(parent), path)) {
+    return project_error(error, "Workspace locator path exceeds capacity");
+  }
   char *separator = strrchr(parent, '/');
 #if defined(PLATFORM_WINDOWS)
   char *backslash = strrchr(parent, '\\');
@@ -1703,10 +1722,9 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
         error, "Open a managed scene before saving its authored edits");
   }
   char root[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  if (strlen(manifest_path) >= sizeof(root)) {
+  if (!vkr_string_copy_bounded(root, sizeof(root), manifest_path)) {
     return project_error(error, "Managed scene path exceeds supported length");
   }
-  strcpy(root, manifest_path);
   char *separator = strrchr(root, '/');
 #if defined(PLATFORM_WINDOWS)
   char *backslash = strrchr(root, '\\');
@@ -2002,9 +2020,10 @@ bool8_t vkr_editor_project_local_jobs_directory(
   }
   FilePath path = project_path(out);
   char resolved[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  if (file_path_resolve(&path, resolved, sizeof(resolved)) != FILE_ERROR_NONE) {
+  if (file_path_resolve(&path, resolved, sizeof(resolved)) != FILE_ERROR_NONE ||
+      !vkr_string_copy_bounded(out, VKR_EDITOR_PROJECT_PATH_CAPACITY,
+                               resolved)) {
     return project_error(error, "Cannot resolve local job directory");
   }
-  strcpy(out, resolved);
   return true_v;
 }

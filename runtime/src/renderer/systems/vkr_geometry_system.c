@@ -536,13 +536,16 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
   geom->center = packed_config.center;
   geom->min_extents = packed_config.min_extents;
   geom->max_extents = packed_config.max_extents;
-  if (packed_config.name[0] != '\0') {
-    string_copy(geom->name, packed_config.name);
-  } else {
+  if (packed_config.name[0] == '\0' ||
+      !vkr_string_copy_bounded(geom->name, sizeof(geom->name),
+                               packed_config.name)) {
     string_format(geom->name, sizeof(geom->name), "geometry_%u", handle.id);
   }
-  if (packed_config.material_name[0] != '\0') {
-    string_copy(geom->material_name, packed_config.material_name);
+  if (packed_config.material_name[0] != '\0' &&
+      !vkr_string_copy_bounded(geom->material_name, sizeof(geom->material_name),
+                               packed_config.material_name)) {
+    log_warn("Geometry '%s' material name is not terminated within %u bytes",
+             geom->name, (uint32_t)sizeof(geom->material_name));
   }
 
   const bool8_t published = system->asset_publisher->publish_geometry(

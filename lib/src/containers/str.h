@@ -338,21 +338,24 @@ int32_t string_format_v(char *dest, uint64_t dest_size, const char *format,
 char *string_empty(char *str);
 
 /**
- * @brief Copy a string.
- * @param dest The destination string.
- * @param source The source string.
- * @return A pointer to the copied string.
+ * @brief Copies a null-terminated string into a buffer of `capacity` bytes.
+ * @return true when the whole string and its terminator fit. On failure the
+ * destination holds an empty string, never a truncated prefix, so a partial
+ * path cannot be mistaken for the requested one.
  */
-char *string_copy(char *dest, const char *source);
+VKR_MUST_USE bool8_t vkr_string_copy_bounded(char *dest, uint64_t capacity,
+                                             const char *source);
 
 /**
- * @brief Copy a string with a length.
- * @param dest The destination string.
- * @param source The source string.
- * @param length The length of the string to copy.
- * @return A pointer to the copied string.
+ * Copies a string literal into a character array. The size check happens at
+ * compile time, so `array` must be an array, not a pointer.
  */
-char *string_ncopy(char *dest, const char *source, int64_t length);
+#define VKR_STRING_COPY_LITERAL(array, literal)                                \
+  do {                                                                         \
+    _Static_assert(sizeof(literal) <= sizeof(array),                           \
+                   "string literal exceeds its destination array");            \
+    MemCopy((array), (literal), sizeof(literal));                              \
+  } while (0)
 
 /**
  * @brief Trim a string.

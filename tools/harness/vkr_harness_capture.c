@@ -1483,7 +1483,8 @@ static void vkr_harness_profile_from_v2(const VkrHarnessProfileV2 *source,
 
 static void
 vkr_harness_case_legacy_display_defaults(VkrHarnessCase *destination) {
-  string_copy(destination->renderer.display_transform, "aces_fitted");
+  VKR_STRING_COPY_LITERAL(destination->renderer.display_transform,
+                          "aces_fitted");
   destination->renderer.color_contrast = 1.0f;
   destination->renderer.color_saturation = 1.0f;
 }
@@ -1499,7 +1500,7 @@ static void vkr_harness_case_from_v3(const VkrHarnessCaseV3 *source,
   destination->renderer.gtao_power = VKR_GTAO_DEFAULT_POWER;
   destination->renderer.shadow_debug_mode = source->renderer.shadow_debug_mode;
   destination->renderer.render_scale = 1.0f;
-  string_copy(destination->renderer.upscaler, "spatial");
+  VKR_STRING_COPY_LITERAL(destination->renderer.upscaler, "spatial");
   destination->camera = source->camera;
   MemCopy(destination->captures, source->captures,
           sizeof(destination->captures));
@@ -1521,7 +1522,7 @@ static void vkr_harness_case_from_v4(const VkrHarnessCaseV4 *source,
   MemCopy(&destination->renderer, &source->renderer,
           sizeof(VkrHarnessRendererConfigV4));
   destination->renderer.render_scale = 1.0f;
-  string_copy(destination->renderer.upscaler, "spatial");
+  VKR_STRING_COPY_LITERAL(destination->renderer.upscaler, "spatial");
   destination->camera = source->camera;
   MemCopy(destination->captures, source->captures,
           sizeof(destination->captures));
@@ -2693,7 +2694,8 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
     out_summary->provenance = header->provenance;
   }
   if (common->version <= 10u)
-    string_copy(out_summary->case_manifest.renderer.display_output, "sdr");
+    VKR_STRING_COPY_LITERAL(out_summary->case_manifest.renderer.display_output,
+                            "sdr");
   if (common->version <= 12u) {
     out_summary->case_manifest.renderer.motion_blur_enabled = false_v;
     out_summary->case_manifest.renderer.motion_blur_shutter_angle = 180.0f;

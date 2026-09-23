@@ -477,24 +477,26 @@ static void test_cstring_empty(void) {
   printf("  test_cstring_empty PASSED\n");
 }
 
-static void test_cstring_copy(void) {
-  printf("  Running test_cstring_copy...\n");
-  char buf[16];
-  char *ret = string_copy(buf, "copy");
-  assert(ret == buf);
+static void test_string_copy_bounded(void) {
+  printf("  Running test_string_copy_bounded...\n");
+  char buf[5];
+  assert(vkr_string_copy_bounded(buf, sizeof(buf), "copy"));
   assert(strcmp(buf, "copy") == 0);
-  printf("  test_cstring_copy PASSED\n");
-}
-
-static void test_cstring_ncopy(void) {
-  printf("  Running test_cstring_ncopy...\n");
-  char buf[8];
+  // One byte short of the terminator fails and leaves an empty string rather
+  // than a truncated prefix.
   memset(buf, 'X', sizeof(buf));
-  char *ret = string_ncopy(buf, "abcdef", 3);
-  (void)ret;
-  assert(buf[0] == 'a' && buf[1] == 'b' && buf[2] == 'c');
-  // strncpy does not guarantee NUL-termination when truncated
-  printf("  test_cstring_ncopy PASSED\n");
+  assert(!vkr_string_copy_bounded(buf, sizeof(buf), "copy!"));
+  assert(buf[0] == '\0');
+  assert(vkr_string_copy_bounded(buf, sizeof(buf), ""));
+  assert(buf[0] == '\0');
+  memset(buf, 'X', sizeof(buf));
+  assert(!vkr_string_copy_bounded(buf, sizeof(buf), NULL));
+  assert(buf[0] == '\0');
+  assert(!vkr_string_copy_bounded(buf, 0, "copy"));
+  char literal[8];
+  VKR_STRING_COPY_LITERAL(literal, "fixed");
+  assert(strcmp(literal, "fixed") == 0);
+  printf("  test_string_copy_bounded PASSED\n");
 }
 
 static void test_cstring_trim(void) {
@@ -651,8 +653,7 @@ bool32_t run_string_tests(void) {
   test_cstring_format();
   test_cstring_format_v();
   test_cstring_empty();
-  test_cstring_copy();
-  test_cstring_ncopy();
+  test_string_copy_bounded();
   test_cstring_trim();
   test_cstring_mid();
   test_cstring_get_last_char_occurrence();

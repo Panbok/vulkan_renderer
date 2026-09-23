@@ -50,7 +50,7 @@ static bool8_t project_test_visit(const char *id, void *context) {
 static void project_test_overlay(VkrAllocator *allocator,
                                  const char *project_manifest) {
   char root[1024];
-  strcpy(root, project_manifest);
+  assert(vkr_string_copy_bounded(root, sizeof(root), project_manifest));
   char *separator = strrchr(root, '/');
 #if defined(PLATFORM_WINDOWS)
   char *backslash = strrchr(root, '\\');
@@ -403,16 +403,16 @@ bool32_t run_editor_project_store_tests(void) {
   // Request-generation uses the loaded native manifest path as the scene owner.
   char selected_scene[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   s_loaded.scene_count = 1;
-  strcpy(s_loaded.scenes[0].path, "project.json");
+  VKR_STRING_COPY_LITERAL(s_loaded.scenes[0].path, "project.json");
   assert(vkr_editor_project_scene_path(&s_loaded, 0, true_v, selected_scene,
                                        &error));
   assert(strcmp(selected_scene, s_loaded.manifest_path) == 0);
-  strcpy(s_loaded.scenes[0].path, "missing-scene.json");
+  VKR_STRING_COPY_LITERAL(s_loaded.scenes[0].path, "missing-scene.json");
   assert(!vkr_editor_project_scene_path(&s_loaded, 0, true_v, selected_scene,
                                         &error));
   assert(vkr_editor_project_scene_path(&s_loaded, 0, false_v, selected_scene,
                                        &error));
-  strcpy(s_loaded.scenes[0].path, "../escape.json");
+  VKR_STRING_COPY_LITERAL(s_loaded.scenes[0].path, "../escape.json");
   assert(!vkr_editor_project_scene_path(&s_loaded, 0, false_v, selected_scene,
                                         &error));
   s_loaded.scene_count = 0;
@@ -427,15 +427,16 @@ bool32_t run_editor_project_store_tests(void) {
   assert(!vkr_editor_project_save(&s_loaded, &error));
   assert(strstr(error.message, "another editor"));
   vkr_platform_process_lock_release(&held_lock);
-  strcpy(s_loaded.name, "Renamed 日");
+  VKR_STRING_COPY_LITERAL(s_loaded.name, "Renamed 日");
   assert(vkr_editor_project_save(&s_loaded, &error));
   // A second loaded instance must not overwrite the rename with an old
   // snapshot.
   assert(!vkr_editor_project_save(&s_project, &error));
   assert(strstr(error.message, "changed outside"));
-  strcpy(s_loaded.scenes[0].id, "00000000-0000-4000-8000-000000000002");
-  strcpy(s_loaded.scenes[0].name, "Scene");
-  strcpy(s_loaded.scenes[0].path, "../escape/scene.json");
+  VKR_STRING_COPY_LITERAL(s_loaded.scenes[0].id,
+                          "00000000-0000-4000-8000-000000000002");
+  VKR_STRING_COPY_LITERAL(s_loaded.scenes[0].name, "Scene");
+  VKR_STRING_COPY_LITERAL(s_loaded.scenes[0].path, "../escape/scene.json");
   s_loaded.scene_count = 1;
   assert(!vkr_editor_project_save(&s_loaded, &error));
   s_loaded.scene_count = 0;
@@ -523,7 +524,7 @@ bool32_t run_editor_project_store_tests(void) {
   snprintf(relocated, sizeof(relocated), "%stests/tmp/moved-%s",
            PROJECT_SOURCE_DIR, uuid);
   assert(rename(directory, relocated) == 0);
-  strcpy(directory, relocated);
+  assert(vkr_string_copy_bounded(directory, sizeof(directory), relocated));
   assert(vkr_editor_workspace_open(relocated, false_v, &workspace, &error));
   assert(vkr_editor_project_load(&workspace, s_project.id, &allocator,
                                  &s_loaded, &error));
@@ -537,7 +538,8 @@ bool32_t run_editor_project_store_tests(void) {
   FilePath final_manifest = project_test_path(s_loaded.manifest_path);
   assert(file_remove(&final_manifest) == FILE_ERROR_NONE);
   char project_root[1024];
-  strcpy(project_root, s_loaded.manifest_path);
+  assert(vkr_string_copy_bounded(project_root, sizeof(project_root),
+                                 s_loaded.manifest_path));
   char *slash = strrchr(project_root, '/');
 #if defined(PLATFORM_WINDOWS)
   char *backslash = strrchr(project_root, '\\');

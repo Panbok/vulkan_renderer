@@ -703,8 +703,9 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_pending_asset_slot(
     }
   }
 
+  const uint64_t key_length = string_length(key_buf);
   char *key_copy =
-      vkr_allocator_alloc(&manager->asset_allocator, string_length(key_buf) + 1,
+      vkr_allocator_alloc(&manager->asset_allocator, key_length + 1,
                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!key_copy) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -716,7 +717,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_pending_asset_slot(
     return VKR_MESH_ASSET_HANDLE_INVALID;
   }
 
-  string_copy(key_copy, key_buf);
+  MemCopy(key_copy, key_buf, key_length + 1);
   asset->key_string = key_copy;
   VkrMeshAssetEntry entry = {.asset_index = slot, .key = key_copy};
   if (!vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,
@@ -1688,7 +1689,9 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
         cfg.center = center;
         cfg.min_extents = min_extents;
         cfg.max_extents = max_extents;
-        string_copy(cfg.name, geometry_name_buf);
+        _Static_assert(sizeof(cfg.name) == sizeof(geometry_name_buf),
+                       "geometry names share one capacity");
+        MemCopy(cfg.name, geometry_name_buf, sizeof(cfg.name));
 
         merged_geometry = vkr_geometry_system_create(manager->geometry_system,
                                                      &cfg, true_v, &geo_err);
@@ -2871,7 +2874,9 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
         cfg.center = center;
         cfg.min_extents = min_extents;
         cfg.max_extents = max_extents;
-        string_copy(cfg.name, geometry_name_buf);
+        _Static_assert(sizeof(cfg.name) == sizeof(geometry_name_buf),
+                       "geometry names share one capacity");
+        MemCopy(cfg.name, geometry_name_buf, sizeof(cfg.name));
 
         merged_geometry = vkr_geometry_system_create(manager->geometry_system,
                                                      &cfg, true_v, &geo_err);
@@ -3226,7 +3231,9 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
         cfg.center = center;
         cfg.min_extents = min_extents;
         cfg.max_extents = max_extents;
-        string_copy(cfg.name, geometry_name_buf);
+        _Static_assert(sizeof(cfg.name) == sizeof(geometry_name_buf),
+                       "geometry names share one capacity");
+        MemCopy(cfg.name, geometry_name_buf, sizeof(cfg.name));
 
         merged_geometry = vkr_geometry_system_create(manager->geometry_system,
                                                      &cfg, true_v, &geo_err);
@@ -3409,8 +3416,9 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     asset->bounds_local_radius = vec3_length(half_extents);
   }
 
+  const uint64_t key_length = string_length(key_buf);
   char *key_copy =
-      vkr_allocator_alloc(&manager->asset_allocator, string_length(key_buf) + 1,
+      vkr_allocator_alloc(&manager->asset_allocator, key_length + 1,
                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!key_copy) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -3418,7 +3426,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     return VKR_MESH_ASSET_HANDLE_INVALID;
   }
 
-  string_copy(key_copy, key_buf);
+  MemCopy(key_copy, key_buf, key_length + 1);
   asset->key_string = key_copy;
   VkrMeshAssetEntry entry = {.asset_index = slot, .key = key_copy};
   if (!vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,

@@ -2303,7 +2303,10 @@ bool8_t vkr_editor_scene_panels_read_json(VkrEditorScenePanels *panels,
                                       NULL)) {
     return false_v;
   }
-  strcpy(panels->search, search);
+  if (!vkr_string_copy_bounded(panels->search, sizeof(panels->search),
+                               search)) {
+    return false_v;
+  }
   panels->inspector_scroll = scroll;
   panels->rebuild = true_v;
   return true_v;
