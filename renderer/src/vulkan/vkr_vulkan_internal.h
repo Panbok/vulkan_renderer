@@ -1,7 +1,4 @@
-#include "vkr_packed_geometry.h"
-#include "vkr_texture_upload.h"
-#ifndef VKR_VULKAN_INTERNAL_H
-#define VKR_VULKAN_INTERNAL_H
+#pragma once
 
 #include "vulkan/vkr_vulkan_renderer.h"
 
@@ -27,6 +24,7 @@
 #include "vkr_ibl_sh_pool.h"
 #include "vkr_ltc_lut.h"
 #include "vkr_motion_blur.h"
+#include "vkr_packed_geometry.h"
 #include "vkr_packet_constants.h"
 #include "vkr_render_graph_internal.h"
 #include "vkr_rg_json.h"
@@ -35,6 +33,7 @@
 #include "vkr_ssr.h"
 #include "vkr_subsurface.h"
 #include "vkr_temporal.h"
+#include "vkr_texture_upload.h"
 #include "vulkan/vkr_vulkan_dependency.h"
 #include "vulkan/vkr_vulkan_memory.h"
 #include "vulkan/vkr_vulkan_wsi.h"
@@ -3349,7 +3348,4 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
                                  VkrVulkanPreparedIbl *prepared);
 
 bool8_t vkr_vk_prepare_capture(VkrVulkanRenderer *renderer,
-
                                VkrVulkanFrameSlot *slot);
-
-#endif
