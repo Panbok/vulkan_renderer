@@ -2,6 +2,7 @@
 #include "core/vkr_json.h"
 #include "core/vkr_subsystem_plan.h"
 #include "gameplay/vkr_gameplay_player.h"
+#include "vkr_sample_runtime_config.h"
 
 #include "application/vkr_standard_scene_runtime.h"
 #include "core/event.h"
@@ -30,13 +31,11 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "vkr_renderer.h"
 #include <stdio.h>
-#include <stdlib.h>
 
 #define VKR_FPS_UPDATE_INTERVAL 0.25
 #define VKR_MEMORY_UPDATE_INTERVAL 1.0
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
-#define SCENE_PATH "assets/scenes/bistro.scene.json"
 
 static VkrSampleRuntimePreferences
 sample_preferences_snapshot(VkrStandardSceneRuntime *application);
@@ -147,14 +146,14 @@ typedef struct State {
   VkrSampleUiClient ui;
   VkrGraphicsSettingsState graphics;
   VkrGraphicsSettings graphics_started;
-  char graphics_path[1024];
+  char graphics_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   char graphics_message[160];
   bool8_t graphics_dirty;
   float64_t graphics_changed_at;
   VkrSceneEditState edits;
   String8 scene_path;
-  char scene_path_storage[1024];
-  char sidecar_path[1024];
+  char scene_path_storage[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
+  char sidecar_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   char physics_asset_root[1024];
   char scene_status[512];
   bool8_t modal;
@@ -357,40 +356,6 @@ vkr_internal void vkr_standard_scene_runtime_accumulate_frame_time(
     state->hud_frame_samples++;
   }
   vkr_metrics_snapshot_release(application->metrics, &snapshot);
-}
-
-/**
- * @brief Parses common truthy/falsy environment values.
- *
- * Unknown values keep the provided default to avoid brittle automation.
- */
-vkr_internal bool8_t
-vkr_standard_scene_runtime_env_flag(const char *name, bool8_t default_value) {
-  if (!name || name[0] == '\0') {
-    return default_value;
-  }
-
-  const char *value = getenv(name);
-  if (!value || value[0] == '\0') {
-    return default_value;
-  }
-
-  switch (value[0]) {
-  case '1':
-  case 'y':
-  case 'Y':
-  case 't':
-  case 'T':
-    return true_v;
-  case '0':
-  case 'n':
-  case 'N':
-  case 'f':
-  case 'F':
-    return false_v;
-  default:
-    return default_value;
-  }
 }
 
 vkr_internal const char *
@@ -4193,183 +4158,24 @@ vkr_sample_runtime_update(void *state_ptr, VkrStandardSceneRuntime *application,
   }
 }
 
-VkrSampleRuntimeConfig vkr_sample_runtime_config_default(void) {
-  return (VkrSampleRuntimeConfig){
-      .presentation =
-          {
-              .render_scale = 1.0f,
-              .paneled = false_v,
-              .scene_only = false_v,
-          },
-  };
-}
-
 int vkr_sample_runtime_run(int argc, char **argv,
                            const VkrSampleRuntimeConfig *runtime_config) {
-  if (!runtime_config || !runtime_config->title ||
-      !runtime_config->ui.initialize || !runtime_config->ui.handle_input ||
-      !runtime_config->ui.build || !runtime_config->ui.shutdown) {
-    fprintf(stderr, "Invalid sample runtime configuration\n");
+  VkrSampleRuntimeOptions options;
+  if (!vkr_sample_runtime_options_parse(argc, argv, runtime_config, &options)) {
     return 2;
   }
 
   int exit_code = 0;
-  const char *metrics_json_path = NULL;
-  const char *scene_path_arg = getenv("VKR_SCENE_PATH");
-  bool8_t scene_requested = scene_path_arg && scene_path_arg[0];
-  bool8_t gameplay_enabled = false_v;
-  if (!scene_requested)
-    scene_path_arg = SCENE_PATH;
-#if defined(_WIN32)
-  VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
-#else
-  VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
-#endif
-  for (int i = 1; i < argc; ++i) {
-    if (strcmp(argv[i], "--gameplay") == 0) {
-      gameplay_enabled = true_v;
-    } else if (strcmp(argv[i], "--scene") == 0) {
-      if (i + 1 >= argc || !argv[i + 1][0]) {
-        fprintf(stderr, "--scene requires a scene JSON path\n");
-        return 2;
-      }
-      scene_path_arg = argv[++i];
-      scene_requested = true_v;
-    } else if (strcmp(argv[i], "--metrics-json") == 0) {
-      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
-        fprintf(stderr, "--metrics-json requires an output path\n");
-        return 2;
-      }
-      metrics_json_path = argv[++i];
-    } else if (strcmp(argv[i], "--renderer") == 0) {
-      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
-        fprintf(stderr, "--renderer requires 'vulkan' or 'metal'\n");
-        return 2;
-      }
-      const char *renderer_name = argv[++i];
-      if (strcmp(renderer_name, "vulkan") == 0) {
-        renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
-      } else if (strcmp(renderer_name, "metal") == 0) {
-        renderer_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
-      } else {
-        fprintf(stderr, "unknown renderer '%s'\n", renderer_name);
-        return 2;
-      }
-    }
-  }
-  const bool8_t rg_gpu_timing_enabled =
-      vkr_standard_scene_runtime_env_flag("VKR_RG_GPU_TIMING", false_v);
-  const bool8_t submission_gpu_timing_enabled =
-      vkr_standard_scene_runtime_env_flag("VKR_GPU_SUBMISSION_TIMING", false_v);
-  const bool8_t metrics_event_subjects = vkr_standard_scene_runtime_env_flag(
-      "VKR_METRICS_EVENT_SUBJECTS", false_v);
-  const bool8_t metal_validation_enabled =
-      vkr_standard_scene_runtime_env_flag("MTL_DEBUG_LAYER", false_v) ||
-      vkr_standard_scene_runtime_env_flag("MTL_SHADER_VALIDATION", false_v);
-
-  VkrStandardSceneRuntimeConfig vkr_standard_scene_runtime_config = {0};
-  char bootstrap_fonts[2048] = {0};
-  if (runtime_config->project_managed) {
-    if (!vkr_platform_executable_path(bootstrap_fonts,
-                                      sizeof(bootstrap_fonts))) {
-      fprintf(stderr, "Cannot locate installed editor resources\n");
-      return 2;
-    }
-    char *separator = strrchr(bootstrap_fonts, '/');
-    if (!separator || !vkr_string_copy_bounded(
-                          separator + 1,
-                          sizeof(bootstrap_fonts) -
-                              (uint64_t)(separator + 1 - bootstrap_fonts),
-                          "resources/editor/fonts")) {
-      return 2;
-    }
-    vkr_standard_scene_runtime_config.bootstrap_font_directory =
-        bootstrap_fonts;
-  }
-  vkr_standard_scene_runtime_config.title = runtime_config->title;
-  vkr_standard_scene_runtime_config.x = 100;
-  vkr_standard_scene_runtime_config.y = 100;
-  vkr_standard_scene_runtime_config.width =
-      runtime_config->presentation.paneled ? 1280 : 800;
-  vkr_standard_scene_runtime_config.height =
-      runtime_config->presentation.paneled ? 800 : 600;
-  vkr_standard_scene_runtime_config.app_arena_size = MB(1);
-  vkr_standard_scene_runtime_config.target_frame_rate = 0;
-  vkr_standard_scene_runtime_config.disable_camera_controller =
-      gameplay_enabled;
-  vkr_standard_scene_runtime_config.renderer_backend = renderer_backend;
-  const char *graphics_path = runtime_config->project_managed
-                                  ? ""
-                                  : getenv("VKR_GRAPHICS_SETTINGS_PATH");
-  if (!graphics_path)
-    graphics_path = PROJECT_SOURCE_DIR ".vkr-graphics-settings.json";
-  if (strlen(graphics_path) >= 1024) {
-    fprintf(stderr, "Graphics settings path is too long\n");
-    return 2;
-  }
-  VkrGraphicsSettings graphics_settings =
-      vkr_graphics_settings_defaults(renderer_backend);
-  const bool8_t graphics_loaded =
-      vkr_graphics_settings_load(graphics_path, &graphics_settings);
-  if (!graphics_loaded)
-    fprintf(stderr, "Ignoring invalid Graphics settings: %s\n", graphics_path);
-  const bool8_t temporal_available =
-      renderer_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN ||
-      (renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL &&
-       !metal_validation_enabled);
-  const bool8_t dynamic_available =
-      renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL &&
-      !metal_validation_enabled;
-  if (!temporal_available)
-    graphics_settings.temporal_upscaling = false_v;
-  if (!dynamic_available || !graphics_settings.temporal_upscaling)
-    graphics_settings.dynamic_resolution = false_v;
-  vkr_standard_scene_runtime_config.target_frame_rate =
-      graphics_settings.frame_limit;
-  vkr_standard_scene_runtime_config.render_scale =
-      graphics_settings.render_scale;
-  vkr_standard_scene_runtime_config.requested_present_mode =
-      graphics_settings.vsync ? VKR_PRESENT_MODE_FIFO
-                              : VKR_PRESENT_MODE_IMMEDIATE;
-  vkr_standard_scene_runtime_config.display_output_mode =
-      graphics_settings.hdr ? VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR
-                            : VKR_DISPLAY_OUTPUT_SDR;
-  vkr_standard_scene_runtime_config.upscale_mode =
-      !graphics_settings.temporal_upscaling ? VKR_UPSCALE_MODE_SPATIAL
-      : renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL
-          ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
-          : VKR_UPSCALE_MODE_FSR31;
-  vkr_standard_scene_runtime_config.dynamic_resolution =
-      (VkrDynamicResolutionConfig){.min_scale = .334f,
-                                   .max_scale = 1.0f,
-                                   .target_frame_ms = 1000.0f / 75.0f,
-                                   .enabled =
-                                       graphics_settings.dynamic_resolution};
-  vkr_standard_scene_runtime_config.metrics_config = (VkrMetricsConfig){
-      .pass_gpu_timings = rg_gpu_timing_enabled,
-      .submission_gpu_timings = submission_gpu_timing_enabled,
-      .event_subjects = metrics_event_subjects,
-  };
-  vkr_standard_scene_runtime_config.device_requirements =
-      (VkrDeviceRequirements){
-          .supported_stages =
-              VKR_SHADER_STAGE_VERTEX_BIT | VKR_SHADER_STAGE_FRAGMENT_BIT,
-          .supported_queues = VKR_DEVICE_QUEUE_GRAPHICS_BIT |
-                              VKR_DEVICE_QUEUE_TRANSFER_BIT |
-                              VKR_DEVICE_QUEUE_PRESENT_BIT,
-          .allowed_device_types =
-              VKR_DEVICE_TYPE_DISCRETE_BIT | VKR_DEVICE_TYPE_INTEGRATED_BIT,
-          .supported_sampler_filters = VKR_SAMPLER_FILTER_ANISOTROPIC_BIT,
-      };
-
+  const VkrRendererBackendType renderer_backend = options.renderer_backend;
+  VkrStandardSceneRuntimeConfig scene_runtime_config =
+      vkr_sample_runtime_scene_config(runtime_config, &options);
   VkrStandardSceneRuntime application = {0};
-  if (!vkr_standard_scene_runtime_create(&application,
-                                         &vkr_standard_scene_runtime_config)) {
+  if (!vkr_standard_scene_runtime_create(&application, &scene_runtime_config)) {
     fprintf(stderr, "VkrStandardSceneRuntime creation failed\n");
     return 1;
   }
   application.host.window.defer_close = runtime_config->project_managed;
-  if (metal_validation_enabled &&
+  if (options.metal_validation_enabled &&
       renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
     log_info("Metal validation enabled; the Scene uses fixed-scale spatial "
              "reconstruction instead of MetalFX");
@@ -4394,24 +4200,17 @@ int vkr_sample_runtime_run(int argc, char **argv,
 
   state = arena_alloc(application.app_arena, sizeof(State),
                       ARENA_MEMORY_TAG_STRUCT);
-  state->graphics = (VkrGraphicsSettingsState){
-      .settings = graphics_settings,
-      .temporal_upscaling_available = temporal_available,
-      .dynamic_resolution_available = dynamic_available,
-      .temporal_upscaling_name =
-          renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL
-              ? string8_lit("MetalFX")
-              : string8_lit("FSR 3.1")};
-  state->graphics_started = graphics_settings;
+  state->graphics = options.graphics;
+  state->graphics_started = options.graphics.settings;
   state->graphics_dirty = false_v;
   state->graphics_changed_at = 0.0;
   state->graphics_message[0] = '\0';
   snprintf(state->graphics_path, sizeof(state->graphics_path), "%s",
-           graphics_path);
-  if (!graphics_loaded)
+           options.graphics_path);
+  if (!options.graphics_loaded)
     snprintf(state->graphics_message, sizeof(state->graphics_message),
              "Saved settings were invalid. Defaults are in use.");
-  sample_graphics_apply_live(&application, &graphics_settings);
+  sample_graphics_apply_live(&application, &state->graphics.settings);
   state->stats_arena = arena_create(KB(1), KB(1));
   VkrAllocator app_alloc = {.ctx = application.app_arena};
   vkr_allocator_arena(&app_alloc);
@@ -4433,15 +4232,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->ui = runtime_config->ui;
   application.project_ui =
       state->ui.project_scene ? vkr_standard_scene_runtime_project_ui : NULL;
-  if (strlen(PROJECT_SOURCE_DIR) + strlen(scene_path_arg) +
-          sizeof(".editor.json") >
-      sizeof(state->sidecar_path)) {
-    arena_destroy(state->stats_arena);
-    vkr_standard_scene_runtime_shutdown(&application);
-    return 2;
-  }
   snprintf(state->scene_path_storage, sizeof(state->scene_path_storage), "%s",
-           runtime_config->project_managed ? "" : scene_path_arg);
+           runtime_config->project_managed ? "" : options.scene_path);
   state->scene_path =
       string8_create_from_cstr((const uint8_t *)state->scene_path_storage,
                                strlen(state->scene_path_storage));
@@ -4451,12 +4243,12 @@ int vkr_sample_runtime_run(int argc, char **argv,
            PROJECT_SOURCE_DIR);
   state->modal = runtime_config->project_managed;
   if (!runtime_config->project_managed) {
-    const bool8_t absolute =
-        scene_path_arg[0] == '/' || scene_path_arg[0] == '\\' ||
-        (strlen(scene_path_arg) > 1u && scene_path_arg[1] == ':');
+    const char *scene_path = options.scene_path;
+    const bool8_t absolute = scene_path[0] == '/' || scene_path[0] == '\\' ||
+                             (strlen(scene_path) > 1u && scene_path[1] == ':');
     snprintf(state->sidecar_path, sizeof(state->sidecar_path),
              "%s%s.editor.json", absolute ? "" : PROJECT_SOURCE_DIR,
-             scene_path_arg);
+             scene_path);
   }
   state->edits = (VkrSceneEditState){
       .allocator = &application.ui_system.retained_allocator};
@@ -4471,7 +4263,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
     vkr_standard_scene_runtime_shutdown(&application);
     return 6;
   }
-  state->gameplay_enabled = gameplay_enabled;
+  state->gameplay_enabled = options.gameplay_enabled;
   state->world_text_id = 0;
   state->world_text_update_clock = vkr_clock_create();
   state->free_camera_use_gamepad = false_v;
@@ -4523,65 +4315,48 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->scene_load_timer_active = false_v;
   state->scene_load_start_time_seconds = 0.0;
 
-  const char *auto_close_env = getenv("VKR_AUTOCLOSE_SECONDS");
-  if (auto_close_env && auto_close_env[0] != '\0') {
-    char *end_ptr = NULL;
-    float64_t auto_close_seconds = strtod(auto_close_env, &end_ptr);
-    if (end_ptr != auto_close_env && auto_close_seconds > 0.0) {
-      state->auto_close_enabled = true_v;
-      state->auto_close_after_seconds = auto_close_seconds;
-      log_info("Auto-close enabled via VKR_AUTOCLOSE_SECONDS=%.2f",
-               auto_close_seconds);
-    } else {
-      log_warn("Ignoring invalid VKR_AUTOCLOSE_SECONDS value '%s'",
-               auto_close_env);
-    }
+  if (options.auto_close_seconds > 0.0) {
+    state->auto_close_enabled = true_v;
+    state->auto_close_after_seconds = options.auto_close_seconds;
+    log_info("Auto-close enabled via VKR_AUTOCLOSE_SECONDS=%.2f",
+             options.auto_close_seconds);
+  } else if (options.auto_close_rejected) {
+    log_warn("Ignoring invalid VKR_AUTOCLOSE_SECONDS value '%s'",
+             options.auto_close_rejected);
   }
 
-  // Headless metrics capture. Both knobs are opt-in so interactive runs are
-  // unchanged; together with VKR_AUTOCLOSE_SECONDS they make a baseline
-  // reproducible without a human driving the app.
-  if (!runtime_config->project_managed &&
-      (gameplay_enabled || scene_requested ||
-       vkr_standard_scene_runtime_env_flag("VKR_AUTOLOAD_SCENE", false_v))) {
-    log_info("Auto-loading scene '%s'", scene_path_arg);
+  if (options.autoload_scene) {
+    log_info("Auto-loading scene '%s'", options.scene_path);
     vkr_standard_scene_runtime_init_scene_system(&application);
   }
 
-  const char *metrics_interval_env = getenv("VKR_METRICS_INTERVAL_SECONDS");
-  if (metrics_interval_env && metrics_interval_env[0] != '\0') {
-    char *metrics_end_ptr = NULL;
-    float64_t metrics_interval = strtod(metrics_interval_env, &metrics_end_ptr);
-    if (metrics_end_ptr != metrics_interval_env && metrics_interval > 0.0) {
-      state->metrics_dump_enabled = true_v;
-      state->metrics_dump_interval_seconds = metrics_interval;
-      state->metrics_dump_clock = vkr_clock_create();
-      vkr_clock_start(&state->metrics_dump_clock);
-      log_info("Periodic metrics dump enabled every %.2fs via "
-               "VKR_METRICS_INTERVAL_SECONDS",
-               metrics_interval);
-    } else {
-      log_warn("Ignoring invalid VKR_METRICS_INTERVAL_SECONDS value '%s'",
-               metrics_interval_env);
-    }
+  if (options.metrics_interval_seconds > 0.0) {
+    state->metrics_dump_enabled = true_v;
+    state->metrics_dump_interval_seconds = options.metrics_interval_seconds;
+    state->metrics_dump_clock = vkr_clock_create();
+    vkr_clock_start(&state->metrics_dump_clock);
+    log_info("Periodic metrics dump enabled every %.2fs via "
+             "VKR_METRICS_INTERVAL_SECONDS",
+             options.metrics_interval_seconds);
+  } else if (options.metrics_interval_rejected) {
+    log_warn("Ignoring invalid VKR_METRICS_INTERVAL_SECONDS value '%s'",
+             options.metrics_interval_rejected);
   }
 
   // Already applied through config.metrics_config; this only reports it.
   if (application.metrics->config.pass_gpu_timings) {
     log_info("RenderGraph GPU timings enabled via VKR_RG_GPU_TIMING");
   }
-  if (metrics_event_subjects) {
+  if (options.metrics_event_subjects) {
     log_info("Metrics event subjects enabled via VKR_METRICS_EVENT_SUBJECTS");
   }
 
-  state->assert_no_upload_waits = vkr_standard_scene_runtime_env_flag(
-      "VKR_ASSERT_NO_UPLOAD_WAITS", false_v);
+  state->assert_no_upload_waits = options.assert_no_upload_waits;
   if (state->assert_no_upload_waits) {
     log_info("Upload wait assertion enabled via VKR_ASSERT_NO_UPLOAD_WAITS");
   }
 
-  state->scene_memory_verbose =
-      vkr_standard_scene_runtime_env_flag("VKR_SCENE_MEM_VERBOSE", false_v);
+  state->scene_memory_verbose = options.scene_memory_verbose;
   if (state->scene_memory_verbose) {
     log_info(
         "Verbose scene memory breakdown enabled via VKR_SCENE_MEM_VERBOSE");
@@ -4658,7 +4433,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
     fflush(stdout);
   }
 
-  if (metrics_json_path) {
+  if (options.metrics_json_path) {
+    const char *metrics_json_path = options.metrics_json_path;
     String8 metrics_path = string8_create_from_cstr(
         (const uint8_t *)metrics_json_path, string_length(metrics_json_path));
     if (!vkr_renderer_metrics_write_json(&application.renderer_metrics,

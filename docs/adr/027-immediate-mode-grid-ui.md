@@ -354,6 +354,7 @@ layout behavior grids cannot express.
 - [Graphics settings](../../runtime/src/vkr_graphics_settings.c)
 - [Graphics Settings UI](../../editor/src/editor_graphics.c)
 - [Sample runtime settings owner](../../runtime/src/vkr_sample_runtime.c)
+- [Sample runtime startup options](../../runtime/src/vkr_sample_runtime_config.c)
 
 The Graphics Settings and nine-recipe Bakery additions are source-integrated.
 CPU oracles, macOS UI/Bakery checks, and Release/Debug/editor wrapper evidence

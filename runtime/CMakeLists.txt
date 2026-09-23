@@ -4,7 +4,9 @@ file(GLOB_RECURSE VKR_RUNTIME_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h)
 list(FILTER VKR_RUNTIME_SOURCES EXCLUDE REGEX "/src/assets/")
 list(REMOVE_ITEM VKR_RUNTIME_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_sample_runtime.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_sample_runtime.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_sample_runtime.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_sample_runtime_config.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_sample_runtime_config.h")
 if(APPLE)
     enable_language(OBJC)
     file(GLOB VKR_RUNTIME_OBJC CONFIGURE_DEPENDS src/platform/*.m)
@@ -25,7 +27,8 @@ endif()
 
 # Demo controls and presentation policy are optional consumers of the runtime.
 if(VKR_BUILD_APP OR VKR_BUILD_EDITOR OR VKR_BUILD_TESTS)
-    add_library(vkr_sample_runtime STATIC src/vkr_sample_runtime.c)
+    add_library(vkr_sample_runtime STATIC src/vkr_sample_runtime.c
+                src/vkr_sample_runtime_config.c)
     vkr_configure_library(vkr_sample_runtime)
     target_link_libraries(vkr_sample_runtime PUBLIC vkr_runtime)
 endif()
