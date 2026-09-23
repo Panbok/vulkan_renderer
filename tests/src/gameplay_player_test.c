@@ -218,6 +218,88 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+static void test_player_unfocused_simulation(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 47, 16, NULL));
+  InputState input = {0};
+  const VkrEntityId falling = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, falling, vec3_new(4, 8, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  const VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
+  assert(vkr_scene_physics_apply(&scene, falling, &body, NULL));
+  const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, entity, vec3_new(0, 8, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  VkrGameplayPlayer player = {0};
+  assert(vkr_gameplay_player_attach(&player, &scene, &input, entity, 100, 0,
+                                    NULL));
+  VkrPlayerState *state =
+      vkr_entity_get_component_mut(scene.world, entity, player.component);
+  assert(state);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  assert(vkr_gameplay_player_frame(&player, 100, true_v) == 0);
+  const VkrInputTransition press = {.time_seconds = 100.001,
+                                    .kind = VKR_INPUT_TRANSITION_BUTTON,
+                                    .code = BUTTON_LEFT,
+                                    .pressed = true_v};
+  input.observer(&press, input.observer_context);
+  state->held = 1u << VKR_GAMEPLAY_FORWARD;
+
+  // UI input capture cancels player intent, but cannot freeze a running world.
+  for (uint32_t tick = 1; tick <= 8; ++tick) {
+    const float64_t now = 100 + tick * VKR_SCENE_SIMULATION_FIXED_DT;
+    const float64_t dt = vkr_gameplay_player_frame(&player, now, false_v);
+    assert(fabs(dt - VKR_SCENE_SIMULATION_FIXED_DT) < 1e-12);
+    vkr_scene_update(&scene, dt);
+    assert(vkr_scene_simulation_completed_ticks(&scene) == tick);
+    assert(!scene.physics_paused && !scene.simulation.faulted);
+    assert(!player.active && !state->held && !player.commands.count);
+  }
+  VkrPhysicsPose pose;
+  assert(vkr_scene_physics_get_pose(&scene, falling, &pose));
+  assert(pose.position[1] < 8 && player.current_foot.y < 8);
+  assert(player.shots_fired == 0);
+
+  VkrInputTransition ignored = press;
+  ignored.time_seconds = 100 + 8.5 * VKR_SCENE_SIMULATION_FIXED_DT;
+  input.observer(&ignored, input.observer_context);
+  assert(!player.commands.count);
+  const float64_t resumed = 100 + 9 * VKR_SCENE_SIMULATION_FIXED_DT;
+  vkr_scene_update(&scene, vkr_gameplay_player_frame(&player, resumed, true_v));
+  assert(vkr_scene_simulation_completed_ticks(&scene) == 9);
+  assert(player.active && player.shots_fired == 0);
+
+  // A fresh press after focus returns retains the shared scene tick mapping.
+  VkrInputTransition fresh = press;
+  fresh.time_seconds = resumed + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
+  input.observer(&fresh, input.observer_context);
+  assert(!player.commands.faulted && player.commands.count == 1);
+  assert(player.commands.commands[player.commands.head].tick == 10);
+  vkr_scene_update(
+      &scene, vkr_gameplay_player_frame(
+                  &player, 100 + 10 * VKR_SCENE_SIMULATION_FIXED_DT, true_v));
+  assert(vkr_scene_simulation_completed_ticks(&scene) == 10);
+  assert(!scene.simulation.faulted && player.shots_fired == 1);
+
+  // Explicit pause still excludes the paused wall-time span on resume.
+  vkr_scene_physics_set_paused(&scene, true_v);
+  assert(vkr_gameplay_player_frame(&player, 150, true_v) == 0);
+  assert(!player.active && !state->held && !player.commands.count);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  assert(vkr_gameplay_player_frame(&player, 200, true_v) == 0);
+  fresh.time_seconds = 200 + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
+  input.observer(&fresh, input.observer_context);
+  assert(!player.commands.faulted && player.commands.count == 1);
+  assert(player.commands.commands[player.commands.head].tick == 11);
+  vkr_scene_update(&scene,
+                   vkr_gameplay_player_frame(
+                       &player, 200 + VKR_SCENE_SIMULATION_FIXED_DT, true_v));
+  assert(vkr_scene_simulation_completed_ticks(&scene) == 11);
+  assert(!scene.simulation.faulted);
+  vkr_gameplay_player_shutdown(&player);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_gameplay_player_tests(void) {
   VkrDMemory memory;
   assert(vkr_dmemory_create(MB(4), MB(32), &memory));
@@ -225,6 +307,7 @@ bool32_t run_gameplay_player_tests(void) {
   vkr_dmemory_allocator_create(&allocator);
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
+  test_player_unfocused_simulation(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 44, 16, NULL));
   InputState input = {0};

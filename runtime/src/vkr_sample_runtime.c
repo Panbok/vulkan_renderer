@@ -2261,6 +2261,12 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
           vkr_window_is_mouse_captured(&application->host.window);
       vkr_window_set_mouse_capture(&application->host.window, !captured);
     }
+    if (vkr_window_is_mouse_captured(&application->host.window)) {
+      application->ui_system.focused_id = VKR_UI_ID_NONE;
+      application->ui_system.focused_is_text = false_v;
+      application->ui_capture = (VkrUiInputCapture){0};
+      state->scene_keyboard_focus = true_v;
+    }
     return;
   }
 

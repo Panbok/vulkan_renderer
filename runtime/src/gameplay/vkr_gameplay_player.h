@@ -46,6 +46,7 @@ typedef struct VkrGameplayPlayer {
   float32_t render_pitch;
   Vec3 previous_foot;
   Vec3 current_foot;
+  bool8_t clock_running;
   bool8_t active;
   bool8_t shot_pending;
   bool8_t hit_pending;
@@ -62,8 +63,10 @@ bool8_t vkr_gameplay_player_attach(VkrGameplayPlayer *player, VkrScene *scene,
                                    const char **error);
 void vkr_gameplay_player_shutdown(VkrGameplayPlayer *player);
 /* Call once before scene_update, after the input pump. Returns admitted elapsed
- * time, independently of a display-delta clamp. Inactive input cancels held
- * actions and reload, discards pending input, and requires fresh presses. */
+ * time while the scene runs, independently of input focus and a display-delta
+ * clamp. Inactive input cancels held actions and reload, discards pending
+ * input, and requires fresh presses. Only scene pause/disable/fault stops the
+ * clock. */
 float64_t vkr_gameplay_player_frame(VkrGameplayPlayer *player, float64_t now,
                                     bool8_t active);
 bool8_t vkr_gameplay_player_camera(VkrGameplayPlayer *player,

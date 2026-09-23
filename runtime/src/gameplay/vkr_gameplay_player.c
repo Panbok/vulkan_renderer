@@ -254,6 +254,7 @@ static void player_reset(VkrScene *scene, void *context) {
   player->commands = (VkrGameplayInput){0};
   player->shot_pending = false_v;
   player->hit_pending = false_v;
+  player->clock_running = false_v;
   player->active = false_v;
   player->shots_fired = 0;
   player->hits = 0;
@@ -464,9 +465,23 @@ float64_t vkr_gameplay_player_frame(VkrGameplayPlayer *player, float64_t now,
   if (!player || !player->scene || !isfinite(now)) {
     return 0;
   }
-  active = active && !player->scene->physics_paused &&
-           !player->scene->physics_disabled &&
-           !player->scene->simulation.faulted;
+  const bool8_t running = !player->scene->physics_paused &&
+                          !player->scene->physics_disabled &&
+                          !player->scene->simulation.faulted;
+  const float64_t dt =
+      running && player->clock_running ? now - player->last_frame_time : 0.0;
+  if (dt < 0.0 || !isfinite(dt)) {
+    player->commands.faulted = true_v;
+    player->commands.error = VKR_GAMEPLAY_INPUT_ERROR_TIME;
+    return 0;
+  }
+  if (!running || !player->clock_running) {
+    player->epoch = now - vkr_scene_physics_time(player->scene) -
+                    vkr_scene_physics_debt(player->scene);
+  }
+  player->last_frame_time = now;
+  player->clock_running = running;
+  active = active && running;
   if (!active || !player->active) {
     VkrPlayerState *state = player_state(player);
     if (state) {
@@ -479,18 +494,8 @@ float64_t vkr_gameplay_player_frame(VkrGameplayPlayer *player, float64_t now,
     }
     player->commands = (VkrGameplayInput){
         .consumed_tick = vkr_scene_simulation_completed_ticks(player->scene)};
-    player->epoch = now - vkr_scene_physics_time(player->scene) -
-                    vkr_scene_physics_debt(player->scene);
-    player->last_frame_time = now;
-    player->active = active;
-    return 0;
   }
-  const float64_t dt = now - player->last_frame_time;
-  player->last_frame_time = now;
-  if (dt < 0 || !isfinite(dt)) {
-    player->commands.faulted = true_v;
-    return 0;
-  }
+  player->active = active;
   return dt;
 }
 
