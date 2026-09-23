@@ -103,9 +103,10 @@ typedef enum VkrUiIcon {
 /** Shared placement, style, and text settings for leaf widgets.
  * Labels, buttons, checkboxes and text fields use content plus padding and
  * borders, bounded by style min/max sizes and available space. STRETCH places
- * these text widgets at START without enlarging them; set min_size_pt to reserve
- * more space. Icons and field carets are included in their content size.
- * Structural panels and scroll containers retain normal stretch behavior. */
+ * these text widgets at START without enlarging them; set min_size_pt to
+ * reserve more space. Icons and field carets are included in their content
+ * size. Structural panels and scroll containers retain normal stretch behavior.
+ */
 typedef struct VkrUiWidgetConfig {
   VkrUiPlacement placement;
   VkrUiStyle style;
@@ -227,7 +228,8 @@ bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
                      bool8_t mouse_captured, float64_t delta_time,
                      const VkrUiPanelConfig *root_config);
 
-/** Finalize input and tooltips. Frame scratch stays live through draw preparation. */
+/** Finalize input and tooltips. Frame scratch stays live through draw
+ * preparation. */
 VkrUiInputCapture vkr_ui_end(VkrUiSystem *system);
 
 bool8_t vkr_ui_push_id_label(VkrUiSystem *system, String8 label);
@@ -287,7 +289,7 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
 /** Set an authored widget's left/top margins and fixed size in points before
  * draw preparation. Input keeps using the preceding presented bounds. */
 bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,
-                                VkrUiRect rect_pt);
+                               VkrUiRect rect_pt);
 /* Update a noninteractive wire after the current scene/camera pose is known,
  * before draw preparation. Coordinates remain widget-local points. */
 bool8_t vkr_ui_bezier_set_points(VkrUiSystem *system, VkrUiId id,
@@ -298,7 +300,8 @@ VkrUiInputCapture vkr_ui_system_capture(const VkrUiSystem *system);
 /** Most recent CPU damage result; 1 means every tile needs redraw. */
 float32_t vkr_ui_system_dirty_tile_ratio(const VkrUiSystem *system);
 
-/** Resolve layout, damage and commands, then build the packet-facing indexed stream. */
+/** Resolve layout, damage and commands, then build the packet-facing indexed
+ * stream. */
 bool8_t vkr_ui_system_prepare_draw_list(VkrUiSystem *system,
                                         VkrAllocator *frame_allocator,
                                         uint32_t target_width,

@@ -259,9 +259,6 @@ Array(VkrMeshAsset);
  * @brief Handle to a mesh instance.
  */
 
-
-
-
 /**
  * @brief Per-entity mesh instance referencing a shared asset.
  *

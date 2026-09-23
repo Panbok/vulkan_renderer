@@ -25,7 +25,8 @@ static void test_metal_packet_slang_draw_matrix_conversion(void) {
   printf("  test_metal_packet_slang_draw_matrix_conversion PASSED\n");
 }
 
-static Vec3 prepared_normal(const VkrPreparedInstanceGPU *instance, Vec3 normal) {
+static Vec3 prepared_normal(const VkrPreparedInstanceGPU *instance,
+                            Vec3 normal) {
   return (Vec3){
       instance->normal_column0.x * normal.x +
           instance->normal_column1.x * normal.y +
@@ -68,7 +69,8 @@ static void test_prepared_instance_normal_orthogonality(void) {
   source.model.m00 = source.model.m11 = source.model.m22 = 1e-12f;
   const VkrPreparedInstanceGPU tiny = vkr_gpu_prepare_instance(&source);
   const Vec3 tiny_normal = prepared_normal(&tiny, (Vec3){0.0f, 0.0f, 1.0f});
-  assert(tiny_normal.x == 0.0f && tiny_normal.y == 0.0f && tiny_normal.z == 1.0f);
+  assert(tiny_normal.x == 0.0f && tiny_normal.y == 0.0f &&
+         tiny_normal.z == 1.0f);
   printf("  test_prepared_instance_normal_orthogonality PASSED\n");
 }
 

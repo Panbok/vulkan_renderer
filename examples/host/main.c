@@ -45,9 +45,8 @@ int main(void) {
   int result = 1;
   if (vkr_application_host_create(&host, &config, &allocator)) {
     ExampleState state = {.host = &host};
-    const VkrApplicationHostCallbacks callbacks = {.state = &state,
-                                                   .frame = example_frame,
-                                                   .event = example_event};
+    const VkrApplicationHostCallbacks callbacks = {
+        .state = &state, .frame = example_frame, .event = example_event};
     vkr_application_host_set_callbacks(&host, &callbacks);
     vkr_application_host_run(&host);
     const bool8_t suspended_before_frame = state.frames == 0u;
@@ -57,7 +56,8 @@ int main(void) {
     vkr_application_host_destroy(&host);
     result = suspended_before_frame && state.frames == 3u &&
                      state.initializations == 1u && state.shutdowns == 1u
-                 ? 0 : 1;
+                 ? 0
+                 : 1;
   }
   vkr_allocator_release_global_accounting(&allocator);
   vkr_dmemory_destroy(&memory);

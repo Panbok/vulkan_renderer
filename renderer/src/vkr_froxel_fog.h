@@ -14,7 +14,8 @@ typedef struct VkrFroxelDensityBox {
   float32_t density_multiplier;
 } VkrFroxelDensityBox;
 
-/** Scene-owned medium. Boxes add density relative to the global height medium. */
+/** Scene-owned medium. Boxes add density relative to the global height medium.
+ */
 typedef struct VkrFroxelFogSettings {
   bool8_t enabled;
   Vec3 color;
@@ -57,10 +58,10 @@ _Static_assert(offsetof(VkrFroxelFogGpuParams, current_view_projection) == 800u,
 VkrFroxelFogSettings vkr_froxel_fog_settings_defaults(void);
 bool8_t vkr_froxel_fog_settings_valid(const VkrFroxelFogSettings *settings);
 bool8_t vkr_froxel_fog_projection_valid(const VkrFroxelFogSettings *settings,
-                                       Mat4 projection);
+                                        Mat4 projection);
 struct VkrFrameInput;
 /** Cold preparation consumes validated settings and shadow payloads. */
-VkrFroxelFogGpuParams vkr_froxel_fog_prepare(
-    const struct VkrFrameInput *input, uint32_t width, uint32_t height);
-uint64_t vkr_froxel_fog_content_signature(
-    const struct VkrFrameInput *input, const VkrFroxelFogGpuParams *params);
+VkrFroxelFogGpuParams vkr_froxel_fog_prepare(const struct VkrFrameInput *input,
+                                             uint32_t width, uint32_t height);
+uint64_t vkr_froxel_fog_content_signature(const struct VkrFrameInput *input,
+                                          const VkrFroxelFogGpuParams *params);

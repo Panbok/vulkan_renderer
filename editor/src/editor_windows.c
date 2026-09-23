@@ -307,11 +307,10 @@ static void editor_scene_resolution_build(const VkrEditorUi *editor,
                                   ? string8_lit("Scene stopped")
                               : !frame->scene ? string8_lit("No Scene loaded")
                                               : frame->text.performance;
-  text = string8_create_formatted(ui->frame_allocator, "%.*s\n%.*s\n%.*s",
-                                  (int32_t)performance.length, performance.str,
-                                  (int32_t)text.length, text.str,
-                                  (int32_t)frame->text.system.length,
-                                  frame->text.system.str);
+  text = string8_create_formatted(
+      ui->frame_allocator, "%.*s\n%.*s\n%.*s", (int32_t)performance.length,
+      performance.str, (int32_t)text.length, text.str,
+      (int32_t)frame->text.system.length, frame->text.system.str);
   if (gameplay) {
     text = string8_create_formatted(
         ui->frame_allocator, "%.*s\n%.*s", (int32_t)text.length, text.str,
@@ -378,12 +377,13 @@ void vkr_editor_scene_toolbar_build(VkrEditorUi *editor,
       (Vec4){0.65f, 0.70f, 0.75f, 1}, false_v);
   if (editor_toolbar_button(ui, string8_lit("scene.load"),
                             VKR_UI_ICON_SCENE_LOAD, string8_lit("Load scene"),
-                            1, cols, green, frame->scene_loading || frame->scene != NULL))
+                            1, cols, green,
+                            frame->scene_loading || frame->scene != NULL))
     *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_LOAD};
-  if (editor_toolbar_button(
-          ui, string8_lit("scene.unload"), VKR_UI_ICON_SCENE_UNLOAD,
-          string8_lit("Unload scene"), 2, cols, red,
-          frame->scene_loading || frame->scene == NULL))
+  if (editor_toolbar_button(ui, string8_lit("scene.unload"),
+                            VKR_UI_ICON_SCENE_UNLOAD,
+                            string8_lit("Unload scene"), 2, cols, red,
+                            frame->scene_loading || frame->scene == NULL))
     *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_UNLOAD};
   if (editor_toolbar_button(ui, string8_lit("simulation.start"),
                             VKR_UI_ICON_PLAY,
@@ -423,16 +423,11 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   const VkrUiTrack nav_columns[] = {
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.unit = VKR_UI_TRACK_AUTO},
   };
   const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
@@ -494,10 +489,9 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                        ? VKR_EDITOR_MENU_NONE
                        : VKR_EDITOR_MENU_DEBUG;
   }
-  if (editor_menu_button(ui, string8_lit("menu.settings"),
-                         string8_lit("Settings"), 5u,
-                         editor->menu == VKR_EDITOR_MENU_SETTINGS,
-                         editor->heading_font)) {
+  if (editor_menu_button(
+          ui, string8_lit("menu.settings"), string8_lit("Settings"), 5u,
+          editor->menu == VKR_EDITOR_MENU_SETTINGS, editor->heading_font)) {
     editor->commands_open = false_v;
     editor->menu = editor->menu == VKR_EDITOR_MENU_SETTINGS
                        ? VKR_EDITOR_MENU_NONE
@@ -565,8 +559,8 @@ static VkrUiRect editor_menu_popup_rect(const VkrEditorUi *editor,
   const float32_t target_height = (float32_t)ui->target_height / scale;
   const bool8_t settings = editor->menu == VKR_EDITOR_MENU_SETTINGS;
   const bool8_t debug = editor->menu == VKR_EDITOR_MENU_DEBUG;
-  const float32_t width = Min(settings ? 180.0f : (debug ? 230.0f : 210.0f),
-                              target_width);
+  const float32_t width =
+      Min(settings ? 180.0f : (debug ? 230.0f : 210.0f), target_width);
   const float32_t height = Min(
       settings ? 96.0f
                : (debug ? (editor->labels_expanded ? 184.0f : 50.0f) : 94.0f),
@@ -640,7 +634,8 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui) {
       editor->menu = VKR_EDITOR_MENU_NONE;
     }
     item.placement.row = 2u;
-    if (vkr_ui_button(ui, string8_lit("physics"), string8_lit("Physics"), &item)) {
+    if (vkr_ui_button(ui, string8_lit("physics"), string8_lit("Physics"),
+                      &item)) {
       editor_window_raise(editor, VKR_EDITOR_WINDOW_PHYSICS);
       editor->menu = VKR_EDITOR_MENU_NONE;
     }
@@ -994,12 +989,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
           (window->position_pt.y + 30.0f) * ui->content_scale,
           window->size_pt.x * ui->content_scale,
           Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
-      vkr_editor_physics_settings_build(editor->physics_settings, frame, bounds, editor->heading_font);
+      vkr_editor_physics_settings_build(editor->physics_settings, frame, bounds,
+                                        editor->heading_font);
       (void)vkr_ui_panel_end(ui);
     }
   } else {
-    VkrUiWidgetConfig body = vkr_editor_text_config(
-        font_size_pt, (Vec4){0.84f, 0.87f, 0.92f, 1.0f});
+    VkrUiWidgetConfig body =
+        vkr_editor_text_config(font_size_pt, (Vec4){0.84f, 0.87f, 0.92f, 1.0f});
     body.placement = (VkrUiPlacement){
         .column = 0u,
         .row = 1u,
@@ -1169,10 +1165,12 @@ void vkr_editor_commands_update(VkrEditorUi *editor,
       (void)vkr_ui_keyboard_layer_set(ui, 0u);
     }
   }
-  const uint8_t space_modifiers = input_key_press_modifiers(frame->input, KEY_SPACE);
+  const uint8_t space_modifiers =
+      input_key_press_modifiers(frame->input, KEY_SPACE);
   if (!frame->mouse_captured && !editor->commands_open &&
       input_key_just_pressed(frame->input, KEY_SPACE) &&
-      (space_modifiers & (VKR_INPUT_MOD_CONTROL | VKR_INPUT_MOD_ALT)) == VKR_INPUT_MOD_CONTROL) {
+      (space_modifiers & (VKR_INPUT_MOD_CONTROL | VKR_INPUT_MOD_ALT)) ==
+          VKR_INPUT_MOD_CONTROL) {
     vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
     frame->ui->capture.keyboard = true_v;
   }

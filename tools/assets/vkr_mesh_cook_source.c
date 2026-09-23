@@ -1,8 +1,8 @@
 #include "assets/vkr_mesh_cook_source.h"
+#include "assets/mesh_loader_gltf.h"
 #include "assets/vkr_mesh_cook_types.h"
 #include "assets/vkr_mesh_deduplicate.h"
 #include "assets/vkr_mesh_encode.h"
-#include "assets/mesh_loader_gltf.h"
 #include "assets/vkr_meshoptimizer_bridge.h"
 
 #include "containers/str.h"
@@ -769,7 +769,8 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
 
   if (!builder->preserve_tangents)
     vkr_geometry_generate_tangents(state->scratch_allocator, dedup_vertices,
-                                 dedup_vertex_count, indices_copy, index_count);
+                                   dedup_vertex_count, indices_copy,
+                                   index_count);
 
   Vec3 min, max, center;
   vkr_mesh_loader_compute_bounds(dedup_vertices, dedup_vertex_count, &min, &max,
@@ -1245,14 +1246,14 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
   const uint64_t vertex_capacity =
       vertex_count > builder->vertices.capacity
           ? Max(vertex_count,
-                Min((uint64_t)UINT32_MAX, builder->vertices.capacity *
-                                              DEFAULT_VECTOR_RESIZE_FACTOR))
+                Min((uint64_t)UINT32_MAX,
+                    builder->vertices.capacity * DEFAULT_VECTOR_RESIZE_FACTOR))
           : builder->vertices.capacity;
   const uint64_t index_capacity =
       index_count > builder->indices.capacity
           ? Max(index_count,
-                Min((uint64_t)UINT32_MAX, builder->indices.capacity *
-                                              DEFAULT_VECTOR_RESIZE_FACTOR))
+                Min((uint64_t)UINT32_MAX,
+                    builder->indices.capacity * DEFAULT_VECTOR_RESIZE_FACTOR))
           : builder->indices.capacity;
   if (vertex_count > UINT32_MAX || index_count > UINT32_MAX ||
       !vector_reserve_VkrVertex3d(&builder->vertices, vertex_capacity) ||
@@ -1491,10 +1492,9 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
     }
     return false_v;
   }
-  if (range_override_count &&
-      !vkr_scene_bake_apply_light_ranges(
-          source_path, &state.source, range_overrides, range_override_count,
-          out_error)) {
+  if (range_override_count && !vkr_scene_bake_apply_light_ranges(
+                                  source_path, &state.source, range_overrides,
+                                  range_override_count, out_error)) {
     return false_v;
   }
 
@@ -1548,12 +1548,13 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
     }
   }
 
-  VkrGeometryUploadRange *cooked_ranges = state.merged_submeshes.length
-      ? vkr_allocator_alloc(scratch_allocator,
-                          (uint64_t)state.merged_submeshes.length *
-                              sizeof(*cooked_ranges),
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
-      : NULL;
+  VkrGeometryUploadRange *cooked_ranges =
+      state.merged_submeshes.length
+          ? vkr_allocator_alloc(scratch_allocator,
+                                (uint64_t)state.merged_submeshes.length *
+                                    sizeof(*cooked_ranges),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
   if (state.merged_submeshes.length && !cooked_ranges) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -1635,16 +1636,20 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
         continue;
       }
       /* Managed names consist only of generated ASCII IDs and fixed folders. */
-      remap = string8_create_formatted(source_allocator, "%.*s%s\"%.*s\":\"%.*s\"",
-          (int32_t)remap.length, remap.str, comma ? "," : "",
-          (int32_t)material.length, material.str, (int32_t)material.length, material.str);
+      remap = string8_create_formatted(
+          source_allocator, "%.*s%s\"%.*s\":\"%.*s\"", (int32_t)remap.length,
+          remap.str, comma ? "," : "", (int32_t)material.length, material.str,
+          (int32_t)material.length, material.str);
       comma = true_v;
     }
-    remap = string8_create_formatted(source_allocator, "%.*s}}\n", (int32_t)remap.length, remap.str);
-    String8 remap_path = string8_create_formatted(source_allocator, "%.*s.remap.json",
-        (int32_t)output_path.length, output_path.str);
-    if (!remap.str || !remap_path.str || !vkr_mesh_cooked_write_atomic(scratch_allocator,
-        remap_path, remap.str, remap.length)) {
+    remap = string8_create_formatted(source_allocator, "%.*s}}\n",
+                                     (int32_t)remap.length, remap.str);
+    String8 remap_path =
+        string8_create_formatted(source_allocator, "%.*s.remap.json",
+                                 (int32_t)output_path.length, output_path.str);
+    if (!remap.str || !remap_path.str ||
+        !vkr_mesh_cooked_write_atomic(scratch_allocator, remap_path, remap.str,
+                                      remap.length)) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       return false_v;
     }

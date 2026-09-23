@@ -613,8 +613,8 @@ void input_get_mouse_delta(const InputState *input_state, int32_t *dx,
  * Each event contributes its signed delta. input_update clears the accumulator
  * after frame consumers finish; accumulation saturates at the int32_t limits.
  * @param input_state Pointer to the `InputState` to query.
- * @param[out] delta Pointer to store the frame's mouse wheel delta. Positive for
- * up/forward, negative for down/backward.
+ * @param[out] delta Pointer to store the frame's mouse wheel delta. Positive
+ * for up/forward, negative for down/backward.
  */
 void input_get_mouse_wheel(InputState *input_state, int32_t *delta);
 

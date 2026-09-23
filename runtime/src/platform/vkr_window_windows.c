@@ -78,18 +78,18 @@ vkr_internal bool8_t vkr_win32_display_output_equal(
              vkr_win32_float_bits(b.output_scale);
 }
 
-vkr_internal uint64_t vkr_win32_display_output_pack(
-    uint32_t revision, bool8_t available, float32_t headroom) {
-  const uint32_t state = (revision & 0x7fffffffu) |
-                         (available ? 0x80000000u : 0u);
-  return ((uint64_t)state << 32u) |
-         (uint64_t)vkr_win32_float_bits(headroom);
+vkr_internal uint64_t vkr_win32_display_output_pack(uint32_t revision,
+                                                    bool8_t available,
+                                                    float32_t headroom) {
+  const uint32_t state =
+      (revision & 0x7fffffffu) | (available ? 0x80000000u : 0u);
+  return ((uint64_t)state << 32u) | (uint64_t)vkr_win32_float_bits(headroom);
 }
 
 vkr_internal VkrDisplayOutputSnapshot
 vkr_win32_display_output_current(const PlatformState *state) {
-  const uint64_t packed = vkr_atomic_uint64_load(
-      &state->display_output_state, VKR_MEMORY_ORDER_SEQ_CST);
+  const uint64_t packed = vkr_atomic_uint64_load(&state->display_output_state,
+                                                 VKR_MEMORY_ORDER_SEQ_CST);
   const uint32_t state_bits = (uint32_t)(packed >> 32u);
   const uint32_t headroom_bits = (uint32_t)packed;
   float32_t headroom = 0.0f;
@@ -106,8 +106,9 @@ vkr_win32_display_output_current(const PlatformState *state) {
   };
 }
 
-vkr_internal void vkr_win32_publish_display_output(
-    PlatformState *state, VkrDisplayOutputSnapshot snapshot) {
+vkr_internal void
+vkr_win32_publish_display_output(PlatformState *state,
+                                 VkrDisplayOutputSnapshot snapshot) {
   const VkrDisplayOutputSnapshot previous =
       vkr_win32_display_output_current(state);
   if (vkr_win32_display_output_equal(previous, snapshot))
@@ -116,19 +117,18 @@ vkr_internal void vkr_win32_publish_display_output(
   if (revision == 0u || revision > 0x7fffffffu)
     revision = 1u;
   uint32_t sequence = vkr_atomic_uint32_load(&state->display_output_sequence,
-                                              VKR_MEMORY_ORDER_SEQ_CST);
+                                             VKR_MEMORY_ORDER_SEQ_CST);
   vkr_atomic_uint32_store(&state->display_output_sequence, sequence | 1u,
                           VKR_MEMORY_ORDER_SEQ_CST);
   vkr_atomic_uint32_store(&state->display_output_scale_bits,
                           vkr_win32_float_bits(snapshot.output_scale),
                           VKR_MEMORY_ORDER_SEQ_CST);
-  vkr_atomic_uint64_store(
-      &state->display_output_state,
-      vkr_win32_display_output_pack(revision, snapshot.available,
-                                    snapshot.headroom),
-      VKR_MEMORY_ORDER_SEQ_CST);
-  vkr_atomic_uint32_store(&state->display_output_sequence,
-                          (sequence | 1u) + 1u, VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint64_store(&state->display_output_state,
+                          vkr_win32_display_output_pack(
+                              revision, snapshot.available, snapshot.headroom),
+                          VKR_MEMORY_ORDER_SEQ_CST);
+  vkr_atomic_uint32_store(&state->display_output_sequence, (sequence | 1u) + 1u,
+                          VKR_MEMORY_ORDER_SEQ_CST);
 }
 
 vkr_internal bool8_t vkr_win32_sdr_white_nits(
@@ -229,12 +229,11 @@ vkr_win32_query_display_output(IDXGIFactory1 *factory, HMONITOR monitor) {
       DISPLAYCONFIG_PATH_TARGET_INFO target = {0};
       const bool8_t queried =
           SUCCEEDED(IDXGIOutput_QueryInterface(output, &IID_IDXGIOutput6,
-                                                (void **)&output6)) &&
+                                               (void **)&output6)) &&
           output6 && SUCCEEDED(IDXGIOutput6_GetDesc1(output6, &desc1)) &&
           vkr_win32_output_target_for_name(desc.DeviceName, &target);
       float32_t sdr_white_nits = 0.0f;
-      if (queried &&
-          vkr_win32_sdr_white_nits(&target, &sdr_white_nits) &&
+      if (queried && vkr_win32_sdr_white_nits(&target, &sdr_white_nits) &&
           desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 &&
           isfinite(desc1.MaxFullFrameLuminance) &&
           isfinite(desc1.MaxLuminance) && desc1.MaxFullFrameLuminance > 0.0f &&
@@ -270,7 +269,8 @@ static void vkr_win32_refresh_display_output(PlatformState *state) {
     state->display_monitor = monitor;
     state->display_output_dirty = true_v;
   }
-  if (state->display_factory && !IDXGIFactory1_IsCurrent(state->display_factory)) {
+  if (state->display_factory &&
+      !IDXGIFactory1_IsCurrent(state->display_factory)) {
     IDXGIFactory1_Release(state->display_factory);
     state->display_factory = NULL;
     state->display_output_dirty = true_v;
@@ -540,8 +540,8 @@ VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window) {
       continue;
     const VkrDisplayOutputSnapshot snapshot =
         vkr_win32_display_output_current(state);
-    const uint32_t end = vkr_atomic_uint32_load(
-        &state->display_output_sequence, VKR_MEMORY_ORDER_SEQ_CST);
+    const uint32_t end = vkr_atomic_uint32_load(&state->display_output_sequence,
+                                                VKR_MEMORY_ORDER_SEQ_CST);
     if (begin == end)
       return snapshot;
   }

@@ -1,14 +1,15 @@
 #pragma once
 
 #include "defines.h"
-#include "shaders/shared/temporal_contract.slangh"
 #include "math/mat.h"
 #include "math/vec.h"
+#include "shaders/shared/temporal_contract.slangh"
 
 /** Renderer-owned jitter period used to align deterministic replay. */
 #define VKR_TEMPORAL_SEQUENCE_LENGTH 8u
 
-/** Unchanged rendered inputs required before accumulating recursive SSR output. */
+/** Unchanged rendered inputs required before accumulating recursive SSR output.
+ */
 #define VKR_TEMPORAL_SSR_SETTLE_FRAMES 128u
 
 /** FSR jitter period for validated nonzero render/output widths. */
@@ -18,8 +19,8 @@ uint32_t vkr_temporal_upscale_sequence_length(uint32_t render_width,
 struct VkrPreparedFrame;
 
 /** Rendered-input identity for static accumulation; native resource and graph
- * revisions must also match. Recursive SSR output needs the settling gate below.
- * Contains no borrowed storage. */
+ * revisions must also match. Recursive SSR output needs the settling gate
+ * below. Contains no borrowed storage. */
 typedef struct VkrTemporalSceneSignature {
   uint64_t hash[2];
   bool8_t eligible;
@@ -42,7 +43,8 @@ bool8_t vkr_temporal_prepare_static_accumulation(
 VkrTemporalSceneSignature
 vkr_ssr_content_signature(const struct VkrPreparedFrame *packet);
 
-/** Independent direct-light bounce content; excludes camera and sampling phase. */
+/** Independent direct-light bounce content; excludes camera and sampling phase.
+ */
 VkrTemporalSceneSignature
 vkr_ssgi_content_signature(const struct VkrPreparedFrame *packet);
 

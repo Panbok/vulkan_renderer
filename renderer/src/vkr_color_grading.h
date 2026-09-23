@@ -24,6 +24,5 @@ _Static_assert(AlignOf(VkrColorGradingGpu) == 16u,
  * tuple (0, 0, 1, 1) returns exact identity rows and an exact disabled flag.
  */
 VkrColorGradingGpu vkr_color_grading_prepare(float32_t temperature,
-                                              float32_t tint,
-                                              float32_t contrast,
-                                              float32_t saturation);
+                                             float32_t tint, float32_t contrast,
+                                             float32_t saturation);

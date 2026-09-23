@@ -41,7 +41,8 @@ void vkr_dynamic_resolution_init(VkrDynamicResolutionState *state,
                                  float32_t initial_scale);
 
 /** Clears timing and learned tier costs after the output workload changes.
- * Preserves configuration, current scale, submit watermark and transition total.
+ * Preserves configuration, current scale, submit watermark and transition
+ * total.
  */
 void vkr_dynamic_resolution_reset_feedback(VkrDynamicResolutionState *state);
 

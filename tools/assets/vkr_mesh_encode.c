@@ -1,14 +1,13 @@
 #include "assets/vkr_mesh_encode.h"
 
+#include "assets/vkr_mesh_decode.h"
+#include "assets/vkr_meshoptimizer_encode.h"
 #include "core/logger.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "platform/vkr_platform.h"
-#include "assets/vkr_mesh_decode.h"
-#include "assets/vkr_meshoptimizer_encode.h"
 
 #include <math.h>
-
 
 #define VKR_MESH_COOKED_HEADER_SIZE 272u
 #define VKR_MESH_COOKED_DEPENDENCY_SIZE 64u
@@ -1077,7 +1076,8 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
     ok = ok && vkr_mesh_cooked_writer_u32(&writer, range->index_count);
     ok = ok && vkr_mesh_cooked_writer_u32(&writer, range->vertex_count);
     ok = ok && vkr_mesh_cooked_writer_i32(&writer, 0);
-    ok = ok && vkr_mesh_cooked_writer_u32(&writer, upload_range->pipeline_domain);
+    ok = ok &&
+         vkr_mesh_cooked_writer_u32(&writer, upload_range->pipeline_domain);
     ok = ok && vkr_mesh_cooked_writer_u64(&writer, range->material_offset);
     ok = ok && vkr_mesh_cooked_writer_u32(
                    &writer, (uint32_t)upload_range->material_name.length);

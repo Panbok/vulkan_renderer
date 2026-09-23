@@ -43,7 +43,8 @@ static void test_thread_create_join(void) {
   assert(vkr_thread_get_id(thread) != 0 && "thread id should be non-zero");
 
   assert(vkr_thread_join(thread) && "thread join failed");
-  assert(!vkr_thread_is_active(thread) && "thread should be inactive after join");
+  assert(!vkr_thread_is_active(thread) &&
+         "thread should be inactive after join");
 
   assert(vkr_thread_destroy(&allocator, &thread) &&
          "thread destroy failed after join");
@@ -80,9 +81,8 @@ static void test_mutex_contention(void) {
 
   int accumulator = 0;
   const int iterations = 500;
-  MutexCounterArgs args = {.mutex = mutex,
-                           .accumulator = &accumulator,
-                           .iterations = iterations};
+  MutexCounterArgs args = {
+      .mutex = mutex, .accumulator = &accumulator, .iterations = iterations};
 
   VkrThread t1 = NULL;
   VkrThread t2 = NULL;
@@ -96,7 +96,8 @@ static void test_mutex_contention(void) {
   vkr_thread_destroy(&allocator, &t1);
   vkr_thread_destroy(&allocator, &t2);
 
-  assert(accumulator == iterations * 2 && "mutex-protected increments mismatch");
+  assert(accumulator == iterations * 2 &&
+         "mutex-protected increments mismatch");
 
   assert(vkr_mutex_destroy(&allocator, &mutex) && "mutex destroy failed");
   teardown_suite();

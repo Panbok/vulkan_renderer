@@ -122,7 +122,8 @@ _Static_assert(sizeof(VkrPreparedInstanceGPU) == 144,
                "Native prepared instance must be 144 bytes");
 
 /** Computes normal transport and bounds once at native publication/upload. */
-VkrPreparedInstanceGPU vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source);
+VkrPreparedInstanceGPU
+vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source);
 
 /** One completion-protected object transform indexed by stable temporal ID. */
 typedef struct VkrTemporalTransformGPU {

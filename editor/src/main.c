@@ -1,5 +1,5 @@
-#include "platform/vkr_entry.h"
 #include "editor_application.h"
+#include "platform/vkr_entry.h"
 
 VKR_MAIN(argc, argv) {
   VkrEditorApplication editor = {0};

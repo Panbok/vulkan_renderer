@@ -1,8 +1,8 @@
 #include "renderer/systems/vkr_texture_system.h"
-#include "filesystem/vkr_asset_path.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_asset_path.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
@@ -1738,7 +1738,8 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
 }
 
 /* Final destruction belongs to the texture system. Loader unload releases
- * its acquired reference and never dispatches back through the resource table. */
+ * its acquired reference and never dispatches back through the resource table.
+ */
 vkr_internal bool8_t vkr_texture_system_destroy_unreferenced(
     VkrTextureSystem *system, VkrTextureEntry *entry) {
   const uint32_t texture_index = entry->index;

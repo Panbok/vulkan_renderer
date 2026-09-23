@@ -1,9 +1,9 @@
 #include "render_graph_barrier_test.h"
 #include "container_test_allocator.h"
 #include "vkr_frame_input.h"
+#include "vkr_render_graph_frame.h"
 #include "vkr_renderer_impl.h"
 #include "vkr_rg_json.h"
-#include "vkr_render_graph_frame.h"
 
 /**
  * Barrier planning is a deterministic function of the declared graph, so it is
@@ -351,21 +351,25 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
   const char *source =
       "{\"version\":1,\"name\":\"draws\",\"resources\":["
       "{\"name\":\"candidate\",\"type\":\"buffer\",\"size\":{"
-      "\"mode\":\"draw_elements\",\"count_source\":\"gpu_draw_candidate_capacity\","
+      "\"mode\":\"draw_elements\",\"count_source\":\"gpu_draw_candidate_"
+      "capacity\","
       "\"bytes_per_element\":48},\"usage\":[\"STORAGE\"],"
       "\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]},"
       "{\"name\":\"visible\",\"type\":\"buffer\",\"size\":{"
-      "\"mode\":\"draw_elements\",\"count_source\":\"gpu_draw_visible_capacity\","
+      "\"mode\":\"draw_elements\",\"count_source\":\"gpu_draw_visible_"
+      "capacity\","
       "\"bytes_per_element\":160},\"usage\":[\"STORAGE\"],"
       "\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]},"
       "{\"name\":\"transmission_instance\",\"type\":\"buffer\",\"size\":{"
       "\"mode\":\"draw_elements\",\"count_source\":"
       "\"transmission_gpu_draw_candidate_capacity\",\"bytes_per_element\":128},"
-      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]},"
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\","
+      "\"GROW_ONLY\"]},"
       "{\"name\":\"transmission_arguments\",\"type\":\"buffer\",\"size\":{"
       "\"mode\":\"draw_elements\",\"count_source\":"
       "\"transmission_gpu_draw_visible_capacity\",\"bytes_per_element\":20},"
-      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]}],"
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\","
+      "\"GROW_ONLY\"]}],"
       "\"passes\":[]}";
   VkrRgJsonGraph json = {0};
   assert(rg_barrier_test_load_json(&allocator, source, &json));
@@ -409,13 +413,12 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
   image.flags = VKR_RG_RESOURCE_FLAG_GROW_ONLY;
   assert(!vkr_rg_image_handle_valid(
       vkr_rg_create_image(graph, string8_lit("bad_image"), &image)));
-  const VkrRgResourceFlags conflicts[] = {
-      VKR_RG_RESOURCE_FLAG_EXTERNAL, VKR_RG_RESOURCE_FLAG_HISTORY,
-      VKR_RG_RESOURCE_FLAG_RETAINED};
+  const VkrRgResourceFlags conflicts[] = {VKR_RG_RESOURCE_FLAG_EXTERNAL,
+                                          VKR_RG_RESOURCE_FLAG_HISTORY,
+                                          VKR_RG_RESOURCE_FLAG_RETAINED};
   for (uint32_t i = 0u; i < ArrayCount(conflicts); ++i) {
     VkrRgBufferDesc buffer = {
-        .size = 16u,
-        .flags = VKR_RG_RESOURCE_FLAG_GROW_ONLY | conflicts[i]};
+        .size = 16u, .flags = VKR_RG_RESOURCE_FLAG_GROW_ONLY | conflicts[i]};
     assert(!vkr_rg_buffer_handle_valid(
         vkr_rg_create_buffer(graph, string8_lit("bad_buffer"), &buffer)));
   }
@@ -1805,8 +1808,8 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   for (uint64_t i = 0u; i < runtime->buffers.length; ++i) {
     const VkrRgBuffer *buffer = &runtime->buffers.data[i];
     if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_compaction_state")) {
-      const uint64_t view_count = 1u + frame.shadow_cascade_count +
-                                  frame.local_shadow_view_count;
+      const uint64_t view_count =
+          1u + frame.shadow_cascade_count + frame.local_shadow_view_count;
       assert(buffer->desc.size ==
              view_count * sizeof(VkrGpuDrawCompactionState));
       found_compaction_state = true_v;
@@ -1869,8 +1872,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   frame.bloom_mip_count = 7u;
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length ==
-         VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT);
+  assert(runtime->passes.length == VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT);
   assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);

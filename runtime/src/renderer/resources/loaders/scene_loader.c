@@ -7,7 +7,6 @@
 #include "renderer/resources/loaders/scene_loader.h"
 
 #include "assets/vkr_diffuse_volume.h"
-#include "vkr_subsurface.h"
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
@@ -15,12 +14,13 @@
 #include "math/vkr_quat.h"
 #include "math/vkr_transform.h"
 #include "renderer/systems/vkr_mesh_manager.h"
-#include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_world_resources.h"
+#include "vkr_subsurface.h"
 
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 typedef struct SceneText3DImport {
   String8 text;
@@ -875,7 +875,8 @@ scene_loader_parse_atmosphere_import(String8 json) {
 invalid:
   result.valid = false_v;
   log_error("Scene loader: $.atmosphere must contain a finite nonzero sun "
-            "direction; finite nonnegative solar_irradiance; density scales in [0,100]; "
+            "direction; finite nonnegative solar_irradiance; density scales in "
+            "[0,100]; "
             "ground_albedo in [0,1]; altitude in [0,100000]; angular "
             "diameter in [1e-16,5]; mie_anisotropy in [-.95,.95]; and finite "
             "nonnegative sh_deringing");
@@ -957,9 +958,10 @@ invalid:
   return result;
 }
 
-vkr_internal SceneFroxelFogImport scene_loader_parse_froxel_fog_import(String8 json) {
-  SceneFroxelFogImport result = {.valid = true_v,
-      .settings = vkr_froxel_fog_settings_defaults()};
+vkr_internal SceneFroxelFogImport
+scene_loader_parse_froxel_fog_import(String8 json) {
+  SceneFroxelFogImport result = {
+      .valid = true_v, .settings = vkr_froxel_fog_settings_defaults()};
   if (!json.str || json.length == 0u)
     return result;
 
@@ -1037,9 +1039,10 @@ vkr_internal SceneFroxelFogImport scene_loader_parse_froxel_fog_import(String8 j
 
 invalid:
   result.valid = false_v;
-  log_error("Scene loader: $.volumetric_fog requires color in [0,1], "
-            "finite nonnegative density/height_falloff, finite base_height, "
-            "positive max_distance, and at most 16 ordered finite density boxes");
+  log_error(
+      "Scene loader: $.volumetric_fog requires color in [0,1], "
+      "finite nonnegative density/height_falloff, finite base_height, "
+      "positive max_distance, and at most 16 ordered finite density boxes");
   return result;
 }
 
@@ -1336,13 +1339,12 @@ vkr_internal void scene_loader_apply_diffuse_volume_import(
 }
 
 vkr_internal bool8_t scene_loader_subsurface_texture_key(
-    const SceneSubsurfaceImport *import, char storage[256u],
-    String8 *out_key) {
+    const SceneSubsurfaceImport *import, char storage[256u], String8 *out_key) {
   if (!import || !storage || !out_key)
     return false_v;
 
-  int32_t written = snprintf(storage, 256u, "__scene_subsurface_%u",
-                             import->profile_count);
+  int32_t written =
+      snprintf(storage, 256u, "__scene_subsurface_%u", import->profile_count);
   if (written < 0 || (uint32_t)written >= 256u)
     return false_v;
   uint32_t length = (uint32_t)written;
@@ -1451,9 +1453,9 @@ vkr_internal bool8_t scene_loader_apply_subsurface_import(
       .upload_is_compressed = false_v,
   };
   VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
-  if (!vkr_texture_system_finalize_prepared_load(
-          &assets->texture_system, texture_key, &prepared, &texture,
-          out_error)) {
+  if (!vkr_texture_system_finalize_prepared_load(&assets->texture_system,
+                                                 texture_key, &prepared,
+                                                 &texture, out_error)) {
     return false_v;
   }
 
@@ -4417,7 +4419,8 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     return false_v;
   }
   payload->json_length = json_copy.length;
-  if (!scene_loader_source_fingerprint(json_copy, &payload->scene_source_fingerprint)) {
+  if (!scene_loader_source_fingerprint(json_copy,
+                                       &payload->scene_source_fingerprint)) {
     scene_loader_destroy_async_payload(payload);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
@@ -4684,9 +4687,9 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
     async_payload->diffuse_volume_applied = true_v;
   }
   if (!async_payload->subsurface_applied) {
-    if (!scene_loader_apply_subsurface_import(
-            scene, async_payload->assets, &async_payload->subsurface_import,
-            out_error)) {
+    if (!scene_loader_apply_subsurface_import(scene, async_payload->assets,
+                                              &async_payload->subsurface_import,
+                                              out_error)) {
       return false_v;
     }
     async_payload->subsurface_applied = true_v;

@@ -357,9 +357,9 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                    "$.camera.position", error) ||
         !vkr_harness_manifest_f32(doc, token, "orthographic_height", true_v,
                                   &camera->orthographic_height, error)) {
-      vkr_harness_error_set(
-          error, "camera.orthographic", "$.camera",
-          "Orthographic views require position and orthographic_height without yaw, pitch or FOV");
+      vkr_harness_error_set(error, "camera.orthographic", "$.camera",
+                            "Orthographic views require position and "
+                            "orthographic_height without yaw, pitch or FOV");
       return false_v;
     }
   } else if (string_equals(mode, "static")) {
@@ -439,8 +439,9 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
   }
   if (orthographic_height_token >= 0 &&
       !vkr_harness_camera_is_orthographic(camera->mode)) {
-    vkr_harness_error_set(error, "camera.orthographic_height", "$.camera",
-                          "orthographic_height requires an orthographic camera mode");
+    vkr_harness_error_set(
+        error, "camera.orthographic_height", "$.camera",
+        "orthographic_height requires an orthographic camera mode");
     return false_v;
   }
   if ((camera->mode == VKR_HARNESS_CAMERA_STATIC &&
@@ -1396,9 +1397,10 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       (!string_equals(out_case->scene, "assets/scenes/bistro.scene.json") ||
        out_case->warmup_frames < 300u ||
        fabs(out_case->fixed_delta_seconds - 1.0 / 60.0) > 1e-12)) {
-    vkr_harness_error_set(
-        out_error, "case.physics_fixture", "$.renderer.physics_fixture",
-        "The physics fixture requires Bistro, 300 warmup frames and 60 Hz fixed delta");
+    vkr_harness_error_set(out_error, "case.physics_fixture",
+                          "$.renderer.physics_fixture",
+                          "The physics fixture requires Bistro, 300 warmup "
+                          "frames and 60 Hz fixed delta");
     return false_v;
   }
   if (!vkr_harness_manifest_field(&doc, 0, "resize_round_trip", false_v,

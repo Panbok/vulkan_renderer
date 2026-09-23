@@ -54,7 +54,6 @@ typedef struct VkrSubsurfaceBinding {
   uint32_t profile_count;
 } VkrSubsurfaceBinding;
 
-
 #define VKR_TEXTURE_MAX_DIMENSION 16384
 #define VKR_TEXTURE_MAX_ARRAY_LAYERS 2048
 #define VKR_TEXTURE_MAX_UPLOAD_REGIONS 32768
@@ -143,7 +142,8 @@ typedef struct VkrPbrProperties {
   /** Charlie sheen under clearcoat; zero RGB preserves existing layers. */
   Vec3 sheen_color;
   float32_t sheen_roughness;
-  /** Reflection-only GGX elongation; rotation is CCW in tangent-space radians. */
+  /** Reflection-only GGX elongation; rotation is CCW in tangent-space radians.
+   */
   float32_t anisotropy_strength;
   float32_t anisotropy_rotation;
   /** Thin-sheet Lambert transmission; strength partitions the base diffuse

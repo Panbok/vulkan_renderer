@@ -66,14 +66,16 @@ bool8_t vkr_render_assets_initialize(
  * initialization. */
 void vkr_render_assets_shutdown(VkrRenderAssets *assets);
 
-/* Refresh at a sampled frame boundary or after committed Scene memory relief. */
+/* Refresh at a sampled frame boundary or after committed Scene memory relief.
+ */
 void vkr_render_assets_refresh_texture_residency_budget(
     VkrRenderAssets *assets, const VkrDeviceMemoryStats *device_memory);
 
 /* Publish before sampling memory and applying ready material textures, so a
  * newly charged texture heap cannot be rejected by an older allowance. */
-bool8_t vkr_render_assets_pump_publications(
-    VkrRenderAssets *assets, VkrResourceSubmissionState submission);
+bool8_t
+vkr_render_assets_pump_publications(VkrRenderAssets *assets,
+                                    VkrResourceSubmissionState submission);
 uint32_t vkr_render_assets_ibl_sh_slot(const VkrRenderAssets *assets,
                                        VkrTextureHandle source);
 

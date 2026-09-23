@@ -126,9 +126,9 @@ vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
 }
 
 float32_t vkr_exposure_history_delta(float64_t current_seconds,
-                                      float64_t history_seconds) {
+                                     float64_t history_seconds) {
   return (float32_t)Min(current_seconds - history_seconds,
-                       (float64_t)VKR_EXPOSURE_MAX_DELTA_SECONDS);
+                        (float64_t)VKR_EXPOSURE_MAX_DELTA_SECONDS);
 }
 
 VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,

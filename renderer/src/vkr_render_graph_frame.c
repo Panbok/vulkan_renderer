@@ -1,6 +1,6 @@
 #include "vkr_render_graph_frame.h"
-#include "vkr_ssr.h"
 #include "vkr_ssgi.h"
+#include "vkr_ssr.h"
 
 vkr_internal uint32_t vkr_render_graph_draw_capacity(uint32_t count) {
   uint32_t capacity = 1u;
@@ -27,7 +27,8 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   for (uint32_t i = 0; world && i < world->skinning_count; ++i) {
     skinning_vertices += world->skinning[i].vertex_count;
   }
-  frame->skinning_vertex_capacity = vkr_render_graph_draw_capacity(skinning_vertices);
+  frame->skinning_vertex_capacity =
+      vkr_render_graph_draw_capacity(skinning_vertices);
   frame->animation_preview_enabled = packet->input.animation_preview != NULL;
   const uint32_t material_features = !world ? 0u
                                      : world->opaque_material_features_valid
@@ -112,9 +113,8 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->local_shadow_map_size = packet->input.local_shadow
                                      ? packet->input.local_shadow->map_size
                                      : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
-  frame->local_shadow_transmission_map_size =
-      Min(frame->local_shadow_map_size,
-          VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
+  frame->local_shadow_transmission_map_size = Min(
+      frame->local_shadow_map_size, VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
   frame->local_shadow_map_layer_count =
       packet->input.local_shadow ? packet->input.local_shadow->face_budget : 1u;
   frame->shadow_cascade_render_mask =
@@ -132,12 +132,16 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
     hzb_extent >>= 1u;
     hzb_mip_count++;
   }
-  frame->fog_enabled = packet->scene_rendering && packet->fog.color_density.w > 0.0f;
-  frame->froxel_fog_enabled = packet->scene_rendering &&
+  frame->fog_enabled =
+      packet->scene_rendering && packet->fog.color_density.w > 0.0f;
+  frame->froxel_fog_enabled =
+      packet->scene_rendering &&
       packet->froxel_fog.grid_dimensions_cell_pixels[0] > 0u;
   frame->ssgi_enabled = packet->scene_rendering && packet->ssgi_enabled;
-  frame->ssgi_depth_mip_count = frame->ssgi_enabled
-      ? vkr_ssgi_depth_mip_count(frame->viewport_width, frame->viewport_height) : 0u;
+  frame->ssgi_depth_mip_count =
+      frame->ssgi_enabled ? vkr_ssgi_depth_mip_count(frame->viewport_width,
+                                                     frame->viewport_height)
+                          : 0u;
   frame->ssr_enabled = packet->scene_rendering && packet->ssr_enabled;
   frame->ssr_depth_mip_count =
       frame->ssr_enabled ? vkr_ssr_depth_mip_count(frame->viewport_width,
@@ -157,9 +161,11 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           ? vkr_bloom_mip_count(bloom_config, bloom_width, bloom_height)
           : 0u;
   frame->bloom_enabled = frame->bloom_mip_count > 0u;
-  frame->subsurface_enabled = packet->scene_rendering && packet->subsurface_enabled;
+  frame->subsurface_enabled =
+      packet->scene_rendering && packet->subsurface_enabled;
   frame->dof_enabled = packet->scene_rendering && packet->dof_enabled;
-  frame->motion_blur_enabled = packet->scene_rendering && packet->motion_blur_enabled;
+  frame->motion_blur_enabled =
+      packet->scene_rendering && packet->motion_blur_enabled;
   frame->gtao_depth_mip_count =
       packet->gtao.enabled
           ? vkr_gtao_depth_mip_count(gtao_config, frame->viewport_width,

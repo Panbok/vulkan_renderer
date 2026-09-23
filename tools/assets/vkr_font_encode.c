@@ -11,7 +11,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-
 _Static_assert(CHAR_BIT == 8, "VKFA requires 8-bit bytes");
 _Static_assert(sizeof(float32_t) == 4u, "VKFA requires 32-bit float32_t");
 _Static_assert(FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128,

@@ -9,8 +9,6 @@
 
 #define VKR_UI_CLIP_STACK_CAPACITY 32u
 
-
-
 typedef struct VkrUiDrawCommand {
   VkrUiRect rect_px;
   /** Prepared convex icon polygon: inner then outer coverage ring, Y-down.
@@ -38,10 +36,6 @@ typedef struct VkrUiDrawBuffer {
   VkrUiRect clip_stack[VKR_UI_CLIP_STACK_CAPACITY];
   uint32_t clip_count;
 } VkrUiDrawBuffer;
-
-
-
-
 
 typedef enum VkrUiDrawBuildStatus {
   VKR_UI_DRAW_BUILD_OK = 0,

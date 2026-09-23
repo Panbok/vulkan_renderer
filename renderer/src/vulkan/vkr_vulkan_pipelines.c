@@ -379,28 +379,24 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     valid &= vkr_vk_reflect_member_offset(
         sheen, "directional_albedo_texture",
         offsetof(VkrVulkanSheen, directional_albedo_texture), NULL);
-    valid &= vkr_vk_reflect_member_offset(sheen, "ltc_matrix_texture",
-                                           offsetof(VkrVulkanSheen,
-                                                    ltc_matrix_texture),
-                                           NULL);
-    valid &= vkr_vk_reflect_member_offset(sheen, "ltc_amplitude_texture",
-                                           offsetof(VkrVulkanSheen,
-                                                    ltc_amplitude_texture),
-                                           NULL);
-    valid &= vkr_vk_reflect_member_offset(sheen, "sampler",
-                                           offsetof(VkrVulkanSheen, sampler),
-                                           NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        sheen, "ltc_matrix_texture",
+        offsetof(VkrVulkanSheen, ltc_matrix_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        sheen, "ltc_amplitude_texture",
+        offsetof(VkrVulkanSheen, ltc_amplitude_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        sheen, "sampler", offsetof(VkrVulkanSheen, sampler), NULL);
     valid &= vkr_vk_reflect_member_offset(
         sheen, "ltc_matrix_texture_b",
         offsetof(VkrVulkanSheen, ltc_matrix_texture_b), NULL);
     valid &= vkr_vk_reflect_member_offset(
         sheen, "ltc_amplitude_texture_b",
         offsetof(VkrVulkanSheen, ltc_amplitude_texture_b), NULL);
-    valid &= vkr_vk_reflect_member_offset(sheen, "reserved",
-                                           offsetof(VkrVulkanSheen, reserved),
-                                           NULL);
-    valid &= sheen && vkr_vk_reflected_struct_size(sheen) ==
-                          sizeof(VkrVulkanSheen);
+    valid &= vkr_vk_reflect_member_offset(
+        sheen, "reserved", offsetof(VkrVulkanSheen, reserved), NULL);
+    valid &=
+        sheen && vkr_vk_reflected_struct_size(sheen) == sizeof(VkrVulkanSheen);
     valid &= vkr_vk_reflect_member_offset(
         anisotropy, "table0_texture",
         offsetof(VkrVulkanAnisotropy, table0_texture), NULL);
@@ -414,7 +410,7 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
         anisotropy, "sampler_index",
         offsetof(VkrVulkanAnisotropy, sampler_index), NULL);
     valid &= anisotropy && vkr_vk_reflected_struct_size(anisotropy) ==
-                                sizeof(VkrVulkanAnisotropy);
+                               sizeof(VkrVulkanAnisotropy);
     valid &= vkr_vk_reflect_member_offset(
         frame, "fog", offsetof(VkrVulkanPacketFrameRoot, fog), &fog);
     valid &= vkr_vk_reflect_member_offset(
@@ -1080,9 +1076,8 @@ vkr_internal bool8_t vkr_vk_validate_motion_blur_root_abi(
   return valid;
 }
 
-vkr_internal bool8_t vkr_vk_validate_subsurface_root_abi(VkrVulkanRenderer *renderer,
-                                                  const char *shader,
-                                                  const char *entry) {
+vkr_internal bool8_t vkr_vk_validate_subsurface_root_abi(
+    VkrVulkanRenderer *renderer, const char *shader, const char *entry) {
   FilePath shader_path =
       file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
@@ -1115,7 +1110,8 @@ vkr_internal bool8_t vkr_vk_validate_subsurface_root_abi(VkrVulkanRenderer *rend
   SpvReflectBlockVariable *params = vkr_vk_reflect_member(root, "params");
   static const VkrVulkanReflectedField subsurface_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSubsurfaceRoot, params),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSubsurfaceRoot, inverse_view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSubsurfaceRoot,
+                                 inverse_view_projection),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSubsurfaceRoot, frame),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSubsurfaceRoot, frame_padding),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSubsurfaceRoot, visible_rows),
@@ -1138,12 +1134,14 @@ vkr_internal bool8_t vkr_vk_validate_subsurface_root_abi(VkrVulkanRenderer *rend
   for (uint32_t i = 0u; i < ArrayCount(subsurface_fields); ++i)
     valid &= vkr_vk_reflect_member_offset(root, subsurface_fields[i].name,
                                           subsurface_fields[i].offset, NULL);
-  valid &= vkr_vk_reflect_member_offset(params, "projection",
-                                        offsetof(VkrSubsurfaceGpuParams, projection), NULL);
+  valid &= vkr_vk_reflect_member_offset(
+      params, "projection", offsetof(VkrSubsurfaceGpuParams, projection), NULL);
   valid &= vkr_vk_reflect_member_offset(
       params, "dimensions", offsetof(VkrSubsurfaceGpuParams, dimensions), NULL);
-  valid &= vkr_vk_reflected_struct_size(root) == sizeof(VkrVulkanSubsurfaceRoot);
-  valid &= vkr_vk_reflected_struct_size(params) == sizeof(VkrSubsurfaceGpuParams);
+  valid &=
+      vkr_vk_reflected_struct_size(root) == sizeof(VkrVulkanSubsurfaceRoot);
+  valid &=
+      vkr_vk_reflected_struct_size(params) == sizeof(VkrSubsurfaceGpuParams);
   spvReflectDestroyShaderModule(&module);
   return valid;
 }
@@ -1419,8 +1417,10 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sheen_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, anisotropy_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, visible_rows),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, subsurface_source_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, subsurface_profile_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                                 subsurface_source_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                                 subsurface_profile_count),
   };
   static const VkrVulkanReflectedField atmosphere_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAtmosphereRoot, params),
@@ -1535,11 +1535,9 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot,
                                  gtao_visibility_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, linear_sampler),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot,
-                                 clearcoat_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, clearcoat_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, sheen_texture),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot,
-                                 anisotropy_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, anisotropy_texture),
   };
   static const VkrVulkanReflectedField ssgi_depth_base_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiDepthBaseRoot, params),
@@ -1688,7 +1686,8 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       skinning_fields, ArrayCount(skinning_fields),
       sizeof(VkrVulkanSkinningRoot));
   valid &= vkr_vk_validate_subsurface_root_abi(
-      renderer, VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV, "vk_subsurface_gather");
+      renderer, VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV,
+      "vk_subsurface_gather");
   static const char *const motion_blur_shaders[] = {
       VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV,
       VKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV,
@@ -1699,7 +1698,8 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
       "vk_motion_blur_neighbor_max",
       "vk_motion_blur_reconstruct",
   };
-  _Static_assert(ArrayCount(motion_blur_shaders) == ArrayCount(motion_blur_entries),
+  _Static_assert(ArrayCount(motion_blur_shaders) ==
+                     ArrayCount(motion_blur_entries),
                  "motion_blur reflection entries must match their modules");
   for (uint32_t i = 0u; i < ArrayCount(motion_blur_shaders); ++i)
     valid &= vkr_vk_validate_motion_blur_root_abi(
@@ -1723,8 +1723,8 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
   _Static_assert(ArrayCount(dof_shaders) == ArrayCount(dof_entries),
                  "dof reflection entries must match their modules");
   for (uint32_t i = 0u; i < ArrayCount(dof_shaders); ++i)
-    valid &= vkr_vk_validate_dof_root_abi(renderer, dof_shaders[i],
-                                          dof_entries[i]);
+    valid &=
+        vkr_vk_validate_dof_root_abi(renderer, dof_shaders[i], dof_entries[i]);
   static const char *const cull_shaders[] = {
       VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
       VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
@@ -1975,9 +1975,9 @@ vkr_internal bool8_t vkr_vk_validate_ui_root_abi(VkrVulkanRenderer *renderer) {
   return vkr_vk_validate_root_abi(renderer, VKR_VULKAN_PACKET_UI_VERT_SPV,
                                   "ui_vertex", fields, ArrayCount(fields),
                                   sizeof(VkrVulkanUiRoot)) &&
-         vkr_vk_validate_root_abi(
-             renderer, VKR_VULKAN_PACKET_UI_RECT_VERT_SPV, "ui_rect_vertex",
-             fields, ArrayCount(fields), sizeof(VkrVulkanUiRoot));
+         vkr_vk_validate_root_abi(renderer, VKR_VULKAN_PACKET_UI_RECT_VERT_SPV,
+                                  "ui_rect_vertex", fields, ArrayCount(fields),
+                                  sizeof(VkrVulkanUiRoot));
 }
 
 #undef VKR_VULKAN_REFLECTED_FIELD
@@ -2272,16 +2272,16 @@ vkr_internal bool8_t vkr_vk_create_presentation_pipeline(
     VkrVulkanRenderer *renderer, VkrVulkanPacketPipeline pipeline,
     VkrVulkanPacketShader vertex_shader, VkrVulkanPacketShader fragment_shader,
     VkFormat color_format, bool8_t blend_enabled, VkPipeline *out_pipeline) {
-  if (!vkr_vk_create_packet_pipeline_at(
-          renderer, pipeline, vertex_shader, fragment_shader, color_format,
-          VK_FORMAT_UNDEFINED, false_v, false_v, blend_enabled, false_v,
-          out_pipeline))
+  if (!vkr_vk_create_packet_pipeline_at(renderer, pipeline, vertex_shader,
+                                        fragment_shader, color_format,
+                                        VK_FORMAT_UNDEFINED, false_v, false_v,
+                                        blend_enabled, false_v, out_pipeline))
     return false_v;
   return true_v;
 }
 
 bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
-                                                VkFormat color_format) {
+                                               VkFormat color_format) {
   const VkrVulkanPacketPipeline pipelines[] = {
       VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
       VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
@@ -2308,7 +2308,8 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
             color_format, blends[i], &replacements[i]))
       continue;
     for (uint32_t j = 0u; j < i; ++j)
-      vkDestroyPipeline(vkr_vk_renderer_device(renderer), replacements[j], NULL);
+      vkDestroyPipeline(vkr_vk_renderer_device(renderer), replacements[j],
+                        NULL);
     return false_v;
   }
   for (uint32_t i = 0u; i < ArrayCount(pipelines); ++i) {

@@ -54,9 +54,10 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_point = true_v,
       .windows =
           {
-              [VKR_EDITOR_WINDOW_PHYSICS] =
-                  {.position_pt = {180.0f, 80.0f}, .size_pt = {760.0f, 620.0f},
-                   .z_order = 6u, .visible = false_v},
+              [VKR_EDITOR_WINDOW_PHYSICS] = {.position_pt = {180.0f, 80.0f},
+                                             .size_pt = {760.0f, 620.0f},
+                                             .z_order = 6u,
+                                             .visible = false_v},
               [VKR_EDITOR_WINDOW_GRAPHICS] =
                   {
                       .position_pt = {250.0f, 76.0f},

@@ -216,10 +216,11 @@ vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
  * Lowers elapsed simulation time from a completed exposure producer.
  * Backends accumulate the frontend's bounded frame delta only on successful
  * automatic-exposure submissions and retain that time with each output.
- * Both times belong to that monotonic clock; current_seconds >= history_seconds.
+ * Both times belong to that monotonic clock; current_seconds >=
+ * history_seconds.
  */
 float32_t vkr_exposure_history_delta(float64_t current_seconds,
-                                      float64_t history_seconds);
+                                     float64_t history_seconds);
 
 /** Production metering defaults, already normalized. */
 VkrExposureMeteringConfig vkr_exposure_metering_config_default(void);

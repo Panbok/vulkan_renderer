@@ -155,12 +155,12 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
           under_threshold;
   if (state->filtered_frame_ns > over_threshold) {
     state->over_budget_samples = Min(state->over_budget_samples + 1u,
-                                    VKR_DYNAMIC_RESOLUTION_DOWNSHIFT_SAMPLES);
+                                     VKR_DYNAMIC_RESOLUTION_DOWNSHIFT_SAMPLES);
     state->under_budget_samples = 0u;
   } else if (state->filtered_frame_ns < under_threshold &&
              failed_upshift_has_headroom) {
     state->under_budget_samples = Min(state->under_budget_samples + 1u,
-                                     VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES);
+                                      VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES);
     state->over_budget_samples = 0u;
   } else {
     state->over_budget_samples = 0u;

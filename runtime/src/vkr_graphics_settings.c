@@ -135,12 +135,12 @@ bool8_t vkr_graphics_settings_load(const char *path,
   fclose(file);
   if (!read_ok)
     return false_v;
-  return vkr_graphics_settings_read_json(
-      string8_create(bytes, length), settings);
+  return vkr_graphics_settings_read_json(string8_create(bytes, length),
+                                         settings);
 }
 
 bool8_t vkr_graphics_settings_read_json(String8 json,
-                                      VkrGraphicsSettings *settings) {
+                                        VkrGraphicsSettings *settings) {
   if (!settings || !json.str || !json.length) {
     return false_v;
   }
@@ -208,7 +208,7 @@ bool8_t vkr_graphics_settings_read_json(String8 json,
 }
 
 bool8_t vkr_graphics_settings_write_json(VkrJsonWriter *writer,
-                                       const VkrGraphicsSettings *settings) {
+                                         const VkrGraphicsSettings *settings) {
   if (!writer || !vkr_graphics_settings_valid(settings) ||
       !vkr_json_writer_begin_object(writer) ||
       !vkr_json_writer_name(writer, string8_lit("version")) ||
@@ -218,8 +218,9 @@ bool8_t vkr_graphics_settings_write_json(VkrJsonWriter *writer,
   for (uint32_t i = 0; i < ArrayCount(s_fields); ++i) {
     const GraphicsField *field = &s_fields[i];
     const uint8_t *address = (const uint8_t *)settings + field->offset;
-    if (!vkr_json_writer_name(writer, string8_create_from_cstr(
-            (const uint8_t *)field->name, strlen(field->name)))) {
+    if (!vkr_json_writer_name(
+            writer, string8_create_from_cstr((const uint8_t *)field->name,
+                                             strlen(field->name)))) {
       return false_v;
     }
     bool8_t ok = false_v;
@@ -242,7 +243,7 @@ bool8_t vkr_graphics_settings_write_json(VkrJsonWriter *writer,
 }
 
 bool8_t vkr_graphics_settings_save(const char *path,
-                                 const VkrGraphicsSettings *settings) {
+                                   const VkrGraphicsSettings *settings) {
   if (!settings || !vkr_graphics_settings_valid(settings)) {
     return false_v;
   }
@@ -250,8 +251,9 @@ bool8_t vkr_graphics_settings_save(const char *path,
     return true_v;
   }
   VkrJsonFileWriter writer = {0};
-  if (!vkr_json_file_writer_begin(&writer, string8_create_from_cstr(
-          (const uint8_t *)path, strlen(path)))) {
+  if (!vkr_json_file_writer_begin(
+          &writer,
+          string8_create_from_cstr((const uint8_t *)path, strlen(path)))) {
     return false_v;
   }
   if (!vkr_graphics_settings_write_json(&writer.writer, settings) ||

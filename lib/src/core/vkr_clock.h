@@ -42,5 +42,4 @@ void vkr_clock_stop(VkrClock *clock);
  * @param interval_seconds Interval in seconds.
  * @return `true_v` if the interval elapsed, `false_v` otherwise.
  */
-bool8_t vkr_clock_interval_elapsed(VkrClock *clock,
-                                   float64_t interval_seconds);
+bool8_t vkr_clock_interval_elapsed(VkrClock *clock, float64_t interval_seconds);

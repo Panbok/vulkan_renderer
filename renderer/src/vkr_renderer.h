@@ -1105,7 +1105,8 @@ typedef struct VkrDeviceMemoryStats {
   /** Largest upload currently blocked by the backend's heap reserve. */
   uint64_t pending_texture_upload_bytes;
   /** Charged backing dedicated to asset textures, including spare capacity and
-   * resources awaiting completion. Comparable to heap_usage_bytes when valid. */
+   * resources awaiting completion. Comparable to heap_usage_bytes when valid.
+   */
   uint64_t texture_heap_capacity_bytes;
   bool8_t texture_heap_capacity_valid;
   bool8_t heap_usage_valid;

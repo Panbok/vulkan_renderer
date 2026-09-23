@@ -364,8 +364,6 @@ vkr_texture_system_get_default_emissive_handle(VkrTextureSystem *system);
 // Helpers (used by loaders with direct system access)
 // =============================================================================
 
-
-
 /**
  * @brief Decode and prepare upload payload without touching GPU state.
  *
@@ -385,7 +383,8 @@ bool8_t vkr_texture_system_prepare_load_from_file(
  *
  * This function creates the GPU texture and inserts it into the texture map.
  * On success the returned handle is visible to acquire calls. This direct API
- * does not acquire a reference; resource loaders retain their result separately.
+ * does not acquire a reference; resource loaders retain their result
+ * separately.
  */
 bool8_t vkr_texture_system_finalize_prepared_load(
     VkrTextureSystem *system, String8 name,

@@ -97,9 +97,11 @@ static void test_pool_allocator_adapter(void) {
   vkr_pool_allocator_create(&allocator);
 
   VkrAllocatorStatistics global_before = vkr_allocator_get_global_statistics();
-  VkrAllocatorStatistics local_before = vkr_allocator_get_statistics(&allocator);
+  VkrAllocatorStatistics local_before =
+      vkr_allocator_get_statistics(&allocator);
 
-  void *arr = vkr_allocator_alloc(&allocator, 64, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  void *arr =
+      vkr_allocator_alloc(&allocator, 64, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   void *str = vkr_allocator_alloc_aligned(&allocator, 32, 32,
                                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
   assert(arr && str);

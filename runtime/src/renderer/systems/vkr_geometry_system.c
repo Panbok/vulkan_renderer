@@ -198,8 +198,7 @@ vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane(
 
   uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
 
-  vkr_geometry_generate_tangents(&system->allocator, verts, 4, indices,
-                                        6);
+  vkr_geometry_generate_tangents(&system->allocator, verts, 4, indices, 6);
 
   VkrGeometryConfig config = {0};
   config.vertex_size = sizeof(VkrVertex3d);
@@ -710,8 +709,7 @@ vkr_geometry_system_create_box(VkrGeometrySystem *system, Vec3 center,
       12, 15, 14, 14, 13, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20,
   };
 
-  vkr_geometry_generate_tangents(&system->allocator, verts, 24, indices,
-                                        36);
+  vkr_geometry_generate_tangents(&system->allocator, verts, 24, indices, 36);
 
   VkrGeometryConfig config = {0};
   config.vertex_size = sizeof(VkrVertex3d);
@@ -862,7 +860,7 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
   VkrQuat rotation = vkr_geometry_rotation_from_axis(axis);
   vkr_geometry_apply_transform(verts, vertex_count, rotation, origin);
   vkr_geometry_generate_tangents(&system->allocator, verts, vertex_count,
-                                        indices, index_count);
+                                 indices, index_count);
 
   Vec3 min = vec3_zero();
   Vec3 max = vec3_zero();
@@ -984,7 +982,7 @@ vkr_geometry_system_create_cone(VkrGeometrySystem *system, float32_t radius,
   VkrQuat rotation = vkr_geometry_rotation_from_axis(axis);
   vkr_geometry_apply_transform(verts, vertex_count, rotation, origin);
   vkr_geometry_generate_tangents(&system->allocator, verts, vertex_count,
-                                        indices, index_count);
+                                 indices, index_count);
 
   Vec3 min = vec3_zero();
   Vec3 max = vec3_zero();
@@ -1089,7 +1087,7 @@ VkrGeometryHandle vkr_geometry_system_create_torus(
   VkrQuat rotation = vkr_geometry_rotation_from_axis(axis);
   vkr_geometry_apply_transform(verts, vertex_count, rotation, origin);
   vkr_geometry_generate_tangents(&system->allocator, verts, vertex_count,
-                                        indices, index_count);
+                                 indices, index_count);
 
   Vec3 min = vec3_zero();
   Vec3 max = vec3_zero();
@@ -1193,7 +1191,7 @@ VkrGeometryHandle vkr_geometry_system_create_sphere(
   VkrQuat rotation = vkr_geometry_rotation_from_axis(axis);
   vkr_geometry_apply_transform(verts, vertex_count, rotation, origin);
   vkr_geometry_generate_tangents(&system->allocator, verts, vertex_count,
-                                        indices, index_count);
+                                 indices, index_count);
 
   Vec3 min = vec3_zero();
   Vec3 max = vec3_zero();
@@ -1318,7 +1316,7 @@ VkrGeometryHandle vkr_geometry_system_create_arrow(
   VkrQuat rotation = vkr_geometry_rotation_from_axis(axis);
   vkr_geometry_apply_transform(verts, vertex_count, rotation, origin);
   vkr_geometry_generate_tangents(&system->allocator, verts, vertex_count,
-                                        indices, index_count);
+                                 indices, index_count);
 
   Vec3 min = vec3_zero();
   Vec3 max = vec3_zero();

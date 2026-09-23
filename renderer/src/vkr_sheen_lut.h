@@ -8,12 +8,12 @@
 #define VKR_SHEEN_LTC_LUT_SIZE 64u
 #define VKR_SHEEN_LTC_LUT_TABLE_COUNT 4u
 #define VKR_SHEEN_LTC_LUT_CHANNEL_COUNT 4u
-#define VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT \
+#define VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT                                       \
   (VKR_SHEEN_ENERGY_LUT_SIZE * VKR_SHEEN_ENERGY_LUT_SIZE)
-#define VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT \
+#define VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT                                    \
   (VKR_SHEEN_LTC_LUT_SIZE * VKR_SHEEN_LTC_LUT_SIZE)
-#define VKR_SHEEN_LTC_LUT_TABLE_BYTE_SIZE \
-  (VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT * VKR_SHEEN_LTC_LUT_CHANNEL_COUNT * \
+#define VKR_SHEEN_LTC_LUT_TABLE_BYTE_SIZE                                      \
+  (VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT * VKR_SHEEN_LTC_LUT_CHANNEL_COUNT *     \
    sizeof(uint16_t))
 
 /*
@@ -34,9 +34,10 @@ extern "C" {
 #endif
 extern const uint16_t
     vkr_sheen_energy_lut_pixels[VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT];
-extern const uint16_t vkr_sheen_ltc_lut_pixels[VKR_SHEEN_LTC_LUT_TABLE_COUNT]
-                                            [VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT *
-                                             VKR_SHEEN_LTC_LUT_CHANNEL_COUNT];
+extern const uint16_t
+    vkr_sheen_ltc_lut_pixels[VKR_SHEEN_LTC_LUT_TABLE_COUNT]
+                            [VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT *
+                             VKR_SHEEN_LTC_LUT_CHANNEL_COUNT];
 #ifdef __cplusplus
 }
 #endif

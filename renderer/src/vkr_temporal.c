@@ -326,8 +326,8 @@ VkrTemporalSceneSignature
 vkr_ssgi_content_signature(const VkrPreparedFrame *packet) {
   VkrTemporalSceneSignature signature = {
       .hash = {UINT64_C(0x9e3779b97f4a7c15), UINT64_C(0xd1b54a32d192ed03)},
-      .eligible = !packet->input.world ||
-                  !packet->input.world->publication_pending,
+      .eligible =
+          !packet->input.world || !packet->input.world->publication_pending,
   };
   temporal_scene_lane(&signature, packet->input.frame.scene_generation);
   temporal_scene_lane(&signature, packet->ssgi_enabled);
@@ -347,7 +347,7 @@ vkr_ssgi_content_signature(const VkrPreparedFrame *packet) {
     temporal_scene_lane(&signature, shadow->cascade_count);
     for (uint32_t i = 0u; i < shadow->cascade_count; ++i)
       temporal_scene_floats(&signature,
-          shadow->cascades[i].origin_inv_size_sun.w, 0.0f);
+                            shadow->cascades[i].origin_inv_size_sun.w, 0.0f);
     const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
     temporal_scene_floats(&signature, receiver->receiver_bias_texels,
                           receiver->slope_bias_texels);

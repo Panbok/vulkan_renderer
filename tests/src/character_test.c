@@ -150,7 +150,8 @@ static void test_character_ground_wall_jump_and_sphere_query(void) {
 
 static void test_character_crouch_clearance_and_foot_anchor(void) {
   /* A low ceiling must reject standing without faulting or lifting the feet.
-   * Movement out from below it must make the same held stand request succeed. */
+   * Movement out from below it must make the same held stand request succeed.
+   */
   VkrPhysicsWorld *world = vkr_physics_world_create(4);
   assert(world != NULL);
   character_test_box(world, 100, vec3_new(0, -0.5f, 0), vec3_new(10, 0.5f, 10),

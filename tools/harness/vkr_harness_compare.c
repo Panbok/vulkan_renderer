@@ -1,5 +1,5 @@
-#include "vkr_harness_runtime.h"
 #include "vkr_harness_json.h"
+#include "vkr_harness_runtime.h"
 
 #include <stb_image.h>
 
@@ -135,10 +135,11 @@ VkrHarnessComparisonResult vkr_harness_compare_f32_le(
   return vkr_harness_comparison_finish(result, config, false_v);
 }
 
-static VkrHarnessComparisonResult vkr_harness_compare_float16_le(
-    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
-    uint32_t component_count, const VkrHarnessCompareConfig *config,
-    uint8_t *diff_rgba) {
+static VkrHarnessComparisonResult
+vkr_harness_compare_float16_le(const uint8_t *actual, const uint8_t *baseline,
+                               uint64_t pixel_count, uint32_t component_count,
+                               const VkrHarnessCompareConfig *config,
+                               uint8_t *diff_rgba) {
   VkrHarnessComparisonResult result = {
       .outcome = VKR_HARNESS_COMPARISON_INCOMPATIBLE,
       .value_count = pixel_count * component_count,
@@ -151,8 +152,7 @@ static VkrHarnessComparisonResult vkr_harness_compare_float16_le(
     bool8_t failed = false_v;
     float64_t pixel_error = 0.0;
     for (uint32_t component = 0; component < component_count; ++component) {
-      const uint64_t index =
-          (pixel * component_count + component) * 2u;
+      const uint64_t index = (pixel * component_count + component) * 2u;
       const float32_t actual_value =
           vkr_harness_half_to_float(vkr_harness_read_u16_le(actual + index));
       const float32_t baseline_value =
@@ -181,14 +181,14 @@ VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
     const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
     const VkrHarnessCompareConfig *config, uint8_t *diff_rgba) {
   return vkr_harness_compare_float16_le(actual, baseline, pixel_count, 4u,
-                                         config, diff_rgba);
+                                        config, diff_rgba);
 }
 
 VkrHarnessComparisonResult vkr_harness_compare_rg16f_le(
     const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
     const VkrHarnessCompareConfig *config, uint8_t *diff_rgba) {
   return vkr_harness_compare_float16_le(actual, baseline, pixel_count, 2u,
-                                         config, diff_rgba);
+                                        config, diff_rgba);
 }
 
 VkrHarnessComparisonResult vkr_harness_compare_u32_le(const uint8_t *actual,
@@ -514,9 +514,9 @@ static bool8_t vkr_harness_capture_extended_display_metadata(
       document && vkr_harness_read_file(path, arena, &bytes, &length) &&
       vkr_harness_json_parse(document, (const char *)bytes, length, &ignored);
   const int32_t color_space_token =
-      loaded ? vkr_harness_json_object_get(document, 0, "color_space",
-                                            &duplicate)
-             : -1;
+      loaded
+          ? vkr_harness_json_object_get(document, 0, "color_space", &duplicate)
+          : -1;
   const bool8_t color_space_valid =
       loaded && !duplicate && color_space_token >= 0 &&
       vkr_harness_json_string(document, color_space_token, color_space,
@@ -524,20 +524,18 @@ static bool8_t vkr_harness_capture_extended_display_metadata(
       string_equals(color_space, "extended_srgb_linear");
   duplicate = false_v;
   const int32_t headroom_token =
-      color_space_valid
-          ? vkr_harness_json_object_get(document, 0, "display_headroom",
-                                        &duplicate)
-          : -1;
+      color_space_valid ? vkr_harness_json_object_get(
+                              document, 0, "display_headroom", &duplicate)
+                        : -1;
   const bool8_t headroom_valid =
       color_space_valid && !duplicate && headroom_token >= 0 &&
       vkr_harness_json_f64(document, headroom_token, &headroom,
                            "display_headroom", &ignored);
   duplicate = false_v;
   const int32_t scale_token =
-      headroom_valid
-          ? vkr_harness_json_object_get(document, 0, "display_output_scale",
-                                        &duplicate)
-          : -1;
+      headroom_valid ? vkr_harness_json_object_get(
+                           document, 0, "display_output_scale", &duplicate)
+                     : -1;
   const bool8_t scale_valid =
       headroom_valid && !duplicate && scale_token >= 0 &&
       vkr_harness_json_f64(document, scale_token, &scale,
@@ -583,7 +581,8 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
           !vkr_harness_capture_extended_display_metadata(
               baseline_root, reference, arenas->transient, &baseline_headroom,
               &baseline_scale) ||
-          actual_headroom != baseline_headroom || actual_scale != baseline_scale) {
+          actual_headroom != baseline_headroom ||
+          actual_scale != baseline_scale) {
         row->comparison.outcome = VKR_HARNESS_COMPARISON_INCOMPATIBLE;
         string_format(row->comparison_status, sizeof(row->comparison_status),
                       "incompatible");
@@ -684,9 +683,8 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
           rgba16f
               ? vkr_harness_compare_rgba16f_le(actual_bytes, baseline_bytes,
                                                pixels, &row->thresholds, diff)
-          : rg16f
-              ? vkr_harness_compare_rg16f_le(actual_bytes, baseline_bytes,
-                                             pixels, &row->thresholds, diff)
+          : rg16f ? vkr_harness_compare_rg16f_le(actual_bytes, baseline_bytes,
+                                                 pixels, &row->thresholds, diff)
           : string_equals(row->value_kind, "depth")
               ? vkr_harness_compare_f32_le(actual_bytes, baseline_bytes, pixels,
                                            &row->thresholds, diff)

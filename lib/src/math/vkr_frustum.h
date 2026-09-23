@@ -76,4 +76,4 @@ VkrFrustum vkr_frustum_from_matrix(Mat4 view_projection);
  * @return true if visible or intersecting, false if completely outside.
  */
 bool8_t vkr_frustum_test_sphere(const VkrFrustum *frustum, Vec3 center,
-                                 float32_t radius);
+                                float32_t radius);

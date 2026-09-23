@@ -73,8 +73,7 @@ bool8_t vkr_editor_project_save(VkrEditorProject *project,
 // use (or be copied). Files are retained until the editor stops their consumers
 // and dispatches the delete_scene job. Requires the workspace write lease.
 bool8_t vkr_editor_project_remove_scene(VkrEditorProject *project,
-                                        uint32_t index,
-                                        VkrAllocator *allocator,
+                                        uint32_t index, VkrAllocator *allocator,
                                         VkrEditorProjectError *error);
 // Validate a manifest byte buffer without filesystem reads. Views borrow bytes.
 bool8_t vkr_editor_project_parse(String8 bytes, VkrEditorProject *project,
@@ -86,10 +85,13 @@ vkr_editor_project_resolve(const char *owner_root, const char *relative,
                            VkrEditorProjectError *error);
 
 // Resolve the selected scene from its loaded manifest owner. Deletion may name
-// a missing manifest; its job still verifies physical containment before mutation.
-bool8_t vkr_editor_project_scene_path(
-    const VkrEditorProject *project, uint32_t index, bool8_t must_exist,
-    char out_path[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error);
+// a missing manifest; its job still verifies physical containment before
+// mutation.
+bool8_t
+vkr_editor_project_scene_path(const VkrEditorProject *project, uint32_t index,
+                              bool8_t must_exist,
+                              char out_path[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+                              VkrEditorProjectError *error);
 
 // Validates a JSON object and returns a raw member view borrowing the input.
 bool8_t vkr_editor_project_json_member(String8 object, const char *name,

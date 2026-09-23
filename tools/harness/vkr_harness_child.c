@@ -11,19 +11,19 @@
 #include "vkr_harness_runtime.h"
 
 #include "application/vkr_standard_scene_runtime.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_animation.h"
-#include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_scene_physics.h"
-#include "memory/vkr_arena_allocator.h"
-#include <math.h>
+#include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "vkr_gtao.h"
 #include "vkr_ssgi.h"
 #include "vkr_temporal.h"
+#include <math.h>
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
 
@@ -550,24 +550,28 @@ vkr_harness_child_drain_events(VkrStandardSceneRuntime *application) {
  * The oracle uses independent unit-cube support heights and checks that native
  * body poses reach the evaluated render matrices without changing authored TRS.
  */
-vkr_internal void vkr_harness_physics_contacts(
-    const VkrPhysicsContactEvent *events, uint32_t count, void *context) {
+vkr_internal void
+vkr_harness_physics_contacts(const VkrPhysicsContactEvent *events,
+                             uint32_t count, void *context) {
   VkrHarnessChildContext *child = context;
   for (uint32_t i = 0; i < count; ++i) {
-    child->physics_contact_begins += events[i].phase == VKR_PHYSICS_CONTACT_BEGIN;
-    child->physics_contact_persists += events[i].phase == VKR_PHYSICS_CONTACT_PERSIST;
+    child->physics_contact_begins +=
+        events[i].phase == VKR_PHYSICS_CONTACT_BEGIN;
+    child->physics_contact_persists +=
+        events[i].phase == VKR_PHYSICS_CONTACT_PERSIST;
   }
 }
 
 /* Cold, analytic fixture assets exercise the same validated file reader as
- * Bakery output. Their unit-cube surface is independent of native hull cooking. */
+ * Bakery output. Their unit-cube surface is independent of native hull cooking.
+ */
 vkr_internal bool8_t vkr_harness_physics_assets(char paths[2][256]) {
   static const float32_t positions[] = {
       -.5f, -.5f, -.5f, .5f, -.5f, -.5f, -.5f, .5f, -.5f, .5f, .5f, -.5f,
-      -.5f, -.5f, .5f, .5f, -.5f, .5f, -.5f, .5f, .5f, .5f, .5f, .5f};
-  static const uint32_t indices[] = {
-      0,2,1, 1,2,3, 4,5,6, 5,7,6, 0,4,2, 2,4,6,
-      1,3,5, 3,7,5, 0,1,4, 1,5,4, 2,6,3, 3,6,7};
+      -.5f, -.5f, .5f,  .5f, -.5f, .5f,  -.5f, .5f, .5f,  .5f, .5f, .5f};
+  static const uint32_t indices[] = {0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6,
+                                     0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5,
+                                     0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7};
   Arena *arena = arena_create(KB(16), KB(16));
   if (!arena) {
     return false_v;
@@ -576,24 +580,29 @@ vkr_internal bool8_t vkr_harness_physics_assets(char paths[2][256]) {
   bool8_t ok = vkr_allocator_arena(&allocator);
   const char *error = NULL;
   for (uint32_t i = 0; ok && i < 2; ++i) {
-    const int32_t length = snprintf(paths[i], 256, "%s/fixture-%s.vkc",
-                                    g_harness_child->run_dir, i ? "hull" : "mesh");
+    const int32_t length =
+        snprintf(paths[i], 256, "%s/fixture-%s.vkc", g_harness_child->run_dir,
+                 i ? "hull" : "mesh");
     VkrCollisionGeometry geometry = {
         .kind = i ? VKR_COLLISION_CONVEX_HULL : VKR_COLLISION_TRIANGLE_MESH,
-        .positions = positions, .vertex_count = 8,
-        .indices = indices, .index_count = ArrayCount(indices),
+        .positions = positions,
+        .vertex_count = 8,
+        .indices = indices,
+        .index_count = ArrayCount(indices),
         .source_fingerprint = UINT64_C(0x7068797369637302)};
     uint8_t *bytes = NULL;
     uint64_t size = 0;
     VkrHarnessError write_error = {0};
     ok = length > 0 && length < 256 &&
-         vkr_collision_cooked_encode(&allocator, &geometry, &bytes, &size, &error) &&
+         vkr_collision_cooked_encode(&allocator, &geometry, &bytes, &size,
+                                     &error) &&
          vkr_harness_atomic_write(paths[i], bytes, size, &write_error);
   }
   vkr_allocator_release_global_accounting(&allocator);
   arena_destroy(arena);
   if (!ok) {
-    vkr_harness_stderr("Physics fixture asset failed: %s\n", error ? error : "file publication");
+    vkr_harness_stderr("Physics fixture asset failed: %s\n",
+                       error ? error : "file publication");
   }
   return ok;
 }
@@ -619,7 +628,8 @@ vkr_harness_child_create_physics_fixture(VkrStandardSceneRuntime *application) {
                                vkr_quat_identity(), (Vec3){2, 2, 2})) {
     return false_v;
   }
-  vkr_scene_physics_set_contact_callback(scene, vkr_harness_physics_contacts, child);
+  vkr_scene_physics_set_contact_callback(scene, vkr_harness_physics_contacts,
+                                         child);
   for (uint32_t i = 0; i < ArrayCount(child->physics_fixture_bodies); ++i) {
     VkrEntityId entity = vkr_scene_create_entity(scene, NULL);
     child->physics_fixture_bodies[i] = entity;
@@ -632,7 +642,8 @@ vkr_harness_child_create_physics_fixture(VkrStandardSceneRuntime *application) {
     VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
     body.motion = i == 0 ? VKR_PHYSICS_STATIC : VKR_PHYSICS_DYNAMIC;
     body.friction = 0.7f;
-    body.colliders[0].shape = i == 0 ? VKR_PHYSICS_TRIANGLE_MESH : VKR_PHYSICS_CONVEX_HULL;
+    body.colliders[0].shape =
+        i == 0 ? VKR_PHYSICS_TRIANGLE_MESH : VKR_PHYSICS_CONVEX_HULL;
     body.colliders[0].scale = dimensions;
     snprintf(body.colliders[0].asset_path, sizeof(body.colliders[0].asset_path),
              "%s", assets[i != 0]);
@@ -1561,16 +1572,19 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   if (!vkr_camera_set_perspective_lens(
-          camera, vkr_harness_camera_is_orthographic(case_manifest->camera.mode)
-                      ? 70.0f : case_manifest->camera.vertical_fov_degrees,
+          camera,
+          vkr_harness_camera_is_orthographic(case_manifest->camera.mode)
+              ? 70.0f
+              : case_manifest->camera.vertical_fov_degrees,
           case_manifest->camera.near_plane, case_manifest->camera.far_plane,
           case_manifest->width, case_manifest->height)) {
     return false_v;
   }
   if (vkr_harness_camera_is_orthographic(case_manifest->camera.mode)) {
-    const float32_t half_height = case_manifest->camera.orthographic_height * 0.5f;
+    const float32_t half_height =
+        case_manifest->camera.orthographic_height * 0.5f;
     const float32_t half_width = half_height * (float32_t)case_manifest->width /
-                                (float32_t)case_manifest->height;
+                                 (float32_t)case_manifest->height;
     if (!isfinite(half_width) || half_width <= 0.0f || half_height <= 0.0f) {
       return false_v;
     }
@@ -1870,11 +1884,9 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
             ? "indirect_diffuse"
         : replay.render_mode == VKR_RENDER_MODE_DETAIL_LIGHTING
             ? "detail_lighting"
-        : replay.render_mode == VKR_RENDER_MODE_LIGHTING_ONLY
-            ? "lighting_only"
-        : replay.render_mode == VKR_RENDER_MODE_WIREFRAME
-            ? "wireframe"
-            : "default";
+        : replay.render_mode == VKR_RENDER_MODE_LIGHTING_ONLY ? "lighting_only"
+        : replay.render_mode == VKR_RENDER_MODE_WIREFRAME     ? "wireframe"
+                                                              : "default";
     string_format(case_manifest.renderer.render_mode,
                   sizeof(case_manifest.renderer.render_mode), "%s",
                   render_mode);

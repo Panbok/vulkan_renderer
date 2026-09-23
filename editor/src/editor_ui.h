@@ -4,8 +4,8 @@
 #include "editor_bakery.h"
 #include "editor_console.h"
 #include "editor_content.h"
-#include "editor_scene_panels.h"
 #include "editor_physics_settings.h"
+#include "editor_scene_panels.h"
 #include "vkr_sample_runtime.h"
 
 typedef struct VkrEditorProjects VkrEditorProjects;

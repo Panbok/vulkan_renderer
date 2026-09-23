@@ -391,7 +391,7 @@ static FILE *vkr_json_file_open(const char *path) {
   FileHandle handle = {0};
   if (file_open(&native_path,
                 (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
-                                 FILE_MODE_TRUNCATE},
+                                  FILE_MODE_TRUNCATE},
                 &handle) != FILE_ERROR_NONE) {
     return NULL;
   }

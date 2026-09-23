@@ -24,7 +24,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_ENABLED},
     {"scene_rendering", VKR_RG_JSON_CONDITION_SCENE_RENDERING},
     {"skinning_enabled", VKR_RG_JSON_CONDITION_SKINNING_ENABLED},
-    {"animation_preview_enabled", VKR_RG_JSON_CONDITION_ANIMATION_PREVIEW_ENABLED},
+    {"animation_preview_enabled",
+     VKR_RG_JSON_CONDITION_ANIMATION_PREVIEW_ENABLED},
     {"post_transform_cache_enabled",
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE},
     {"post_transform_cache_enabled && editor_enabled",
@@ -771,8 +772,7 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
     } else if (vkr_string8_equals_cstr_i(&dimension, "3d")) {
       out_desc->type = VKR_TEXTURE_TYPE_3D;
     } else {
-      return vkr_rg_json_error(ctx, field_path,
-                               "dimension must be 2d or 3d");
+      return vkr_rg_json_error(ctx, field_path, "dimension must be 2d or 3d");
     }
   }
 
@@ -2104,15 +2104,19 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED:
     return !frame->motion_blur_enabled && frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED:
-    return !frame->motion_blur_enabled && !frame->metalfx_enabled && !frame->fsr31_enabled;
+    return !frame->motion_blur_enabled && !frame->metalfx_enabled &&
+           !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED:
     return !frame->dof_enabled && frame->motion_blur_enabled;
   case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_ENABLED:
-    return !frame->dof_enabled && !frame->motion_blur_enabled && frame->metalfx_enabled;
+    return !frame->dof_enabled && !frame->motion_blur_enabled &&
+           frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED:
-    return !frame->dof_enabled && !frame->motion_blur_enabled && frame->fsr31_enabled;
+    return !frame->dof_enabled && !frame->motion_blur_enabled &&
+           frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED:
-    return !frame->dof_enabled && !frame->motion_blur_enabled && !frame->metalfx_enabled && !frame->fsr31_enabled;
+    return !frame->dof_enabled && !frame->motion_blur_enabled &&
+           !frame->metalfx_enabled && !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_GTAO_ENABLED:
     return frame->gtao_enabled;
   case VKR_RG_JSON_CONDITION_FOG_EDITOR_ENABLED:
@@ -2335,8 +2339,9 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
     return true_v;
   case VKR_RG_JSON_EXTENT_MOTION_BLUR_TILES:
     *out_width = frame->scene_output_width / VKR_MOTION_BLUR_TILE_SIZE +
-        (frame->scene_output_width % VKR_MOTION_BLUR_TILE_SIZE != 0u);
-    *out_height = frame->scene_output_height / VKR_MOTION_BLUR_TILE_SIZE +
+                 (frame->scene_output_width % VKR_MOTION_BLUR_TILE_SIZE != 0u);
+    *out_height =
+        frame->scene_output_height / VKR_MOTION_BLUR_TILE_SIZE +
         (frame->scene_output_height % VKR_MOTION_BLUR_TILE_SIZE != 0u);
     return true_v;
   case VKR_RG_JSON_EXTENT_VIEWPORT:
@@ -2692,9 +2697,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           desc.height = frame->target_height;
           desc.depth = resource->image.depth;
           desc.type = resource->image.type;
-          desc.mip_levels =
-              vkr_rg_json_mip_levels(&resource->image, desc.width, desc.height,
-                                     desc.depth);
+          desc.mip_levels = vkr_rg_json_mip_levels(&resource->image, desc.width,
+                                                   desc.height, desc.depth);
           desc.usage = resource->image.usage;
           uint32_t layers = 1;
           if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
@@ -2757,9 +2761,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           desc.height = height;
           desc.depth = resource->image.depth;
           desc.type = resource->image.type;
-          desc.mip_levels =
-              vkr_rg_json_mip_levels(&resource->image, width, height,
-                                     desc.depth);
+          desc.mip_levels = vkr_rg_json_mip_levels(&resource->image, width,
+                                                   height, desc.depth);
           desc.usage = resource->image.usage;
           desc.flags = vkr_rg_json_resource_flags(resource->flags);
           if (resource->image.layers_is_set ||

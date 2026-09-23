@@ -172,8 +172,7 @@ bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
       (!vkr_harness_camera_is_orthographic(camera->mode) &&
        (camera->vertical_fov_degrees <= 0.0f ||
         camera->vertical_fov_degrees >= 180.0f)) ||
-      camera->near_plane <= 0.0f ||
-      camera->far_plane <= camera->near_plane) {
+      camera->near_plane <= 0.0f || camera->far_plane <= camera->near_plane) {
     vkr_harness_error_set(out_error, "camera.lens", "$.camera",
                           "Camera lens values are invalid");
     return false_v;
@@ -339,12 +338,14 @@ vkr_harness_camera_evaluate_script(const VkrHarnessCamera *camera,
   }
   MemZero(out_pose, sizeof(*out_pose));
   if (vkr_harness_camera_is_orthographic(camera->mode)) {
-    static const Vec3 forwards[] = {
-        {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
-        {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
-    static const Vec3 ups[] = {
-        {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f},
-        {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    static const Vec3 forwards[] = {{0.0f, -1.0f, 0.0f},
+                                    {1.0f, 0.0f, 0.0f},
+                                    {-1.0f, 0.0f, 0.0f},
+                                    {0.0f, 1.0f, 0.0f}};
+    static const Vec3 ups[] = {{0.0f, 0.0f, -1.0f},
+                               {0.0f, 1.0f, 0.0f},
+                               {0.0f, 1.0f, 0.0f},
+                               {0.0f, 0.0f, 1.0f}};
     const uint32_t view = camera->mode - VKR_HARNESS_CAMERA_ORTHOGRAPHIC_TOP;
     out_pose->pose = camera->static_pose;
     out_pose->forward = forwards[view];

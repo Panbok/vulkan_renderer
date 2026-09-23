@@ -211,8 +211,8 @@ VkrGpuMemoryStatus vkr_gpu_memory_allocate_in_range(
   if (prefix_size != 0) {
     range->size = prefix_size;
     if (suffix_size != 0) {
-      for (uint32_t i = memory->free_range_count;
-           i > (uint32_t)range_index + 1; --i)
+      for (uint32_t i = memory->free_range_count; i > (uint32_t)range_index + 1;
+           --i)
         memory->free_ranges[i] = memory->free_ranges[i - 1];
       memory->free_ranges[range_index + 1] =
           (VkrGpuFreeRange){reserved_end, suffix_size};

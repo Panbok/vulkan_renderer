@@ -4,7 +4,7 @@
 #include "core/logger.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
-#include "vkr_render_graph_internal.h"
 #include "vkr_pch.h"
+#include "vkr_render_graph_internal.h"
 
 bool32_t run_render_graph_barrier_tests();

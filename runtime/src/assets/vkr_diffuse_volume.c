@@ -217,8 +217,7 @@ static bool8_t vkr_diffuse_volume_valid(const VkrDiffuseVolume *volume) {
       for (uint32_t x = 0u; x + 1u < volume->dimensions[0]; ++x) {
         const uint32_t region_id = volume->cell_region_ids[cell_index++];
         if (region_id > VKR_DIFFUSE_VOLUME_MAX_REGION_ID ||
-            !vkr_diffuse_volume_cell_region_valid(volume, x, y, z,
-                                                   region_id))
+            !vkr_diffuse_volume_cell_region_valid(volume, x, y, z, region_id))
           return false_v;
       }
   return true_v;

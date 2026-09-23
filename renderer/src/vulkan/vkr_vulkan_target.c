@@ -21,9 +21,8 @@ bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
   out_targets->height = height;
   out_targets->image_count = image_count;
   for (uint32_t i = 0; i < image_count; ++i) {
-    if (!vkr_vk_create_image_ex(renderer, width, height, 1u, 1u, 1u, format,
-                                0u, VK_IMAGE_TYPE_2D,
-                                VK_IMAGE_VIEW_TYPE_2D,
+    if (!vkr_vk_create_image_ex(renderer, width, height, 1u, 1u, 1u, format, 0u,
+                                VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                 VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN,
@@ -147,15 +146,15 @@ bool8_t vkr_vk_create_window_target(VkrVulkanRenderer *renderer,
     const VkFormatFeatureFlags required_features =
         VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
-    format_usable[i] =
-        (properties.optimalTilingFeatures & required_features) ==
-        required_features;
+    format_usable[i] = (properties.optimalTilingFeatures & required_features) ==
+                       required_features;
   }
   const bool8_t prefer_extended_linear =
       renderer->display_output_requested.extended_linear != 0u &&
       vkr_vulkan_device_extended_linear_present_enabled(renderer->device);
-  const VkSurfaceFormatKHR surface_format = vkr_vulkan_device_choose_surface_format(
-      formats, format_usable, format_count, prefer_extended_linear);
+  const VkSurfaceFormatKHR surface_format =
+      vkr_vulkan_device_choose_surface_format(
+          formats, format_usable, format_count, prefer_extended_linear);
   if (surface_format.format == VK_FORMAT_UNDEFINED) {
     log_error("Vulkan window surface exposes no presentation format for "
               "the selected display-output policy");
@@ -312,7 +311,7 @@ bool8_t vkr_vk_recreate_window_target(VkrVulkanRenderer *renderer,
   }
   if (replacement_window.format != renderer->window_target.format &&
       !vkr_vk_recreate_presentation_pipelines(renderer,
-                                               replacement_window.format)) {
+                                              replacement_window.format)) {
     vkr_vk_destroy_target_set(renderer, &replacement_targets);
     vkr_vk_destroy_window_target(renderer, &replacement_window);
     return false_v;

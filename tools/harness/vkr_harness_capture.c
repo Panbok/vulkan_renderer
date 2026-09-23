@@ -1685,7 +1685,8 @@ static void vkr_harness_case_from_v13(const VkrHarnessCaseV13 *source,
   destination->camera = source->camera;
   MemCopy(destination->captures, source->captures, sizeof(source->captures));
   destination->capture_count = source->capture_count;
-  MemCopy(destination->assertions, source->assertions, sizeof(source->assertions));
+  MemCopy(destination->assertions, source->assertions,
+          sizeof(source->assertions));
   destination->assertion_count = source->assertion_count;
   destination->compare = source->compare;
   destination->content_scale = source->content_scale;
@@ -1700,7 +1701,8 @@ static void vkr_harness_case_from_v14(const VkrHarnessCaseV14 *source,
   destination->camera = source->camera;
   MemCopy(destination->captures, source->captures, sizeof(source->captures));
   destination->capture_count = source->capture_count;
-  MemCopy(destination->assertions, source->assertions, sizeof(source->assertions));
+  MemCopy(destination->assertions, source->assertions,
+          sizeof(source->assertions));
   destination->assertion_count = source->assertion_count;
   destination->compare = source->compare;
   destination->content_scale = source->content_scale;
@@ -2672,13 +2674,15 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
   } else if (common->version == 13u) {
     const VkrHarnessCaptureSummaryHeaderV13 *header =
         (const VkrHarnessCaptureSummaryHeaderV13 *)bytes;
-    vkr_harness_case_from_v13(&header->case_manifest, &out_summary->case_manifest);
+    vkr_harness_case_from_v13(&header->case_manifest,
+                              &out_summary->case_manifest);
     out_summary->profile = header->profile;
     out_summary->provenance = header->provenance;
   } else if (common->version == 14u) {
     const VkrHarnessCaptureSummaryHeaderV14 *header =
         (const VkrHarnessCaptureSummaryHeaderV14 *)bytes;
-    vkr_harness_case_from_v14(&header->case_manifest, &out_summary->case_manifest);
+    vkr_harness_case_from_v14(&header->case_manifest,
+                              &out_summary->case_manifest);
     out_summary->profile = header->profile;
     out_summary->provenance = header->provenance;
   } else {

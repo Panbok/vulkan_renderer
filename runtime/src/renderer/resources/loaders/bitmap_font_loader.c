@@ -620,9 +620,6 @@ vkr_internal bool8_t vkr_bitmap_font_parse_int(String8 line, const char *key,
   return string8_to_i32(&value, out_value);
 }
 
-
-
-
 vkr_internal bool8_t vkr_bitmap_font_parse_info(VkrBitmapFontParseState *state,
                                                 String8 line) {
   assert_log(state != NULL, "State is NULL");

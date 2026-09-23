@@ -1,5 +1,5 @@
-#include "platform/vkr_entry.h"
 #include "app_ui.h"
+#include "platform/vkr_entry.h"
 #include "vkr_sample_runtime.h"
 
 VKR_MAIN(argc, argv) {

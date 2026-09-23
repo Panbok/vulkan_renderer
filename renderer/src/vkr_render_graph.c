@@ -35,15 +35,14 @@ vkr_internal int64_t vkr_rg_find_buffer_index(VkrRenderGraph *graph,
 vkr_internal bool8_t vkr_rg_image_desc_equal(const VkrRgImageDesc *a,
                                              const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
-         a->depth == b->depth &&
-         a->format == b->format && a->usage.set == b->usage.set &&
-         a->samples == b->samples && a->layers == b->layers &&
-         a->mip_levels == b->mip_levels && a->type == b->type &&
-         a->flags == b->flags;
+         a->depth == b->depth && a->format == b->format &&
+         a->usage.set == b->usage.set && a->samples == b->samples &&
+         a->layers == b->layers && a->mip_levels == b->mip_levels &&
+         a->type == b->type && a->flags == b->flags;
 }
 
 vkr_internal bool8_t vkr_rg_image_desc_valid(String8 name,
-                                              const VkrRgImageDesc *desc) {
+                                             const VkrRgImageDesc *desc) {
   if (desc->type >= VKR_TEXTURE_TYPE_COUNT || desc->depth == 0u) {
     log_error("RenderGraph image '%.*s': invalid texture type or depth",
               (int)name.length, name.str);
@@ -59,7 +58,7 @@ vkr_internal bool8_t vkr_rg_image_desc_valid(String8 name,
   if (desc->layers != 1u || desc->samples != VKR_SAMPLE_COUNT_1 ||
       (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY) != 0u ||
       (desc->usage.set & (VKR_TEXTURE_USAGE_COLOR_ATTACHMENT |
-                           VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT)) != 0u) {
+                          VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT)) != 0u) {
     log_error("RenderGraph image '%.*s': 3D images require one layer, one "
               "sample, no array view, and no attachment usage",
               (int)name.length, name.str);
@@ -74,8 +73,8 @@ vkr_internal bool8_t vkr_rg_buffer_desc_equal(const VkrRgBufferDesc *a,
          a->flags == b->flags;
 }
 
-vkr_internal bool8_t
-vkr_rg_image_flags_valid(String8 name, VkrRgResourceFlags flags) {
+vkr_internal bool8_t vkr_rg_image_flags_valid(String8 name,
+                                              VkrRgResourceFlags flags) {
   if (flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) {
     log_error("RenderGraph image '%.*s': GROW_ONLY requires an owned buffer",
               (int)name.length, name.str);
@@ -724,10 +723,11 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
   if ((desc->flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) &&
-      (desc->flags & (VKR_RG_RESOURCE_FLAG_EXTERNAL |
-                      VKR_RG_RESOURCE_FLAG_HISTORY |
-                      VKR_RG_RESOURCE_FLAG_RETAINED))) {
-    log_error("RenderGraph buffer '%.*s': GROW_ONLY requires owned, non-history storage",
+      (desc->flags &
+       (VKR_RG_RESOURCE_FLAG_EXTERNAL | VKR_RG_RESOURCE_FLAG_HISTORY |
+        VKR_RG_RESOURCE_FLAG_RETAINED))) {
+    log_error("RenderGraph buffer '%.*s': GROW_ONLY requires owned, "
+              "non-history storage",
               (int)name.length, name.str);
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }

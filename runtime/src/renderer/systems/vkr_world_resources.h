@@ -79,10 +79,12 @@ vkr_world_resources_prepare_scene_environment(struct VkrRenderAssets *assets,
                                               VkrWorldResources *resources,
                                               VkrScene *scene);
 
-/** Queues the requested atmosphere candidate, if any, at a cold frame boundary. */
-bool8_t vkr_world_resources_prepare_scene_atmosphere(
-    struct VkrRenderAssets *assets, VkrWorldResources *resources,
-    VkrScene *scene);
+/** Queues the requested atmosphere candidate, if any, at a cold frame boundary.
+ */
+bool8_t
+vkr_world_resources_prepare_scene_atmosphere(struct VkrRenderAssets *assets,
+                                             VkrWorldResources *resources,
+                                             VkrScene *scene);
 
 /** Polls native candidate completion and atomically publishes a ready tuple. */
 void vkr_world_resources_poll_scene_atmosphere(struct VkrRenderAssets *assets,

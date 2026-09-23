@@ -36,8 +36,7 @@ vkr_internal void vkr_vk_cmd_ibl_image_barrier(
 
 vkr_internal bool8_t vkr_vk_prepare_atmosphere_dispatch(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
-    VkrVulkanAtmospherePipeline pipeline,
-    const VkrVulkanPendingIblBake *job,
+    VkrVulkanAtmospherePipeline pipeline, const VkrVulkanPendingIblBake *job,
     const VkrVulkanPublishedTexture *source, uint32_t width, uint32_t height,
     uint32_t depth) {
   if (!job->atmosphere_sun_readback.address || !source ||
@@ -61,7 +60,8 @@ vkr_internal bool8_t vkr_vk_prepare_atmosphere_dispatch(
       .transmittance_sample = renderer->atmosphere_sampled_slots[0].index,
       .transmittance_storage = renderer->atmosphere_storage_slots[0].index,
       .multiple_scattering_sample = renderer->atmosphere_sampled_slots[1].index,
-      .multiple_scattering_storage = renderer->atmosphere_storage_slots[1].index,
+      .multiple_scattering_storage =
+          renderer->atmosphere_storage_slots[1].index,
       .source_storage = source->storage_slots[0].index,
       .sampler = renderer->dfg_sampler_slot.index,
       .sun_output = job->atmosphere_sun_readback.address,
@@ -96,8 +96,9 @@ vkr_internal void vkr_vk_record_atmosphere_cache_barrier(
                                VK_IMAGE_LAYOUT_GENERAL);
 }
 
-vkr_internal void vkr_vk_record_atmosphere_readback_visibility(
-    VkCommandBuffer command, VkBuffer buffer) {
+vkr_internal void
+vkr_vk_record_atmosphere_readback_visibility(VkCommandBuffer command,
+                                             VkBuffer buffer) {
   const VkBufferMemoryBarrier2 barrier = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
       .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -417,8 +418,8 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
                VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT, 1u) ||
            !vkr_vk_prepare_atmosphere_dispatch(
                renderer, &bake->atmosphere[1],
-               VKR_VULKAN_ATMOSPHERE_PIPELINE_MULTIPLE_SCATTERING, job,
-               source, VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
+               VKR_VULKAN_ATMOSPHERE_PIPELINE_MULTIPLE_SCATTERING, job, source,
+               VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
                VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE, 1u)))
         return false_v;
       if (!vkr_vk_prepare_atmosphere_dispatch(
@@ -428,8 +429,7 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
               source->image.array_layers) ||
           !vkr_vk_prepare_atmosphere_dispatch(
               renderer, &bake->atmosphere[3],
-              VKR_VULKAN_ATMOSPHERE_PIPELINE_SUN, job, source, 1u, 1u,
-              1u))
+              VKR_VULKAN_ATMOSPHERE_PIPELINE_SUN, job, source, 1u, 1u, 1u))
         return false_v;
       bake->atmosphere_dispatch_count = job->atmosphere_rebuild_luts ? 4u : 2u;
     }
@@ -532,8 +532,8 @@ void vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
     if (bake->is_atmosphere) {
       if (bake->atmosphere_rebuild_luts) {
         const VkImageLayout cache_layout = atmosphere_cache_written
-                                              ? VK_IMAGE_LAYOUT_GENERAL
-                                              : VK_IMAGE_LAYOUT_UNDEFINED;
+                                               ? VK_IMAGE_LAYOUT_GENERAL
+                                               : VK_IMAGE_LAYOUT_UNDEFINED;
         vkr_vk_record_atmosphere_cache_barrier(
             command, &renderer->atmosphere_transmittance,
             atmosphere_cache_written ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
@@ -570,7 +570,7 @@ void vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
       vkr_vk_record_ibl_source_mips(command, bake->source);
       vkr_vk_record_prepared_compute(renderer, command, &bake->atmosphere[3]);
       vkr_vk_record_atmosphere_readback_visibility(command,
-                                                    bake->atmosphere_readback);
+                                                   bake->atmosphere_readback);
     }
     if (bake->project)
       vkr_vk_record_prepared_compute(renderer, command, &bake->projection);

@@ -56,9 +56,8 @@ vkr_internal void test_bloom_chain_gain(void) {
     uint32_t width;
     uint32_t height;
     uint32_t mip_count;
-  } cases[] = {{1u, 1u, 0u},       {16u, 17u, 0u},
-               {33u, 35u, 2u},   {65u, 67u, 3u},
-               {129u, 131u, 4u}, {257u, 259u, 5u},
+  } cases[] = {{1u, 1u, 0u},    {16u, 17u, 0u},   {33u, 35u, 2u},
+               {65u, 67u, 3u},  {129u, 131u, 4u}, {257u, 259u, 5u},
                {801u, 601u, 6u}};
   for (uint32_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     const uint32_t count =

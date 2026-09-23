@@ -3,8 +3,9 @@
 #include "assets/vkr_mesh_source.h"
 #include "vkr_geometry_upload.h"
 
-/* Cooked influence values also supply the skinning upload ABI. Joint indices address each instance's
- * source skin.joints array. Zero weights and joints mark an unskinned vertex.
+/* Cooked influence values also supply the skinning upload ABI. Joint indices
+ * address each instance's source skin.joints array. Zero weights and joints
+ * mark an unskinned vertex.
  */
 typedef VkrSkinningInfluence VkrMeshSkinVertex;
 

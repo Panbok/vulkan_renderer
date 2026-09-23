@@ -1068,9 +1068,8 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
       // Layout clamps this request to the current declared row extent.
       node->retained->scroll_offset.y = FLT_MAX;
     else {
-      const int32_t direction =
-          (int32_t)vkr_ui_key_pressed(system, KEY_NEXT) -
-          (int32_t)vkr_ui_key_pressed(system, KEY_PRIOR);
+      const int32_t direction = (int32_t)vkr_ui_key_pressed(system, KEY_NEXT) -
+                                (int32_t)vkr_ui_key_pressed(system, KEY_PRIOR);
       node->retained->scroll_offset.y =
           Max(0.0f, node->retained->scroll_offset.y + direction * page);
     }
@@ -1754,14 +1753,14 @@ vkr_internal bool8_t vkr_ui_layout_node(VkrUiSystem *system,
     return true_v;
 
   const VkrUiRect content_rect = vkr_ui_style_content_rect(rect, &node->style);
-  VkrUiRect child_clip =
-      node->clip_children ? vkr_ui_rect_intersect(parent_clip, content_rect)
-                          : parent_clip;
+  VkrUiRect child_clip = node->clip_children
+                             ? vkr_ui_rect_intersect(parent_clip, content_rect)
+                             : parent_clip;
   if (node->kind == VKR_UI_NODE_SCROLL && system->focused_id == node->id) {
     // Descendants must not paint over the container's keyboard focus ring.
     const float32_t inset = 2.0f * Max(1.0f, system->content_scale);
-    const VkrUiRect focus_content = vkr_ui_rect_inset(
-        rect, (VkrUiEdges){inset, inset, inset, inset});
+    const VkrUiRect focus_content =
+        vkr_ui_rect_inset(rect, (VkrUiEdges){inset, inset, inset, inset});
     child_clip = vkr_ui_rect_intersect(child_clip, focus_content);
   }
   const uint32_t columns = node->column_count ? node->column_count : 1u;
@@ -1921,8 +1920,10 @@ typedef struct VkrUiIconLine {
   float32_t x0, y0, x1, y1;
 } VkrUiIconLine;
 
-static void vkr_ui_icon_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect, Vec4 color) {
-  const Vec2 corners[] = {{rect.x, rect.y}, {rect.x + rect.width, rect.y},
+static void vkr_ui_icon_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect,
+                             Vec4 color) {
+  const Vec2 corners[] = {{rect.x, rect.y},
+                          {rect.x + rect.width, rect.y},
                           {rect.x + rect.width, rect.y + rect.height},
                           {rect.x, rect.y + rect.height}};
   (void)vkr_ui_draw_buffer_polygon(buffer, corners, color);
@@ -1948,12 +1949,12 @@ vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
   static const VkrUiIconLine bakery[] = {
       {2, 3, 14, 3}, {14, 3, 14, 14}, {14, 14, 2, 14}, {2, 14, 2, 3},
       {2, 6, 14, 6}, {5, 9, 11, 9},   {5, 11, 11, 11}};
-  static const VkrUiIconLine scene_load[] = {
-      {2, 9, 2, 14}, {2, 14, 14, 14}, {14, 14, 14, 9},
-      {8, 1, 8, 10}, {4, 6, 8, 10}, {8, 10, 12, 6}};
-  static const VkrUiIconLine scene_unload[] = {
-      {2, 9, 2, 14}, {2, 14, 14, 14}, {14, 14, 14, 9},
-      {8, 10, 8, 1}, {4, 5, 8, 1}, {8, 1, 12, 5}};
+  static const VkrUiIconLine scene_load[] = {{2, 9, 2, 14},   {2, 14, 14, 14},
+                                             {14, 14, 14, 9}, {8, 1, 8, 10},
+                                             {4, 6, 8, 10},   {8, 10, 12, 6}};
+  static const VkrUiIconLine scene_unload[] = {{2, 9, 2, 14},   {2, 14, 14, 14},
+                                               {14, 14, 14, 9}, {8, 10, 8, 1},
+                                               {4, 5, 8, 1},    {8, 1, 12, 5}};
   static const VkrUiIconLine camera[] = {
       {1, 4, 10, 4},  {10, 4, 10, 12}, {10, 12, 1, 12}, {1, 12, 1, 4},
       {10, 6, 15, 3}, {15, 3, 15, 13}, {15, 13, 10, 10}};
@@ -2163,9 +2164,10 @@ vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
     for (uint32_t row = 0u; row < 3u; ++row)
       for (uint32_t column = 0u; column < 2u; ++column)
         vkr_ui_icon_rect(buffer,
-            (VkrUiRect){rect.x + (5.0f + 4.0f * column) * scale,
-                        rect.y + (3.0f + 4.0f * row) * scale,
-                        2.0f * scale, 2.0f * scale}, linear);
+                         (VkrUiRect){rect.x + (5.0f + 4.0f * column) * scale,
+                                     rect.y + (3.0f + 4.0f * row) * scale,
+                                     2.0f * scale, 2.0f * scale},
+                         linear);
   } else if (icon == VKR_UI_ICON_PLAY || icon == VKR_UI_ICON_MONITOR_PLAY) {
     const float32_t left = icon == VKR_UI_ICON_PLAY ? 4.0f : 6.0f;
     const float32_t top = icon == VKR_UI_ICON_PLAY ? 2.0f : 4.0f;
@@ -2179,21 +2181,18 @@ vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
     (void)vkr_ui_draw_buffer_polygon(buffer, corners, linear);
   } else if (icon == VKR_UI_ICON_PAUSE) {
     vkr_ui_icon_rect(buffer,
-                                   (VkrUiRect){rect.x + 3 * scale,
-                                               rect.y + 2 * scale, 3 * scale,
-                                               12 * scale},
-                                   linear);
+                     (VkrUiRect){rect.x + 3 * scale, rect.y + 2 * scale,
+                                 3 * scale, 12 * scale},
+                     linear);
     vkr_ui_icon_rect(buffer,
-                                   (VkrUiRect){rect.x + 10 * scale,
-                                               rect.y + 2 * scale, 3 * scale,
-                                               12 * scale},
-                                   linear);
+                     (VkrUiRect){rect.x + 10 * scale, rect.y + 2 * scale,
+                                 3 * scale, 12 * scale},
+                     linear);
   } else if (icon == VKR_UI_ICON_MONITOR_STOP) {
     vkr_ui_icon_rect(buffer,
-                                   (VkrUiRect){rect.x + 6 * scale,
-                                               rect.y + 5 * scale, 4 * scale,
-                                               4 * scale},
-                                   linear);
+                     (VkrUiRect){rect.x + 6 * scale, rect.y + 5 * scale,
+                                 4 * scale, 4 * scale},
+                     linear);
   }
 }
 
@@ -2278,10 +2277,10 @@ vkr_internal VkrUiRect vkr_ui_uniform_inset(VkrUiRect rect, float32_t inset) {
 
 vkr_internal uint32_t vkr_ui_bezier_segments(const VkrUiFrameNode *node) {
   const bool8_t straight =
-    node->bezier_points[0].x == node->bezier_points[1].x &&
-    node->bezier_points[0].y == node->bezier_points[1].y &&
-    node->bezier_points[2].x == node->bezier_points[3].x &&
-    node->bezier_points[2].y == node->bezier_points[3].y;
+      node->bezier_points[0].x == node->bezier_points[1].x &&
+      node->bezier_points[0].y == node->bezier_points[1].y &&
+      node->bezier_points[2].x == node->bezier_points[3].x &&
+      node->bezier_points[2].y == node->bezier_points[3].y;
   return straight ? 1u : 24u;
 }
 
@@ -2575,9 +2574,10 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
   uint64_t estimate = 0u;
   for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
     const VkrUiFrameNode *node = &system->frame_nodes[i];
-    estimate += node->kind == VKR_UI_NODE_IMAGE    ? 26u
-                : node->kind == VKR_UI_NODE_BEZIER ? 9u + vkr_ui_bezier_segments(node)
-                                                   : 9u;
+    estimate += node->kind == VKR_UI_NODE_IMAGE ? 26u
+                : node->kind == VKR_UI_NODE_BEZIER
+                    ? 9u + vkr_ui_bezier_segments(node)
+                    : 9u;
     if (node->icon != VKR_UI_ICON_NONE)
       estimate += 20u;
     if (node->retained->text_live) {
@@ -2650,8 +2650,7 @@ vkr_internal uint32_t vkr_ui_tooltip_prepare(VkrUiSystem *system,
       source = i;
       break;
     }
-    if (system->hot_id == VKR_UI_ID_NONE &&
-        node->id == system->focused_id &&
+    if (system->hot_id == VKR_UI_ID_NONE && node->id == system->focused_id &&
         node->input_layer == system->keyboard_input_layer)
       source = i;
   }
@@ -2746,7 +2745,7 @@ bool8_t vkr_ui_bezier_set_points(VkrUiSystem *system, VkrUiId id,
 }
 
 bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,
-                                VkrUiRect rect_pt) {
+                               VkrUiRect rect_pt) {
   if (!system || (!system->frame_open && !system->frame_draw_pending) ||
       id == VKR_UI_ID_NONE || !vkr_ui_rect_is_finite(rect_pt) ||
       !vkr_ui_rect_has_area(rect_pt))
@@ -2756,7 +2755,7 @@ bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,
     return false_v;
   VkrUiFrameNode *node = &system->frame_nodes[retained->frame_node_index];
   const Vec2 size_px = {rect_pt.width * system->content_scale,
-                         rect_pt.height * system->content_scale};
+                        rect_pt.height * system->content_scale};
   if (!isfinite(size_px.x) || !isfinite(size_px.y))
     return false_v;
   node->placement.margin_pt.left = rect_pt.x;

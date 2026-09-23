@@ -159,10 +159,16 @@ vkr_internal void test_packet_frame_flags(void) {
  * and seeks/topology changes must not borrow that span as motion history. */
 static void test_skinning_history_identity(void) {
   VkrSkinningInput jobs[2] = {
-      {.geometry = {.id = 7, .generation = 2}, .temporal_index = 3,
-       .temporal_generation = 4, .vertex_count = 5, .discontinuity = 1},
-      {.geometry = {.id = 8, .generation = 2}, .temporal_index = 9,
-       .temporal_generation = 6, .vertex_count = 11, .discontinuity = 1},
+      {.geometry = {.id = 7, .generation = 2},
+       .temporal_index = 3,
+       .temporal_generation = 4,
+       .vertex_count = 5,
+       .discontinuity = 1},
+      {.geometry = {.id = 8, .generation = 2},
+       .temporal_index = 9,
+       .temporal_generation = 6,
+       .vertex_count = 11,
+       .discontinuity = 1},
   };
   VkrWorldPassPayload world = {.skinning = jobs, .skinning_count = 2};
   VkrSkinningHistory history;

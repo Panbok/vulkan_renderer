@@ -1,7 +1,7 @@
 #include "editor_viewport_test.h"
 
-#include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_camera.h"
+#include "renderer/systems/vkr_editor_viewport.h"
 #include "vkr_exposure.h"
 #include "vkr_renderer_internal.h"
 
@@ -148,11 +148,11 @@ vkr_internal void test_scene_output_extent_restore(void) {
 
 static void test_orthographic_resize(void) {
   VkrCamera camera = {0};
-  vkr_camera_system_orthographic_create(&camera, NULL, -10, 10, -10, 10,
-                                        0.1f, 1000.0f);
+  vkr_camera_system_orthographic_create(&camera, NULL, -10, 10, -10, 10, 0.1f,
+                                        1000.0f);
   camera.generation = 1u;
-  assert(vkr_camera_set_basis(&camera, vec3_new(0, 100, 0),
-                              vec3_new(0, -1, 0), vec3_new(0, 0, -1)));
+  assert(vkr_camera_set_basis(&camera, vec3_new(0, 100, 0), vec3_new(0, -1, 0),
+                              vec3_new(0, 0, -1)));
   VkrCameraSystem system = {0};
   system.cameras.data = &camera;
   system.cameras.length = 1u;

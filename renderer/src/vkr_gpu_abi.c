@@ -3,8 +3,8 @@
 #include "vkr_buffer.h"
 #include "vkr_color_grading.h"
 
-#include <stddef.h>
 #include <math.h>
+#include <stddef.h>
 
 #define VKR_GPU_ABI_FIELD(TYPE, HOST, SHADER, OFFSET)                          \
   {#HOST, SHADER, OFFSET, (uint32_t)offsetof(TYPE, HOST)}
@@ -18,7 +18,8 @@
    FIELDS,                                                                     \
    ArrayCount(FIELDS)}
 
-VkrPreparedInstanceGPU vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source) {
+VkrPreparedInstanceGPU
+vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source) {
   const Mat4 model = source->model;
   /* Double intermediates keep cofactors finite for finite binary32 scales.
      A common positive scale cancels when shaders normalize the result. */
@@ -98,13 +99,18 @@ vkr_global const VkrGpuAbiField vkr_gpu_geometry_decode_record_fields[] = {
 vkr_global const VkrGpuAbiField vkr_gpu_instance_fields[] = {
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, model, "model", 0),
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, object_id, "object_id", 64),
-    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_index, "temporal_index", 68),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_index, "temporal_index",
+                      68),
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_generation,
                       "temporal_generation", 72),
-    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_flags, "temporal_flags", 76),
-    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column0, "normal_column0", 80),
-    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column1, "normal_column1", 96),
-    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column2, "normal_column2", 112),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_flags, "temporal_flags",
+                      76),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column0, "normal_column0",
+                      80),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column1, "normal_column1",
+                      96),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column2, "normal_column2",
+                      112),
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, deformation_address,
                       "deformation_address", 128),
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, previous_deformation_address,
@@ -180,21 +186,25 @@ vkr_global const VkrGpuAbiField vkr_local_shadow_view_fields[] = {
 };
 
 vkr_global const VkrGpuAbiField vkr_color_grading_fields[] = {
-    VKR_GPU_ABI_FIELD(VkrColorGradingGpu, white_balance_rows, "white_balance_rows", 0),
+    VKR_GPU_ABI_FIELD(VkrColorGradingGpu, white_balance_rows,
+                      "white_balance_rows", 0),
     VKR_GPU_ABI_FIELD(VkrColorGradingGpu, controls, "controls", 48),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_rectangle_light_row_fields[] = {
-    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, center_half_width, "center_half_width", 0),
-    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, right_half_height, "right_half_height", 16),
+    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, center_half_width,
+                      "center_half_width", 0),
+    VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, right_half_height,
+                      "right_half_height", 16),
     VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, up_radiance, "up_radiance", 32),
     VKR_GPU_ABI_FIELD(VkrGpuRectangleLightRow, color, "color", 48),
 };
 
 vkr_global const VkrGpuAbiRecord
     vkr_gpu_abi_records[VKR_GPU_ABI_RECORD_COUNT] = {
-        [VKR_GPU_ABI_COLOR_GRADING] = VKR_GPU_ABI_RECORD(
-            VkrColorGradingGpu, "VkrColorGrading", 64, 16, vkr_color_grading_fields),
+        [VKR_GPU_ABI_COLOR_GRADING] =
+            VKR_GPU_ABI_RECORD(VkrColorGradingGpu, "VkrColorGrading", 64, 16,
+                               vkr_color_grading_fields),
         [VKR_GPU_ABI_VERTEX] = VKR_GPU_ABI_RECORD(
             VkrVertex3d, "VkrMetalPacketVertex", 64, 16, vkr_gpu_vertex_fields),
         [VKR_GPU_ABI_PACKED_STATIC_VERTEX] =
@@ -224,9 +234,9 @@ vkr_global const VkrGpuAbiRecord
         [VKR_GPU_ABI_POINT_LIGHT_ROW] =
             VKR_GPU_ABI_RECORD(VkrGpuPointLightRow, "VkrGpuPointLightRow", 64,
                                16, vkr_gpu_point_light_row_fields),
-    [VKR_GPU_ABI_RECTANGLE_LIGHT_ROW] =
-        VKR_GPU_ABI_RECORD(VkrGpuRectangleLightRow, "VkrGpuRectangleLightRow", 64,
-                           16, vkr_gpu_rectangle_light_row_fields),
+        [VKR_GPU_ABI_RECTANGLE_LIGHT_ROW] = VKR_GPU_ABI_RECORD(
+            VkrGpuRectangleLightRow, "VkrGpuRectangleLightRow", 64, 16,
+            vkr_gpu_rectangle_light_row_fields),
 };
 
 const VkrGpuAbiRecord *vkr_gpu_abi_record(VkrGpuAbiRecordId id) {

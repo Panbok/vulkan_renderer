@@ -1,7 +1,7 @@
 #pragma once
 
-#include "containers/str.h"
 #include "assets/vkr_mesh_source.h"
+#include "containers/str.h"
 #include "vkr_renderer.h"
 
 typedef struct VkrSceneLightRangeOverride {

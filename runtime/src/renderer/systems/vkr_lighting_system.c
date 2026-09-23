@@ -418,9 +418,9 @@ void vkr_lighting_system_apply_atmosphere_sun(
      directional-light record points along incoming light, which shaders negate
      when forming their surface-to-light vector. */
   system->directional.enabled = true_v;
-  system->directional.direction = vec3_new(-settings->sun_direction.x,
-                                            -settings->sun_direction.y,
-                                            -settings->sun_direction.z);
+  system->directional.direction =
+      vec3_new(-settings->sun_direction.x, -settings->sun_direction.y,
+               -settings->sun_direction.z);
   system->directional.color = result->solar_irradiance;
   system->directional.intensity = 1.0f;
   system->directional.sun_angular_diameter_degrees =

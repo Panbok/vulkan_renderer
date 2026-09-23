@@ -140,8 +140,6 @@ typedef struct VkrMeshManagerGenerations {
   uint64_t caster_bounds;
 } VkrMeshManagerGenerations;
 
-
-
 /** @brief Owns mesh instances, shared assets, and their shadow generations. */
 typedef struct VkrMeshManager {
   Arena *arena;
@@ -586,6 +584,7 @@ uint32_t vkr_mesh_manager_instance_capacity(const VkrMeshManager *manager);
 
 /** Scene animator owns input until the binding is cleared. Updates caster and
  * content generations even when only the pose changed. */
-void vkr_mesh_manager_instance_set_skinning(VkrMeshManager *manager,
-    VkrMeshInstanceHandle handle, const struct VkrSkinningInput *input,
-    Mat4 model, Vec3 min_extents, Vec3 max_extents);
+void vkr_mesh_manager_instance_set_skinning(
+    VkrMeshManager *manager, VkrMeshInstanceHandle handle,
+    const struct VkrSkinningInput *input, Mat4 model, Vec3 min_extents,
+    Vec3 max_extents);

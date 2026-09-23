@@ -1,7 +1,7 @@
 #pragma once
 
-#include "renderer/systems/vkr_ui_system.h"
 #include "core/vkr_json_writer.h"
+#include "renderer/systems/vkr_ui_system.h"
 
 typedef struct VkrEditorBakery VkrEditorBakery;
 
@@ -25,22 +25,26 @@ typedef enum VkrEditorProjectJobStatus {
   VKR_EDITOR_PROJECT_JOB_UNKNOWN,
 } VkrEditorProjectJobStatus;
 
-/* Project jobs share Bakery's sole cancellable worker. The job owns copied paths;
- * callers keep request/result files alive until a terminal status is observed. */
+/* Project jobs share Bakery's sole cancellable worker. The job owns copied
+ * paths; callers keep request/result files alive until a terminal status is
+ * observed. */
 uint64_t vkr_editor_bakery_project_start(VkrEditorBakery *bakery,
-                                       const char *request_path,
-                                       const char *result_path);
+                                         const char *request_path,
+                                         const char *result_path);
 VkrEditorProjectJobStatus
 vkr_editor_bakery_project_status(VkrEditorBakery *bakery, uint64_t job_id,
-                                String8 *log);
+                                 String8 *log);
 void vkr_editor_bakery_project_cancel(VkrEditorBakery *bakery, uint64_t job_id);
 
 /* Managed panel queues only workspace-owned scene recipes. Compiled renderer
- * tables remain explicit development tools outside project asset inventories. */
+ * tables remain explicit development tools outside project asset inventories.
+ */
 void vkr_editor_bakery_set_managed(VkrEditorBakery *bakery, bool8_t enabled,
-                                  bool8_t writable_scene, const char *workspace);
+                                   bool8_t writable_scene,
+                                   const char *workspace);
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
-                                         bool8_t *reflection, bool8_t *diffuse);
+                                          bool8_t *reflection,
+                                          bool8_t *diffuse);
 bool8_t vkr_editor_bakery_busy(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_write_settings(const VkrEditorBakery *bakery,
                                          VkrJsonWriter *writer);

@@ -3,7 +3,7 @@
 #include <math.h>
 
 vkr_internal Vec4 vkr_vk_material_anisotropy(float32_t strength,
-                                              float32_t rotation) {
+                                             float32_t rotation) {
   const float32_t normalized_rotation =
       remainderf(rotation, 6.28318530717958647692f);
   return (Vec4){strength, cosf(normalized_rotation), sinf(normalized_rotation),
@@ -26,7 +26,8 @@ vkr_vk_material_diffuse_extensions_valid(const VkrMaterial *material) {
        pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f))
     return false_v;
   if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
-      pbr->subsurface_strength > 1.0f || pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT)
+      pbr->subsurface_strength > 1.0f ||
+      pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT)
     return false_v;
   if (pbr->subsurface_strength > 0.0f &&
       (material->material_type != VKR_MATERIAL_TYPE_PBR ||
@@ -2690,14 +2691,12 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
               .material_clearcoat = {pbr.clearcoat_factor,
                                      pbr.clearcoat_roughness,
                                      pbr.clearcoat_normal_scale, 0.0f},
-              .clearcoat_texture =
-                  texture_indices[VKR_TEXTURE_SLOT_CLEARCOAT],
+              .clearcoat_texture = texture_indices[VKR_TEXTURE_SLOT_CLEARCOAT],
               .clearcoat_roughness_texture =
                   texture_indices[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS],
               .clearcoat_normal_texture =
                   texture_indices[VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL],
-              .clearcoat_sampler =
-                  sampler_indices[VKR_TEXTURE_SLOT_CLEARCOAT],
+              .clearcoat_sampler = sampler_indices[VKR_TEXTURE_SLOT_CLEARCOAT],
               .clearcoat_roughness_sampler =
                   sampler_indices[VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS],
               .clearcoat_normal_sampler =
@@ -2718,13 +2717,14 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
                   texture_indices[VKR_TEXTURE_SLOT_ANISOTROPY],
               .anisotropy_sampler =
                   sampler_indices[VKR_TEXTURE_SLOT_ANISOTROPY],
-              .material_diffuse_transmission = {
-                  pbr.diffuse_transmission_color.x,
-                  pbr.diffuse_transmission_color.y,
-                  pbr.diffuse_transmission_color.z,
-                  pbr.diffuse_transmission_strength},
-                  .material_subsurface = {pbr.subsurface_strength,
-                      (float32_t)pbr.subsurface_profile, 0.0f, 0.0f},
+              .material_diffuse_transmission =
+                  {pbr.diffuse_transmission_color.x,
+                   pbr.diffuse_transmission_color.y,
+                   pbr.diffuse_transmission_color.z,
+                   pbr.diffuse_transmission_strength},
+              .material_subsurface = {pbr.subsurface_strength,
+                                      (float32_t)pbr.subsurface_profile, 0.0f,
+                                      0.0f},
           },
       .transmission =
           {

@@ -8,8 +8,8 @@
 #include "memory/vkr_arena_pool.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/resources/loaders/mesh_loader.h"
-#include "vkr_geometry_data.h"
 #include "renderer/systems/vkr_geometry_system.h"
+#include "vkr_geometry_data.h"
 
 #include <assert.h>
 #include <math.h>
@@ -175,8 +175,8 @@ static void test_tangent_generation_repairs_parallel_accumulation(void) {
     vertices[i].normal = (VkrPackedVec3){1.0f, 0.0f, 0.0f};
   }
   const uint32_t indices[3] = {0u, 1u, 2u};
-  vkr_geometry_generate_tangents(
-      &allocator, vertices, ArrayCount(vertices), indices, ArrayCount(indices));
+  vkr_geometry_generate_tangents(&allocator, vertices, ArrayCount(vertices),
+                                 indices, ArrayCount(indices));
   for (uint32_t i = 0u; i < ArrayCount(vertices); ++i) {
     const Vec3 tangent = vec3_new(vertices[i].tangent.x, vertices[i].tangent.y,
                                   vertices[i].tangent.z);
@@ -599,8 +599,7 @@ test_collect_triangle_centroids(const VkrMeshLoaderResult *result,
   uint32_t triangle = 0;
   for (uint64_t range_index = 0; range_index < result->submeshes.length;
        ++range_index) {
-    const VkrGeometryUploadRange *range =
-        &result->submeshes.data[range_index];
+    const VkrGeometryUploadRange *range = &result->submeshes.data[range_index];
     for (uint32_t i = 0; i < range->index_count; i += 3u) {
       const VkrPackedVec3 a = test_mesh_result_position(
           result, indices[range->first_index + i], range->decode_index);

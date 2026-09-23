@@ -16,9 +16,10 @@ static bool8_t
 vkr_harness_scene_asset_extension(const char *path,
                                   VkrHarnessAssetContext context) {
   static const char *extensions[] = {
-      ".json", ".gltf",    ".glb", ".bin", ".obj", ".mtl", ".mt",   ".png",
-      ".jpg",  ".jpeg",    ".bmp", ".tga", ".hdr", ".ktx", ".ktx2", ".vkt",
-      ".vka", ".vkb",  ".fontcfg", ".ttf", ".ttc", ".fnt", ".vkf", ".vkfa", ".vkdv",
+      ".json", ".gltf", ".glb",  ".bin",  ".obj",     ".mtl", ".mt",
+      ".png",  ".jpg",  ".jpeg", ".bmp",  ".tga",     ".hdr", ".ktx",
+      ".ktx2", ".vkt",  ".vka",  ".vkb",  ".fontcfg", ".ttf", ".ttc",
+      ".fnt",  ".vkf",  ".vkfa", ".vkdv",
   };
   uint64_t length = 0u;
   uint64_t filename = 0u;
@@ -576,7 +577,8 @@ bool8_t vkr_harness_scene_manifest_build_context(
                 0 ||
             !vkr_harness_scene_manifest_add_reference(
                 resolved_root, asset->path, out_manifest, remap,
-                context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE, out_error)) {
+                context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE,
+                out_error)) {
           ok = false_v;
           break;
         }

@@ -5,16 +5,16 @@
 #include "vkr_asset_publisher.h"
 #include "vkr_atmosphere.h"
 #include "vkr_bloom.h"
-#include "vkr_display_output.h"
 #include "vkr_buffer.h"
+#include "vkr_display_output.h"
 #include "vkr_gpu_abi.h"
 #include "vkr_gtao.h"
 #include "vkr_ibl_math.h"
 #include "vkr_prepared_frame.h"
 #include "vkr_render_graph.h"
 #include "vkr_renderer_impl.h"
-#include "vkr_ssr.h"
 #include "vkr_ssgi.h"
+#include "vkr_ssr.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
 struct VkrGeometryUpload;
@@ -71,7 +71,8 @@ typedef struct VkrMetalPacketRendererConfig {
   void *metal_layer;
   /** Window presentation policy; offscreen targets always resolve to SDR. */
   VkrDisplayOutputMode display_output_mode;
-  /** Borrowed context and optional platform snapshot callback for window output. */
+  /** Borrowed context and optional platform snapshot callback for window
+   * output. */
   void *display_output_context;
   VkrDisplayOutputSnapshot (*display_output_snapshot)(void *context);
   /** Requested window presentation policy; offscreen targets ignore it. */
@@ -306,8 +307,10 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
     VkrTextureHandle *out_handle);
-/** Authorizes completion-gated retirement before a smaller graph realization. */
-void vkr_metal_packet_renderer_request_memory_relief(VkrMetalPacketRenderer *renderer);
+/** Authorizes completion-gated retirement before a smaller graph realization.
+ */
+void vkr_metal_packet_renderer_request_memory_relief(
+    VkrMetalPacketRenderer *renderer);
 
 bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
     VkrMetalPacketRenderer *renderer);
@@ -354,8 +357,9 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
  * Selection is coarse: submit contains no backend-type branch or callback
  * through the Vulkan-shaped backend interface.
  */
-/** Refreshes the platform snapshot before target graph realization. Returns false
- * only when a completion-safe layer/presentation-pipeline transition fails. */
+/** Refreshes the platform snapshot before target graph realization. Returns
+ * false only when a completion-safe layer/presentation-pipeline transition
+ * fails. */
 bool8_t vkr_metal_packet_renderer_refresh_display_output(
     VkrMetalPacketRenderer *renderer, bool8_t *out_format_changed);
 /** Current native present attachment format after the most recent refresh. */
@@ -370,9 +374,11 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
     const VkrRenderGraphFrameInfo *frame_info);
 uint32_t vkr_metal_packet_renderer_frame_image_index(
     const VkrMetalPacketRenderer *renderer);
-/** Returns the extent only when the retained editor image has committed contents. */
+/** Returns the extent only when the retained editor image has committed
+ * contents. */
 void vkr_metal_packet_renderer_retained_editor_extent(
-    VkrMetalPacketRenderer *renderer, uint32_t *out_width, uint32_t *out_height);
+    VkrMetalPacketRenderer *renderer, uint32_t *out_width,
+    uint32_t *out_height);
 void vkr_metal_packet_renderer_retained_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);
@@ -422,8 +428,8 @@ vkr_metal_packet_renderer_submit_value(const VkrMetalPacketRenderer *renderer);
 uint64_t vkr_metal_packet_renderer_completed_value(
     const VkrMetalPacketRenderer *renderer);
 /** Borrowed UTF-8 model name; storage lives until renderer destruction. */
-String8 vkr_metal_packet_renderer_device_name(
-    const VkrMetalPacketRenderer *renderer);
+String8
+vkr_metal_packet_renderer_device_name(const VkrMetalPacketRenderer *renderer);
 /** Returns the presentation mode actually applied to the Metal target. */
 VkrPresentMode
 vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer);

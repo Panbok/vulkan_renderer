@@ -41,8 +41,8 @@ typedef struct VkrFontSystemConfig {
 
 struct VkrFontSystem;
 String8 vkr_font_system_bootstrap_path(struct VkrFontSystem *system,
-                                     const char *filename,
-                                     VkrAllocator *allocator);
+                                       const char *filename,
+                                       VkrAllocator *allocator);
 
 #define VKR_FONT_CONFIG_MAX_FACES 16
 

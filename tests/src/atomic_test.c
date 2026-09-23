@@ -19,10 +19,9 @@ static void test_atomic_bool_ops(void) {
   assert(vkr_atomic_bool_load(&flag, VKR_MEMORY_ORDER_RELAXED) == true_v);
 
   expected = false_v;
-  bool32_t swapped =
-      vkr_atomic_bool_compare_exchange(&flag, &expected, false_v,
-                                       VKR_MEMORY_ORDER_ACQ_REL,
-                                       VKR_MEMORY_ORDER_ACQUIRE);
+  bool32_t swapped = vkr_atomic_bool_compare_exchange(&flag, &expected, false_v,
+                                                      VKR_MEMORY_ORDER_ACQ_REL,
+                                                      VKR_MEMORY_ORDER_ACQUIRE);
   assert(swapped == false_v);
   assert(expected == true_v);
   assert(vkr_atomic_bool_load(&flag, VKR_MEMORY_ORDER_RELAXED) == true_v);
@@ -34,7 +33,8 @@ static void test_atomic_int32_ops(void) {
   printf("  Running test_atomic_int32_ops...\n");
 
   VkrAtomicInt32 value = 0;
-  int32_t prev = vkr_atomic_int32_fetch_add(&value, 5, VKR_MEMORY_ORDER_RELAXED);
+  int32_t prev =
+      vkr_atomic_int32_fetch_add(&value, 5, VKR_MEMORY_ORDER_RELAXED);
   assert(prev == 0);
   assert(vkr_atomic_int32_load(&value, VKR_MEMORY_ORDER_RELAXED) == 5);
 
@@ -49,10 +49,9 @@ static void test_atomic_int32_ops(void) {
   assert(vkr_atomic_int32_load(&value, VKR_MEMORY_ORDER_RELAXED) == 8);
 
   expected = 1;
-  bool32_t exchanged =
-      vkr_atomic_int32_compare_exchange(&value, &expected, 12,
-                                        VKR_MEMORY_ORDER_ACQ_REL,
-                                        VKR_MEMORY_ORDER_ACQUIRE);
+  bool32_t exchanged = vkr_atomic_int32_compare_exchange(
+      &value, &expected, 12, VKR_MEMORY_ORDER_ACQ_REL,
+      VKR_MEMORY_ORDER_ACQUIRE);
   assert(exchanged == false_v);
   assert(expected == 8);
   assert(vkr_atomic_int32_load(&value, VKR_MEMORY_ORDER_RELAXED) == 8);
@@ -84,10 +83,9 @@ static void test_atomic_uint64_ops(void) {
   assert(vkr_atomic_uint64_load(&value, VKR_MEMORY_ORDER_RELAXED) == 500);
 
   expected = 10;
-  bool32_t swapped =
-      vkr_atomic_uint64_compare_exchange(&value, &expected, 900,
-                                         VKR_MEMORY_ORDER_ACQ_REL,
-                                         VKR_MEMORY_ORDER_ACQUIRE);
+  bool32_t swapped = vkr_atomic_uint64_compare_exchange(
+      &value, &expected, 900, VKR_MEMORY_ORDER_ACQ_REL,
+      VKR_MEMORY_ORDER_ACQUIRE);
   assert(swapped == false_v);
   assert(expected == 500);
   assert(vkr_atomic_uint64_load(&value, VKR_MEMORY_ORDER_RELAXED) == 500);

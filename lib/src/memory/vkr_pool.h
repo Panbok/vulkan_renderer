@@ -14,8 +14,8 @@
 #include "defines.h"
 
 typedef struct VkrPool {
-  void *memory;            // Base memory for chunks
-  void *freelist_memory;   // Storage for freelist nodes
+  void *memory;          // Base memory for chunks
+  void *freelist_memory; // Storage for freelist nodes
 
   uint64_t memory_size;          // Page-aligned size reserved for chunks
   uint64_t freelist_memory_size; // Page-aligned size reserved for freelist

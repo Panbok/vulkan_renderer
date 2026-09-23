@@ -563,7 +563,8 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
                             3.0f, 28.0f));
   /* The new default Content tab must have a visible, clickable rectangle. */
-  assert(tree.nodes[4u].as.leaf.tabs[0u].panel_kind == VKR_UI_DOCK_PANEL_CONTENT);
+  assert(tree.nodes[4u].as.leaf.tabs[0u].panel_kind ==
+         VKR_UI_DOCK_PANEL_CONTENT);
   assert(ui_near(vkr_ui_dock_tab_rect(&tree, 4u, 0u).width, 102.0f));
   /* Keep the following reorder oracle on its explicit three-panel fixture. */
   assert(vkr_ui_dock_close_tab(&tree, 4u, 0u));

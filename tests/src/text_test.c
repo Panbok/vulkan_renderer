@@ -511,14 +511,14 @@ vkr_internal void test_ui_system_scale_revision_and_offsets(void) {
     vkr_ui_label(&system, string8_lit("scaled-label"), string8_lit("A"),
                  &label);
     (void)vkr_ui_end(&system);
-    assert(vkr_ui_widget_set_rect(
-        &system, label_id, (VkrUiRect){3.0f, 4.0f, 20.0f, 20.0f}));
+    assert(vkr_ui_widget_set_rect(&system, label_id,
+                                  (VkrUiRect){3.0f, 4.0f, 20.0f, 20.0f}));
     VkrPreparedUiDrawList draw_list = {0};
     assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
                                            &draw_list));
     assert(draw_list.vertex_count == 4u);
-    assert(!vkr_ui_widget_set_rect(
-        &system, label_id, (VkrUiRect){9.0f, 4.0f, 20.0f, 20.0f}));
+    assert(!vkr_ui_widget_set_rect(&system, label_id,
+                                   (VkrUiRect){9.0f, 4.0f, 20.0f, 20.0f}));
     assert(system.content_scale_revision ==
            system.offscreen_content_scale_revision);
     float32_t min_x = draw_list.vertices[0].position.x;
@@ -624,7 +624,7 @@ vkr_internal void test_ui_text_widgets_size_to_content(void) {
         widget.placement.align = VKR_UI_ALIGN_END;
       }
       const String8 content = {.str = (uint8_t *)cases[i].content,
-                                .length = strlen(cases[i].content)};
+                               .length = strlen(cases[i].content)};
       const String8 id = string8_lit("content-size");
       if (cases[i].kind == LABEL) {
         vkr_ui_label(&system, id, content, &widget);
@@ -1199,15 +1199,16 @@ vkr_internal void test_ui_slider_final_pointer_position(void) {
     slider.placement.justify = VKR_UI_ALIGN_START;
     slider.placement.align = VKR_UI_ALIGN_START;
     slider.disabled = frame == 4u;
-    const bool8_t changed = vkr_ui_slider_f32(
-        &system, string8_lit("slider"), &value, -10.0f, 30.0f, &slider);
+    const bool8_t changed = vkr_ui_slider_f32(&system, string8_lit("slider"),
+                                              &value, -10.0f, 30.0f, &slider);
     (void)vkr_ui_end(&system);
     VkrPreparedUiDrawList draw_list = {0};
     assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
                                            &draw_list));
     assert(changed == (frame >= 1u && frame <= 3u));
-    assert_f32_eq(value, expected[frame], 0.0f,
-                  "slider commits final release position and honors input gates");
+    assert_f32_eq(
+        value, expected[frame], 0.0f,
+        "slider commits final release position and honors input gates");
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   input_shutdown(&input);
@@ -1238,8 +1239,9 @@ vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
       {.unit = VKR_UI_TRACK_PX, .value = 40.0f},
   };
   // A 60px viewport pages over 120px of rows. The last button begins at80px.
-  const Keys keys[] = {KEY_MAX_KEYS, KEY_TAB, KEY_NEXT, KEY_PRIOR, KEY_END,
-                       KEY_HOME, KEY_NEXT, KEY_MAX_KEYS, KEY_MAX_KEYS, KEY_HOME};
+  const Keys keys[] = {KEY_MAX_KEYS, KEY_TAB,  KEY_NEXT, KEY_PRIOR,
+                       KEY_END,      KEY_HOME, KEY_NEXT, KEY_MAX_KEYS,
+                       KEY_MAX_KEYS, KEY_HOME};
   const float32_t expected_y[] = {80, 80, 20, 80, 20, 80, 20, 20, 20, 20};
   float32_t target_y = 0.0f;
   bool8_t target_visible = false_v;
@@ -1273,8 +1275,8 @@ vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
       if (row == 2u)
         button.style.background_color = (Vec4){1, 0, 0, 1};
       assert(vkr_ui_push_id_u64(&system, row));
-      const bool8_t clicked = vkr_ui_button(
-          &system, string8_lit("button"), string8_lit("A"), &button);
+      const bool8_t clicked = vkr_ui_button(&system, string8_lit("button"),
+                                            string8_lit("A"), &button);
       if (row == 2u)
         activated = clicked;
       else
@@ -1297,7 +1299,8 @@ vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
       for (uint32_t i = 0u; i < batch->index_count; ++i) {
         const VkrUiVertex *vertex =
             &draw_list.vertices[draw_list.indices[batch->first_index + i]];
-        // The pressed button dims its background; its red-only identity remains.
+        // The pressed button dims its background; its red-only identity
+        // remains.
         if (vertex->color.x <= 0.0f || vertex->color.y != 0.0f ||
             vertex->color.z != 0.0f)
           continue;

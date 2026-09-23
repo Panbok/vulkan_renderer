@@ -1080,7 +1080,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .point_light_grid = &application->lighting_system.point_light_grid,
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
-      .subsurface = active_scene && !application->disable_subsurface_scattering &&
+      .subsurface = active_scene &&
+                            !application->disable_subsurface_scattering &&
                             application->globals.projection.m33 == 0.0f
                         ? active_scene->subsurface
                         : (VkrSubsurfaceBinding){0},
@@ -1099,11 +1100,13 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   VkrAnimationPreviewInput animation_preview = {0};
   bool8_t has_animation_preview = false_v;
   if (application->animation_preview.player && active_scene &&
-      application->animation_preview.scene_generation == application->scene_generation) {
+      application->animation_preview.scene_generation ==
+          application->scene_generation) {
     const VkrAnimationPreviewRequest *request = &application->animation_preview;
-    has_animation_preview = vkr_scene_animation_build_preview(active_scene,
-        request->wrapper, request->player, request->yaw, request->pitch,
-        request->distance, scratch, &world_payload, &animation_preview);
+    has_animation_preview = vkr_scene_animation_build_preview(
+        active_scene, request->wrapper, request->player, request->yaw,
+        request->pitch, request->distance, scratch, &world_payload,
+        &animation_preview);
   }
 
   VkrFrameInput packet = {
@@ -1145,8 +1148,9 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
                              application->globals.projection.m33 == 0.0f,
               .dof_focus_distance = application->globals.dof_focus_distance,
               .dof_f_stop = application->globals.dof_f_stop,
-              .motion_blur_enabled = application->globals.motion_blur_enabled &&
-                                     application->globals.projection.m33 == 0.0f,
+              .motion_blur_enabled =
+                  application->globals.motion_blur_enabled &&
+                  application->globals.projection.m33 == 0.0f,
               .motion_blur_shutter_angle =
                   application->globals.motion_blur_shutter_angle,
               .ssr_enabled = application->globals.ssr_enabled,

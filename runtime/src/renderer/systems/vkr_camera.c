@@ -665,9 +665,9 @@ void vkr_camera_registry_resize_all(VkrCameraSystem *system, uint32_t width,
       if (camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC && height > 0u) {
         const float32_t center =
             0.5f * (camera->left_clip + camera->right_clip);
-        const float32_t half_width =
-            0.5f * (camera->top_clip - camera->bottom_clip) *
-            (float32_t)width / (float32_t)height;
+        const float32_t half_width = 0.5f *
+                                     (camera->top_clip - camera->bottom_clip) *
+                                     (float32_t)width / (float32_t)height;
         camera->left_clip = center - half_width;
         camera->right_clip = center + half_width;
       }

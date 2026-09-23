@@ -21,7 +21,8 @@ bool8_t vkr_platform_executable_path(char *path, uint32_t capacity) {
   }
   path[0] = '\0';
   wchar_t executable[32768];
-  const DWORD length = GetModuleFileNameW(NULL, executable, ArrayCount(executable));
+  const DWORD length =
+      GetModuleFileNameW(NULL, executable, ArrayCount(executable));
   if (!length || length >= ArrayCount(executable) ||
       !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, executable, -1, path,
                            (int)capacity, NULL, NULL)) {

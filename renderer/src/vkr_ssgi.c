@@ -12,12 +12,12 @@
 #define VKR_SSGI_TEMPORAL_DEPTH_ABSOLUTE_MAX 1000.0f
 
 static float32_t ssgi_clamp(float32_t value, float32_t minimum,
-                           float32_t maximum) {
+                            float32_t maximum) {
   return value < minimum ? minimum : (value > maximum ? maximum : value);
 }
 
 static float32_t ssgi_normalize_float(float32_t value, float32_t fallback,
-                                     float32_t minimum, float32_t maximum) {
+                                      float32_t minimum, float32_t maximum) {
   return ssgi_clamp(isfinite(value) ? value : fallback, minimum, maximum);
 }
 
@@ -44,19 +44,18 @@ VkrSsgiConfig vkr_ssgi_config_normalize(const VkrSsgiConfig *config) {
       config->max_steps < 1u
           ? 1u
           : (config->max_steps > VKR_SSGI_MAX_STEPS ? VKR_SSGI_MAX_STEPS
-                                                   : config->max_steps);
+                                                    : config->max_steps);
   result.thickness =
       ssgi_normalize_float(config->thickness, defaults.thickness,
-                          VKR_SSGI_THICKNESS_MIN, VKR_SSGI_THICKNESS_MAX);
-  result.max_distance =
-      ssgi_normalize_float(config->max_distance, defaults.max_distance,
-                          VKR_SSGI_MAX_DISTANCE_MIN, VKR_SSGI_MAX_DISTANCE_MAX);
-  result.normal_bias =
-      ssgi_normalize_float(config->normal_bias, defaults.normal_bias,
-                          0.0f, 1.0f);
+                           VKR_SSGI_THICKNESS_MIN, VKR_SSGI_THICKNESS_MAX);
+  result.max_distance = ssgi_normalize_float(
+      config->max_distance, defaults.max_distance, VKR_SSGI_MAX_DISTANCE_MIN,
+      VKR_SSGI_MAX_DISTANCE_MAX);
+  result.normal_bias = ssgi_normalize_float(config->normal_bias,
+                                            defaults.normal_bias, 0.0f, 1.0f);
   result.edge_fade_pixels =
       ssgi_normalize_float(config->edge_fade_pixels, defaults.edge_fade_pixels,
-                          VKR_SSGI_EDGE_FADE_MIN, VKR_SSGI_EDGE_FADE_MAX);
+                           VKR_SSGI_EDGE_FADE_MIN, VKR_SSGI_EDGE_FADE_MAX);
   result.temporal_weight = ssgi_normalize_float(
       config->temporal_weight, defaults.temporal_weight, 0.0f, 1.0f);
   result.temporal_depth_relative = ssgi_normalize_float(
@@ -73,7 +72,7 @@ uint32_t vkr_ssgi_reduced_extent(uint32_t extent) {
 }
 
 uint32_t vkr_ssgi_depth_mip_count(uint32_t source_width,
-                                 uint32_t source_height) {
+                                  uint32_t source_height) {
   if (source_width == 0u || source_height == 0u)
     return 0u;
 
@@ -88,12 +87,10 @@ uint32_t vkr_ssgi_depth_mip_count(uint32_t source_width,
   return count;
 }
 
-VkrSsgiGpuParams vkr_ssgi_gpu_params(const VkrSsgiConfig *config, Mat4 projection,
-                                   Mat4 inverse_projection, Mat4 view,
-                                   Mat4 previous_projection,
-                                   uint32_t source_width,
-                                   uint32_t source_height,
-                                   bool8_t history_valid, uint32_t sample_phase) {
+VkrSsgiGpuParams vkr_ssgi_gpu_params(
+    const VkrSsgiConfig *config, Mat4 projection, Mat4 inverse_projection,
+    Mat4 view, Mat4 previous_projection, uint32_t source_width,
+    uint32_t source_height, bool8_t history_valid, uint32_t sample_phase) {
   if (source_width == 0u || source_height == 0u)
     return (VkrSsgiGpuParams){0};
 

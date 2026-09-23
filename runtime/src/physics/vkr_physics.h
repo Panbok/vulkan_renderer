@@ -48,7 +48,8 @@ typedef struct VkrPhysicsCharacterInput {
   float32_t velocity[3];
   float32_t gravity[3]; // Added to velocity exactly once as gravity * dt.
   float32_t dt;
-  bool8_t crouch; // Hold to request a shorter capsule; blocked stand stays crouched.
+  bool8_t crouch; // Hold to request a shorter capsule; blocked stand stays
+                  // crouched.
 } VkrPhysicsCharacterInput;
 
 typedef struct VkrPhysicsCharacterState {

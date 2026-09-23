@@ -94,7 +94,8 @@ vkr_internal bool8_t vkr_texture_loader_load(VkrResourceLoader *self,
   }
 
   /* One reference belongs to the loader result, including its PENDING_GPU
-   * interval. Request deduplication shares this owner until the final unload. */
+   * interval. Request deduplication shares this owner until the final unload.
+   */
   vkr_texture_system_add_ref_by_handle(system, handle);
   out_handle->type = VKR_RESOURCE_TYPE_TEXTURE;
   out_handle->loader_id = self->id;
@@ -160,7 +161,8 @@ vkr_internal bool8_t vkr_texture_loader_finalize_async(
   }
 
   /* One reference belongs to the loader result, including its PENDING_GPU
-   * interval. Request deduplication shares this owner until the final unload. */
+   * interval. Request deduplication shares this owner until the final unload.
+   */
   vkr_texture_system_add_ref_by_handle(system, handle);
   out_handle->type = VKR_RESOURCE_TYPE_TEXTURE;
   out_handle->loader_id = self->id;

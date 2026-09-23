@@ -16,8 +16,9 @@ vkr_internal bool8_t vkr_application_host_event(Event *event,
 
 /* Queue before direct delivery so asynchronously subscribed observers retain
  * lifecycle order when a callback causes another lifecycle transition. */
-vkr_internal void vkr_application_host_dispatch_lifecycle(
-    VkrApplicationHost *host, EventType type) {
+vkr_internal void
+vkr_application_host_dispatch_lifecycle(VkrApplicationHost *host,
+                                        EventType type) {
   Event event = {.type = type};
   (void)event_manager_dispatch(&host->events, event);
   if (host->callbacks.event)
@@ -27,10 +28,10 @@ vkr_internal void vkr_application_host_dispatch_lifecycle(
 vkr_internal bool8_t
 vkr_application_host_subscribe_events(VkrApplicationHost *host) {
   const EventType types[] = {
-      EVENT_TYPE_WINDOW_CLOSE,         EVENT_TYPE_WINDOW_INIT,
-      EVENT_TYPE_WINDOW_RESIZE,        EVENT_TYPE_KEY_PRESS,
-      EVENT_TYPE_KEY_RELEASE,          EVENT_TYPE_MOUSE_MOVE,
-      EVENT_TYPE_MOUSE_WHEEL,          EVENT_TYPE_BUTTON_PRESS,
+      EVENT_TYPE_WINDOW_CLOSE,   EVENT_TYPE_WINDOW_INIT,
+      EVENT_TYPE_WINDOW_RESIZE,  EVENT_TYPE_KEY_PRESS,
+      EVENT_TYPE_KEY_RELEASE,    EVENT_TYPE_MOUSE_MOVE,
+      EVENT_TYPE_MOUSE_WHEEL,    EVENT_TYPE_BUTTON_PRESS,
       EVENT_TYPE_BUTTON_RELEASE,
   };
   for (uint32_t i = 0u; i < sizeof(types) / sizeof(types[0]); ++i) {
@@ -198,8 +199,7 @@ void vkr_application_host_resume(VkrApplicationHost *host) {
   assert(host &&
          bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_SUSPENDED));
   bitset8_clear(&host->flags, VKR_APPLICATION_HOST_FLAG_SUSPENDED);
-  vkr_application_host_dispatch_lifecycle(host,
-                                          EVENT_TYPE_APPLICATION_RESUME);
+  vkr_application_host_dispatch_lifecycle(host, EVENT_TYPE_APPLICATION_RESUME);
 }
 
 void vkr_application_host_close(VkrApplicationHost *host) {

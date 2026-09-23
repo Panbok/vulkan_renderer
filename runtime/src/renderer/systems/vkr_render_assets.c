@@ -3,9 +3,9 @@
 #include "core/logger.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/resources/loaders/animation_loader.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/scene_loader.h"
-#include "renderer/resources/loaders/animation_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
 #include "vkr_ibl_math.h"
 
@@ -175,8 +175,8 @@ bool8_t vkr_render_assets_initialize(
   if (!vkr_resource_system_register_loader((void *)assets,
                                            vkr_scene_loader_create()))
     return false_v;
-  if (!vkr_resource_system_register_loader(
-          (void *)assets, vkr_animation_loader_create())) {
+  if (!vkr_resource_system_register_loader((void *)assets,
+                                           vkr_animation_loader_create())) {
     return false_v;
   }
 
@@ -266,15 +266,13 @@ bool8_t vkr_render_assets_texture_pressure_budget(
       return false_v;
     const uint64_t non_asset_bytes = usage - asset_capacity;
     const uint64_t target_usage = budget - budget / 5u;
-    const uint64_t target_asset_bytes = target_usage > non_asset_bytes
-                                            ? target_usage - non_asset_bytes
-                                            : 0u;
+    const uint64_t target_asset_bytes =
+        target_usage > non_asset_bytes ? target_usage - non_asset_bytes : 0u;
     /* Reusing charged asset heaps needs no new managed allocation. Pending
      * publication and completed retirement do not change this allowance. */
     *out_budget = Max(asset_capacity, target_asset_bytes);
-    *out_pressure_active =
-        projected_usage >= budget - budget / 10u ||
-        (pressure_active && usage > budget - budget / 4u);
+    *out_pressure_active = projected_usage >= budget - budget / 10u ||
+                           (pressure_active && usage > budget - budget / 4u);
     return true_v;
   }
   if (projected_usage >= budget - budget / 10u ||
@@ -323,8 +321,9 @@ void vkr_render_assets_refresh_texture_residency_budget(
   }
 }
 
-bool8_t vkr_render_assets_pump_publications(
-    VkrRenderAssets *assets, VkrResourceSubmissionState submission) {
+bool8_t
+vkr_render_assets_pump_publications(VkrRenderAssets *assets,
+                                    VkrResourceSubmissionState submission) {
   if (!assets || !assets->resource_system_initialized)
     return false_v;
   const VkrAssetPublisher *publisher = assets->asset_publisher;

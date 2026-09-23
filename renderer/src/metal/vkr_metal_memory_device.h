@@ -149,8 +149,9 @@ void vkr_metal_memory_device_cancel_ring(VkrMetalMemoryDevice *device,
 VkrMetalMemoryStatus vkr_metal_memory_device_grow_ring(
     VkrMetalMemoryDevice *device, VkrMetalRingKind ring_kind,
     uint64_t required_slot_size, uint64_t completed_submit_value);
-uint64_t vkr_metal_memory_device_ring_slot_capacity(
-    const VkrMetalMemoryDevice *device, VkrMetalRingKind ring_kind);
+uint64_t
+vkr_metal_memory_device_ring_slot_capacity(const VkrMetalMemoryDevice *device,
+                                           VkrMetalRingKind ring_kind);
 
 // External native resources remain caller-owned. Reserve before creation, then
 // reconcile with actual allocatedSize. A failed reconcile preserves the

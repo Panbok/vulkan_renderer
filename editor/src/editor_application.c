@@ -1,8 +1,8 @@
 #include "editor_application.h"
-#include "editor_physics.h"
-#include "editor_internal.h"
-#include "editor_projects.h"
 #include "editor_content.h"
+#include "editor_internal.h"
+#include "editor_physics.h"
+#include "editor_projects.h"
 
 #include "core/logger.h"
 #include <math.h>
@@ -53,8 +53,10 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   editor->ui.bakery = vkr_editor_bakery_create(&ui->retained_allocator);
   editor->ui.scene_panels =
       vkr_editor_scene_panels_create(&ui->retained_allocator);
-  editor->ui.physics_settings = vkr_editor_physics_settings_create(&ui->retained_allocator);
-  if (!editor->ui.bakery || !editor->ui.scene_panels || !editor->ui.physics_settings)
+  editor->ui.physics_settings =
+      vkr_editor_physics_settings_create(&ui->retained_allocator);
+  if (!editor->ui.bakery || !editor->ui.scene_panels ||
+      !editor->ui.physics_settings)
     goto cleanup;
   if (editor->project_managed) {
     editor->ui.projects = vkr_editor_projects_create(
@@ -64,15 +66,21 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
     }
   }
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  if (editor->project_managed && !vkr_font_system_load_from_file(
+  if (editor->project_managed &&
+      !vkr_font_system_load_from_file(
           ui->fonts, string8_lit("default-scene-font"),
-          vkr_font_system_bootstrap_path(ui->fonts, "UbuntuMono-cooked.fontcfg", &ui->retained_allocator), &error)) {
+          vkr_font_system_bootstrap_path(ui->fonts, "UbuntuMono-cooked.fontcfg",
+                                         &ui->retained_allocator),
+          &error)) {
     goto cleanup;
   }
   const String8 name = string8_lit("editor-heading");
   if (!vkr_font_system_load_from_file(
           ui->fonts, name,
-          vkr_font_system_bootstrap_path(ui->fonts, "UbuntuMono-Bold-cooked.fontcfg", &ui->retained_allocator), &error)) {
+          vkr_font_system_bootstrap_path(ui->fonts,
+                                         "UbuntuMono-Bold-cooked.fontcfg",
+                                         &ui->retained_allocator),
+          &error)) {
     log_error("Failed to load the editor heading font (%u)", (uint32_t)error);
     goto cleanup;
   }
@@ -84,7 +92,10 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   const String8 label_name = string8_lit("editor-light-labels");
   if (!vkr_font_system_load_from_file(
           ui->fonts, label_name,
-          vkr_font_system_bootstrap_path(ui->fonts, "editor-light-labels.fontcfg", &ui->retained_allocator), &error)) {
+          vkr_font_system_bootstrap_path(ui->fonts,
+                                         "editor-light-labels.fontcfg",
+                                         &ui->retained_allocator),
+          &error)) {
     log_error("Failed to load editor light labels (%u)", (uint32_t)error);
     goto cleanup;
   }
@@ -142,7 +153,8 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
   vkr_editor_content_update(editor->ui.content);
   vkr_editor_projects_update(editor->ui.projects, &editor->ui, frame);
   VkrSampleUiFrame editor_frame = *frame;
-  editor_frame.scene_loading |= vkr_editor_projects_loading(editor->ui.projects);
+  editor_frame.scene_loading |=
+      vkr_editor_projects_loading(editor->ui.projects);
   frame = &editor_frame;
   VkrUiDockInputCapture capture = {0};
   if (!vkr_editor_projects_modal(editor->ui.projects)) {
@@ -156,19 +168,23 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
   return capture;
 }
 
-static bool8_t editor_application_save_scene(void *state, VkrSceneEditState *edits,
-                                              const VkrScene *scene,
-                                              String8 runtime_scene_path) {
+static bool8_t editor_application_save_scene(void *state,
+                                             VkrSceneEditState *edits,
+                                             const VkrScene *scene,
+                                             String8 runtime_scene_path) {
   VkrEditorApplication *editor = state;
-  return vkr_editor_projects_save_scene(editor->ui.projects, edits, scene, runtime_scene_path);
+  return vkr_editor_projects_save_scene(editor->ui.projects, edits, scene,
+                                        runtime_scene_path);
 }
 
 static bool8_t editor_application_shutdown(void *state,
                                            const VkrUiDockTree *dock,
                                            VkrUiSystem *ui) {
   VkrEditorApplication *editor = state;
-  const bool8_t projects_saved = vkr_editor_projects_flush(editor->ui.projects, &editor->ui, dock);
-  /* Stop and join every workspace writer before releasing its lifetime lease. */
+  const bool8_t projects_saved =
+      vkr_editor_projects_flush(editor->ui.projects, &editor->ui, dock);
+  /* Stop and join every workspace writer before releasing its lifetime lease.
+   */
   vkr_editor_content_destroy(editor->ui.content);
   editor->ui.content = NULL;
   vkr_editor_bakery_destroy(editor->ui.bakery);
@@ -240,7 +256,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .initialize = editor_application_initialize,
       .handle_input = editor_application_handle_input,
       .build = editor_application_build,
-      .save_scene_edits = editor->project_managed ? editor_application_save_scene : NULL,
+      .save_scene_edits =
+          editor->project_managed ? editor_application_save_scene : NULL,
       .project_scene = editor_application_project_scene,
       .shutdown = editor_application_shutdown,
   };

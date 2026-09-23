@@ -68,14 +68,16 @@ vkr_internal void test_harness_camera_float_range_boundary(void) {
 vkr_internal void test_harness_orthographic_camera(void) {
   const char *modes[] = {"orthographic_top", "orthographic_left",
                          "orthographic_right", "orthographic_bottom"};
-  const Vec3 expected_forward[] = {
-      {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
-      {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+  const Vec3 expected_forward[] = {{0.0f, -1.0f, 0.0f},
+                                   {1.0f, 0.0f, 0.0f},
+                                   {-1.0f, 0.0f, 0.0f},
+                                   {0.0f, 1.0f, 0.0f}};
   for (uint32_t i = 0; i < ArrayCount(modes); ++i) {
     char camera[256];
     snprintf(camera, sizeof(camera),
              "{\"mode\":\"%s\",\"position\":[1,2,3],"
-             "\"orthographic_height\":240}", modes[i]);
+             "\"orthographic_height\":240}",
+             modes[i]);
     VkrHarnessCase parsed = {0};
     assert(harness_parse_case("offscreen", "none", camera, "", &parsed));
     assert(vkr_harness_camera_is_orthographic(parsed.camera.mode));
@@ -98,12 +100,18 @@ vkr_internal void test_harness_orthographic_camera(void) {
   }
   const char *invalid[] = {
       "{\"mode\":\"orthographic_top\",\"position\":[0,1,0]}",
-      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":0}",
-      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":-1}",
-      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":1e100}",
-      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":10,\"pitch\":-90}",
-      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":10,\"vertical_fov_degrees\":70}",
-      "{\"mode\":\"static\",\"position\":[0,1,0],\"yaw\":0,\"pitch\":0,\"orthographic_height\":10}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_"
+      "height\":0}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_"
+      "height\":-1}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_"
+      "height\":1e100}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_"
+      "height\":10,\"pitch\":-90}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_"
+      "height\":10,\"vertical_fov_degrees\":70}",
+      "{\"mode\":\"static\",\"position\":[0,1,0],\"yaw\":0,\"pitch\":0,"
+      "\"orthographic_height\":10}",
   };
   for (uint32_t i = 0; i < ArrayCount(invalid); ++i) {
     VkrHarnessCase parsed = {0};
@@ -697,7 +705,8 @@ vkr_internal void test_harness_fingerprints(void) {
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   char orthographic_workload[VKR_HARNESS_DIGEST_MAX];
-  snprintf(orthographic_workload, sizeof(orthographic_workload), "%s", workload);
+  snprintf(orthographic_workload, sizeof(orthographic_workload), "%s",
+           workload);
   case_manifest.camera.orthographic_height = 80.0f;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
@@ -2212,7 +2221,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
            directory);
   snprintf(legacy_v9_path, sizeof(legacy_v9_path), "%s/legacy-v9.bin",
            directory);
-  snprintf(legacy_v14_path, sizeof(legacy_v14_path), "%s/legacy-v14.bin", directory);
+  snprintf(legacy_v14_path, sizeof(legacy_v14_path), "%s/legacy-v14.bin",
+           directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3Fixture *legacy = calloc(1u, sizeof(*legacy));
   assert(legacy);
@@ -2446,7 +2456,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.motion_blur_entity_velocity_y = -0.5f;
   report.case_manifest.renderer.motion_blur_entity_velocity_z = 0.75f;
   report.case_manifest.renderer.physics_fixture = true_v;
-  VkrHarnessCaptureSummaryHeaderV14Fixture *legacy_v14 = calloc(1u, sizeof(*legacy_v14));
+  VkrHarnessCaptureSummaryHeaderV14Fixture *legacy_v14 =
+      calloc(1u, sizeof(*legacy_v14));
   assert(legacy_v14);
   MemCopy(legacy_v14->magic, magic, sizeof(magic));
   legacy_v14->version = 14u;
@@ -2456,9 +2467,11 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   legacy_v14->case_manifest.renderer.shadow_cascades = 3u;
   legacy_v14->case_manifest.camera.far_plane = 432.0f;
   legacy_v14->case_manifest.content_scale = 1.75f;
-  legacy_v14->case_manifest.asset_context = VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
+  legacy_v14->case_manifest.asset_context =
+      VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
   string_copy(legacy_v14->profile.id, "legacy.v14.profile");
-  assert(vkr_harness_atomic_write(legacy_v14_path, legacy_v14, sizeof(*legacy_v14), &error));
+  assert(vkr_harness_atomic_write(legacy_v14_path, legacy_v14,
+                                  sizeof(*legacy_v14), &error));
   free(legacy_v14);
   assert(vkr_harness_capture_summary_read(legacy_v14_path, arena, &summary));
   assert(!summary.case_manifest.renderer.physics_fixture);
@@ -2466,7 +2479,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.shadow_cascades == 3u);
   assert(summary.case_manifest.camera.far_plane == 432.0f);
   assert(summary.case_manifest.content_scale == 1.75f);
-  assert(summary.case_manifest.asset_context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
+  assert(summary.case_manifest.asset_context ==
+         VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
   assert(strcmp(summary.profile.id, "legacy.v14.profile") == 0);
 
   assert(

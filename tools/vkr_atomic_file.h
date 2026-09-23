@@ -51,7 +51,8 @@ inline bool write_file_atomic(const char *path, const std::string &contents) {
     std::cerr << "write_file_atomic: empty destination path\n";
     return false;
   }
-  const std::filesystem::path destination = vkr_filesystem_native_utf8_path(path);
+  const std::filesystem::path destination =
+      vkr_filesystem_native_utf8_path(path);
   const std::filesystem::path temporary = atomic_temporary_path(destination);
   std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
   if (!file) {

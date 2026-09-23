@@ -10,7 +10,6 @@
 
 /** Y-down backing-pixel rectangle: x, y, width, height. */
 
-
 /** Logical-point or resolved-pixel edge values in top/right/bottom/left order.
  */
 typedef struct VkrUiEdges {
@@ -21,9 +20,6 @@ typedef struct VkrUiEdges {
 } VkrUiEdges;
 
 /** Renderer-independent mirror of a generation-safe texture handle. */
-
-
-
 
 bool8_t vkr_ui_rect_is_finite(VkrUiRect rect);
 bool8_t vkr_ui_rect_has_area(VkrUiRect rect);

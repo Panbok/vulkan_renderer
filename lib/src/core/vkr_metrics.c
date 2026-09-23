@@ -273,10 +273,9 @@ bool8_t vkr_metrics_snapshot_acquire(VkrMetrics *metrics,
         owners == VKR_METRICS_SNAPSHOT_WRITER_OWNED - 1u) {
       continue;
     }
-    if (!vkr_atomic_uint32_compare_exchange(&metrics->snapshot_owners[index],
-                                            &owners, owners + 1u,
-                                            VKR_MEMORY_ORDER_ACQ_REL,
-                                            VKR_MEMORY_ORDER_ACQUIRE)) {
+    if (!vkr_atomic_uint32_compare_exchange(
+            &metrics->snapshot_owners[index], &owners, owners + 1u,
+            VKR_MEMORY_ORDER_ACQ_REL, VKR_MEMORY_ORDER_ACQUIRE)) {
       continue;
     }
     if (index != vkr_atomic_uint32_load(&metrics->published_index,
@@ -299,9 +298,9 @@ void vkr_metrics_snapshot_release(VkrMetrics *metrics,
       view->buffer_index >= VKR_METRICS_SNAPSHOT_BUFFER_COUNT) {
     return;
   }
-  const uint32_t previous = vkr_atomic_uint32_fetch_sub(
-      &metrics->snapshot_owners[view->buffer_index], 1u,
-      VKR_MEMORY_ORDER_RELEASE);
+  const uint32_t previous =
+      vkr_atomic_uint32_fetch_sub(&metrics->snapshot_owners[view->buffer_index],
+                                  1u, VKR_MEMORY_ORDER_RELEASE);
   assert(previous > 0 && previous != VKR_METRICS_SNAPSHOT_WRITER_OWNED);
   (void)previous;
   *view = (VkrMetricsSnapshotView){0};
@@ -547,8 +546,7 @@ uint32_t vkr_metrics_frame_missing_required(const VkrMetrics *metrics,
   uint32_t missing = 0;
   for (uint32_t i = 0; i < count; ++i) {
     if (metrics->catalog[i].required_when_enabled &&
-        frame->samples[i].availability ==
-            VKR_METRIC_AVAILABILITY_UNAVAILABLE) {
+        frame->samples[i].availability == VKR_METRIC_AVAILABILITY_UNAVAILABLE) {
       missing++;
     }
   }

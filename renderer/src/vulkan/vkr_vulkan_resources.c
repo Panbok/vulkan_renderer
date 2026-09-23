@@ -1065,8 +1065,8 @@ void vkr_vk_retire_ltc_descriptor_slots(VkrVulkanRenderer *renderer) {
                                      NULL);
 }
 
-vkr_internal bool8_t vkr_vk_create_sheen_resources(
-    VkrVulkanRenderer *renderer) {
+vkr_internal bool8_t
+vkr_vk_create_sheen_resources(VkrVulkanRenderer *renderer) {
   _Static_assert(sizeof(vkr_sheen_energy_lut_pixels) == 128u * 1024u,
                  "Sheen energy LUT must remain R16F 256x256");
   _Static_assert(sizeof(vkr_sheen_ltc_lut_pixels) == 128u * 1024u,
@@ -1076,9 +1076,9 @@ vkr_internal bool8_t vkr_vk_create_sheen_resources(
       energy_bytes + sizeof(vkr_sheen_ltc_lut_pixels);
   VkFormatProperties energy_properties = {0};
   VkFormatProperties ltc_properties = {0};
-  vkGetPhysicalDeviceFormatProperties(vkr_vulkan_device_physical(renderer->device),
-                                      VK_FORMAT_R16_SFLOAT,
-                                      &energy_properties);
+  vkGetPhysicalDeviceFormatProperties(
+      vkr_vulkan_device_physical(renderer->device), VK_FORMAT_R16_SFLOAT,
+      &energy_properties);
   vkGetPhysicalDeviceFormatProperties(
       vkr_vulkan_device_physical(renderer->device),
       VK_FORMAT_R16G16B16A16_SFLOAT, &ltc_properties);
@@ -1088,8 +1088,9 @@ vkr_internal bool8_t vkr_vk_create_sheen_resources(
       VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
   if ((energy_properties.optimalTilingFeatures & required) != required ||
       (ltc_properties.optimalTilingFeatures & required) != required) {
-    log_error("Vulkan sheen LUT formats lack linear sampled/transfer-destination "
-              "support");
+    log_error(
+        "Vulkan sheen LUT formats lack linear sampled/transfer-destination "
+        "support");
     return false_v;
   }
   if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
@@ -1097,19 +1098,18 @@ vkr_internal bool8_t vkr_vk_create_sheen_resources(
                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                             &renderer->sheen_upload) ||
       !renderer->sheen_upload.allocation.mapped ||
-      !vkr_vk_create_image_ex(renderer, VKR_SHEEN_ENERGY_LUT_SIZE,
-                              VKR_SHEEN_ENERGY_LUT_SIZE, 1u, 1u, 1u,
-                              VK_FORMAT_R16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
-                              VK_IMAGE_VIEW_TYPE_2D,
-                              VK_IMAGE_USAGE_SAMPLED_BIT |
-                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                              VKR_GPU_ALLOCATION_OWNER_SHADER,
-                              &renderer->sheen_directional_albedo_image, NULL))
+      !vkr_vk_create_image_ex(
+          renderer, VKR_SHEEN_ENERGY_LUT_SIZE, VKR_SHEEN_ENERGY_LUT_SIZE, 1u,
+          1u, 1u, VK_FORMAT_R16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
+          VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+          VKR_GPU_ALLOCATION_OWNER_SHADER,
+          &renderer->sheen_directional_albedo_image, NULL))
     goto cleanup;
   for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
     if (!vkr_vk_create_image_ex(
-            renderer, VKR_SHEEN_LTC_LUT_SIZE, VKR_SHEEN_LTC_LUT_SIZE, 1u,
-            1u, 1u, VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
+            renderer, VKR_SHEEN_LTC_LUT_SIZE, VKR_SHEEN_LTC_LUT_SIZE, 1u, 1u,
+            1u, VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
             VK_IMAGE_VIEW_TYPE_2D,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->sheen_ltc_images[table],
@@ -1156,11 +1156,10 @@ void vkr_vk_record_sheen_upload(VkrVulkanRenderer *renderer,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const VkBufferImageCopy2 copy_region = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-        .bufferOffset = energy
-                            ? 0u
-                            : energy_bytes +
-                                  (VkDeviceSize)(image_index - 1u) *
-                                      VKR_SHEEN_LTC_LUT_TABLE_BYTE_SIZE,
+        .bufferOffset =
+            energy ? 0u
+                   : energy_bytes + (VkDeviceSize)(image_index - 1u) *
+                                        VKR_SHEEN_LTC_LUT_TABLE_BYTE_SIZE,
         .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                              .layerCount = 1u},
         .imageExtent = {.width = energy ? VKR_SHEEN_ENERGY_LUT_SIZE
@@ -1235,16 +1234,16 @@ void vkr_vk_retire_sheen_descriptor_slots(VkrVulkanRenderer *renderer) {
                                      NULL);
 }
 
-vkr_internal bool8_t vkr_vk_create_anisotropy_resources(
-    VkrVulkanRenderer *renderer) {
+vkr_internal bool8_t
+vkr_vk_create_anisotropy_resources(VkrVulkanRenderer *renderer) {
   _Static_assert(sizeof(vkr_anisotropy_lut_pixels) ==
                      VKR_ANISOTROPY_LUT_TABLE_COUNT *
                          VKR_ANISOTROPY_LUT_TABLE_BYTE_SIZE,
                  "Anisotropy LUT storage must remain three RGBA16F arrays");
   VkFormatProperties properties = {0};
-  vkGetPhysicalDeviceFormatProperties(vkr_vulkan_device_physical(renderer->device),
-                                      VK_FORMAT_R16G16B16A16_SFLOAT,
-                                      &properties);
+  vkGetPhysicalDeviceFormatProperties(
+      vkr_vulkan_device_physical(renderer->device),
+      VK_FORMAT_R16G16B16A16_SFLOAT, &properties);
   const VkFormatFeatureFlags required =
       VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
       VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
@@ -1256,17 +1255,15 @@ vkr_internal bool8_t vkr_vk_create_anisotropy_resources(
   }
   if (!vkr_vk_create_buffer(
           renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
-          VKR_GPU_ALLOCATION_OWNER_STAGING,
-          sizeof(vkr_anisotropy_lut_pixels), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          &renderer->anisotropy_upload) ||
+          VKR_GPU_ALLOCATION_OWNER_STAGING, sizeof(vkr_anisotropy_lut_pixels),
+          VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &renderer->anisotropy_upload) ||
       !renderer->anisotropy_upload.allocation.mapped)
     goto cleanup;
   for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
     if (!vkr_vk_create_image_ex(
-            renderer, VKR_ANISOTROPY_LUT_SIZE, VKR_ANISOTROPY_LUT_SIZE, 1u,
-            1u, VKR_ANISOTROPY_LUT_LAYER_COUNT,
-            VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
-            VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+            renderer, VKR_ANISOTROPY_LUT_SIZE, VKR_ANISOTROPY_LUT_SIZE, 1u, 1u,
+            VKR_ANISOTROPY_LUT_LAYER_COUNT, VK_FORMAT_R16G16B16A16_SFLOAT, 0u,
+            VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VKR_GPU_ALLOCATION_OWNER_SHADER,
             &renderer->anisotropy_images[table], NULL))
@@ -1302,8 +1299,8 @@ void vkr_vk_record_anisotropy_upload(VkrVulkanRenderer *renderer,
         VKR_ANISOTROPY_LUT_LAYER_COUNT);
     const VkBufferImageCopy2 region = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-        .bufferOffset = (VkDeviceSize)table *
-                        VKR_ANISOTROPY_LUT_TABLE_BYTE_SIZE,
+        .bufferOffset =
+            (VkDeviceSize)table * VKR_ANISOTROPY_LUT_TABLE_BYTE_SIZE,
         .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                              .layerCount = VKR_ANISOTROPY_LUT_LAYER_COUNT},
         .imageExtent = {.width = VKR_ANISOTROPY_LUT_SIZE,
@@ -1319,15 +1316,15 @@ void vkr_vk_record_anisotropy_upload(VkrVulkanRenderer *renderer,
         .pRegions = &region,
     };
     vkCmdCopyBufferToImage2(command, &copy);
-    vkr_vk_cmd_image_barrier_range(
-        command, image->handle, VK_PIPELINE_STAGE_2_COPY_BIT,
-        VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1u,
-        VKR_ANISOTROPY_LUT_LAYER_COUNT);
+    vkr_vk_cmd_image_barrier_range(command, image->handle,
+                                   VK_PIPELINE_STAGE_2_COPY_BIT,
+                                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1u,
+                                   VKR_ANISOTROPY_LUT_LAYER_COUNT);
   }
   slot->anisotropy_upload_recorded = true_v;
 }
@@ -1337,8 +1334,10 @@ bool8_t vkr_vk_commit_anisotropy_upload(VkrVulkanRenderer *renderer,
                                         uint64_t retire_value) {
   if (!slot->anisotropy_upload_recorded)
     return true_v;
-  if (!renderer->anisotropy_upload_pending || !renderer->anisotropy_upload.handle ||
-      !vkr_vk_retire_buffer(renderer, &renderer->anisotropy_upload, retire_value))
+  if (!renderer->anisotropy_upload_pending ||
+      !renderer->anisotropy_upload.handle ||
+      !vkr_vk_retire_buffer(renderer, &renderer->anisotropy_upload,
+                            retire_value))
     return false_v;
   renderer->anisotropy_upload_pending = false_v;
   renderer->anisotropy_upload_retire_value = retire_value;
@@ -1366,7 +1365,8 @@ void vkr_vk_retire_anisotropy_descriptor_slots(VkrVulkanRenderer *renderer) {
       continue;
     if (vkr_gpu_slot_table_retire(renderer->sampled_image_slots, *slot,
                                   completed) != VKR_GPU_SLOT_STATUS_OK)
-      log_error("Vulkan failed to retire an anisotropy sampled-image descriptor");
+      log_error(
+          "Vulkan failed to retire an anisotropy sampled-image descriptor");
     *slot = (VkrGpuSlotHandle){0};
   }
   if (renderer->sampled_image_slots)
@@ -2021,10 +2021,9 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
     get_descriptor(vkr_vk_renderer_device(renderer), &sheen_image_get,
                    properties->sampledImageDescriptorSize,
                    renderer->descriptor_scratch);
-    if (vkr_gpu_slot_table_publish(renderer->sampled_image_slots,
-                                  renderer->descriptor_scratch,
-                                  &sheen_texture_handle) !=
-            VKR_GPU_SLOT_STATUS_OK ||
+    if (vkr_gpu_slot_table_publish(
+            renderer->sampled_image_slots, renderer->descriptor_scratch,
+            &sheen_texture_handle) != VKR_GPU_SLOT_STATUS_OK ||
         sheen_texture_handle.index != 6u + image_index)
       return false_v;
     renderer->sheen_texture_slots[image_index] = sheen_texture_handle;
@@ -2043,10 +2042,9 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
     get_descriptor(vkr_vk_renderer_device(renderer), &anisotropy_image_get,
                    properties->sampledImageDescriptorSize,
                    renderer->descriptor_scratch);
-    if (vkr_gpu_slot_table_publish(renderer->sampled_image_slots,
-                                  renderer->descriptor_scratch,
-                                  &anisotropy_texture_handle) !=
-            VKR_GPU_SLOT_STATUS_OK ||
+    if (vkr_gpu_slot_table_publish(
+            renderer->sampled_image_slots, renderer->descriptor_scratch,
+            &anisotropy_texture_handle) != VKR_GPU_SLOT_STATUS_OK ||
         anisotropy_texture_handle.index != 11u + table)
       return false_v;
     renderer->anisotropy_texture_slots[table] = anisotropy_texture_handle;

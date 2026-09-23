@@ -1,15 +1,14 @@
 #include "vkr_sheen_lut.h"
 
-const uint16_t
-    vkr_sheen_energy_lut_pixels[VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT] = {
+const uint16_t vkr_sheen_energy_lut_pixels[VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT] = {
 #define VKR_SHEEN_LUT_EMIT_ENERGY 1
 #include "vkr_sheen_lut_data.inc"
 #undef VKR_SHEEN_LUT_EMIT_ENERGY
 };
 
 const uint16_t vkr_sheen_ltc_lut_pixels[VKR_SHEEN_LTC_LUT_TABLE_COUNT]
-                                        [VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT *
-                                         VKR_SHEEN_LTC_LUT_CHANNEL_COUNT] = {
+                                       [VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT *
+                                        VKR_SHEEN_LTC_LUT_CHANNEL_COUNT] = {
 #define VKR_SHEEN_LUT_EMIT_LTC 1
 #include "vkr_sheen_lut_data.inc"
 #undef VKR_SHEEN_LUT_EMIT_LTC

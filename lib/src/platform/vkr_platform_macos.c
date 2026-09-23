@@ -4,9 +4,9 @@
 
 #include "containers/str.h"
 
-#include <mach/mach.h>
-#include <mach-o/dyld.h>
 #include <limits.h>
+#include <mach-o/dyld.h>
+#include <mach/mach.h>
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/resource.h>

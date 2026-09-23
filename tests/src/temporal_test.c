@@ -243,23 +243,23 @@ vkr_internal void test_temporal_ssr_settling(void) {
   // The approved window is 128 matching rendered frames, followed by the
   // existing static integral. A changed scene restarts the entire window.
   for (uint32_t cycle = 0u; cycle < 2u; ++cycle) {
-    assert(!vkr_temporal_prepare_static_accumulation(
-        false_v, true_v, unchanged, &unchanged));
+    assert(!vkr_temporal_prepare_static_accumulation(false_v, true_v, unchanged,
+                                                     &unchanged));
     assert(unchanged == 0u);
     for (uint32_t frame = 0u; frame < 128u; ++frame)
-      assert(!vkr_temporal_prepare_static_accumulation(
-          true_v, true_v, unchanged, &unchanged));
-    assert(vkr_temporal_prepare_static_accumulation(
-        true_v, true_v, unchanged, &unchanged));
+      assert(!vkr_temporal_prepare_static_accumulation(true_v, true_v,
+                                                       unchanged, &unchanged));
+    assert(vkr_temporal_prepare_static_accumulation(true_v, true_v, unchanged,
+                                                    &unchanged));
     for (uint32_t frame = 0u; frame < 512u; ++frame)
-      assert(vkr_temporal_prepare_static_accumulation(
-          true_v, true_v, unchanged, &unchanged));
+      assert(vkr_temporal_prepare_static_accumulation(true_v, true_v, unchanged,
+                                                      &unchanged));
     assert(unchanged == 128u);
   }
-  assert(!vkr_temporal_prepare_static_accumulation(
-      false_v, false_v, unchanged, &unchanged));
-  assert(vkr_temporal_prepare_static_accumulation(
-      true_v, false_v, unchanged, &unchanged));
+  assert(!vkr_temporal_prepare_static_accumulation(false_v, false_v, unchanged,
+                                                   &unchanged));
+  assert(vkr_temporal_prepare_static_accumulation(true_v, false_v, unchanged,
+                                                  &unchanged));
   printf("  test_temporal_ssr_settling PASSED\n");
 }
 
@@ -619,11 +619,10 @@ vkr_internal void test_dynamic_resolution_failed_upshift_headroom(void) {
 
   // A one-third cheaper lower tier predicts 10 ms upstairs, below headroom.
   for (uint32_t i = 0u; i < 100u; ++i) {
-    const uint64_t cost = temporal_near(state.current_scale, 0.85f)
-                              ? 6000000u
-                              : 10000000u;
-    vkr_dynamic_resolution_update(&state, ++submit, cost,
-                                  state.current_scale, &next_scale);
+    const uint64_t cost =
+        temporal_near(state.current_scale, 0.85f) ? 6000000u : 10000000u;
+    vkr_dynamic_resolution_update(&state, ++submit, cost, state.current_scale,
+                                  &next_scale);
   }
   assert(temporal_near(state.current_scale, 0.9f));
   assert(state.transition_count == 3u);

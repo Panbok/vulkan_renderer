@@ -159,10 +159,10 @@ typedef enum VkrRgJsonExtentMode {
   VKR_RG_JSON_EXTENT_WINDOW,       // The extent is the window size.
   VKR_RG_JSON_EXTENT_SCENE_OUTPUT, // Reconstructed Scene presentation size.
   VKR_RG_JSON_EXTENT_MOTION_BLUR_TILES, // Ceil(Scene output / 16).
-  VKR_RG_JSON_EXTENT_EDITOR_IMAGE, // Retained editor presentation size.
-  VKR_RG_JSON_EXTENT_VIEWPORT,     // Internal Scene render size.
-  VKR_RG_JSON_EXTENT_FIXED,        // The extent is a fixed size.
-  VKR_RG_JSON_EXTENT_SQUARE,       // The extent is a square size.
+  VKR_RG_JSON_EXTENT_EDITOR_IMAGE,      // Retained editor presentation size.
+  VKR_RG_JSON_EXTENT_VIEWPORT,          // Internal Scene render size.
+  VKR_RG_JSON_EXTENT_FIXED,             // The extent is a fixed size.
+  VKR_RG_JSON_EXTENT_SQUARE,            // The extent is a square size.
 } VkrRgJsonExtentMode;
 
 /**

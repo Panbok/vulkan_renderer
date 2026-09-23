@@ -51,7 +51,7 @@ typedef struct VkrRectangleLight {
 
 bool8_t vkr_rectangle_light_valid(const VkrRectangleLight *light);
 void vkr_rectangle_light_pack(const VkrRectangleLight *light,
-                             VkrGpuRectangleLightRow *row);
+                              VkrGpuRectangleLightRow *row);
 
 /** Packs one canonical point light into the shared four-Vec4 GPU row. */
 void vkr_point_light_pack(const VkrPointLight *light, VkrGpuPointLightRow *row);

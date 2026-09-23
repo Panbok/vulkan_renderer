@@ -1,7 +1,7 @@
 #pragma once
 
-#include "vkr_render_resources.h"
 #include "vkr_atmosphere.h"
+#include "vkr_render_resources.h"
 
 struct VkrMaterial;
 struct VkrGeometryConfig;
@@ -49,11 +49,14 @@ typedef struct VkrAssetPublisher {
                                   float32_t sh_deringing);
   /** Queues a candidate generation; copies params before returning. */
   bool8_t (*bake_atmosphere)(void *state, const VkrAtmosphereGpuParams *params,
-                            VkrTextureHandle source, VkrTextureHandle prefilter,
-                            float32_t sh_deringing);
-  /** Nonblocking completion query. READY includes source, prefilter, SH and sun. */
+                             VkrTextureHandle source,
+                             VkrTextureHandle prefilter,
+                             float32_t sh_deringing);
+  /** Nonblocking completion query. READY includes source, prefilter, SH and
+   * sun. */
   VkrAtmosphereBakeStatus (*atmosphere_bake_status)(
-      void *state, VkrTextureHandle source, VkrAtmosphereBakeResult *out_result);
+      void *state, VkrTextureHandle source,
+      VkrAtmosphereBakeResult *out_result);
   /* Published L2 coefficient slot for a source cubemap, or VKR_SH_SLOT_BLACK
      when it has none yet. Cold: the scene resolves it once per frame while
      packing probes (ADR-038). */

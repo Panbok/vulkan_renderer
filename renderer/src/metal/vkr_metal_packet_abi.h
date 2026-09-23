@@ -5,21 +5,21 @@
 #include "math/mat.h"
 #include "math/vec.h"
 #include "metal/vkr_metal_material_table.h"
-#include "vkr_bloom.h"
-#include "vkr_dof.h"
-#include "vkr_subsurface.h"
-#include "vkr_motion_blur.h"
 #include "vkr_atmosphere.h"
+#include "vkr_bloom.h"
 #include "vkr_buffer.h"
 #include "vkr_display_output.h"
+#include "vkr_dof.h"
 #include "vkr_exposure.h"
+#include "vkr_fog.h"
+#include "vkr_froxel_fog.h"
 #include "vkr_gpu_abi.h"
 #include "vkr_gtao.h"
 #include "vkr_lighting.h"
-#include "vkr_ssr.h"
+#include "vkr_motion_blur.h"
 #include "vkr_ssgi.h"
-#include "vkr_fog.h"
-#include "vkr_froxel_fog.h"
+#include "vkr_ssr.h"
+#include "vkr_subsurface.h"
 
 enum {
   VKR_METAL_PACKET_ROOT_ALIGNMENT = 256,
@@ -49,7 +49,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolume {
   Vec4 inverse_spacing;
   uint32_t dimensions[4];
 } VkrMetalPacketDiffuseVolume;
-_Static_assert(sizeof(VkrMetalPacketDiffuseVolume) == 48u, "Metal diffuse volume parameters ABI drift");
+_Static_assert(sizeof(VkrMetalPacketDiffuseVolume) == 48u,
+               "Metal diffuse volume parameters ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketLtc {
   uint64_t lights;
@@ -71,8 +72,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSheen {
   uint64_t ltc_amplitude_texture_b;
   uint32_t reserved[2];
 } VkrMetalPacketSheen;
-_Static_assert(sizeof(VkrMetalPacketSheen) == 48u,
-               "Metal sheen ABI drift");
+_Static_assert(sizeof(VkrMetalPacketSheen) == 48u, "Metal sheen ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketAnisotropy {
   uint64_t table0;
@@ -181,8 +181,8 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot, anisotropy) == 520u,
                "Metal anisotropy ABI offset drift");
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, froxel_fog) == 136u,
                "Metal froxel parameters ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketFrameRoot, froxel_integrated_texture_id) ==
-                   216u,
+_Static_assert(offsetof(VkrMetalPacketFrameRoot,
+                        froxel_integrated_texture_id) == 216u,
                "Metal froxel integrated texture ABI offset drift");
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, local_shadow_transmission) ==
                    528u,
@@ -216,7 +216,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketEditorOverlayRoot {
   uint64_t display_output;
 } VkrMetalPacketEditorOverlayRoot;
 
-_Static_assert(offsetof(VkrMetalPacketEditorOverlayRoot, display_output) == 104u,
+_Static_assert(offsetof(VkrMetalPacketEditorOverlayRoot, display_output) ==
+                   104u,
                "Metal editor overlay display-output ABI offset drift");
 _Static_assert(sizeof(VkrMetalPacketEditorOverlayRoot) == 112,
                "Metal editor overlay root ABI size drift");
@@ -354,7 +355,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFogRoot {
   uint32_t reserved[2];
 } VkrMetalPacketFogRoot;
 
-_Static_assert(sizeof(VkrMetalPacketFogRoot) == 144u, "Metal fog root ABI drift");
+_Static_assert(sizeof(VkrMetalPacketFogRoot) == 144u,
+               "Metal fog root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelInjectRoot {
   uint64_t frame;
@@ -474,8 +476,10 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiCompositeRoot {
   uint64_t subsurface_source_texture_id;
   uint64_t receiver_texture_id;
 } VkrMetalPacketSsgiCompositeRoot;
-_Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot, subsurface_source_texture_id) == 488u &&
-                   offsetof(VkrMetalPacketSsgiCompositeRoot, subsurface_profile_count) == 440u,
+_Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot,
+                        subsurface_source_texture_id) == 488u &&
+                   offsetof(VkrMetalPacketSsgiCompositeRoot,
+                            subsurface_profile_count) == 440u,
                "Subsurface source producer ABI drift");
 
 _Static_assert(sizeof(VkrMetalPacketSsgiCompositeRoot) == 512u,
@@ -591,8 +595,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrCompositeRoot {
 
 _Static_assert(sizeof(VkrMetalPacketSsrCompositeRoot) == 480,
                "Metal SSR composite root ABI must remain 480 bytes");
-_Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot,
-                        clearcoat_texture_id) == 448u,
+_Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot, clearcoat_texture_id) ==
+                   448u,
                "Metal SSR composite clearcoat ABI offset drift");
 _Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot, sheen_texture_id) ==
                    456u,
@@ -839,8 +843,8 @@ _Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot,
                    offsetof(VkrMetalPacketTemporalResolveRoot,
                             previous_jitter_pixels) == 208u,
                "Metal temporal-resolve jitter ABI drift");
-_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, scene_history_mode) ==
-                   216u,
+_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot,
+                        scene_history_mode) == 216u,
                "Metal temporal static-scene ABI drift");
 
 /** Post-MetalFX stationary mean. Output alpha stores private sample age. */
@@ -862,8 +866,10 @@ _Static_assert(sizeof(VkrMetalPacketMetalfxStabilizeRoot) == 64u &&
                "MetalFX stabilize root size/alignment ABI drift");
 _Static_assert(
     offsetof(VkrMetalPacketMetalfxStabilizeRoot, output_texture_id) == 0u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, history_texture_id) == 8u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, validity_texture_id) == 16u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, history_texture_id) ==
+            8u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, validity_texture_id) ==
+            16u &&
         offsetof(VkrMetalPacketMetalfxStabilizeRoot, output_extent) == 24u &&
         offsetof(VkrMetalPacketMetalfxStabilizeRoot, source_extent) == 32u &&
         offsetof(VkrMetalPacketMetalfxStabilizeRoot, jitter_pixels) == 40u &&
@@ -898,8 +904,10 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   uint64_t visible_rows;
   uint64_t subsurface_source_texture_id;
 } VkrMetalPacketDeferredLightingRoot;
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot, subsurface_source_texture_id) == 232u &&
-                   offsetof(VkrMetalPacketDeferredLightingRoot, subsurface_profile_count) == 156u,
+_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
+                        subsurface_source_texture_id) == 232u &&
+                   offsetof(VkrMetalPacketDeferredLightingRoot,
+                            subsurface_profile_count) == 156u,
                "Subsurface source producer ABI drift");
 
 _Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
@@ -1109,8 +1117,8 @@ _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
 _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
                         multiple_scattering_sample_texture_id) == 144u,
                "Metal atmosphere multiple-scattering sample offset drift");
-_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, source_storage_texture_id) ==
-                   160u,
+_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
+                        source_storage_texture_id) == 160u,
                "Metal atmosphere source offset drift");
 _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, sun_output) == 168u,
                "Metal atmosphere sun output offset drift");

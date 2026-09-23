@@ -498,8 +498,9 @@ bool8_t vkr_harness_report_write(const char *path,
           report->case_manifest.renderer.editor_resume_frame) &&
       vkr_harness_json_emit_bool(writer, "text_fixture",
                                  report->case_manifest.renderer.text_fixture) &&
-      vkr_harness_json_emit_bool(writer, "physics_fixture",
-                                 report->case_manifest.renderer.physics_fixture) &&
+      vkr_harness_json_emit_bool(
+          writer, "physics_fixture",
+          report->case_manifest.renderer.physics_fixture) &&
       vkr_harness_json_emit_bool(writer, "taa_enabled",
                                  report->case_manifest.renderer.taa_enabled) &&
       vkr_harness_json_emit_bool(

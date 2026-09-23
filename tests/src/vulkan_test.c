@@ -3,9 +3,9 @@
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "vkr_geometry_ranges.h"
 #include "vkr_gpu_abi.h"
 #include "vkr_gpu_memory.h"
-#include "vkr_geometry_ranges.h"
 #include "vkr_gpu_slot_table.h"
 #include "vkr_gpu_submit_ring.h"
 #include "vulkan/vkr_vulkan_device.h"
@@ -120,8 +120,8 @@ static void test_srgb_surface_format_selection(void) {
   assert(selected.format == VK_FORMAT_B8G8R8A8_SRGB &&
          selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
-  selected = vkr_vulkan_device_choose_surface_format(formats, all_usable, 1u,
-                                                     false_v);
+  selected =
+      vkr_vulkan_device_choose_surface_format(formats, all_usable, 1u, false_v);
   assert(selected.format == VK_FORMAT_R8G8B8A8_SRGB &&
          selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
@@ -131,8 +131,8 @@ static void test_srgb_surface_format_selection(void) {
   assert(selected.format == VK_FORMAT_R8G8B8A8_SRGB &&
          selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
-  selected = vkr_vulkan_device_choose_surface_format(
-      formats + 2u, all_usable, 2u, false_v);
+  selected = vkr_vulkan_device_choose_surface_format(formats + 2u, all_usable,
+                                                     2u, false_v);
   assert(selected.format == VK_FORMAT_UNDEFINED);
 
   const VkSurfaceFormatKHR unrestricted = {VK_FORMAT_UNDEFINED,
@@ -386,29 +386,29 @@ static void test_shared_gpu_memory_bounded_placement(void) {
   VkrGpuAllocationHandle middle = {0}, prefix = {0}, suffix = {0}, tail = {0};
   VkrGpuPlacement placement = {0};
   assert(vkr_gpu_memory_allocate_in_range(
-             memory, 60u, 64u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
-             &middle, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+             memory, 60u, 64u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u, &middle,
+             &placement) == VKR_GPU_MEMORY_STATUS_OK);
   assert(placement.reserved_offset == 100u && placement.reserved_size == 88u);
   assert(placement.resource_offset == 128u && placement.resource_size == 60u);
 
   /* The span has 40 bytes left, despite 168 free bytes in the full core. */
   assert(vkr_gpu_memory_allocate_in_range(
-             memory, 41u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
-             &tail, &placement) == VKR_GPU_MEMORY_STATUS_OUT_OF_BYTES);
+             memory, 41u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u, &tail,
+             &placement) == VKR_GPU_MEMORY_STATUS_OUT_OF_BYTES);
   assert(vkr_gpu_memory_allocate_in_range(
-             memory, 40u, 64u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
-             &tail, &placement) == VKR_GPU_MEMORY_STATUS_FRAGMENTED);
+             memory, 40u, 64u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u, &tail,
+             &placement) == VKR_GPU_MEMORY_STATUS_FRAGMENTED);
   assert(vkr_gpu_memory_allocate(memory, 100u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER,
-                                 &prefix, &placement) ==
-         VKR_GPU_MEMORY_STATUS_OK);
+                                 &prefix,
+                                 &placement) == VKR_GPU_MEMORY_STATUS_OK);
   assert(placement.reserved_offset == 0u && placement.reserved_size == 100u);
   assert(vkr_gpu_memory_allocate_in_range(
-             memory, 28u, 1u, VKR_GPU_MEMORY_CLASS_TEXTURE, 228u, 28u,
-             &suffix, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+             memory, 28u, 1u, VKR_GPU_MEMORY_CLASS_TEXTURE, 228u, 28u, &suffix,
+             &placement) == VKR_GPU_MEMORY_STATUS_OK);
   assert(placement.reserved_offset == 228u && placement.reserved_size == 28u);
   assert(vkr_gpu_memory_allocate_in_range(
-             memory, 40u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
-             &tail, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+             memory, 40u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u, &tail,
+             &placement) == VKR_GPU_MEMORY_STATUS_OK);
   assert(placement.reserved_offset == 188u && placement.reserved_size == 40u);
 
   assert(vkr_gpu_memory_retire(memory, middle, 7u) == VKR_GPU_MEMORY_STATUS_OK);
@@ -442,14 +442,15 @@ static void test_shared_gpu_memory_bounded_placement(void) {
   assert(metrics.free_bytes == 256u && metrics.largest_free_range == 256u);
   assert(metrics.live_allocations == 0u && metrics.retired_allocations == 0u);
   assert(vkr_gpu_memory_allocate(memory, 256u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER,
-                                 &replacement, &placement) ==
-         VKR_GPU_MEMORY_STATUS_OK);
+                                 &replacement,
+                                 &placement) == VKR_GPU_MEMORY_STATUS_OK);
   assert(placement.reserved_offset == 0u && placement.reserved_size == 256u);
   printf("  test_shared_gpu_memory_bounded_placement PASSED\n");
 }
 
 static void test_shared_gpu_memory_range_failure_is_transactional(void) {
-  printf("  Running test_shared_gpu_memory_range_failure_is_transactional...\n");
+  printf(
+      "  Running test_shared_gpu_memory_range_failure_is_transactional...\n");
   const VkrGpuMemoryConfig config = {256u, 1u, 1u, 1u};
   uint8_t storage[2048] = {0};
   VkrGpuMemoryCore *memory = NULL;
@@ -459,8 +460,8 @@ static void test_shared_gpu_memory_range_failure_is_transactional(void) {
   VkrGpuAllocationHandle handle = {19u, 23u};
   VkrGpuPlacement placement = {.resource_offset = 17u, .reserved_size = 29u};
   assert(vkr_gpu_memory_allocate_in_range(
-             memory, 64u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 64u, 64u,
-             &handle, &placement) == VKR_GPU_MEMORY_STATUS_OUT_OF_RANGE_METADATA);
+             memory, 64u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 64u, 64u, &handle,
+             &placement) == VKR_GPU_MEMORY_STATUS_OUT_OF_RANGE_METADATA);
   assert(handle.index == 19u && handle.generation == 23u);
   assert(placement.resource_offset == 17u && placement.reserved_size == 29u);
   VkrGpuMemoryMetrics metrics = {0};
@@ -475,10 +476,11 @@ static void test_shared_gpu_memory_range_failure_is_transactional(void) {
              memory, 1u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 128u, UINT64_MAX,
              &handle, &placement) == VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT);
   assert(vkr_gpu_memory_allocate_in_range(
-             memory, 1u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 0u, 0u,
-             &handle, &placement) == VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT);
+             memory, 1u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 0u, 0u, &handle,
+             &placement) == VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT);
   assert(vkr_gpu_memory_allocate(memory, 256u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER,
-                                 &handle, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+                                 &handle,
+                                 &placement) == VKR_GPU_MEMORY_STATUS_OK);
   assert(handle.index == 0u && handle.generation == 1u);
   assert(placement.resource_offset == 0u && placement.reserved_size == 256u);
   printf("  test_shared_gpu_memory_range_failure_is_transactional PASSED\n");

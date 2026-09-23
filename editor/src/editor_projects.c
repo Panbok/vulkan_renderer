@@ -4,9 +4,9 @@
 #include "editor_project_store.h"
 #include <math.h>
 
+#include "core/vkr_atomic.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
-#include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
@@ -760,8 +760,8 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
   *frame->scene_request = (VkrSampleSceneRequest){
       .unload = true_v, .discard_edits = projects->discard_edits};
   projects->discard_edits = false_v;
-  projects->view = candidate->scene_count ? PROJECT_VIEW_SCENES
-                                        : PROJECT_VIEW_EDITOR;
+  projects->view =
+      candidate->scene_count ? PROJECT_VIEW_SCENES : PROJECT_VIEW_EDITOR;
   projects->content_scene[0] = '\0';
   vkr_editor_content_set_project(editor->content, projects->workspace.root,
                                  candidate->id, "");
@@ -1091,9 +1091,10 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
       project_error(projects, &error);
       ok = false_v;
     } else {
-      ok = ok && project_json_text(
-                     writer, "scene_id",
-                     projects->project->scenes[projects->pending_scene].id) &&
+      ok = ok &&
+           project_json_text(
+               writer, "scene_id",
+               projects->project->scenes[projects->pending_scene].id) &&
            project_json_text(writer, "scene_path", scene_path);
     }
   }
@@ -1101,7 +1102,8 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
     ok = ok && vkr_json_writer_name(writer, string8_lit("models")) &&
          vkr_json_writer_begin_array(writer);
     if (projects->adding_model) {
-      ok = ok && vkr_json_writer_string(writer, project_string(projects->models[0]));
+      ok = ok &&
+           vkr_json_writer_string(writer, project_string(projects->models[0]));
     }
     ok = ok && vkr_json_writer_end_array(writer) &&
          vkr_json_writer_name(writer, string8_lit("lights")) &&
@@ -1719,10 +1721,10 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
   }
   vkr_editor_workspace_lease_release(&projects->lease);
   if (projects->settings_save) {
-    vkr_allocator_free(
-        projects->allocator, projects->settings_save,
-        sizeof(*projects->settings_save) + projects->settings_save->capacity,
-        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    vkr_allocator_free(projects->allocator, projects->settings_save,
+                       sizeof(*projects->settings_save) +
+                           projects->settings_save->capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   }
   if (projects->owned_assets.str) {
     vkr_allocator_free(projects->allocator, projects->owned_assets.str,
@@ -1800,7 +1802,7 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   }
   if (projects->settings_save && projects->settings_save->worker &&
       vkr_atomic_bool_load(&projects->settings_save->complete,
-                            VKR_MEMORY_ORDER_ACQUIRE)) {
+                           VKR_MEMORY_ORDER_ACQUIRE)) {
     (void)project_finish_settings_save(projects);
   }
   if (!projects->defaults_captured) {
@@ -1915,7 +1917,8 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
         projects->view = PROJECT_VIEW_ADD_ENTITY;
         snprintf(projects->message, sizeof(projects->message),
                  "Entity was not added. Check the model and dependencies, or "
-                 "light settings. See Bakery for details; correct the form or cancel.");
+                 "light settings. See Bakery for details; correct the form or "
+                 "cancel.");
       } else if (!strcmp(projects->operation, "delete_scene")) {
         snprintf(projects->message, sizeof(projects->message),
                  "Scene removed from project; file deletion is incomplete. "
@@ -1956,7 +1959,8 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
           if (!frame->scene->world->dir.records[i].chunk) {
             continue;
           }
-          const VkrEntityId entity = vkr_entity_id_from_index(frame->scene->world, i);
+          const VkrEntityId entity =
+              vkr_entity_id_from_index(frame->scene->world, i);
           VkrSampleEntityIdentity identity;
           if (vkr_sample_entity_identity(frame->scene, entity, &identity) &&
               identity.scene_entity == projects->added_scene_entity &&
@@ -2624,8 +2628,9 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       (void)vkr_ui_panel_end(ui);
     }
   }
-  const float32_t width = Min(projects->view == PROJECT_VIEW_ADD_ENTITY ? 620.0f : 1040.0f,
-                              Max(280.0f, total_width - 40));
+  const float32_t width =
+      Min(projects->view == PROJECT_VIEW_ADD_ENTITY ? 620.0f : 1040.0f,
+          Max(280.0f, total_width - 40));
   const float32_t height = Min(740.0f, Max(240.0f, total_height - 40));
   VkrUiPanelConfig modal = vkr_ui_panel_config_default();
   modal.placement.column = 0;
@@ -2648,13 +2653,13 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
     return;
   }
   const char *title =
-      projects->view == PROJECT_VIEW_CHOOSER     ? "Projects"
-      : projects->view == PROJECT_VIEW_CREATE    ? "Create project"
-      : projects->view == PROJECT_VIEW_ADD_SCENE ? "Add scene"
+      projects->view == PROJECT_VIEW_CHOOSER      ? "Projects"
+      : projects->view == PROJECT_VIEW_CREATE     ? "Create project"
+      : projects->view == PROJECT_VIEW_ADD_SCENE  ? "Add scene"
       : projects->view == PROJECT_VIEW_ADD_ENTITY ? "Add entity"
-      : projects->view == PROJECT_VIEW_SCENES    ? "Scenes"
-      : projects->view == PROJECT_VIEW_RENAME    ? "Rename"
-      : projects->view == PROJECT_VIEW_DELETE    ? "Delete scene permanently?"
+      : projects->view == PROJECT_VIEW_SCENES     ? "Scenes"
+      : projects->view == PROJECT_VIEW_RENAME     ? "Rename"
+      : projects->view == PROJECT_VIEW_DELETE     ? "Delete scene permanently?"
       : projects->view == PROJECT_VIEW_CONFIRM
           ? projects->closing ? "Close editor" : "Unsaved scene edits"
           : "Preparing your project";
@@ -2668,7 +2673,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       .value = projects->view == PROJECT_VIEW_CREATE ||
                        projects->view == PROJECT_VIEW_ADD_SCENE
                    ? 2110
-                   : projects->view == PROJECT_VIEW_ADD_ENTITY ? 550
+               : projects->view == PROJECT_VIEW_ADD_ENTITY
+                   ? 550
                    : Max(height - 175, projects->card_count * 70.0f + 160)};
   VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
   scroll.placement.column = 0;
@@ -2830,7 +2836,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
         if (project_button(ui, "scene.delete", "Delete", body_width - 108,
                            46 + i * 40.0f, 96,
                            projects->read_only || frame->scene_loading ||
-                               projects->job_id || projects->waiting_activation ||
+                               projects->job_id ||
+                               projects->waiting_activation ||
                                vkr_editor_bakery_busy(editor->bakery))) {
           projects->pending_scene = i;
           projects->message[0] = '\0';
@@ -2879,12 +2886,14 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
   if (!projects->dialog_closed) {
     if (projects->view == PROJECT_VIEW_ADD_ENTITY) {
       const float32_t button_width = Min(180.0f, (width - 60) * .5f);
-      if (project_button(ui, "entity.submit", "Add to scene", width - 36 - button_width,
-                         height - 65, button_width,
-                         projects->read_only || !project_entity_draft_valid(projects) ||
+      if (project_button(ui, "entity.submit", "Add to scene",
+                         width - 36 - button_width, height - 65, button_width,
+                         projects->read_only ||
+                             !project_entity_draft_valid(projects) ||
                              frame->scene_loading || projects->job_id ||
                              vkr_editor_bakery_busy(editor->bakery))) {
-        snprintf(projects->operation, sizeof(projects->operation), "add_entities");
+        snprintf(projects->operation, sizeof(projects->operation),
+                 "add_entities");
         if (frame->edits->revision != frame->edits->saved_revision) {
           projects->resume_view = PROJECT_VIEW_SCENES;
           projects->view = PROJECT_VIEW_CONFIRM;
@@ -3069,8 +3078,8 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
     }
     (void)vkr_ui_panel_end(ui);
   }
-  VkrUiWidgetConfig action = project_widget(
-      Max(0.0f, (width - 76) * .5f), top + 56, 76, 26);
+  VkrUiWidgetConfig action =
+      project_widget(Max(0.0f, (width - 76) * .5f), top + 56, 76, 26);
   action.text.font = ui->fonts->default_system_font_handle;
   action.style.background_color = (Vec4){.12f, .19f, .24f, .9f};
   action.style.corner_radius_pt = (Vec4){4, 4, 4, 4};

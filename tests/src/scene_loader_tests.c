@@ -3,8 +3,8 @@
 #include "assets/vkr_mesh_cook_source.h"
 #include "containers/str.h"
 #include "memory/arena.h"
-#include "memory/vkr_arena_pool.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_arena_pool.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/loaders/scene_loader.h"
@@ -715,11 +715,13 @@ static void test_scene_derived_matrix_is_lossless_and_exclusive(void) {
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
   assert(vkr_scene_load_from_json(
       &ctx.scene, &ctx.assets,
-      string8_lit("{\"version\":2,\"entities\":[{\"transform\":{\"matrix\":[1,0,0,0,0.25,1,0,0,0,0,1,0,2,3,4,1]}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"transform\":{\"matrix\":[1,"
+                  "0,0,0,0.25,1,0,0,0,0,1,0,2,3,4,1]}}]}"),
       &ctx.allocator, NULL, &error));
   vkr_scene_update(&ctx.scene, 0.0);
   assert(ctx.scene.topo_count == 1u);
-  const SceneTransform *transform = vkr_scene_get_transform(&ctx.scene, ctx.scene.topo_order[0]);
+  const SceneTransform *transform =
+      vkr_scene_get_transform(&ctx.scene, ctx.scene.topo_order[0]);
   assert(transform && transform->matrix_authored && !transform->trs_editable);
   assert(transform->local.elements[4] == 0.25f);
   assert(transform->world.elements[12] == 2.0f);
@@ -730,7 +732,8 @@ static void test_scene_derived_matrix_is_lossless_and_exclusive(void) {
   assert(scene_loader_test_context_init(&ctx));
   assert(!vkr_scene_load_from_json(
       &ctx.scene, &ctx.assets,
-      string8_lit("{\"version\":2,\"entities\":[{\"transform\":{\"matrix\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],\"pos\":[0,0,0]}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"transform\":{\"matrix\":[1,"
+                  "0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],\"pos\":[0,0,0]}}]}"),
       &ctx.allocator, NULL, &error));
   scene_loader_test_context_shutdown(&ctx);
 }

@@ -260,16 +260,16 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_publish_pair_paths(
   bool8_t have_roughness = false_v;
   for (uint64_t i = 0; i < paths->length; ++i) {
     String8 *existing = vector_get_String8(paths, i);
-    have_normal = have_normal ||
-                  (existing &&
-                   vkr_mesh_loader_gltf_path_equals(*existing, normal_path));
-    have_roughness = have_roughness ||
-                     (existing && vkr_mesh_loader_gltf_path_equals(
-                                      *existing, roughness_path));
+    have_normal =
+        have_normal ||
+        (existing && vkr_mesh_loader_gltf_path_equals(*existing, normal_path));
+    have_roughness =
+        have_roughness || (existing && vkr_mesh_loader_gltf_path_equals(
+                                           *existing, roughness_path));
   }
 
-  const uint64_t additions = (have_normal ? 0u : 1u) +
-                             (have_roughness ? 0u : 1u);
+  const uint64_t additions =
+      (have_normal ? 0u : 1u) + (have_roughness ? 0u : 1u);
   if (additions == 0u) {
     return true_v;
   }
@@ -278,12 +278,11 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_publish_pair_paths(
     return false_v;
   }
 
-  String8 normal_copy = have_normal
-                            ? (String8){0}
-                            : string8_duplicate(allocator, &normal_path);
-  String8 roughness_copy =
-      have_roughness ? (String8){0}
-                     : string8_duplicate(allocator, &roughness_path);
+  String8 normal_copy =
+      have_normal ? (String8){0} : string8_duplicate(allocator, &normal_path);
+  String8 roughness_copy = have_roughness
+                               ? (String8){0}
+                               : string8_duplicate(allocator, &roughness_path);
   if ((!have_normal && !normal_copy.str) ||
       (!have_roughness && !roughness_copy.str)) {
     return false_v;
@@ -441,8 +440,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_resolve_texture_path(
   return true_v;
 }
 
-vkr_internal String8
-vkr_mesh_loader_gltf_strip_query(String8 path) {
+vkr_internal String8 vkr_mesh_loader_gltf_strip_query(String8 path) {
   for (uint64_t i = 0; i < path.length; ++i) {
     if (path.str[i] == '?') {
       return string8_substring(&path, 0, i);
@@ -456,8 +454,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_has_vkt_extension(String8 path) {
   if (path.length < extension.length) {
     return false_v;
   }
-  String8 suffix = string8_substring(&path, path.length - extension.length,
-                                     path.length);
+  String8 suffix =
+      string8_substring(&path, path.length - extension.length, path.length);
   return string8_equalsi(&suffix, &extension);
 }
 
@@ -486,32 +484,34 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
     goto cleanup;
   }
 
-  String8 source_sidecar = string8_create_formatted(
-      info->scratch_allocator, "%.*s.vkt", (int32_t)source_path.length,
-      source_path.str);
+  String8 source_sidecar =
+      string8_create_formatted(info->scratch_allocator, "%.*s.vkt",
+                               (int32_t)source_path.length, source_path.str);
   if (!vkr_mesh_loader_gltf_path_exists(info->scratch_allocator, source_path) &&
-      source_sidecar.str && vkr_mesh_loader_gltf_path_exists(
-                                info->scratch_allocator, source_sidecar)) {
-    log_error("MeshLoader(glTF): cannot bake cutout variant from packed sidecar "
-              "'%.*s'; the source image '%.*s' is required",
-              (int32_t)source_sidecar.length, source_sidecar.str,
-              (int32_t)source_path.length, source_path.str);
+      source_sidecar.str &&
+      vkr_mesh_loader_gltf_path_exists(info->scratch_allocator,
+                                       source_sidecar)) {
+    log_error(
+        "MeshLoader(glTF): cannot bake cutout variant from packed sidecar "
+        "'%.*s'; the source image '%.*s' is required",
+        (int32_t)source_sidecar.length, source_sidecar.str,
+        (int32_t)source_path.length, source_path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
     goto cleanup;
   }
 
-  String8 source_cstr = string8_create_formatted(
-      info->scratch_allocator, "%.*s", (int32_t)source_path.length,
-      source_path.str);
+  String8 source_cstr =
+      string8_create_formatted(info->scratch_allocator, "%.*s",
+                               (int32_t)source_path.length, source_path.str);
   if (!source_cstr.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
-  FilePath source_file = file_path_create(
-      (const char *)source_cstr.str, info->scratch_allocator,
-      vkr_mesh_loader_gltf_path_is_absolute(source_path)
-          ? FILE_PATH_TYPE_ABSOLUTE
-          : FILE_PATH_TYPE_RELATIVE);
+  FilePath source_file =
+      file_path_create((const char *)source_cstr.str, info->scratch_allocator,
+                       vkr_mesh_loader_gltf_path_is_absolute(source_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
   FileMode read_mode = bitset8_create();
   bitset8_set(&read_mode, FILE_MODE_READ);
   bitset8_set(&read_mode, FILE_MODE_BINARY);
@@ -524,8 +524,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
   }
   uint8_t *source_bytes = NULL;
   uint64_t source_size = 0u;
-  const FileError read_error = file_read_all(
-      &file, info->scratch_allocator, &source_bytes, &source_size);
+  const FileError read_error = file_read_all(&file, info->scratch_allocator,
+                                             &source_bytes, &source_size);
   file_close(&file);
   if (read_error != FILE_ERROR_NONE || !source_bytes || source_size == 0u) {
     log_error("MeshLoader(glTF): failed to read cutout source '%.*s'",
@@ -563,8 +563,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
   }
   if (info->out_generated_asset_paths &&
       !vkr_mesh_loader_gltf_push_unique_path(info->out_generated_asset_paths,
-                                              variant_path,
-                                              info->load_allocator)) {
+                                             variant_path,
+                                             info->load_allocator)) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
@@ -590,9 +590,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_pair_view_is_compatible(
     return false_v;
   }
 
-  String8 uri = string8_create_from_cstr(
-      (const uint8_t *)view->texture->image->uri,
-      string_length(view->texture->image->uri));
+  String8 uri =
+      string8_create_from_cstr((const uint8_t *)view->texture->image->uri,
+                               string_length(view->texture->image->uri));
   if (vkr_string8_starts_with(&uri, "data:")) {
     log_warn("MeshLoader(glTF): skipping paired normal/roughness bake because "
              "%s is embedded",
@@ -649,11 +649,11 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_hash_pair_source(
     return false_v;
   }
 
-  FilePath source_file = file_path_create(
-      (const char *)source_cstr.str, info->scratch_allocator,
-      vkr_mesh_loader_gltf_path_is_absolute(source_path)
-          ? FILE_PATH_TYPE_ABSOLUTE
-          : FILE_PATH_TYPE_RELATIVE);
+  FilePath source_file =
+      file_path_create((const char *)source_cstr.str, info->scratch_allocator,
+                       vkr_mesh_loader_gltf_path_is_absolute(source_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
   FileMode read_mode = bitset8_create();
   bitset8_set(&read_mode, FILE_MODE_READ);
   bitset8_set(&read_mode, FILE_MODE_BINARY);
@@ -667,8 +667,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_hash_pair_source(
 
   uint8_t *source_bytes = NULL;
   uint64_t source_size = 0u;
-  const FileError read_error = file_read_all(
-      &file, info->scratch_allocator, &source_bytes, &source_size);
+  const FileError read_error = file_read_all(&file, info->scratch_allocator,
+                                             &source_bytes, &source_size);
   file_close(&file);
   if (read_error != FILE_ERROR_NONE || !source_bytes || source_size == 0u) {
     log_error("MeshLoader(glTF): failed to read paired source '%.*s'",
@@ -677,7 +677,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_hash_pair_source(
     return false_v;
   }
   *out_hash = vkr_mesh_loader_gltf_hash_bytes(VKR_FNV1A64_OFFSET_BASIS,
-                                               source_bytes, source_size);
+                                              source_bytes, source_size);
   return true_v;
 }
 
@@ -709,8 +709,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_pair_mappings_are_compatible(
       return false_v;
     }
     if (source->texcoord != normal_view->texcoord) {
-      log_warn("MeshLoader(glTF): skipping paired normal/roughness bake because "
-               "normal and converted spec-gloss sources use different UV sets");
+      log_warn(
+          "MeshLoader(glTF): skipping paired normal/roughness bake because "
+          "normal and converted spec-gloss sources use different UV sets");
       return false_v;
     }
   }
@@ -722,8 +723,9 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
     const cgltf_texture_view *normal_view,
     const cgltf_texture_view *roughness_view, String8 normal_texture,
-    String8 roughness_texture, float32_t normal_scale, float32_t roughness_factor,
-    String8 *out_normal_texture, String8 *out_roughness_texture) {
+    String8 roughness_texture, float32_t normal_scale,
+    float32_t roughness_factor, String8 *out_normal_texture,
+    String8 *out_roughness_texture) {
   if (!info || !info->load_allocator || !info->scratch_allocator || !material ||
       !out_normal_texture || !out_roughness_texture) {
     return VKR_VKT_PAIR_FAILED;
@@ -731,8 +733,8 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
   *out_normal_texture = (String8){0};
   *out_roughness_texture = (String8){0};
   if (!normal_texture.str || normal_texture.length == 0u ||
-      !vkr_mesh_loader_gltf_pair_mappings_are_compatible(
-          material, normal_view, roughness_view)) {
+      !vkr_mesh_loader_gltf_pair_mappings_are_compatible(material, normal_view,
+                                                         roughness_view)) {
     return VKR_VKT_PAIR_INCOMPATIBLE;
   }
 
@@ -747,14 +749,13 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
   const bool8_t has_roughness_source =
       roughness_texture.str && roughness_texture.length > 0u;
   String8 roughness_source =
-      has_roughness_source
-          ? vkr_mesh_loader_gltf_strip_query(roughness_texture)
-          : (String8){0};
+      has_roughness_source ? vkr_mesh_loader_gltf_strip_query(roughness_texture)
+                           : (String8){0};
   if (!vkr_mesh_loader_gltf_pair_source_is_compatible(info, normal_texture,
-                                                       "normal") ||
+                                                      "normal") ||
       (has_roughness_source &&
-       !vkr_mesh_loader_gltf_pair_source_is_compatible(
-           info, roughness_texture, "metallic-roughness"))) {
+       !vkr_mesh_loader_gltf_pair_source_is_compatible(info, roughness_texture,
+                                                       "metallic-roughness"))) {
     result = VKR_VKT_PAIR_INCOMPATIBLE;
     goto cleanup;
   }
@@ -763,15 +764,15 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
   String8 roughness_cstr = {0};
   uint64_t normal_hash = 0u;
   uint64_t roughness_hash = 0u;
-  normal_cstr = string8_create_formatted(
-      info->scratch_allocator, "%.*s", (int32_t)normal_source.length,
-      normal_source.str);
-  roughness_cstr = has_roughness_source
-                       ? string8_create_formatted(
-                             info->scratch_allocator, "%.*s",
-                             (int32_t)roughness_source.length,
-                             roughness_source.str)
-                       : (String8){0};
+  normal_cstr = string8_create_formatted(info->scratch_allocator, "%.*s",
+                                         (int32_t)normal_source.length,
+                                         normal_source.str);
+  roughness_cstr =
+      has_roughness_source
+          ? string8_create_formatted(info->scratch_allocator, "%.*s",
+                                     (int32_t)roughness_source.length,
+                                     roughness_source.str)
+          : (String8){0};
   if (!normal_cstr.str || (has_roughness_source && !roughness_cstr.str)) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
@@ -785,10 +786,10 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
   }
   const bool8_t hashes_ok =
       vkr_mesh_loader_gltf_hash_pair_source(info, normal_source, normal_cstr,
-                                             &normal_hash) &&
-      (!has_roughness_source || vkr_mesh_loader_gltf_hash_pair_source(
-                                    info, roughness_source, roughness_cstr,
-                                    &roughness_hash));
+                                            &normal_hash) &&
+      (!has_roughness_source ||
+       vkr_mesh_loader_gltf_hash_pair_source(info, roughness_source,
+                                             roughness_cstr, &roughness_hash));
   vkr_allocator_end_scope(&hash_scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
   if (!hashes_ok) {
     goto cleanup;
@@ -818,19 +819,19 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
                              "normal_%016llx_roughness_missing_scale_%08x_"
                              "factor_%08x",
                              VKR_VKT_NORMAL_ROUGHNESS_POLICY_VERSION,
-                             (unsigned long long)normal_hash,
-                             normal_scale_bits, roughness_factor_bits);
+                             (unsigned long long)normal_hash, normal_scale_bits,
+                             roughness_factor_bits);
   recipe = vkr_mesh_loader_gltf_output_path(info, recipe);
   if (!recipe.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
-  String8 normal_variant = string8_create_formatted(
-      info->load_allocator, "%.*s_normal.vkt", (int32_t)recipe.length,
-      recipe.str);
-  String8 roughness_variant = string8_create_formatted(
-      info->load_allocator, "%.*s_metalrough.vkt", (int32_t)recipe.length,
-      recipe.str);
+  String8 normal_variant =
+      string8_create_formatted(info->load_allocator, "%.*s_normal.vkt",
+                               (int32_t)recipe.length, recipe.str);
+  String8 roughness_variant =
+      string8_create_formatted(info->load_allocator, "%.*s_metalrough.vkt",
+                               (int32_t)recipe.length, recipe.str);
   if (!normal_variant.str || !roughness_variant.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
@@ -1637,21 +1638,27 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_validate_layer_views(
     const cgltf_texture_view *const *views, uint32_t view_count) {
   for (uint32_t i = 0; i < view_count; ++i) {
     const cgltf_texture_view *view = views[i];
-    if (!view->texture) continue;
+    if (!view->texture)
+      continue;
     const cgltf_image *image = view->texture->image;
     const cgltf_sampler *sampler = view->texture->sampler;
-    if (view->texcoord != 0u || view->has_transform || !image ||
-        !image->uri || !image->uri[0] || image->buffer_view ||
-        (image->uri[0] == 'd' && image->uri[1] == 'a' && image->uri[2] == 't' && image->uri[3] == 'a' && image->uri[4] == ':') ||
-        (sampler && (sampler->wrap_s != cgltf_wrap_mode_repeat ||
-         sampler->wrap_t != cgltf_wrap_mode_repeat ||
-         (sampler->mag_filter != cgltf_filter_type_undefined &&
-          sampler->mag_filter != cgltf_filter_type_linear) ||
-         (sampler->min_filter != cgltf_filter_type_undefined &&
-          sampler->min_filter != cgltf_filter_type_linear_mipmap_linear)))) {
-      log_error("MeshLoader(glTF): layer map %u in '%s' requires an external image, untransformed UV0 and repeat/linear mip-linear sampling",
-                i, material->name ? material->name : "<unnamed>");
-      vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    if (view->texcoord != 0u || view->has_transform || !image || !image->uri ||
+        !image->uri[0] || image->buffer_view ||
+        (image->uri[0] == 'd' && image->uri[1] == 'a' && image->uri[2] == 't' &&
+         image->uri[3] == 'a' && image->uri[4] == ':') ||
+        (sampler &&
+         (sampler->wrap_s != cgltf_wrap_mode_repeat ||
+          sampler->wrap_t != cgltf_wrap_mode_repeat ||
+          (sampler->mag_filter != cgltf_filter_type_undefined &&
+           sampler->mag_filter != cgltf_filter_type_linear) ||
+          (sampler->min_filter != cgltf_filter_type_undefined &&
+           sampler->min_filter != cgltf_filter_type_linear_mipmap_linear)))) {
+      log_error(
+          "MeshLoader(glTF): layer map %u in '%s' requires an external image, "
+          "untransformed UV0 and repeat/linear mip-linear sampling",
+          i, material->name ? material->name : "<unnamed>");
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
       return false_v;
     }
   }
@@ -1660,59 +1667,79 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_validate_layer_views(
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_validate_clearcoat(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material) {
-  if (!material->has_clearcoat) return true_v;
+  if (!material->has_clearcoat)
+    return true_v;
   const cgltf_clearcoat *coat = &material->clearcoat;
   if (material->has_pbr_specular_glossiness || material->unlit ||
-      !isfinite(coat->clearcoat_factor) ||
-      coat->clearcoat_factor < 0.0f || coat->clearcoat_factor > 1.0f ||
+      !isfinite(coat->clearcoat_factor) || coat->clearcoat_factor < 0.0f ||
+      coat->clearcoat_factor > 1.0f ||
       !isfinite(coat->clearcoat_roughness_factor) ||
-      coat->clearcoat_roughness_factor < 0.0f || coat->clearcoat_roughness_factor > 1.0f ||
+      coat->clearcoat_roughness_factor < 0.0f ||
+      coat->clearcoat_roughness_factor > 1.0f ||
       !isfinite(coat->clearcoat_normal_texture.scale)) {
-    log_error("MeshLoader(glTF): invalid or incompatible clearcoat material '%s'",
-              material->name ? material->name : "<unnamed>");
+    log_error(
+        "MeshLoader(glTF): invalid or incompatible clearcoat material '%s'",
+        material->name ? material->name : "<unnamed>");
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
   }
   const cgltf_texture_view *views[] = {&coat->clearcoat_texture,
-      &coat->clearcoat_roughness_texture, &coat->clearcoat_normal_texture};
-  return vkr_mesh_loader_gltf_validate_layer_views(info, material, views, ArrayCount(views));
+                                       &coat->clearcoat_roughness_texture,
+                                       &coat->clearcoat_normal_texture};
+  return vkr_mesh_loader_gltf_validate_layer_views(info, material, views,
+                                                   ArrayCount(views));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_validate_sheen(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material) {
-  if (!material->has_sheen) return true_v;
+  if (!material->has_sheen)
+    return true_v;
   const cgltf_sheen *sheen = &material->sheen;
   if (material->has_pbr_specular_glossiness || material->unlit ||
-      !isfinite(sheen->sheen_roughness_factor) || sheen->sheen_roughness_factor < 0.0f ||
+      !isfinite(sheen->sheen_roughness_factor) ||
+      sheen->sheen_roughness_factor < 0.0f ||
       sheen->sheen_roughness_factor > 1.0f ||
-      !isfinite(sheen->sheen_color_factor[0]) || sheen->sheen_color_factor[0] < 0.0f || sheen->sheen_color_factor[0] > 1.0f ||
-      !isfinite(sheen->sheen_color_factor[1]) || sheen->sheen_color_factor[1] < 0.0f || sheen->sheen_color_factor[1] > 1.0f ||
-      !isfinite(sheen->sheen_color_factor[2]) || sheen->sheen_color_factor[2] < 0.0f || sheen->sheen_color_factor[2] > 1.0f) {
+      !isfinite(sheen->sheen_color_factor[0]) ||
+      sheen->sheen_color_factor[0] < 0.0f ||
+      sheen->sheen_color_factor[0] > 1.0f ||
+      !isfinite(sheen->sheen_color_factor[1]) ||
+      sheen->sheen_color_factor[1] < 0.0f ||
+      sheen->sheen_color_factor[1] > 1.0f ||
+      !isfinite(sheen->sheen_color_factor[2]) ||
+      sheen->sheen_color_factor[2] < 0.0f ||
+      sheen->sheen_color_factor[2] > 1.0f) {
     log_error("MeshLoader(glTF): invalid or incompatible sheen material '%s'",
               material->name ? material->name : "<unnamed>");
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
   }
-  const cgltf_texture_view *views[] = {&sheen->sheen_color_texture, &sheen->sheen_roughness_texture};
-  return vkr_mesh_loader_gltf_validate_layer_views(info, material, views, ArrayCount(views));
+  const cgltf_texture_view *views[] = {&sheen->sheen_color_texture,
+                                       &sheen->sheen_roughness_texture};
+  return vkr_mesh_loader_gltf_validate_layer_views(info, material, views,
+                                                   ArrayCount(views));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_validate_anisotropy(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material) {
-  if (!material->has_anisotropy) return true_v;
+  if (!material->has_anisotropy)
+    return true_v;
   const cgltf_anisotropy *anisotropy = &material->anisotropy;
   if (material->has_pbr_specular_glossiness || material->unlit ||
-      !isfinite(anisotropy->anisotropy_strength) || anisotropy->anisotropy_strength < 0.0f ||
-      anisotropy->anisotropy_strength > 1.0f || !isfinite(anisotropy->anisotropy_rotation) ||
+      !isfinite(anisotropy->anisotropy_strength) ||
+      anisotropy->anisotropy_strength < 0.0f ||
+      anisotropy->anisotropy_strength > 1.0f ||
+      !isfinite(anisotropy->anisotropy_rotation) ||
       (anisotropy->anisotropy_strength > 0.0f && material->has_transmission &&
        material->transmission.transmission_factor > 0.0f)) {
-    log_error("MeshLoader(glTF): invalid anisotropy or unsupported anisotropic refraction in '%s'",
+    log_error("MeshLoader(glTF): invalid anisotropy or unsupported anisotropic "
+              "refraction in '%s'",
               material->name ? material->name : "<unnamed>");
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
   }
   const cgltf_texture_view *views[] = {&anisotropy->anisotropy_texture};
-  return vkr_mesh_loader_gltf_validate_layer_views(info, material, views, ArrayCount(views));
+  return vkr_mesh_loader_gltf_validate_layer_views(info, material, views,
+                                                   ArrayCount(views));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
@@ -1837,29 +1864,41 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
           info,
           material->has_volume ? &material->volume.thickness_texture : NULL,
           "tc=data_mask", &thickness_texture) ||
-      !vkr_mesh_loader_gltf_resolve_texture_path(info,
-          material->has_clearcoat ? &material->clearcoat.clearcoat_texture : NULL,
+      !vkr_mesh_loader_gltf_resolve_texture_path(
+          info,
+          material->has_clearcoat ? &material->clearcoat.clearcoat_texture
+                                  : NULL,
           "tc=data_mask", &clearcoat_texture) ||
-      !vkr_mesh_loader_gltf_resolve_texture_path(info,
-          material->has_clearcoat ? &material->clearcoat.clearcoat_roughness_texture : NULL,
+      !vkr_mesh_loader_gltf_resolve_texture_path(
+          info,
+          material->has_clearcoat
+              ? &material->clearcoat.clearcoat_roughness_texture
+              : NULL,
           "tc=data_mask", &clearcoat_roughness_texture) ||
-      !vkr_mesh_loader_gltf_resolve_texture_path(info,
-          material->has_clearcoat ? &material->clearcoat.clearcoat_normal_texture : NULL,
+      !vkr_mesh_loader_gltf_resolve_texture_path(
+          info,
+          material->has_clearcoat
+              ? &material->clearcoat.clearcoat_normal_texture
+              : NULL,
           "tc=normal_rg", &clearcoat_normal_texture) ||
-      !vkr_mesh_loader_gltf_resolve_texture_path(info,
+      !vkr_mesh_loader_gltf_resolve_texture_path(
+          info,
           material->has_sheen ? &material->sheen.sheen_color_texture : NULL,
           "cs=srgb&tc=color_srgb", &sheen_color_texture) ||
-      !vkr_mesh_loader_gltf_resolve_texture_path(info,
+      !vkr_mesh_loader_gltf_resolve_texture_path(
+          info,
           material->has_sheen ? &material->sheen.sheen_roughness_texture : NULL,
           "tc=data_mask", &sheen_roughness_texture) ||
-      !vkr_mesh_loader_gltf_resolve_texture_path(info,
-          material->has_anisotropy ? &material->anisotropy.anisotropy_texture : NULL,
+      !vkr_mesh_loader_gltf_resolve_texture_path(
+          info,
+          material->has_anisotropy ? &material->anisotropy.anisotropy_texture
+                                   : NULL,
           "tc=data_mask", &anisotropy_texture)) {
     return false_v;
   }
 
-  if (material->alpha_mode == cgltf_alpha_mode_mask &&
-      base_color_texture.str && base_color_texture.length > 0u) {
+  if (material->alpha_mode == cgltf_alpha_mode_mask && base_color_texture.str &&
+      base_color_texture.length > 0u) {
     if (non_unit_vertex_alpha) {
       log_warn("MeshLoader(glTF): skipping alpha-coverage variant for MASK "
                "material '%s' because COLOR_0 has non-unit alpha",
@@ -1967,27 +2006,37 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
   ok = ok && vkr_mesh_loader_gltf_write_literal_line(&file, "pipeline=world");
 
   if (material->has_anisotropy) {
-    ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
-        "anisotropy_strength", material->anisotropy.anisotropy_strength);
-    ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
-        "anisotropy_rotation", remainderf(material->anisotropy.anisotropy_rotation, 6.283185307179586f));
+    ok = ok && vkr_mesh_loader_gltf_write_key_f32(
+                   &file, info->load_allocator, "anisotropy_strength",
+                   material->anisotropy.anisotropy_strength);
+    ok = ok && vkr_mesh_loader_gltf_write_key_f32(
+                   &file, info->load_allocator, "anisotropy_rotation",
+                   remainderf(material->anisotropy.anisotropy_rotation,
+                              6.283185307179586f));
   }
   if (material->has_sheen) {
-    ok = ok && vkr_mesh_loader_gltf_write_key_vec3(&file, info->load_allocator,
-        "sheen_color", vec3_new(material->sheen.sheen_color_factor[0],
-            material->sheen.sheen_color_factor[1], material->sheen.sheen_color_factor[2]));
-    ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
-        "sheen_roughness", material->sheen.sheen_roughness_factor);
+    ok = ok && vkr_mesh_loader_gltf_write_key_vec3(
+                   &file, info->load_allocator, "sheen_color",
+                   vec3_new(material->sheen.sheen_color_factor[0],
+                            material->sheen.sheen_color_factor[1],
+                            material->sheen.sheen_color_factor[2]));
+    ok = ok && vkr_mesh_loader_gltf_write_key_f32(
+                   &file, info->load_allocator, "sheen_roughness",
+                   material->sheen.sheen_roughness_factor);
   }
 
   if (material->has_clearcoat) {
-    ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
-        "clearcoat_factor", material->clearcoat.clearcoat_factor);
-    ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
-        "clearcoat_roughness", material->clearcoat.clearcoat_roughness_factor);
-    ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
-        "clearcoat_normal_scale", material->clearcoat.clearcoat_normal_texture.texture
-            ? material->clearcoat.clearcoat_normal_texture.scale : 1.0f);
+    ok = ok && vkr_mesh_loader_gltf_write_key_f32(
+                   &file, info->load_allocator, "clearcoat_factor",
+                   material->clearcoat.clearcoat_factor);
+    ok = ok && vkr_mesh_loader_gltf_write_key_f32(
+                   &file, info->load_allocator, "clearcoat_roughness",
+                   material->clearcoat.clearcoat_roughness_factor);
+    ok = ok && vkr_mesh_loader_gltf_write_key_f32(
+                   &file, info->load_allocator, "clearcoat_normal_scale",
+                   material->clearcoat.clearcoat_normal_texture.texture
+                       ? material->clearcoat.clearcoat_normal_texture.scale
+                       : 1.0f);
   }
 
   if (ok) {
@@ -2010,11 +2059,14 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
         {.key = "transmission_texture",
          .value = transmission_texture,
          .prefix_literal = NULL},
-        {.key = "sheen_color_texture", .value = sheen_color_texture, .prefix_literal = "sheen_color_colorspace=srgb"},
+        {.key = "sheen_color_texture",
+         .value = sheen_color_texture,
+         .prefix_literal = "sheen_color_colorspace=srgb"},
         {.key = "sheen_roughness_texture", .value = sheen_roughness_texture},
         {.key = "anisotropy_texture", .value = anisotropy_texture},
         {.key = "clearcoat_texture", .value = clearcoat_texture},
-        {.key = "clearcoat_roughness_texture", .value = clearcoat_roughness_texture},
+        {.key = "clearcoat_roughness_texture",
+         .value = clearcoat_roughness_texture},
         {.key = "clearcoat_normal_texture", .value = clearcoat_normal_texture},
         {.key = "thickness_texture",
          .value = thickness_texture,
@@ -2063,18 +2115,29 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
     for (cgltf_size p = 0; p < data->meshes[m].primitives_count; ++p) {
       const cgltf_primitive *primitive = &data->meshes[m].primitives[p];
       const cgltf_material *material = primitive->material;
-      if (!material || !material->has_anisotropy || material->anisotropy.anisotropy_strength <= 0.0f) continue;
-      const cgltf_accessor *normal = cgltf_find_accessor(primitive, cgltf_attribute_type_normal, 0);
-      const cgltf_accessor *tangent = cgltf_find_accessor(primitive, cgltf_attribute_type_tangent, 0);
-      const cgltf_accessor *uv = cgltf_find_accessor(primitive, cgltf_attribute_type_texcoord, 0);
-      if ((!(normal && tangent) && (!material->normal_texture.texture || !uv)) ||
-          (!uv && (material->anisotropy.anisotropy_texture.texture || material->normal_texture.texture))) {
-        log_error("MeshLoader(glTF): anisotropy requires NORMAL/TANGENT or a normal texture with UV0");
-        vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      if (!material || !material->has_anisotropy ||
+          material->anisotropy.anisotropy_strength <= 0.0f)
+        continue;
+      const cgltf_accessor *normal =
+          cgltf_find_accessor(primitive, cgltf_attribute_type_normal, 0);
+      const cgltf_accessor *tangent =
+          cgltf_find_accessor(primitive, cgltf_attribute_type_tangent, 0);
+      const cgltf_accessor *uv =
+          cgltf_find_accessor(primitive, cgltf_attribute_type_texcoord, 0);
+      if ((!(normal && tangent) &&
+           (!material->normal_texture.texture || !uv)) ||
+          (!uv && (material->anisotropy.anisotropy_texture.texture ||
+                   material->normal_texture.texture))) {
+        log_error("MeshLoader(glTF): anisotropy requires NORMAL/TANGENT or a "
+                  "normal texture with UV0");
+        vkr_mesh_loader_gltf_set_error(info,
+                                       VKR_RENDERER_ERROR_INVALID_PARAMETER);
         return false_v;
       }
       const cgltf_texture_view *normal_view[] = {&material->normal_texture};
-      if (!vkr_mesh_loader_gltf_validate_layer_views(info, material, normal_view, 1u)) return false_v;
+      if (!vkr_mesh_loader_gltf_validate_layer_views(info, material,
+                                                     normal_view, 1u))
+        return false_v;
     }
   }
 
@@ -2543,7 +2606,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
   const cgltf_accessor *color_accessor =
       cgltf_find_accessor(primitive, cgltf_attribute_type_color, 0);
 
-  const bool8_t anisotropic = primitive->material && primitive->material->has_anisotropy &&
+  const bool8_t anisotropic =
+      primitive->material && primitive->material->has_anisotropy &&
       primitive->material->anisotropy.anisotropy_strength > 0.0f;
   float32_t decal_normal_offset_meters = 0.0f;
   float32_t sidecar_offset_meters = 0.0f;
@@ -2691,11 +2755,15 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     }
     Vec3 world_tangent = vec3_new(1.0f, 0.0f, 0.0f);
     if (anisotropic && tangent_accessor) {
-      if (!vkr_mesh_loader_gltf_transform_unit_direction(world,
-              vec3_new(tangent.x, tangent.y, tangent.z), &world_tangent)) {
-        log_error("MeshLoader(glTF): anisotropy has an invalid authored tangent");
-        vkr_allocator_end_scope(&primitive_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      if (!vkr_mesh_loader_gltf_transform_unit_direction(
+              world, vec3_new(tangent.x, tangent.y, tangent.z),
+              &world_tangent)) {
+        log_error(
+            "MeshLoader(glTF): anisotropy has an invalid authored tangent");
+        vkr_allocator_end_scope(&primitive_scope,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        vkr_mesh_loader_gltf_set_error(info,
+                                       VKR_RENDERER_ERROR_INVALID_PARAMETER);
         return false_v;
       }
     } else {
@@ -2750,8 +2818,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     if (!normal_accessor) {
       /* glTF requires flat normals when absent. Split corners before deriving
          the tangent basis so neighboring faces cannot average their normals. */
-      VkrVertex3d *flat_vertices = vkr_allocator_alloc(info->scratch_allocator,
-          (uint64_t)index_count * sizeof(VkrVertex3d), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      VkrVertex3d *flat_vertices = vkr_allocator_alloc(
+          info->scratch_allocator, (uint64_t)index_count * sizeof(VkrVertex3d),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       VkrMeshSkinVertex *flat_skin =
           skin_vertices
               ? vkr_allocator_alloc(info->scratch_allocator,
@@ -2759,22 +2828,26 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
                                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
               : NULL;
       if (!flat_vertices || (skin_vertices && !flat_skin)) {
-        vkr_allocator_end_scope(&primitive_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        vkr_allocator_end_scope(&primitive_scope,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
         vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
         return false_v;
       }
       for (uint32_t i = 0; i < index_count; i += 3u) {
         const Vec3 p0 = vkr_vertex_unpack_vec3(vertices[indices[i]].position);
-        const Vec3 p1 = vkr_vertex_unpack_vec3(vertices[indices[i+1u]].position);
-        const Vec3 p2 = vkr_vertex_unpack_vec3(vertices[indices[i+2u]].position);
-        const Vec3 n = vec3_normalize(vec3_cross(vec3_sub(p1,p0), vec3_sub(p2,p0)));
+        const Vec3 p1 =
+            vkr_vertex_unpack_vec3(vertices[indices[i + 1u]].position);
+        const Vec3 p2 =
+            vkr_vertex_unpack_vec3(vertices[indices[i + 2u]].position);
+        const Vec3 n =
+            vec3_normalize(vec3_cross(vec3_sub(p1, p0), vec3_sub(p2, p0)));
         for (uint32_t c = 0; c < 3u; ++c) {
-          flat_vertices[i+c] = vertices[indices[i+c]];
+          flat_vertices[i + c] = vertices[indices[i + c]];
           if (flat_skin) {
             flat_skin[i + c] = skin_vertices[indices[i + c]];
           }
-          flat_vertices[i+c].normal = vkr_vertex_pack_vec3(n);
-          indices[i+c] = i+c;
+          flat_vertices[i + c].normal = vkr_vertex_pack_vec3(n);
+          indices[i + c] = i + c;
         }
       }
       vertices = flat_vertices;
@@ -2782,21 +2855,29 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
       vertex_count = index_count;
     }
     if (!tangent_accessor)
-      vkr_geometry_generate_tangents(info->scratch_allocator, vertices, vertex_count, indices, index_count);
+      vkr_geometry_generate_tangents(info->scratch_allocator, vertices,
+                                     vertex_count, indices, index_count);
     for (uint32_t i = 0; i < vertex_count; ++i) {
       const Vec3 n = vkr_vertex_unpack_vec3(vertices[i].normal);
-      Vec3 t = vec3_new(vertices[i].tangent.x, vertices[i].tangent.y, vertices[i].tangent.z);
+      Vec3 t = vec3_new(vertices[i].tangent.x, vertices[i].tangent.y,
+                        vertices[i].tangent.z);
       t = vec3_sub(t, vec3_scale(n, vec3_dot(n, t)));
-      if (!isfinite(n.x) || !isfinite(n.y) || !isfinite(n.z) || vec3_length(n) < 1e-6f ||
-          !isfinite(t.x) || !isfinite(t.y) || !isfinite(t.z) || vec3_length(t) < 1e-6f ||
-          !isfinite(vertices[i].tangent.w) || fabsf(vertices[i].tangent.w) < 0.5f) {
-        log_error("MeshLoader(glTF): anisotropy has a degenerate tangent basis");
-        vkr_allocator_end_scope(&primitive_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      if (!isfinite(n.x) || !isfinite(n.y) || !isfinite(n.z) ||
+          vec3_length(n) < 1e-6f || !isfinite(t.x) || !isfinite(t.y) ||
+          !isfinite(t.z) || vec3_length(t) < 1e-6f ||
+          !isfinite(vertices[i].tangent.w) ||
+          fabsf(vertices[i].tangent.w) < 0.5f) {
+        log_error(
+            "MeshLoader(glTF): anisotropy has a degenerate tangent basis");
+        vkr_allocator_end_scope(&primitive_scope,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        vkr_mesh_loader_gltf_set_error(info,
+                                       VKR_RENDERER_ERROR_INVALID_PARAMETER);
         return false_v;
       }
       t = vec3_normalize(t);
-      vertices[i].tangent = vec4_new(t.x, t.y, t.z, vertices[i].tangent.w < 0.0f ? -1.0f : 1.0f);
+      vertices[i].tangent =
+          vec4_new(t.x, t.y, t.z, vertices[i].tangent.w < 0.0f ? -1.0f : 1.0f);
     }
   }
 

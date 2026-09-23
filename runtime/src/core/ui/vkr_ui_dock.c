@@ -63,9 +63,9 @@ void vkr_ui_dock_default_editor_layout(VkrUiDockTree *tree) {
   vkr_ui_dock_split(tree, 2u, 0u, VKR_UI_DOCK_SPLIT_Y, 0.74468085f, 3u, 4u);
   vkr_ui_dock_split(tree, 3u, 2u, VKR_UI_DOCK_SPLIT_X, 0.18f, 5u, 6u);
   vkr_ui_dock_leaf(tree, 4u, 2u, VKR_UI_DOCK_PANEL_CONTENT);
-  tree->nodes[4u].as.leaf.tabs[1u] = (VkrUiDockTab){
-      .id = (uint64_t)VKR_UI_DOCK_PANEL_CONSOLE + 1u,
-      .panel_kind = VKR_UI_DOCK_PANEL_CONSOLE};
+  tree->nodes[4u].as.leaf.tabs[1u] =
+      (VkrUiDockTab){.id = (uint64_t)VKR_UI_DOCK_PANEL_CONSOLE + 1u,
+                     .panel_kind = VKR_UI_DOCK_PANEL_CONSOLE};
   tree->nodes[4u].as.leaf.tab_count = 2u;
   vkr_ui_dock_leaf(tree, 5u, 3u, VKR_UI_DOCK_PANEL_HIERARCHY);
   vkr_ui_dock_split(tree, 6u, 3u, VKR_UI_DOCK_SPLIT_X, 0.7317073f, 7u, 8u);

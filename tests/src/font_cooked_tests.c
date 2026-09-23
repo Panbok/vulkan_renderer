@@ -1,11 +1,11 @@
 #include "font_cooked_tests.h"
 
+#include "assets/vkr_font_encode.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
-#include "assets/vkr_font_encode.h"
 
 #include <assert.h>
 #include <math.h>

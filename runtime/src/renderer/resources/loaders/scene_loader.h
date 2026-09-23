@@ -7,9 +7,9 @@
  */
 #pragma once
 
+#include "assets/vkr_mesh_source.h"
 #include "containers/str.h"
 #include "defines.h"
-#include "assets/vkr_mesh_source.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 

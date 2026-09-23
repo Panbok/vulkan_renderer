@@ -74,24 +74,19 @@ static void test_component_registration_lookup(void) {
   VkrWorld *world = create_world(1);
   assert(world && "World create failed");
 
-  VkrComponentTypeId pos_id =
-      vkr_entity_register_component(world, "Position", sizeof(Position),
-                                    AlignOf(Position));
+  VkrComponentTypeId pos_id = vkr_entity_register_component(
+      world, "Position", sizeof(Position), AlignOf(Position));
   assert(pos_id != VKR_COMPONENT_TYPE_INVALID);
 
-  VkrComponentTypeId found =
-      vkr_entity_find_component(world, "Position");
+  VkrComponentTypeId found = vkr_entity_find_component(world, "Position");
   assert(found == pos_id);
 
-  VkrComponentTypeId once_id =
-      vkr_entity_register_component_once(world, "Position", sizeof(Position),
-                                         AlignOf(Position));
+  VkrComponentTypeId once_id = vkr_entity_register_component_once(
+      world, "Position", sizeof(Position), AlignOf(Position));
   assert(once_id == pos_id);
 
-  VkrComponentTypeId mismatch =
-      vkr_entity_register_component_once(world, "Position",
-                                         sizeof(Position) + 4,
-                                         AlignOf(Position));
+  VkrComponentTypeId mismatch = vkr_entity_register_component_once(
+      world, "Position", sizeof(Position) + 4, AlignOf(Position));
   assert(mismatch == VKR_COMPONENT_TYPE_INVALID);
 
   vkr_entity_destroy_world(world);
@@ -106,9 +101,8 @@ static void test_entity_add_remove_component(void) {
   VkrWorld *world = create_world(1);
   assert(world && "World create failed");
 
-  VkrComponentTypeId pos_id =
-      vkr_entity_register_component(world, "Position", sizeof(Position),
-                                    AlignOf(Position));
+  VkrComponentTypeId pos_id = vkr_entity_register_component(
+      world, "Position", sizeof(Position), AlignOf(Position));
   assert(pos_id != VKR_COMPONENT_TYPE_INVALID);
 
   VkrEntityId entity = vkr_entity_create_entity(world);
@@ -145,12 +139,10 @@ static void test_create_entity_with_components(void) {
   VkrWorld *world = create_world(1);
   assert(world && "World create failed");
 
-  VkrComponentTypeId pos_id =
-      vkr_entity_register_component(world, "Position", sizeof(Position),
-                                    AlignOf(Position));
-  VkrComponentTypeId vel_id =
-      vkr_entity_register_component(world, "Velocity", sizeof(Velocity),
-                                    AlignOf(Velocity));
+  VkrComponentTypeId pos_id = vkr_entity_register_component(
+      world, "Position", sizeof(Position), AlignOf(Position));
+  VkrComponentTypeId vel_id = vkr_entity_register_component(
+      world, "Velocity", sizeof(Velocity), AlignOf(Velocity));
   assert(pos_id != VKR_COMPONENT_TYPE_INVALID);
   assert(vel_id != VKR_COMPONENT_TYPE_INVALID);
 
@@ -159,9 +151,8 @@ static void test_create_entity_with_components(void) {
   VkrComponentTypeId types[] = {pos_id, vel_id};
   const void *inits[] = {&pos, &vel};
 
-  VkrEntityId entity =
-      vkr_entity_create_entity_with_components(world, types, inits,
-                                               ArrayCount(types));
+  VkrEntityId entity = vkr_entity_create_entity_with_components(
+      world, types, inits, ArrayCount(types));
   assert(entity.u64 != 0);
   assert(vkr_entity_has_component(world, entity, pos_id));
   assert(vkr_entity_has_component(world, entity, vel_id));
@@ -175,9 +166,8 @@ static void test_create_entity_with_components(void) {
   assert(vel_ptr->x == vel.x && vel_ptr->y == vel.y && vel_ptr->z == vel.z);
 
   uint32_t arch_count = world->arch_count;
-  VkrEntityId entity2 =
-      vkr_entity_create_entity_with_components(world, types, inits,
-                                               ArrayCount(types));
+  VkrEntityId entity2 = vkr_entity_create_entity_with_components(
+      world, types, inits, ArrayCount(types));
   assert(entity2.u64 != 0);
   assert(world->arch_count == arch_count);
 
@@ -193,9 +183,8 @@ static void test_create_many_entities(void) {
   VkrWorld *world = create_world(1);
   assert(world && "World create failed");
 
-  VkrComponentTypeId pos_id =
-      vkr_entity_register_component(world, "Position", sizeof(Position),
-                                    AlignOf(Position));
+  VkrComponentTypeId pos_id = vkr_entity_register_component(
+      world, "Position", sizeof(Position), AlignOf(Position));
   assert(pos_id != VKR_COMPONENT_TYPE_INVALID);
 
   const uint32_t count = 900;
@@ -232,12 +221,10 @@ static void test_query_and_compiled(void) {
   VkrWorld *world = create_world(1);
   assert(world && "World create failed");
 
-  VkrComponentTypeId pos_id =
-      vkr_entity_register_component(world, "Position", sizeof(Position),
-                                    AlignOf(Position));
-  VkrComponentTypeId vel_id =
-      vkr_entity_register_component(world, "Velocity", sizeof(Velocity),
-                                    AlignOf(Velocity));
+  VkrComponentTypeId pos_id = vkr_entity_register_component(
+      world, "Position", sizeof(Position), AlignOf(Position));
+  VkrComponentTypeId vel_id = vkr_entity_register_component(
+      world, "Velocity", sizeof(Velocity), AlignOf(Velocity));
   assert(pos_id != VKR_COMPONENT_TYPE_INVALID);
   assert(vel_id != VKR_COMPONENT_TYPE_INVALID);
 
@@ -433,9 +420,8 @@ static void test_world_id_validation(void) {
   VkrWorld *world_b = create_world(2);
   assert(world_a && world_b);
 
-  VkrComponentTypeId pos_id =
-      vkr_entity_register_component(world_a, "Position", sizeof(Position),
-                                    AlignOf(Position));
+  VkrComponentTypeId pos_id = vkr_entity_register_component(
+      world_a, "Position", sizeof(Position), AlignOf(Position));
   assert(pos_id != VKR_COMPONENT_TYPE_INVALID);
 
   VkrEntityId entity = vkr_entity_create_entity(world_a);

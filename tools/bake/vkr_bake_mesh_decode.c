@@ -90,16 +90,18 @@ vkr_internal bool8_t vkr_bake_mesh_emit_ranges(
         const Vec4 world_normal =
             mat4_mul_vec4(normal, vec4_new(source_normal.x, source_normal.y,
                                            source_normal.z, 0.0f));
-        const Vec4 world_tangent = mat4_mul_vec4(world,
-            vec4_new(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, 0.0f));
+        const Vec4 world_tangent =
+            mat4_mul_vec4(world, vec4_new(vertex.tangent.x, vertex.tangent.y,
+                                          vertex.tangent.z, 0.0f));
         triangle.vertex[corner] = (VkrBakeVertex){
             .position = mat4_mul_vec3(world, position),
             .normal = vec3_normalize(
                 vec3_new(world_normal.x, world_normal.y, world_normal.z)),
             .uv = vertex.texcoord,
             .color = vertex.colour,
-            .tangent = vec4_new(world_tangent.x, world_tangent.y, world_tangent.z,
-                                flipped ? -vertex.tangent.w : vertex.tangent.w)};
+            .tangent =
+                vec4_new(world_tangent.x, world_tangent.y, world_tangent.z,
+                         flipped ? -vertex.tangent.w : vertex.tangent.w)};
         if (!vkr_bake_mesh_finite_vec3(triangle.vertex[corner].position) ||
             !vkr_bake_mesh_finite_vec3(triangle.vertex[corner].normal) ||
             vec3_length(triangle.vertex[corner].normal) <= 1.0e-8f ||

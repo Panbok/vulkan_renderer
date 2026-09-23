@@ -64,12 +64,13 @@ static void debug_overlay_build_help(VkrUiSystem *ui) {
                &title);
   VkrUiWidgetConfig body = debug_overlay_text(
       ui, 11.0f, 13.0f, (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
-  vkr_ui_label(ui, string8_lit("body"),
-               string8_lit("F6  Toggle debug UI       Tab  Toggle mouse capture\n"
-                           "F4 / F5  Texture filter  F7   GPU pass timings\n"
-                           "F8  Cycle IBL mode       F9 / F10  IBL intensity\n"
-                           "G   Camera snapshot"),
-               &body);
+  vkr_ui_label(
+      ui, string8_lit("body"),
+      string8_lit("F6  Toggle debug UI       Tab  Toggle mouse capture\n"
+                  "F4 / F5  Texture filter  F7   GPU pass timings\n"
+                  "F8  Cycle IBL mode       F9 / F10  IBL intensity\n"
+                  "G   Camera snapshot"),
+      &body);
   (void)vkr_ui_panel_end(ui);
 }
 

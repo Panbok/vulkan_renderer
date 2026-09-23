@@ -1578,7 +1578,8 @@ vkr_internal bool8_t vkr_shadow_local_face_reusable(
           ((retained_token.transmission_valid_layer_mask & bit) != 0u &&
            MemCompare(history->transmission_resource_generations,
                       retained_token.transmission_resource_generations,
-                      sizeof(history->transmission_resource_generations)) == 0)) &&
+                      sizeof(history->transmission_resource_generations)) ==
+               0)) &&
          history->last_submit_value != 0u && history->static_only_contents &&
          history->static_generation == candidates->static_generation &&
          history->publication_generation ==

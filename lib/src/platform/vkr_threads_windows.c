@@ -36,7 +36,8 @@ vkr_internal DWORD WINAPI thread_wrapper(LPVOID param) {
   }
 
   // Exit early if a cancellation request was issued before the thread ran.
-  if (vkr_atomic_bool_load(&thread->cancel_requested, VKR_MEMORY_ORDER_ACQUIRE)) {
+  if (vkr_atomic_bool_load(&thread->cancel_requested,
+                           VKR_MEMORY_ORDER_ACQUIRE)) {
     vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
     return 0;
   }

@@ -17,8 +17,10 @@ void vkr_editor_field_style(VkrUiWidgetConfig *config);
 void vkr_editor_action_style(VkrUiWidgetConfig *config, VkrFontHandle heading);
 
 void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
-void vkr_editor_labels_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
-void vkr_editor_labels_project(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
+void vkr_editor_labels_build(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame);
+void vkr_editor_labels_project(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame);
 void vkr_editor_dock_show(VkrUiDockTree *dock, VkrUiDockPanelKind kind);
 void vkr_editor_dock_toggle(VkrUiDockTree *dock, VkrUiDockPanelKind kind);
 void vkr_editor_scene_toolbar_update(VkrEditorUi *editor,
@@ -29,8 +31,7 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame);
 void vkr_editor_viewport_build(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame);
-void vkr_editor_grid_build(VkrEditorUi *editor,
-                           const VkrSampleUiFrame *frame);
+void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
 void vkr_editor_grid_project(VkrEditorUi *editor,
                              const VkrSampleUiFrame *frame);
 void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,

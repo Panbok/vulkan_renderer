@@ -155,7 +155,8 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
                                               uint32_t max_updates);
 
 /** Refreshes demand counters once after world demand/publication changes. */
-void vkr_material_system_refresh_texture_stream_demand(VkrMaterialSystem *system);
+void vkr_material_system_refresh_texture_stream_demand(
+    VkrMaterialSystem *system);
 
 /** Commits successful reduced Scene output; retries each waiting request once.
  */
@@ -183,9 +184,11 @@ void vkr_material_system_set_texture_residency_budget(VkrMaterialSystem *system,
                                                       uint64_t budget_bytes);
 void vkr_material_system_set_automatic_texture_residency_budget(
     VkrMaterialSystem *system, uint64_t budget_bytes);
-/** Capacity retries use a finite high-water value even while budget is unlimited. */
+/** Capacity retries use a finite high-water value even while budget is
+ * unlimited. */
 void vkr_material_system_set_texture_capacity_budget(
-    VkrMaterialSystem *system, uint64_t budget_bytes, uint64_t capacity_allowance);
+    VkrMaterialSystem *system, uint64_t budget_bytes,
+    uint64_t capacity_allowance);
 
 /** Returns the neutral fallback representation for one texture slot. */
 VkrMaterialTexture

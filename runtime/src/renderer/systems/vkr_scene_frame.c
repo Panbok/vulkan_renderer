@@ -105,9 +105,8 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
                ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
                : 0u) |
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
-          (source->transmissive
-               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
-               : 0u),
+          (source->transmissive ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
+                                : 0u),
   };
   const uint32_t gpu_index =
       source->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC
@@ -218,16 +217,23 @@ VkrRendererError vkr_scene_build_world_draws(
   uint32_t skinning_count = 0;
   for (uint32_t i = 0; i < live_instance_count; ++i) {
     uint32_t slot = 0;
-    const VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(meshes, i, &slot);
-    if (instance->visible && instance->loading_state == VKR_MESH_LOADING_STATE_LOADED && instance->skinning) {
+    const VkrMeshInstance *instance =
+        vkr_mesh_manager_get_instance_by_live_index(meshes, i, &slot);
+    if (instance->visible &&
+        instance->loading_state == VKR_MESH_LOADING_STATE_LOADED &&
+        instance->skinning) {
       skinning_count++;
     }
   }
   if (skinning_count > VKR_SKINNING_BINDING_CAPACITY) {
     return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
   }
-  VkrSkinningInput *skinning = skinning_count ? vkr_allocator_alloc(scratch,
-      (uint64_t)skinning_count * sizeof(VkrSkinningInput), VKR_ALLOCATOR_MEMORY_TAG_ARRAY) : NULL;
+  VkrSkinningInput *skinning =
+      skinning_count
+          ? vkr_allocator_alloc(
+                scratch, (uint64_t)skinning_count * sizeof(VkrSkinningInput),
+                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
   if (skinning_count && !skinning) {
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
@@ -512,9 +518,15 @@ VkrRendererError vkr_scene_build_world_draws(
           .geometry = submesh->geometry,
           .material = draw_material,
           .model = instance->model,
-          .center = instance->skinning ? vec3_scale(vec3_add(instance->skinning_min, instance->skinning_max), 0.5f) : submesh->center,
-          .min_extents = instance->skinning ? instance->skinning_min : submesh->min_extents,
-          .max_extents = instance->skinning ? instance->skinning_max : submesh->max_extents,
+          .center = instance->skinning
+                        ? vec3_scale(vec3_add(instance->skinning_min,
+                                              instance->skinning_max),
+                                     0.5f)
+                        : submesh->center,
+          .min_extents = instance->skinning ? instance->skinning_min
+                                            : submesh->min_extents,
+          .max_extents = instance->skinning ? instance->skinning_max
+                                            : submesh->max_extents,
           .alpha = alpha,
           .submesh_index = submesh->geometry_submesh_index,
           .object_id = object_id,
@@ -523,7 +535,8 @@ VkrRendererError vkr_scene_build_world_draws(
           .skinning_index = skinning_index,
           .bounds_valid = instance->bounds_valid,
           .transmissive = transmissive,
-          .double_sided = instance->skinning || (material && material->double_sided),
+          .double_sided =
+              instance->skinning || (material && material->double_sided),
           .shadow_mobility = instance->shadow_mobility,
       };
       vkr_scene_emit_world_source(&emit, &source);

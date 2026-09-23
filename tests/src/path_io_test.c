@@ -21,8 +21,7 @@ bool32_t run_path_io_tests(void) {
                         .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_create_directory(&directory));
   char name[1024];
-  snprintf(name, sizeof(name),
-           PROJECT_SOURCE_DIR "tests/tmp/настройки_%u.json",
+  snprintf(name, sizeof(name), PROJECT_SOURCE_DIR "tests/tmp/настройки_%u.json",
            vkr_platform_get_process_id());
   FilePath path = {.path = string8_create((uint8_t *)name, strlen(name)),
                    .type = FILE_PATH_TYPE_ABSOLUTE};

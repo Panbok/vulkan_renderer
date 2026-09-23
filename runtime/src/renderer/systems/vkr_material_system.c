@@ -1,5 +1,5 @@
-#include <math.h>
 #include "renderer/systems/vkr_material_system.h"
+#include <math.h>
 
 #include "containers/vkr_sort.h"
 #include "defines.h"
@@ -160,33 +160,57 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
 
   VkrMaterial *material = &system->materials.data[handle.id - 1];
   if (!isfinite(material->pbr.subsurface_strength) ||
-      material->pbr.subsurface_strength < 0.0f || material->pbr.subsurface_strength > 1.0f ||
+      material->pbr.subsurface_strength < 0.0f ||
+      material->pbr.subsurface_strength > 1.0f ||
       material->pbr.subsurface_profile >= 8u ||
       (material->pbr.subsurface_strength > 0.0f &&
        (material->material_type != VKR_MATERIAL_TYPE_PBR ||
-        material->pbr.transmission_factor > 0.0f || material->pbr.thickness_factor > 0.0f ||
+        material->pbr.transmission_factor > 0.0f ||
+        material->pbr.thickness_factor > 0.0f ||
         material->pbr.diffuse_transmission_strength > 0.0f)) ||
       !isfinite(material->pbr.diffuse_transmission_strength) ||
-      material->pbr.diffuse_transmission_strength < 0.0f || material->pbr.diffuse_transmission_strength > 1.0f ||
-      !isfinite(material->pbr.diffuse_transmission_color.x) || material->pbr.diffuse_transmission_color.x < 0.0f || material->pbr.diffuse_transmission_color.x > 1.0f ||
-      !isfinite(material->pbr.diffuse_transmission_color.y) || material->pbr.diffuse_transmission_color.y < 0.0f || material->pbr.diffuse_transmission_color.y > 1.0f ||
-      !isfinite(material->pbr.diffuse_transmission_color.z) || material->pbr.diffuse_transmission_color.z < 0.0f || material->pbr.diffuse_transmission_color.z > 1.0f ||
+      material->pbr.diffuse_transmission_strength < 0.0f ||
+      material->pbr.diffuse_transmission_strength > 1.0f ||
+      !isfinite(material->pbr.diffuse_transmission_color.x) ||
+      material->pbr.diffuse_transmission_color.x < 0.0f ||
+      material->pbr.diffuse_transmission_color.x > 1.0f ||
+      !isfinite(material->pbr.diffuse_transmission_color.y) ||
+      material->pbr.diffuse_transmission_color.y < 0.0f ||
+      material->pbr.diffuse_transmission_color.y > 1.0f ||
+      !isfinite(material->pbr.diffuse_transmission_color.z) ||
+      material->pbr.diffuse_transmission_color.z < 0.0f ||
+      material->pbr.diffuse_transmission_color.z > 1.0f ||
       (material->pbr.diffuse_transmission_strength > 0.0f &&
        (material->material_type != VKR_MATERIAL_TYPE_PBR ||
-        material->pbr.transmission_factor > 0.0f || material->pbr.thickness_factor > 0.0f)) ||
+        material->pbr.transmission_factor > 0.0f ||
+        material->pbr.thickness_factor > 0.0f)) ||
       !isfinite(material->pbr.anisotropy_strength) ||
-      material->pbr.anisotropy_strength < 0.0f || material->pbr.anisotropy_strength > 1.0f ||
+      material->pbr.anisotropy_strength < 0.0f ||
+      material->pbr.anisotropy_strength > 1.0f ||
       !isfinite(material->pbr.anisotropy_rotation) ||
-      (material->pbr.anisotropy_strength > 0.0f && material->pbr.transmission_factor > 0.0f) ||
-      !isfinite(material->pbr.clearcoat_factor) || material->pbr.clearcoat_factor < 0.0f ||
-      material->pbr.clearcoat_factor > 1.0f || !isfinite(material->pbr.clearcoat_roughness) ||
-      material->pbr.clearcoat_roughness < 0.0f || material->pbr.clearcoat_roughness > 1.0f ||
+      (material->pbr.anisotropy_strength > 0.0f &&
+       material->pbr.transmission_factor > 0.0f) ||
+      !isfinite(material->pbr.clearcoat_factor) ||
+      material->pbr.clearcoat_factor < 0.0f ||
+      material->pbr.clearcoat_factor > 1.0f ||
+      !isfinite(material->pbr.clearcoat_roughness) ||
+      material->pbr.clearcoat_roughness < 0.0f ||
+      material->pbr.clearcoat_roughness > 1.0f ||
       !isfinite(material->pbr.clearcoat_normal_scale) ||
-      !isfinite(material->pbr.sheen_color.x) || material->pbr.sheen_color.x < 0.0f || material->pbr.sheen_color.x > 1.0f ||
-      !isfinite(material->pbr.sheen_color.y) || material->pbr.sheen_color.y < 0.0f || material->pbr.sheen_color.y > 1.0f ||
-      !isfinite(material->pbr.sheen_color.z) || material->pbr.sheen_color.z < 0.0f || material->pbr.sheen_color.z > 1.0f ||
-      !isfinite(material->pbr.sheen_roughness) || material->pbr.sheen_roughness < 0.0f || material->pbr.sheen_roughness > 1.0f) {
-    if (out_error) *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      !isfinite(material->pbr.sheen_color.x) ||
+      material->pbr.sheen_color.x < 0.0f ||
+      material->pbr.sheen_color.x > 1.0f ||
+      !isfinite(material->pbr.sheen_color.y) ||
+      material->pbr.sheen_color.y < 0.0f ||
+      material->pbr.sheen_color.y > 1.0f ||
+      !isfinite(material->pbr.sheen_color.z) ||
+      material->pbr.sheen_color.z < 0.0f ||
+      material->pbr.sheen_color.z > 1.0f ||
+      !isfinite(material->pbr.sheen_roughness) ||
+      material->pbr.sheen_roughness < 0.0f ||
+      material->pbr.sheen_roughness > 1.0f) {
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
   VkrMaterial published = *material;
@@ -196,7 +220,8 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
   if ((published.pbr.diffuse_transmission_strength > 0.0f ||
        published.pbr.subsurface_strength > 0.0f) &&
       published.alpha_mode == VKR_MATERIAL_ALPHA_BLEND) {
-    if (out_error) *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
   if (material->id != handle.id || material->generation != handle.generation ||
@@ -314,7 +339,8 @@ vkr_material_system_stream_last_used(const VkrMaterialSystem *system,
              : 0u;
 }
 
-void vkr_material_system_refresh_texture_stream_demand(VkrMaterialSystem *system) {
+void vkr_material_system_refresh_texture_stream_demand(
+    VkrMaterialSystem *system) {
   uint32_t missing = 0u;
   uint32_t evicted = 0u;
   for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
@@ -329,8 +355,8 @@ void vkr_material_system_refresh_texture_stream_demand(VkrMaterialSystem *system
   system->texture_stream_demanded_evicted_count = evicted;
 }
 
-static void vkr_material_system_requeue_demanded_evictions(
-    VkrMaterialSystem *system) {
+static void
+vkr_material_system_requeue_demanded_evictions(VkrMaterialSystem *system) {
   for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
     VkrMaterialTextureStream *stream = &system->texture_streams[i];
     if (stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED &&
@@ -468,7 +494,7 @@ typedef struct VkrMaterialTextureEvictionCandidate {
 } VkrMaterialTextureEvictionCandidate;
 
 static int32_t vkr_material_system_eviction_compare_texture(const void *a,
-                                                        const void *b) {
+                                                            const void *b) {
   const VkrTextureHandle x =
       ((const VkrMaterialTextureEvictionCandidate *)a)->texture;
   const VkrTextureHandle y =
@@ -479,9 +505,11 @@ static int32_t vkr_material_system_eviction_compare_texture(const void *a,
 }
 
 static int32_t vkr_material_system_eviction_compare_age(const void *a,
-                                                    const void *b) {
-  const uint64_t x = ((const VkrMaterialTextureEvictionCandidate *)a)->last_used;
-  const uint64_t y = ((const VkrMaterialTextureEvictionCandidate *)b)->last_used;
+                                                        const void *b) {
+  const uint64_t x =
+      ((const VkrMaterialTextureEvictionCandidate *)a)->last_used;
+  const uint64_t y =
+      ((const VkrMaterialTextureEvictionCandidate *)b)->last_used;
   return x != y ? (x < y ? -1 : 1)
                 : vkr_material_system_eviction_compare_texture(a, b);
 }
@@ -497,7 +525,8 @@ vkr_material_system_evict_to_fit(VkrMaterialSystem *system,
     return true_v;
 
   /* The fixed stream capacity bounds this cold-path scratch to 64 KiB.
-   * Eviction removes a whole shared texture, so its newest user owns priority. */
+   * Eviction removes a whole shared texture, so its newest user owns priority.
+   */
   VkrMaterialTextureEvictionCandidate
       candidates[VKR_MATERIAL_TEXTURE_STREAM_CAPACITY];
   uint32_t candidate_count = 0u;
@@ -505,20 +534,20 @@ vkr_material_system_evict_to_fit(VkrMaterialSystem *system,
     const VkrMaterialTextureStream *stream = &system->texture_streams[i];
     if (stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT &&
         !vkr_material_system_texture_handle_equal(stream->resident_texture,
-                                                   protected_texture)) {
+                                                  protected_texture)) {
       candidates[candidate_count++] = (VkrMaterialTextureEvictionCandidate){
           stream->resident_texture,
           vkr_material_system_stream_last_used(system, stream)};
     }
   }
   vkr_sort(candidates, candidate_count, sizeof(*candidates),
-        vkr_material_system_eviction_compare_texture);
+           vkr_material_system_eviction_compare_texture);
   uint32_t texture_count = 0u;
   for (uint32_t i = 0u; i < candidate_count; ++i) {
     const VkrMaterialTextureEvictionCandidate candidate = candidates[i];
-    if (texture_count && vkr_material_system_texture_handle_equal(
-                             candidates[texture_count - 1u].texture,
-                             candidate.texture)) {
+    if (texture_count &&
+        vkr_material_system_texture_handle_equal(
+            candidates[texture_count - 1u].texture, candidate.texture)) {
       candidates[texture_count - 1u].last_used =
           Max(candidates[texture_count - 1u].last_used, candidate.last_used);
     } else {
@@ -526,11 +555,12 @@ vkr_material_system_evict_to_fit(VkrMaterialSystem *system,
     }
   }
   vkr_sort(candidates, texture_count, sizeof(*candidates),
-        vkr_material_system_eviction_compare_age);
-  for (uint32_t i = 0u; i < texture_count &&
-                       system->texture_stream_resident_bytes > limit; ++i) {
+           vkr_material_system_eviction_compare_age);
+  for (uint32_t i = 0u;
+       i < texture_count && system->texture_stream_resident_bytes > limit;
+       ++i) {
     if (!vkr_material_system_evict_resident_texture(system,
-                                                     candidates[i].texture))
+                                                    candidates[i].texture))
       return false_v;
   }
   return system->texture_stream_resident_bytes <= limit;
@@ -659,7 +689,8 @@ void vkr_material_system_set_automatic_texture_residency_budget(
 }
 
 void vkr_material_system_set_texture_capacity_budget(
-    VkrMaterialSystem *system, uint64_t budget_bytes, uint64_t capacity_allowance) {
+    VkrMaterialSystem *system, uint64_t budget_bytes,
+    uint64_t capacity_allowance) {
   if (!system || system->texture_stream_budget_user_configured)
     return;
   if (system->texture_stream_count &&
@@ -744,13 +775,13 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
     VkrMaterial *material =
         vkr_material_system_get_by_handle(system, stream->material);
     VkrResourceHandleInfo resolved = {0};
-    VkrTexture *texture =
-        state == VKR_RESOURCE_LOAD_STATE_READY && material &&
-                vkr_resource_system_try_get_resolved(&stream->request, &resolved) &&
-                resolved.type == VKR_RESOURCE_TYPE_TEXTURE
-            ? vkr_texture_system_get_by_handle(system->texture_system,
-                                                 resolved.as.texture)
-            : NULL;
+    VkrTexture *texture = state == VKR_RESOURCE_LOAD_STATE_READY && material &&
+                                  vkr_resource_system_try_get_resolved(
+                                      &stream->request, &resolved) &&
+                                  resolved.type == VKR_RESOURCE_TYPE_TEXTURE
+                              ? vkr_texture_system_get_by_handle(
+                                    system->texture_system, resolved.as.texture)
+                              : NULL;
     if (!texture || texture->description.type != VKR_TEXTURE_TYPE_2D) {
       if (material && dependency_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY &&
           system->texture_stream_memory_recovery_enabled) {
@@ -804,7 +835,8 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
       continue;
     }
     /* Residency acquires its own reference before request ownership ends. */
-    vkr_texture_system_add_ref_by_handle(system->texture_system, texture_handle);
+    vkr_texture_system_add_ref_by_handle(system->texture_system,
+                                         texture_handle);
     const VkrMaterialTexture replacement = {
         .handle = texture_handle,
         .slot = stream->slot,
@@ -813,7 +845,7 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
     if (!vkr_material_system_replace_stream_texture(system, stream,
                                                     replacement)) {
       (void)vkr_texture_system_release_by_handle(system->texture_system,
-                                                   texture_handle);
+                                                 texture_handle);
       ++i;
       continue;
     }

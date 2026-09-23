@@ -124,9 +124,9 @@ uint32_t vkr_ssr_depth_mip_count(uint32_t source_width, uint32_t source_height);
  * Builds one GPU record from an already normalized configuration. `projection`
  * is the current jittered projection used by the opaque raster;
  * `previous_projection` belongs to the previous submitted raster and is used
- * only by shared surface-motion depth helpers; SSR uses reflected-hit transport.
- * History jitter defaults to zero; each backend supplies the selected producer's
- * jitter difference when temporal raster jitter is enabled.
+ * only by shared surface-motion depth helpers; SSR uses reflected-hit
+ * transport. History jitter defaults to zero; each backend supplies the
+ * selected producer's jitter difference when temporal raster jitter is enabled.
  * A zero source extent returns a zero record so the caller can reject it at
  * its frame boundary without dividing by zero in a shader.
  */

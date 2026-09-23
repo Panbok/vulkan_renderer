@@ -52,8 +52,9 @@ typedef enum VkrSampleCameraView {
   VKR_SAMPLE_CAMERA_VIEW_COUNT,
 } VkrSampleCameraView;
 
-/* Runtime-owned viewport controls; the UI submits a copied request. Grid spacing
- * is in world units. Orthographic selection enables the grid on transition. */
+/* Runtime-owned viewport controls; the UI submits a copied request. Grid
+ * spacing is in world units. Orthographic selection enables the grid on
+ * transition. */
 typedef struct VkrSampleViewState {
   VkrSampleCameraView camera_view;
   VkrRenderMode render_mode;
@@ -71,7 +72,8 @@ typedef struct VkrSampleViewRequest {
 typedef struct VkrSampleSceneRequest {
   String8 path;
   String8 sidecar_path;
-  String8 asset_root; /* Managed workspace root; empty uses repository asset root. */
+  String8 asset_root; /* Managed workspace root; empty uses repository asset
+                         root. */
   bool8_t select;
   bool8_t unload;
   bool8_t discard_edits;

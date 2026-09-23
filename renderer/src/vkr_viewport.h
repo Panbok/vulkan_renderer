@@ -47,6 +47,7 @@ typedef struct VkrViewportMapping {
  * @param out_y Render-target Y in pixels
  * @return true if the point lies within `image_rect_px`, false otherwise
  */
-bool8_t vkr_viewport_mapping_window_to_target_pixel(
-    const VkrViewportMapping *mapping, int32_t window_x, int32_t window_y,
-    uint32_t *out_x, uint32_t *out_y);
+bool8_t
+vkr_viewport_mapping_window_to_target_pixel(const VkrViewportMapping *mapping,
+                                            int32_t window_x, int32_t window_y,
+                                            uint32_t *out_x, uint32_t *out_y);

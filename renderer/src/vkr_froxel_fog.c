@@ -5,9 +5,9 @@
 
 VkrFroxelFogSettings vkr_froxel_fog_settings_defaults(void) {
   return (VkrFroxelFogSettings){.color = {1.0f, 1.0f, 1.0f},
-                               .density = 0.01f,
-                               .height_falloff = 0.1f,
-                               .max_distance = 200.0f};
+                                .density = 0.01f,
+                                .height_falloff = 0.1f,
+                                .max_distance = 200.0f};
 }
 
 static bool8_t finite_vec3(Vec3 v) {
@@ -31,8 +31,7 @@ bool8_t vkr_froxel_fog_settings_valid(const VkrFroxelFogSettings *settings) {
   for (uint32_t i = 0; i < settings->box_count; ++i) {
     const VkrFroxelDensityBox *box = &settings->boxes[i];
     if (!finite_vec3(box->minimum) || !finite_vec3(box->maximum) ||
-        box->minimum.x >= box->maximum.x ||
-        box->minimum.y >= box->maximum.y ||
+        box->minimum.x >= box->maximum.x || box->minimum.y >= box->maximum.y ||
         box->minimum.z >= box->maximum.z ||
         !isfinite(box->density_multiplier) || box->density_multiplier < 0.0f)
       return false_v;
@@ -41,15 +40,15 @@ bool8_t vkr_froxel_fog_settings_valid(const VkrFroxelFogSettings *settings) {
 }
 
 bool8_t vkr_froxel_fog_projection_valid(const VkrFroxelFogSettings *settings,
-                                       Mat4 projection) {
+                                        Mat4 projection) {
   if (!settings->enabled)
     return true_v;
   /* The volume extrapolates beyond the raster far plane; only its near
      boundary constrains the authored fog range. */
   const float32_t near_distance = projection.m23 / projection.m22;
   const float32_t ratio = settings->max_distance / near_distance;
-  return isfinite(near_distance) && near_distance > 0.0f &&
-         isfinite(ratio) && ratio > 1.0f;
+  return isfinite(near_distance) && near_distance > 0.0f && isfinite(ratio) &&
+         ratio > 1.0f;
 }
 
 static void select_local_lights(const VkrFrameInput *input,
@@ -60,7 +59,8 @@ static void select_local_lights(const VkrFrameInput *input,
     return;
 
   /* Bound the entire fog frustum once, then rank upper-bound illumination at
-     the closest point in that box. View motion changes ranking, not ownership. */
+     the closest point in that box. View motion changes ranking, not ownership.
+   */
   Vec3 minimum = {INFINITY, INFINITY, INFINITY};
   Vec3 maximum = {-INFINITY, -INFINITY, -INFINITY};
   for (uint32_t corner = 0; corner < 4u; ++corner) {
@@ -73,12 +73,11 @@ static void select_local_lights(const VkrFrameInput *input,
     b = vec4_scale(b, 1.0f / b.w);
     const Vec4 av = mat4_mul_vec4(input->globals.view, a);
     const Vec4 bv = mat4_mul_vec4(input->globals.view, b);
-    const float32_t t = (-params->height_distance_phase.z - av.z) /
-                        (bv.z - av.z);
-    const Vec3 points[2] = {{a.x, a.y, a.z},
-                            {a.x + t * (b.x - a.x),
-                             a.y + t * (b.y - a.y),
-                             a.z + t * (b.z - a.z)}};
+    const float32_t t =
+        (-params->height_distance_phase.z - av.z) / (bv.z - av.z);
+    const Vec3 points[2] = {
+        {a.x, a.y, a.z},
+        {a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z)}};
     for (uint32_t j = 0; j < 2u; ++j) {
       minimum.x = Min(minimum.x, points[j].x);
       minimum.y = Min(minimum.y, points[j].y);
@@ -93,15 +92,19 @@ static void select_local_lights(const VkrFrameInput *input,
   for (uint32_t i = 0; i < input->lighting->point_light_count; ++i) {
     const VkrPointLight *light = &input->lighting->point_lights[i];
     const uint32_t first = input->local_shadow->light_first_view[i];
-    const uint32_t faces = light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
+    const uint32_t faces =
+        light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
     if (!first || first - 1u + faces > input->local_shadow->view_count)
       continue;
-    const float64_t dx = Max(Max(minimum.x - light->position.x,
-                                 light->position.x - maximum.x), 0.0f);
-    const float64_t dy = Max(Max(minimum.y - light->position.y,
-                                 light->position.y - maximum.y), 0.0f);
-    const float64_t dz = Max(Max(minimum.z - light->position.z,
-                                 light->position.z - maximum.z), 0.0f);
+    const float64_t dx =
+        Max(Max(minimum.x - light->position.x, light->position.x - maximum.x),
+            0.0f);
+    const float64_t dy =
+        Max(Max(minimum.y - light->position.y, light->position.y - maximum.y),
+            0.0f);
+    const float64_t dz =
+        Max(Max(minimum.z - light->position.z, light->position.z - maximum.z),
+            0.0f);
     const float64_t distance_squared = dx * dx + dy * dy + dz * dz;
     if (light->kind != VKR_POINT_LIGHT_KIND_POLYNOMIAL && light->range > 0.0f &&
         distance_squared >= (float64_t)light->range * light->range)
@@ -110,10 +113,12 @@ static void select_local_lights(const VkrFrameInput *input,
     if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL)
       denominator = Max((float64_t)Max(light->constant, 1.0f) +
                             light->linear * sqrt(distance_squared) +
-                            light->quadratic * distance_squared, 0.0001);
+                            light->quadratic * distance_squared,
+                        0.0001);
     const float64_t score = light->intensity *
-        (0.2126 * light->color.x + 0.7152 * light->color.y +
-         0.0722 * light->color.z) / denominator;
+                            (0.2126 * light->color.x + 0.7152 * light->color.y +
+                             0.0722 * light->color.z) /
+                            denominator;
     if (score <= 0.0)
       continue;
     for (uint32_t slot = 0; slot < 2u; ++slot) {
@@ -137,15 +142,15 @@ static void select_local_lights(const VkrFrameInput *input,
 }
 
 VkrFroxelFogGpuParams vkr_froxel_fog_prepare(const VkrFrameInput *input,
-                                            uint32_t width, uint32_t height) {
+                                             uint32_t width, uint32_t height) {
   const VkrFroxelFogSettings *s = &input->globals.froxel_fog;
   if (!s->enabled || input->globals.render_mode != VKR_RENDER_MODE_DEFAULT)
     return (VkrFroxelFogGpuParams){0};
-  const float32_t near_distance = input->globals.projection.m23 /
-                                 input->globals.projection.m22;
+  const float32_t near_distance =
+      input->globals.projection.m23 / input->globals.projection.m22;
   const float32_t log_range = logf(s->max_distance / near_distance);
-  const Mat4 view_projection = mat4_mul(input->globals.projection,
-                                       input->globals.view);
+  const Mat4 view_projection =
+      mat4_mul(input->globals.projection, input->globals.view);
   VkrFroxelFogGpuParams params = {
       .inverse_view_projection = mat4_inverse(view_projection),
       .previous_view_projection = view_projection,
@@ -157,16 +162,17 @@ VkrFroxelFogGpuParams vkr_froxel_fog_prepare(const VkrFrameInput *input,
                                 s->max_distance, 0.0f},
       .depth_mapping = {near_distance, log_range, 1.0f / log_range, 0.0f},
       .temporal_clamp = {0.9f, 0.25f, 4.0f, 1e-6f},
-      .grid_dimensions_cell_pixels = {Max(width / VKR_FROXEL_FOG_CELL_PIXELS, 1u),
-          Max(height / VKR_FROXEL_FOG_CELL_PIXELS, 1u), VKR_FROXEL_FOG_DEPTH,
-          VKR_FROXEL_FOG_CELL_PIXELS},
+      .grid_dimensions_cell_pixels =
+          {Max(width / VKR_FROXEL_FOG_CELL_PIXELS, 1u),
+           Max(height / VKR_FROXEL_FOG_CELL_PIXELS, 1u), VKR_FROXEL_FOG_DEPTH,
+           VKR_FROXEL_FOG_CELL_PIXELS},
   };
   params.selected_local_indices_count[3] = s->box_count;
   for (uint32_t i = 0; i < s->box_count; ++i) {
     const VkrFroxelDensityBox *b = &s->boxes[i];
     params.boxes[i] = (VkrFroxelDensityBoxGpu){
         .min_density = {b->minimum.x, b->minimum.y, b->minimum.z,
-                         b->density_multiplier},
+                        b->density_multiplier},
         .max_reserved = {b->maximum.x, b->maximum.y, b->maximum.z, 0.0f}};
   }
   select_local_lights(input, &params);
@@ -212,7 +218,8 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
       HASH(light->render_id);
       const uint32_t first = input->local_shadow->light_first_view[index];
       HASH(first);
-      const uint32_t faces = light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
+      const uint32_t faces =
+          light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
       hash = hash_bytes(hash, &input->local_shadow->views[first - 1u],
                         faces * sizeof(VkrLocalShadowView));
     }
@@ -220,7 +227,8 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
   if (input->shadow) {
     HASH(input->shadow->cascade_count);
     hash = hash_bytes(hash, input->shadow->cascades,
-                      input->shadow->cascade_count * sizeof(VkrShadowCascadePacketData));
+                      input->shadow->cascade_count *
+                          sizeof(VkrShadowCascadePacketData));
     HASH(input->shadow->receiver.receiver_bias_texels);
   }
 #undef HASH

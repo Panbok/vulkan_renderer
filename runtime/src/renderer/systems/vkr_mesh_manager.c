@@ -1,5 +1,5 @@
-#include "vkr_frame_input.h"
 #include "renderer/systems/vkr_mesh_manager.h"
+#include "vkr_frame_input.h"
 #include "vkr_geometry_upload.h"
 
 #include "containers/bitset.h"
@@ -1602,7 +1602,8 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
           uint32_t *src_indices = (uint32_t *)mesh_result->mesh_buffer.indices;
           uint32_t opaque_write = 0;
           for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-            const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
+            const VkrGeometryUploadRange *range =
+                &mesh_result->submeshes.data[i];
             if (vkr_mesh_manager_material_uses_cutout(
                     manager->material_system,
                     mesh_result->material_handles.data[i])) {
@@ -2842,8 +2843,7 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
             vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
 
         for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-          const VkrGeometryUploadRange *range =
-              &mesh_result->submeshes.data[i];
+          const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
           Vec3 range_min = vec3_add(range->center, range->min_extents);
           Vec3 range_max = vec3_add(range->center, range->max_extents);
           union_min.x = vkr_min_f32(union_min.x, range_min.x);
@@ -3747,16 +3747,18 @@ uint32_t vkr_mesh_manager_instance_capacity(const VkrMeshManager *manager) {
 }
 
 void vkr_mesh_manager_instance_set_skinning(VkrMeshManager *manager,
-    VkrMeshInstanceHandle handle, const VkrSkinningInput *input,
-    Mat4 model, Vec3 min_extents, Vec3 max_extents) {
+                                            VkrMeshInstanceHandle handle,
+                                            const VkrSkinningInput *input,
+                                            Mat4 model, Vec3 min_extents,
+                                            Vec3 max_extents) {
   VkrMeshInstance *instance = vkr_mesh_manager_get_instance(manager, handle);
   if (!instance) {
     return;
   }
   const uint64_t generation = input ? input->pose_generation : 0;
   bool8_t changed = instance->skinning != input ||
-      instance->skinning_generation != generation ||
-      MemCompare(&instance->model, &model, sizeof(model)) != 0;
+                    instance->skinning_generation != generation ||
+                    MemCompare(&instance->model, &model, sizeof(model)) != 0;
   instance->skinning = input;
   instance->skinning_generation = generation;
   instance->model = model;
@@ -3767,16 +3769,18 @@ void vkr_mesh_manager_instance_set_skinning(VkrMeshManager *manager,
     instance->bounds_valid = true_v;
     instance->bounds_world_center = mat4_mul_vec3(model, center);
     instance->bounds_world_radius = vec3_length(vec3_sub(max_extents, center)) *
-        mat4_affine_sphere_scale(model);
+                                    mat4_affine_sphere_scale(model);
     if (instance->shadow_mobility != VKR_SHADOW_CASTER_MOBILITY_DYNAMIC) {
       instance->shadow_mobility = VKR_SHADOW_CASTER_MOBILITY_DYNAMIC;
       vkr_mesh_manager_note_topology_change(manager);
     }
   } else {
-    VkrMeshAsset *asset = vkr_mesh_manager_get_live_asset(manager, instance->asset);
+    VkrMeshAsset *asset =
+        vkr_mesh_manager_get_live_asset(manager, instance->asset);
     vkr_mesh_manager_update_instance_bounds(instance, asset, model);
   }
   if (changed) {
-    vkr_mesh_manager_note_content_change(manager, instance->shadow_mobility, true_v);
+    vkr_mesh_manager_note_content_change(manager, instance->shadow_mobility,
+                                         true_v);
   }
 }

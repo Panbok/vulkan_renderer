@@ -53,9 +53,9 @@ bool8_t vkr_mesh_cook_deduplicate_vertices(
   VkrVertex3d *unique = vkr_allocator_alloc(
       scratch_allocator, (uint64_t)vertex_count * sizeof(*unique),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *remap = vkr_allocator_alloc(
-      scratch_allocator, (uint64_t)vertex_count * sizeof(*remap),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *remap = vkr_allocator_alloc(scratch_allocator,
+                                        (uint64_t)vertex_count * sizeof(*remap),
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   VkrMeshSkinVertex *unique_skin =
       skin_vertices
           ? vkr_allocator_alloc(scratch_allocator,
@@ -70,7 +70,8 @@ bool8_t vkr_mesh_cook_deduplicate_vertices(
   }
   uint32_t unique_count = 0u;
   for (uint32_t i = 0u; i < vertex_count; ++i) {
-    const uint32_t bucket = vkr_mesh_cook_vertex_hash(&vertices[i]) % table_size;
+    const uint32_t bucket =
+        vkr_mesh_cook_vertex_hash(&vertices[i]) % table_size;
     bool8_t found = false_v;
     for (uint32_t probe = 0u; probe < table_size; ++probe) {
       const uint32_t index = (bucket + probe) % table_size;

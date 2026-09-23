@@ -1,8 +1,8 @@
 #pragma once
 
 #include "defines.h"
-#include "shaders/shared/ssgi_contract.slangh"
 #include "math/mat.h"
+#include "shaders/shared/ssgi_contract.slangh"
 
 /** SSGI never emits more than this many hierarchy decisions for one ray. */
 #define VKR_SSGI_MAX_STEPS 24u
@@ -40,8 +40,9 @@ typedef struct VkrSsgiConfig {
  * UV is canonical top-left. View space is right handed with forward -Z; all
  * hierarchy and history depths are positive view depth (`-view.z`), where zero
  * represents an uncovered pixel. `view` transforms the world-space G-buffer
- * normal before cosine-weighted diffuse sampling. `previous_projection_*` linearize the
- * previous device depth supplied by the existing motion-validity buffer.
+ * normal before cosine-weighted diffuse sampling. `previous_projection_*`
+ * linearize the previous device depth supplied by the existing motion-validity
+ * buffer.
  */
 typedef struct VkrSsgiGpuParams {
   Mat4 projection;
@@ -95,7 +96,8 @@ VkrSsgiConfig vkr_ssgi_config_normalize(const VkrSsgiConfig *config);
 uint32_t vkr_ssgi_reduced_extent(uint32_t extent);
 
 /** Includes the half-resolution base level and ends at 1x1. */
-uint32_t vkr_ssgi_depth_mip_count(uint32_t source_width, uint32_t source_height);
+uint32_t vkr_ssgi_depth_mip_count(uint32_t source_width,
+                                  uint32_t source_height);
 
 /**
  * Builds one GPU record from an already normalized configuration. `projection`
@@ -105,9 +107,7 @@ uint32_t vkr_ssgi_depth_mip_count(uint32_t source_width, uint32_t source_height)
  * A zero source extent returns a zero record so the caller can reject it at
  * its frame boundary without dividing by zero in a shader.
  */
-VkrSsgiGpuParams vkr_ssgi_gpu_params(const VkrSsgiConfig *config, Mat4 projection,
-                                   Mat4 inverse_projection, Mat4 view,
-                                   Mat4 previous_projection,
-                                   uint32_t source_width,
-                                   uint32_t source_height,
-                                   bool8_t history_valid, uint32_t sample_phase);
+VkrSsgiGpuParams vkr_ssgi_gpu_params(
+    const VkrSsgiConfig *config, Mat4 projection, Mat4 inverse_projection,
+    Mat4 view, Mat4 previous_projection, uint32_t source_width,
+    uint32_t source_height, bool8_t history_valid, uint32_t sample_phase);

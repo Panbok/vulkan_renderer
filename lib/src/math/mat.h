@@ -236,9 +236,8 @@ static INLINE float32_t mat4_affine_sphere_scale(Mat4 model) {
   const float64_t row2 = c0 * c0 + c1 * c1 + c2 * c2 + ac + bc;
   const float64_t bound = sqrt(Max(row0, Max(row1, row2)));
   const float32_t rounded = (float32_t)bound;
-  return rounded > 0.0f && isfinite(rounded)
-             ? nextafterf(rounded, INFINITY)
-             : rounded;
+  return rounded > 0.0f && isfinite(rounded) ? nextafterf(rounded, INFINITY)
+                                             : rounded;
 }
 
 /** Affine reflection parity, matching the prepared normal-basis sign. */
@@ -756,8 +755,8 @@ static INLINE Mat4 mat4_inverse(Mat4 m) {
   // Compare cancellation against the terms that formed the determinant, not
   // an absolute world-unit threshold. Wide orthographic projections have small
   // determinants even though their axes are independent and well conditioned.
-  const float32_t determinant_terms = fabsf(m00 * c00) + fabsf(m01 * c01) +
-                                      fabsf(m02 * c02) + fabsf(m03 * c03);
+  const float32_t determinant_terms =
+      fabsf(m00 * c00) + fabsf(m01 * c01) + fabsf(m02 * c02) + fabsf(m03 * c03);
   if (!isfinite(det) || !isfinite(determinant_terms) ||
       fabsf(det) <= 1e-6f * determinant_terms) {
     return mat4_identity();

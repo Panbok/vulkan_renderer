@@ -218,7 +218,8 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                       "does not match VKR_FRAME_INPUT_VERSION");
   if (!isfinite(packet->frame.delta_time) || packet->frame.delta_time < 0.0)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.frame.delta_time", "must be finite and nonnegative");
+                      "packet.frame.delta_time",
+                      "must be finite and nonnegative");
 
   /* Tonemapping multiplies by the manual value and the metering passes raise
      two to the compensation bias with no recovery branch, so both are proven
@@ -280,20 +281,22 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                       "packet.globals.dof_enabled", "must be zero or one");
   if (packet->globals.motion_blur_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.globals.motion_blur_enabled", "must be zero or one");
+                      "packet.globals.motion_blur_enabled",
+                      "must be zero or one");
   if (packet->globals.motion_blur_enabled &&
       !vkr_motion_blur_controls_valid(packet->globals.motion_blur_shutter_angle,
                                       packet->globals.projection))
-    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.globals.motion_blur",
-                      "requires finite perspective depth and shutter angle in [0,360]");
+    VKR_REJECT_PACKET(
+        VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.globals.motion_blur",
+        "requires finite perspective depth and shutter angle in [0,360]");
   if (packet->globals.dof_enabled &&
       !vkr_dof_controls_valid(packet->globals.dof_focus_distance,
                               packet->globals.dof_f_stop,
                               packet->globals.projection))
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.dof",
-                      "requires finite perspective depth, positive f-stop and focus beyond the focal length");
+                      "requires finite perspective depth, positive f-stop and "
+                      "focus beyond the focal length");
   if (packet->globals.bloom_enabled &&
       (!isfinite(packet->globals.bloom_threshold) ||
        packet->globals.bloom_threshold < 0.0f))
@@ -319,7 +322,8 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
       !vkr_froxel_fog_projection_valid(&packet->globals.froxel_fog,
                                        packet->globals.projection))
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.globals.froxel_fog", "invalid volumetric fog medium or depth range");
+                      "packet.globals.froxel_fog",
+                      "invalid volumetric fog medium or depth range");
   if (packet->globals.ssgi_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.ssgi_enabled", "must be zero or one");
@@ -357,7 +361,8 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VkrSkinningHistory skinning_layout;
     if (!vkr_skinning_history_prepare(world, &skinning_layout)) {
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.world.skinning", "exceeds deformation capacity");
+                        "packet.world.skinning",
+                        "exceeds deformation capacity");
     }
     for (uint32_t i = 0; i < world->skinning_count; ++i) {
       const VkrSkinningInput *skin = &world->skinning[i];
@@ -438,32 +443,43 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
     for (uint32_t stream = 0; stream < 3; ++stream) {
-      const uint32_t count = stream == 0 ? world->gpu_candidate_count :
-          stream == 1 ? world->transmission_gpu_candidate_count : world->instance_count;
+      const uint32_t count = stream == 0 ? world->gpu_candidate_count
+                             : stream == 1
+                                 ? world->transmission_gpu_candidate_count
+                                 : world->instance_count;
       for (uint32_t i = 0; i < count; ++i) {
-        const VkrInstanceDataGPU *instance = stream == 0 ? &world->gpu_candidates[i].instance :
-            stream == 1 ? &world->transmission_gpu_candidates[i].instance : &world->instances[i];
+        const VkrInstanceDataGPU *instance =
+            stream == 0   ? &world->gpu_candidates[i].instance
+            : stream == 1 ? &world->transmission_gpu_candidates[i].instance
+                          : &world->instances[i];
         if (instance->skinning_index > world->skinning_count) {
           VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                            "packet.world.instances.skinning_index", "binding is out of range");
+                            "packet.world.instances.skinning_index",
+                            "binding is out of range");
         }
         if (instance->skinning_index) {
           if (stream == 0 && i < world->static_candidate_count) {
             VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                              "packet.world.static_candidate_count", "skinning requires dynamic residency");
+                              "packet.world.static_candidate_count",
+                              "skinning requires dynamic residency");
           }
-          const VkrSkinningInput *skin = &world->skinning[instance->skinning_index - 1u];
+          const VkrSkinningInput *skin =
+              &world->skinning[instance->skinning_index - 1u];
           if (skin->temporal_index != instance->temporal_index ||
               skin->temporal_generation != instance->temporal_generation) {
             VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                              "packet.world.instances.skinning_index", "binding identity differs");
+                              "packet.world.instances.skinning_index",
+                              "binding identity differs");
           }
           if (stream < 2) {
-            const VkrGeometryHandle geometry = stream == 0 ? world->gpu_candidates[i].geometry :
-                world->transmission_gpu_candidates[i].geometry;
-            if (geometry.id != skin->geometry.id || geometry.generation != skin->geometry.generation) {
+            const VkrGeometryHandle geometry =
+                stream == 0 ? world->gpu_candidates[i].geometry
+                            : world->transmission_gpu_candidates[i].geometry;
+            if (geometry.id != skin->geometry.id ||
+                geometry.generation != skin->geometry.generation) {
               VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                                "packet.world.skinning.geometry", "binding geometry differs");
+                                "packet.world.skinning.geometry",
+                                "binding geometry differs");
             }
           }
         }
@@ -811,18 +827,22 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
   const VkrFrameLighting *lighting = packet->lighting;
   if (lighting) {
     const Mat4 subsurface_projection = packet->globals.projection;
-    const float32_t subsurface_near = subsurface_projection.m23 / subsurface_projection.m22;
-    const float32_t subsurface_far = subsurface_projection.m23 / (subsurface_projection.m22 + 1.0f);
+    const float32_t subsurface_near =
+        subsurface_projection.m23 / subsurface_projection.m22;
+    const float32_t subsurface_far =
+        subsurface_projection.m23 / (subsurface_projection.m22 + 1.0f);
     if (lighting->subsurface.profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
         (lighting->subsurface.profile_count > 0u &&
          (lighting->subsurface.texture.id == 0u ||
           lighting->subsurface.texture.generation == VKR_INVALID_ID ||
-          subsurface_projection.m32 != -1.0f || subsurface_projection.m33 != 0.0f ||
-          !isfinite(subsurface_near) || subsurface_near <= 0.0f ||
-          !isfinite(subsurface_far) || subsurface_far <= subsurface_near)))
+          subsurface_projection.m32 != -1.0f ||
+          subsurface_projection.m33 != 0.0f || !isfinite(subsurface_near) ||
+          subsurface_near <= 0.0f || !isfinite(subsurface_far) ||
+          subsurface_far <= subsurface_near)))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.lighting.subsurface",
-                        "requires up to eight profiles, a texture and finite perspective depth");
+                        "requires up to eight profiles, a texture and finite "
+                        "perspective depth");
     const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
     if (volume->texture.id != 0u &&
         volume->texture.generation != VKR_INVALID_ID) {
@@ -898,8 +918,9 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
 
 bool8_t vkr_skinning_history_prepare(const VkrWorldPassPayload *world,
                                      VkrSkinningHistory *history) {
-  if (!history || (world && (world->skinning_count > VKR_SKINNING_BINDING_CAPACITY ||
-                            (world->skinning_count && !world->skinning)))) {
+  if (!history ||
+      (world && (world->skinning_count > VKR_SKINNING_BINDING_CAPACITY ||
+                 (world->skinning_count && !world->skinning)))) {
     return false_v;
   }
   *history = (VkrSkinningHistory){0};
@@ -924,9 +945,10 @@ bool8_t vkr_skinning_history_prepare(const VkrWorldPassPayload *world,
 }
 
 uint64_t vkr_skinning_history_find(const VkrSkinningHistory *history,
-                                  const VkrSkinningInput *input) {
+                                   const VkrSkinningInput *input) {
   if (!history || !input || !history->producer_submit ||
-      input->discontinuity == UINT64_MAX || history->count > VKR_SKINNING_BINDING_CAPACITY) {
+      input->discontinuity == UINT64_MAX ||
+      history->count > VKR_SKINNING_BINDING_CAPACITY) {
     return UINT64_MAX;
   }
   for (uint32_t i = 0; i < history->count; ++i) {

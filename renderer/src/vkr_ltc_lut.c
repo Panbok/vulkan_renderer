@@ -37,9 +37,9 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-const uint16_t vkr_ltc_lut_pixels
-    [VKR_LTC_LUT_TABLE_COUNT]
-    [VKR_LTC_LUT_TABLE_TEXEL_COUNT * VKR_LTC_LUT_CHANNEL_COUNT] = {
+const uint16_t vkr_ltc_lut_pixels[VKR_LTC_LUT_TABLE_COUNT]
+                                 [VKR_LTC_LUT_TABLE_TEXEL_COUNT *
+                                  VKR_LTC_LUT_CHANNEL_COUNT] = {
 #include "vkr_ltc_lut_data.inc"
 };
 

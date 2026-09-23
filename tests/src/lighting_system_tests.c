@@ -229,7 +229,8 @@ static bool32_t test_rectangle_light_uses_rigid_parent_rotation(void) {
   // child translation (1,2,3) to (15,10,3); child scale cannot change it.
   assert(lighting_test_vec3_near(light->right, vec3_new(0.0f, 0.0f, -1.0f)));
   assert(lighting_test_vec3_near(light->up, vec3_new(1.0f, 0.0f, 0.0f)));
-  assert(lighting_test_vec3_near(light->position, vec3_new(15.0f, 10.0f, 3.0f)));
+  assert(
+      lighting_test_vec3_near(light->position, vec3_new(15.0f, 10.0f, 3.0f)));
   assert(light->half_width == 1.0f && light->half_height == 2.0f);
 
   vkr_lighting_system_shutdown(&system);

@@ -23,7 +23,6 @@
 #include <sys/types.h>
 #include <time.h>
 
-
 #if defined(PLATFORM_APPLE)
 #include <CoreGraphics/CoreGraphics.h>
 #include <TargetConditionals.h>

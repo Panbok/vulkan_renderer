@@ -728,20 +728,20 @@ vkr_internal void test_local_shadow_transmission_cache_is_atomic(void) {
   };
 
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
-                                         1u, vec3_zero(), &local);
+                                          1u, vec3_zero(), &local);
   assert(local.render_mask == UINT32_C(0x3f));
   vkr_shadow_system_commit_frame(&system, 31u);
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
-                                         1u, vec3_zero(), &local);
+                                          1u, vec3_zero(), &local);
   assert(local.render_mask == 0u);
 
   /* Losing any prefix image invalidates the complete point-light group. */
-  for (uint32_t i = 0u;
-       i < ArrayCount(valid.transmission_resource_generations); ++i) {
+  for (uint32_t i = 0u; i < ArrayCount(valid.transmission_resource_generations);
+       ++i) {
     VkrRetainedLocalShadowToken changed = valid;
     changed.transmission_resource_generations[i]++;
     vkr_shadow_system_resolve_local_shadows(&system, 0u, changed, &payload,
-                                           &light, 1u, vec3_zero(), &local);
+                                            &light, 1u, vec3_zero(), &local);
     assert(local.render_mask == UINT32_C(0x3f));
     vkr_shadow_system_discard_frame(&system);
   }
@@ -749,29 +749,29 @@ vkr_internal void test_local_shadow_transmission_cache_is_atomic(void) {
     VkrRetainedLocalShadowToken incomplete = valid;
     incomplete.transmission_valid_layer_mask &= ~(UINT32_C(1) << face);
     vkr_shadow_system_resolve_local_shadows(&system, 0u, incomplete, &payload,
-                                           &light, 1u, vec3_zero(), &local);
+                                            &light, 1u, vec3_zero(), &local);
     assert(local.render_mask == UINT32_C(0x3f));
     vkr_shadow_system_discard_frame(&system);
   }
 
   /* Cancelled replacements leave the last submitted pool reusable. */
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
-                                         1u, vec3_zero(), &local);
+                                          1u, vec3_zero(), &local);
   assert(local.render_mask == 0u);
   payload.publication_generation++;
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
-                                         1u, vec3_zero(), &local);
+                                          1u, vec3_zero(), &local);
   assert(local.render_mask == UINT32_C(0x3f));
   vkr_shadow_system_discard_frame(&system);
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
-                                         1u, vec3_zero(), &local);
+                                          1u, vec3_zero(), &local);
   assert(local.render_mask == UINT32_C(0x3f));
   vkr_shadow_system_commit_frame(&system, 32u);
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
-                                         1u, vec3_zero(), &local);
+                                          1u, vec3_zero(), &local);
   assert(local.render_mask == 0u);
   vkr_shadow_system_resolve_local_shadows(&system, 1u, valid, &payload, &light,
-                                         1u, vec3_zero(), &local);
+                                          1u, vec3_zero(), &local);
   assert(local.render_mask == UINT32_C(0x3f));
   vkr_shadow_system_discard_frame(&system);
   vkr_shadow_system_shutdown(&system);

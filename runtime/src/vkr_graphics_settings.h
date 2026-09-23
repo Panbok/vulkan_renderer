@@ -48,6 +48,6 @@ bool8_t vkr_graphics_settings_load(const char *path,
 bool8_t vkr_graphics_settings_save(const char *path,
                                    const VkrGraphicsSettings *settings);
 bool8_t vkr_graphics_settings_read_json(String8 json,
-                                      VkrGraphicsSettings *settings);
+                                        VkrGraphicsSettings *settings);
 bool8_t vkr_graphics_settings_write_json(VkrJsonWriter *writer,
-                                       const VkrGraphicsSettings *settings);
+                                         const VkrGraphicsSettings *settings);

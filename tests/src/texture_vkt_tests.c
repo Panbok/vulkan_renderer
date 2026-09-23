@@ -422,15 +422,14 @@ static void test_normal_roughness_material_moments(void) {
   for (uint32_t roughness = 0u; roughness < 256u; ++roughness) {
     uint8_t normal[4];
     uint8_t encoded_roughness = 0u;
-    VkrVktMaterialMoment moment = vkr_vkt_material_moment(
-        constant, (uint8_t)roughness, 1.0f, 1.0f);
+    VkrVktMaterialMoment moment =
+        vkr_vkt_material_moment(constant, (uint8_t)roughness, 1.0f, 1.0f);
     vkr_vkt_encode_material_moment(moment, normal, &encoded_roughness);
     assert(normal[0] == 128u && normal[1] == 128u);
     assert_normal_rg_material_output(normal);
     assert(encoded_roughness == roughness);
 
-    moment = vkr_vkt_material_moment(constant, (uint8_t)roughness, 0.0f,
-                                     1.0f);
+    moment = vkr_vkt_material_moment(constant, (uint8_t)roughness, 0.0f, 1.0f);
     vkr_vkt_encode_material_moment(moment, normal, &encoded_roughness);
     assert(normal[0] == 128u && normal[1] == 128u);
     assert_normal_rg_material_output(normal);
@@ -639,11 +638,13 @@ static void test_texture_mip_color_transfer(void) {
   uint8_t intermediate[2u * 4u];
   for (uint32_t value = 0u; value < 256u; ++value) {
     MemSet(source, value, sizeof(source));
-    vkr_vkt_downsample_rgba8(source, 5u, 3u, intermediate, 2u, 1u, true_v, false_v);
+    vkr_vkt_downsample_rgba8(source, 5u, 3u, intermediate, 2u, 1u, true_v,
+                             false_v);
     for (uint32_t i = 0u; i < sizeof(intermediate); ++i) {
       assert(intermediate[i] == value);
     }
-    vkr_vkt_downsample_rgba8(intermediate, 2u, 1u, mip, 1u, 1u, true_v, false_v);
+    vkr_vkt_downsample_rgba8(intermediate, 2u, 1u, mip, 1u, 1u, true_v,
+                             false_v);
     for (uint32_t i = 0u; i < sizeof(mip); ++i) {
       assert(mip[i] == value);
     }
@@ -710,7 +711,7 @@ static void test_texture_cutout_color_and_coverage(void) {
 
   // Half the base texels pass, but none of these four unadjusted mip texels
   // pass. A single scale can recover exactly two without promoting alpha 0.
-  uint8_t reduced[] = {90, 80, 70, 0, 90, 80, 70, 60,
+  uint8_t reduced[] = {90, 80, 70, 0,  90, 80, 70, 60,
                        90, 80, 70, 80, 90, 80, 70, 120};
   vkr_vkt_preserve_alpha_coverage(reduced, 4u, threshold, 8u, 16u);
   assert(vkr_vkt_alpha_covered(reduced, 4u, threshold) == 2u);

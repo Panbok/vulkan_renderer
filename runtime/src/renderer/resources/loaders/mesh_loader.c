@@ -1,6 +1,6 @@
 #include "renderer/resources/loaders/mesh_loader.h"
-#include "filesystem/vkr_asset_path.h"
 #include "core/vkr_json.h"
+#include "filesystem/vkr_asset_path.h"
 
 #include "assets/vkr_mesh_cooked.h"
 #include "assets/vkr_mesh_decode.h"
@@ -224,7 +224,8 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
-  if (!vkr_mesh_cooked_apply_material_remap(scratch_allocator, name, &decoded)) {
+  if (!vkr_mesh_cooked_apply_material_remap(scratch_allocator, name,
+                                            &decoded)) {
     log_error(
         "Mesh '%.*s': material remap is unreadable, malformed or incomplete",
         (int)name.length, name.str);

@@ -16,8 +16,8 @@
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
-#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_collision_layers.h"
+#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_world_resources.h"
 
 // ============================================================================
@@ -1211,8 +1211,8 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   if (assets) {
     vkr_scene_reset_diffuse_volume(scene, assets);
     if (scene->subsurface.texture.id != 0u) {
-      if (!vkr_texture_system_release_by_handle(
-              &assets->texture_system, scene->subsurface.texture)) {
+      if (!vkr_texture_system_release_by_handle(&assets->texture_system,
+                                                scene->subsurface.texture)) {
         log_warn("Scene subsurface texture %u:%u remains registered in the "
                  "texture system after native release failed",
                  scene->subsurface.texture.id,
@@ -1662,7 +1662,8 @@ bool8_t vkr_scene_set_transform(VkrScene *scene, VkrEntityId entity,
   SceneTransform *previous = vkr_scene_get_transform(scene, entity);
   const VkrEntityId parent =
       previous ? previous->parent : VKR_ENTITY_ID_INVALID;
-  if (!vkr_scene_physics_transform_validate(scene, entity, position, rotation, scale, parent, NULL)) {
+  if (!vkr_scene_physics_transform_validate(scene, entity, position, rotation,
+                                            scale, parent, NULL)) {
     return false_v;
   }
   SceneTransform comp = {
@@ -1705,7 +1706,8 @@ void vkr_scene_set_position(VkrScene *scene, VkrEntityId entity,
   SceneTransform *t = vkr_scene_get_transform(scene, entity);
   if (!t || (t->matrix_authored && !t->trs_editable))
     return;
-  if (!vkr_scene_physics_transform_validate(scene, entity, position, t->rotation, t->scale, t->parent, NULL)) {
+  if (!vkr_scene_physics_transform_validate(
+          scene, entity, position, t->rotation, t->scale, t->parent, NULL)) {
     return;
   }
   t->position = position;
@@ -1718,7 +1720,8 @@ void vkr_scene_set_rotation(VkrScene *scene, VkrEntityId entity,
   SceneTransform *t = vkr_scene_get_transform(scene, entity);
   if (!t || (t->matrix_authored && !t->trs_editable))
     return;
-  if (!vkr_scene_physics_transform_validate(scene, entity, t->position, rotation, t->scale, t->parent, NULL)) {
+  if (!vkr_scene_physics_transform_validate(
+          scene, entity, t->position, rotation, t->scale, t->parent, NULL)) {
     return;
   }
   t->rotation = rotation;
@@ -1797,7 +1800,7 @@ bool8_t vkr_scene_ensure_render_id(VkrScene *scene, VkrEntityId entity,
     return false;
 
   if (vkr_entity_has_component(scene->world, entity,
-                                scene->comp_physics_collider)) {
+                               scene->comp_physics_collider)) {
     return false_v;
   }
   SceneRenderId *existing = (SceneRenderId *)vkr_entity_get_component_mut(

@@ -6,20 +6,20 @@
 #include "math/vec.h"
 #include "math/vkr_transform.h"
 #include "vkr_bloom.h"
-#include "vkr_dof.h"
-#include "vkr_subsurface.h"
-#include "vkr_motion_blur.h"
 #include "vkr_buffer.h"
+#include "vkr_dof.h"
 #include "vkr_exposure.h"
+#include "vkr_fog.h"
+#include "vkr_froxel_fog.h"
 #include "vkr_gpu_abi.h"
 #include "vkr_gtao.h"
 #include "vkr_ibl_math.h"
 #include "vkr_lighting.h"
-#include "vkr_fog.h"
-#include "vkr_froxel_fog.h"
+#include "vkr_motion_blur.h"
 #include "vkr_render_resources.h"
 #include "vkr_renderer.h"
 #include "vkr_shadow.h"
+#include "vkr_subsurface.h"
 #include "vkr_temporal.h"
 #include "vkr_ui_draw_types.h"
 
@@ -138,7 +138,8 @@ typedef struct VkrFrameGlobals {
   bool8_t ssr_enabled;
   bool8_t ssgi_enabled;
   VkrFogSettings fog;
-  /** Opt-in local participating medium; supersedes analytic fog when enabled. */
+  /** Opt-in local participating medium; supersedes analytic fog when enabled.
+   */
   VkrFroxelFogSettings froxel_fog;
   /** Optional post-reconstruction lens blur; a zeroed block disables it. */
   bool8_t dof_enabled;
@@ -514,7 +515,8 @@ typedef struct VkrAnimationPreviewDraw {
   Mat4 model;
 } VkrAnimationPreviewDraw;
 
-/** Independent, fixed 512-square editor view. No main-view history is reused. */
+/** Independent, fixed 512-square editor view. No main-view history is reused.
+ */
 typedef struct VkrAnimationPreviewInput {
   Mat4 view_projection;
   const VkrAnimationPreviewDraw *draws;
@@ -571,4 +573,4 @@ typedef struct VkrSkinningHistory {
 bool8_t vkr_skinning_history_prepare(const VkrWorldPassPayload *world,
                                      VkrSkinningHistory *history);
 uint64_t vkr_skinning_history_find(const VkrSkinningHistory *history,
-                                  const VkrSkinningInput *input);
+                                   const VkrSkinningInput *input);

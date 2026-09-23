@@ -101,11 +101,9 @@ VkPhysicalDevice vkr_vulkan_device_physical(const VkrVulkanDevice *device);
 VkDevice vkr_vulkan_device_handle(const VkrVulkanDevice *device);
 VkQueue vkr_vulkan_device_queue(const VkrVulkanDevice *device);
 VkSurfaceKHR vkr_vulkan_device_surface(const VkrVulkanDevice *device);
-VkSurfaceFormatKHR
-vkr_vulkan_device_choose_surface_format(const VkSurfaceFormatKHR *formats,
-                                        const bool8_t *format_usable,
-                                        uint32_t count,
-                                        bool8_t prefer_extended_linear);
+VkSurfaceFormatKHR vkr_vulkan_device_choose_surface_format(
+    const VkSurfaceFormatKHR *formats, const bool8_t *format_usable,
+    uint32_t count, bool8_t prefer_extended_linear);
 bool8_t vkr_vulkan_device_present_fences_enabled(const VkrVulkanDevice *device);
 bool8_t vkr_vulkan_device_extended_linear_present_enabled(
     const VkrVulkanDevice *device);

@@ -4,8 +4,8 @@
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
-#include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_material_system.h"
+#include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
 #include <ktx.h>
@@ -1206,7 +1206,8 @@ test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
   system->texture_stream_resident_bytes += resident->resident_bytes;
 
   /* The oldest material shares its texture with a current-demand material.
-   * A separate, older-demand texture must be selected before that shared one. */
+   * A separate, older-demand texture must be selected before that shared one.
+   */
   VkrTextureHandle cold_texture = VKR_TEXTURE_HANDLE_INVALID;
   assert(vkr_texture_system_create_writable(
              &ctx->texture_system, string8_lit("texture_eviction_cold"),
@@ -1223,14 +1224,15 @@ test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
       system, "texture_eviction_cold_material", vec4_one(), &error);
   assert(cold_material.id != 0u);
   VkrMaterial *cold = vkr_material_system_get_by_handle(system, cold_material);
-  cold->textures[VKR_TEXTURE_SLOT_DIFFUSE] = (VkrMaterialTexture){
-      .handle = cold_texture, .slot = VKR_TEXTURE_SLOT_DIFFUSE,
-      .enabled = true_v};
+  cold->textures[VKR_TEXTURE_SLOT_DIFFUSE] =
+      (VkrMaterialTexture){.handle = cold_texture,
+                           .slot = VKR_TEXTURE_SLOT_DIFFUSE,
+                           .enabled = true_v};
   assert(vkr_material_system_unpublish(system, cold_material) == true_v);
   assert(vkr_material_system_publish(system, cold_material, &error) == true_v);
-  assert(vkr_material_system_stream_texture(
-             system, cold_material, VKR_TEXTURE_SLOT_DIFFUSE,
-             "textures/cold.vkt") == true_v);
+  assert(vkr_material_system_stream_texture(system, cold_material,
+                                            VKR_TEXTURE_SLOT_DIFFUSE,
+                                            "textures/cold.vkt") == true_v);
   VkrMaterialTextureStream *cold_stream =
       &system->texture_streams[system->texture_stream_count - 1u];
   cold_stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
@@ -1481,8 +1483,8 @@ test_compressed_texture_subresource_shapes(MaterialPbrTestContext *ctx) {
   printf("  test_compressed_texture_subresource_shapes PASSED\n");
 }
 
-vkr_internal void test_texture_request_owns_pending_publication(
-    MaterialPbrTestContext *ctx) {
+vkr_internal void
+test_texture_request_owns_pending_publication(MaterialPbrTestContext *ctx) {
   VkrJobSystem jobs = {0};
   VkrJobSystemConfig config = vkr_job_system_config_default();
   config.worker_count = 1u;
@@ -1490,14 +1492,14 @@ vkr_internal void test_texture_request_owns_pending_publication(
   config.queue_capacity = 64u;
   assert(vkr_job_system_init(&config, &jobs));
   assert(vkr_resource_system_init(&ctx->temp_allocator, &jobs, NULL));
-  assert(vkr_resource_system_register_loader(
-      &ctx->texture_system, vkr_texture_loader_create()));
+  assert(vkr_resource_system_register_loader(&ctx->texture_system,
+                                             vkr_texture_loader_create()));
   const char *relative = "tests/tmp/material_pbr/request_owned.vkt";
   char absolute[1024];
   snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, relative);
   assert(material_pbr_test_write_uastc_texture(absolute, 1u, 1u));
-  const String8 path = string8_create_from_cstr(
-      (const uint8_t *)relative, string_length(relative));
+  const String8 path = string8_create_from_cstr((const uint8_t *)relative,
+                                                string_length(relative));
 
   for (uint32_t mode = 0u; mode < 3u; ++mode) {
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -1508,15 +1510,16 @@ vkr_internal void test_texture_request_owns_pending_publication(
     if (mode < 2u) {
       VkrResourceHandleInfo sync = {0};
       assert(vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_TEXTURE, path,
-                                           &ctx->temp_allocator, &sync, &error));
+                                           &ctx->temp_allocator, &sync,
+                                           &error));
       assert(sync.request_id == 0u);
       texture = sync.as.texture;
-      assert(vkr_texture_system_get_ref_count_by_handle(
-                 &ctx->texture_system, texture) == 1u);
+      assert(vkr_texture_system_get_ref_count_by_handle(&ctx->texture_system,
+                                                        texture) == 1u);
       vkr_texture_system_add_ref_by_handle(&ctx->texture_system, texture);
       vkr_resource_system_unload(&sync, path);
-      assert(vkr_texture_system_get_ref_count_by_handle(
-                 &ctx->texture_system, texture) == 1u);
+      assert(vkr_texture_system_get_ref_count_by_handle(&ctx->texture_system,
+                                                        texture) == 1u);
     }
     VkrResourceHandleInfo request = {0}, duplicate = {0};
     assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_TEXTURE, path,
@@ -1525,8 +1528,9 @@ vkr_internal void test_texture_request_owns_pending_publication(
                                     &ctx->temp_allocator, &duplicate, &error));
     assert(request.request_id != 0u &&
            request.request_id == duplicate.request_id);
-    VkrResourceSubmissionState submission = {
-        .submit_serial = 1u, .completed_submit_serial = 0u, .frame_active = true_v};
+    VkrResourceSubmissionState submission = {.submit_serial = 1u,
+                                             .completed_submit_serial = 0u,
+                                             .frame_active = true_v};
     const uint32_t expected_refs = mode < 2u ? 2u : 1u;
     bool8_t published = false_v;
     for (uint32_t attempt = 0u; attempt < 500u && !published; ++attempt) {
@@ -1535,9 +1539,10 @@ vkr_internal void test_texture_request_owns_pending_publication(
           &ctx->texture_system.texture_map, relative);
       published = entry && entry->ref_count == expected_refs;
       if (published) {
-        const VkrTexture *loaded = &ctx->texture_system.textures.data[entry->index];
+        const VkrTexture *loaded =
+            &ctx->texture_system.textures.data[entry->index];
         texture = (VkrTextureHandle){loaded->description.id,
-                                      loaded->description.generation};
+                                     loaded->description.generation};
       } else {
         vkr_platform_sleep(2u);
       }
@@ -1549,10 +1554,11 @@ vkr_internal void test_texture_request_owns_pending_publication(
     assert(!vkr_resource_system_try_get_resolved(&request, &resolved));
     if (mode < 2u) {
       /* Last resident eviction cannot destroy the pending request's texture. */
-      assert(vkr_texture_system_release_by_handle(&ctx->texture_system, texture));
+      assert(
+          vkr_texture_system_release_by_handle(&ctx->texture_system, texture));
     }
-    assert(vkr_texture_system_get_ref_count_by_handle(
-               &ctx->texture_system, texture) == 1u);
+    assert(vkr_texture_system_get_ref_count_by_handle(&ctx->texture_system,
+                                                      texture) == 1u);
     vkr_resource_system_unload(&duplicate, path);
     assert(vkr_texture_system_get_by_handle(&ctx->texture_system, texture));
     assert(ctx->publisher_state.texture_destroy_calls == destroyed);
@@ -1565,9 +1571,10 @@ vkr_internal void test_texture_request_owns_pending_publication(
              resolved.as.texture.generation == texture.generation);
       vkr_texture_system_add_ref_by_handle(&ctx->texture_system, texture);
       vkr_resource_system_unload(&request, path);
-      assert(vkr_texture_system_get_ref_count_by_handle(
-                 &ctx->texture_system, texture) == 1u);
-      assert(vkr_texture_system_release_by_handle(&ctx->texture_system, texture));
+      assert(vkr_texture_system_get_ref_count_by_handle(&ctx->texture_system,
+                                                        texture) == 1u);
+      assert(
+          vkr_texture_system_release_by_handle(&ctx->texture_system, texture));
     } else {
       /* Cancellation releases the published result even before READY. */
       vkr_resource_system_unload(&request, path);
@@ -1586,11 +1593,13 @@ vkr_internal void test_texture_request_owns_pending_publication(
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_TEXTURE, path,
                                   &ctx->temp_allocator, &failed, &error));
-  const VkrResourceSubmissionState submission = {
-      .submit_serial = 3u, .completed_submit_serial = 3u, .frame_active = true_v};
-  for (uint32_t attempt = 0u; attempt < 500u &&
-       vkr_resource_system_get_state(&failed, &error) !=
-           VKR_RESOURCE_LOAD_STATE_FAILED; ++attempt) {
+  const VkrResourceSubmissionState submission = {.submit_serial = 3u,
+                                                 .completed_submit_serial = 3u,
+                                                 .frame_active = true_v};
+  for (uint32_t attempt = 0u;
+       attempt < 500u && vkr_resource_system_get_state(&failed, &error) !=
+                             VKR_RESOURCE_LOAD_STATE_FAILED;
+       ++attempt) {
     vkr_resource_system_pump(submission, NULL);
     vkr_platform_sleep(2u);
   }

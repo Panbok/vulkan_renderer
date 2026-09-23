@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
-#include "bake/vkr_bake_bvh.h"
 #include "bake/vkr_bake_bsdf.h"
+#include "bake/vkr_bake_bvh.h"
 #include "bake/vkr_bake_scene.h"
 
 #ifdef __cplusplus
@@ -129,17 +129,17 @@ bool8_t vkr_bake_integrator_trace(const VkrBakeIntegrator *integrator,
                                   VkrBakeIntegratorError *out_error);
 
 bool8_t vkr_bake_integrator_photon_map_reset(
-    const VkrBakeIntegrator *integrator,
-    VkrBakePhotonSettings settings, VkrBakePhotonMap *in_out_map,
-    VkrBakeIntegratorError *out_error);
-
-bool8_t vkr_bake_integrator_emit_photons(
-    const VkrBakeIntegrator *integrator,
-    VkrBakePhotonSettings settings, VkrBakePhotonMap *in_out_map,
-    VkrBakeIntegratorError *out_error);
-
-bool8_t vkr_bake_integrator_build_photon_grid(
+    const VkrBakeIntegrator *integrator, VkrBakePhotonSettings settings,
     VkrBakePhotonMap *in_out_map, VkrBakeIntegratorError *out_error);
+
+bool8_t vkr_bake_integrator_emit_photons(const VkrBakeIntegrator *integrator,
+                                         VkrBakePhotonSettings settings,
+                                         VkrBakePhotonMap *in_out_map,
+                                         VkrBakeIntegratorError *out_error);
+
+bool8_t
+vkr_bake_integrator_build_photon_grid(VkrBakePhotonMap *in_out_map,
+                                      VkrBakeIntegratorError *out_error);
 
 #ifdef __cplusplus
 }

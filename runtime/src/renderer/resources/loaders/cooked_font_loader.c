@@ -1,13 +1,13 @@
 #include "renderer/resources/loaders/cooked_font_loader.h"
 #include "filesystem/vkr_asset_path.h"
 
+#include "assets/vkr_font_cooked.h"
 #include "containers/str.h"
 #include "core/logger.h"
 #include "core/vkr_text.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
-#include "assets/vkr_font_cooked.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 

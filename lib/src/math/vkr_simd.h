@@ -1111,14 +1111,15 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_div_f32x4(VKR_SIMD_F32X4 a,
 }
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_sqrt_f32x4(VKR_SIMD_F32X4 v) {
-  VKR_SIMD_F32X4 result = {
-      {vkr_sqrt_f32(v.x), vkr_sqrt_f32(v.y), vkr_sqrt_f32(v.z), vkr_sqrt_f32(v.w)}};
+  VKR_SIMD_F32X4 result = {{vkr_sqrt_f32(v.x), vkr_sqrt_f32(v.y),
+                            vkr_sqrt_f32(v.z), vkr_sqrt_f32(v.w)}};
   return result;
 }
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_rsqrt_f32x4(VKR_SIMD_F32X4 v) {
   VKR_SIMD_F32X4 result = {{1.0f / vkr_sqrt_f32(v.x), 1.0f / vkr_sqrt_f32(v.y),
-                            1.0f / vkr_sqrt_f32(v.z), 1.0f / vkr_sqrt_f32(v.w)}};
+                            1.0f / vkr_sqrt_f32(v.z),
+                            1.0f / vkr_sqrt_f32(v.w)}};
   return result;
 }
 

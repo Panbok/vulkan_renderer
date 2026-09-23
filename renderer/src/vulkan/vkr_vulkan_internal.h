@@ -264,25 +264,31 @@
   "packet.exposure_resolve.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV
-#define VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV "packet.subsurface_gather.comp.spv"
+#define VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV                           \
+  "packet.subsurface_gather.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV
-#define VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV "packet.motion_blur_tile_max.comp.spv"
+#define VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV                        \
+  "packet.motion_blur_tile_max.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV
-#define VKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV "packet.motion_blur_neighbor_max.comp.spv"
+#define VKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV                    \
+  "packet.motion_blur_neighbor_max.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV
-#define VKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV "packet.motion_blur_reconstruct.comp.spv"
+#define VKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV                     \
+  "packet.motion_blur_reconstruct.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_DOF_COC_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_COC_COMP_SPV "packet.dof_coc.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV
-#define VKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV "packet.dof_dilate_horizontal.comp.spv"
+#define VKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV                       \
+  "packet.dof_dilate_horizontal.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV
-#define VKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV "packet.dof_dilate_vertical.comp.spv"
+#define VKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV                         \
+  "packet.dof_dilate_vertical.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV "packet.dof_prefilter.comp.spv"
@@ -837,8 +843,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t subsurface_source_texture;
   uint32_t subsurface_profile_count;
 } VkrVulkanLightingRoot;
-_Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) == 184u &&
-                   offsetof(VkrVulkanLightingRoot, subsurface_profile_count) == 188u,
+_Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
+                       184u &&
+                   offsetof(VkrVulkanLightingRoot, subsurface_profile_count) ==
+                       188u,
                "Subsurface source producer ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanHzbRoot {
@@ -996,8 +1004,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiCompositeRoot {
   uint32_t receiver_texture;
   uint32_t reserved[3];
 } VkrVulkanSsgiCompositeRoot;
-_Static_assert(offsetof(VkrVulkanSsgiCompositeRoot, subsurface_source_texture) == 424u &&
-                   offsetof(VkrVulkanSsgiCompositeRoot, subsurface_profile_count) == 428u,
+_Static_assert(offsetof(VkrVulkanSsgiCompositeRoot,
+                        subsurface_source_texture) == 424u &&
+                   offsetof(VkrVulkanSsgiCompositeRoot,
+                            subsurface_profile_count) == 428u,
                "Subsurface source producer ABI drift");
 typedef struct VKR_SIMD_ALIGN VkrVulkanFogRoot {
   VkrFogGpuParams params;
@@ -1568,8 +1578,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
 } VkrVulkanPacketUtilityRoot;
 
 _Static_assert(sizeof(VkrVertex3d) == 64u, "Shared vertex ABI drift");
-_Static_assert(sizeof(VkrVulkanUiRoot) == 80u,
-               "Vulkan UI root ABI size drift");
+_Static_assert(sizeof(VkrVulkanUiRoot) == 80u, "Vulkan UI root ABI size drift");
 _Static_assert(offsetof(VkrVulkanUiRoot, target_unit_range) == 16u,
                "Vulkan UI root target offset drift");
 _Static_assert(offsetof(VkrVulkanUiRoot, corner_radii) == 48u,
@@ -1593,30 +1602,24 @@ _Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_id) == 48u,
                "Vulkan material identifier ABI drift");
 _Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_emissive) == 64u,
                "Vulkan material parameter ABI drift");
-_Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_clearcoat) == 144u &&
-                   offsetof(VkrVulkanMaterialGpuRow, clearcoat_texture) ==
-                       160u &&
-                   offsetof(VkrVulkanMaterialGpuRow,
-                            clearcoat_roughness_texture) == 164u &&
-                   offsetof(VkrVulkanMaterialGpuRow, clearcoat_normal_texture) ==
-                       168u &&
-                   offsetof(VkrVulkanMaterialGpuRow, clearcoat_sampler) ==
-                       172u &&
-                   offsetof(VkrVulkanMaterialGpuRow,
-                            clearcoat_roughness_sampler) == 176u &&
-                   offsetof(VkrVulkanMaterialGpuRow, clearcoat_normal_sampler) ==
-                       180u,
-               "Vulkan clearcoat material ABI drift");
-_Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_sheen) == 192u &&
-                   offsetof(VkrVulkanMaterialGpuRow, sheen_color_texture) ==
-                       208u &&
-                   offsetof(VkrVulkanMaterialGpuRow, sheen_roughness_texture) ==
-                       212u &&
-                   offsetof(VkrVulkanMaterialGpuRow, sheen_color_sampler) ==
-                       216u &&
-                   offsetof(VkrVulkanMaterialGpuRow, sheen_roughness_sampler) ==
-                       220u,
-               "Vulkan sheen material ABI drift");
+_Static_assert(
+    offsetof(VkrVulkanMaterialGpuRow, material_clearcoat) == 144u &&
+        offsetof(VkrVulkanMaterialGpuRow, clearcoat_texture) == 160u &&
+        offsetof(VkrVulkanMaterialGpuRow, clearcoat_roughness_texture) ==
+            164u &&
+        offsetof(VkrVulkanMaterialGpuRow, clearcoat_normal_texture) == 168u &&
+        offsetof(VkrVulkanMaterialGpuRow, clearcoat_sampler) == 172u &&
+        offsetof(VkrVulkanMaterialGpuRow, clearcoat_roughness_sampler) ==
+            176u &&
+        offsetof(VkrVulkanMaterialGpuRow, clearcoat_normal_sampler) == 180u,
+    "Vulkan clearcoat material ABI drift");
+_Static_assert(
+    offsetof(VkrVulkanMaterialGpuRow, material_sheen) == 192u &&
+        offsetof(VkrVulkanMaterialGpuRow, sheen_color_texture) == 208u &&
+        offsetof(VkrVulkanMaterialGpuRow, sheen_roughness_texture) == 212u &&
+        offsetof(VkrVulkanMaterialGpuRow, sheen_color_sampler) == 216u &&
+        offsetof(VkrVulkanMaterialGpuRow, sheen_roughness_sampler) == 220u,
+    "Vulkan sheen material ABI drift");
 _Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_anisotropy) == 224u &&
                    offsetof(VkrVulkanMaterialGpuRow, anisotropy_texture) ==
                        240u &&
@@ -1947,8 +1950,7 @@ _Static_assert(offsetof(VkrVulkanPacketUtilityRoot, ibl_probes) == 520u,
 _Static_assert(offsetof(VkrVulkanPacketUtilityRoot, exposure_state) == 536u,
                "Packet utility-root exposure block moved");
 _Static_assert(offsetof(VkrVulkanPacketUtilityRoot, color_grading) == 544u &&
-                   offsetof(VkrVulkanPacketUtilityRoot, display_output) ==
-                       560u,
+                   offsetof(VkrVulkanPacketUtilityRoot, display_output) == 560u,
                "Packet utility-root display block moved");
 
 typedef struct VkrVulkanAllocation {
@@ -3143,13 +3145,13 @@ bool8_t vkr_vk_prepare_subsurface(VkrVulkanRenderer *renderer,
                                   VkrVulkanPreparedCompute *prepared,
                                   const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_motion_blur(VkrVulkanRenderer *renderer,
-                                    VkrVulkanPreparedCompute *prepared,
-                                    const VkrRgPass *pass,
-                                    VkrVulkanDeferredPipeline pipeline);
+                                   VkrVulkanPreparedCompute *prepared,
+                                   const VkrRgPass *pass,
+                                   VkrVulkanDeferredPipeline pipeline);
 bool8_t vkr_vk_prepare_dof(VkrVulkanRenderer *renderer,
-                            VkrVulkanPreparedCompute *prepared,
-                            const VkrRgPass *pass,
-                            VkrVulkanDeferredPipeline pipeline);
+                           VkrVulkanPreparedCompute *prepared,
+                           const VkrRgPass *pass,
+                           VkrVulkanDeferredPipeline pipeline);
 bool8_t vkr_vk_prepare_bloom_prefilter(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedCompute *prepared,
                                        const VkrRgPass *pass);
@@ -3240,7 +3242,7 @@ bool8_t vkr_vk_recreate_window_target(VkrVulkanRenderer *renderer,
                                       uint32_t width, uint32_t height,
                                       uint32_t image_count);
 bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
-                                                VkFormat color_format);
+                                               VkFormat color_format);
 bool8_t vkr_vk_retire_allocation(VkrVulkanRenderer *renderer,
                                  VkrVulkanAllocation *allocation,
                                  uint64_t retire_value);

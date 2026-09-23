@@ -13,7 +13,7 @@ typedef enum VkrRgDotExportFlags {
   VKR_RG_DOT_EXPORT_PASS_EDGES = 1 << 1,
 } VkrRgDotExportFlags;
 
-#define VKR_RG_DOT_EXPORT_DEFAULT                                             \
+#define VKR_RG_DOT_EXPORT_DEFAULT                                              \
   (VKR_RG_DOT_EXPORT_RESOURCES | VKR_RG_DOT_EXPORT_PASS_EDGES)
 
 typedef struct VkrRgDotExportDesc {

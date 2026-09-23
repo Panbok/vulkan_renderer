@@ -25,7 +25,7 @@ typedef struct VkrPickingDecodedId {
 
 #define VKR_PICKING_ID_KIND_BITS 3u
 #define VKR_PICKING_ID_KIND_SHIFT (32u - VKR_PICKING_ID_KIND_BITS)
-#define VKR_PICKING_ID_KIND_MASK                                             \
+#define VKR_PICKING_ID_KIND_MASK                                               \
   (((1u << VKR_PICKING_ID_KIND_BITS) - 1u) << VKR_PICKING_ID_KIND_SHIFT)
 #define VKR_PICKING_ID_VALUE_MASK ((1u << VKR_PICKING_ID_KIND_SHIFT) - 1u)
 // MAX_VALUE is one less than VALUE_MASK because encoding adds 1 to reserve 0 as
