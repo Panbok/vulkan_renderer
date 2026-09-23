@@ -30,25 +30,32 @@ set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "Disable KTX Vulkan upload path in rend
 
 set(_VKR_BUILD_SHARED_LIBS_PREV "${BUILD_SHARED_LIBS}")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build KTX dependencies statically." FORCE)
-# KTX's floating-point channel flags can set the high bit. Shift them as
-# uint32_t; the upstream signed shift triggers UBSan during HDR cube creation.
+# Patches applied once to the KTX checkout:
+# - KTX's floating-point channel flags can set the high bit. Shift them as
+#   uint32_t; the upstream signed shift triggers UBSan during HDR cube creation.
+# - BasisU's job_pool destructor raised its kill flag outside the queue mutex,
+#   so a worker between its predicate check and its wait could miss the wakeup
+#   and hang texture compression in the destructor's join.
 find_package(Git REQUIRED)
-set(VKR_KTX_FLOAT_PATCH "${CMAKE_SOURCE_DIR}/vendor/ktx-float-channel-shift.patch")
-execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
-    apply --reverse --check "${VKR_KTX_FLOAT_PATCH}"
-    RESULT_VARIABLE vkr_ktx_patch_present OUTPUT_QUIET ERROR_QUIET)
-if(NOT vkr_ktx_patch_present EQUAL 0)
+foreach(vkr_ktx_patch IN ITEMS
+        "${CMAKE_SOURCE_DIR}/vendor/ktx-float-channel-shift.patch"
+        "${CMAKE_SOURCE_DIR}/vendor/ktx-basisu-job-pool-shutdown.patch")
     execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
-        apply --check "${VKR_KTX_FLOAT_PATCH}" RESULT_VARIABLE vkr_ktx_patch_check)
-    if(NOT vkr_ktx_patch_check EQUAL 0)
-        message(FATAL_ERROR "KTX floating-point channel patch no longer applies")
+        apply --reverse --check "${vkr_ktx_patch}"
+        RESULT_VARIABLE vkr_ktx_patch_present OUTPUT_QUIET ERROR_QUIET)
+    if(NOT vkr_ktx_patch_present EQUAL 0)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
+            apply --check "${vkr_ktx_patch}" RESULT_VARIABLE vkr_ktx_patch_check)
+        if(NOT vkr_ktx_patch_check EQUAL 0)
+            message(FATAL_ERROR "KTX patch no longer applies: ${vkr_ktx_patch}")
+        endif()
+        execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
+            apply "${vkr_ktx_patch}" RESULT_VARIABLE vkr_ktx_patch_result)
+        if(NOT vkr_ktx_patch_result EQUAL 0)
+            message(FATAL_ERROR "Could not apply KTX patch: ${vkr_ktx_patch}")
+        endif()
     endif()
-    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${VKR_KTX_SOFTWARE_DIR}"
-        apply "${VKR_KTX_FLOAT_PATCH}" RESULT_VARIABLE vkr_ktx_patch_result)
-    if(NOT vkr_ktx_patch_result EQUAL 0)
-        message(FATAL_ERROR "Could not apply KTX floating-point channel patch")
-    endif()
-endif()
+endforeach()
 add_subdirectory("${VKR_KTX_SOFTWARE_DIR}" "${CMAKE_BINARY_DIR}/vendor/ktx-software" EXCLUDE_FROM_ALL)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Clang can select MSVC STL vector-algorithm helpers newer than the

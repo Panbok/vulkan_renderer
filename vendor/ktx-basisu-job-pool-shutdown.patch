@@ -1,0 +1,20 @@
+diff --git a/external/basisu/encoder/basisu_enc.cpp b/external/basisu/encoder/basisu_enc.cpp
+index 662d36ed..06c0cb9b 100644
+--- a/external/basisu/encoder/basisu_enc.cpp
++++ b/external/basisu/encoder/basisu_enc.cpp
+@@ -1533,8 +1533,13 @@ namespace basisu
+ 	{
+ 		debug_printf("job_pool::~job_pool\n");
+ 		
+-		// Notify all workers that they need to die right now.
+-		m_kill_flag = true;
++		// Notify all workers that they need to die right now. Raise the flag
++		// under the queue mutex: a worker between its predicate check and its
++		// wait would otherwise miss the wakeup and block the join forever.
++		{
++			std::lock_guard<std::mutex> lock(m_mutex);
++			m_kill_flag = true;
++		}
+ 		
+ 		m_has_work.notify_all();
+ 
