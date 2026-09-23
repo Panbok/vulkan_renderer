@@ -1053,11 +1053,12 @@ static bool create_indirect_workload(
     DiagnosticIndirectWorkload *workload) {
   if (draw_command == DRAW_COMMAND_DIRECT)
     return true;
+  const bool gpu_encoded = draw_command_is_gpu(draw_command);
   workload->slot_count = slot_count;
   workload->command_count = command_count;
   workload->buffers = calloc(slot_count, sizeof(*workload->buffers));
   workload->residencies = calloc(slot_count, sizeof(*workload->residencies));
-  if (draw_command_is_gpu(draw_command)) {
+  if (gpu_encoded) {
     workload->arguments = calloc(slot_count, sizeof(*workload->arguments));
     workload->argument_tables =
         calloc(slot_count, sizeof(*workload->argument_tables));
@@ -1079,7 +1080,7 @@ static bool create_indirect_workload(
         device, draw_command, &workload->argument_encoder);
   }
   if (!workload->buffers || !workload->residencies ||
-      (draw_command_is_gpu(draw_command) &&
+      (gpu_encoded &&
        (!workload->arguments || !workload->argument_tables ||
         !workload->encode_pipeline || !workload->argument_encoder)))
     return false;
@@ -1104,7 +1105,7 @@ static bool create_indirect_workload(
     descriptor.maxFragmentBufferBindCount = 3u;
   }
   MTL4ArgumentTableDescriptor *argument_table_descriptor = nil;
-  if (draw_command_is_gpu(draw_command)) {
+  if (gpu_encoded) {
     argument_table_descriptor = [MTL4ArgumentTableDescriptor new];
     argument_table_descriptor.label =
         @"VKR timestamp diagnostic ICB encode resources";
@@ -1133,7 +1134,7 @@ static bool create_indirect_workload(
                      instanceCount:1u
                       baseInstance:0u];
       }
-    } else if (valid) {
+    } else if (valid && gpu_encoded) {
       workload->arguments[slot] =
           [device newBufferWithLength:workload->argument_encoder.encodedLength
                               options:MTLResourceStorageModeShared |
@@ -1489,6 +1490,8 @@ static bool encode_render_work(const DiagnosticConfig *config,
   const MTLStages stages = encoder_stages(config->work, encoder_index);
   const uint32_t render_pass_index =
       slot_index * config->encoder_count + encoder_index;
+  if (!render->passes || render_pass_index >= render->pass_count)
+    return false;
   id<MTL4RenderCommandEncoder> encoder = [slot->command_buffer
       renderCommandEncoderWithDescriptor:render->passes[render_pass_index]];
   if (!encoder)
@@ -1599,7 +1602,9 @@ static int run_diagnostic(const DiagnosticConfig *config) {
     fprintf(stderr, "Metal 4 timestamp diagnostics require macOS 26.\n");
     return 3;
   }
-  id<MTLDevice> device = [MTLCreateSystemDefaultDevice() retain];
+  // MTLCreateSystemDefaultDevice follows the create rule: the caller already
+  // owns one reference, released below.
+  id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   if (!device || ![device supportsFamily:MTLGPUFamilyMetal4]) {
     fprintf(stderr, "A Metal 4 device is unavailable.\n");
     [device release];

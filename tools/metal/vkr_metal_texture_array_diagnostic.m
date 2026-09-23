@@ -11,7 +11,9 @@ static bool close4(const float *value, float r, float g, float b, float a) {
 
 int main(void) {
   @autoreleasepool {
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    // Owned objects are autoreleased so every early return drains them with
+    // the enclosing pool.
+    id<MTLDevice> device = [MTLCreateSystemDefaultDevice() autorelease];
     if (!device) {
       fprintf(stderr, "Metal device unavailable\n");
       return 3;
@@ -32,37 +34,42 @@ int main(void) {
          "0.0), 1);\n"
          "}\n";
     NSError *error = nil;
-    id<MTLLibrary> library = [device newLibraryWithSource:source
-                                                  options:nil
-                                                    error:&error];
-    id<MTLFunction> function = [library newFunctionWithName:@"sample_layered"];
+    id<MTLLibrary> library = [[device newLibraryWithSource:source
+                                                   options:nil
+                                                     error:&error] autorelease];
+    id<MTLFunction> function =
+        [[library newFunctionWithName:@"sample_layered"] autorelease];
     id<MTLComputePipelineState> pipeline =
-        function
-            ? [device newComputePipelineStateWithFunction:function error:&error]
-            : nil;
+        function ? [[device newComputePipelineStateWithFunction:function
+                                                          error:&error]
+                       autorelease]
+                 : nil;
     if (!pipeline) {
       fprintf(stderr, "Layered sampling pipeline failed: %s\n",
               error.localizedDescription.UTF8String ?: "unknown");
       return 1;
     }
 
-    MTLTextureDescriptor *array_desc = [MTLTextureDescriptor new];
+    MTLTextureDescriptor *array_desc =
+        [[MTLTextureDescriptor new] autorelease];
     array_desc.textureType = MTLTextureType2DArray;
     array_desc.pixelFormat = MTLPixelFormatRGBA8Unorm;
     array_desc.width = 1;
     array_desc.height = 1;
     array_desc.arrayLength = 2;
     array_desc.usage = MTLTextureUsageShaderRead;
-    id<MTLTexture> array_texture = [device newTextureWithDescriptor:array_desc];
+    id<MTLTexture> array_texture =
+        [[device newTextureWithDescriptor:array_desc] autorelease];
 
-    MTLTextureDescriptor *cube_desc = [MTLTextureDescriptor new];
+    MTLTextureDescriptor *cube_desc = [[MTLTextureDescriptor new] autorelease];
     cube_desc.textureType = MTLTextureTypeCubeArray;
     cube_desc.pixelFormat = MTLPixelFormatRGBA8Unorm;
     cube_desc.width = 1;
     cube_desc.height = 1;
     cube_desc.arrayLength = 2;
     cube_desc.usage = MTLTextureUsageShaderRead;
-    id<MTLTexture> cube_texture = [device newTextureWithDescriptor:cube_desc];
+    id<MTLTexture> cube_texture =
+        [[device newTextureWithDescriptor:cube_desc] autorelease];
     if (!array_texture || !cube_texture) {
       fprintf(stderr, "Layered texture allocation failed\n");
       return 1;
@@ -90,9 +97,9 @@ int main(void) {
     }
 
     id<MTLBuffer> output =
-        [device newBufferWithLength:sizeof(float) * 8
-                            options:MTLResourceStorageModeShared];
-    id<MTLCommandQueue> queue = [device newCommandQueue];
+        [[device newBufferWithLength:sizeof(float) * 8
+                             options:MTLResourceStorageModeShared] autorelease];
+    id<MTLCommandQueue> queue = [[device newCommandQueue] autorelease];
     id<MTLCommandBuffer> command = [queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
     [encoder setComputePipelineState:pipeline];
