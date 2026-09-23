@@ -2006,16 +2006,20 @@ vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
   return result == VK_SUCCESS;
 }
 
+bool8_t vkr_vk_validate_shader_abi(VkrVulkanRenderer *renderer) {
+  return vkr_vk_validate_animation_preview_root_abi(renderer) &&
+         vkr_vk_validate_editor_overlay_root_abi(renderer) &&
+         vkr_vk_validate_fullscreen_root_abi(renderer) &&
+         vkr_vk_validate_ui_root_abi(renderer) &&
+         vkr_vk_validate_packet_root_abi(renderer) &&
+         vkr_vk_validate_gtao_root_abi(renderer) &&
+         vkr_vk_validate_ibl_sh_root_abi(renderer) &&
+         vkr_vk_validate_transmission_root_abi(renderer) &&
+         vkr_vk_validate_deferred_root_abi(renderer);
+}
+
 bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
-  if (!vkr_vk_validate_animation_preview_root_abi(renderer) ||
-      !vkr_vk_validate_editor_overlay_root_abi(renderer) ||
-      !vkr_vk_validate_fullscreen_root_abi(renderer) ||
-      !vkr_vk_validate_ui_root_abi(renderer) ||
-      !vkr_vk_validate_packet_root_abi(renderer) ||
-      !vkr_vk_validate_gtao_root_abi(renderer) ||
-      !vkr_vk_validate_ibl_sh_root_abi(renderer) ||
-      !vkr_vk_validate_transmission_root_abi(renderer) ||
-      !vkr_vk_validate_deferred_root_abi(renderer)) {
+  if (!vkr_vk_validate_shader_abi(renderer)) {
     return false_v;
   }
   const VkrVulkanDescriptorLayout *resource_layout =

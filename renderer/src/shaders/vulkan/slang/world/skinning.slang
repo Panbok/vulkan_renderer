@@ -16,9 +16,12 @@ struct VkrSkinningRoot
     uint reserved1;
 };
 
+// Every entry's push block matches the 16-byte VkrVulkanPushConstants range
+// that the shared pipeline layout declares and pipeline creation validates.
 struct VkrSkinningPush
 {
     VkrSkinningRoot *root;
+    uint2 reserved;
 };
 [[vk::push_constant]] ConstantBuffer<VkrSkinningPush> g_skinning_push;
 

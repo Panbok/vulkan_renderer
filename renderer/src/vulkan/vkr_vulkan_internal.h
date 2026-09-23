@@ -2902,6 +2902,10 @@ vkr_vk_texture_publication(VkrVulkanRenderer *renderer,
                            VkrTextureHandle handle);
 bool8_t vkr_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle);
 bool8_t vkr_vk_create_acquire_semaphores(VkrVulkanRenderer *renderer);
+/* Reflects every compiled SPIR-V entry and checks its push-constant root and
+ * GPU rows against the host layouts. Needs only the allocator and the shader
+ * files, not a device. */
+bool8_t vkr_vk_validate_shader_abi(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_flush(const VkrVulkanRenderer *renderer,

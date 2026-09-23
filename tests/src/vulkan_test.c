@@ -771,6 +771,21 @@ static void test_cancelled_asset_use_serials(void) {
   printf("  test_cancelled_asset_use_serials PASSED\n");
 }
 
+static void test_vulkan_shader_abi_reflection(void) {
+  printf("  Running test_vulkan_shader_abi_reflection...\n");
+  // Reflect the SPIR-V this build produced against every host root and GPU
+  // row layout. Reflection needs the shader files, not a Vulkan device.
+  Arena *arena = arena_create(MB(64), MB(8));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrVulkanRenderer renderer = {.allocator = &allocator};
+  assert(vkr_vk_validate_shader_abi(&renderer));
+  vkr_allocator_release_global_accounting(&allocator);
+  arena_destroy(arena);
+  printf("  test_vulkan_shader_abi_reflection PASSED\n");
+}
+
 static void test_shared_graph_metalfx_capability_boundary(void) {
   printf("  Running test_shared_graph_metalfx_capability_boundary...\n");
   // Exercise production binding and validation without creating a GPU device.
@@ -834,6 +849,7 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
 bool32_t run_vulkan_tests(void) {
   printf("--- Running Vulkan tests... ---\n");
   test_shared_graph_metalfx_capability_boundary();
+  test_vulkan_shader_abi_reflection();
   test_cancelled_asset_use_serials();
   test_direct_draw_publication_admission();
   test_present_result_classifier();
