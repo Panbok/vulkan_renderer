@@ -1889,92 +1889,101 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
              &renderer->material_slots) == VKR_GPU_SLOT_STATUS_OK;
 }
 
-bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
-  const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
-      vkr_vulkan_device_descriptor_properties(renderer->device);
-  const VkrVulkanDescriptorLayout *resource_layout =
-      vkr_vulkan_device_resource_layout(renderer->device);
-  const VkrVulkanDescriptorLayout *sampler_layout =
-      vkr_vulkan_device_sampler_layout(renderer->device);
-  VkDescriptorImageInfo image_info = {
-      .imageView = renderer->sentinel_image.view,
-      .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+/* Writes one descriptor through `get_info` into `slots`. The permanent rows
+ * below occupy fixed slots that shaders address by index, so any other slot
+ * fails. `out_handle` receives every successful publication. */
+vkr_internal bool8_t vkr_vk_publish_fixed_descriptor(
+    VkrVulkanRenderer *renderer, VkrGpuSlotTable *slots,
+    const VkDescriptorGetInfoEXT *get_info, size_t descriptor_size,
+    uint32_t expected_index, VkrGpuSlotHandle *out_handle) {
+  PFN_vkGetDescriptorEXT get_descriptor =
+      vkr_vulkan_device_get_descriptor(renderer->device);
+  get_descriptor(vkr_vk_renderer_device(renderer), get_info, descriptor_size,
+                 renderer->descriptor_scratch);
+  VkrGpuSlotHandle handle = {0};
+  if (vkr_gpu_slot_table_publish(slots, renderer->descriptor_scratch,
+                                 &handle) != VKR_GPU_SLOT_STATUS_OK) {
+    return false_v;
+  }
+  if (out_handle) {
+    *out_handle = handle;
+  }
+  return handle.index == expected_index;
+}
+
+vkr_internal bool8_t vkr_vk_publish_fixed_sampled_image(
+    VkrVulkanRenderer *renderer, VkImageView view, VkImageLayout layout,
+    uint32_t expected_index, VkrGpuSlotHandle *out_handle) {
+  const VkDescriptorImageInfo image_info = {
+      .imageView = view,
+      .imageLayout = layout,
   };
-  VkDescriptorImageInfo storage_info = {
-      .imageView = renderer->sentinel_image.view,
-      .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-  };
-  VkDescriptorGetInfoEXT image_get = {
+  const VkDescriptorGetInfoEXT get_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
       .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
       .data.pSampledImage = &image_info,
   };
-  VkDescriptorGetInfoEXT sampler_get = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
-      .data.pSampler = &renderer->sentinel_sampler,
+  return vkr_vk_publish_fixed_descriptor(
+      renderer, renderer->sampled_image_slots, &get_info,
+      vkr_vulkan_device_descriptor_properties(renderer->device)
+          ->sampledImageDescriptorSize,
+      expected_index, out_handle);
+}
+
+vkr_internal bool8_t vkr_vk_publish_fixed_storage_image(
+    VkrVulkanRenderer *renderer, VkImageView view, uint32_t expected_index,
+    VkrGpuSlotHandle *out_handle) {
+  const VkDescriptorImageInfo image_info = {
+      .imageView = view,
+      .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
   };
-  VkDescriptorGetInfoEXT storage_get = {
+  const VkDescriptorGetInfoEXT get_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
       .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-      .data.pStorageImage = &storage_info,
+      .data.pStorageImage = &image_info,
   };
-  PFN_vkGetDescriptorEXT get_descriptor =
-      vkr_vulkan_device_get_descriptor(renderer->device);
-  VkrGpuSlotHandle sampled_handle = {0};
-  VkrGpuSlotHandle sampler_handle = {0};
-  VkrGpuSlotHandle storage_handle = {0};
-  VkrGpuSlotHandle material_handle = {0};
-  get_descriptor(vkr_vk_renderer_device(renderer), &image_get,
-                 properties->sampledImageDescriptorSize,
-                 renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_publish(renderer->sampled_image_slots,
-                                 renderer->descriptor_scratch,
-                                 &sampled_handle) != VKR_GPU_SLOT_STATUS_OK ||
-      sampled_handle.index != 0u) {
-    return false_v;
-  }
-  const VkDescriptorImageInfo dfg_image_info = {
-      .imageView = renderer->dfg_image.view,
-      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-  };
-  const VkDescriptorGetInfoEXT dfg_image_get = {
+  return vkr_vk_publish_fixed_descriptor(
+      renderer, renderer->storage_image_slots, &get_info,
+      vkr_vulkan_device_descriptor_properties(renderer->device)
+          ->storageImageDescriptorSize,
+      expected_index, out_handle);
+}
+
+vkr_internal bool8_t vkr_vk_publish_fixed_sampler(
+    VkrVulkanRenderer *renderer, const VkSampler *sampler,
+    uint32_t expected_index, VkrGpuSlotHandle *out_handle) {
+  const VkDescriptorGetInfoEXT get_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-      .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-      .data.pSampledImage = &dfg_image_info,
+      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
+      .data.pSampler = sampler,
   };
-  VkrGpuSlotHandle dfg_texture_handle = {0};
-  get_descriptor(vkr_vk_renderer_device(renderer), &dfg_image_get,
-                 properties->sampledImageDescriptorSize,
-                 renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_publish(
-          renderer->sampled_image_slots, renderer->descriptor_scratch,
-          &dfg_texture_handle) != VKR_GPU_SLOT_STATUS_OK) {
+  return vkr_vk_publish_fixed_descriptor(
+      renderer, renderer->sampler_slots, &get_info,
+      vkr_vulkan_device_descriptor_properties(renderer->device)
+          ->samplerDescriptorSize,
+      expected_index, out_handle);
+}
+
+/* Sampled-image slots: 0 sentinel, 1 DFG, 2-3 LTC, 4-5 atmosphere, 6-10
+ * sheen, 11-13 anisotropy. */
+vkr_internal bool8_t vkr_vk_publish_permanent_sampled_images(
+    VkrVulkanRenderer *renderer, VkrGpuSlotHandle *out_sentinel) {
+  if (!vkr_vk_publish_fixed_sampled_image(
+          renderer, renderer->sentinel_image.view, VK_IMAGE_LAYOUT_GENERAL, 0u,
+          out_sentinel) ||
+      !vkr_vk_publish_fixed_sampled_image(
+          renderer, renderer->dfg_image.view,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1u,
+          &renderer->dfg_texture_slot)) {
     return false_v;
   }
-  renderer->dfg_texture_slot = dfg_texture_handle;
-  if (dfg_texture_handle.index != 1u)
-    return false_v;
   for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table) {
-    const VkDescriptorImageInfo ltc_image_info = {
-        .imageView = renderer->ltc_images[table].view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-    const VkDescriptorGetInfoEXT ltc_image_get = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-        .data.pSampledImage = &ltc_image_info,
-    };
-    VkrGpuSlotHandle ltc_texture_handle = {0};
-    get_descriptor(vkr_vk_renderer_device(renderer), &ltc_image_get,
-                   properties->sampledImageDescriptorSize,
-                   renderer->descriptor_scratch);
-    if (vkr_gpu_slot_table_publish(
-            renderer->sampled_image_slots, renderer->descriptor_scratch,
-            &ltc_texture_handle) != VKR_GPU_SLOT_STATUS_OK ||
-        ltc_texture_handle.index != 2u + table)
+    if (!vkr_vk_publish_fixed_sampled_image(
+            renderer, renderer->ltc_images[table].view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 2u + table,
+            &renderer->ltc_texture_slots[table])) {
       return false_v;
-    renderer->ltc_texture_slots[table] = ltc_texture_handle;
+    }
   }
   const VkrVulkanImage *atmosphere_images[] = {
       &renderer->atmosphere_transmittance,
@@ -1982,166 +1991,95 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
   };
   for (uint32_t image_index = 0u; image_index < ArrayCount(atmosphere_images);
        ++image_index) {
-    const VkDescriptorImageInfo atmosphere_image_info = {
-        .imageView = atmosphere_images[image_index]->view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-    const VkDescriptorGetInfoEXT atmosphere_image_get = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-        .data.pSampledImage = &atmosphere_image_info,
-    };
-    VkrGpuSlotHandle atmosphere_handle = {0};
-    get_descriptor(vkr_vk_renderer_device(renderer), &atmosphere_image_get,
-                   properties->sampledImageDescriptorSize,
-                   renderer->descriptor_scratch);
-    if (vkr_gpu_slot_table_publish(
-            renderer->sampled_image_slots, renderer->descriptor_scratch,
-            &atmosphere_handle) != VKR_GPU_SLOT_STATUS_OK ||
-        atmosphere_handle.index != 4u + image_index)
+    if (!vkr_vk_publish_fixed_sampled_image(
+            renderer, atmosphere_images[image_index]->view,
+            VK_IMAGE_LAYOUT_GENERAL, 4u + image_index,
+            &renderer->atmosphere_sampled_slots[image_index])) {
       return false_v;
-    renderer->atmosphere_sampled_slots[image_index] = atmosphere_handle;
+    }
   }
   const VkrVulkanImage *sheen_images[1u + VKR_SHEEN_LTC_LUT_TABLE_COUNT];
   sheen_images[0] = &renderer->sheen_directional_albedo_image;
-  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table) {
     sheen_images[1u + table] = &renderer->sheen_ltc_images[table];
+  }
   for (uint32_t image_index = 0u; image_index < ArrayCount(sheen_images);
        ++image_index) {
-    const VkDescriptorImageInfo sheen_image_info = {
-        .imageView = sheen_images[image_index]->view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-    const VkDescriptorGetInfoEXT sheen_image_get = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-        .data.pSampledImage = &sheen_image_info,
-    };
-    VkrGpuSlotHandle sheen_texture_handle = {0};
-    get_descriptor(vkr_vk_renderer_device(renderer), &sheen_image_get,
-                   properties->sampledImageDescriptorSize,
-                   renderer->descriptor_scratch);
-    if (vkr_gpu_slot_table_publish(
-            renderer->sampled_image_slots, renderer->descriptor_scratch,
-            &sheen_texture_handle) != VKR_GPU_SLOT_STATUS_OK ||
-        sheen_texture_handle.index != 6u + image_index)
+    if (!vkr_vk_publish_fixed_sampled_image(
+            renderer, sheen_images[image_index]->view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6u + image_index,
+            &renderer->sheen_texture_slots[image_index])) {
       return false_v;
-    renderer->sheen_texture_slots[image_index] = sheen_texture_handle;
+    }
   }
   for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table) {
-    const VkDescriptorImageInfo anisotropy_image_info = {
-        .imageView = renderer->anisotropy_images[table].view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-    const VkDescriptorGetInfoEXT anisotropy_image_get = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-        .data.pSampledImage = &anisotropy_image_info,
-    };
-    VkrGpuSlotHandle anisotropy_texture_handle = {0};
-    get_descriptor(vkr_vk_renderer_device(renderer), &anisotropy_image_get,
-                   properties->sampledImageDescriptorSize,
-                   renderer->descriptor_scratch);
-    if (vkr_gpu_slot_table_publish(
-            renderer->sampled_image_slots, renderer->descriptor_scratch,
-            &anisotropy_texture_handle) != VKR_GPU_SLOT_STATUS_OK ||
-        anisotropy_texture_handle.index != 11u + table)
+    if (!vkr_vk_publish_fixed_sampled_image(
+            renderer, renderer->anisotropy_images[table].view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 11u + table,
+            &renderer->anisotropy_texture_slots[table])) {
       return false_v;
-    renderer->anisotropy_texture_slots[table] = anisotropy_texture_handle;
+    }
   }
-  get_descriptor(vkr_vk_renderer_device(renderer), &sampler_get,
-                 properties->samplerDescriptorSize,
-                 renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_publish(renderer->sampler_slots,
-                                 renderer->descriptor_scratch,
-                                 &sampler_handle) != VKR_GPU_SLOT_STATUS_OK ||
-      sampler_handle.index != 0u) {
-    return false_v;
-  }
-  /* Published immediately after the sentinel so its heap slot is fixed for the
-     device's lifetime. Index 1 is asserted rather than assumed because the
-     single dirty range below publishes both contiguous rows. */
-  VkDescriptorGetInfoEXT shadow_comparison_get = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
-      .data.pSampler = &renderer->shadow_comparison_sampler,
-  };
-  VkrGpuSlotHandle shadow_comparison_handle = {0};
-  get_descriptor(vkr_vk_renderer_device(renderer), &shadow_comparison_get,
-                 properties->samplerDescriptorSize,
-                 renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_publish(
-          renderer->sampler_slots, renderer->descriptor_scratch,
-          &shadow_comparison_handle) != VKR_GPU_SLOT_STATUS_OK ||
-      shadow_comparison_handle.index != 1u) {
-    return false_v;
-  }
-  renderer->shadow_comparison_sampler_slot = shadow_comparison_handle.index;
-  VkDescriptorGetInfoEXT transmission_get = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
-      .data.pSampler = &renderer->transmission_sampler,
-  };
-  VkrGpuSlotHandle transmission_handle = {0};
-  get_descriptor(vkr_vk_renderer_device(renderer), &transmission_get,
-                 properties->samplerDescriptorSize,
-                 renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_publish(
-          renderer->sampler_slots, renderer->descriptor_scratch,
-          &transmission_handle) != VKR_GPU_SLOT_STATUS_OK ||
-      transmission_handle.index != 2u) {
-    return false_v;
-  }
-  renderer->transmission_sampler_slot = transmission_handle.index;
-  const VkDescriptorGetInfoEXT dfg_sampler_get = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
-      .data.pSampler = &renderer->dfg_sampler,
-  };
-  VkrGpuSlotHandle dfg_sampler_handle = {0};
-  get_descriptor(vkr_vk_renderer_device(renderer), &dfg_sampler_get,
-                 properties->samplerDescriptorSize,
-                 renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_publish(
-          renderer->sampler_slots, renderer->descriptor_scratch,
-          &dfg_sampler_handle) != VKR_GPU_SLOT_STATUS_OK) {
-    return false_v;
-  }
-  renderer->dfg_sampler_slot = dfg_sampler_handle;
-  if (dfg_sampler_handle.index != 3u)
-    return false_v;
+  return true_v;
+}
 
-  get_descriptor(vkr_vk_renderer_device(renderer), &storage_get,
-                 properties->storageImageDescriptorSize,
-                 renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_publish(renderer->storage_image_slots,
-                                 renderer->descriptor_scratch,
-                                 &storage_handle) != VKR_GPU_SLOT_STATUS_OK ||
-      storage_handle.index != 0u) {
+/* Sampler slots: 0 sentinel, 1 shadow comparison, 2 transmission, 3 DFG. The
+ * single dirty range in the caller publishes these contiguous rows. */
+vkr_internal bool8_t vkr_vk_publish_permanent_samplers(
+    VkrVulkanRenderer *renderer, VkrGpuSlotHandle *out_sentinel) {
+  VkrGpuSlotHandle shadow_comparison = {0};
+  VkrGpuSlotHandle transmission = {0};
+  if (!vkr_vk_publish_fixed_sampler(renderer, &renderer->sentinel_sampler, 0u,
+                                    out_sentinel) ||
+      !vkr_vk_publish_fixed_sampler(renderer,
+                                    &renderer->shadow_comparison_sampler, 1u,
+                                    &shadow_comparison)) {
+    return false_v;
+  }
+  renderer->shadow_comparison_sampler_slot = shadow_comparison.index;
+  if (!vkr_vk_publish_fixed_sampler(renderer, &renderer->transmission_sampler,
+                                    2u, &transmission)) {
+    return false_v;
+  }
+  renderer->transmission_sampler_slot = transmission.index;
+  return vkr_vk_publish_fixed_sampler(renderer, &renderer->dfg_sampler, 3u,
+                                      &renderer->dfg_sampler_slot);
+}
+
+/* Storage-image slots: 0 sentinel, then the atmosphere targets. */
+vkr_internal bool8_t
+vkr_vk_publish_permanent_storage_images(VkrVulkanRenderer *renderer) {
+  if (!vkr_vk_publish_fixed_storage_image(
+          renderer, renderer->sentinel_image.view, 0u, NULL)) {
     return false_v;
   }
   for (uint32_t image_index = 0u;
        image_index < ArrayCount(renderer->atmosphere_storage_views);
        ++image_index) {
-    const VkDescriptorImageInfo atmosphere_storage_info = {
-        .imageView = renderer->atmosphere_storage_views[image_index],
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-    const VkDescriptorGetInfoEXT atmosphere_storage_get = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-        .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        .data.pStorageImage = &atmosphere_storage_info,
-    };
-    VkrGpuSlotHandle atmosphere_handle = {0};
-    get_descriptor(vkr_vk_renderer_device(renderer), &atmosphere_storage_get,
-                   properties->storageImageDescriptorSize,
-                   renderer->descriptor_scratch);
-    if (vkr_gpu_slot_table_publish(
-            renderer->storage_image_slots, renderer->descriptor_scratch,
-            &atmosphere_handle) != VKR_GPU_SLOT_STATUS_OK ||
-        atmosphere_handle.index != 1u + image_index)
+    if (!vkr_vk_publish_fixed_storage_image(
+            renderer, renderer->atmosphere_storage_views[image_index],
+            1u + image_index,
+            &renderer->atmosphere_storage_slots[image_index])) {
       return false_v;
-    renderer->atmosphere_storage_slots[image_index] = atmosphere_handle;
+    }
+  }
+  return true_v;
+}
+
+bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
+  const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
+      vkr_vulkan_device_descriptor_properties(renderer->device);
+  const VkrVulkanDescriptorLayout *resource_layout =
+      vkr_vulkan_device_resource_layout(renderer->device);
+  const VkrVulkanDescriptorLayout *sampler_layout =
+      vkr_vulkan_device_sampler_layout(renderer->device);
+  VkrGpuSlotHandle sampled_handle = {0};
+  VkrGpuSlotHandle sampler_handle = {0};
+  VkrGpuSlotHandle material_handle = {0};
+  if (!vkr_vk_publish_permanent_sampled_images(renderer, &sampled_handle) ||
+      !vkr_vk_publish_permanent_samplers(renderer, &sampler_handle) ||
+      !vkr_vk_publish_permanent_storage_images(renderer)) {
+    return false_v;
   }
   const VkrVulkanMaterialPublishedRow material = {
       .material =

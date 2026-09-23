@@ -603,18 +603,22 @@ template <typename Body> void vkr_parallel_rows(uint32_t rows, Body body) {
     worker.join();
 }
 
-VKR_MAIN(argc, argv) {
-  if (argc != 2) {
-    std::cerr << "Usage: vkr_sheen_cooker <output.inc>\n";
-    return 2;
-  }
+namespace {
+using SheenScales = std::array<double, VKR_SHEEN_LTC_LUT_SIZE>;
 
-  std::array<double, VKR_SHEEN_LTC_LUT_SIZE> scales = {};
-  double raw_peak = 0.0;
-  /* Each roughness peak is an independent quadrature; only the serial pass
-     below folds them into the shared scale table, so the result does not
-     depend on the worker count. */
-  std::array<double, VKR_SHEEN_LTC_LUT_SIZE> peaks = {};
+/* The four RGBA16F LTC tables plus the per-cell fits that seed neighbours. */
+struct SheenLtcTables {
+  std::vector<uint16_t> matrix_a, amplitude_a, matrix_b, amplitude_b;
+  std::vector<std::array<FullFit, 2>> fits;
+  std::vector<std::string> failures;
+};
+
+/* Per-roughness energy scale that keeps the Charlie peak under the headroom.
+   Each peak is an independent quadrature; only the serial pass below folds
+   them into the shared scale table, so the result does not depend on the
+   worker count. */
+bool compute_energy_scales(SheenScales *scales, double *raw_peak) {
+  SheenScales peaks = {};
   vkr_parallel_rows(VKR_SHEEN_LTC_LUT_SIZE, [&](uint32_t y) {
     peaks[y] = peak_energy(roughness_from_unit(
         static_cast<double>(y) / (VKR_SHEEN_LTC_LUT_SIZE - 1u)));
@@ -625,17 +629,20 @@ VKR_MAIN(argc, argv) {
     const double peak = peaks[y];
     if (!std::isfinite(peak) || peak <= 0.0) {
       std::cerr << "invalid Charlie peak at roughness " << roughness << '\n';
-      return 1;
+      return false;
     }
-    scales[y] = std::min(1.0, k_energy_headroom / peak);
-    raw_peak = std::max(raw_peak, peak);
+    (*scales)[y] = std::min(1.0, k_energy_headroom / peak);
+    *raw_peak = std::max(*raw_peak, peak);
   }
+  return true;
+}
 
-  std::vector<uint16_t> energy;
-  energy.reserve(VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT);
-  double normalized_peak = 0.0;
-  /* One independent quadrature per texel; validation and encoding stay
-     serial and in scan order. */
+/* Normalized directional energy table. One independent quadrature per texel;
+   validation and encoding stay serial and in scan order. */
+bool compute_energy_table(const SheenScales &scales,
+                          std::vector<uint16_t> *energy,
+                          double *normalized_peak) {
+  energy->reserve(VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT);
   std::vector<double> energy_values(VKR_SHEEN_ENERGY_LUT_TEXEL_COUNT);
   vkr_parallel_rows(VKR_SHEEN_ENERGY_LUT_SIZE, [&](uint32_t y) {
     const double roughness = roughness_from_unit(
@@ -656,253 +663,263 @@ VKR_MAIN(argc, argv) {
       if (!std::isfinite(value) || value < 0.0 || value > 1.0 + 1.0e-4) {
         std::cerr << "invalid normalized Charlie energy at " << x << ',' << y
                   << ": " << value << '\n';
-        return 1;
+        return false;
       }
-      normalized_peak = std::max(normalized_peak, value);
-      energy.push_back(half(value));
+      *normalized_peak = std::max(*normalized_peak, value);
+      energy->push_back(half(value));
     }
   }
+  return true;
+}
 
-  std::vector<uint16_t> ltc_matrix_a, ltc_amplitude_a;
-  std::vector<uint16_t> ltc_matrix_b, ltc_amplitude_b;
-  for (std::vector<uint16_t> *table : {&ltc_matrix_a, &ltc_amplitude_a,
-                                       &ltc_matrix_b, &ltc_amplitude_b})
-    table->assign(VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT * 4u, 0u);
-  /* Each cell is seeded from its left neighbour and the cell above, so
-     (x_index, y) depends only on (x_index - 1, y) and (x_index, y - 1). Every
-     cell on one anti-diagonal is therefore independent, and solving a diagonal
-     in parallel hands each cell exactly the seeds the serial scan gave it.
-     The table is identical at any worker count. */
-  std::vector<std::array<FullFit, 2>> fits(
-      static_cast<size_t>(VKR_SHEEN_LTC_LUT_SIZE) * VKR_SHEEN_LTC_LUT_SIZE);
-  std::vector<std::string> failures(fits.size());
-  const auto solve_cell = [&](uint32_t y, uint32_t x_index) {
-    const size_t cell =
-        static_cast<size_t>(y) * VKR_SHEEN_LTC_LUT_SIZE + x_index;
-    const bool has_left = x_index > 0u;
-    const std::array<FullFit, 2> left =
-        has_left ? fits[cell - 1u] : std::array<FullFit, 2>{};
-    const double view_parameter = static_cast<double>(y) /
-                                  (VKR_SHEEN_LTC_LUT_SIZE - 1u);
-    /* Allocate 64² LTC rows near grazing where Charlie varies fastest. */
-    const double no_v = (1.0 - view_parameter) * (1.0 - view_parameter);
-    /* Charlie's nearly-zero roughness lobe is the unstable endpoint.  Fit
-       from broad to narrow roughness and retain that continuation only for
-       solving; table storage remains increasing roughness. */
-    const uint32_t x = VKR_SHEEN_LTC_LUT_SIZE - 1u - x_index;
-    const double roughness = roughness_from_unit(
-        static_cast<double>(x) / (VKR_SHEEN_LTC_LUT_SIZE - 1u));
-    const double scale = scales[x];
-    const double target_energy = directional_energy(no_v, roughness);
-    std::vector<JointSample> samples;
-    samples.reserve(64u * 64u);
-    const GaussRule &rule = gauss_rule();
-    for (uint32_t z_index = 0; z_index < 64u; ++z_index) {
-      const double no_l = rule.x[z_index];
-      const double sin_l = std::sqrt(std::max(0.0, 1.0 - no_l * no_l));
-      for (uint32_t phi_index = 0; phi_index < 64u; ++phi_index) {
-        const double phi = 2.0 * k_pi * (phi_index + 0.5) / 64.0;
-        const SheenVec3 wi = {sin_l * std::cos(phi), sin_l * std::sin(phi), no_l};
-        samples.push_back({wi, no_l * charlie_brdf(no_v, wi, roughness) /
-            std::max(target_energy, k_eps), rule.w[z_index] * 2.0 * k_pi / 64.0});
+std::array<double, 8> fit_parameters(const std::array<FullFit, 2> &pair) {
+  return std::array<double, 8>{pair[0].log_s, pair[0].log_k, pair[0].h,
+      pair[0].beta, pair[1].log_s, pair[1].log_k, pair[1].h, pair[1].beta};
+}
+
+/* Components are equivalent under permutation. The permutation is chosen by
+   the actual bilinear midpoint response against a neighbour, rather than a
+   distance between encoded parameters. */
+double ltc_midpoint_error(const std::array<FullFit, 2> &current,
+                          const std::array<FullFit, 2> &neighbor,
+                          double midpoint_roughness, double midpoint_no_v) {
+  std::array<FullFit, 2> midpoint = {};
+  for (uint32_t component = 0; component < 2u; ++component) {
+    midpoint[component] = {
+        0.5 * (current[component].log_s + neighbor[component].log_s),
+        0.5 * (current[component].log_k + neighbor[component].log_k),
+        0.5 * (current[component].h + neighbor[component].h),
+        0.5 * (current[component].beta + neighbor[component].beta),
+        0.5 * (current[component].fraction + neighbor[component].fraction)};
+  }
+  const double fraction_sum = midpoint[0].fraction + midpoint[1].fraction;
+  midpoint[0].fraction /= fraction_sum;
+  midpoint[1].fraction /= fraction_sum;
+  const double energy = directional_energy(midpoint_no_v, midpoint_roughness);
+  double error = 0.0;
+  for (uint32_t z_index = 0; z_index < 6u; ++z_index) {
+    const double z = (z_index + 0.5) / 6.0;
+    const double radial = std::sqrt(std::max(0.0, 1.0 - z * z));
+    for (uint32_t phi_index = 0; phi_index < 8u; ++phi_index) {
+      const double phi = 2.0 * k_pi * phi_index / 8.0;
+      const SheenVec3 wi = {radial * std::cos(phi), radial * std::sin(phi), z};
+      const double target = z * charlie_brdf(midpoint_no_v, wi,
+                                              midpoint_roughness) /
+          std::max(energy, k_eps);
+      const double estimate = midpoint[0].fraction *
+              full_density(midpoint[0], wi) / full_mass(midpoint[0]) +
+          midpoint[1].fraction *
+              full_density(midpoint[1], wi) / full_mass(midpoint[1]);
+      error += (estimate - target) * (estimate - target);
+    }
+  }
+  return error;
+}
+
+uint16_t signed_half(double value) {
+  const bool negative = value < 0.0;
+  const uint16_t encoded = half(std::abs(value));
+  return static_cast<uint16_t>(encoded | (negative ? 0x8000u : 0u));
+}
+
+/* Fits and encodes one LTC cell. The cell is seeded from its left neighbour
+   and the cell above, which the anti-diagonal schedule has already solved. */
+void solve_ltc_cell(const SheenScales &scales, SheenLtcTables *tables,
+                    uint32_t y, uint32_t x_index) {
+  std::vector<std::array<FullFit, 2>> &fits = tables->fits;
+  const size_t cell =
+      static_cast<size_t>(y) * VKR_SHEEN_LTC_LUT_SIZE + x_index;
+  const bool has_left = x_index > 0u;
+  const std::array<FullFit, 2> left =
+      has_left ? fits[cell - 1u] : std::array<FullFit, 2>{};
+  const double view_parameter = static_cast<double>(y) /
+                                (VKR_SHEEN_LTC_LUT_SIZE - 1u);
+  /* Allocate 64² LTC rows near grazing where Charlie varies fastest. */
+  const double no_v = (1.0 - view_parameter) * (1.0 - view_parameter);
+  /* Charlie's nearly-zero roughness lobe is the unstable endpoint.  Fit
+     from broad to narrow roughness and retain that continuation only for
+     solving; table storage remains increasing roughness. */
+  const uint32_t x = VKR_SHEEN_LTC_LUT_SIZE - 1u - x_index;
+  const double roughness = roughness_from_unit(
+      static_cast<double>(x) / (VKR_SHEEN_LTC_LUT_SIZE - 1u));
+  const double scale = scales[x];
+  const double target_energy = directional_energy(no_v, roughness);
+  std::vector<JointSample> samples;
+  samples.reserve(64u * 64u);
+  const GaussRule &rule = gauss_rule();
+  for (uint32_t z_index = 0; z_index < 64u; ++z_index) {
+    const double no_l = rule.x[z_index];
+    const double sin_l = std::sqrt(std::max(0.0, 1.0 - no_l * no_l));
+    for (uint32_t phi_index = 0; phi_index < 64u; ++phi_index) {
+      const double phi = 2.0 * k_pi * (phi_index + 0.5) / 64.0;
+      const SheenVec3 wi = {sin_l * std::cos(phi), sin_l * std::sin(phi), no_l};
+      samples.push_back({wi, no_l * charlie_brdf(no_v, wi, roughness) /
+          std::max(target_energy, k_eps), rule.w[z_index] * 2.0 * k_pi / 64.0});
+    }
+  }
+  const std::array<JointRectangle, 4> rectangles =
+      joint_rectangles(no_v, roughness, target_energy);
+  const RectfitObjective objective = {&samples, &rectangles};
+  const std::array<double, 8> fallback = {0.0, 0.0, 0.0, 0.0,
+                                            -0.7, -0.7, 0.0, 0.35};
+  std::array<FullFit, 2> pair = {};
+  std::vector<double> residuals;
+  const std::array<FullFit, 2> upper =
+      y > 0u ? fits[(static_cast<size_t>(y) - 1u) * VKR_SHEEN_LTC_LUT_SIZE +
+                    x_index]
+             : std::array<FullFit, 2>{};
+  if (y == 0u) {
+    pair = rectfit_normal_view(objective, &residuals);
+  } else {
+    std::array<std::array<double, 8>, 3> starts = {fallback, fallback, fallback};
+    uint32_t start_count = 1u;
+    if (has_left) starts[start_count++] = fit_parameters(left);
+    starts[start_count++] = fit_parameters(upper);
+    double best_cost = std::numeric_limits<double>::infinity();
+    for (uint32_t start_index = 0; start_index < start_count; ++start_index) {
+      std::vector<double> candidate_residuals;
+      const std::array<FullFit, 2> candidate = objective.evaluate(
+          rectfit_optimize(objective, starts[start_index]), &candidate_residuals);
+      const double cost = rectfit_squared_norm(candidate_residuals);
+      if (cost < best_cost) {
+        best_cost = cost;
+        pair = candidate;
+        residuals.swap(candidate_residuals);
       }
     }
-    const std::array<JointRectangle, 4> rectangles =
-        joint_rectangles(no_v, roughness, target_energy);
-    const RectfitObjective objective = {&samples, &rectangles};
-    const auto parameters_for = [](const std::array<FullFit, 2> &pair) {
-      return std::array<double, 8>{pair[0].log_s, pair[0].log_k, pair[0].h,
-          pair[0].beta, pair[1].log_s, pair[1].log_k, pair[1].h, pair[1].beta};
+  }
+  /* A zero-weight component has no node response, but its encoded matrix
+     is still bilinearly filtered.  Canonicalize it to the active lobe so
+     an arbitrary optimizer endpoint cannot create a bright midpoint. */
+  constexpr double k_inactive_fraction = 1.0e-4;
+  if (pair[0].fraction <= k_inactive_fraction) {
+    pair[0] = pair[1];
+    /* The surviving lobe carries the whole mixture. Dropping the pruned
+       weight without handing it over leaves the pair summing to just under
+       one, which the mixture check below rejects. */
+    pair[1].fraction = 1.0;
+    pair[0].fraction = 0.0;
+  } else if (pair[1].fraction <= k_inactive_fraction) {
+    pair[1] = pair[0];
+    pair[0].fraction = 1.0;
+    pair[1].fraction = 0.0;
+  }
+  if (has_left || y > 0u) {
+    const std::array<FullFit, 2> swapped_pair = {pair[1], pair[0]};
+    double direct = 0.0;
+    double swapped = 0.0;
+    const auto accumulate_neighbor = [&](const std::array<FullFit, 2> &neighbor,
+                                         double midpoint_roughness,
+                                         double midpoint_no_v) {
+      direct += ltc_midpoint_error(pair, neighbor, midpoint_roughness,
+                                   midpoint_no_v);
+      swapped += ltc_midpoint_error(swapped_pair, neighbor, midpoint_roughness,
+                                    midpoint_no_v);
     };
-    const std::array<double, 8> fallback = {0.0, 0.0, 0.0, 0.0,
-                                              -0.7, -0.7, 0.0, 0.35};
-    std::array<FullFit, 2> pair = {};
-    std::vector<double> residuals;
-    const std::array<FullFit, 2> upper =
-        y > 0u ? fits[(static_cast<size_t>(y) - 1u) * VKR_SHEEN_LTC_LUT_SIZE +
-                      x_index]
-               : std::array<FullFit, 2>{};
-    if (y == 0u) {
-      pair = rectfit_normal_view(objective, &residuals);
-    } else {
-      std::array<std::array<double, 8>, 3> starts = {fallback, fallback, fallback};
-      uint32_t start_count = 1u;
-      if (has_left) starts[start_count++] = parameters_for(left);
-      starts[start_count++] = parameters_for(upper);
-      double best_cost = std::numeric_limits<double>::infinity();
-      for (uint32_t start_index = 0; start_index < start_count; ++start_index) {
-        std::vector<double> candidate_residuals;
-        const std::array<FullFit, 2> candidate = objective.evaluate(
-            rectfit_optimize(objective, starts[start_index]), &candidate_residuals);
-        const double cost = rectfit_squared_norm(candidate_residuals);
-        if (cost < best_cost) {
-          best_cost = cost;
-          pair = candidate;
-          residuals.swap(candidate_residuals);
-        }
-      }
+    if (has_left) {
+      const double left_roughness = roughness_from_unit(
+          static_cast<double>(x + 1u) / (VKR_SHEEN_LTC_LUT_SIZE - 1u));
+      accumulate_neighbor(left, 0.5 * (roughness + left_roughness), no_v);
     }
-    /* A zero-weight component has no node response, but its encoded matrix
-       is still bilinearly filtered.  Canonicalize it to the active lobe so
-       an arbitrary optimizer endpoint cannot create a bright midpoint. */
-    constexpr double k_inactive_fraction = 1.0e-4;
-    if (pair[0].fraction <= k_inactive_fraction) {
-      pair[0] = pair[1];
-      /* The surviving lobe carries the whole mixture. Dropping the pruned
-         weight without handing it over leaves the pair summing to just under
-         one, which the mixture check below rejects. */
-      pair[1].fraction = 1.0;
-      pair[0].fraction = 0.0;
-    } else if (pair[1].fraction <= k_inactive_fraction) {
-      pair[1] = pair[0];
-      pair[0].fraction = 1.0;
-      pair[1].fraction = 0.0;
+    if (y > 0u) {
+      const double upper_view = static_cast<double>(y - 0.5) /
+          (VKR_SHEEN_LTC_LUT_SIZE - 1u);
+      const double upper_no_v = (1.0 - upper_view) * (1.0 - upper_view);
+      accumulate_neighbor(upper, roughness, upper_no_v);
     }
-    /* Components are equivalent under permutation.  Choose the assignment
-       that minimizes the actual bilinear midpoint response, rather than
-       a distance between encoded parameters. */
-    const auto midpoint_error = [](const std::array<FullFit, 2> &current,
-                                   const std::array<FullFit, 2> &neighbor,
-                                   double midpoint_roughness,
-                                   double midpoint_no_v) {
-      std::array<FullFit, 2> midpoint = {};
-      for (uint32_t component = 0; component < 2u; ++component) {
-        midpoint[component] = {
-            0.5 * (current[component].log_s + neighbor[component].log_s),
-            0.5 * (current[component].log_k + neighbor[component].log_k),
-            0.5 * (current[component].h + neighbor[component].h),
-            0.5 * (current[component].beta + neighbor[component].beta),
-            0.5 * (current[component].fraction + neighbor[component].fraction)};
-      }
-      const double fraction_sum = midpoint[0].fraction + midpoint[1].fraction;
-      midpoint[0].fraction /= fraction_sum;
-      midpoint[1].fraction /= fraction_sum;
-      const double energy = directional_energy(midpoint_no_v, midpoint_roughness);
-      double error = 0.0;
-      for (uint32_t z_index = 0; z_index < 6u; ++z_index) {
-        const double z = (z_index + 0.5) / 6.0;
-        const double radial = std::sqrt(std::max(0.0, 1.0 - z * z));
-        for (uint32_t phi_index = 0; phi_index < 8u; ++phi_index) {
-          const double phi = 2.0 * k_pi * phi_index / 8.0;
-          const SheenVec3 wi = {radial * std::cos(phi), radial * std::sin(phi), z};
-          const double target = z * charlie_brdf(midpoint_no_v, wi,
-                                                  midpoint_roughness) /
-              std::max(energy, k_eps);
-          const double estimate = midpoint[0].fraction *
-                  full_density(midpoint[0], wi) / full_mass(midpoint[0]) +
-              midpoint[1].fraction *
-                  full_density(midpoint[1], wi) / full_mass(midpoint[1]);
-          error += (estimate - target) * (estimate - target);
-        }
-      }
-      return error;
-    };
-    if (has_left || y > 0u) {
-      const std::array<FullFit, 2> swapped_pair = {pair[1], pair[0]};
-      double direct = 0.0;
-      double swapped = 0.0;
-      const auto accumulate_neighbor = [&](const std::array<FullFit, 2> &neighbor,
-                                           double midpoint_roughness,
-                                           double midpoint_no_v) {
-        direct += midpoint_error(pair, neighbor, midpoint_roughness,
-                                 midpoint_no_v);
-        swapped += midpoint_error(swapped_pair, neighbor, midpoint_roughness,
-                                  midpoint_no_v);
-      };
-      if (has_left) {
-        const double left_roughness = roughness_from_unit(
-            static_cast<double>(x + 1u) / (VKR_SHEEN_LTC_LUT_SIZE - 1u));
-        accumulate_neighbor(left, 0.5 * (roughness + left_roughness), no_v);
-      }
-      if (y > 0u) {
-        const double upper_view = static_cast<double>(y - 0.5) /
-            (VKR_SHEEN_LTC_LUT_SIZE - 1u);
-        const double upper_no_v = (1.0 - upper_view) * (1.0 - upper_view);
-        accumulate_neighbor(upper, roughness, upper_no_v);
-      }
-      if (swapped < direct) std::swap(pair[0], pair[1]);
-    }
-    for (const FullFit &component : pair) {
-      if (!std::isfinite(component.log_s) || !std::isfinite(component.log_k) ||
-          !std::isfinite(component.h) || !std::isfinite(component.beta) ||
-          !std::isfinite(component.fraction) ||
-          std::abs(component.log_s) > 6.0 || std::abs(component.log_k) > 6.0 ||
-          std::abs(component.h) > 6.0 ||
-          std::abs(component.beta) > k_full_beta_limit ||
-          component.fraction < 0.0 || component.fraction > 1.0 ||
-          full_mass(component) < 1.0e-4) {
-        failures[cell] = "invalid encoded Charlie LTC at " +
-                         std::to_string(x) + "," + std::to_string(y);
-        return;
-      }
-    }
-    if (std::abs(pair[0].fraction + pair[1].fraction - 1.0) > 1.0e-9) {
-      failures[cell] = "invalid Charlie LTC mixture at " +
-                       std::to_string(x) + "," + std::to_string(y);
+    if (swapped < direct) std::swap(pair[0], pair[1]);
+  }
+  for (const FullFit &component : pair) {
+    if (!std::isfinite(component.log_s) || !std::isfinite(component.log_k) ||
+        !std::isfinite(component.h) || !std::isfinite(component.beta) ||
+        !std::isfinite(component.fraction) ||
+        std::abs(component.log_s) > 6.0 || std::abs(component.log_k) > 6.0 ||
+        std::abs(component.h) > 6.0 ||
+        std::abs(component.beta) > k_full_beta_limit ||
+        component.fraction < 0.0 || component.fraction > 1.0 ||
+        full_mass(component) < 1.0e-4) {
+      tables->failures[cell] = "invalid encoded Charlie LTC at " +
+                               std::to_string(x) + "," + std::to_string(y);
       return;
     }
-    fits[cell] = pair;
-    const auto signed_half = [](double value) {
-      const bool negative = value < 0.0;
-      const uint16_t encoded = half(std::abs(value));
-      return static_cast<uint16_t>(encoded | (negative ? 0x8000u : 0u));
-    };
-    const size_t offset = (static_cast<size_t>(y) * VKR_SHEEN_LTC_LUT_SIZE + x) * 4u;
-    const std::array<double, 4> encoded_a = {pair[0].log_s, pair[0].log_k,
-                                              pair[0].h, pair[0].beta};
-    const std::array<double, 4> encoded_b = {pair[1].log_s, pair[1].log_k,
-                                              pair[1].h, pair[1].beta};
-    for (uint32_t channel = 0; channel < 4u; ++channel) {
-      ltc_matrix_a[offset + channel] = signed_half(encoded_a[channel]);
-      ltc_matrix_b[offset + channel] = signed_half(encoded_b[channel]);
-    }
-    ltc_amplitude_a[offset] = half(pair[0].fraction);
-    ltc_amplitude_a[offset + 1u] = half(k_allocation_relative_reserve);
-    ltc_amplitude_a[offset + 2u] = half(k_allocation_absolute_reserve);
-    ltc_amplitude_a[offset + 3u] = half(scale);
-    ltc_amplitude_b[offset] = half(pair[1].fraction);
-  };
-
-  {
-    const uint32_t worker_count =
-        std::max(1u, std::thread::hardware_concurrency());
-    constexpr uint32_t last_index = VKR_SHEEN_LTC_LUT_SIZE - 1u;
-    bool diagonal_failed = false;
-    for (uint32_t diagonal = 0; !diagonal_failed && diagonal <= 2u * last_index;
-         ++diagonal) {
-      const uint32_t first_y =
-          diagonal > last_index ? diagonal - last_index : 0u;
-      const uint32_t last_y = std::min(diagonal, last_index);
-      std::atomic<uint32_t> next_y{first_y};
-      std::vector<std::thread> workers;
-      const uint32_t count = std::min(worker_count, last_y - first_y + 1u);
-      workers.reserve(count);
-      for (uint32_t worker = 0; worker < count; ++worker)
-        workers.emplace_back([&]() {
-          for (;;) {
-            const uint32_t y = next_y.fetch_add(1u);
-            if (y > last_y)
-              break;
-            solve_cell(y, diagonal - y);
-          }
-        });
-      for (std::thread &worker : workers)
-        worker.join();
-      for (uint32_t y = first_y; y <= last_y; ++y)
-        diagonal_failed =
-            diagonal_failed ||
-            !failures[static_cast<size_t>(y) * VKR_SHEEN_LTC_LUT_SIZE +
-                      (diagonal - y)].empty();
-    }
-    /* Report in scan order, so a rejected fit names the cell the serial scan
-       would have named. */
-    for (const std::string &failure : failures)
-      if (!failure.empty()) {
-        std::cerr << failure << '\n';
-        return 1;
-      }
   }
+  if (std::abs(pair[0].fraction + pair[1].fraction - 1.0) > 1.0e-9) {
+    tables->failures[cell] = "invalid Charlie LTC mixture at " +
+                             std::to_string(x) + "," + std::to_string(y);
+    return;
+  }
+  fits[cell] = pair;
+  const size_t offset = (static_cast<size_t>(y) * VKR_SHEEN_LTC_LUT_SIZE + x) * 4u;
+  const std::array<double, 4> encoded_a = {pair[0].log_s, pair[0].log_k,
+                                            pair[0].h, pair[0].beta};
+  const std::array<double, 4> encoded_b = {pair[1].log_s, pair[1].log_k,
+                                            pair[1].h, pair[1].beta};
+  for (uint32_t channel = 0; channel < 4u; ++channel) {
+    tables->matrix_a[offset + channel] = signed_half(encoded_a[channel]);
+    tables->matrix_b[offset + channel] = signed_half(encoded_b[channel]);
+  }
+  tables->amplitude_a[offset] = half(pair[0].fraction);
+  tables->amplitude_a[offset + 1u] = half(k_allocation_relative_reserve);
+  tables->amplitude_a[offset + 2u] = half(k_allocation_absolute_reserve);
+  tables->amplitude_a[offset + 3u] = half(scale);
+  tables->amplitude_b[offset] = half(pair[1].fraction);
+}
 
+/* Each cell is seeded from its left neighbour and the cell above, so
+   (x_index, y) depends only on (x_index - 1, y) and (x_index, y - 1). Every
+   cell on one anti-diagonal is therefore independent, and solving a diagonal
+   in parallel hands each cell exactly the seeds the serial scan gave it.
+   The table is identical at any worker count. */
+bool solve_ltc_tables(const SheenScales &scales, SheenLtcTables *tables) {
+  for (std::vector<uint16_t> *table : {&tables->matrix_a, &tables->amplitude_a,
+                                       &tables->matrix_b, &tables->amplitude_b})
+    table->assign(VKR_SHEEN_LTC_LUT_TABLE_TEXEL_COUNT * 4u, 0u);
+  tables->fits.assign(
+      static_cast<size_t>(VKR_SHEEN_LTC_LUT_SIZE) * VKR_SHEEN_LTC_LUT_SIZE,
+      std::array<FullFit, 2>{});
+  tables->failures.assign(tables->fits.size(), std::string());
+  const uint32_t worker_count =
+      std::max(1u, std::thread::hardware_concurrency());
+  constexpr uint32_t last_index = VKR_SHEEN_LTC_LUT_SIZE - 1u;
+  bool diagonal_failed = false;
+  for (uint32_t diagonal = 0; !diagonal_failed && diagonal <= 2u * last_index;
+       ++diagonal) {
+    const uint32_t first_y =
+        diagonal > last_index ? diagonal - last_index : 0u;
+    const uint32_t last_y = std::min(diagonal, last_index);
+    std::atomic<uint32_t> next_y{first_y};
+    std::vector<std::thread> workers;
+    const uint32_t count = std::min(worker_count, last_y - first_y + 1u);
+    workers.reserve(count);
+    for (uint32_t worker = 0; worker < count; ++worker)
+      workers.emplace_back([&]() {
+        for (;;) {
+          const uint32_t y = next_y.fetch_add(1u);
+          if (y > last_y)
+            break;
+          solve_ltc_cell(scales, tables, y, diagonal - y);
+        }
+      });
+    for (std::thread &worker : workers)
+      worker.join();
+    for (uint32_t y = first_y; y <= last_y; ++y)
+      diagonal_failed =
+          diagonal_failed ||
+          !tables->failures[static_cast<size_t>(y) * VKR_SHEEN_LTC_LUT_SIZE +
+                            (diagonal - y)].empty();
+  }
+  /* Report in scan order, so a rejected fit names the cell the serial scan
+     would have named. */
+  for (const std::string &failure : tables->failures)
+    if (!failure.empty()) {
+      std::cerr << failure << '\n';
+      return false;
+    }
+  return true;
+}
+
+std::string emit_sheen_lut(const std::vector<uint16_t> &energy,
+                           const SheenLtcTables &tables) {
   std::ostringstream output;
   output << "// Generated by vkr_sheen_cooker. Charlie D plus Estevez/Kulla\n"
             "// visibility; raw R16F directional E and four RGBA16F LTC tables.\n"
@@ -912,16 +929,36 @@ VKR_MAIN(argc, argv) {
             "#if defined(VKR_SHEEN_LUT_EMIT_ENERGY)\n";
   emit_values(&output, energy);
   output << "#elif defined(VKR_SHEEN_LUT_EMIT_LTC)\n{\n";
-  emit_values(&output, ltc_matrix_a);
+  emit_values(&output, tables.matrix_a);
   output << "}, {\n";
-  emit_values(&output, ltc_amplitude_a);
+  emit_values(&output, tables.amplitude_a);
   output << "}, {\n";
-  emit_values(&output, ltc_matrix_b);
+  emit_values(&output, tables.matrix_b);
   output << "}, {\n";
-  emit_values(&output, ltc_amplitude_b);
+  emit_values(&output, tables.amplitude_b);
   output << "}\n#else\n#error \"Select a Vkr sheen LUT section before including this file\"\n#endif\n";
+  return output.str();
+}
+}  // namespace
 
-  const std::string contents = output.str();
+VKR_MAIN(argc, argv) {
+  if (argc != 2) {
+    std::cerr << "Usage: vkr_sheen_cooker <output.inc>\n";
+    return 2;
+  }
+
+  SheenScales scales = {};
+  double raw_peak = 0.0;
+  std::vector<uint16_t> energy;
+  double normalized_peak = 0.0;
+  SheenLtcTables tables;
+  if (!compute_energy_scales(&scales, &raw_peak) ||
+      !compute_energy_table(scales, &energy, &normalized_peak) ||
+      !solve_ltc_tables(scales, &tables)) {
+    return 1;
+  }
+
+  const std::string contents = emit_sheen_lut(energy, tables);
   std::string existing;
   {
     // Windows refuses to replace a file this process still holds open, so the
