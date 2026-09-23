@@ -3517,7 +3517,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     MemCopy(cpu + text_offset, ui_draw_list->indices, ui_index_bytes);
     upload->ui_indices_gpu = gpu + text_offset;
     upload->ui_indices_length = ui_index_bytes;
-    text_offset += ui_index_bytes;
   }
   if (packet->input.world &&
       packet->input.world->transmission_gpu_candidate_count > 0) {

@@ -1396,7 +1396,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
 
   Vec3 axis = vec3_zero();
   bool8_t has_axis = vkr_gizmo_handle_axis(handle, &axis);
-  Vec3 plane_normal = vec3_zero();
+  Vec3 plane_normal;
 
   if (mode == VKR_GIZMO_MODE_SCALE) {
     axis = vec3_zero();
@@ -1406,7 +1406,6 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
   if (mode == VKR_GIZMO_MODE_ROTATE) {
     if (!has_axis) {
       axis = vec3_normalize(camera->forward);
-      has_axis = true_v;
     }
     plane_normal = axis;
   } else {
@@ -1529,7 +1528,7 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
   Vec3 result_scale = state->gizmo_drag.start_scale;
 
   if (state->gizmo_drag.mode == VKR_GIZMO_MODE_TRANSLATE) {
-    Vec3 new_pivot = state->gizmo_drag.start_world_position;
+    Vec3 new_pivot;
     if (vkr_gizmo_handle_is_free_translate(state->gizmo_drag.handle)) {
       new_pivot = vec3_add(state->gizmo_drag.start_world_position, delta);
     } else {
@@ -1538,7 +1537,7 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
       new_pivot = vec3_add(state->gizmo_drag.start_world_position, axis_delta);
     }
 
-    Vec3 local_pos = new_pivot;
+    Vec3 local_pos;
     if (state->gizmo_drag.uses_text_pivot) {
       local_pos = vkr_standard_scene_runtime_text_origin_from_pivot(
           scene, transform, new_pivot, state->gizmo_drag.text_pivot_local,
@@ -3565,7 +3564,7 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
         camera->view_dirty = true_v;
       }
     } else {
-      Vec3 target = vec3_zero();
+      Vec3 target;
       float32_t half_height = 25.0f;
       if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
         if (state->player_camera_active) {

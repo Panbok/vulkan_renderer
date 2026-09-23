@@ -47,7 +47,7 @@ uint16_t vkr_float32_to_float16(float32_t value) {
       (remainder == 0x1000u && (rounded_mantissa & 1u))) {
     rounded_mantissa++;
     if (rounded_mantissa == 0x400u) {
-      rounded_mantissa = 0u;
+      // The mantissa carried into the exponent and is zero again.
       if (half_exponent + 1 >= 31) {
         return (uint16_t)(sign | 0x7c00u);
       }

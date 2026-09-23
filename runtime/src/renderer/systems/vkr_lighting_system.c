@@ -471,7 +471,8 @@ void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
   uint64_t cell_count =
       point_light_grid_dimensions_for_size(extent, cell_size, dimensions);
   if (cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS) {
-    float32_t rejected_size = cell_size;
+    // Assigned by the first growth step, which always runs.
+    float32_t rejected_size;
     do {
       rejected_size = cell_size;
       cell_size *= 1.25f;

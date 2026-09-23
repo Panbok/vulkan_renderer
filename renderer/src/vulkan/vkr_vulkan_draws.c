@@ -516,6 +516,8 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   }
 
   if (renderer->prepared_frame.subsurface_enabled) {
+    // Frame preparation enables subsurface only when lighting provides a bank.
+    assert_log(lighting != NULL, "Subsurface requires frame lighting");
     const VkrSubsurfaceBinding *binding = &lighting->subsurface;
     VkrVulkanPublishedTexture *texture =
         vkr_vk_published_texture(renderer, binding->texture, NULL);

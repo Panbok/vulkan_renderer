@@ -109,7 +109,9 @@ static bool8_t physics_unit_scale(Vec3 value) {
 
 static ScenePhysicsBody *physics_body(const VkrScene *scene,
                                       VkrEntityId entity) {
-  if (!scene || !scene->world) {
+  // Body records live in the physics world's storage; without that world no
+  // component may be resolved to a body.
+  if (!scene || !scene->world || !scene->physics) {
     return NULL;
   }
   const ScenePhysicsBodyComponent *component =

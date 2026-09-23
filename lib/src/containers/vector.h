@@ -87,6 +87,7 @@ typedef struct VectorFindResult {
     if (vector->length == vector->capacity && !vector_resize_##name(vector)) { \
       return false;                                                            \
     }                                                                          \
+    assert_log(vector->data != NULL, "Vector storage is NULL");                \
     vector->data[vector->length++] = value;                                    \
     return true;                                                               \
   }                                                                            \
@@ -95,6 +96,7 @@ typedef struct VectorFindResult {
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(vector->length > 0, "Vector is empty");                         \
+    assert_log(vector->data != NULL, "Vector storage is NULL");                \
     return (vector->data[--vector->length]);                                   \
   }                                                                            \
   static inline VKR_MAYBE_UNUSED type *vector_pop_at_##name(                   \
@@ -102,6 +104,7 @@ typedef struct VectorFindResult {
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(index < vector->length, "Index is out of bounds");              \
+    assert_log(vector->data != NULL, "Vector storage is NULL");                \
     uint64_t length = vector->length;                                          \
     uint64_t stride = sizeof(type);                                            \
     if (dest != NULL) {                                                        \
@@ -141,6 +144,7 @@ typedef struct VectorFindResult {
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(index < vector->length, "Index is out of bounds");              \
+    assert_log(vector->data != NULL, "Vector storage is NULL");                \
     vector->data[index] = value;                                               \
   }                                                                            \
   static inline VKR_MAYBE_UNUSED type *vector_get_##name(                      \
@@ -148,6 +152,7 @@ typedef struct VectorFindResult {
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(index < vector->length, "Index is out of bounds");              \
+    assert_log(vector->data != NULL, "Vector storage is NULL");                \
     return (type *)(vector->data + index);                                     \
   }                                                                            \
   static inline VKR_MAYBE_UNUSED void vector_destroy_##name(                   \

@@ -1591,9 +1591,6 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
         queryless_key[queryless_name.length] = '\0';
         entry = vkr_hash_table_get_VkrTextureEntry(&system->texture_map,
                                                    queryless_key);
-        if (entry) {
-          texture_key = queryless_key;
-        }
       }
     }
   }

@@ -9,6 +9,13 @@ header diagnostic otherwise repeats once per including translation unit.
 
 The analyzer defines `__clang_analyzer__`; `logger.h` then turns `assert_log`
 into an analysis assumption, so documented preconditions are not reported.
+Analysis parses precompiled prefix headers textually because a precompiled
+header restores the macro state it was built with, including the absence of
+`__clang_analyzer__`.
+
+Analyze the Debug tree for a clean gate. In Release, log statements below
+LOG_LEVEL are type-checked but unreachable, so values read only by them are
+reported as dead stores even though Debug reads them.
 
 Examples:
   python3 tools/checks/run_clang_checks.py warnings --build-dir build_release
@@ -69,7 +76,15 @@ def load_units(build_dir, prefixes):
     return units
 
 
-def unit_arguments(entry):
+def precompiled_header_sources(argument):
+    """Returns the headers a CMake precompiled-header wrapper includes."""
+    wrapper = Path(argument[len('-include'):])
+    if not wrapper.is_file():
+        return []
+    return re.findall(r'#include "([^"]+)"', wrapper.read_text())
+
+
+def unit_arguments(entry, textual_prefix_headers=False):
     arguments = (entry['arguments'] if 'arguments' in entry
                  else shlex.split(entry['command']))
     result = []
@@ -83,12 +98,22 @@ def unit_arguments(entry):
             continue
         if argument in DROPPED:
             continue
+        if (textual_prefix_headers and argument.startswith('-include') and
+                'cmake_pch' in argument):
+            # A precompiled header restores the macro state it was built
+            # with, which hides __clang_analyzer__ from the analysis.
+            if result and result[-1].startswith('-Xarch_'):
+                result.pop()
+            for header in precompiled_header_sources(argument):
+                result += ['-include', header]
+            continue
         result.append(argument)
     return result
 
 
 def run_unit(mode, entry, extra):
-    arguments = unit_arguments(entry) + extra
+    arguments = unit_arguments(entry, textual_prefix_headers=mode == 'analyze')
+    arguments += extra
     if mode == 'warnings':
         arguments.append('-fsyntax-only')
     else:

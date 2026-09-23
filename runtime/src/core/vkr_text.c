@@ -686,10 +686,7 @@ vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
       max_line_width = Max(max_line_width, current_width);
       current_width = 0.0;
       line_count++;
-      kern = 0.0f;
       total_advance = glyph_width;
-      has_prev = false_v;
-      previous = (VkrTextResolvedGlyph){0};
     }
 
     current_width += total_advance;
@@ -854,8 +851,6 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
       line_count++;
       kern = 0.0f;
       total_advance = glyph_width;
-      has_prev = false_v;
-      previous = (VkrTextResolvedGlyph){0};
       if (opts.clip && opts.max_height > 0.0f &&
           (float64_t)line_count * (float64_t)line_height >
               (float64_t)opts.max_height) {

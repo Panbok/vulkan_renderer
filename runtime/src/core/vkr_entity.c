@@ -1249,6 +1249,8 @@ VkrEntityId vkr_entity_create_entity_with_components(
 
   VkrArchetype *archetype =
       vkr_entity_archetype_get_or_create(world, sorted_types, unique_count);
+  assert_log(!archetype || archetype->comp_count == unique_count,
+             "Archetype layout matches the coalesced component list");
   if (!archetype) {
     if (!scratch_scoped) {
       if (inits != stack_inits) {
@@ -1318,7 +1320,8 @@ VkrEntityId vkr_entity_create_entity_with_components(
 
   uint32_t slot = chunk->count++;
   chunk->ents[slot] = id;
-  for (uint32_t comp = 0; comp < archetype->comp_count; ++comp) {
+  // The archetype's columns are the coalesced inits, in the same order.
+  for (uint32_t comp = 0; comp < unique_count; ++comp) {
     uint8_t *dst_col = (uint8_t *)chunk->columns[comp];
     uint32_t size = archetype->sizes[comp];
     const void *src = inits[comp].data;
@@ -1606,6 +1609,8 @@ bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
     if (archetype->types[comp] != type)
       dst_types[j++] = archetype->types[comp];
   }
+  // Archetype types are unique and `type` was found, so exactly one is dropped.
+  assert_log(j == comp_count, "Archetype component types are unique");
 
   VkrArchetype *dst =
       vkr_entity_archetype_get_or_create(world, dst_types, comp_count);

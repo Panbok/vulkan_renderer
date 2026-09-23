@@ -326,6 +326,8 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
   const uint8_t *bytes = nullptr;
   uint64_t size = 0;
   VkrDiffuseVolume reopened = {};
+  // parse_options requires an output path unless the run only inspects.
+  assert_log(options.output != nullptr, "A bake requires an output path");
   if (!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size) ||
       !vkr_diffuse_volume_decode(bytes, size, arena, &reopened) ||
       !write_atomic(options.output, bytes, size)) {

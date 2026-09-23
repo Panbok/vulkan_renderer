@@ -106,14 +106,13 @@ static void test_arena_simple_alloc() {
   uint64_t alloc_size1 = 100;
   void *ptr1 = arena_alloc(arena, alloc_size1, ARENA_MEMORY_TAG_UNKNOWN);
   assert(ptr1 != NULL && "Allocation 1 failed");
-  uint64_t pos_after_alloc1 = arena_pos(arena);
 
   uint64_t current_arena_pos_before_ptr1 = arena_pos(arena);
   ptr1 = arena_alloc(
       arena, alloc_size1,
       ARENA_MEMORY_TAG_UNKNOWN); // re-assign ptr1 for clarity after 0-byte
   assert(ptr1 != NULL && "Allocation 1 (after 0-byte) failed");
-  pos_after_alloc1 = arena_pos(arena);
+  uint64_t pos_after_alloc1 = arena_pos(arena);
 
   assert(pos_after_alloc1 >= current_arena_pos_before_ptr1 + alloc_size1 &&
          "Position after alloc 1 too small");
@@ -153,11 +152,6 @@ static void test_arena_commit_grow() {
 
   uint64_t initial_total_committed_in_block =
       arena->current->cmt; // cmt is total committed in block
-  uint64_t allocatable_before_header =
-      initial_total_committed_in_block - ARENA_HEADER_SIZE;
-  if (allocatable_before_header < 0)
-    allocatable_before_header = 0; // Should not happen if cmt is sane
-
   uint64_t current_pos_in_block = arena->current->pos;
   uint64_t remaining_in_initial_commit =
       initial_total_committed_in_block - current_pos_in_block;

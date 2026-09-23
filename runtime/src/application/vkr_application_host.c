@@ -57,7 +57,6 @@ bool8_t vkr_application_host_create(VkrApplicationHost *host,
   bool8_t platform_ready = false_v;
   bool8_t events_ready = false_v;
   bool8_t window_ready = false_v;
-  bool8_t mutex_ready = false_v;
   bool8_t gamepad_ready = false_v;
   if (!vkr_platform_init())
     goto cleanup;
@@ -77,9 +76,9 @@ bool8_t vkr_application_host_create(VkrApplicationHost *host,
       goto cleanup;
     gamepad_ready = true_v;
   }
+  // The mutex is the last fallible acquisition, so no cleanup path owns it.
   if (!vkr_mutex_create(allocator, &host->mutex))
     goto cleanup;
-  mutex_ready = true_v;
   host->clock = vkr_clock_create();
   host->flags = bitset8_create();
   bitset8_set(&host->flags, VKR_APPLICATION_HOST_FLAG_INITIALIZED);
@@ -92,8 +91,6 @@ cleanup:
     vkr_window_destroy(&host->window);
   if (events_ready)
     event_manager_destroy(&host->events);
-  if (mutex_ready)
-    vkr_mutex_destroy(allocator, &host->mutex);
   if (platform_ready)
     vkr_platform_shutdown();
   MemZero(host, sizeof(*host));

@@ -267,7 +267,6 @@ vkr_internal void test_temporal_reset_reasons(void) {
   printf("  Running test_temporal_reset_reasons...\n");
   VkrTemporalState state = {0};
   VkrTemporalFrameInput input = temporal_input(10u);
-  VkrTemporalFrame frame = vkr_temporal_prepare(&state, &input);
   vkr_temporal_commit(&state, &input);
 
   VkrTemporalFrameInput changed = input;
@@ -278,7 +277,7 @@ vkr_internal void test_temporal_reset_reasons(void) {
   changed.projection.m00 *= 0.9f;
   changed.view_position = (Vec3){20.0f, 0.0f, 0.0f};
   changed.explicit_reset_reasons = VKR_TEMPORAL_RESET_EXPLICIT;
-  frame = vkr_temporal_prepare(&state, &changed);
+  VkrTemporalFrame frame = vkr_temporal_prepare(&state, &changed);
   const uint32_t expected =
       VKR_TEMPORAL_RESET_MODE_CHANGE | VKR_TEMPORAL_RESET_FRAME_GAP |
       VKR_TEMPORAL_RESET_EXTENT_CHANGE | VKR_TEMPORAL_RESET_SCENE_CHANGE |
@@ -590,9 +589,11 @@ vkr_internal void test_dynamic_resolution_failed_upshift_headroom(void) {
   assert(resized.filtered_sample_valid && resized.cooldown_samples > 0u);
 
   // Sustained identical work must not retry the known failing upper tier.
-  for (uint32_t i = 0u; i < 600u; ++i)
-    assert(!vkr_dynamic_resolution_update(&state, ++submit, 9000000u,
-                                          state.current_scale, &next_scale));
+  for (uint32_t i = 0u; i < 600u; ++i) {
+    const bool8_t changed = vkr_dynamic_resolution_update(
+        &state, ++submit, 9000000u, state.current_scale, &next_scale);
+    assert(!changed);
+  }
   assert(temporal_near(state.current_scale, 0.85f));
   assert(state.transition_count == 2u);
 
@@ -626,9 +627,11 @@ vkr_internal void test_dynamic_resolution_failed_upshift_headroom(void) {
   }
   assert(temporal_near(state.current_scale, 0.9f));
   assert(state.transition_count == 3u);
-  for (uint32_t i = 0u; i < 100u; ++i)
-    assert(!vkr_dynamic_resolution_update(&state, ++submit, 10000000u,
-                                          state.current_scale, &next_scale));
+  for (uint32_t i = 0u; i < 100u; ++i) {
+    const bool8_t changed = vkr_dynamic_resolution_update(
+        &state, ++submit, 10000000u, state.current_scale, &next_scale);
+    assert(!changed);
+  }
   assert(state.failed_upshift_cost_ratio == 0.0);
   printf("  test_dynamic_resolution_failed_upshift_headroom PASSED\n");
 }

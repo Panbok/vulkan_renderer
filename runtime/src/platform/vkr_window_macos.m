@@ -39,7 +39,9 @@ bool8_t vkr_platform_clipboard_write_text(const uint8_t *text,
   if (!text && length != 0u)
     return false_v;
   @autoreleasepool {
-    NSString *string = [[NSString alloc] initWithBytes:text
+    // initWithBytes: requires a pointer even for an empty string.
+    const void *bytes = text ? (const void *)text : (const void *)"";
+    NSString *string = [[NSString alloc] initWithBytes:bytes
                                                 length:length
                                               encoding:NSUTF8StringEncoding];
     if (!string)

@@ -1518,16 +1518,12 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
 
   uint32_t import_count = 0;
   uint32_t input_index = 0;
-  bool8_t overflow_warned = false_v;
   while (vkr_json_next_array_element(&probes_reader)) {
     if (import_count >= VKR_SCENE_REFLECTION_PROBE_MAX) {
-      if (!overflow_warned) {
-        log_warn(
-            "Scene loader: reflection_probes exceeds limit (%u), extra entries "
-            "are ignored",
-            VKR_SCENE_REFLECTION_PROBE_MAX);
-        overflow_warned = true_v;
-      }
+      log_warn(
+          "Scene loader: reflection_probes exceeds limit (%u), extra entries "
+          "are ignored",
+          VKR_SCENE_REFLECTION_PROBE_MAX);
       break;
     }
 

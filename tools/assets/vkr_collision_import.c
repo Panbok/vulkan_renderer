@@ -1,6 +1,7 @@
 #include "assets/vkr_collision_import.h"
 #include "assets/vkr_cgltf.h"
 #include "assets/vkr_collision_hull.h"
+#include "core/logger.h"
 #include "math/mat.h"
 #include <math.h>
 #include <string.h>
@@ -96,7 +97,11 @@ bool8_t vkr_collision_import_gltf(VkrAllocator *result, VkrAllocator *scratch,
       goto cleanup;
     }
   }
-  uint64_t vertex_count = 0, index_count = 0;
+  uint64_t vertex_count = 0;
+  uint64_t index_count = 0;
+  // cgltf provides node storage for every counted node.
+  assert_log(data->nodes_count == 0 || data->nodes,
+             "Parsed glTF nodes need storage");
   for (cgltf_size n = 0; n < data->nodes_count; ++n) {
     const cgltf_node *node = data->nodes + n;
     if (!node->mesh || !collision_node_selected(data, node, selected)) {

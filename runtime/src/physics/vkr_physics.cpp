@@ -4,6 +4,9 @@
 // clang-format on
 
 #include "vkr_physics.h"
+extern "C" {
+#include "core/logger.h"
+}
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemSingleThreaded.h>
 #include <Jolt/Core/TempAllocator.h>
@@ -1306,29 +1309,41 @@ static bool8_t update_sensors(VkrPhysicsWorld *world) {
   return true_v;
 }
 
-extern "C" bool8_t vkr_physics_sensor_events(VkrPhysicsWorld *world,
-                                             VkrPhysicsSensorEvent *events,
-                                             uint32_t capacity,
-                                             uint32_t *out_count) {
+// Moves every queued event into caller storage. Null storage is accepted only
+// with zero capacity, so a nonempty queue that fits always has a destination.
+template <typename Event>
+static bool8_t drain_events(VkrPhysicsWorld *world, std::vector<Event> *queue,
+                            Event *events, uint32_t capacity,
+                            uint32_t *out_count, const char *invalid_message,
+                            const char *capacity_message) {
   if (world && world->dispatching) {
     return fail(world, "Physics mutation or drain during event dispatch");
   }
-
   if (out_count) {
     *out_count = 0;
   }
   if (!world || world->faulted || !out_count || (!events && capacity)) {
-    return fail(world, "Invalid sensor event output or faulted world");
+    return fail(world, invalid_message);
   }
-  if (capacity < world->events.size()) {
-    return fail(world, "Sensor event output capacity exceeded");
+  if (capacity < queue->size()) {
+    return fail(world, capacity_message);
   }
-  *out_count = static_cast<uint32_t>(world->events.size());
+  *out_count = static_cast<uint32_t>(queue->size());
   if (*out_count) {
-    MemCopy(events, world->events.data(), *out_count * sizeof(*events));
+    assert_log(events != NULL, "A nonempty queue implies caller storage");
+    MemCopy(events, queue->data(), *out_count * sizeof(*events));
   }
-  world->events.clear();
+  queue->clear();
   return true_v;
+}
+
+extern "C" bool8_t vkr_physics_sensor_events(VkrPhysicsWorld *world,
+                                             VkrPhysicsSensorEvent *events,
+                                             uint32_t capacity,
+                                             uint32_t *out_count) {
+  return drain_events(world, world ? &world->events : nullptr, events, capacity,
+                      out_count, "Invalid sensor event output or faulted world",
+                      "Sensor event output capacity exceeded");
 }
 
 extern "C" bool8_t vkr_physics_body_reserve_destroy(VkrPhysicsWorld *world,
@@ -1881,25 +1896,10 @@ extern "C" bool8_t vkr_physics_contact_events(VkrPhysicsWorld *world,
                                               VkrPhysicsContactEvent *events,
                                               uint32_t capacity,
                                               uint32_t *out_count) {
-  if (world && world->dispatching) {
-    return fail(world, "Physics mutation or drain during event dispatch");
-  }
-
-  if (out_count) {
-    *out_count = 0;
-  }
-  if (!world || world->faulted || !out_count || (!events && capacity)) {
-    return fail(world, "Invalid contact event output or faulted world");
-  }
-  if (capacity < world->contact_events.size()) {
-    return fail(world, "Contact event output capacity exceeded");
-  }
-  *out_count = static_cast<uint32_t>(world->contact_events.size());
-  if (*out_count) {
-    MemCopy(events, world->contact_events.data(), *out_count * sizeof(*events));
-  }
-  world->contact_events.clear();
-  return true_v;
+  return drain_events(world, world ? &world->contact_events : nullptr, events,
+                      capacity, out_count,
+                      "Invalid contact event output or faulted world",
+                      "Contact event output capacity exceeded");
 }
 
 JPH::ValidateResult

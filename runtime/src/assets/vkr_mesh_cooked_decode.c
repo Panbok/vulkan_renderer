@@ -1255,15 +1255,16 @@ bool8_t vkr_mesh_cooked_apply_material_remap(VkrAllocator *scratch,
   }
   file_close(&file);
   VkrJsonReader reader = vkr_json_reader_create(bytes, read);
+  // One remap slot per decoded range; the range count is fixed from here on.
+  const uint64_t range_count = decoded->ranges.length;
   String8 *mapped = NULL;
-  if (decoded->ranges.length) {
-    mapped =
-        vkr_allocator_alloc(scratch, decoded->ranges.length * sizeof(*mapped),
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (range_count) {
+    mapped = vkr_allocator_alloc(scratch, range_count * sizeof(*mapped),
+                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!mapped) {
       return false_v;
     }
-    MemZero(mapped, decoded->ranges.length * sizeof(*mapped));
+    MemZero(mapped, range_count * sizeof(*mapped));
   }
   if (!mesh_remap_take(&reader, '{')) {
     return false_v;
@@ -1301,12 +1302,12 @@ bool8_t vkr_mesh_cooked_apply_material_remap(VkrAllocator *scratch,
   if (!version_seen || !materials_seen || reader.pos != reader.length) {
     return false_v;
   }
-  for (uint64_t i = 0; i < decoded->ranges.length; ++i) {
+  for (uint64_t i = 0; i < range_count; ++i) {
     if (decoded->ranges.data[i].material_name.length && !mapped[i].str) {
       return false_v;
     }
   }
-  for (uint64_t i = 0; i < decoded->ranges.length; ++i) {
+  for (uint64_t i = 0; i < range_count; ++i) {
     if (mapped[i].str) {
       decoded->ranges.data[i].material_name = mapped[i];
     }

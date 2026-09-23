@@ -2922,25 +2922,29 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_scene(
       data->animations_count > UINT32_MAX)
     return false_v;
   VkrMeshSource *source = info->out_source;
+  // Each node may add one mesh variant; indices are stored as uint32_t.
+  const cgltf_size mesh_capacity = data->meshes_count + data->nodes_count;
+  if (mesh_capacity < data->meshes_count || mesh_capacity > UINT32_MAX)
+    return false_v;
   *source = (VkrMeshSource){
       .nodes = array_create_VkrMeshSourceNode(info->load_allocator,
                                               data->nodes_count),
-      .meshes = array_create_VkrMeshSourceMesh(
-          info->load_allocator, data->meshes_count + data->nodes_count),
+      .meshes =
+          array_create_VkrMeshSourceMesh(info->load_allocator, mesh_capacity),
       .animation_count = (uint32_t)data->animations_count,
       .fingerprint = vkr_mesh_source_hash(UINT64_C(14695981039346656037),
                                           data->json, data->json_size),
   };
   if ((data->nodes_count && !source->nodes.data) ||
-      ((data->meshes_count + data->nodes_count) && !source->meshes.data))
+      (mesh_capacity && !source->meshes.data))
     return false_v;
   source->meshes.length = data->meshes_count;
-  MemZero(source->meshes.data,
-          (data->meshes_count + data->nodes_count) * sizeof(VkrMeshSourceMesh));
-  Mat4 *variant_worlds = vkr_allocator_alloc(
-      info->load_allocator,
-      (data->meshes_count + data->nodes_count) * sizeof(Mat4),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  MemZero(source->meshes.data, mesh_capacity * sizeof(VkrMeshSourceMesh));
+  Mat4 *variant_worlds =
+      mesh_capacity ? vkr_allocator_alloc(info->load_allocator,
+                                          mesh_capacity * sizeof(Mat4),
+                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                    : NULL;
   bool8_t *has_decal =
       data->meshes_count
           ? vkr_allocator_alloc(info->load_allocator, data->meshes_count,

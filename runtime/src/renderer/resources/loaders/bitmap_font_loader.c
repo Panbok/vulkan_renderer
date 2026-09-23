@@ -1286,7 +1286,6 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
 
   VkrBitmapFontParseState state = vkr_bitmap_font_parse_state_create(
       &result->allocator, temp_alloc, out_error);
-  bool8_t loaded_from_cache = false_v;
   String8 cache_path = {0};
 
   if (file_type == VKR_BITMAP_FONT_FILE_TYPE_VKF) {
@@ -1301,8 +1300,8 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       return false_v;
     }
-    loaded_from_cache = true_v;
   } else if (file_type == VKR_BITMAP_FONT_FILE_TYPE_FNT) {
+    bool8_t loaded_from_cache = false_v;
     cache_path = vkr_bitmap_font_cache_path(temp_alloc, name);
     if (vkr_bitmap_font_cache_exists(temp_alloc, cache_path)) {
       if (vkr_bitmap_font_cache_read(&state, cache_path)) {

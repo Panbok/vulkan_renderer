@@ -73,6 +73,11 @@ typedef struct VkrSceneWorldEmitContext {
   uint32_t dynamic_gpu_index;
   uint32_t transmission_index;
   uint32_t transparent_index;
+  // Counts from the counting pass; emission must stay inside each span.
+  uint32_t static_gpu_count;
+  uint32_t gpu_count;
+  uint32_t transmission_count;
+  uint32_t transparent_count;
 } VkrSceneWorldEmitContext;
 
 vkr_internal INLINE void
@@ -108,16 +113,26 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
           (source->transmissive ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
                                 : 0u),
   };
-  const uint32_t gpu_index =
-      source->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC
-          ? context->static_gpu_index++
-          : context->dynamic_gpu_index++;
+  const bool8_t static_caster =
+      source->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC;
+  const uint32_t gpu_index = static_caster ? context->static_gpu_index++
+                                           : context->dynamic_gpu_index++;
+  assert_log(static_caster ? gpu_index < context->static_gpu_count
+                           : gpu_index < context->gpu_count,
+             "World emission exceeded its counted candidate span");
   context->gpu_candidates[gpu_index] = candidate;
-  if (source->transmissive)
+  if (source->transmissive) {
+    assert_log(context->transmission_index < context->transmission_count,
+               "World emission exceeded its counted transmission span");
     context->transmission_gpu_candidates[context->transmission_index++] =
         candidate;
+  }
+  assert_log(context->source_index < context->gpu_count,
+             "World emission visited more sources than it counted");
   if (!source->transmissive && source->alpha.world_transparent &&
       context->transparent_visible[context->source_index]) {
+    assert_log(context->transparent_index < context->transparent_count,
+               "World emission exceeded its counted transparent span");
     const float32_t depth = vkr_scene_transparent_depth(
         context->view, source->model, source->center);
     context->transparent_candidates[context->transparent_index++] =
@@ -334,6 +349,8 @@ VkrRendererError vkr_scene_build_world_draws(
                                         submesh->max_extents, &center, &radius);
           visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
         }
+        assert_log(source_index < gpu_candidate_count,
+                   "Visibility pass exceeded the counted sources");
         transparent_visible[source_index] = visible;
         transparent_draw_count += visible ? 1u : 0u;
         stats.objects_culled_camera += visible ? 0u : 1u;
@@ -378,6 +395,8 @@ VkrRendererError vkr_scene_build_world_draws(
                                         submesh->max_extents, &center, &radius);
           visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
         }
+        assert_log(source_index < gpu_candidate_count,
+                   "Visibility pass exceeded the counted sources");
         transparent_visible[source_index] = visible;
         transparent_draw_count += visible ? 1u : 0u;
         stats.objects_culled_camera += visible ? 0u : 1u;
@@ -430,6 +449,10 @@ VkrRendererError vkr_scene_build_world_draws(
       .dynamic_gpu_index = static_candidate_count,
       .transmission_gpu_candidates = transmission_gpu_candidates,
       .transparent_candidates = transparent_candidates,
+      .static_gpu_count = static_candidate_count,
+      .gpu_count = gpu_candidate_count,
+      .transmission_count = transmission_gpu_candidate_count,
+      .transparent_count = transparent_draw_count,
   };
 
   /* Counted spans keep static casters first while each partition and both
@@ -495,6 +518,8 @@ VkrRendererError vkr_scene_build_world_draws(
                             : 0u;
     uint32_t skinning_index = 0;
     if (instance->skinning) {
+      assert_log(skinning_cursor < skinning_count,
+                 "Skinning emission exceeded the counted bindings");
       skinning[skinning_cursor] = *instance->skinning;
       skinning_index = ++skinning_cursor;
     }

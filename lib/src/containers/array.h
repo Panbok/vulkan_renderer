@@ -84,6 +84,7 @@
       const Array_##name *array, const uint64_t index) {                       \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
+    assert_log(array->data != NULL, "Array storage is NULL");                  \
     return (type *)(array->data + index);                                      \
   }                                                                            \
                                                                                \
@@ -98,6 +99,7 @@
       Array_##name *array, const uint64_t index, type value) {                 \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
+    assert_log(array->data != NULL, "Array storage is NULL");                  \
     array->data[index] = value;                                                \
   }                                                                            \
   /**                                                                          \

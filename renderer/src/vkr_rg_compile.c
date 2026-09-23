@@ -646,12 +646,16 @@ vkr_internal bool8_t vkr_rg_validate_pass(VkrRenderGraph *graph,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_rg_process_image_read(VkrRenderGraph *graph,
-                                               VkrRgDependencyState *states,
-                                               uint32_t pass_index,
-                                               VkrRgImageHandle image) {
-  uint32_t idx = image.id - 1;
-  VkrRgDependencyState *state = &states[idx];
+// Dependency tracking is identical for images and buffers; `resource_id` is
+// the handle id of a use that vkr_rg_validate_pass already resolved, so it
+// indexes `states`, which holds one entry per graph resource of that kind.
+vkr_internal bool8_t vkr_rg_process_read(VkrRenderGraph *graph,
+                                         VkrRgDependencyState *states,
+                                         uint32_t pass_index,
+                                         uint32_t resource_id) {
+  assert_log(states && resource_id > 0,
+             "Validated resource uses imply dependency storage");
+  VkrRgDependencyState *state = &states[resource_id - 1];
   if (state->last_writer >= 0) {
     if (!vkr_rg_add_edge(graph, (uint32_t)state->last_writer, pass_index)) {
       return false_v;
@@ -660,47 +664,13 @@ vkr_internal bool8_t vkr_rg_process_image_read(VkrRenderGraph *graph,
   return vkr_rg_add_reader_unique(&state->last_readers, pass_index);
 }
 
-vkr_internal bool8_t vkr_rg_process_image_write(VkrRenderGraph *graph,
-                                                VkrRgDependencyState *states,
-                                                uint32_t pass_index,
-                                                VkrRgImageHandle image) {
-  uint32_t idx = image.id - 1;
-  VkrRgDependencyState *state = &states[idx];
-  if (state->last_writer >= 0) {
-    if (!vkr_rg_add_edge(graph, (uint32_t)state->last_writer, pass_index)) {
-      return false_v;
-    }
-  }
-  for (uint64_t i = 0; i < state->last_readers.length; ++i) {
-    if (!vkr_rg_add_edge(graph, state->last_readers.data[i], pass_index)) {
-      return false_v;
-    }
-  }
-  vector_clear_uint32_t(&state->last_readers);
-  state->last_writer = (int32_t)pass_index;
-  return true_v;
-}
-
-vkr_internal bool8_t vkr_rg_process_buffer_read(VkrRenderGraph *graph,
-                                                VkrRgDependencyState *states,
-                                                uint32_t pass_index,
-                                                VkrRgBufferHandle buffer) {
-  uint32_t idx = buffer.id - 1;
-  VkrRgDependencyState *state = &states[idx];
-  if (state->last_writer >= 0) {
-    if (!vkr_rg_add_edge(graph, (uint32_t)state->last_writer, pass_index)) {
-      return false_v;
-    }
-  }
-  return vkr_rg_add_reader_unique(&state->last_readers, pass_index);
-}
-
-vkr_internal bool8_t vkr_rg_process_buffer_write(VkrRenderGraph *graph,
-                                                 VkrRgDependencyState *states,
-                                                 uint32_t pass_index,
-                                                 VkrRgBufferHandle buffer) {
-  uint32_t idx = buffer.id - 1;
-  VkrRgDependencyState *state = &states[idx];
+vkr_internal bool8_t vkr_rg_process_write(VkrRenderGraph *graph,
+                                          VkrRgDependencyState *states,
+                                          uint32_t pass_index,
+                                          uint32_t resource_id) {
+  assert_log(states && resource_id > 0,
+             "Validated resource uses imply dependency storage");
+  VkrRgDependencyState *state = &states[resource_id - 1];
   if (state->last_writer >= 0) {
     if (!vkr_rg_add_edge(graph, (uint32_t)state->last_writer, pass_index)) {
       return false_v;
@@ -1860,8 +1830,8 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
 
     for (uint64_t i = 0; i < pass->desc.image_reads.length; ++i) {
       VkrRgImageUse *use = vector_get_VkrRgImageUse(&pass->desc.image_reads, i);
-      if (!vkr_rg_process_image_read(graph, image_states, pass_index,
-                                     use->image)) {
+      if (!vkr_rg_process_read(graph, image_states, pass_index,
+                               use->image.id)) {
         ok = false_v;
         goto cleanup;
       }
@@ -1870,8 +1840,8 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.image_writes.length; ++i) {
       VkrRgImageUse *use =
           vector_get_VkrRgImageUse(&pass->desc.image_writes, i);
-      if (!vkr_rg_process_image_write(graph, image_states, pass_index,
-                                      use->image)) {
+      if (!vkr_rg_process_write(graph, image_states, pass_index,
+                                use->image.id)) {
         ok = false_v;
         goto cleanup;
       }
@@ -1881,14 +1851,14 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
       VkrRgAttachment *att =
           vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
       if (att->desc.load_op == VKR_ATTACHMENT_LOAD_OP_LOAD) {
-        if (!vkr_rg_process_image_read(graph, image_states, pass_index,
-                                       att->image)) {
+        if (!vkr_rg_process_read(graph, image_states, pass_index,
+                                 att->image.id)) {
           ok = false_v;
           goto cleanup;
         }
       }
-      if (!vkr_rg_process_image_write(graph, image_states, pass_index,
-                                      att->image)) {
+      if (!vkr_rg_process_write(graph, image_states, pass_index,
+                                att->image.id)) {
         ok = false_v;
         goto cleanup;
       }
@@ -1897,15 +1867,15 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
     if (pass->desc.has_depth_attachment) {
       VkrRgAttachment *att = &pass->desc.depth_attachment;
       if (att->desc.load_op == VKR_ATTACHMENT_LOAD_OP_LOAD || att->read_only) {
-        if (!vkr_rg_process_image_read(graph, image_states, pass_index,
-                                       att->image)) {
+        if (!vkr_rg_process_read(graph, image_states, pass_index,
+                                 att->image.id)) {
           ok = false_v;
           goto cleanup;
         }
       }
       if (!att->read_only) {
-        if (!vkr_rg_process_image_write(graph, image_states, pass_index,
-                                        att->image)) {
+        if (!vkr_rg_process_write(graph, image_states, pass_index,
+                                  att->image.id)) {
           ok = false_v;
           goto cleanup;
         }
@@ -1915,8 +1885,8 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.buffer_reads.length; ++i) {
       VkrRgBufferUse *use =
           vector_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
-      if (!vkr_rg_process_buffer_read(graph, buffer_states, pass_index,
-                                      use->buffer)) {
+      if (!vkr_rg_process_read(graph, buffer_states, pass_index,
+                               use->buffer.id)) {
         ok = false_v;
         goto cleanup;
       }
@@ -1925,8 +1895,8 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.buffer_writes.length; ++i) {
       VkrRgBufferUse *use =
           vector_get_VkrRgBufferUse(&pass->desc.buffer_writes, i);
-      if (!vkr_rg_process_buffer_write(graph, buffer_states, pass_index,
-                                       use->buffer)) {
+      if (!vkr_rg_process_write(graph, buffer_states, pass_index,
+                                use->buffer.id)) {
         ok = false_v;
         goto cleanup;
       }

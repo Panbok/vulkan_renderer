@@ -2541,6 +2541,10 @@ vkr_internal bool8_t vkr_ui_build_tiles(VkrUiSystem *system) {
     VkrUiFrameNode *node = &system->frame_nodes[i];
     VkrUiRetainedState *retained = node->retained;
     const VkrUiRect current = vkr_ui_node_draw_aabb(system, node);
+    // Each frame node owns a distinct retained state (duplicate ids are
+    // rejected when nodes are added), so damage never exceeds retained_count.
+    assert_log(damage_count < system->retained_count,
+               "Frame nodes exceed their retained states");
     damage[damage_count++] = (VkrUiTileDamage){
         .previous_aabb_px = retained->last_draw_aabb,
         .current_aabb_px = current,
@@ -2553,6 +2557,8 @@ vkr_internal bool8_t vkr_ui_build_tiles(VkrUiSystem *system) {
         retained->last_seen_frame == system->frame_index ||
         !vkr_ui_rect_has_area(retained->last_draw_aabb))
       continue;
+    assert_log(damage_count < system->retained_count,
+               "Unseen retained damage exceeds the retained states");
     damage[damage_count++] = (VkrUiTileDamage){
         .previous_aabb_px = retained->last_draw_aabb,
     };
