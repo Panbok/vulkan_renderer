@@ -583,3 +583,31 @@ String8 string8_get_stem(VkrAllocator *allocator, String8 path);
  */
 uint32_t string8_split_whitespace(const String8 *line, String8 *tokens,
                                   uint32_t max_tokens);
+
+/**
+ * @brief Split a resource name at its first '?'.
+ *
+ * Resource names carry options as `path?key=value&key=value`.
+ *
+ * @param name The resource name (not modified).
+ * @param out_query Receives the view after '?', or an empty string when
+ * `name` has no '?'. May be NULL.
+ * @return The view before '?', or `name` when it has no '?'.
+ */
+String8 string8_split_query(String8 name, String8 *out_query);
+
+/**
+ * @brief Produce the next `key=value` pair of a query, left to right.
+ *
+ * Pairs are separated by '&'. A pair without '=' or with an empty key or
+ * value is skipped. Start with `*io_cursor = 0`; the returned views borrow
+ * `query`.
+ *
+ * @param query The query without its leading '?'.
+ * @param io_cursor In/out scan position.
+ * @param out_key Receives the key view.
+ * @param out_value Receives the value view.
+ * @return True when a pair is produced, false when the query is exhausted.
+ */
+bool8_t string8_query_next_pair(String8 query, uint64_t *io_cursor,
+                                String8 *out_key, String8 *out_value);

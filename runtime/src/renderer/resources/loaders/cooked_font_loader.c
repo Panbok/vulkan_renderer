@@ -18,47 +18,23 @@ typedef struct VkrCookedFontRequest {
   uint32_t size;
 } VkrCookedFontRequest;
 
-static String8 vkr_cooked_font_strip_query(String8 name) {
-  for (uint64_t i = 0; i < name.length; ++i) {
-    if (name.str[i] == '?') {
-      return string8_substring(&name, 0, i);
-    }
-  }
-  return name;
-}
-
 static VkrCookedFontRequest vkr_cooked_font_parse_request(String8 name) {
-  String8 base_path = vkr_cooked_font_strip_query(name);
+  String8 query = {0};
   VkrCookedFontRequest request = {
-      .file_path = base_path,
+      .file_path = string8_split_query(name, &query),
       .size = VKR_MTSDF_FONT_DEFAULT_SIZE,
   };
 
-  for (uint64_t start = base_path.length; start < name.length;) {
-    ++start;
-    uint64_t end = start;
-    while (end < name.length && name.str[end] != '&') {
-      ++end;
+  const String8 size_key = string8_lit("size");
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
+    int32_t size = 0;
+    if (string8_equalsi(&key, &size_key) && string8_to_i32(&value, &size) &&
+        size > 0) {
+      request.size = (uint32_t)size;
     }
-    String8 param = string8_substring(&name, start, end);
-    uint64_t equals = UINT64_MAX;
-    for (uint64_t i = 0; i < param.length; ++i) {
-      if (param.str[i] == '=') {
-        equals = i;
-        break;
-      }
-    }
-    if (equals != UINT64_MAX && equals > 0 && equals + 1 < param.length) {
-      String8 key = string8_substring(&param, 0, equals);
-      String8 value = string8_substring(&param, equals + 1, param.length);
-      String8 size_key = string8_lit("size");
-      int32_t size = 0;
-      if (string8_equalsi(&key, &size_key) && string8_to_i32(&value, &size) &&
-          size > 0) {
-        request.size = (uint32_t)size;
-      }
-    }
-    start = end;
   }
   return request;
 }
@@ -69,7 +45,7 @@ static bool8_t vkr_cooked_font_loader_can_load(VkrResourceLoader *self,
   if (!name.str || name.length == 0) {
     return false_v;
   }
-  String8 base_path = vkr_cooked_font_strip_query(name);
+  String8 base_path = string8_split_query(name, NULL);
   const String8 extension = string8_lit("vkfa");
   for (uint64_t i = base_path.length; i > 0; --i) {
     if (base_path.str[i - 1] == '.') {
@@ -287,25 +263,18 @@ static bool8_t vkr_cooked_font_loader_load(VkrResourceLoader *self,
 
   void *pool_chunk = NULL;
   Arena *result_arena = NULL;
+  VkrAllocator result_allocator = {0};
   VkrCookedFontLoaderResult *result = NULL;
   VkrTextureHandle atlas = VKR_TEXTURE_HANDLE_INVALID;
   String8 atlas_name = {0};
   bool8_t atlas_published = false_v;
   bool8_t success = false_v;
 
-  if (!context->arena_pool->initialized ||
-      !(pool_chunk = vkr_arena_pool_acquire(context->arena_pool))) {
+  if (!vkr_arena_pool_acquire_arena(context->arena_pool, &pool_chunk,
+                                    &result_arena, &result_allocator)) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     goto cleanup;
   }
-  result_arena =
-      arena_create_from_buffer(pool_chunk, context->arena_pool->chunk_size);
-  if (!result_arena) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    goto cleanup;
-  }
-  VkrAllocator result_allocator = {.ctx = result_arena};
-  vkr_allocator_arena(&result_allocator);
   result =
       vkr_allocator_alloc(&result_allocator, sizeof(VkrCookedFontLoaderResult),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
@@ -422,15 +391,10 @@ cleanup:
   if (!success && atlas_published) {
     vkr_texture_system_release(context->texture_system, atlas_name);
   }
-  if (!success && result_arena) {
-    if (result) {
-      vkr_allocator_release_global_accounting(&result->allocator);
-    }
-    arena_destroy(result_arena);
-    result_arena = NULL;
-  }
-  if (!success && pool_chunk) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
+  if (!success) {
+    vkr_arena_pool_release_arena(context->arena_pool, pool_chunk, result_arena,
+                                 result ? &result->allocator
+                                        : &result_allocator);
   }
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return success;
@@ -464,15 +428,9 @@ static void vkr_cooked_font_loader_unload(VkrResourceLoader *self,
   if (result->font.atlas_pages.data) {
     array_destroy_VkrTextureHandle(&result->font.atlas_pages);
   }
-  Arena *arena = result->arena;
-  void *pool_chunk = result->pool_chunk;
-  if (arena) {
-    vkr_allocator_release_global_accounting(&result->allocator);
-    arena_destroy(arena);
-  }
-  if (pool_chunk && context && context->arena_pool) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-  }
+  vkr_arena_pool_release_arena(context ? context->arena_pool : NULL,
+                               result->pool_chunk, result->arena,
+                               &result->allocator);
 }
 
 static uint32_t

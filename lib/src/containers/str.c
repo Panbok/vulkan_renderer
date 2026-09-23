@@ -896,3 +896,56 @@ uint32_t string8_split_whitespace(const String8 *line, String8 *tokens,
   }
   return count;
 }
+
+String8 string8_split_query(String8 name, String8 *out_query) {
+  for (uint64_t i = 0; i < name.length; ++i) {
+    if (name.str[i] == '?') {
+      if (out_query) {
+        *out_query = string8_substring(&name, i + 1, name.length);
+      }
+      return string8_substring(&name, 0, i);
+    }
+  }
+
+  if (out_query) {
+    *out_query = (String8){0};
+  }
+  return name;
+}
+
+bool8_t string8_query_next_pair(String8 query, uint64_t *io_cursor,
+                                String8 *out_key, String8 *out_value) {
+  if (!io_cursor || !out_key || !out_value) {
+    return false_v;
+  }
+
+  uint64_t cursor = *io_cursor;
+  while (cursor < query.length) {
+    uint64_t end = cursor;
+    while (end < query.length && query.str[end] != '&') {
+      end++;
+    }
+
+    String8 param = string8_substring(&query, cursor, end);
+    cursor = end + 1;
+
+    uint64_t equals = UINT64_MAX;
+    for (uint64_t i = 0; i < param.length; ++i) {
+      if (param.str[i] == '=') {
+        equals = i;
+        break;
+      }
+    }
+    if (equals == UINT64_MAX || equals == 0 || equals + 1 >= param.length) {
+      continue;
+    }
+
+    *out_key = string8_substring(&param, 0, equals);
+    *out_value = string8_substring(&param, equals + 1, param.length);
+    *io_cursor = cursor;
+    return true_v;
+  }
+
+  *io_cursor = query.length;
+  return false_v;
+}

@@ -131,16 +131,8 @@ vkr_internal void vkr_mesh_loader_destroy_result(VkrMeshLoaderContext *context,
       result->material_handles.data[index] = VKR_MATERIAL_HANDLE_INVALID;
     }
   }
-  void *pool_chunk = result->pool_chunk;
-  result->pool_chunk = NULL;
-  if (result->arena) {
-    vkr_allocator_release_global_accounting(&result->allocator);
-    arena_destroy(result->arena);
-    result->arena = NULL;
-  }
-  if (pool_chunk && context->arena_pool) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-  }
+  vkr_arena_pool_release_arena(context->arena_pool, result->pool_chunk,
+                               result->arena, &result->allocator);
 }
 
 vkr_internal bool8_t vkr_mesh_loader_create_result(
@@ -151,31 +143,19 @@ vkr_internal bool8_t vkr_mesh_loader_create_result(
     *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
     return false_v;
   }
-  void *pool_chunk = vkr_arena_pool_acquire(context->arena_pool);
-  if (!pool_chunk) {
+  void *pool_chunk = NULL;
+  Arena *arena = NULL;
+  VkrAllocator allocator = {0};
+  if (!vkr_arena_pool_acquire_arena(context->arena_pool, &pool_chunk, &arena,
+                                    &allocator)) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-  Arena *arena =
-      arena_create_from_buffer(pool_chunk, context->arena_pool->chunk_size);
-  if (!arena) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-  VkrAllocator allocator = {.ctx = arena};
-  if (!vkr_allocator_arena(&allocator)) {
-    arena_destroy(arena);
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
     return false_v;
   }
   VkrMeshLoaderResult *result = vkr_allocator_alloc(
       &allocator, sizeof(*result), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!result) {
-    vkr_allocator_release_global_accounting(&allocator);
-    arena_destroy(arena);
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
+    vkr_arena_pool_release_arena(context->arena_pool, pool_chunk, arena,
+                                 &allocator);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }

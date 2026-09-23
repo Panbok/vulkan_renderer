@@ -617,6 +617,54 @@ static void test_cstring_index_of(void) {
   printf("  test_cstring_index_of PASSED\n");
 }
 
+static void test_string8_split_query(void) {
+  printf("  Running test_string8_split_query...\n");
+
+  String8 query = string8_lit("stale");
+  String8 path = string8_split_query(string8_lit("fonts/a.vkfa"), &query);
+  String8 expected_path = string8_lit("fonts/a.vkfa");
+  assert(string8_equals(&path, &expected_path));
+  assert(query.length == 0);
+
+  path = string8_split_query(string8_lit("fonts/a.vkfa?size=32?x=1"), &query);
+  String8 expected_query = string8_lit("size=32?x=1");
+  assert(string8_equals(&path, &expected_path));
+  assert(string8_equals(&query, &expected_query));
+
+  path = string8_split_query(string8_lit("?size=8"), NULL);
+  assert(path.length == 0);
+
+  printf("  test_string8_split_query PASSED\n");
+}
+
+static void test_string8_query_next_pair(void) {
+  printf("  Running test_string8_query_next_pair...\n");
+
+  // Pairs without '=' or with an empty key or value are skipped; the
+  // surrounding valid pairs survive in order.
+  const String8 query = string8_lit("a=1&&novalue&=x&y=&size=32&z=a=b&");
+  const char *expected_keys[] = {"a", "size", "z"};
+  const char *expected_values[] = {"1", "32", "a=b"};
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  uint32_t count = 0;
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
+    assert(count < ArrayCount(expected_keys));
+    assert(vkr_string8_equals_cstr(&key, expected_keys[count]));
+    assert(vkr_string8_equals_cstr(&value, expected_values[count]));
+    ++count;
+  }
+  assert(count == ArrayCount(expected_keys));
+  assert(cursor == query.length);
+  assert(!string8_query_next_pair(query, &cursor, &key, &value));
+
+  cursor = 0;
+  assert(!string8_query_next_pair((String8){0}, &cursor, &key, &value));
+
+  printf("  test_string8_query_next_pair PASSED\n");
+}
+
 bool32_t run_string_tests(void) {
   printf("--- Starting String Tests ---\n");
 
@@ -642,6 +690,8 @@ bool32_t run_string_tests(void) {
   test_vkr_string8_duplicate_cstr();
   test_vkr_string8_starts_with();
   test_vkr_string8_trimmed_suffix();
+  test_string8_split_query();
+  test_string8_query_next_pair();
 
   // CString tests
   test_cstring_equals();

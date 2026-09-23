@@ -1,5 +1,6 @@
 #include "memory/vkr_arena_pool.h"
 #include "core/logger.h"
+#include "memory/vkr_arena_allocator.h"
 
 bool8_t vkr_arena_pool_create(uint64_t chunk_size, uint32_t chunk_count,
                               VkrAllocator *allocator, VkrArenaPool *out_pool) {
@@ -90,4 +91,53 @@ void vkr_arena_pool_release(VkrArenaPool *pool, void *chunk) {
     vkr_cond_signal(pool->cond);
   }
   vkr_mutex_unlock(pool->mutex);
+}
+
+bool8_t vkr_arena_pool_acquire_arena(VkrArenaPool *pool, void **out_chunk,
+                                     Arena **out_arena,
+                                     VkrAllocator *out_allocator) {
+  assert_log(out_chunk != NULL, "out_chunk must not be NULL");
+  assert_log(out_arena != NULL, "out_arena must not be NULL");
+  assert_log(out_allocator != NULL, "out_allocator must not be NULL");
+
+  *out_chunk = NULL;
+  *out_arena = NULL;
+  MemZero(out_allocator, sizeof(*out_allocator));
+  if (!pool || !pool->initialized) {
+    return false_v;
+  }
+
+  void *chunk = vkr_arena_pool_acquire(pool);
+  if (!chunk) {
+    return false_v;
+  }
+  Arena *arena = arena_create_from_buffer(chunk, pool->chunk_size);
+  if (!arena) {
+    vkr_arena_pool_release(pool, chunk);
+    return false_v;
+  }
+  VkrAllocator allocator = {.ctx = arena};
+  if (!vkr_allocator_arena(&allocator)) {
+    arena_destroy(arena);
+    vkr_arena_pool_release(pool, chunk);
+    return false_v;
+  }
+
+  *out_chunk = chunk;
+  *out_arena = arena;
+  *out_allocator = allocator;
+  return true_v;
+}
+
+void vkr_arena_pool_release_arena(VkrArenaPool *pool, void *chunk, Arena *arena,
+                                  VkrAllocator *allocator) {
+  if (allocator && arena) {
+    vkr_allocator_release_global_accounting(allocator);
+  }
+  if (arena) {
+    arena_destroy(arena);
+  }
+  if (pool && chunk) {
+    vkr_arena_pool_release(pool, chunk);
+  }
 }

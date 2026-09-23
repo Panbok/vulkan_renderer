@@ -1235,44 +1235,29 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
     return false_v;
   }
 
-  void *pool_chunk = NULL;
-  Arena *result_arena = NULL;
-  if (context->arena_pool && context->arena_pool->initialized) {
-    pool_chunk = vkr_arena_pool_acquire(context->arena_pool);
-    if (!pool_chunk) {
-      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return false_v;
-    }
-    result_arena =
-        arena_create_from_buffer(pool_chunk, context->arena_pool->chunk_size);
-  } else {
+  if (!context->arena_pool || !context->arena_pool->initialized) {
     log_fatal("BitmapFontLoader: arena pool is not initialized");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return false_v;
   }
 
-  if (!result_arena) {
-    if (pool_chunk && context->arena_pool) {
-      vkr_arena_pool_release(context->arena_pool, pool_chunk);
-    }
+  void *pool_chunk = NULL;
+  Arena *result_arena = NULL;
+  VkrAllocator result_alloc = {0};
+  if (!vkr_arena_pool_acquire_arena(context->arena_pool, &pool_chunk,
+                                    &result_arena, &result_alloc)) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return false_v;
   }
 
-  VkrAllocator result_alloc = {.ctx = result_arena};
-  vkr_allocator_arena(&result_alloc);
-
   VkrBitmapFontLoaderResult *result =
       vkr_allocator_alloc(&result_alloc, sizeof(VkrBitmapFontLoaderResult),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!result) {
-    arena_destroy(result_arena);
-    if (pool_chunk && context->arena_pool) {
-      vkr_arena_pool_release(context->arena_pool, pool_chunk);
-    }
+    vkr_arena_pool_release_arena(context->arena_pool, pool_chunk, result_arena,
+                                 &result_alloc);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return false_v;
@@ -1281,8 +1266,7 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
   MemZero(result, sizeof(VkrBitmapFontLoaderResult));
   result->arena = result_arena;
   result->pool_chunk = pool_chunk;
-  result->allocator = (VkrAllocator){.ctx = result_arena};
-  vkr_allocator_arena(&result->allocator);
+  result->allocator = result_alloc;
 
   VkrBitmapFontParseState state = vkr_bitmap_font_parse_state_create(
       &result->allocator, temp_alloc, out_error);
@@ -1293,10 +1277,8 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
       if (*out_error == VKR_RENDERER_ERROR_NONE) {
         *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       }
-      arena_destroy(result_arena);
-      if (pool_chunk && context->arena_pool) {
-        vkr_arena_pool_release(context->arena_pool, pool_chunk);
-      }
+      vkr_arena_pool_release_arena(context->arena_pool, pool_chunk,
+                                   result_arena, &result->allocator);
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       return false_v;
     }
@@ -1320,10 +1302,8 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
         if (*out_error == VKR_RENDERER_ERROR_NONE) {
           *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
         }
-        arena_destroy(result_arena);
-        if (pool_chunk && context->arena_pool) {
-          vkr_arena_pool_release(context->arena_pool, pool_chunk);
-        }
+        vkr_arena_pool_release_arena(context->arena_pool, pool_chunk,
+                                     result_arena, &result->allocator);
         vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
         return false_v;
       }
@@ -1341,10 +1321,8 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
   VkrTextureHandle atlas = VKR_TEXTURE_HANDLE_INVALID;
   if (!vkr_bitmap_font_load_atlas(&state, temp_alloc, name, &pages,
                                   &atlas_pages, &atlas)) {
-    arena_destroy(result_arena);
-    if (pool_chunk && context->arena_pool) {
-      vkr_arena_pool_release(context->arena_pool, pool_chunk);
-    }
+    vkr_arena_pool_release_arena(context->arena_pool, pool_chunk, result_arena,
+                                 &result->allocator);
     if (*out_error == VKR_RENDERER_ERROR_NONE) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     }
@@ -1356,10 +1334,8 @@ vkr_internal bool8_t vkr_bitmap_font_loader_load(
   if (!vkr_bitmap_font_build_result(&state, atlas, &atlas_pages, page_count,
                                     &result->font)) {
     vkr_bitmap_font_unload_pages(&pages, &atlas_pages);
-    arena_destroy(result_arena);
-    if (pool_chunk && context->arena_pool) {
-      vkr_arena_pool_release(context->arena_pool, pool_chunk);
-    }
+    vkr_arena_pool_release_arena(context->arena_pool, pool_chunk, result_arena,
+                                 &result->allocator);
     if (*out_error == VKR_RENDERER_ERROR_NONE) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     }
@@ -1424,16 +1400,9 @@ vkr_bitmap_font_loader_unload(VkrResourceLoader *self,
     array_destroy_VkrBitmapFontPage(&result->pages);
   }
 
-  void *pool_chunk = result->pool_chunk;
-  Arena *arena = result->arena;
-
-  if (arena) {
-    arena_destroy(arena);
-  }
-
-  if (pool_chunk && context && context->arena_pool) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-  }
+  vkr_arena_pool_release_arena(context ? context->arena_pool : NULL,
+                               result->pool_chunk, result->arena,
+                               &result->allocator);
 }
 
 vkr_internal uint32_t vkr_bitmap_font_loader_batch_load(

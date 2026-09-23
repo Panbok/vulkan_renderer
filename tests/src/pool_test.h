@@ -3,6 +3,8 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
+#include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_arena_pool.h"
 #include "memory/vkr_pool.h"
 #include "memory/vkr_pool_allocator.h"
 #include <assert.h>

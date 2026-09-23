@@ -32,7 +32,6 @@
 #define VKR_KTX2_VK_FORMAT_R16G16B16A16_SFLOAT 97u
 
 vkr_internal String8 vkr_texture_strip_resource_key_prefix(String8 name);
-vkr_internal String8 vkr_texture_strip_query(String8 name, String8 *out_query);
 
 /**
  * @brief Header for the texture cache file
@@ -109,7 +108,7 @@ vkr_internal String8 vkr_texture_cache_path(VkrAllocator *allocator,
                                             String8 source_path) {
   assert_log(allocator != NULL, "Allocator is NULL");
   String8 query = {0};
-  source_path = vkr_texture_strip_query(source_path, &query);
+  source_path = string8_split_query(source_path, &query);
   (void)query;
   source_path = vkr_texture_strip_resource_key_prefix(source_path);
   return string8_create_formatted(allocator, "%.*s%s",
@@ -243,29 +242,6 @@ vkr_internal bool8_t vkr_texture_path_has_vkt_extension(String8 path) {
 }
 
 /**
- * @brief Strip the query portion from a texture name.
- * @param name The requested texture name (may include a query).
- * @param out_query Optional output for the query substring (without '?').
- * @return The base path without any query parameters.
- */
-vkr_internal String8 vkr_texture_strip_query(String8 name, String8 *out_query) {
-  for (uint64_t i = 0; i < name.length; ++i) {
-    if (name.str[i] == '?') {
-      if (out_query) {
-        *out_query = string8_substring(&name, i + 1, name.length);
-      }
-      return string8_substring(&name, 0, i);
-    }
-  }
-
-  if (out_query) {
-    *out_query = (String8){0};
-  }
-
-  return name;
-}
-
-/**
  * @brief Remove accidental `<type>|` resource-key prefixes from texture names.
  *
  * Async request dedupe keys use this format internally; texture I/O expects the
@@ -342,53 +318,6 @@ vkr_internal String8 vkr_texture_strip_resource_key_prefix(String8 name) {
 }
 
 /**
- * @brief Iterates query parameters and returns the next valid `key=value` pair.
- * @param query Query string without leading `?`.
- * @param io_cursor In/out scan cursor.
- * @param out_key Output key slice.
- * @param out_value Output value slice.
- * @return true when a pair is produced, false when iteration completes.
- */
-vkr_internal bool8_t vkr_texture_query_next_pair(String8 query,
-                                                 uint64_t *io_cursor,
-                                                 String8 *out_key,
-                                                 String8 *out_value) {
-  if (!io_cursor || !out_key || !out_value) {
-    return false_v;
-  }
-
-  uint64_t cursor = *io_cursor;
-  while (cursor < query.length) {
-    uint64_t end = cursor;
-    while (end < query.length && query.str[end] != '&') {
-      end++;
-    }
-
-    String8 param = string8_substring(&query, cursor, end);
-    cursor = end + 1;
-
-    uint64_t eq_pos = UINT64_MAX;
-    for (uint64_t i = 0; i < param.length; ++i) {
-      if (param.str[i] == '=') {
-        eq_pos = i;
-        break;
-      }
-    }
-    if (eq_pos == UINT64_MAX || eq_pos == 0 || eq_pos + 1 >= param.length) {
-      continue;
-    }
-
-    *out_key = string8_substring(&param, 0, eq_pos);
-    *out_value = string8_substring(&param, eq_pos + 1, param.length);
-    *io_cursor = cursor;
-    return true_v;
-  }
-
-  *io_cursor = query.length;
-  return false_v;
-}
-
-/**
  * @brief Scans `cs` query parameters and resolves final colorspace preference.
  *
  * Parsing order is left-to-right so later `cs` values override earlier ones.
@@ -408,7 +337,7 @@ vkr_internal VkrTextureQueryColorScanResult vkr_texture_scan_query_colorspace(
   uint64_t cursor = 0;
   String8 key = {0};
   String8 value = {0};
-  while (vkr_texture_query_next_pair(query, &cursor, &key, &value)) {
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
     if (!string8_equalsi(&key, &key_cs)) {
       continue;
     }
@@ -487,7 +416,7 @@ vkr_internal bool8_t vkr_texture_scan_query_class(String8 query,
   uint64_t cursor = 0;
   String8 key = {0};
   String8 value = {0};
-  while (vkr_texture_query_next_pair(query, &cursor, &key, &value)) {
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
     if (!string8_equalsi(&key, &key_tc) && !string8_equalsi(&key, &key_class)) {
       continue;
     }
@@ -512,7 +441,7 @@ vkr_internal bool8_t vkr_texture_scan_query_source_only(String8 query) {
   uint64_t cursor = 0;
   String8 key = {0};
   String8 value = {0};
-  while (vkr_texture_query_next_pair(query, &cursor, &key, &value)) {
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
     if (string8_equalsi(&key, &source_key)) {
       source_only = string8_equalsi(&value, &only_value);
     }
@@ -600,7 +529,7 @@ vkr_internal VkrTextureClass vkr_texture_class_from_filename_heuristic(
 vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
   name = vkr_texture_strip_resource_key_prefix(name);
   String8 query = {0};
-  String8 base_path = vkr_texture_strip_query(name, &query);
+  String8 base_path = string8_split_query(name, &query);
   VkrTextureQueryColorScanResult scan =
       vkr_texture_scan_query_colorspace(query, false_v, true_v);
   VkrTextureClass texture_class = VKR_TEXTURE_CLASS_COLOR_SRGB;
@@ -645,7 +574,7 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
 
 bool8_t vkr_texture_is_vkt_path(String8 path) {
   String8 query = {0};
-  String8 base_path = vkr_texture_strip_query(path, &query);
+  String8 base_path = string8_split_query(path, &query);
   (void)query;
   return vkr_texture_path_has_vkt_extension(base_path);
 }
@@ -711,7 +640,7 @@ vkr_texture_detect_vkt_container(const uint8_t *bytes, uint64_t size) {
 bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
                                          bool8_t default_srgb) {
   String8 query = {0};
-  (void)vkr_texture_strip_query(request_path, &query);
+  (void)string8_split_query(request_path, &query);
   return vkr_texture_scan_query_colorspace(query, default_srgb, false_v)
       .prefers_srgb;
 }
@@ -961,7 +890,7 @@ vkr_internal bool8_t vkr_texture_cache_write(
   }
 
   String8 query = {0};
-  cache_path = vkr_texture_strip_query(cache_path, &query);
+  cache_path = string8_split_query(cache_path, &query);
   (void)query;
   cache_path = vkr_texture_strip_resource_key_prefix(cache_path);
   if (!cache_path.str || cache_path.length == 0) {
@@ -1042,7 +971,7 @@ vkr_internal bool8_t vkr_texture_cache_read(
   }
 
   String8 query = {0};
-  cache_path = vkr_texture_strip_query(cache_path, &query);
+  cache_path = string8_split_query(cache_path, &query);
   (void)query;
   cache_path = vkr_texture_strip_resource_key_prefix(cache_path);
   if (!cache_path.str || cache_path.length == 0) {
@@ -1581,7 +1510,7 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
   char *queryless_key = NULL;
   if (!entry) {
     String8 query = {0};
-    String8 queryless_name = vkr_texture_strip_query(texture_name, &query);
+    String8 queryless_name = string8_split_query(texture_name, &query);
     if (queryless_name.str && queryless_name.length > 0 &&
         queryless_name.length < texture_name.length) {
       queryless_key = (char *)malloc((size_t)queryless_name.length + 1);
@@ -1776,7 +1705,7 @@ bool8_t vkr_texture_system_release(VkrTextureSystem *system,
   char *queryless_key = NULL;
   if (!entry) {
     String8 query = {0};
-    String8 queryless_name = vkr_texture_strip_query(texture_name, &query);
+    String8 queryless_name = string8_split_query(texture_name, &query);
     if (queryless_name.str && queryless_name.length > 0 &&
         queryless_name.length < texture_name.length) {
       queryless_key = (char *)malloc((size_t)queryless_name.length + 1);
@@ -2659,7 +2588,7 @@ vkr_internal char *vkr_texture_path_to_cstr(VkrAllocator *allocator,
    * plumbing.
    */
   String8 query = {0};
-  path = vkr_texture_strip_query(path, &query);
+  path = string8_split_query(path, &query);
   (void)query;
   path = vkr_texture_strip_resource_key_prefix(path);
   char *path_cstr = vkr_allocator_alloc(allocator, path.length + 1,

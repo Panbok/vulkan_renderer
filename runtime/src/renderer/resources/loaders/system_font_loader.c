@@ -50,74 +50,38 @@ typedef struct VkrSystemFontRequest {
   uint32_t last_codepoint;
 } VkrSystemFontRequest;
 
-vkr_internal String8 vkr_system_font_strip_query(String8 name,
-                                                 String8 *out_query) {
-  for (uint64_t i = 0; i < name.length; ++i) {
-    if (name.str[i] == '?') {
-      if (out_query) {
-        *out_query = string8_substring(&name, i + 1, name.length);
-      }
-      return string8_substring(&name, 0, i);
-    }
-  }
-
-  if (out_query) {
-    *out_query = (String8){0};
-  }
-
-  return name;
-}
-
 vkr_internal VkrSystemFontRequest vkr_system_font_parse_request(String8 name) {
   String8 query = {0};
-  String8 base_path = vkr_system_font_strip_query(name, &query);
+  String8 base_path = string8_split_query(name, &query);
 
   uint32_t size = VKR_SYSTEM_FONT_DEFAULT_SIZE;
   uint32_t font_index = VKR_SYSTEM_FONT_DEFAULT_INDEX;
   uint32_t last_codepoint = VKR_SYSTEM_FONT_LAST_CODEPOINT;
-  uint64_t start = 0;
-  while (start < query.length) {
-    uint64_t end = start;
-    while (end < query.length && query.str[end] != '&') {
-      end++;
-    }
-
-    String8 param = string8_substring(&query, start, end);
-    uint64_t eq_pos = UINT64_MAX;
-    for (uint64_t i = 0; i < param.length; ++i) {
-      if (param.str[i] == '=') {
-        eq_pos = i;
-        break;
+  const String8 key_size = string8_lit("size");
+  const String8 key_index = string8_lit("index");
+  const String8 key_glyph_last = string8_lit("glyph_last");
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
+    if (string8_equalsi(&key, &key_size)) {
+      int32_t parsed = 0;
+      if (string8_to_i32(&value, &parsed) && parsed > 0) {
+        size = (uint32_t)parsed;
+      }
+    } else if (string8_equalsi(&key, &key_glyph_last)) {
+      uint32_t parsed = 0;
+      int32_t signed_value = 0;
+      if (string8_to_i32(&value, &signed_value) && signed_value >= 255) {
+        parsed = (uint32_t)signed_value;
+        last_codepoint = Min(parsed, VKR_SYSTEM_FONT_UI_LAST_CODEPOINT);
+      }
+    } else if (string8_equalsi(&key, &key_index)) {
+      int32_t parsed = 0;
+      if (string8_to_i32(&value, &parsed) && parsed >= 0) {
+        font_index = (uint32_t)parsed;
       }
     }
-
-    if (eq_pos != UINT64_MAX && eq_pos > 0 && eq_pos + 1 < param.length) {
-      String8 key = string8_substring(&param, 0, eq_pos);
-      String8 value = string8_substring(&param, eq_pos + 1, param.length);
-      String8 key_size = string8_lit("size");
-      String8 key_index = string8_lit("index");
-      String8 key_glyph_last = string8_lit("glyph_last");
-      if (string8_equalsi(&key, &key_size)) {
-        int32_t parsed = 0;
-        if (string8_to_i32(&value, &parsed) && parsed > 0) {
-          size = (uint32_t)parsed;
-        }
-      } else if (string8_equalsi(&key, &key_glyph_last)) {
-        uint32_t parsed = 0;
-        int32_t signed_value = 0;
-        if (string8_to_i32(&value, &signed_value) && signed_value >= 255) {
-          parsed = (uint32_t)signed_value;
-          last_codepoint = Min(parsed, VKR_SYSTEM_FONT_UI_LAST_CODEPOINT);
-        }
-      } else if (string8_equalsi(&key, &key_index)) {
-        int32_t parsed = 0;
-        if (string8_to_i32(&value, &parsed) && parsed >= 0) {
-          font_index = (uint32_t)parsed;
-        }
-      }
-    }
-
-    start = end + 1;
   }
 
   return (VkrSystemFontRequest){
@@ -634,7 +598,7 @@ vkr_internal bool8_t vkr_system_font_loader_can_load(VkrResourceLoader *self,
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
 
-  String8 base_path = vkr_system_font_strip_query(name, NULL);
+  String8 base_path = string8_split_query(name, NULL);
   for (uint64_t i = base_path.length; i > 0; --i) {
     if (base_path.str[i - 1] == '.') {
       String8 ext = string8_substring(&base_path, i, base_path.length);
@@ -668,35 +632,29 @@ vkr_internal bool8_t vkr_system_font_loader_load(
     return false_v;
   }
 
-  void *pool_chunk = NULL;
-  Arena *result_arena = NULL;
-  if (context->arena_pool && context->arena_pool->initialized) {
-    pool_chunk = vkr_arena_pool_acquire(context->arena_pool);
-    if (!pool_chunk) {
-      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      return false_v;
-    }
-    result_arena =
-        arena_create_from_buffer(pool_chunk, context->arena_pool->chunk_size);
-  } else {
+  if (!context->arena_pool || !context->arena_pool->initialized) {
     log_fatal("SystemFontLoader: arena pool not initialized");
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
-  VkrAllocator result_alloc = {.ctx = result_arena};
-  vkr_allocator_arena(&result_alloc);
+  void *pool_chunk = NULL;
+  Arena *result_arena = NULL;
+  VkrAllocator result_alloc = {0};
+  if (!vkr_arena_pool_acquire_arena(context->arena_pool, &pool_chunk,
+                                    &result_arena, &result_alloc)) {
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
 
   VkrSystemFontLoaderResult *result =
       vkr_allocator_alloc(&result_alloc, sizeof(VkrSystemFontLoaderResult),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!result) {
-    arena_destroy(result_arena);
-    if (pool_chunk) {
-      vkr_arena_pool_release(context->arena_pool, pool_chunk);
-    }
+    vkr_arena_pool_release_arena(context->arena_pool, pool_chunk, result_arena,
+                                 &result_alloc);
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -787,10 +745,8 @@ vkr_internal bool8_t vkr_system_font_loader_load(
   return true_v;
 
 fail:
-  arena_destroy(result_arena);
-  if (pool_chunk && context->arena_pool) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-  }
+  vkr_arena_pool_release_arena(context->arena_pool, pool_chunk, result_arena,
+                               &result->allocator);
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return false_v;
 }
@@ -831,15 +787,9 @@ vkr_system_font_loader_unload(VkrResourceLoader *self,
     array_destroy_VkrTextureHandle(&font->atlas_pages);
   }
 
-  void *pool_chunk = result->pool_chunk;
-  Arena *arena = result->arena;
-
-  if (arena) {
-    arena_destroy(arena);
-  }
-  if (pool_chunk && context && context->arena_pool) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-  }
+  vkr_arena_pool_release_arena(context ? context->arena_pool : NULL,
+                               result->pool_chunk, result->arena,
+                               &result->allocator);
 }
 
 vkr_internal uint32_t vkr_system_font_loader_batch_load(

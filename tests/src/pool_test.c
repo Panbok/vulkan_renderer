@@ -130,6 +130,53 @@ static void test_pool_allocator_adapter(void) {
   printf("  test_pool_allocator_adapter PASSED\n");
 }
 
+static void test_arena_pool_result_storage(void) {
+  printf("  Running test_arena_pool_result_storage...\n");
+
+  Arena *backing = arena_create(MB(1), MB(1));
+  assert(backing);
+  VkrAllocator backing_allocator = {.ctx = backing};
+  assert(vkr_allocator_arena(&backing_allocator));
+  VkrArenaPool pool = {0};
+  assert(vkr_arena_pool_create(KB(64), 2, &backing_allocator, &pool));
+  const uint64_t free_before = vkr_pool_free_chunks(&pool.pool);
+  const VkrAllocatorStatistics global_before =
+      vkr_allocator_get_global_statistics();
+
+  void *chunk = NULL;
+  Arena *arena = NULL;
+  VkrAllocator allocator = {0};
+  assert(vkr_arena_pool_acquire_arena(&pool, &chunk, &arena, &allocator));
+  assert(chunk && arena);
+  assert(vkr_pool_free_chunks(&pool.pool) == free_before - 1u);
+
+  // Loader results keep recording through a copy of the allocator.
+  VkrAllocator result_allocator = allocator;
+  assert(vkr_allocator_alloc(&result_allocator, 256,
+                             VKR_ALLOCATOR_MEMORY_TAG_STRING));
+  assert(vkr_allocator_alloc(&result_allocator, 128,
+                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY));
+  vkr_arena_pool_release_arena(&pool, chunk, arena, &result_allocator);
+
+  const VkrAllocatorStatistics global_after =
+      vkr_allocator_get_global_statistics();
+  assert(vkr_pool_free_chunks(&pool.pool) == free_before);
+  assert(global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING] ==
+         global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]);
+  assert(global_after.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY] ==
+         global_before.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]);
+
+  VkrArenaPool uninitialized = {0};
+  assert(!vkr_arena_pool_acquire_arena(&uninitialized, &chunk, &arena,
+                                       &allocator));
+  assert(!chunk && !arena);
+
+  vkr_arena_pool_destroy(&backing_allocator, &pool);
+  vkr_allocator_release_global_accounting(&backing_allocator);
+  arena_destroy(backing);
+  printf("  test_arena_pool_result_storage PASSED\n");
+}
+
 bool32_t run_pool_tests(void) {
   printf("--- Starting VkrPool Tests ---\n");
 
@@ -138,6 +185,7 @@ bool32_t run_pool_tests(void) {
   test_pool_out_of_memory();
   test_pool_alignment();
   test_pool_allocator_adapter();
+  test_arena_pool_result_storage();
 
   printf("--- VkrPool Tests Completed ---\n");
   return true_v;

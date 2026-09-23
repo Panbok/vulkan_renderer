@@ -11,18 +11,6 @@ vkr_internal const char *vkr_texture_loader_supported_extensions[] = {
    sizeof(vkr_texture_loader_supported_extensions[0]))
 
 /**
- * @brief Strip query parameters from a texture name for extension checks.
- */
-vkr_internal String8 vkr_texture_loader_strip_query(String8 name) {
-  for (uint64_t i = 0; i < name.length; ++i) {
-    if (name.str[i] == '?') {
-      return string8_substring(&name, 0, i);
-    }
-  }
-  return name;
-}
-
-/**
  * @brief Returns the file extension (without dot) from a query-stripped path.
  */
 vkr_internal String8 vkr_texture_loader_extract_extension(String8 base_name) {
@@ -64,7 +52,7 @@ vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
 
-  String8 base_name = vkr_texture_loader_strip_query(name);
+  String8 base_name = string8_split_query(name, NULL);
   String8 extension = vkr_texture_loader_extract_extension(base_name);
   return vkr_texture_loader_extension_is_supported(extension);
 }

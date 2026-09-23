@@ -696,77 +696,6 @@ vkr_internal String8 vkr_material_strip_resource_key_prefix(String8 path) {
 }
 
 /**
- * @brief Strip the query portion from a texture path.
- * @param path The full path, potentially containing a query.
- * @param out_query Optional output for the query substring (without '?').
- * @return Base path without query parameters.
- */
-vkr_internal String8 vkr_material_strip_query(String8 path,
-                                              String8 *out_query) {
-  for (uint64_t i = 0; i < path.length; ++i) {
-    if (path.str[i] == '?') {
-      if (out_query) {
-        *out_query = string8_substring(&path, i + 1, path.length);
-      }
-      return string8_substring(&path, 0, i);
-    }
-  }
-
-  if (out_query) {
-    *out_query = (String8){0};
-  }
-
-  return path;
-}
-
-/**
- * @brief Iterates query parameters and returns the next valid `key=value` pair.
- * @param query Query string without leading `?`.
- * @param io_cursor In/out scan cursor.
- * @param out_key Output key slice.
- * @param out_value Output value slice.
- * @return true when a pair is produced, false when iteration completes.
- */
-vkr_internal bool8_t vkr_material_query_next_pair(String8 query,
-                                                  uint64_t *io_cursor,
-                                                  String8 *out_key,
-                                                  String8 *out_value) {
-  if (!io_cursor || !out_key || !out_value) {
-    return false_v;
-  }
-
-  uint64_t cursor = *io_cursor;
-  while (cursor < query.length) {
-    uint64_t end = cursor;
-    while (end < query.length && query.str[end] != '&') {
-      end++;
-    }
-
-    String8 param = string8_substring(&query, cursor, end);
-    cursor = end + 1;
-
-    uint64_t eq_pos = UINT64_MAX;
-    for (uint64_t i = 0; i < param.length; ++i) {
-      if (param.str[i] == '=') {
-        eq_pos = i;
-        break;
-      }
-    }
-    if (eq_pos == UINT64_MAX || eq_pos == 0 || eq_pos + 1 >= param.length) {
-      continue;
-    }
-
-    *out_key = string8_substring(&param, 0, eq_pos);
-    *out_value = string8_substring(&param, eq_pos + 1, param.length);
-    *io_cursor = cursor;
-    return true_v;
-  }
-
-  *io_cursor = query.length;
-  return false_v;
-}
-
-/**
  * @brief Find a `cs` parameter inside a query string.
  * @note Returns true if a `cs` key exists, even if the value is unknown.
  */
@@ -783,7 +712,7 @@ vkr_internal bool8_t vkr_material_query_get_colorspace(
   uint64_t cursor = 0;
   String8 key = {0};
   String8 value = {0};
-  while (vkr_material_query_next_pair(query, &cursor, &key, &value)) {
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
     if (!string8_equalsi(&key, &key_cs)) {
       continue;
     }
@@ -856,7 +785,7 @@ vkr_internal bool8_t vkr_material_query_get_texture_class(
   uint64_t cursor = 0;
   String8 key = {0};
   String8 value = {0};
-  while (vkr_material_query_next_pair(query, &cursor, &key, &value)) {
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
     if (!string8_equalsi(&key, &key_tc) && !string8_equalsi(&key, &key_class)) {
       continue;
     }
@@ -885,7 +814,7 @@ vkr_internal String8 vkr_material_append_query_param(VkrAllocator *allocator,
   }
 
   String8 query = {0};
-  String8 base_path = vkr_material_strip_query(path, &query);
+  String8 base_path = string8_split_query(path, &query);
   bool8_t has_query = base_path.length != path.length;
   return string8_create_formatted(allocator, has_query ? "%.*s&%s" : "%.*s?%s",
                                   (int32_t)path.length, path.str, suffix);
@@ -905,7 +834,7 @@ vkr_internal String8 vkr_material_apply_texture_request_intent(
   }
 
   String8 query = {0};
-  (void)vkr_material_strip_query(path, &query);
+  (void)string8_split_query(path, &query);
   VkrMaterialTextureColorSpace parsed = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
   bool8_t known = false_v;
   bool8_t has_cs = vkr_material_query_get_colorspace(query, &parsed, &known);
@@ -2132,7 +2061,7 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
         string8_create_from_cstr((const uint8_t *)out_data->texture_paths[slot],
                                  string_length(out_data->texture_paths[slot]));
     String8 query = {0};
-    (void)vkr_material_strip_query(texture_path, &query);
+    (void)string8_split_query(texture_path, &query);
     const VkrMaterialTextureColorSpace expected =
         slot == VKR_TEXTURE_SLOT_SHEEN_COLOR
             ? VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB

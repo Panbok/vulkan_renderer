@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/vkr_threads.h"
+#include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_pool.h"
 
@@ -50,3 +51,35 @@ void *vkr_arena_pool_acquire(VkrArenaPool *pool);
  * @param chunk Chunk pointer previously returned by vkr_arena_pool_acquire.
  */
 void vkr_arena_pool_release(VkrArenaPool *pool, void *chunk);
+
+/**
+ * @brief Acquires a chunk as the arena allocator for one load result.
+ *
+ * Blocks like vkr_arena_pool_acquire(). Allocations through `out_allocator`
+ * feed the global allocator statistics, so return the storage with
+ * vkr_arena_pool_release_arena(). On failure nothing stays acquired and the
+ * outputs are NULL.
+ * @param pool Pool to acquire from.
+ * @param out_chunk Receives the pooled chunk.
+ * @param out_arena Receives the arena built over the chunk.
+ * @param out_allocator Receives an arena allocator over `out_arena`.
+ * @return true on success, false when no chunk or arena could be prepared.
+ */
+bool8_t vkr_arena_pool_acquire_arena(VkrArenaPool *pool, void **out_chunk,
+                                     Arena **out_arena,
+                                     VkrAllocator *out_allocator);
+
+/**
+ * @brief Returns storage from vkr_arena_pool_acquire_arena().
+ *
+ * Releases the allocator's global accounting, destroys the arena and returns
+ * the chunk. Pass the allocator copy that recorded the result's allocations.
+ * NULL arguments are skipped, so a failure path can release partially
+ * acquired storage.
+ * @param pool Pool the chunk came from.
+ * @param chunk Pooled chunk, or NULL.
+ * @param arena Arena over `chunk`, or NULL.
+ * @param allocator Allocator over `arena`, or NULL.
+ */
+void vkr_arena_pool_release_arena(VkrArenaPool *pool, void *chunk, Arena *arena,
+                                  VkrAllocator *allocator);
