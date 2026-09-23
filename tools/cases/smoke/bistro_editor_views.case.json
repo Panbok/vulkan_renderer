@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.editor.views",
+  "suite": "smoke",
+  "description": "Fixed orthographic top view of Bistro with editor material and visible-triangle diagnostics.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    640,
+    480
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 8,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "detail_lighting"
+  },
+  "camera": {
+    "mode": "orthographic_top",
+    "orthographic_height": 70,
+    "near_plane": 0.1,
+    "far_plane": 300,
+    "position": [
+      -18.5538139,
+      100,
+      10.2048397
+    ]
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "detail_lighting",
+        "lighting_only",
+        "wireframe"
+      ]
+    }
+  ]
+}

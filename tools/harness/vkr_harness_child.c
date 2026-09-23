@@ -1502,6 +1502,14 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "indirect_diffuse")) {
     application->globals.render_mode = VKR_RENDER_MODE_INDIRECT_DIFFUSE;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "detail_lighting")) {
+    application->globals.render_mode = VKR_RENDER_MODE_DETAIL_LIGHTING;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "lighting_only")) {
+    application->globals.render_mode = VKR_RENDER_MODE_LIGHTING_ONLY;
+  } else if (string_equals(case_manifest->renderer.render_mode, "wireframe")) {
+    application->globals.render_mode = VKR_RENDER_MODE_WIREFRAME;
   }
   application->shadow_debug_mode = case_manifest->renderer.shadow_debug_mode;
   application->transmission_depth_diagnostic_enabled =
@@ -1552,10 +1560,28 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
      lens; it never reads window size or input state. */
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
-  return vkr_camera_set_perspective_lens(
-      camera, case_manifest->camera.vertical_fov_degrees,
-      case_manifest->camera.near_plane, case_manifest->camera.far_plane,
-      case_manifest->width, case_manifest->height);
+  if (!vkr_camera_set_perspective_lens(
+          camera, vkr_harness_camera_is_orthographic(case_manifest->camera.mode)
+                      ? 70.0f : case_manifest->camera.vertical_fov_degrees,
+          case_manifest->camera.near_plane, case_manifest->camera.far_plane,
+          case_manifest->width, case_manifest->height)) {
+    return false_v;
+  }
+  if (vkr_harness_camera_is_orthographic(case_manifest->camera.mode)) {
+    const float32_t half_height = case_manifest->camera.orthographic_height * 0.5f;
+    const float32_t half_width = half_height * (float32_t)case_manifest->width /
+                                (float32_t)case_manifest->height;
+    if (!isfinite(half_width) || half_width <= 0.0f || half_height <= 0.0f) {
+      return false_v;
+    }
+    camera->type = VKR_CAMERA_TYPE_ORTHOGRAPHIC;
+    camera->left_clip = -half_width;
+    camera->right_clip = half_width;
+    camera->bottom_clip = -half_height;
+    camera->top_clip = half_height;
+    camera->projection_dirty = true_v;
+  }
+  return true_v;
 }
 
 vkr_internal void
@@ -1842,6 +1868,12 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
             ? "temporal_history"
         : replay.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE
             ? "indirect_diffuse"
+        : replay.render_mode == VKR_RENDER_MODE_DETAIL_LIGHTING
+            ? "detail_lighting"
+        : replay.render_mode == VKR_RENDER_MODE_LIGHTING_ONLY
+            ? "lighting_only"
+        : replay.render_mode == VKR_RENDER_MODE_WIREFRAME
+            ? "wireframe"
             : "default";
     string_format(case_manifest.renderer.render_mode,
                   sizeof(case_manifest.renderer.render_mode), "%s",

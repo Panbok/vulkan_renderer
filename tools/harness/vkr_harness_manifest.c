@@ -242,6 +242,7 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                                    "yaw",
                                                    "pitch",
                                                    "vertical_fov_degrees",
+                                                   "orthographic_height",
                                                    "near_plane",
                                                    "far_plane",
                                                    "keys",
@@ -300,6 +301,7 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
   int32_t position = -1;
   int32_t center = -1;
   int32_t vertical_fov_token = -1;
+  int32_t orthographic_height_token = -1;
   int32_t yaw_token = -1;
   int32_t pitch_token = -1;
   int32_t interpolation_token = -1;
@@ -315,6 +317,8 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                   error) ||
       !vkr_harness_manifest_field(doc, token, "vertical_fov_degrees", false_v,
                                   &vertical_fov_token, error) ||
+      !vkr_harness_manifest_field(doc, token, "orthographic_height", false_v,
+                                  &orthographic_height_token, error) ||
       !vkr_harness_manifest_field(doc, token, "yaw", false_v, &yaw_token,
                                   error) ||
       !vkr_harness_manifest_field(doc, token, "pitch", false_v, &pitch_token,
@@ -333,7 +337,32 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                   &angle_token, error)) {
     return false_v;
   }
-  if (string_equals(mode, "static")) {
+  if (string_equals(mode, "orthographic_top") ||
+      string_equals(mode, "orthographic_left") ||
+      string_equals(mode, "orthographic_right") ||
+      string_equals(mode, "orthographic_bottom")) {
+    camera->mode = string_equals(mode, "orthographic_top")
+                       ? VKR_HARNESS_CAMERA_ORTHOGRAPHIC_TOP
+                   : string_equals(mode, "orthographic_left")
+                       ? VKR_HARNESS_CAMERA_ORTHOGRAPHIC_LEFT
+                   : string_equals(mode, "orthographic_right")
+                       ? VKR_HARNESS_CAMERA_ORTHOGRAPHIC_RIGHT
+                       : VKR_HARNESS_CAMERA_ORTHOGRAPHIC_BOTTOM;
+    if (position < 0 || orthographic_height_token < 0 ||
+        vertical_fov_token >= 0 || yaw_token >= 0 || pitch_token >= 0 ||
+        keys >= 0 || center >= 0 || interpolation_token >= 0 ||
+        radius_token >= 0 || height_token >= 0 || revolutions_token >= 0 ||
+        duration_token >= 0 || angle_token >= 0 ||
+        !vkr_harness_manifest_vec3(doc, position, &camera->static_pose.position,
+                                   "$.camera.position", error) ||
+        !vkr_harness_manifest_f32(doc, token, "orthographic_height", true_v,
+                                  &camera->orthographic_height, error)) {
+      vkr_harness_error_set(
+          error, "camera.orthographic", "$.camera",
+          "Orthographic views require position and orthographic_height without yaw, pitch or FOV");
+      return false_v;
+    }
+  } else if (string_equals(mode, "static")) {
     camera->mode = VKR_HARNESS_CAMERA_STATIC;
     if (position < 0 ||
         !vkr_harness_manifest_vec3(doc, position, &camera->static_pose.position,
@@ -406,6 +435,12 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
   } else {
     vkr_harness_error_set(error, "camera.mode", "$.camera.mode",
                           "Unknown camera mode '%s'", mode);
+    return false_v;
+  }
+  if (orthographic_height_token >= 0 &&
+      !vkr_harness_camera_is_orthographic(camera->mode)) {
+    vkr_harness_error_set(error, "camera.orthographic_height", "$.camera",
+                          "orthographic_height requires an orthographic camera mode");
     return false_v;
   }
   if ((camera->mode == VKR_HARNESS_CAMERA_STATIC &&
@@ -761,7 +796,10 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       string_equals(renderer->render_mode, "material_params") ||
       string_equals(renderer->render_mode, "temporal_motion") ||
       string_equals(renderer->render_mode, "temporal_history") ||
-      string_equals(renderer->render_mode, "indirect_diffuse");
+      string_equals(renderer->render_mode, "indirect_diffuse") ||
+      string_equals(renderer->render_mode, "detail_lighting") ||
+      string_equals(renderer->render_mode, "lighting_only") ||
+      string_equals(renderer->render_mode, "wireframe");
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");

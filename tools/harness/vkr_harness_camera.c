@@ -5,6 +5,11 @@ static Vec3 vkr_harness_lerp_vec3(Vec3 a, Vec3 b, float32_t t) {
                   vkr_lerp_f32(a.z, b.z, t));
 }
 
+bool8_t vkr_harness_camera_is_orthographic(VkrHarnessCameraMode mode) {
+  return mode >= VKR_HARNESS_CAMERA_ORTHOGRAPHIC_TOP &&
+         mode <= VKR_HARNESS_CAMERA_ORTHOGRAPHIC_BOTTOM;
+}
+
 static bool8_t vkr_harness_camera_is_cubemap(VkrHarnessCameraMode mode) {
   return mode >= VKR_HARNESS_CAMERA_CUBEMAP_PX &&
          mode <= VKR_HARNESS_CAMERA_CUBEMAP_NZ;
@@ -163,12 +168,24 @@ static void vkr_harness_camera_evaluate_keys(const VkrHarnessCamera *camera,
 
 bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
                                    VkrHarnessError *out_error) {
-  if (!camera || camera->vertical_fov_degrees <= 0.0f ||
-      camera->vertical_fov_degrees >= 180.0f || camera->near_plane <= 0.0f ||
+  if (!camera ||
+      (!vkr_harness_camera_is_orthographic(camera->mode) &&
+       (camera->vertical_fov_degrees <= 0.0f ||
+        camera->vertical_fov_degrees >= 180.0f)) ||
+      camera->near_plane <= 0.0f ||
       camera->far_plane <= camera->near_plane) {
     vkr_harness_error_set(out_error, "camera.lens", "$.camera",
                           "Camera lens values are invalid");
     return false_v;
+  }
+  if (vkr_harness_camera_is_orthographic(camera->mode)) {
+    if (!isfinite(camera->orthographic_height) ||
+        camera->orthographic_height <= 0.0f) {
+      vkr_harness_error_set(out_error, "camera.orthographic_height", "$.camera",
+                            "Orthographic height must be finite and positive");
+      return false_v;
+    }
+    return true_v;
   }
   if (camera->mode == VKR_HARNESS_CAMERA_STATIC) {
     return true_v;
@@ -250,7 +267,8 @@ bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
     return false_v;
   }
   authored_time_seconds *= vkr_harness_speed_multiplier(camera->speed);
-  if (camera->mode == VKR_HARNESS_CAMERA_STATIC ||
+  if (vkr_harness_camera_is_orthographic(camera->mode) ||
+      camera->mode == VKR_HARNESS_CAMERA_STATIC ||
       vkr_harness_camera_is_cubemap(camera->mode)) {
     *out_pose = camera->static_pose;
     return true_v;
@@ -320,6 +338,20 @@ vkr_harness_camera_evaluate_script(const VkrHarnessCamera *camera,
     return false_v;
   }
   MemZero(out_pose, sizeof(*out_pose));
+  if (vkr_harness_camera_is_orthographic(camera->mode)) {
+    static const Vec3 forwards[] = {
+        {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+        {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    static const Vec3 ups[] = {
+        {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    const uint32_t view = camera->mode - VKR_HARNESS_CAMERA_ORTHOGRAPHIC_TOP;
+    out_pose->pose = camera->static_pose;
+    out_pose->forward = forwards[view];
+    out_pose->up = ups[view];
+    out_pose->exact_basis = true_v;
+    return true_v;
+  }
   if (!vkr_harness_camera_is_cubemap(camera->mode)) {
     return vkr_harness_camera_evaluate(camera, authored_time_seconds,
                                        &out_pose->pose);

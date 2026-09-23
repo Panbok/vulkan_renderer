@@ -136,9 +136,15 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("camera.mode", "%u", case_manifest->camera.mode);
   ADD("camera.interpolation", "%u", case_manifest->camera.interpolation);
   ADD("camera.speed", "%u", case_manifest->camera.speed);
-  ADD("camera.lens", "%.9g,%.9g,%.9g",
-      case_manifest->camera.vertical_fov_degrees,
-      case_manifest->camera.near_plane, case_manifest->camera.far_plane);
+  if (vkr_harness_camera_is_orthographic(case_manifest->camera.mode)) {
+    ADD("camera.orthographic_lens", "%.9g,%.9g,%.9g",
+        case_manifest->camera.orthographic_height,
+        case_manifest->camera.near_plane, case_manifest->camera.far_plane);
+  } else {
+    ADD("camera.lens", "%.9g,%.9g,%.9g",
+        case_manifest->camera.vertical_fov_degrees,
+        case_manifest->camera.near_plane, case_manifest->camera.far_plane);
+  }
   ADD("camera.static", "%.9g,%.9g,%.9g,%.9g,%.9g",
       case_manifest->camera.static_pose.position.x,
       case_manifest->camera.static_pose.position.y,

@@ -133,6 +133,11 @@ typedef enum VkrHarnessCameraMode {
   VKR_HARNESS_CAMERA_CUBEMAP_NY,
   VKR_HARNESS_CAMERA_CUBEMAP_PZ,
   VKR_HARNESS_CAMERA_CUBEMAP_NZ,
+  /** Static editor projection views with exact cardinal bases. */
+  VKR_HARNESS_CAMERA_ORTHOGRAPHIC_TOP,
+  VKR_HARNESS_CAMERA_ORTHOGRAPHIC_LEFT,
+  VKR_HARNESS_CAMERA_ORTHOGRAPHIC_RIGHT,
+  VKR_HARNESS_CAMERA_ORTHOGRAPHIC_BOTTOM,
 } VkrHarnessCameraMode;
 
 typedef enum VkrHarnessCameraInterpolation {
@@ -224,7 +229,11 @@ typedef struct VkrHarnessCamera {
   VkrHarnessCameraMode mode;
   VkrHarnessCameraInterpolation interpolation;
   VkrHarnessSpeed speed;
-  float32_t vertical_fov_degrees;
+  /* Lens scalar is mode-specific. Preserve legacy capture-summary layout. */
+  union {
+    float32_t vertical_fov_degrees;
+    float32_t orthographic_height;
+  };
   float32_t near_plane;
   float32_t far_plane;
   VkrHarnessCameraPose static_pose;
@@ -704,6 +713,7 @@ bool8_t vkr_harness_profile_load(const char *repository_root,
                                  VkrHarnessProfile *out_profile,
                                  VkrHarnessError *out_error);
 
+bool8_t vkr_harness_camera_is_orthographic(VkrHarnessCameraMode mode);
 bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
                                    VkrHarnessError *out_error);
 bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,

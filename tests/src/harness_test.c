@@ -65,6 +65,52 @@ vkr_internal void test_harness_camera_float_range_boundary(void) {
   }
 }
 
+vkr_internal void test_harness_orthographic_camera(void) {
+  const char *modes[] = {"orthographic_top", "orthographic_left",
+                         "orthographic_right", "orthographic_bottom"};
+  const Vec3 expected_forward[] = {
+      {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+      {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+  for (uint32_t i = 0; i < ArrayCount(modes); ++i) {
+    char camera[256];
+    snprintf(camera, sizeof(camera),
+             "{\"mode\":\"%s\",\"position\":[1,2,3],"
+             "\"orthographic_height\":240}", modes[i]);
+    VkrHarnessCase parsed = {0};
+    assert(harness_parse_case("offscreen", "none", camera, "", &parsed));
+    assert(vkr_harness_camera_is_orthographic(parsed.camera.mode));
+    assert(parsed.camera.orthographic_height == 240.0f);
+    VkrHarnessCameraScriptPose pose = {0};
+    assert(vkr_harness_camera_evaluate_script(&parsed.camera, 30.0, &pose));
+    assert(pose.exact_basis);
+    assert(pose.pose.position.x == 1.0f && pose.pose.position.y == 2.0f &&
+           pose.pose.position.z == 3.0f);
+    assert(pose.forward.x == expected_forward[i].x &&
+           pose.forward.y == expected_forward[i].y &&
+           pose.forward.z == expected_forward[i].z);
+    assert(vec3_dot(pose.forward, pose.up) == 0.0f);
+    assert(vec3_dot(pose.up, pose.up) == 1.0f);
+    const Vec3 right = vec3_cross(pose.forward, pose.up);
+    assert(vec3_dot(right, right) == 1.0f);
+    if (i == 0u || i == 3u) {
+      assert(right.x == 1.0f && right.y == 0.0f && right.z == 0.0f);
+    }
+  }
+  const char *invalid[] = {
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0]}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":0}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":-1}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":1e100}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":10,\"pitch\":-90}",
+      "{\"mode\":\"orthographic_top\",\"position\":[0,1,0],\"orthographic_height\":10,\"vertical_fov_degrees\":70}",
+      "{\"mode\":\"static\",\"position\":[0,1,0],\"yaw\":0,\"pitch\":0,\"orthographic_height\":10}",
+  };
+  for (uint32_t i = 0; i < ArrayCount(invalid); ++i) {
+    VkrHarnessCase parsed = {0};
+    assert(!harness_parse_case("offscreen", "none", invalid[i], "", &parsed));
+  }
+}
+
 vkr_internal void test_harness_hash_and_statistics(void) {
   printf("  Running test_harness_hash_and_statistics...\n");
   char digest[VKR_HARNESS_DIGEST_MAX];
@@ -642,6 +688,28 @@ vkr_internal void test_harness_fingerprints(void) {
   assert(strcmp(default_policy, policy) == 0);
   char original_workload[VKR_HARNESS_DIGEST_MAX];
   snprintf(original_workload, sizeof(original_workload), "%s", workload);
+  const VkrHarnessCamera original_camera = case_manifest.camera;
+  case_manifest.camera.mode = VKR_HARNESS_CAMERA_ORTHOGRAPHIC_TOP;
+  case_manifest.camera.orthographic_height = 40.0f;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  char orthographic_workload[VKR_HARNESS_DIGEST_MAX];
+  snprintf(orthographic_workload, sizeof(orthographic_workload), "%s", workload);
+  case_manifest.camera.orthographic_height = 80.0f;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(orthographic_workload, workload) != 0);
+  case_manifest.camera = original_camera;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) == 0);
   string_copy(case_manifest.renderer.exposure_mode, "automatic");
   case_manifest.renderer.manual_exposure = 0.25f;
   case_manifest.renderer.exposure_compensation_ev = 1.0f;
@@ -3393,6 +3461,7 @@ bool32_t run_harness_tests(void) {
   test_harness_case_parser();
   test_harness_editor_diagnostic_manifests();
   test_harness_camera_float_range_boundary();
+  test_harness_orthographic_camera();
   test_harness_profile_parser();
   test_harness_camera_determinism();
   test_harness_camera_warmup_holds_start_pose();
