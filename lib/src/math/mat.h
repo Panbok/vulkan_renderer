@@ -881,11 +881,21 @@ static INLINE Mat4 mat4_inverse_affine(Mat4 m) {
   float32_t det = vec3_dot((Vec3){m.m00, m.m01, m.m02},
                            (Vec3){cross0.x, cross0.y, cross0.z});
 
-  if (vkr_abs_f32(det) < 1e-6f) {
+  // Relative to the terms that formed the determinant, as in mat4_inverse. An
+  // absolute threshold rejected well-conditioned small scales: 0.01 cubed is
+  // below 1e-6.
+  const float32_t determinant_terms = fabsf(m.m00 * cross0.x) +
+                                      fabsf(m.m01 * cross0.y) +
+                                      fabsf(m.m02 * cross0.z);
+  if (!isfinite(det) || !isfinite(determinant_terms) ||
+      fabsf(det) <= 1e-6f * determinant_terms) {
     return mat4_identity();
   }
 
   float32_t inv_det = 1.0f / det;
+  if (!isfinite(inv_det)) {
+    return mat4_identity();
+  }
 
   Mat4 result;
   result.m00 = cross0.x * inv_det;

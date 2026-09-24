@@ -358,6 +358,19 @@ static void test_mat4_inverse_operations(void) {
   Mat4 affine_identity = mat4_mul(affine_transform, affine_inv);
   assert(mat4_is_identity(affine_identity, 0.01f) && "Affine inverse failed");
 
+  // Centimetre-scale content has a determinant below 1e-6 (0.01 cubed) and is
+  // still well conditioned, uniformly or not.
+  const Vec3 small_scales[] = {vec3_new(0.01f, 0.01f, 0.01f),
+                               vec3_new(0.005f, 0.02f, 0.01f)};
+  for (uint32_t i = 0; i < ArrayCount(small_scales); ++i) {
+    const Mat4 small = mat4_mul(
+        mat4_translate(vec3_new(2.0f, -3.0f, 4.0f)),
+        mat4_mul(mat4_euler_rotate_z(0.4f), mat4_scale(small_scales[i])));
+    assert(
+        mat4_is_identity(mat4_mul(small, mat4_inverse_affine(small)), 0.001f) &&
+        "Affine inverse must accept small well-conditioned scales");
+  }
+
   // Test general inverse with simple identity matrix first
   Mat4 simple_test = mat4_identity();
   Mat4 simple_inv = mat4_inverse(simple_test);
