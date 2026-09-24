@@ -197,19 +197,14 @@ static bool8_t vkr_harness_scene_manifest_resolve(
     if (managed) {
       return false_v;
     }
-    const uint64_t owner_length = string_length(owner_relative);
     const bool8_t owner_is_mtl =
-        owner_length >= 4u &&
-        string_equals(owner_relative + owner_length - 4u, ".mtl");
+        vkr_harness_scene_path_ends_with(owner_relative, ".mtl");
     const bool8_t owner_is_gltf =
-        owner_length >= 5u &&
-        string_equals(owner_relative + owner_length - 5u, ".gltf");
+        vkr_harness_scene_path_ends_with(owner_relative, ".gltf");
     const bool8_t owner_is_glb =
-        owner_length >= 4u &&
-        string_equals(owner_relative + owner_length - 4u, ".glb");
+        vkr_harness_scene_path_ends_with(owner_relative, ".glb");
     const bool8_t owner_is_fnt =
-        owner_length >= 4u &&
-        string_equals(owner_relative + owner_length - 4u, ".fnt");
+        vkr_harness_scene_path_ends_with(owner_relative, ".fnt");
     if (!owner_is_mtl && !owner_is_gltf && !owner_is_glb && !owner_is_fnt) {
       return false_v;
     }
@@ -650,13 +645,10 @@ vkr_internal bool8_t vkr_harness_scene_manifest_scan_lines(
       MemCopy(token, parse_bytes + i, end - i);
       token[end - i] = '\0';
       bool8_t runtime_reference = true_v;
-      const uint64_t owner_length = string_length(asset->path);
       const bool8_t owner_is_mtl =
-          owner_length >= 4u &&
-          string_equals(asset->path + owner_length - 4u, ".mtl");
+          vkr_harness_scene_path_ends_with(asset->path, ".mtl");
       const bool8_t owner_is_obj =
-          owner_length >= 4u &&
-          string_equals(asset->path + owner_length - 4u, ".obj");
+          vkr_harness_scene_path_ends_with(asset->path, ".obj");
       if (owner_is_mtl || owner_is_obj) {
         uint64_t line_start = i;
         while (line_start > 0u && parse_bytes[line_start - 1u] != '\n' &&

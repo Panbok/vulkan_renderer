@@ -1244,6 +1244,54 @@ vkr_internal void test_harness_scene_manifest_tracks_transitive_content(void) {
   assert(rmdir(root) == 0);
   printf("  test_harness_scene_manifest_tracks_transitive_content PASSED\n");
 }
+
+/* An upper-case OBJ owner keeps the OBJ rule that only mtllib lines name
+   runtime dependencies. With a case-sensitive owner test, the object name
+   below would be required as a texture and the build would fail. */
+vkr_internal void test_harness_scene_manifest_uppercase_obj_owner(void) {
+  printf("  Running test_harness_scene_manifest_uppercase_obj_owner...\n");
+  char root[] = "/tmp/vkr_scene_manifest_obj_XXXXXX";
+  assert(vkr_test_temp_dir_create(root));
+  VkrHarnessError error = {0};
+  char assets[VKR_HARNESS_PATH_MAX];
+  char scenes[VKR_HARNESS_PATH_MAX];
+  char models[VKR_HARNESS_PATH_MAX];
+  snprintf(assets, sizeof(assets), "%s/assets", root);
+  snprintf(scenes, sizeof(scenes), "%s/assets/scenes", root);
+  snprintf(models, sizeof(models), "%s/assets/models", root);
+  assert(vkr_harness_make_directories(scenes, &error));
+  assert(vkr_harness_make_directories(models, &error));
+
+  char scene_path[VKR_HARNESS_PATH_MAX];
+  char obj_path[VKR_HARNESS_PATH_MAX];
+  char mtl_path[VKR_HARNESS_PATH_MAX];
+  snprintf(scene_path, sizeof(scene_path), "%s/test.scene.json", scenes);
+  snprintf(obj_path, sizeof(obj_path), "%s/TEST.OBJ", models);
+  snprintf(mtl_path, sizeof(mtl_path), "%s/test.mtl", models);
+  const char *scene = "{\"mesh\":\"assets/models/TEST.OBJ\",\"entities\":[]}";
+  const char *obj = "mtllib test.mtl\no decal.png\n";
+  const char *mtl = "newmtl surface\n";
+  assert(vkr_harness_atomic_write(scene_path, scene, strlen(scene), &error));
+  assert(vkr_harness_atomic_write(obj_path, obj, strlen(obj), &error));
+  assert(vkr_harness_atomic_write(mtl_path, mtl, strlen(mtl), &error));
+
+  Arena *arena = arena_create(MB(8), MB(4));
+  assert(arena);
+  VkrHarnessSceneManifest manifest = {0};
+  assert(vkr_harness_scene_manifest_build(root, "assets/scenes/test.scene.json",
+                                          arena, &manifest, &error));
+  assert(manifest.asset_count == 3u);
+  arena_destroy(arena);
+
+  assert(remove(mtl_path) == 0);
+  assert(remove(obj_path) == 0);
+  assert(remove(scene_path) == 0);
+  assert(rmdir(models) == 0);
+  assert(rmdir(scenes) == 0);
+  assert(rmdir(assets) == 0);
+  assert(rmdir(root) == 0);
+  printf("  test_harness_scene_manifest_uppercase_obj_owner PASSED\n");
+}
 #endif
 
 vkr_internal void test_harness_subsystem_plans(void) {
@@ -2934,6 +2982,7 @@ bool32_t run_harness_tests(void) {
   test_harness_fingerprints();
 #if !defined(_WIN32)
   test_harness_scene_manifest_tracks_transitive_content();
+  test_harness_scene_manifest_uppercase_obj_owner();
   test_harness_managed_workspace_closure();
 #endif
   test_harness_subsystem_plans();
