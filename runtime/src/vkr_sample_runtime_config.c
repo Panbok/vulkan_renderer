@@ -8,6 +8,13 @@
 
 #define SCENE_PATH "assets/scenes/bistro.scene.json"
 
+/* Rejected input prints to stderr because it is found before the standard
+ * runtime creates the logger; the caller exits with code 2. Diagnostics after
+ * runtime creation go through the logger. The other direct stderr writes are
+ * the same kind of pre-logger bootstrap failure, or explicitly requested
+ * diagnostic streams that must survive Release builds, where LOG_LEVEL
+ * compiles informational logging out. */
+
 /**
  * @brief Parses common truthy/falsy environment values.
  *

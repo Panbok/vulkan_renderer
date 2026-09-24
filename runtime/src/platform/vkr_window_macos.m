@@ -852,6 +852,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
       [NSApp activateIgnoringOtherApps:YES];
       [state->window makeKeyAndOrderFront:nil];
       if (getenv("VKR_WINDOW_DIAGNOSTICS")) {
+        // Requested explicitly, so it bypasses the Release-compiled-out logger.
         NSRect frame = [state->window frame];
         fprintf(stderr, "VKR window pid=%d visible=%d key=%d miniaturized=%d policy=%ld frame=%.0f,%.0f %.0fx%.0f screen=%p\n",
                 getpid(), [state->window isVisible], [state->window isKeyWindow],
