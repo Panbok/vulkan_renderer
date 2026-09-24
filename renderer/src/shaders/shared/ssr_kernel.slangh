@@ -23,6 +23,13 @@
 #define VKR_SSR_RECEIVER_DEPTH_ABSOLUTE 0.02f
 #define VKR_SSR_HIT_FILTER_TAP_COUNT 5u
 #define VKR_SSR_HIT_FILTER_RADIUS_PIXELS 4.0f
+// Interpolated FP32 UV can land exactly on a stored cell boundary whose floor()
+// selects the exited cell. An epsilon restart then moves UV by less than one
+// ulp on short segments, and nearly axis-aligned rays stall for more than the
+// step budget. Such a restart moves this many source pixels past the boundary
+// instead, along the segment's major screen axis: enough to clear the rounding,
+// and never enough to jump over a cell the ray still occupies on that axis.
+#define VKR_SSR_RESTART_PIXELS 0.015625f
 
 struct VkrSsrParams
 {
@@ -113,6 +120,14 @@ struct VkrSsrClipRange
     float end;
     uint valid;
     float reserved_float_0;
+};
+
+// Leaving the current hierarchy cell. `t` bounds the cell's depth interval;
+// `restart_t` is the parameter the next traversal step evaluates.
+struct VkrSsrCellExit
+{
+    float t;
+    float restart_t;
 };
 
 struct VkrSsrTraceResolve
@@ -467,31 +482,86 @@ bool vkr_ssr_trace_in_bounds(VkrSsrTrace trace)
     return all(uv >= 0.0f) && all(uv < 1.0f);
 }
 
-float2 vkr_ssr_trace_cell_boundary(VkrSsrTrace trace, uint2 mip_extent,
-                                     uint source_shift, VkrSsrParams params)
+// Level cell containing `uv`. Source pixels clamp to the image, and the final
+// cell of a floor-sized level owns the odd tail.
+uint2 vkr_ssr_level_cell(float2 uv, uint2 mip_extent, uint source_shift,
+                         VkrSsrParams params)
 {
-    float2 uv = vkr_ssr_trace_uv(trace);
-    float2 direction = trace.end_uv - trace.start_uv;
     uint2 source_extent = uint2(params.source_width, params.source_height);
     uint2 source_pixel = min(uint2(floor(uv * float2(source_extent))),
                              source_extent - 1u);
-    uint2 cell = min(source_pixel >> source_shift, mip_extent - 1u);
+    return min(source_pixel >> source_shift, mip_extent - 1u);
+}
+
+// Boundary of `cell` that the segment leaves through on each axis, in UV.
+float2 vkr_ssr_cell_exit_boundary(VkrSsrTrace trace, uint2 cell,
+                                  uint2 mip_extent, uint source_shift,
+                                  VkrSsrParams params)
+{
+    float2 direction = trace.end_uv - trace.start_uv;
+    uint2 source_extent = uint2(params.source_width, params.source_height);
     float4 bounds = vkr_ssr_cell_bounds(cell, source_shift, source_extent, mip_extent);
     return float2(direction.x > 0.0f ? bounds.z : bounds.x,
                   direction.y > 0.0f ? bounds.w : bounds.y);
+}
+
+// Parameter distance that moves the projected segment VKR_SSR_RESTART_PIXELS
+// along its faster screen axis. A segment shorter than that distance ends.
+float vkr_ssr_trace_restart_step(VkrSsrTrace trace, VkrSsrParams params)
+{
+    float2 segment_pixels = abs(trace.end_uv - trace.start_uv) *
+                            float2(float(params.source_width),
+                                   float(params.source_height));
+    float major_pixels = max(segment_pixels.x, segment_pixels.y);
+    return VKR_SSR_RESTART_PIXELS / max(major_pixels, VKR_SSR_RESTART_PIXELS);
+}
+
+// First parameter the traversal evaluates after leaving `cell` at `exit_t`.
+// The epsilon restart normally lands in the next cell and keeps entry hits at
+// the boundary. When FP32 UV rounds it back into `cell`, restart a fixed
+// sub-pixel distance past the boundary instead of re-testing the exited cell.
+float vkr_ssr_trace_restart(VkrSsrTrace trace, float exit_t, uint2 cell,
+                            uint2 mip_extent, uint source_shift,
+                            VkrSsrParams params)
+{
+    float restart_t = min(exit_t + VKR_SSR_EPSILON, 1.0f);
+    float2 restart_uv = vkr_ssr_lerp(trace.start_uv, trace.end_uv, restart_t);
+    if (restart_t < 1.0f && all(restart_uv >= 0.0f) &&
+        all(restart_uv < 1.0f) &&
+        all(vkr_ssr_level_cell(restart_uv, mip_extent, source_shift, params) ==
+            cell))
+    {
+        float restart_step =
+            max(vkr_ssr_trace_restart_step(trace, params), VKR_SSR_EPSILON);
+        restart_t = min(exit_t + restart_step, 1.0f);
+    }
+    return restart_t;
+}
+
+// A trace that is inactive or off screen restarts one epsilon ahead, which the
+// following advance turns into termination.
+VkrSsrCellExit vkr_ssr_cell_exit_in_place(VkrSsrTrace trace)
+{
+    VkrSsrCellExit result;
+    result.t = trace.t;
+    result.restart_t = min(trace.t + VKR_SSR_EPSILON, 1.0f);
+    return result;
 }
 
 // SSR's logical level zero reads full-resolution depth; level one reads the
 // existing half-resolution pyramid base. Crossing times are absolute along
 // the projected segment, so the same boundary has the same time regardless
 // of the hierarchy path used to reach it.
-float vkr_ssr_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
-                                VkrSsrParams params)
+VkrSsrCellExit vkr_ssr_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
+                                       VkrSsrParams params)
 {
     if (trace.active == 0u || any(mip_extent == 0u) ||
         !vkr_ssr_trace_in_bounds(trace))
-        return trace.t;
-    float2 boundary = vkr_ssr_trace_cell_boundary(trace, mip_extent, trace.mip, params);
+        return vkr_ssr_cell_exit_in_place(trace);
+    uint2 cell = vkr_ssr_level_cell(vkr_ssr_trace_uv(trace), mip_extent,
+                                    trace.mip, params);
+    float2 boundary =
+        vkr_ssr_cell_exit_boundary(trace, cell, mip_extent, trace.mip, params);
     float2 direction = trace.end_uv - trace.start_uv;
     float tx = abs(direction.x) > VKR_SSR_EPSILON
                    ? (boundary.x - trace.start_uv.x) / direction.x
@@ -499,7 +569,11 @@ float vkr_ssr_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
     float ty = abs(direction.y) > VKR_SSR_EPSILON
                    ? (boundary.y - trace.start_uv.y) / direction.y
                    : 3.402823466e+38f;
-    return min(max(min(tx, ty), trace.t), 1.0f);
+    VkrSsrCellExit result;
+    result.t = min(max(min(tx, ty), trace.t), 1.0f);
+    result.restart_t = vkr_ssr_trace_restart(trace, result.t, cell,
+                                             mip_extent, trace.mip, params);
+    return result;
 }
 
 bool vkr_ssr_trace_hit_matches_pixel(VkrSsrTrace trace, float hit_t,
@@ -511,11 +585,9 @@ bool vkr_ssr_trace_hit_matches_pixel(VkrSsrTrace trace, float hit_t,
 }
 
 // Re-ascending one level retains the projected DDA's bounded 48-step work.
-// The post-boundary epsilon is directional through the ray's UV slope and
-// prevents floor() from selecting the just-exited cell on either slope sign.
-VkrSsrTrace vkr_ssr_trace_advance(VkrSsrTrace trace, float cell_exit_t)
+VkrSsrTrace vkr_ssr_trace_advance(VkrSsrTrace trace, float restart_t)
 {
-    trace.t = min(cell_exit_t + VKR_SSR_EPSILON, 1.0f);
+    trace.t = restart_t;
     trace.mip = min(trace.mip + 1u, trace.max_mip);
     if (!(trace.t < 1.0f) || !vkr_ssr_trace_in_bounds(trace))
         trace.active = 0u;

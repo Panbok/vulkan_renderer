@@ -120,6 +120,13 @@ expected.extend([
     1/math.sqrt(2), -1/math.sqrt(2), 0,
     .8090398349558905, -.26967994498529685, .5222329678670935,
 ])
+# Short-segment restart: four distinct cells and no repeated cell. A minor-axis
+# exit from cell (88, 244) through a badly rounded boundary crosses within 16
+# steps (the former parameter epsilon needed 69) without skipping a major cell.
+expected.extend([0, 4, 88244, 1, 0])
+# A well-rounded boundary keeps the exact epsilon restart; boundary 963 of 1920
+# restarts 1/64 pixel along the 3.84-pixel major axis.
+expected.extend([1, 0.015625 / 3.84])
 assert len(actual) == len(expected), actual
 for i, (got, want) in enumerate(zip(actual, expected)):
     assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
@@ -180,6 +187,8 @@ print("Mirrored affine transport:", actual[254:262])
 print("Unequal current/previous raster jitter:", actual[262:268])
 print("Radiance contribution, coverage ties and missing samples:", actual[268:280])
 print("Representative identity/tap across lamp movement and disappearance:", actual[280:290])
+print("Short-segment repeats/cells, minor-axis start/crossed/skipped:", actual[321:326])
+print("Exact epsilon restart kept / rounded-boundary restart step:", actual[326:328])
 print(f"SSR production shared math: {len(actual)} outputs PASS")
 
 print("Normal-RG strength 0/.5/1/2, disk overflow, zero fallback and ignored blue: PASS")

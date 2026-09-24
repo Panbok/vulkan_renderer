@@ -242,23 +242,23 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     trace.start_uv = float2(0.1f, 0.5f);
     trace.end_uv = float2(0.9f, 0.5f);
     trace.t = 0.368f;
-    g_results[92] = vkr_ssr_trace_cell_exit(trace, source_extent, params);
+    g_results[92] = vkr_ssr_trace_cell_exit(trace, source_extent, params).t;
     trace.t = 0.368002f;
-    g_results[93] = vkr_ssr_trace_cell_exit(trace, source_extent, params);
+    g_results[93] = vkr_ssr_trace_cell_exit(trace, source_extent, params).t;
     trace.start_uv = float2(0.9f, 0.5f);
     trace.end_uv = float2(0.1f, 0.5f);
     trace.t = 0.368f;
-    g_results[94] = vkr_ssr_trace_cell_exit(trace, source_extent, params);
+    g_results[94] = vkr_ssr_trace_cell_exit(trace, source_extent, params).t;
     trace.t = 0.368001f;
-    g_results[95] = vkr_ssr_trace_cell_exit(trace, source_extent, params);
+    g_results[95] = vkr_ssr_trace_cell_exit(trace, source_extent, params).t;
     // SSGI level zero still spans two source pixels: its next boundary is 254,
     // while SSR level zero exits at 253. SSR level one also exits at 254.
     trace.start_uv = float2(0.1f, 0.5f);
     trace.end_uv = float2(0.9f, 0.5f);
     trace.t = 0.368f;
-    g_results[96] = vkr_ssgi_trace_cell_exit(trace, uint2(320, 240), params);
+    g_results[96] = vkr_ssgi_trace_cell_exit(trace, uint2(320, 240), params).t;
     trace.mip = 1u;
-    g_results[97] = vkr_ssr_trace_cell_exit(trace, uint2(320, 240), params);
+    g_results[97] = vkr_ssr_trace_cell_exit(trace, uint2(320, 240), params).t;
     for (uint i = 0; i < 4; ++i) {
         g_results[i] = sparse[i];
         g_results[4 + i] = dense[i];
@@ -716,4 +716,90 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         g_results[318u + component] = widened[component];
     }
 
+    // A 3.84-pixel segment starting on a pixel edge crosses four full-resolution
+    // cells. Each advance must enter a new cell: restarting a fixed parameter
+    // epsilon past a boundary moves UV by less than one FP32 ulp here, so
+    // floor() can re-select the cell that was just exited.
+    params.source_width = 1920u;
+    params.source_height = 1080u;
+    uint2 full_extent = uint2(1920u, 1080u);
+    trace = vkr_ssr_empty_trace();
+    trace.start_uv = float2(0.5f, 0.5f);
+    trace.end_uv = float2(0.502f, 0.50074f);
+    trace.start_depth = 1.0f;
+    trace.end_depth = 1.0f;
+    trace.start_clip_w = 1.0f;
+    trace.end_clip_w = 1.0f;
+    trace.active = 1u;
+    uint repeated_cells = 0u;
+    uint visited_cells = 0u;
+    int2 previous_cell = int2(-1, -1);
+    for (uint step = 0u; step < VKR_SSR_MAX_STEPS && trace.active != 0u; ++step) {
+        int2 cell = int2(floor(vkr_ssr_trace_uv(trace) * float2(full_extent)));
+        if (all(cell == previous_cell))
+            ++repeated_cells;
+        else
+            ++visited_cells;
+        previous_cell = cell;
+        trace = vkr_ssr_trace_advance(
+            trace, vkr_ssr_trace_cell_exit(trace, full_extent, params).restart_t);
+    }
+    g_results[321] = float(repeated_cells);
+    g_results[322] = float(visited_cells);
+
+    // A nearly horizontal ray exits cell (88, 244) through its minor axis at
+    // y = 245, whose FP32 boundary floors back to row 244. The crossing must
+    // finish well inside the 48-step budget, and the restart must not jump over
+    // the major-axis cell the ray still occupies.
+    params.source_width = 641u;
+    params.source_height = 481u;
+    uint2 odd_extent = uint2(641u, 481u);
+    trace = vkr_ssr_empty_trace();
+    trace.start_uv = float2(0.1f, 244.99f / 481.0f);
+    trace.end_uv = float2(0.9f, 245.2f / 481.0f);
+    trace.start_depth = 1.0f;
+    trace.end_depth = 1.0f;
+    trace.start_clip_w = 1.0f;
+    trace.end_clip_w = 1.0f;
+    trace.active = 1u;
+    trace.t = 0.047f;
+    int2 minor_start = int2(floor(vkr_ssr_trace_uv(trace) * float2(odd_extent)));
+    int2 minor_previous = minor_start;
+    uint minor_steps = 0u;
+    bool minor_crossed = false;
+    bool major_skipped = false;
+    for (; minor_steps < VKR_SSR_MAX_STEPS && trace.active != 0u && !minor_crossed;
+         ++minor_steps) {
+        trace = vkr_ssr_trace_advance(
+            trace, vkr_ssr_trace_cell_exit(trace, odd_extent, params).restart_t);
+        int2 cell = int2(floor(vkr_ssr_trace_uv(trace) * float2(odd_extent)));
+        major_skipped = major_skipped || cell.x > minor_previous.x + 1;
+        minor_crossed = cell.y > minor_start.y;
+        minor_previous = cell;
+    }
+    g_results[323] = float(minor_start.x * 1000 + minor_start.y);
+    g_results[324] = minor_crossed && minor_steps <= 16u ? 1.0f : 0.0f;
+    g_results[325] = major_skipped ? 1.0f : 0.0f;
+
+    // Where the epsilon restart already enters the next cell (boundary 253 of
+    // 641), traversal and entry hits keep their exact previous parameters.
+    // Boundary 963 of 1920 floors back into pixel 962, so only that restart
+    // moves 1/64 pixel along the major axis: 0.015625 / 3.84 in parameter.
+    params.source_width = 641u;
+    params.source_height = 481u;
+    trace = vkr_ssr_empty_trace();
+    trace.start_uv = float2(0.1f, 0.5f);
+    trace.end_uv = float2(0.9f, 0.5f);
+    trace.active = 1u;
+    trace.t = 0.368f;
+    VkrSsrCellExit exact_exit = vkr_ssr_trace_cell_exit(trace, odd_extent, params);
+    g_results[326] = exact_exit.restart_t == min(exact_exit.t + VKR_SSR_EPSILON, 1.0f)
+                         ? 1.0f : 0.0f;
+    params.source_width = 1920u;
+    params.source_height = 1080u;
+    trace.start_uv = float2(0.5f, 0.5f);
+    trace.end_uv = float2(0.502f, 0.50074f);
+    trace.t = 0.651f;
+    VkrSsrCellExit rounded_exit = vkr_ssr_trace_cell_exit(trace, full_extent, params);
+    g_results[327] = rounded_exit.restart_t - rounded_exit.t;
 }

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-24
 authority: adr
 ---
 
@@ -54,7 +54,11 @@ identity and a distinct balanced workload fingerprint.
 
 
 Traversal uses homogeneous interpolation, clipped screen bounds, absolute cell
-crossings and the earliest supported rear-depth slab. Thickness is a binary
+crossings and the earliest supported rear-depth slab. A cell exit restarts the
+ray `1e-6` past its crossing parameter. FP32 can store a cell boundary `k/N`
+below pixel edge `k`, so that restart can select the exited cell again. The
+restart then moves 1/64 source pixel along the projected segment's major axis
+(`VKR_SSR_RESTART_PIXELS`). SSGI shares this restart. Thickness is a binary
 intersection tolerance; a separate 1 mm normal offset separates the origin.
 Leaf validation reuses its loaded depth and accepts only its half-open source
 pixel, allowing numerical roundoff ahead of the surface. Mirrors sample incoming
@@ -209,7 +213,26 @@ composite target is unnecessary because each invocation reads/writes its own HDR
 pixel. Off-screen geometry and exact curved-surface transport require capabilities
 outside this bounded screen-space design.
 
+Restarting 1/64 pixel past every crossing also removes the stall, but it skips
+the start of every cell and shifts every entry hit. On the Bistro bar turn it
+changed 14% of raw trace pixels and lost 30-45 hits per frame. Moving 1/64 pixel
+along the exit axis instead would carry a slow minor axis dozens of pixels along
+the major axis and skip cells.
+
 ## Evidence and remaining checks
+
+The restart correction extends `tools/checks/check_ssr_stability.py`. Before
+it, a 3.84-pixel segment re-entered 14 cells, and a nearly horizontal ray at a
+rounded row boundary needed 69 steps against the 48-decision budget. Other new
+cases keep the epsilon restart where it already clears the boundary and check
+the 1/64-pixel distance. All 328 outputs pass. On Metal Release (M1,
+`tools/profiles/local-offscreen.json`), `local/ssr_bar_turn_stop` gains 228-253
+trace hits per captured frame, about 0.4% of 63k, and loses at most 2.
+`local/ssgi_bistro_reported_turn_stop` gains 8,014-10,284 SSR hits of 505k-532k
+and loses at most 4. The recovered hits form vertical stripes along rounded
+pixel columns on the ceiling. Neither case captures the SSGI trace, so SSGI is
+covered by the shared code only. Vulkan compiles and its SPIR-V validates;
+native Vulkan execution was unavailable.
 
 The full-resolution trial uses the same later bar camera, four checkpoint replays
 and 80% spatial/TAA settings as the radiance-owner correction below. Keeping the

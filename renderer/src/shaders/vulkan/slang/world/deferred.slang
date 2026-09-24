@@ -2373,7 +2373,8 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
         uint2 mip_extent = max(source_extent >> trace.mip, uint2(1u, 1u));
         float2 uv = vkr_ssr_trace_uv(trace);
         uint2 source_pixel = min(uint2(floor(uv * float2(source_extent))), source_extent - 1u);
-        float exit_t = vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
+        VkrSsrCellExit cell_exit =
+            vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
         float surface_depth;
         if (trace.mip == 0u)
         {
@@ -2387,25 +2388,26 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
                 int3(mip_cell, trace.mip - 1u));
         }
         VkrSsrTraceResolve resolve = vkr_ssr_trace_resolve(
-            trace, surface_depth, exit_t, root.params);
+            trace, surface_depth, cell_exit.t, root.params);
         if (resolve.hit == 0u)
         {
-            trace = resolve.descend != 0u ? vkr_ssr_trace_descend(trace)
-                                          : vkr_ssr_trace_advance(trace, exit_t);
+            trace = resolve.descend != 0u
+                        ? vkr_ssr_trace_descend(trace)
+                        : vkr_ssr_trace_advance(trace, cell_exit.restart_t);
             continue;
         }
         float ray_depth = vkr_ssr_trace_depth_at(trace, resolve.hit_t);
         if (!vkr_ssr_trace_hit_matches_pixel(trace, resolve.hit_t, source_pixel, root.params) ||
             !vkr_ssr_depth_hit_matches(ray_depth, surface_depth, root.params))
         {
-            trace = vkr_ssr_trace_advance(trace, exit_t);
+            trace = vkr_ssr_trace_advance(trace, cell_exit.restart_t);
             continue;
         }
         uint hit_visible =
             g_uint2_textures[root.vbuffer_texture].Load(int3(source_pixel, 0)).x;
         if (hit_visible == 0u)
         {
-            trace = vkr_ssr_trace_advance(trace, exit_t);
+            trace = vkr_ssr_trace_advance(trace, cell_exit.restart_t);
             continue;
         }
         float3 hit_normal = vkr_vk_ssr_selected_normal(
@@ -2420,7 +2422,7 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
             hit = uint4(asuint(float3(hit_uv, ray_depth)), hit_visible);
             break;
         }
-        trace = vkr_ssr_trace_advance(trace, exit_t);
+        trace = vkr_ssr_trace_advance(trace, cell_exit.restart_t);
     }
     g_storage_2d[root.destination_texture][cell] = raw;
     g_storage_uint4_2d[root.hit_texture][cell] = hit;

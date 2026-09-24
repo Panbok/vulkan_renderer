@@ -221,7 +221,8 @@ kernel void vkr_metal_packet_ssr_trace(
         ? source_extent
         : uint2(root.pyramid.get_width(trace.mip - 1u),
                  root.pyramid.get_height(trace.mip - 1u));
-    float cell_exit = vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
+    VkrSsrCellExit cell_exit =
+        vkr_ssr_trace_cell_exit(trace, mip_extent, root.params);
     float2 trace_uv = vkr_ssr_trace_uv(trace);
     uint2 source_pixel = min(uint2(floor(trace_uv * float2(source_extent))),
                              source_extent - 1u);
@@ -234,11 +235,11 @@ kernel void vkr_metal_packet_ssr_trace(
       surface_depth = root.pyramid.read(cell, trace.mip - 1u).x;
     }
     VkrSsrTraceResolve resolve = vkr_ssr_trace_resolve(
-        trace, surface_depth, cell_exit, root.params);
+        trace, surface_depth, cell_exit.t, root.params);
     if (resolve.hit == 0u) {
       trace = resolve.descend != 0u
                   ? vkr_ssr_trace_descend(trace)
-                  : vkr_ssr_trace_advance(trace, cell_exit);
+                  : vkr_ssr_trace_advance(trace, cell_exit.restart_t);
       continue;
     }
 
@@ -248,12 +249,12 @@ kernel void vkr_metal_packet_ssr_trace(
     if (!vkr_ssr_trace_hit_matches_pixel(trace, resolve.hit_t, source_pixel,
                                          root.params) ||
         !vkr_ssr_depth_hit_matches(ray_depth, surface_depth, root.params)) {
-      trace = vkr_ssr_trace_advance(trace, cell_exit);
+      trace = vkr_ssr_trace_advance(trace, cell_exit.restart_t);
       continue;
     }
     uint hit_visible = root.vbuffer.read(source_pixel).x;
     if (hit_visible == 0u) {
-      trace = vkr_ssr_trace_advance(trace, cell_exit);
+      trace = vkr_ssr_trace_advance(trace, cell_exit.restart_t);
       continue;
     }
     float3 hit_world_normal = vkr_metal_ssr_selected_normal(
@@ -271,7 +272,7 @@ kernel void vkr_metal_packet_ssr_trace(
           uint4(as_type<uint2>(hit_uv), as_type<uint>(ray_depth), hit_visible);
       break;
     }
-    trace = vkr_ssr_trace_advance(trace, cell_exit);
+    trace = vkr_ssr_trace_advance(trace, cell_exit.restart_t);
   }
   root.raw.write(float4(hit_radiance, confidence), pixel);
   root.hit.write(hit, pixel);

@@ -103,22 +103,29 @@ VkrSsrParams vkr_ssgi_screen_trace_params(VkrSsgiParams params)
 }
 
 // SSGI retains its half-resolution leaf and existing relative crossing math.
-float vkr_ssgi_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
-                                 VkrSsrParams screen)
+VkrSsrCellExit vkr_ssgi_trace_cell_exit(VkrSsrTrace trace, uint2 mip_extent,
+                                        VkrSsrParams screen)
 {
     if (trace.active == 0u || any(mip_extent == 0u) ||
         !vkr_ssr_trace_in_bounds(trace))
-        return trace.t;
+        return vkr_ssr_cell_exit_in_place(trace);
     float2 uv = vkr_ssr_trace_uv(trace);
     float2 direction = trace.end_uv - trace.start_uv;
-    float2 boundary = vkr_ssr_trace_cell_boundary(trace, mip_extent, trace.mip + 1u, screen);
+    uint source_shift = trace.mip + 1u;
+    uint2 cell = vkr_ssr_level_cell(uv, mip_extent, source_shift, screen);
+    float2 boundary = vkr_ssr_cell_exit_boundary(trace, cell, mip_extent,
+                                                 source_shift, screen);
     float tx = abs(direction.x) > VKR_SSR_EPSILON
                    ? (boundary.x - uv.x) / direction.x
                    : 3.402823466e+38f;
     float ty = abs(direction.y) > VKR_SSR_EPSILON
                    ? (boundary.y - uv.y) / direction.y
                    : 3.402823466e+38f;
-    return min(trace.t + max(min(tx, ty), 0.0f), 1.0f);
+    VkrSsrCellExit result;
+    result.t = min(trace.t + max(min(tx, ty), 0.0f), 1.0f);
+    result.restart_t = vkr_ssr_trace_restart(trace, result.t, cell,
+                                             mip_extent, source_shift, screen);
+    return result;
 }
 
 VkrSsrTraceResolve vkr_ssgi_trace_resolve(VkrSsrTrace trace,
