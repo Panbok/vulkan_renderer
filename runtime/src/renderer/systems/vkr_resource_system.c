@@ -1783,6 +1783,399 @@ vkr_internal void vkr_resource_system_estimate_finalize_cost(
   }
 }
 
+/** Budget and submission state shared by the stages of one pump. Every stage
+ * runs with the request mutex held and may release it around callbacks; a
+ * stage reports false (or LOCK_LOST) when it could not re-acquire it, and the
+ * pump then returns without unlocking. */
+typedef struct VkrResourcePump {
+  const VkrResourceAsyncBudget *effective_budget;
+  uint64_t completed_submit_serial;
+  uint64_t submit_serial;
+  bool8_t frame_active;
+  uint32_t finalize_budget;
+  uint32_t used_gpu_upload_ops;
+  uint64_t used_gpu_upload_bytes;
+} VkrResourcePump;
+
+/** Outcome of the async finalize stage for one request. */
+typedef enum VkrResourcePumpFinalize {
+  /* The mutex could not be re-acquired. */
+  VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST = 0,
+  /* The request is settled for this pump; move to the next request. */
+  VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST,
+  /* The payload finalized; continue with submit-serial tracking. */
+  VKR_RESOURCE_PUMP_FINALIZE_FINALIZED,
+} VkrResourcePumpFinalize;
+
+/* Applies one worker completion to its request, then releases whatever the
+ * request no longer wants (loaded resource, async payload) outside the
+ * mutex. */
+vkr_internal bool8_t vkr_resource_system_pump_completion_locked(
+    VkrResourceAsyncCompletion *completion) {
+  bool8_t unload_loaded_resource = false_v;
+  VkrResourceHandleInfo unload_info = {0};
+  bool8_t release_async_payload = false_v;
+  uint32_t release_async_loader_id = VKR_INVALID_ID;
+  void *release_async_ptr = NULL;
+
+  int32_t request_index = vkr_resource_system_request_find_by_id_locked(
+      vkr_resource_system, completion->request_id);
+  if (request_index < 0) {
+    unload_loaded_resource = completion->loaded;
+    unload_info = completion->loaded_info;
+    if (completion->has_async_payload) {
+      release_async_payload = true_v;
+      release_async_loader_id = completion->loader_id;
+      release_async_ptr = completion->async_payload;
+    }
+  } else {
+    VkrResourceAsyncRequest *request =
+        &vkr_resource_system->requests[request_index];
+    request->cpu_job_in_flight = false_v;
+    if (!request->in_use) {
+      unload_loaded_resource = completion->loaded;
+      unload_info = completion->loaded_info;
+      if (completion->has_async_payload) {
+        release_async_payload = true_v;
+        release_async_loader_id = completion->loader_id;
+        release_async_ptr = completion->async_payload;
+      }
+    } else if (request->cancel_requested) {
+      unload_loaded_resource = completion->loaded;
+      unload_info = completion->loaded_info;
+      if (completion->has_async_payload) {
+        release_async_payload = true_v;
+        release_async_loader_id = completion->loader_id;
+        release_async_ptr = completion->async_payload;
+      }
+      request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
+      request->last_error = VKR_RENDERER_ERROR_NONE;
+      vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                              VKR_METRIC_EVENT_STATUS_FAILED);
+      if (request->ref_count == 0) {
+        vkr_resource_system_request_release_locked(vkr_resource_system,
+                                                   request_index, NULL, NULL);
+      }
+    } else if (completion->has_async_payload) {
+      request->loader_id = completion->loader_id;
+      request->async_payload = completion->async_payload;
+      request->gpu_submit_serial = 0;
+      request->last_error = VKR_RENDERER_ERROR_NONE;
+      request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
+    } else if (completion->loaded) {
+      request->loaded_info = completion->loaded_info;
+      request->loader_id = completion->loaded_info.loader_id;
+      request->last_error = VKR_RENDERER_ERROR_NONE;
+      // Submit serial assignment and READY transition are render-thread
+      // responsibilities.
+      request->gpu_submit_serial = 0;
+      request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
+    } else {
+      request->last_error = completion->load_error;
+      request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
+      vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                              VKR_METRIC_EVENT_STATUS_FAILED);
+    }
+  }
+
+  if (unload_loaded_resource) {
+    vkr_mutex_unlock(vkr_resource_system->mutex);
+    vkr_resource_system_unload_sync_internal(&unload_info, completion->path);
+    if (release_async_payload) {
+      vkr_resource_system_release_async_payload(release_async_loader_id,
+                                                release_async_ptr);
+    }
+    vkr_resource_system_completion_release_path(vkr_resource_system,
+                                                completion);
+    if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+      return false_v;
+    }
+  } else {
+    if (release_async_payload) {
+      vkr_mutex_unlock(vkr_resource_system->mutex);
+      vkr_resource_system_release_async_payload(release_async_loader_id,
+                                                release_async_ptr);
+      if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+        return false_v;
+      }
+    }
+    vkr_resource_system_completion_release_path(vkr_resource_system,
+                                                completion);
+  }
+  return true_v;
+}
+
+/* Releases canceled, unreferenced request `i`, unloading its resource and
+ * payload outside the mutex. */
+vkr_internal bool8_t vkr_resource_system_pump_release_canceled_locked(
+    uint32_t i, VkrResourcePump *pump) {
+  VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
+  const uint32_t loader_id = request->loader_id;
+  void *payload = request->async_payload;
+  const VkrResourceHandleInfo loaded_info = request->loaded_info;
+  const String8 path = request->path;
+  request->async_payload = NULL;
+  request->loaded_info = (VkrResourceHandleInfo){0};
+  if (payload || loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
+    request->callback_in_flight = true_v;
+    vkr_mutex_unlock(vkr_resource_system->mutex);
+    if (loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
+      vkr_resource_system_unload_sync_internal(&loaded_info, path);
+    }
+    if (payload) {
+      vkr_resource_system_release_async_payload(loader_id, payload);
+    }
+    if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+      return false_v;
+    }
+    request = &vkr_resource_system->requests[i];
+    request->callback_in_flight = false_v;
+  }
+  vkr_resource_system_request_release_locked(vkr_resource_system, (int32_t)i,
+                                             NULL, NULL);
+  pump->finalize_budget--;
+  return true_v;
+}
+
+/* Releases CPU-pending request `i` once it is canceled and unreferenced, or
+ * submits its CPU job. */
+vkr_internal bool8_t
+vkr_resource_system_pump_pending_cpu_locked(uint32_t i, VkrResourcePump *pump) {
+  VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
+  if (request->cancel_requested && request->ref_count == 0 &&
+      !request->cpu_job_in_flight) {
+    uint32_t detached_loader_id = VKR_INVALID_ID;
+    void *detached_payload = NULL;
+    vkr_resource_system_request_release_locked(vkr_resource_system, (int32_t)i,
+                                               &detached_loader_id,
+                                               &detached_payload);
+    if (detached_payload) {
+      vkr_mutex_unlock(vkr_resource_system->mutex);
+      vkr_resource_system_release_async_payload(detached_loader_id,
+                                                detached_payload);
+      if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+        return false_v;
+      }
+    }
+    pump->finalize_budget--;
+    return true_v;
+  }
+
+  if (!request->cpu_job_in_flight && !request->cancel_requested) {
+    (void)vkr_resource_system_try_submit_cpu_job_locked(vkr_resource_system,
+                                                        request);
+  }
+  return true_v;
+}
+
+/* Settles `request` after its finalize callback failed: cancellation, a
+ * dependency wait, a busy retry, or a terminal failure that releases the
+ * payload outside the mutex. */
+vkr_internal bool8_t vkr_resource_system_pump_settle_failed_finalize_locked(
+    VkrResourceAsyncRequest *request, void *payload_ptr,
+    VkrRendererError finalize_error, VkrResourcePump *pump) {
+  request->callback_in_flight = false_v;
+  if (request->cancel_requested) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
+    request->last_error = VKR_RENDERER_ERROR_NONE;
+    vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                            VKR_METRIC_EVENT_STATUS_FAILED);
+    pump->finalize_budget--;
+    return true_v;
+  }
+  if (finalize_error == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES;
+    request->last_error = VKR_RENDERER_ERROR_NONE;
+    return true_v;
+  }
+  if (finalize_error == VKR_RENDERER_ERROR_RESOURCE_BUSY) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
+    request->last_error = VKR_RENDERER_ERROR_NONE;
+    return true_v;
+  }
+  uint32_t payload_loader_id = request->loader_id;
+  request->async_payload = NULL;
+  request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
+  request->last_error = finalize_error;
+  vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                          VKR_METRIC_EVENT_STATUS_FAILED);
+  vkr_mutex_unlock(vkr_resource_system->mutex);
+  vkr_resource_system_release_async_payload(payload_loader_id, payload_ptr);
+  if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+    return false_v;
+  }
+  pump->finalize_budget--;
+  return true_v;
+}
+
+/* Runs the loader's finalize callback for request `i` outside the mutex once
+ * a frame is recording and the GPU cost fits the pump budget, then releases
+ * the payload and honors a cancellation raised meanwhile. */
+vkr_internal VkrResourcePumpFinalize
+vkr_resource_system_pump_finalize_locked(uint32_t i, VkrResourcePump *pump) {
+  VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
+  // Async finalize can issue Vulkan mutations/uploads and must run only
+  // while recording an active frame command buffer on the render thread.
+  if (!pump->frame_active) {
+    return VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
+  }
+
+  VkrResourceLoader *loader = NULL;
+  if (request->loader_id != VKR_INVALID_ID &&
+      request->loader_id < vkr_resource_system->loader_count) {
+    loader = &vkr_resource_system->loaders[request->loader_id];
+  }
+
+  if (!loader || !loader->finalize_async) {
+    void *payload_ptr = request->async_payload;
+    uint32_t payload_loader_id = request->loader_id;
+    request->async_payload = NULL;
+    request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
+    request->last_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                            VKR_METRIC_EVENT_STATUS_FAILED);
+    vkr_mutex_unlock(vkr_resource_system->mutex);
+    vkr_resource_system_release_async_payload(payload_loader_id, payload_ptr);
+    if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+      return VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST;
+    }
+    pump->finalize_budget--;
+    return VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
+  }
+
+  void *payload_ptr = request->async_payload;
+  VkrResourceAsyncFinalizeCost finalize_cost = {0};
+  vkr_resource_system_estimate_finalize_cost(loader, request->path, payload_ptr,
+                                             &finalize_cost);
+  if (request->metrics_bytes == 0) {
+    request->metrics_bytes = finalize_cost.gpu_upload_bytes;
+  }
+  if (!vkr_resource_system_gpu_cost_fits_budget(
+          &finalize_cost, pump->used_gpu_upload_ops,
+          pump->used_gpu_upload_bytes, pump->effective_budget)) {
+    return VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
+  }
+
+  VkrResourceHandleInfo finalized_info = {0};
+  VkrRendererError finalize_error = VKR_RENDERER_ERROR_NONE;
+  String8 finalize_path = request->path;
+  request->callback_in_flight = true_v;
+
+  /*
+   * Finalize callbacks may submit nested async dependencies through the
+   * resource system. They must run without holding the request-table
+   * mutex to avoid re-entrant mutex deadlocks on the render thread.
+   */
+  vkr_mutex_unlock(vkr_resource_system->mutex);
+  bool8_t finalized = loader->finalize_async(loader, finalize_path, payload_ptr,
+                                             &finalized_info, &finalize_error);
+  if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+    return VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST;
+  }
+
+  // The callback pins this slot and its path against cancellation
+  // release. Worker dependency requests may relocate the table, so reload
+  // the view.
+  request = &vkr_resource_system->requests[i];
+
+  if (!finalized) {
+    return vkr_resource_system_pump_settle_failed_finalize_locked(
+               request, payload_ptr, finalize_error, pump)
+               ? VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST
+               : VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST;
+  }
+
+  uint32_t payload_loader_id = request->loader_id;
+  request->async_payload = NULL;
+
+  finalized_info.loader_id = loader->id;
+  finalized_info.load_state = VKR_RESOURCE_LOAD_STATE_READY;
+  finalized_info.last_error = VKR_RENDERER_ERROR_NONE;
+  finalized_info.request_id = request->request_id;
+  request->loaded_info = finalized_info;
+  vkr_resource_system_gpu_cost_consume(
+      &finalize_cost, &pump->used_gpu_upload_ops, &pump->used_gpu_upload_bytes,
+      pump->effective_budget);
+
+  vkr_mutex_unlock(vkr_resource_system->mutex);
+  vkr_resource_system_release_async_payload(payload_loader_id, payload_ptr);
+  if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+    return VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST;
+  }
+  request = &vkr_resource_system->requests[i];
+  request->callback_in_flight = false_v;
+  if (request->cancel_requested) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
+    request->last_error = VKR_RENDERER_ERROR_NONE;
+    vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                            VKR_METRIC_EVENT_STATUS_FAILED);
+    pump->finalize_budget--;
+    return VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
+  }
+  return VKR_RESOURCE_PUMP_FINALIZE_FINALIZED;
+}
+
+/* Advances request `i` while it waits on GPU work or dependencies: release
+ * when canceled, async finalize, then READY once its submit serial has
+ * completed. */
+vkr_internal bool8_t
+vkr_resource_system_pump_pending_gpu_locked(uint32_t i, VkrResourcePump *pump) {
+  VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
+  if (request->cancel_requested && request->ref_count == 0) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
+    request->last_error = VKR_RENDERER_ERROR_NONE;
+    vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                            VKR_METRIC_EVENT_STATUS_FAILED);
+    if (!request->cpu_job_in_flight) {
+      uint32_t detached_loader_id = VKR_INVALID_ID;
+      void *detached_payload = NULL;
+      vkr_resource_system_request_release_locked(
+          vkr_resource_system, (int32_t)i, &detached_loader_id,
+          &detached_payload);
+      if (detached_payload) {
+        vkr_mutex_unlock(vkr_resource_system->mutex);
+        vkr_resource_system_release_async_payload(detached_loader_id,
+                                                  detached_payload);
+        if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+          return false_v;
+        }
+      }
+      pump->finalize_budget--;
+    }
+    return true_v;
+  }
+
+  if (request->async_payload && request->gpu_submit_serial == 0) {
+    const VkrResourcePumpFinalize finalize =
+        vkr_resource_system_pump_finalize_locked(i, pump);
+    if (finalize == VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST) {
+      return false_v;
+    }
+    if (finalize == VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST) {
+      return true_v;
+    }
+    // Finalize released the mutex; reload the view it may have relocated.
+    request = &vkr_resource_system->requests[i];
+  }
+
+  if (request->gpu_submit_serial == 0) {
+    request->gpu_submit_serial = pump->submit_serial;
+  }
+
+  if (request->gpu_submit_serial == 0 ||
+      pump->completed_submit_serial >= request->gpu_submit_serial) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_READY;
+    request->last_error = VKR_RENDERER_ERROR_NONE;
+    // The only terminal state that counts as a successful load; every
+    // other exit below publishes its event with FAILED so a cancellation
+    // or finalize error never widens the load-duration aggregate.
+    vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                            VKR_METRIC_EVENT_STATUS_SUCCESS);
+    pump->finalize_budget--;
+  }
+  return true_v;
+}
+
 void vkr_resource_system_pump(VkrResourceSubmissionState submission,
                               const VkrResourceAsyncBudget *budget) {
   if (!vkr_resource_system) {
@@ -1803,348 +2196,51 @@ void vkr_resource_system_pump(VkrResourceSubmissionState submission,
     return;
   }
 
-  uint32_t finalize_budget = effective_budget->max_finalize_requests;
-  uint32_t used_gpu_upload_ops = 0;
-  uint64_t used_gpu_upload_bytes = 0;
-  while (finalize_budget > 0) {
+  VkrResourcePump pump = {
+      .effective_budget = effective_budget,
+      .completed_submit_serial = completed_submit_serial,
+      .submit_serial = submit_serial,
+      .frame_active = frame_active,
+      .finalize_budget = effective_budget->max_finalize_requests,
+      .used_gpu_upload_ops = 0,
+      .used_gpu_upload_bytes = 0,
+  };
+  while (pump.finalize_budget > 0) {
     VkrResourceAsyncCompletion completion = {0};
     if (!vkr_resource_system_completion_dequeue_locked(vkr_resource_system,
                                                        &completion)) {
       break;
     }
 
-    bool8_t unload_loaded_resource = false_v;
-    VkrResourceHandleInfo unload_info = {0};
-    bool8_t release_async_payload = false_v;
-    uint32_t release_async_loader_id = VKR_INVALID_ID;
-    void *release_async_ptr = NULL;
-
-    int32_t request_index = vkr_resource_system_request_find_by_id_locked(
-        vkr_resource_system, completion.request_id);
-    if (request_index < 0) {
-      unload_loaded_resource = completion.loaded;
-      unload_info = completion.loaded_info;
-      if (completion.has_async_payload) {
-        release_async_payload = true_v;
-        release_async_loader_id = completion.loader_id;
-        release_async_ptr = completion.async_payload;
-      }
-    } else {
-      VkrResourceAsyncRequest *request =
-          &vkr_resource_system->requests[request_index];
-      request->cpu_job_in_flight = false_v;
-      if (!request->in_use) {
-        unload_loaded_resource = completion.loaded;
-        unload_info = completion.loaded_info;
-        if (completion.has_async_payload) {
-          release_async_payload = true_v;
-          release_async_loader_id = completion.loader_id;
-          release_async_ptr = completion.async_payload;
-        }
-      } else if (request->cancel_requested) {
-        unload_loaded_resource = completion.loaded;
-        unload_info = completion.loaded_info;
-        if (completion.has_async_payload) {
-          release_async_payload = true_v;
-          release_async_loader_id = completion.loader_id;
-          release_async_ptr = completion.async_payload;
-        }
-        request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
-        request->last_error = VKR_RENDERER_ERROR_NONE;
-        vkr_resource_system_record_request_load(vkr_resource_system, request,
-                                                VKR_METRIC_EVENT_STATUS_FAILED);
-        if (request->ref_count == 0) {
-          vkr_resource_system_request_release_locked(vkr_resource_system,
-                                                     request_index, NULL, NULL);
-        }
-      } else if (completion.has_async_payload) {
-        request->loader_id = completion.loader_id;
-        request->async_payload = completion.async_payload;
-        request->gpu_submit_serial = 0;
-        request->last_error = VKR_RENDERER_ERROR_NONE;
-        request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
-      } else if (completion.loaded) {
-        request->loaded_info = completion.loaded_info;
-        request->loader_id = completion.loaded_info.loader_id;
-        request->last_error = VKR_RENDERER_ERROR_NONE;
-        // Submit serial assignment and READY transition are render-thread
-        // responsibilities.
-        request->gpu_submit_serial = 0;
-        request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
-      } else {
-        request->last_error = completion.load_error;
-        request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
-        vkr_resource_system_record_request_load(vkr_resource_system, request,
-                                                VKR_METRIC_EVENT_STATUS_FAILED);
-      }
+    if (!vkr_resource_system_pump_completion_locked(&completion)) {
+      return;
     }
 
-    if (unload_loaded_resource) {
-      vkr_mutex_unlock(vkr_resource_system->mutex);
-      vkr_resource_system_unload_sync_internal(&unload_info, completion.path);
-      if (release_async_payload) {
-        vkr_resource_system_release_async_payload(release_async_loader_id,
-                                                  release_async_ptr);
-      }
-      vkr_resource_system_completion_release_path(vkr_resource_system,
-                                                  &completion);
-      if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-        return;
-      }
-    } else {
-      if (release_async_payload) {
-        vkr_mutex_unlock(vkr_resource_system->mutex);
-        vkr_resource_system_release_async_payload(release_async_loader_id,
-                                                  release_async_ptr);
-        if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-          return;
-        }
-      }
-      vkr_resource_system_completion_release_path(vkr_resource_system,
-                                                  &completion);
-    }
-
-    finalize_budget--;
+    pump.finalize_budget--;
   }
 
   for (uint32_t i = 0;
-       i < vkr_resource_system->request_capacity && finalize_budget > 0; ++i) {
+       i < vkr_resource_system->request_capacity && pump.finalize_budget > 0;
+       ++i) {
     VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
     if (!request->in_use) {
       continue;
     }
 
+    bool8_t locked = true_v;
     if (request->load_state == VKR_RESOURCE_LOAD_STATE_CANCELED &&
         request->ref_count == 0 && !request->cpu_job_in_flight &&
         !request->callback_in_flight) {
-      const uint32_t loader_id = request->loader_id;
-      void *payload = request->async_payload;
-      const VkrResourceHandleInfo loaded_info = request->loaded_info;
-      const String8 path = request->path;
-      request->async_payload = NULL;
-      request->loaded_info = (VkrResourceHandleInfo){0};
-      if (payload || loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
-        request->callback_in_flight = true_v;
-        vkr_mutex_unlock(vkr_resource_system->mutex);
-        if (loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
-          vkr_resource_system_unload_sync_internal(&loaded_info, path);
-        }
-        if (payload) {
-          vkr_resource_system_release_async_payload(loader_id, payload);
-        }
-        if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-          return;
-        }
-        request = &vkr_resource_system->requests[i];
-        request->callback_in_flight = false_v;
-      }
-      vkr_resource_system_request_release_locked(vkr_resource_system,
-                                                 (int32_t)i, NULL, NULL);
-      finalize_budget--;
-      continue;
+      locked = vkr_resource_system_pump_release_canceled_locked(i, &pump);
+    } else if (request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU) {
+      locked = vkr_resource_system_pump_pending_cpu_locked(i, &pump);
+    } else if (request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU ||
+               request->load_state ==
+                   VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES) {
+      locked = vkr_resource_system_pump_pending_gpu_locked(i, &pump);
     }
-
-    if (request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU) {
-      if (request->cancel_requested && request->ref_count == 0 &&
-          !request->cpu_job_in_flight) {
-        uint32_t detached_loader_id = VKR_INVALID_ID;
-        void *detached_payload = NULL;
-        vkr_resource_system_request_release_locked(
-            vkr_resource_system, (int32_t)i, &detached_loader_id,
-            &detached_payload);
-        if (detached_payload) {
-          vkr_mutex_unlock(vkr_resource_system->mutex);
-          vkr_resource_system_release_async_payload(detached_loader_id,
-                                                    detached_payload);
-          if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-            return;
-          }
-        }
-        finalize_budget--;
-        continue;
-      }
-
-      if (!request->cpu_job_in_flight && !request->cancel_requested) {
-        (void)vkr_resource_system_try_submit_cpu_job_locked(vkr_resource_system,
-                                                            request);
-      }
-      continue;
-    }
-
-    if (request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU ||
-        request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES) {
-      if (request->cancel_requested && request->ref_count == 0) {
-        request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
-        request->last_error = VKR_RENDERER_ERROR_NONE;
-        vkr_resource_system_record_request_load(vkr_resource_system, request,
-                                                VKR_METRIC_EVENT_STATUS_FAILED);
-        if (!request->cpu_job_in_flight) {
-          uint32_t detached_loader_id = VKR_INVALID_ID;
-          void *detached_payload = NULL;
-          vkr_resource_system_request_release_locked(
-              vkr_resource_system, (int32_t)i, &detached_loader_id,
-              &detached_payload);
-          if (detached_payload) {
-            vkr_mutex_unlock(vkr_resource_system->mutex);
-            vkr_resource_system_release_async_payload(detached_loader_id,
-                                                      detached_payload);
-            if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-              return;
-            }
-          }
-          finalize_budget--;
-        }
-        continue;
-      }
-
-      if (request->async_payload && request->gpu_submit_serial == 0) {
-        // Async finalize can issue Vulkan mutations/uploads and must run only
-        // while recording an active frame command buffer on the render thread.
-        if (!frame_active) {
-          continue;
-        }
-
-        VkrResourceLoader *loader = NULL;
-        if (request->loader_id != VKR_INVALID_ID &&
-            request->loader_id < vkr_resource_system->loader_count) {
-          loader = &vkr_resource_system->loaders[request->loader_id];
-        }
-
-        if (!loader || !loader->finalize_async) {
-          void *payload_ptr = request->async_payload;
-          uint32_t payload_loader_id = request->loader_id;
-          request->async_payload = NULL;
-          request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
-          request->last_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-          vkr_resource_system_record_request_load(
-              vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
-          vkr_mutex_unlock(vkr_resource_system->mutex);
-          vkr_resource_system_release_async_payload(payload_loader_id,
-                                                    payload_ptr);
-          if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-            return;
-          }
-          finalize_budget--;
-          continue;
-        }
-
-        void *payload_ptr = request->async_payload;
-        VkrResourceAsyncFinalizeCost finalize_cost = {0};
-        vkr_resource_system_estimate_finalize_cost(loader, request->path,
-                                                   payload_ptr, &finalize_cost);
-        if (request->metrics_bytes == 0) {
-          request->metrics_bytes = finalize_cost.gpu_upload_bytes;
-        }
-        if (!vkr_resource_system_gpu_cost_fits_budget(
-                &finalize_cost, used_gpu_upload_ops, used_gpu_upload_bytes,
-                effective_budget)) {
-          continue;
-        }
-
-        VkrResourceHandleInfo finalized_info = {0};
-        VkrRendererError finalize_error = VKR_RENDERER_ERROR_NONE;
-        String8 finalize_path = request->path;
-        request->callback_in_flight = true_v;
-
-        /*
-         * Finalize callbacks may submit nested async dependencies through the
-         * resource system. They must run without holding the request-table
-         * mutex to avoid re-entrant mutex deadlocks on the render thread.
-         */
-        vkr_mutex_unlock(vkr_resource_system->mutex);
-        bool8_t finalized =
-            loader->finalize_async(loader, finalize_path, payload_ptr,
-                                   &finalized_info, &finalize_error);
-        if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-          return;
-        }
-
-        // The callback pins this slot and its path against cancellation
-        // release. Worker dependency requests may relocate the table, so reload
-        // the view.
-        request = &vkr_resource_system->requests[i];
-
-        if (!finalized) {
-          request->callback_in_flight = false_v;
-          if (request->cancel_requested) {
-            request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
-            request->last_error = VKR_RENDERER_ERROR_NONE;
-            vkr_resource_system_record_request_load(
-                vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
-            finalize_budget--;
-            continue;
-          }
-          if (finalize_error == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-            request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES;
-            request->last_error = VKR_RENDERER_ERROR_NONE;
-            continue;
-          }
-          if (finalize_error == VKR_RENDERER_ERROR_RESOURCE_BUSY) {
-            request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
-            request->last_error = VKR_RENDERER_ERROR_NONE;
-            continue;
-          }
-          uint32_t payload_loader_id = request->loader_id;
-          request->async_payload = NULL;
-          request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
-          request->last_error = finalize_error;
-          vkr_resource_system_record_request_load(
-              vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
-          vkr_mutex_unlock(vkr_resource_system->mutex);
-          vkr_resource_system_release_async_payload(payload_loader_id,
-                                                    payload_ptr);
-          if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-            return;
-          }
-          finalize_budget--;
-          continue;
-        }
-
-        uint32_t payload_loader_id = request->loader_id;
-        request->async_payload = NULL;
-
-        finalized_info.loader_id = loader->id;
-        finalized_info.load_state = VKR_RESOURCE_LOAD_STATE_READY;
-        finalized_info.last_error = VKR_RENDERER_ERROR_NONE;
-        finalized_info.request_id = request->request_id;
-        request->loaded_info = finalized_info;
-        vkr_resource_system_gpu_cost_consume(
-            &finalize_cost, &used_gpu_upload_ops, &used_gpu_upload_bytes,
-            effective_budget);
-
-        vkr_mutex_unlock(vkr_resource_system->mutex);
-        vkr_resource_system_release_async_payload(payload_loader_id,
-                                                  payload_ptr);
-        if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-          return;
-        }
-        request = &vkr_resource_system->requests[i];
-        request->callback_in_flight = false_v;
-        if (request->cancel_requested) {
-          request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
-          request->last_error = VKR_RENDERER_ERROR_NONE;
-          vkr_resource_system_record_request_load(
-              vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
-          finalize_budget--;
-          continue;
-        }
-      }
-
-      if (request->gpu_submit_serial == 0) {
-        request->gpu_submit_serial = submit_serial;
-      }
-
-      if (request->gpu_submit_serial == 0 ||
-          completed_submit_serial >= request->gpu_submit_serial) {
-        request->load_state = VKR_RESOURCE_LOAD_STATE_READY;
-        request->last_error = VKR_RENDERER_ERROR_NONE;
-        // The only terminal state that counts as a successful load; every
-        // other exit below publishes its event with FAILED so a cancellation
-        // or finalize error never widens the load-duration aggregate.
-        vkr_resource_system_record_request_load(
-            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_SUCCESS);
-        finalize_budget--;
-      }
+    if (!locked) {
+      return;
     }
   }
 

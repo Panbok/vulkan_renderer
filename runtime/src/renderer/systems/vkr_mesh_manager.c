@@ -1455,6 +1455,332 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
   return true_v;
 }
 
+/* Compacts the indices of non-cutout submeshes and records each submesh's
+ * opaque range when only part of a 32-bit merged index buffer is opaque.
+ * False means scratch storage failed or the ranges overflowed. */
+vkr_internal bool8_t vkr_mesh_manager_build_opaque_ranges(
+    VkrMeshManager *manager, const VkrMeshLoaderResult *mesh_result,
+    uint32_t subset_count, VkrOpaqueRangeInfo **out_opaque_ranges,
+    bool8_t *out_build_opaque_indices, VkrRendererError *out_error) {
+  VkrAllocator *scratch_allocator = &manager->scratch_allocator;
+  bool8_t subsets_success = true_v;
+  VkrOpaqueRangeInfo *opaque_ranges = NULL;
+  uint32_t *opaque_indices = NULL;
+  uint32_t opaque_index_count = 0;
+  bool8_t build_opaque_indices = false_v;
+
+  if (mesh_result->mesh_buffer.index_size != sizeof(uint32_t)) {
+    log_warn(
+        "MeshManager: merged buffer index size %u; opaque compaction skipped",
+        mesh_result->mesh_buffer.index_size);
+  } else {
+    uint32_t total_indices = mesh_result->mesh_buffer.index_count;
+    for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
+      const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
+      if (!vkr_mesh_manager_material_uses_cutout(
+              manager->material_system,
+              mesh_result->material_handles.data[i])) {
+        opaque_index_count += range->index_count;
+      }
+    }
+
+    if (opaque_index_count > 0 && opaque_index_count < total_indices) {
+      build_opaque_indices = true_v;
+      opaque_ranges = vkr_allocator_alloc(scratch_allocator,
+                                          (uint64_t)subset_count *
+                                              sizeof(VkrOpaqueRangeInfo),
+                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      if (!opaque_ranges) {
+        if (out_error) {
+          *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        }
+        subsets_success = false_v;
+      } else {
+        MemZero(opaque_ranges,
+                (uint64_t)subset_count * sizeof(VkrOpaqueRangeInfo));
+      }
+
+      if (subsets_success) {
+        opaque_indices = vkr_allocator_alloc(
+            scratch_allocator, (uint64_t)opaque_index_count * sizeof(uint32_t),
+            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        if (!opaque_indices) {
+          if (out_error) {
+            *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+          }
+          subsets_success = false_v;
+        }
+      }
+
+      if (subsets_success) {
+        uint32_t *src_indices = (uint32_t *)mesh_result->mesh_buffer.indices;
+        uint32_t opaque_write = 0;
+        for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
+          const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
+          if (vkr_mesh_manager_material_uses_cutout(
+                  manager->material_system,
+                  mesh_result->material_handles.data[i])) {
+            continue;
+          }
+          if (opaque_write + range->index_count > opaque_index_count) {
+            log_warn("MeshManager: opaque index buffer overflow");
+            subsets_success = false_v;
+            break;
+          }
+
+          if (opaque_ranges) {
+            opaque_ranges[i].first_index = opaque_write;
+            opaque_ranges[i].index_count = range->index_count;
+          }
+          MemCopy(opaque_indices + opaque_write,
+                  src_indices + range->first_index,
+                  (uint64_t)range->index_count * sizeof(uint32_t));
+          opaque_write += range->index_count;
+        }
+        if (opaque_write != opaque_index_count) {
+          log_warn("MeshManager: opaque index count mismatch (%u vs %u)",
+                   opaque_write, opaque_index_count);
+        }
+      }
+    }
+  }
+
+  *out_opaque_ranges = opaque_ranges;
+  *out_build_opaque_indices = build_opaque_indices;
+  return subsets_success;
+}
+
+/* Acquires the merged mesh-buffer geometry by name, creating it from the mesh
+ * buffer with the union bounds of every range when it is not loaded yet. */
+vkr_internal bool8_t vkr_mesh_manager_acquire_merged_geometry(
+    VkrMeshManager *manager, const VkrMeshLoaderResult *mesh_result,
+    VkrGeometryHandle *out_geometry, VkrRendererError *out_error) {
+  char geometry_name_buf[GEOMETRY_NAME_MAX_LENGTH] = {0};
+  vkr_mesh_manager_build_mesh_buffer_key(geometry_name_buf,
+                                         mesh_result->source_path);
+  String8 geometry_name = string8_create((uint8_t *)geometry_name_buf,
+                                         string_length(geometry_name_buf));
+
+  VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
+  *out_geometry = vkr_geometry_system_acquire_by_name(
+      manager->geometry_system, geometry_name, true_v, &geo_err);
+  if (out_geometry->id != 0) {
+    return true_v;
+  }
+  if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+    if (out_error) {
+      *out_error = geo_err;
+    }
+    return false_v;
+  }
+
+  Vec3 union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+  Vec3 union_max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+  bool8_t has_bounds = false_v;
+
+  for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
+    const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
+    Vec3 range_min = vec3_add(range->center, range->min_extents);
+    Vec3 range_max = vec3_add(range->center, range->max_extents);
+    union_min.x = vkr_min_f32(union_min.x, range_min.x);
+    union_min.y = vkr_min_f32(union_min.y, range_min.y);
+    union_min.z = vkr_min_f32(union_min.z, range_min.z);
+    union_max.x = vkr_max_f32(union_max.x, range_max.x);
+    union_max.y = vkr_max_f32(union_max.y, range_max.y);
+    union_max.z = vkr_max_f32(union_max.z, range_max.z);
+    has_bounds = true_v;
+  }
+
+  Vec3 center = vec3_zero();
+  Vec3 min_extents = vec3_zero();
+  Vec3 max_extents = vec3_zero();
+  if (has_bounds) {
+    center = vec3_scale(vec3_add(union_min, union_max), 0.5f);
+    min_extents = vec3_sub(union_min, center);
+    max_extents = vec3_sub(union_max, center);
+  }
+
+  VkrGeometryConfig cfg = {0};
+  cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
+  cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
+  cfg.vertices = mesh_result->mesh_buffer.vertices;
+  cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
+  cfg.decodes = mesh_result->mesh_buffer.decodes;
+  cfg.decode_count = mesh_result->mesh_buffer.decode_count;
+  cfg.index_size = mesh_result->mesh_buffer.index_size;
+  cfg.index_count = mesh_result->mesh_buffer.index_count;
+  cfg.indices = mesh_result->mesh_buffer.indices;
+  cfg.center = center;
+  cfg.min_extents = min_extents;
+  cfg.max_extents = max_extents;
+  _Static_assert(sizeof(cfg.name) == sizeof(geometry_name_buf),
+                 "geometry names share one capacity");
+  MemCopy(cfg.name, geometry_name_buf, sizeof(cfg.name));
+
+  *out_geometry = vkr_geometry_system_create(manager->geometry_system, &cfg,
+                                             true_v, &geo_err);
+  if (out_geometry->id == 0) {
+    if (out_error) {
+      *out_error = geo_err;
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+/** Scratch state for turning one loaded mesh resource into a mesh. The arrays
+ * live in the manager scratch scope that the caller opens and ends. */
+typedef struct VkrMeshResourceBuild {
+  VkrMeshManager *manager;
+  const VkrMeshLoadDesc *desc;
+  VkrMeshLoaderResult *mesh_result;
+  VkrRendererError *out_error;
+  VkrSubMeshDesc *sub_descs;
+  uint32_t built_count;
+  VkrGeometryHandle merged_geometry;
+  VkrGeometryHandle *resolved_subset_geometries;
+  VkrOpaqueRangeInfo *opaque_ranges;
+  bool8_t build_opaque_indices;
+} VkrMeshResourceBuild;
+
+/* Appends the descriptor of merged submesh `i`, taking one more reference on
+ * the shared geometry for every submesh after the first. */
+vkr_internal bool8_t vkr_mesh_manager_describe_merged_submesh(
+    VkrMeshResourceBuild *build, uint32_t i) {
+  VkrMeshManager *manager = build->manager;
+  VkrMeshLoaderResult *mesh_result = build->mesh_result;
+  const VkrMeshLoadDesc *desc = build->desc;
+  VkrRendererError *out_error = build->out_error;
+  const VkrOpaqueRangeInfo *opaque_ranges = build->opaque_ranges;
+  const bool8_t build_opaque_indices = build->build_opaque_indices;
+  const VkrGeometryUploadRange *range =
+      array_get_VkrGeometryUploadRange(&mesh_result->submeshes, i);
+  if (!range) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    return false_v;
+  }
+
+  if (i > 0 && build->merged_geometry.id != 0) {
+    vkr_geometry_system_acquire(manager->geometry_system,
+                                build->merged_geometry);
+  }
+
+  VkrMaterialHandle material = mesh_result->material_handles.data[i];
+  bool8_t owns_material = true_v;
+  if (material.id == 0) {
+    material = manager->material_system->default_material;
+    owns_material = false_v;
+  }
+
+  VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
+      range->pipeline_domain, desc->pipeline_domain);
+
+  String8 shader_override = range->shader_override.str ? range->shader_override
+                                                       : desc->shader_override;
+  String8 shader_override_copy = {0};
+  if (shader_override.str && shader_override.length > 0) {
+    shader_override_copy =
+        string8_duplicate(&manager->allocator, &shader_override);
+  }
+
+  build->sub_descs[build->built_count++] = (VkrSubMeshDesc){
+      .geometry = build->merged_geometry,
+      .material = material,
+      .shader_override = shader_override_copy,
+      .pipeline_domain = domain,
+      .range_id = range->range_id,
+      .first_index = range->first_index,
+      .index_count = range->index_count,
+      .vertex_offset = range->vertex_offset,
+      .opaque_first_index = (build_opaque_indices && opaque_ranges)
+                                ? opaque_ranges[i].first_index
+                                : 0,
+      .opaque_index_count = (build_opaque_indices && opaque_ranges)
+                                ? opaque_ranges[i].index_count
+                                : 0,
+      .opaque_vertex_offset = range->vertex_offset,
+      .center = range->center,
+      .min_extents = range->min_extents,
+      .max_extents = range->max_extents,
+      .owns_geometry = true_v,
+      .owns_material = owns_material,
+  };
+  return true_v;
+}
+
+/* Appends the descriptor of subset `i`, moving its resolved geometry
+ * reference into the descriptor. */
+vkr_internal bool8_t vkr_mesh_manager_describe_subset_submesh(
+    VkrMeshResourceBuild *build, uint32_t i) {
+  VkrMeshManager *manager = build->manager;
+  const VkrMeshLoadDesc *desc = build->desc;
+  VkrRendererError *out_error = build->out_error;
+  VkrGeometryHandle *resolved_subset_geometries =
+      build->resolved_subset_geometries;
+  VkrMeshLoaderSubset *subset =
+      array_get_VkrMeshLoaderSubset(&build->mesh_result->subsets, i);
+  if (!subset) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    return false_v;
+  }
+
+  if (!resolved_subset_geometries) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    return false_v;
+  }
+
+  VkrGeometryHandle geometry = resolved_subset_geometries[i];
+  if (geometry.id == 0) {
+    if (out_error && *out_error == VKR_RENDERER_ERROR_NONE) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    return false_v;
+  }
+  resolved_subset_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
+
+  VkrMaterialHandle material = subset->material_handle;
+  bool8_t owns_material = true_v;
+  if (material.id == 0) {
+    material = manager->material_system->default_material;
+    owns_material = false_v;
+  }
+
+  VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
+      subset->pipeline_domain, desc->pipeline_domain);
+
+  String8 shader_override = subset->shader_override.str
+                                ? subset->shader_override
+                                : desc->shader_override;
+  String8 shader_override_copy = {0};
+  if (shader_override.str && shader_override.length > 0) {
+    shader_override_copy =
+        string8_duplicate(&manager->allocator, &shader_override);
+  }
+
+  build->sub_descs[build->built_count++] = (VkrSubMeshDesc){
+      .geometry = geometry,
+      .material = material,
+      .shader_override = shader_override_copy,
+      .pipeline_domain = domain,
+      .range_id = geometry.id,
+      .first_index = 0,
+      .index_count = subset->geometry_config.index_count,
+      .vertex_offset = 0,
+      .center = subset->geometry_config.center,
+      .min_extents = subset->geometry_config.min_extents,
+      .max_extents = subset->geometry_config.max_extents,
+      .owns_geometry = true_v,
+      .owns_material = owns_material,
+  };
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
     VkrMeshManager *manager, const VkrResourceHandleInfo *handle_info,
     VkrRendererError error, const VkrMeshLoadDesc *desc, uint32_t *out_index,
@@ -1521,326 +1847,73 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
 
   MemZero(sub_descs, (uint64_t)subset_count * sizeof(VkrSubMeshDesc));
 
-  uint32_t built_count = 0;
+  VkrMeshResourceBuild build = {
+      .manager = manager,
+      .desc = desc,
+      .mesh_result = mesh_result,
+      .out_error = out_error,
+      .sub_descs = sub_descs,
+      .built_count = 0,
+      .merged_geometry = VKR_GEOMETRY_HANDLE_INVALID,
+      .resolved_subset_geometries = NULL,
+      .opaque_ranges = NULL,
+      .build_opaque_indices = false_v,
+  };
   bool8_t subsets_success = true_v;
-  VkrGeometryHandle merged_geometry = VKR_GEOMETRY_HANDLE_INVALID;
-  VkrGeometryHandle *resolved_subset_geometries = NULL;
-  VkrOpaqueRangeInfo *opaque_ranges = NULL;
-  uint32_t *opaque_indices = NULL;
-  uint32_t opaque_index_count = 0;
-  bool8_t build_opaque_indices = false_v;
 
   if (use_merged) {
-    if (mesh_result->mesh_buffer.index_size != sizeof(uint32_t)) {
-      log_warn(
-          "MeshManager: merged buffer index size %u; opaque compaction skipped",
-          mesh_result->mesh_buffer.index_size);
-    } else {
-      uint32_t total_indices = mesh_result->mesh_buffer.index_count;
-      for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-        const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
-        if (!vkr_mesh_manager_material_uses_cutout(
-                manager->material_system,
-                mesh_result->material_handles.data[i])) {
-          opaque_index_count += range->index_count;
-        }
-      }
+    subsets_success = vkr_mesh_manager_build_opaque_ranges(
+        manager, mesh_result, subset_count, &build.opaque_ranges,
+        &build.build_opaque_indices, out_error);
 
-      if (opaque_index_count > 0 && opaque_index_count < total_indices) {
-        build_opaque_indices = true_v;
-        opaque_ranges = vkr_allocator_alloc(scratch_allocator,
-                                            (uint64_t)subset_count *
-                                                sizeof(VkrOpaqueRangeInfo),
-                                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        if (!opaque_ranges) {
-          if (out_error) {
-            *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-          }
-          subsets_success = false_v;
-        } else {
-          MemZero(opaque_ranges,
-                  (uint64_t)subset_count * sizeof(VkrOpaqueRangeInfo));
-        }
-
-        if (subsets_success) {
-          opaque_indices = vkr_allocator_alloc(scratch_allocator,
-                                               (uint64_t)opaque_index_count *
-                                                   sizeof(uint32_t),
-                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-          if (!opaque_indices) {
-            if (out_error) {
-              *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-            }
-            subsets_success = false_v;
-          }
-        }
-
-        if (subsets_success) {
-          uint32_t *src_indices = (uint32_t *)mesh_result->mesh_buffer.indices;
-          uint32_t opaque_write = 0;
-          for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-            const VkrGeometryUploadRange *range =
-                &mesh_result->submeshes.data[i];
-            if (vkr_mesh_manager_material_uses_cutout(
-                    manager->material_system,
-                    mesh_result->material_handles.data[i])) {
-              continue;
-            }
-            if (opaque_write + range->index_count > opaque_index_count) {
-              log_warn("MeshManager: opaque index buffer overflow");
-              subsets_success = false_v;
-              break;
-            }
-
-            if (opaque_ranges) {
-              opaque_ranges[i].first_index = opaque_write;
-              opaque_ranges[i].index_count = range->index_count;
-            }
-            MemCopy(opaque_indices + opaque_write,
-                    src_indices + range->first_index,
-                    (uint64_t)range->index_count * sizeof(uint32_t));
-            opaque_write += range->index_count;
-          }
-          if (opaque_write != opaque_index_count) {
-            log_warn("MeshManager: opaque index count mismatch (%u vs %u)",
-                     opaque_write, opaque_index_count);
-          }
-        }
-      }
-    }
-
-    char geometry_name_buf[GEOMETRY_NAME_MAX_LENGTH] = {0};
-    vkr_mesh_manager_build_mesh_buffer_key(geometry_name_buf,
-                                           mesh_result->source_path);
-    String8 geometry_name = string8_create((uint8_t *)geometry_name_buf,
-                                           string_length(geometry_name_buf));
-
-    VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-    merged_geometry = vkr_geometry_system_acquire_by_name(
-        manager->geometry_system, geometry_name, true_v, &geo_err);
-    if (merged_geometry.id == 0) {
-      if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-        if (out_error) {
-          *out_error = geo_err;
-        }
-        subsets_success = false_v;
-      } else {
-        Vec3 union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-        Vec3 union_max =
-            vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
-        bool8_t has_bounds = false_v;
-
-        for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-          const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
-          Vec3 range_min = vec3_add(range->center, range->min_extents);
-          Vec3 range_max = vec3_add(range->center, range->max_extents);
-          union_min.x = vkr_min_f32(union_min.x, range_min.x);
-          union_min.y = vkr_min_f32(union_min.y, range_min.y);
-          union_min.z = vkr_min_f32(union_min.z, range_min.z);
-          union_max.x = vkr_max_f32(union_max.x, range_max.x);
-          union_max.y = vkr_max_f32(union_max.y, range_max.y);
-          union_max.z = vkr_max_f32(union_max.z, range_max.z);
-          has_bounds = true_v;
-        }
-
-        Vec3 center = vec3_zero();
-        Vec3 min_extents = vec3_zero();
-        Vec3 max_extents = vec3_zero();
-        if (has_bounds) {
-          center = vec3_scale(vec3_add(union_min, union_max), 0.5f);
-          min_extents = vec3_sub(union_min, center);
-          max_extents = vec3_sub(union_max, center);
-        }
-
-        VkrGeometryConfig cfg = {0};
-        cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
-        cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
-        cfg.vertices = mesh_result->mesh_buffer.vertices;
-        cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
-        cfg.decodes = mesh_result->mesh_buffer.decodes;
-        cfg.decode_count = mesh_result->mesh_buffer.decode_count;
-        cfg.index_size = mesh_result->mesh_buffer.index_size;
-        cfg.index_count = mesh_result->mesh_buffer.index_count;
-        cfg.indices = mesh_result->mesh_buffer.indices;
-        cfg.center = center;
-        cfg.min_extents = min_extents;
-        cfg.max_extents = max_extents;
-        _Static_assert(sizeof(cfg.name) == sizeof(geometry_name_buf),
-                       "geometry names share one capacity");
-        MemCopy(cfg.name, geometry_name_buf, sizeof(cfg.name));
-
-        merged_geometry = vkr_geometry_system_create(manager->geometry_system,
-                                                     &cfg, true_v, &geo_err);
-        if (merged_geometry.id == 0) {
-          if (out_error) {
-            *out_error = geo_err;
-          }
-          subsets_success = false_v;
-        }
-      }
+    if (!vkr_mesh_manager_acquire_merged_geometry(
+            manager, mesh_result, &build.merged_geometry, out_error)) {
+      subsets_success = false_v;
     }
 
     if (subsets_success &&
-        !vkr_mesh_manager_publish_loaded_mesh(manager, merged_geometry,
+        !vkr_mesh_manager_publish_loaded_mesh(manager, build.merged_geometry,
                                               mesh_result, out_error)) {
       subsets_success = false_v;
     }
   }
 
   if (subsets_success && !use_merged) {
-    resolved_subset_geometries = vkr_allocator_alloc(
+    build.resolved_subset_geometries = vkr_allocator_alloc(
         scratch_allocator, sizeof(VkrGeometryHandle) * subset_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!resolved_subset_geometries) {
+    if (!build.resolved_subset_geometries) {
       if (out_error) {
         *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       }
       subsets_success = false_v;
     } else if (!vkr_mesh_manager_resolve_subset_geometries_batch(
                    manager, mesh_result, subset_count,
-                   resolved_subset_geometries, out_error)) {
+                   build.resolved_subset_geometries, out_error)) {
       subsets_success = false_v;
     }
   }
 
   // Build all subsets
   for (uint32_t i = 0; subsets_success && i < subset_count; ++i) {
-    if (use_merged) {
-      const VkrGeometryUploadRange *range =
-          array_get_VkrGeometryUploadRange(&mesh_result->submeshes, i);
-      if (!range) {
-        if (out_error) {
-          *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        }
-        subsets_success = false_v;
-        break;
-      }
-
-      if (i > 0 && merged_geometry.id != 0) {
-        vkr_geometry_system_acquire(manager->geometry_system, merged_geometry);
-      }
-
-      VkrMaterialHandle material = mesh_result->material_handles.data[i];
-      bool8_t owns_material = true_v;
-      if (material.id == 0) {
-        material = manager->material_system->default_material;
-        owns_material = false_v;
-      }
-
-      VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
-          range->pipeline_domain, desc->pipeline_domain);
-
-      String8 shader_override = range->shader_override.str
-                                    ? range->shader_override
-                                    : desc->shader_override;
-      String8 shader_override_copy = {0};
-      if (shader_override.str && shader_override.length > 0) {
-        shader_override_copy =
-            string8_duplicate(&manager->allocator, &shader_override);
-      }
-
-      sub_descs[built_count++] = (VkrSubMeshDesc){
-          .geometry = merged_geometry,
-          .material = material,
-          .shader_override = shader_override_copy,
-          .pipeline_domain = domain,
-          .range_id = range->range_id,
-          .first_index = range->first_index,
-          .index_count = range->index_count,
-          .vertex_offset = range->vertex_offset,
-          .opaque_first_index = (build_opaque_indices && opaque_ranges)
-                                    ? opaque_ranges[i].first_index
-                                    : 0,
-          .opaque_index_count = (build_opaque_indices && opaque_ranges)
-                                    ? opaque_ranges[i].index_count
-                                    : 0,
-          .opaque_vertex_offset = range->vertex_offset,
-          .center = range->center,
-          .min_extents = range->min_extents,
-          .max_extents = range->max_extents,
-          .owns_geometry = true_v,
-          .owns_material = owns_material,
-      };
-      continue;
-    }
-
-    VkrMeshLoaderSubset *subset =
-        array_get_VkrMeshLoaderSubset(&mesh_result->subsets, i);
-    if (!subset) {
-      if (out_error) {
-        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      }
-      subsets_success = false_v;
-      break;
-    }
-
-    if (!resolved_subset_geometries) {
-      if (out_error) {
-        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      }
-      subsets_success = false_v;
-      break;
-    }
-
-    VkrGeometryHandle geometry = resolved_subset_geometries[i];
-    if (geometry.id == 0) {
-      if (out_error && *out_error == VKR_RENDERER_ERROR_NONE) {
-        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      }
-      subsets_success = false_v;
-      break;
-    }
-    resolved_subset_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
-
-    VkrMaterialHandle material = subset->material_handle;
-    bool8_t owns_material = true_v;
-    if (material.id == 0) {
-      material = manager->material_system->default_material;
-      owns_material = false_v;
-    }
-
-    VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
-        subset->pipeline_domain, desc->pipeline_domain);
-
-    String8 shader_override = subset->shader_override.str
-                                  ? subset->shader_override
-                                  : desc->shader_override;
-    String8 shader_override_copy = {0};
-    if (shader_override.str && shader_override.length > 0) {
-      shader_override_copy =
-          string8_duplicate(&manager->allocator, &shader_override);
-    }
-
-    sub_descs[built_count++] = (VkrSubMeshDesc){
-        .geometry = geometry,
-        .material = material,
-        .shader_override = shader_override_copy,
-        .pipeline_domain = domain,
-        .range_id = geometry.id,
-        .first_index = 0,
-        .index_count = subset->geometry_config.index_count,
-        .vertex_offset = 0,
-        .center = subset->geometry_config.center,
-        .min_extents = subset->geometry_config.min_extents,
-        .max_extents = subset->geometry_config.max_extents,
-        .owns_geometry = true_v,
-        .owns_material = owns_material,
-    };
+    subsets_success = use_merged
+                          ? vkr_mesh_manager_describe_merged_submesh(&build, i)
+                          : vkr_mesh_manager_describe_subset_submesh(&build, i);
   }
 
   // Check if all subsets were built successfully
-  if (!subsets_success || built_count != subset_count) {
-    if (resolved_subset_geometries) {
+  if (!subsets_success || build.built_count != subset_count) {
+    if (build.resolved_subset_geometries) {
       for (uint32_t i = 0; i < subset_count; ++i) {
-        if (resolved_subset_geometries[i].id != 0) {
+        if (build.resolved_subset_geometries[i].id != 0) {
           vkr_geometry_system_release(manager->geometry_system,
-                                      resolved_subset_geometries[i]);
-          resolved_subset_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
+                                      build.resolved_subset_geometries[i]);
+          build.resolved_subset_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
         }
       }
     }
     // Clean up any geometry that was created
-    for (uint32_t i = 0; i < built_count; ++i) {
+    for (uint32_t i = 0; i < build.built_count; ++i) {
       if (sub_descs[i].geometry.id != 0) {
         vkr_geometry_system_release(manager->geometry_system,
                                     sub_descs[i].geometry);
@@ -1868,7 +1941,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
   }
 
   // Clean up geometry handles (ownership transferred to mesh manager)
-  for (uint32_t i = 0; i < built_count; ++i) {
+  for (uint32_t i = 0; i < build.built_count; ++i) {
     if (sub_descs[i].geometry.id != 0) {
       vkr_geometry_system_release(manager->geometry_system,
                                   sub_descs[i].geometry);
@@ -2562,6 +2635,146 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
   return instance;
 }
 
+/** Inputs shared by every submesh of one mesh asset build. */
+typedef struct VkrMeshAssetSubmeshBuild {
+  VkrMeshManager *manager;
+  const VkrMeshLoadDesc *desc;
+  const VkrMeshLoaderResult *mesh_result;
+  VkrGeometryHandle merged_geometry;
+  uint32_t first_subset;
+  VkrRendererError *out_error;
+} VkrMeshAssetSubmeshBuild;
+
+/* Describes merged asset submesh `i` over `range`. Every submesh after the
+ * first takes one more reference on the shared geometry, and an owned
+ * material takes one reference. */
+vkr_internal void vkr_mesh_manager_describe_merged_asset_submesh(
+    const VkrMeshAssetSubmeshBuild *build, const VkrGeometryUploadRange *range,
+    uint32_t i, VkrMeshAssetSubmesh *submesh) {
+  VkrMeshManager *manager = build->manager;
+  const VkrMeshLoadDesc *desc = build->desc;
+  const VkrGeometryHandle merged_geometry = build->merged_geometry;
+  const uint32_t first_subset = build->first_subset;
+
+  if (i > 0 && merged_geometry.id != 0) {
+    vkr_geometry_system_acquire(manager->geometry_system, merged_geometry);
+  }
+
+  VkrMaterialHandle material =
+      build->mesh_result->material_handles.data[first_subset + i];
+  bool8_t owns_material = true_v;
+  if (material.id == 0) {
+    material = manager->material_system->default_material;
+    owns_material = false_v;
+  }
+  if (owns_material && material.id != 0) {
+    vkr_material_system_add_ref(manager->material_system, material);
+  }
+
+  VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
+      range->pipeline_domain, desc->pipeline_domain);
+
+  String8 shader_override = range->shader_override.str ? range->shader_override
+                                                       : desc->shader_override;
+  String8 shader_override_copy = {0};
+  if (shader_override.str && shader_override.length > 0) {
+    shader_override_copy =
+        string8_duplicate(&manager->asset_allocator, &shader_override);
+  }
+
+  *submesh = (VkrMeshAssetSubmesh){
+      .geometry_submesh_index = first_subset + i,
+      .geometry = merged_geometry,
+      .material = material,
+      .shader_override = shader_override_copy,
+      .pipeline_domain = domain,
+      .range_id = range->range_id,
+      .first_index = range->first_index,
+      .index_count = range->index_count,
+      .vertex_offset = range->vertex_offset,
+      .center = range->center,
+      .min_extents = range->min_extents,
+      .max_extents = range->max_extents,
+      .owns_geometry = true_v,
+      .owns_material = owns_material,
+  };
+}
+
+/* Acquires or creates the geometry of loader subset `i` under the geometry
+ * key written into `geometry_config->name`, then describes the asset submesh.
+ * `geometry_config` is either the subset's own configuration or a caller
+ * copy; an owned material takes one reference. */
+vkr_internal bool8_t vkr_mesh_manager_describe_subset_asset_submesh(
+    const VkrMeshAssetSubmeshBuild *build, const VkrMeshLoaderSubset *subset,
+    VkrGeometryConfig *geometry_config, uint32_t i,
+    VkrMeshAssetSubmesh *submesh) {
+  VkrMeshManager *manager = build->manager;
+  const VkrMeshLoadDesc *desc = build->desc;
+  VkrRendererError *out_error = build->out_error;
+
+  vkr_mesh_manager_build_geometry_key(geometry_config->name,
+                                      build->mesh_result->source_path, i);
+  uint64_t name_length = string_length(geometry_config->name);
+  String8 geometry_name =
+      string8_create((uint8_t *)geometry_config->name, name_length);
+
+  VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
+  VkrGeometryHandle geometry = vkr_geometry_system_acquire_by_name(
+      manager->geometry_system, geometry_name, true_v, &geo_err);
+
+  if (geometry.id == 0) {
+    if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+      *out_error = geo_err;
+      return false_v;
+    }
+    geometry = vkr_geometry_system_create(manager->geometry_system,
+                                          geometry_config, true_v, &geo_err);
+    if (geometry.id == 0) {
+      *out_error = geo_err;
+      return false_v;
+    }
+  }
+
+  VkrMaterialHandle material = subset->material_handle;
+  bool8_t owns_material = true_v;
+  if (material.id == 0) {
+    material = manager->material_system->default_material;
+    owns_material = false_v;
+  }
+  if (owns_material && material.id != 0) {
+    vkr_material_system_add_ref(manager->material_system, material);
+  }
+
+  VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
+      subset->pipeline_domain, desc->pipeline_domain);
+
+  String8 shader_override = subset->shader_override.str
+                                ? subset->shader_override
+                                : desc->shader_override;
+  String8 shader_override_copy = {0};
+  if (shader_override.str && shader_override.length > 0) {
+    shader_override_copy =
+        string8_duplicate(&manager->asset_allocator, &shader_override);
+  }
+
+  *submesh = (VkrMeshAssetSubmesh){
+      .geometry = geometry,
+      .material = material,
+      .shader_override = shader_override_copy,
+      .pipeline_domain = domain,
+      .range_id = geometry.id,
+      .first_index = 0,
+      .index_count = geometry_config->index_count,
+      .vertex_offset = 0,
+      .center = geometry_config->center,
+      .min_extents = geometry_config->min_extents,
+      .max_extents = geometry_config->max_extents,
+      .owns_geometry = true_v,
+      .owns_material = owns_material,
+  };
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     VkrMeshManager *manager, VkrMeshAsset *asset,
     const VkrMeshLoaderResult *mesh_result, const VkrMeshLoadDesc *desc,
@@ -2636,66 +2849,8 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
   bool8_t subsets_success = true_v;
 
   if (use_merged) {
-    char geometry_name_buf[GEOMETRY_NAME_MAX_LENGTH] = {0};
-    vkr_mesh_manager_build_mesh_buffer_key(geometry_name_buf,
-                                           mesh_result->source_path);
-    String8 geometry_name = string8_create((uint8_t *)geometry_name_buf,
-                                           string_length(geometry_name_buf));
-
-    VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-    merged_geometry = vkr_geometry_system_acquire_by_name(
-        manager->geometry_system, geometry_name, true_v, &geo_err);
-
-    if (merged_geometry.id == 0) {
-      if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-        *out_error = geo_err;
-        subsets_success = false_v;
-      } else {
-        Vec3 union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-        Vec3 union_max =
-            vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
-
-        for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-          const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
-          Vec3 range_min = vec3_add(range->center, range->min_extents);
-          Vec3 range_max = vec3_add(range->center, range->max_extents);
-          union_min.x = vkr_min_f32(union_min.x, range_min.x);
-          union_min.y = vkr_min_f32(union_min.y, range_min.y);
-          union_min.z = vkr_min_f32(union_min.z, range_min.z);
-          union_max.x = vkr_max_f32(union_max.x, range_max.x);
-          union_max.y = vkr_max_f32(union_max.y, range_max.y);
-          union_max.z = vkr_max_f32(union_max.z, range_max.z);
-        }
-
-        Vec3 center = vec3_scale(vec3_add(union_min, union_max), 0.5f);
-        Vec3 min_extents = vec3_sub(union_min, center);
-        Vec3 max_extents = vec3_sub(union_max, center);
-
-        VkrGeometryConfig cfg = {0};
-        cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
-        cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
-        cfg.vertices = mesh_result->mesh_buffer.vertices;
-        cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
-        cfg.decodes = mesh_result->mesh_buffer.decodes;
-        cfg.decode_count = mesh_result->mesh_buffer.decode_count;
-        cfg.index_size = mesh_result->mesh_buffer.index_size;
-        cfg.index_count = mesh_result->mesh_buffer.index_count;
-        cfg.indices = mesh_result->mesh_buffer.indices;
-        cfg.center = center;
-        cfg.min_extents = min_extents;
-        cfg.max_extents = max_extents;
-        _Static_assert(sizeof(cfg.name) == sizeof(geometry_name_buf),
-                       "geometry names share one capacity");
-        MemCopy(cfg.name, geometry_name_buf, sizeof(cfg.name));
-
-        merged_geometry = vkr_geometry_system_create(manager->geometry_system,
-                                                     &cfg, true_v, &geo_err);
-        if (merged_geometry.id == 0) {
-          *out_error = geo_err;
-          subsets_success = false_v;
-        }
-      }
-    }
+    subsets_success = vkr_mesh_manager_acquire_merged_geometry(
+        manager, mesh_result, &merged_geometry, out_error);
   }
 
   if (subsets_success && use_merged &&
@@ -2704,6 +2859,14 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     subsets_success = false_v;
   }
 
+  const VkrMeshAssetSubmeshBuild submesh_build = {
+      .manager = manager,
+      .desc = desc,
+      .mesh_result = mesh_result,
+      .merged_geometry = merged_geometry,
+      .first_subset = first_subset,
+      .out_error = out_error,
+  };
   Vec3 bounds_union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
   Vec3 bounds_union_max =
       vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
@@ -2717,116 +2880,16 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     if (use_merged) {
       const VkrGeometryUploadRange *range =
           &mesh_result->submeshes.data[first_subset + i];
-
-      if (i > 0 && merged_geometry.id != 0) {
-        vkr_geometry_system_acquire(manager->geometry_system, merged_geometry);
-      }
-
-      VkrMaterialHandle material =
-          mesh_result->material_handles.data[first_subset + i];
-      bool8_t owns_material = true_v;
-      if (material.id == 0) {
-        material = manager->material_system->default_material;
-        owns_material = false_v;
-      }
-      if (owns_material && material.id != 0) {
-        vkr_material_system_add_ref(manager->material_system, material);
-      }
-
-      VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
-          range->pipeline_domain, desc->pipeline_domain);
-
-      String8 shader_override = range->shader_override.str
-                                    ? range->shader_override
-                                    : desc->shader_override;
-      String8 shader_override_copy = {0};
-      if (shader_override.str && shader_override.length > 0) {
-        shader_override_copy =
-            string8_duplicate(&manager->asset_allocator, &shader_override);
-      }
-
-      *submesh = (VkrMeshAssetSubmesh){
-          .geometry_submesh_index = first_subset + i,
-          .geometry = merged_geometry,
-          .material = material,
-          .shader_override = shader_override_copy,
-          .pipeline_domain = domain,
-          .range_id = range->range_id,
-          .first_index = range->first_index,
-          .index_count = range->index_count,
-          .vertex_offset = range->vertex_offset,
-          .center = range->center,
-          .min_extents = range->min_extents,
-          .max_extents = range->max_extents,
-          .owns_geometry = true_v,
-          .owns_material = owns_material,
-      };
+      vkr_mesh_manager_describe_merged_asset_submesh(&submesh_build, range, i,
+                                                     submesh);
     } else {
       const VkrMeshLoaderSubset *subset = &mesh_result->subsets.data[i];
       VkrGeometryConfig geometry_config = subset->geometry_config;
-
-      vkr_mesh_manager_build_geometry_key(geometry_config.name,
-                                          mesh_result->source_path, i);
-      uint64_t name_length = string_length(geometry_config.name);
-      String8 geometry_name =
-          string8_create((uint8_t *)geometry_config.name, name_length);
-
-      VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-      VkrGeometryHandle geometry = vkr_geometry_system_acquire_by_name(
-          manager->geometry_system, geometry_name, true_v, &geo_err);
-
-      if (geometry.id == 0) {
-        if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-          *out_error = geo_err;
-          subsets_success = false_v;
-          break;
-        }
-        geometry = vkr_geometry_system_create(
-            manager->geometry_system, &geometry_config, true_v, &geo_err);
-        if (geometry.id == 0) {
-          *out_error = geo_err;
-          subsets_success = false_v;
-          break;
-        }
+      if (!vkr_mesh_manager_describe_subset_asset_submesh(
+              &submesh_build, subset, &geometry_config, i, submesh)) {
+        subsets_success = false_v;
+        break;
       }
-
-      VkrMaterialHandle material = subset->material_handle;
-      bool8_t owns_material = true_v;
-      if (material.id == 0) {
-        material = manager->material_system->default_material;
-        owns_material = false_v;
-      }
-      if (owns_material && material.id != 0) {
-        vkr_material_system_add_ref(manager->material_system, material);
-      }
-
-      VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
-          subset->pipeline_domain, desc->pipeline_domain);
-
-      String8 shader_override = subset->shader_override.str
-                                    ? subset->shader_override
-                                    : desc->shader_override;
-      String8 shader_override_copy = {0};
-      if (shader_override.str && shader_override.length > 0) {
-        shader_override_copy =
-            string8_duplicate(&manager->asset_allocator, &shader_override);
-      }
-
-      *submesh = (VkrMeshAssetSubmesh){
-          .geometry = geometry,
-          .material = material,
-          .shader_override = shader_override_copy,
-          .pipeline_domain = domain,
-          .range_id = geometry.id,
-          .first_index = 0,
-          .index_count = geometry_config.index_count,
-          .vertex_offset = 0,
-          .center = geometry_config.center,
-          .min_extents = geometry_config.min_extents,
-          .max_extents = geometry_config.max_extents,
-          .owns_geometry = true_v,
-          .owns_material = owns_material,
-      };
     }
 
     built_count++;
@@ -2865,6 +2928,105 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     asset->bounds_local_radius = vec3_length(half_extents);
   }
 
+  return true_v;
+}
+
+/* Takes a free asset slot and initializes it for `desc`: identity, domain,
+ * load metrics, owned path strings and a zeroed array of `subset_count`
+ * submeshes. Every failure returns the slot to the free list and yields
+ * NULL. */
+vkr_internal VkrMeshAsset *vkr_mesh_manager_init_loaded_asset_slot(
+    VkrMeshManager *manager, const VkrMeshLoadDesc *desc,
+    const VkrMeshLoaderResult *mesh_result, uint32_t subset_count,
+    uint32_t *out_slot, VkrRendererError *out_error) {
+  uint32_t slot;
+  if (manager->asset_free_count > 0) {
+    slot = *array_get_uint32_t(&manager->asset_free_indices,
+                               manager->asset_free_count - 1);
+    manager->asset_free_count--;
+  } else {
+    if (manager->next_asset_index >= manager->mesh_assets.length) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return NULL;
+    }
+    slot = manager->next_asset_index++;
+  }
+
+  VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+  MemZero(asset, sizeof(*asset));
+
+  uint32_t generation = manager->asset_generation_counter++;
+  uint32_t id = slot + 1;
+
+  asset->id = id;
+  asset->generation = generation;
+  asset->domain = vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
+  asset->source_mesh_index_plus_one = desc->source_mesh_index_plus_one;
+  asset->ref_count = 0;
+  asset->loading_state = VKR_MESH_LOADING_STATE_NOT_LOADED;
+  asset->last_error = VKR_RENDERER_ERROR_NONE;
+  asset->pending_request_id = 0;
+  asset->load_metrics = mesh_result->load_metrics;
+
+  asset->mesh_path =
+      string8_duplicate(&manager->asset_allocator, &desc->mesh_path);
+  if (desc->shader_override.str && desc->shader_override.length > 0) {
+    asset->shader_override =
+        string8_duplicate(&manager->asset_allocator, &desc->shader_override);
+  }
+
+  if (!asset->mesh_path.str ||
+      (desc->shader_override.length > 0 && !asset->shader_override.str)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
+    return NULL;
+  }
+
+  asset->submeshes =
+      array_create_VkrMeshAssetSubmesh(&manager->asset_allocator, subset_count);
+  if (!asset->submeshes.data) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_mesh_manager_free_asset_strings(manager, asset);
+    MemZero(asset, sizeof(*asset));
+    array_set_uint32_t(&manager->asset_free_indices, manager->asset_free_count,
+                       slot);
+    manager->asset_free_count++;
+    return NULL;
+  }
+  MemZero(asset->submeshes.data, subset_count * sizeof(VkrMeshAssetSubmesh));
+
+  *out_slot = slot;
+  return asset;
+}
+
+/* Copies `key_buf` into asset storage and registers the asset under it. On
+ * failure the whole asset slot is destroyed. */
+vkr_internal bool8_t vkr_mesh_manager_register_asset_key(
+    VkrMeshManager *manager, VkrMeshAsset *asset, uint32_t slot,
+    const char *key_buf, VkrRendererError *out_error) {
+  const uint64_t key_length = string_length(key_buf);
+  char *key_copy =
+      vkr_allocator_alloc(&manager->asset_allocator, key_length + 1,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!key_copy) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
+    return false_v;
+  }
+
+  MemCopy(key_copy, key_buf, key_length + 1);
+  asset->key_string = key_copy;
+  VkrMeshAssetEntry entry = {.asset_index = slot, .key = key_copy};
+  if (!vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,
+                                               entry)) {
+    asset->key_string = NULL;
+    vkr_allocator_free(&manager->asset_allocator, key_copy,
+                       string_length(key_copy) + 1u,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   return true_v;
 }
 
@@ -2933,126 +3095,19 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     }
   }
 
-  uint32_t slot;
-  if (manager->asset_free_count > 0) {
-    slot = *array_get_uint32_t(&manager->asset_free_indices,
-                               manager->asset_free_count - 1);
-    manager->asset_free_count--;
-  } else {
-    if (manager->next_asset_index >= manager->mesh_assets.length) {
-      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      return VKR_MESH_ASSET_HANDLE_INVALID;
-    }
-    slot = manager->next_asset_index++;
-  }
-
-  VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
-  MemZero(asset, sizeof(*asset));
-
-  uint32_t generation = manager->asset_generation_counter++;
-  uint32_t id = slot + 1;
-
-  asset->id = id;
-  asset->generation = generation;
-  asset->domain = vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
-  asset->source_mesh_index_plus_one = desc->source_mesh_index_plus_one;
-  asset->ref_count = 0;
-  asset->loading_state = VKR_MESH_LOADING_STATE_NOT_LOADED;
-  asset->last_error = VKR_RENDERER_ERROR_NONE;
-  asset->pending_request_id = 0;
-  asset->load_metrics = mesh_result->load_metrics;
-
-  asset->mesh_path =
-      string8_duplicate(&manager->asset_allocator, &desc->mesh_path);
-  if (desc->shader_override.str && desc->shader_override.length > 0) {
-    asset->shader_override =
-        string8_duplicate(&manager->asset_allocator, &desc->shader_override);
-  }
-
-  if (!asset->mesh_path.str ||
-      (desc->shader_override.length > 0 && !asset->shader_override.str)) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
+  uint32_t slot = 0;
+  VkrMeshAsset *asset = vkr_mesh_manager_init_loaded_asset_slot(
+      manager, desc, mesh_result, subset_count, &slot, out_error);
+  if (!asset) {
     return VKR_MESH_ASSET_HANDLE_INVALID;
   }
-
-  asset->submeshes =
-      array_create_VkrMeshAssetSubmesh(&manager->asset_allocator, subset_count);
-  if (!asset->submeshes.data) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    vkr_mesh_manager_free_asset_strings(manager, asset);
-    MemZero(asset, sizeof(*asset));
-    array_set_uint32_t(&manager->asset_free_indices, manager->asset_free_count,
-                       slot);
-    manager->asset_free_count++;
-    return VKR_MESH_ASSET_HANDLE_INVALID;
-  }
-  MemZero(asset->submeshes.data, subset_count * sizeof(VkrMeshAssetSubmesh));
 
   VkrGeometryHandle merged_geometry = VKR_GEOMETRY_HANDLE_INVALID;
   bool8_t subsets_success = true_v;
 
   if (use_merged) {
-    char geometry_name_buf[GEOMETRY_NAME_MAX_LENGTH] = {0};
-    vkr_mesh_manager_build_mesh_buffer_key(geometry_name_buf,
-                                           mesh_result->source_path);
-    String8 geometry_name = string8_create((uint8_t *)geometry_name_buf,
-                                           string_length(geometry_name_buf));
-
-    VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-    merged_geometry = vkr_geometry_system_acquire_by_name(
-        manager->geometry_system, geometry_name, true_v, &geo_err);
-
-    if (merged_geometry.id == 0) {
-      if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-        *out_error = geo_err;
-        subsets_success = false_v;
-      } else {
-        Vec3 union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-        Vec3 union_max =
-            vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
-
-        for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-          const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
-          Vec3 range_min = vec3_add(range->center, range->min_extents);
-          Vec3 range_max = vec3_add(range->center, range->max_extents);
-          union_min.x = vkr_min_f32(union_min.x, range_min.x);
-          union_min.y = vkr_min_f32(union_min.y, range_min.y);
-          union_min.z = vkr_min_f32(union_min.z, range_min.z);
-          union_max.x = vkr_max_f32(union_max.x, range_max.x);
-          union_max.y = vkr_max_f32(union_max.y, range_max.y);
-          union_max.z = vkr_max_f32(union_max.z, range_max.z);
-        }
-
-        Vec3 center = vec3_scale(vec3_add(union_min, union_max), 0.5f);
-        Vec3 min_extents = vec3_sub(union_min, center);
-        Vec3 max_extents = vec3_sub(union_max, center);
-
-        VkrGeometryConfig cfg = {0};
-        cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
-        cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
-        cfg.vertices = mesh_result->mesh_buffer.vertices;
-        cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
-        cfg.decodes = mesh_result->mesh_buffer.decodes;
-        cfg.decode_count = mesh_result->mesh_buffer.decode_count;
-        cfg.index_size = mesh_result->mesh_buffer.index_size;
-        cfg.index_count = mesh_result->mesh_buffer.index_count;
-        cfg.indices = mesh_result->mesh_buffer.indices;
-        cfg.center = center;
-        cfg.min_extents = min_extents;
-        cfg.max_extents = max_extents;
-        _Static_assert(sizeof(cfg.name) == sizeof(geometry_name_buf),
-                       "geometry names share one capacity");
-        MemCopy(cfg.name, geometry_name_buf, sizeof(cfg.name));
-
-        merged_geometry = vkr_geometry_system_create(manager->geometry_system,
-                                                     &cfg, true_v, &geo_err);
-        if (merged_geometry.id == 0) {
-          *out_error = geo_err;
-          subsets_success = false_v;
-        }
-      }
-    }
+    subsets_success = vkr_mesh_manager_acquire_merged_geometry(
+        manager, mesh_result, &merged_geometry, out_error);
   }
 
   if (subsets_success && use_merged &&
@@ -3061,6 +3116,14 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     subsets_success = false_v;
   }
 
+  const VkrMeshAssetSubmeshBuild submesh_build = {
+      .manager = manager,
+      .desc = desc,
+      .mesh_result = mesh_result,
+      .merged_geometry = merged_geometry,
+      .first_subset = first_subset,
+      .out_error = out_error,
+  };
   Vec3 bounds_union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
   Vec3 bounds_union_max =
       vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
@@ -3074,117 +3137,16 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     if (use_merged) {
       const VkrGeometryUploadRange *range = array_get_VkrGeometryUploadRange(
           &mesh_result->submeshes, first_subset + i);
-
-      if (i > 0 && merged_geometry.id != 0) {
-        vkr_geometry_system_acquire(manager->geometry_system, merged_geometry);
-      }
-
-      VkrMaterialHandle material =
-          mesh_result->material_handles.data[first_subset + i];
-      bool8_t owns_material = true_v;
-      if (material.id == 0) {
-        material = manager->material_system->default_material;
-        owns_material = false_v;
-      }
-      if (owns_material && material.id != 0) {
-        vkr_material_system_add_ref(manager->material_system, material);
-      }
-
-      VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
-          range->pipeline_domain, desc->pipeline_domain);
-
-      String8 shader_override = range->shader_override.str
-                                    ? range->shader_override
-                                    : desc->shader_override;
-      String8 shader_override_copy = {0};
-      if (shader_override.str && shader_override.length > 0) {
-        shader_override_copy =
-            string8_duplicate(&manager->asset_allocator, &shader_override);
-      }
-
-      *submesh = (VkrMeshAssetSubmesh){
-          .geometry_submesh_index = first_subset + i,
-          .geometry = merged_geometry,
-          .material = material,
-          .shader_override = shader_override_copy,
-          .pipeline_domain = domain,
-          .range_id = range->range_id,
-          .first_index = range->first_index,
-          .index_count = range->index_count,
-          .vertex_offset = range->vertex_offset,
-          .center = range->center,
-          .min_extents = range->min_extents,
-          .max_extents = range->max_extents,
-          .owns_geometry = true_v,
-          .owns_material = owns_material,
-      };
+      vkr_mesh_manager_describe_merged_asset_submesh(&submesh_build, range, i,
+                                                     submesh);
     } else {
       VkrMeshLoaderSubset *subset =
           array_get_VkrMeshLoaderSubset(&mesh_result->subsets, i);
-
-      vkr_mesh_manager_build_geometry_key(subset->geometry_config.name,
-                                          mesh_result->source_path, i);
-      uint64_t name_length = string_length(subset->geometry_config.name);
-      String8 geometry_name =
-          string8_create((uint8_t *)subset->geometry_config.name, name_length);
-
-      VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-      VkrGeometryHandle geometry = vkr_geometry_system_acquire_by_name(
-          manager->geometry_system, geometry_name, true_v, &geo_err);
-
-      if (geometry.id == 0) {
-        if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-          *out_error = geo_err;
-          subsets_success = false_v;
-          break;
-        }
-        geometry = vkr_geometry_system_create(manager->geometry_system,
-                                              &subset->geometry_config, true_v,
-                                              &geo_err);
-        if (geometry.id == 0) {
-          *out_error = geo_err;
-          subsets_success = false_v;
-          break;
-        }
+      if (!vkr_mesh_manager_describe_subset_asset_submesh(
+              &submesh_build, subset, &subset->geometry_config, i, submesh)) {
+        subsets_success = false_v;
+        break;
       }
-
-      VkrMaterialHandle material = subset->material_handle;
-      bool8_t owns_material = true_v;
-      if (material.id == 0) {
-        material = manager->material_system->default_material;
-        owns_material = false_v;
-      }
-      if (owns_material && material.id != 0) {
-        vkr_material_system_add_ref(manager->material_system, material);
-      }
-
-      VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
-          subset->pipeline_domain, desc->pipeline_domain);
-
-      String8 shader_override = subset->shader_override.str
-                                    ? subset->shader_override
-                                    : desc->shader_override;
-      String8 shader_override_copy = {0};
-      if (shader_override.str && shader_override.length > 0) {
-        shader_override_copy =
-            string8_duplicate(&manager->asset_allocator, &shader_override);
-      }
-
-      *submesh = (VkrMeshAssetSubmesh){
-          .geometry = geometry,
-          .material = material,
-          .shader_override = shader_override_copy,
-          .pipeline_domain = domain,
-          .range_id = geometry.id,
-          .first_index = 0,
-          .index_count = subset->geometry_config.index_count,
-          .vertex_offset = 0,
-          .center = subset->geometry_config.center,
-          .min_extents = subset->geometry_config.min_extents,
-          .max_extents = subset->geometry_config.max_extents,
-          .owns_geometry = true_v,
-          .owns_material = owns_material,
-      };
     }
 
     built_count++;
@@ -3226,27 +3188,8 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     asset->bounds_local_radius = vec3_length(half_extents);
   }
 
-  const uint64_t key_length = string_length(key_buf);
-  char *key_copy =
-      vkr_allocator_alloc(&manager->asset_allocator, key_length + 1,
-                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!key_copy) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
-    return VKR_MESH_ASSET_HANDLE_INVALID;
-  }
-
-  MemCopy(key_copy, key_buf, key_length + 1);
-  asset->key_string = key_copy;
-  VkrMeshAssetEntry entry = {.asset_index = slot, .key = key_copy};
-  if (!vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,
-                                               entry)) {
-    asset->key_string = NULL;
-    vkr_allocator_free(&manager->asset_allocator, key_copy,
-                       string_length(key_copy) + 1u,
-                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  if (!vkr_mesh_manager_register_asset_key(manager, asset, slot, key_buf,
+                                           out_error)) {
     return VKR_MESH_ASSET_HANDLE_INVALID;
   }
 
@@ -3256,7 +3199,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
   asset->last_error = VKR_RENDERER_ERROR_NONE;
   asset->pending_request_id = 0;
 
-  return (VkrMeshAssetHandle){.id = id, .generation = generation};
+  return (VkrMeshAssetHandle){.id = asset->id, .generation = asset->generation};
 }
 
 bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,

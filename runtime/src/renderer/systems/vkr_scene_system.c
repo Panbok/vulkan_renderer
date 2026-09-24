@@ -1162,35 +1162,32 @@ vkr_internal void destroy_text3d_chunk_cb(const VkrArchetype *arch,
   }
 }
 
-void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
-  if (!scene || !vkr_scene_physics_mutations_allowed(scene))
+vkr_internal void scene_text3d_shutdown(VkrScene *scene,
+                                        struct VkrRenderAssets *assets) {
+  if (!assets || !scene->assets || !scene->world) {
     return;
-
-  vkr_scene_physics_shutdown(scene);
-  vkr_scene_collision_layers_shutdown(scene);
-  vkr_scene_animation_shutdown(scene);
-
-  // Send destroy messages for all text3d entities to world resources.
-  // Must happen before ECS world destruction since we need to query components.
-  if (assets && scene->assets && scene->world) {
-    // Build text3d query
-    VkrQuery q_text3d;
-    vkr_entity_query_build(scene->world, &scene->comp_text3d, 1, NULL, 0,
-                           &q_text3d);
-
-    VkrQueryCompiled compiled;
-    if (vkr_entity_query_compile(scene->world, &q_text3d, scene->alloc,
-                                 &compiled)) {
-      DestroyText3DContext ctx = {
-          .scene = scene,
-          .assets = (VkrRenderAssets *)assets,
-      };
-      vkr_entity_query_compiled_each_chunk(&compiled, destroy_text3d_chunk_cb,
-                                           &ctx);
-      vkr_entity_query_compiled_destroy(scene->alloc, &compiled);
-    }
   }
 
+  // Build text3d query
+  VkrQuery q_text3d;
+  vkr_entity_query_build(scene->world, &scene->comp_text3d, 1, NULL, 0,
+                         &q_text3d);
+
+  VkrQueryCompiled compiled;
+  if (vkr_entity_query_compile(scene->world, &q_text3d, scene->alloc,
+                               &compiled)) {
+    DestroyText3DContext ctx = {
+        .scene = scene,
+        .assets = (VkrRenderAssets *)assets,
+    };
+    vkr_entity_query_compiled_each_chunk(&compiled, destroy_text3d_chunk_cb,
+                                         &ctx);
+    vkr_entity_query_compiled_destroy(scene->alloc, &compiled);
+  }
+}
+
+vkr_internal void scene_owned_meshes_shutdown(VkrScene *scene,
+                                              struct VkrRenderAssets *assets) {
   // Remove owned mesh instances from mesh manager
   if (assets && scene->owned_instances) {
     for (uint32_t i = 0; i < scene->owned_instance_count; i++) {
@@ -1206,87 +1203,93 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
       vkr_mesh_manager_remove(&assets->mesh_manager, scene->owned_meshes[i]);
     }
   }
+}
 
-  // Release environment generations; native retirement retains submitted uses.
-  if (assets) {
-    vkr_scene_reset_diffuse_volume(scene, assets);
-    if (scene->subsurface.texture.id != 0u) {
-      if (!vkr_texture_system_release_by_handle(&assets->texture_system,
-                                                scene->subsurface.texture)) {
-        log_warn("Scene subsurface texture %u:%u remains registered in the "
-                 "texture system after native release failed",
-                 scene->subsurface.texture.id,
-                 scene->subsurface.texture.generation);
-      }
-      /* Release consumed the scene reference. The texture system owns any
-         failed native-destruction entry until its later teardown. */
-      scene->subsurface = (VkrSubsurfaceBinding){
-          .texture = VKR_TEXTURE_HANDLE_INVALID,
-      };
+vkr_internal void scene_environment_shutdown(VkrScene *scene,
+                                             struct VkrRenderAssets *assets) {
+  if (!assets) {
+    return;
+  }
+
+  vkr_scene_reset_diffuse_volume(scene, assets);
+  if (scene->subsurface.texture.id != 0u) {
+    if (!vkr_texture_system_release_by_handle(&assets->texture_system,
+                                              scene->subsurface.texture)) {
+      log_warn("Scene subsurface texture %u:%u remains registered in the "
+               "texture system after native release failed",
+               scene->subsurface.texture.id,
+               scene->subsurface.texture.generation);
     }
-    scene_release_owned_texture_handle(
-        (VkrRenderAssets *)assets,
-        &scene->atmosphere.candidate_prefilter_cubemap);
-    scene_release_owned_texture_handle(
-        (VkrRenderAssets *)assets, &scene->atmosphere.candidate_source_cubemap);
-    scene_release_owned_texture_handle(
-        (VkrRenderAssets *)assets,
-        &scene->atmosphere.retired_environment.prefilter_cubemap);
-    scene_release_owned_texture_handle(
-        (VkrRenderAssets *)assets,
-        &scene->atmosphere.retired_environment.source_cubemap);
-    scene_release_owned_texture_handle(
-        (VkrRenderAssets *)assets,
-        &scene->atmosphere.retired_environment.delivery_equirect);
-    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                       &scene->environment.prefilter_cubemap);
-    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                       &scene->environment.source_cubemap);
-    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                       &scene->environment.delivery_equirect);
-    for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
-      VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
-      scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                         &probe->prefilter_cubemap);
-      scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                         &probe->source_cubemap);
-      scene_reset_reflection_probe_runtime(probe);
-    }
-    scene->reflection_probe_count = 0;
-    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
-    scene->environment.enabled = false_v;
-    scene->atmosphere = (VkrSceneAtmosphere){
-        .requested_settings = vkr_atmosphere_settings_defaults(),
-        .candidate_settings = vkr_atmosphere_settings_defaults(),
-        .active_settings = vkr_atmosphere_settings_defaults(),
-        .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-                                .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
-                                .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-                                .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-                                .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
-        .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-        .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+    /* Release consumed the scene reference. The texture system owns any
+       failed native-destruction entry until its later teardown. */
+    scene->subsurface = (VkrSubsurfaceBinding){
+        .texture = VKR_TEXTURE_HANDLE_INVALID,
     };
-    scene->atmosphere.requested_settings.enabled = false_v;
-    scene->atmosphere.candidate_settings.enabled = false_v;
-    scene->atmosphere.active_settings.enabled = false_v;
+  }
+  scene_release_owned_texture_handle(
+      (VkrRenderAssets *)assets,
+      &scene->atmosphere.candidate_prefilter_cubemap);
+  scene_release_owned_texture_handle(
+      (VkrRenderAssets *)assets, &scene->atmosphere.candidate_source_cubemap);
+  scene_release_owned_texture_handle(
+      (VkrRenderAssets *)assets,
+      &scene->atmosphere.retired_environment.prefilter_cubemap);
+  scene_release_owned_texture_handle(
+      (VkrRenderAssets *)assets,
+      &scene->atmosphere.retired_environment.source_cubemap);
+  scene_release_owned_texture_handle(
+      (VkrRenderAssets *)assets,
+      &scene->atmosphere.retired_environment.delivery_equirect);
+  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
+                                     &scene->environment.prefilter_cubemap);
+  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
+                                     &scene->environment.source_cubemap);
+  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
+                                     &scene->environment.delivery_equirect);
+  for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
+    VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
+    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
+                                       &probe->prefilter_cubemap);
+    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
+                                       &probe->source_cubemap);
+    scene_reset_reflection_probe_runtime(probe);
+  }
+  scene->reflection_probe_count = 0;
+  scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+  scene->environment.enabled = false_v;
+  scene->atmosphere = (VkrSceneAtmosphere){
+      .requested_settings = vkr_atmosphere_settings_defaults(),
+      .candidate_settings = vkr_atmosphere_settings_defaults(),
+      .active_settings = vkr_atmosphere_settings_defaults(),
+      .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+                              .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+                              .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
+      .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+  };
+  scene->atmosphere.requested_settings.enabled = false_v;
+  scene->atmosphere.candidate_settings.enabled = false_v;
+  scene->atmosphere.active_settings.enabled = false_v;
+}
+
+vkr_internal void scene_queries_shutdown(VkrScene *scene) {
+  if (!scene->queries_valid) {
+    return;
   }
 
-  // Destroy queries
-  if (scene->queries_valid) {
-    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_transforms);
-    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_renderables);
-    vkr_entity_query_compiled_destroy(scene->alloc,
-                                      &scene->query_directional_light);
-    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_point_lights);
-    vkr_entity_query_compiled_destroy(scene->alloc,
-                                      &scene->query_rectangle_lights);
-    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_shapes);
-  }
+  vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_transforms);
+  vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_renderables);
+  vkr_entity_query_compiled_destroy(scene->alloc,
+                                    &scene->query_directional_light);
+  vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_point_lights);
+  vkr_entity_query_compiled_destroy(scene->alloc,
+                                    &scene->query_rectangle_lights);
+  vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_shapes);
+}
 
-  scene_child_index_shutdown(scene);
-
-  // Free arrays
+vkr_internal void scene_arrays_shutdown(VkrScene *scene) {
   if (scene->topo_order) {
     vkr_allocator_free_aligned(scene->alloc, scene->topo_order,
                                scene->topo_capacity * sizeof(VkrEntityId),
@@ -1311,6 +1314,32 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
         scene->render_dirty_capacity * sizeof(VkrEntityId),
         AlignOf(VkrEntityId), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
+}
+
+void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
+  if (!scene || !vkr_scene_physics_mutations_allowed(scene))
+    return;
+
+  vkr_scene_physics_shutdown(scene);
+  vkr_scene_collision_layers_shutdown(scene);
+  vkr_scene_animation_shutdown(scene);
+
+  // Send destroy messages for all text3d entities to world resources.
+  // Must happen before ECS world destruction since we need to query components.
+  scene_text3d_shutdown(scene, assets);
+
+  scene_owned_meshes_shutdown(scene, assets);
+
+  // Release environment generations; native retirement retains submitted uses.
+  scene_environment_shutdown(scene, assets);
+
+  // Destroy queries
+  scene_queries_shutdown(scene);
+
+  scene_child_index_shutdown(scene);
+
+  // Free arrays
+  scene_arrays_shutdown(scene);
 
   // Destroy ECS world
   if (scene->world) {

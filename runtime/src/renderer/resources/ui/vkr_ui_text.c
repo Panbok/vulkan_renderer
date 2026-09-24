@@ -95,6 +95,195 @@ vkr_internal bool8_t vkr_ui_text_compute_layout(VkrUiText *text) {
   return true_v;
 }
 
+/* Grows vertex or index storage that is smaller than the required count to
+ * that count plus a fixed slack. */
+vkr_internal bool8_t
+vkr_ui_text_reserve_geometry(VkrUiText *text, uint32_t required_vertex_count,
+                             uint32_t required_index_count) {
+  if (required_vertex_count > text->geometry.vertex_capacity) {
+    const uint32_t growth = Min(VKR_UI_TEXT_VERTEX_GROWTH_COUNT,
+                                UINT32_MAX - required_vertex_count);
+    const uint32_t capacity = required_vertex_count + growth;
+    VkrTextVertex *vertices = vkr_allocator_realloc(
+        text->allocator, text->geometry.vertices,
+        (uint64_t)text->geometry.vertex_capacity * sizeof(VkrTextVertex),
+        (uint64_t)capacity * sizeof(VkrTextVertex),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!vertices)
+      return false_v;
+    text->geometry.vertices = vertices;
+    text->geometry.vertex_capacity = capacity;
+  }
+  if (required_index_count > text->geometry.index_capacity) {
+    const uint32_t growth =
+        Min(VKR_UI_TEXT_INDEX_GROWTH_COUNT, UINT32_MAX - required_index_count);
+    const uint32_t capacity = required_index_count + growth;
+    uint32_t *indices = vkr_allocator_realloc(
+        text->allocator, text->geometry.indices,
+        (uint64_t)text->geometry.index_capacity * sizeof(uint32_t),
+        (uint64_t)capacity * sizeof(uint32_t), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!indices)
+      return false_v;
+    text->geometry.indices = indices;
+    text->geometry.index_capacity = capacity;
+  }
+  return true_v;
+}
+
+/** Font and layout values shared by every glyph quad of one text. */
+typedef struct VkrUiTextGlyphSpace {
+  float32_t atlas_w;
+  float32_t atlas_h;
+  float32_t inv_atlas_w;
+  float32_t inv_atlas_h;
+  float32_t font_size;
+  bool8_t cooked;
+  float32_t scale;
+  float32_t inset_px;
+  float32_t layout_bottom;
+} VkrUiTextGlyphSpace;
+
+/** One glyph quad in UI space with its inset atlas coordinates. */
+typedef struct VkrUiTextGlyphQuad {
+  float32_t x0;
+  float32_t x1;
+  float32_t top_y;
+  float32_t bottom_y;
+  float32_t u0;
+  float32_t u1;
+  float32_t v0;
+  float32_t v1;
+} VkrUiTextGlyphQuad;
+
+/* Places `layout_glyph` in UI space and computes its inset atlas UVs from the
+ * cooked, MTSDF or bitmap glyph data. False skips an invalid glyph or one
+ * without geometry. */
+vkr_internal bool8_t vkr_ui_text_glyph_quad(const VkrUiText *text,
+                                            const VkrUiTextGlyphSpace *space,
+                                            const VkrTextGlyph *layout_glyph,
+                                            VkrUiTextGlyphQuad *out_quad) {
+  if (layout_glyph->glyph_index == VKR_INVALID_ID) {
+    return false_v;
+  }
+  const VkrFontGlyph *font_glyph = NULL;
+  const VkrFontGlyphId *cooked_glyph = NULL;
+  const VkrMtsdfGlyph *mtsdf_glyph = NULL;
+  float32_t x0 = 0.0f;
+  float32_t y0 = 0.0f;
+  float32_t glyph_w = 0.0f;
+  float32_t glyph_h = 0.0f;
+  if (space->cooked) {
+    if (layout_glyph->glyph_index >= text->resolved_font->glyphs_by_id.length) {
+      return false_v;
+    }
+    cooked_glyph =
+        &text->resolved_font->glyphs_by_id.data[layout_glyph->glyph_index];
+    if (!cooked_glyph->has_geometry) {
+      return false_v;
+    }
+    x0 = layout_glyph->position.x + cooked_glyph->plane_left * space->font_size;
+    y0 = layout_glyph->position.y - cooked_glyph->plane_top * space->font_size;
+    glyph_w = (cooked_glyph->plane_right - cooked_glyph->plane_left) *
+              space->font_size;
+    glyph_h = (cooked_glyph->plane_top - cooked_glyph->plane_bottom) *
+              space->font_size;
+  } else {
+    if (layout_glyph->glyph_index >= text->resolved_font->glyphs.length) {
+      return false_v;
+    }
+    font_glyph = &text->resolved_font->glyphs.data[layout_glyph->glyph_index];
+    x0 = layout_glyph->position.x +
+         (float32_t)font_glyph->x_offset * space->scale;
+    const float32_t line_top = layout_glyph->position.y - text->bounds.ascent;
+    y0 = line_top + (float32_t)font_glyph->y_offset * space->scale;
+    glyph_w = (float32_t)font_glyph->width * space->scale;
+    glyph_h = (float32_t)font_glyph->height * space->scale;
+    if (text->resolved_font->type == VKR_FONT_TYPE_MTSDF &&
+        text->resolved_font->mtsdf_glyphs.data &&
+        layout_glyph->glyph_index < text->resolved_font->mtsdf_glyphs.length) {
+      mtsdf_glyph =
+          &text->resolved_font->mtsdf_glyphs.data[layout_glyph->glyph_index];
+      if (!mtsdf_glyph->has_geometry) {
+        return false_v;
+      }
+      glyph_w = (mtsdf_glyph->plane_right - mtsdf_glyph->plane_left) *
+                space->font_size;
+      glyph_h = (mtsdf_glyph->plane_top - mtsdf_glyph->plane_bottom) *
+                space->font_size;
+    }
+  }
+
+  float32_t x1 = x0 + glyph_w;
+  float32_t y1 = y0 + glyph_h;
+  float32_t top_y = space->layout_bottom - y1;
+  float32_t bottom_y = space->layout_bottom - y0;
+
+  float32_t u0_raw = 0.0f;
+  float32_t u1_raw = 0.0f;
+  float32_t v0_raw = 0.0f;
+  float32_t v1_raw = 0.0f;
+  float32_t atlas_glyph_w = 0.0f;
+  float32_t atlas_glyph_h = 0.0f;
+  if (cooked_glyph) {
+    u0_raw = cooked_glyph->uv_left;
+    u1_raw = cooked_glyph->uv_right;
+    v0_raw = cooked_glyph->uv_bottom;
+    v1_raw = cooked_glyph->uv_top;
+    atlas_glyph_w = (u1_raw - u0_raw) * space->atlas_w;
+    atlas_glyph_h = (v1_raw - v0_raw) * space->atlas_h;
+  } else if (mtsdf_glyph) {
+    u0_raw = mtsdf_glyph->uv_left;
+    u1_raw = mtsdf_glyph->uv_right;
+    v0_raw = mtsdf_glyph->uv_bottom;
+    v1_raw = mtsdf_glyph->uv_top;
+    atlas_glyph_w = mtsdf_glyph->atlas_right - mtsdf_glyph->atlas_left;
+    atlas_glyph_h = mtsdf_glyph->atlas_top - mtsdf_glyph->atlas_bottom;
+  } else {
+    u0_raw = (float32_t)font_glyph->x * space->inv_atlas_w;
+    u1_raw =
+        (float32_t)(font_glyph->x + font_glyph->width) * space->inv_atlas_w;
+    v0_raw = 1.0f - (float32_t)(font_glyph->y + font_glyph->height) *
+                        space->inv_atlas_h;
+    v1_raw = 1.0f - (float32_t)font_glyph->y * space->inv_atlas_h;
+    atlas_glyph_w = (float32_t)font_glyph->width;
+    atlas_glyph_h = (float32_t)font_glyph->height;
+  }
+
+  float32_t u_inset = space->inset_px * space->inv_atlas_w;
+  float32_t v_inset = space->inset_px * space->inv_atlas_h;
+  if (atlas_glyph_w <= 1.0f) {
+    u_inset = 0.0f;
+  }
+  if (atlas_glyph_h <= 1.0f) {
+    v_inset = 0.0f;
+  }
+
+  float32_t u0 = u0_raw + u_inset;
+  float32_t u1 = u1_raw - u_inset;
+  float32_t v0 = v0_raw + v_inset;
+  float32_t v1 = v1_raw - v_inset;
+  if (u1 <= u0) {
+    u0 = u0_raw;
+    u1 = u1_raw;
+  }
+  if (v1 <= v0) {
+    v0 = v0_raw;
+    v1 = v1_raw;
+  }
+
+  *out_quad = (VkrUiTextGlyphQuad){
+      .x0 = x0,
+      .x1 = x1,
+      .top_y = top_y,
+      .bottom_y = bottom_y,
+      .u0 = u0,
+      .u1 = u1,
+      .v0 = v0,
+      .v1 = v1,
+  };
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
   if (!text || !text->resolved_font) {
     return false_v;
@@ -128,32 +317,9 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
   uint32_t required_vertex_count = glyph_count * VKR_UI_TEXT_QUAD_COUNT;
   uint32_t required_index_count = glyph_count * VKR_UI_TEXT_INDEX_COUNT;
 
-  if (required_vertex_count > text->geometry.vertex_capacity) {
-    const uint32_t growth = Min(VKR_UI_TEXT_VERTEX_GROWTH_COUNT,
-                                UINT32_MAX - required_vertex_count);
-    const uint32_t capacity = required_vertex_count + growth;
-    VkrTextVertex *vertices = vkr_allocator_realloc(
-        text->allocator, text->geometry.vertices,
-        (uint64_t)text->geometry.vertex_capacity * sizeof(VkrTextVertex),
-        (uint64_t)capacity * sizeof(VkrTextVertex),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!vertices)
-      return false_v;
-    text->geometry.vertices = vertices;
-    text->geometry.vertex_capacity = capacity;
-  }
-  if (required_index_count > text->geometry.index_capacity) {
-    const uint32_t growth =
-        Min(VKR_UI_TEXT_INDEX_GROWTH_COUNT, UINT32_MAX - required_index_count);
-    const uint32_t capacity = required_index_count + growth;
-    uint32_t *indices = vkr_allocator_realloc(
-        text->allocator, text->geometry.indices,
-        (uint64_t)text->geometry.index_capacity * sizeof(uint32_t),
-        (uint64_t)capacity * sizeof(uint32_t), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!indices)
-      return false_v;
-    text->geometry.indices = indices;
-    text->geometry.index_capacity = capacity;
+  if (!vkr_ui_text_reserve_geometry(text, required_vertex_count,
+                                    required_index_count)) {
+    return false_v;
   }
 
   VkrTextVertex *vertices = text->geometry.vertices;
@@ -181,137 +347,44 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
   // Flip layout Y (top-down) into UI screen space without changing winding.
   float32_t layout_bottom =
       (text->layout.baseline.y - text->bounds.ascent) + text->bounds.size.y;
+  const VkrUiTextGlyphSpace space = {
+      .atlas_w = atlas_w,
+      .atlas_h = atlas_h,
+      .inv_atlas_w = inv_atlas_w,
+      .inv_atlas_h = inv_atlas_h,
+      .font_size = font_size,
+      .cooked = cooked,
+      .scale = scale,
+      .inset_px = inset_px,
+      .layout_bottom = layout_bottom,
+  };
 
   for (uint32_t i = 0; i < glyph_count; i++) {
-    VkrTextGlyph *layout_glyph = &text->layout.glyphs.data[i];
-    if (layout_glyph->glyph_index == VKR_INVALID_ID) {
+    VkrUiTextGlyphQuad quad = {0};
+    if (!vkr_ui_text_glyph_quad(text, &space, &text->layout.glyphs.data[i],
+                                &quad)) {
       continue;
-    }
-    const VkrFontGlyph *font_glyph = NULL;
-    const VkrFontGlyphId *cooked_glyph = NULL;
-    const VkrMtsdfGlyph *mtsdf_glyph = NULL;
-    float32_t x0 = 0.0f;
-    float32_t y0 = 0.0f;
-    float32_t glyph_w = 0.0f;
-    float32_t glyph_h = 0.0f;
-    if (cooked) {
-      if (layout_glyph->glyph_index >=
-          text->resolved_font->glyphs_by_id.length) {
-        continue;
-      }
-      cooked_glyph =
-          &text->resolved_font->glyphs_by_id.data[layout_glyph->glyph_index];
-      if (!cooked_glyph->has_geometry) {
-        continue;
-      }
-      x0 = layout_glyph->position.x + cooked_glyph->plane_left * font_size;
-      y0 = layout_glyph->position.y - cooked_glyph->plane_top * font_size;
-      glyph_w =
-          (cooked_glyph->plane_right - cooked_glyph->plane_left) * font_size;
-      glyph_h =
-          (cooked_glyph->plane_top - cooked_glyph->plane_bottom) * font_size;
-    } else {
-      if (layout_glyph->glyph_index >= text->resolved_font->glyphs.length) {
-        continue;
-      }
-      font_glyph = &text->resolved_font->glyphs.data[layout_glyph->glyph_index];
-      x0 = layout_glyph->position.x + (float32_t)font_glyph->x_offset * scale;
-      const float32_t line_top = layout_glyph->position.y - text->bounds.ascent;
-      y0 = line_top + (float32_t)font_glyph->y_offset * scale;
-      glyph_w = (float32_t)font_glyph->width * scale;
-      glyph_h = (float32_t)font_glyph->height * scale;
-      if (text->resolved_font->type == VKR_FONT_TYPE_MTSDF &&
-          text->resolved_font->mtsdf_glyphs.data &&
-          layout_glyph->glyph_index <
-              text->resolved_font->mtsdf_glyphs.length) {
-        mtsdf_glyph =
-            &text->resolved_font->mtsdf_glyphs.data[layout_glyph->glyph_index];
-        if (!mtsdf_glyph->has_geometry) {
-          continue;
-        }
-        glyph_w =
-            (mtsdf_glyph->plane_right - mtsdf_glyph->plane_left) * font_size;
-        glyph_h =
-            (mtsdf_glyph->plane_top - mtsdf_glyph->plane_bottom) * font_size;
-      }
-    }
-
-    float32_t x1 = x0 + glyph_w;
-    float32_t y1 = y0 + glyph_h;
-    float32_t top_y = layout_bottom - y1;
-    float32_t bottom_y = layout_bottom - y0;
-
-    float32_t u0_raw = 0.0f;
-    float32_t u1_raw = 0.0f;
-    float32_t v0_raw = 0.0f;
-    float32_t v1_raw = 0.0f;
-    float32_t atlas_glyph_w = 0.0f;
-    float32_t atlas_glyph_h = 0.0f;
-    if (cooked_glyph) {
-      u0_raw = cooked_glyph->uv_left;
-      u1_raw = cooked_glyph->uv_right;
-      v0_raw = cooked_glyph->uv_bottom;
-      v1_raw = cooked_glyph->uv_top;
-      atlas_glyph_w = (u1_raw - u0_raw) * atlas_w;
-      atlas_glyph_h = (v1_raw - v0_raw) * atlas_h;
-    } else if (mtsdf_glyph) {
-      u0_raw = mtsdf_glyph->uv_left;
-      u1_raw = mtsdf_glyph->uv_right;
-      v0_raw = mtsdf_glyph->uv_bottom;
-      v1_raw = mtsdf_glyph->uv_top;
-      atlas_glyph_w = mtsdf_glyph->atlas_right - mtsdf_glyph->atlas_left;
-      atlas_glyph_h = mtsdf_glyph->atlas_top - mtsdf_glyph->atlas_bottom;
-    } else {
-      u0_raw = (float32_t)font_glyph->x * inv_atlas_w;
-      u1_raw = (float32_t)(font_glyph->x + font_glyph->width) * inv_atlas_w;
-      v0_raw =
-          1.0f - (float32_t)(font_glyph->y + font_glyph->height) * inv_atlas_h;
-      v1_raw = 1.0f - (float32_t)font_glyph->y * inv_atlas_h;
-      atlas_glyph_w = (float32_t)font_glyph->width;
-      atlas_glyph_h = (float32_t)font_glyph->height;
-    }
-
-    float32_t u_inset = inset_px * inv_atlas_w;
-    float32_t v_inset = inset_px * inv_atlas_h;
-    if (atlas_glyph_w <= 1.0f) {
-      u_inset = 0.0f;
-    }
-    if (atlas_glyph_h <= 1.0f) {
-      v_inset = 0.0f;
-    }
-
-    float32_t u0 = u0_raw + u_inset;
-    float32_t u1 = u1_raw - u_inset;
-    float32_t v0 = v0_raw + v_inset;
-    float32_t v1 = v1_raw - v_inset;
-    if (u1 <= u0) {
-      u0 = u0_raw;
-      u1 = u1_raw;
-    }
-    if (v1 <= v0) {
-      v0 = v0_raw;
-      v1 = v1_raw;
     }
 
     uint32_t base_vertex = vertex_idx;
 
-    vertices[vertex_idx].position = vec2_new(x0, top_y);
-    vertices[vertex_idx].texcoord = vec2_new(u0, v0);
+    vertices[vertex_idx].position = vec2_new(quad.x0, quad.top_y);
+    vertices[vertex_idx].texcoord = vec2_new(quad.u0, quad.v0);
     vertices[vertex_idx].color = color;
     vertex_idx++;
 
-    vertices[vertex_idx].position = vec2_new(x1, bottom_y);
-    vertices[vertex_idx].texcoord = vec2_new(u1, v1);
+    vertices[vertex_idx].position = vec2_new(quad.x1, quad.bottom_y);
+    vertices[vertex_idx].texcoord = vec2_new(quad.u1, quad.v1);
     vertices[vertex_idx].color = color;
     vertex_idx++;
 
-    vertices[vertex_idx].position = vec2_new(x0, bottom_y);
-    vertices[vertex_idx].texcoord = vec2_new(u0, v1);
+    vertices[vertex_idx].position = vec2_new(quad.x0, quad.bottom_y);
+    vertices[vertex_idx].texcoord = vec2_new(quad.u0, quad.v1);
     vertices[vertex_idx].color = color;
     vertex_idx++;
 
-    vertices[vertex_idx].position = vec2_new(x1, top_y);
-    vertices[vertex_idx].texcoord = vec2_new(u1, v0);
+    vertices[vertex_idx].position = vec2_new(quad.x1, quad.top_y);
+    vertices[vertex_idx].texcoord = vec2_new(quad.u1, quad.v0);
     vertices[vertex_idx].color = color;
     vertex_idx++;
 

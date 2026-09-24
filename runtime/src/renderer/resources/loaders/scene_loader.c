@@ -3038,39 +3038,24 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
                                out_result, out_error);
 }
 
-static bool8_t scene_load_json_owned(VkrScene *scene,
-                                     struct VkrRenderAssets *assets,
-                                     String8 json, String8 owner,
-                                     VkrAllocator *temp_alloc,
-                                     VkrSceneLoadResult *out_result,
-                                     VkrSceneError *out_error) {
-  if (out_result) {
-    *out_result = (VkrSceneLoadResult){0};
-  }
-  if (!scene || !scene->world || !assets || !temp_alloc || !json.str) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
-    return false_v;
-  }
+/** Borrowed load inputs and parsed entities shared by the synchronous
+ * publication stages; `imports` and `entity_ids` live in `temp_alloc`. */
+typedef struct SceneJsonLoad {
+  VkrScene *scene;
+  struct VkrRenderAssets *assets;
+  String8 owner;
+  VkrAllocator *temp_alloc;
+  VkrSceneError *out_error;
+  uint64_t source_fingerprint;
+  SceneEntityImport *imports;
+  VkrEntityId *entity_ids;
+  uint32_t entity_count;
+} SceneJsonLoad;
 
-  VkrJsonReader root = vkr_json_reader_from_string(json);
-  int32_t version = 1;
-  VkrJsonReader version_reader = root;
-  if (vkr_json_get_int(&version_reader, "version", &version) &&
-      (version < 1 || version > 2)) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_UNSUPPORTED_VERSION;
-    log_error("Scene loader: unsupported scene version %d", version);
-    return false_v;
-  }
-
-  uint64_t scene_source_fingerprint = 0;
-  if (!scene_loader_source_fingerprint(json, &scene_source_fingerprint)) {
-    if (out_error) {
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    }
-    return false_v;
-  }
+/* Validates and applies the root-level authored settings before any entity. */
+vkr_internal bool8_t scene_load_json_apply_root_imports(
+    VkrScene *scene, struct VkrRenderAssets *assets, String8 json,
+    String8 owner, VkrAllocator *temp_alloc, VkrSceneError *out_error) {
   const SceneFogImport fog_import = scene_loader_parse_fog_import(json);
   if (!fog_import.valid) {
     if (out_error)
@@ -3179,34 +3164,30 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
       NULL, NULL);
   (void)vkr_world_resources_prepare_scene_reflection_probes(
       assets, &assets->world_resources, scene);
+  return true_v;
+}
 
-  uint32_t entity_count = 0;
-  if (!scene_json_count_entities(&root, &entity_count)) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    log_error("Scene loader: missing or invalid entities array");
-    return false_v;
-  }
-
-  if (entity_count == 0) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_NONE;
-    return true_v;
-  }
-
-  SceneEntityImport *imports =
-      vkr_allocator_alloc(temp_alloc, entity_count * sizeof(SceneEntityImport),
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrEntityId *entity_ids =
-      vkr_allocator_alloc(temp_alloc, entity_count * sizeof(VkrEntityId),
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+/* Parses the entities array into temp storage and enforces the player, weapon
+ * and rectangle-light limits before any entity is created. Shrinks
+ * `entity_count` to the number of parsed entities. */
+vkr_internal bool8_t scene_load_json_parse_entities(SceneJsonLoad *load,
+                                                    const VkrJsonReader *root) {
+  VkrSceneError *out_error = load->out_error;
+  SceneEntityImport *imports = vkr_allocator_alloc(
+      load->temp_alloc, load->entity_count * sizeof(SceneEntityImport),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrEntityId *entity_ids = vkr_allocator_alloc(
+      load->temp_alloc, load->entity_count * sizeof(VkrEntityId),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!imports || !entity_ids) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
     return false_v;
   }
+  load->imports = imports;
+  load->entity_ids = entity_ids;
 
-  VkrJsonReader entities_reader = root;
+  VkrJsonReader entities_reader = *root;
   if (!vkr_json_find_array(&entities_reader, "entities")) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
@@ -3218,7 +3199,7 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
   uint32_t player_count = 0;
   uint32_t player_weapon_count = 0;
   while (vkr_json_next_array_element(&entities_reader)) {
-    if (parsed >= entity_count) {
+    if (parsed >= load->entity_count) {
       break;
     }
 
@@ -3237,7 +3218,8 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
         *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
       return false_v;
     }
-    if (!scene_resolve_entity_paths(temp_alloc, owner, &imports[parsed])) {
+    if (!scene_resolve_entity_paths(load->temp_alloc, load->owner,
+                                    &imports[parsed])) {
       if (out_error) {
         *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
       }
@@ -3261,11 +3243,20 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
     return false_v;
   }
 
-  if (parsed != entity_count) {
-    entity_count = parsed;
+  if (parsed != load->entity_count) {
+    load->entity_count = parsed;
   }
+  return true_v;
+}
 
-  for (uint32_t i = 0; i < entity_count; i++) {
+/* Creates one entity per import with its visibility, name, transform and
+ * player bindings, recording each id for the later stages. */
+vkr_internal bool8_t
+scene_load_json_create_entities(const SceneJsonLoad *load) {
+  VkrScene *scene = load->scene;
+  const SceneEntityImport *imports = load->imports;
+  VkrSceneError *out_error = load->out_error;
+  for (uint32_t i = 0; i < load->entity_count; i++) {
     if ((imports[i].has_player &&
          scene->player_entity.u64 != VKR_ENTITY_ID_INVALID.u64) ||
         (imports[i].has_player_weapon &&
@@ -3284,7 +3275,7 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
       return false_v;
     }
 
-    entity_ids[i] = entity;
+    load->entity_ids[i] = entity;
     vkr_scene_set_visibility(scene, entity, true_v, true_v);
     if (!vkr_entity_has_component(scene->world, entity, scene->comp_visibility))
       return false_v;
@@ -3316,131 +3307,133 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
       scene->player_weapon_bone = imports[i].player_weapon_bone;
     }
   }
+  return true_v;
+}
 
-  for (uint32_t i = 0; i < entity_count; i++) {
-    int32_t parent_index = imports[i].parent_index;
+vkr_internal void scene_load_json_set_parents(const SceneJsonLoad *load) {
+  for (uint32_t i = 0; i < load->entity_count; i++) {
+    int32_t parent_index = load->imports[i].parent_index;
     if (parent_index < 0) {
       continue;
     }
-    if ((uint32_t)parent_index >= entity_count) {
+    if ((uint32_t)parent_index >= load->entity_count) {
       log_warn("Scene loader: entity %u parent index %d is out of range", i,
                parent_index);
       continue;
     }
-    vkr_scene_set_parent(scene, entity_ids[i], entity_ids[parent_index]);
+    vkr_scene_set_parent(load->scene, load->entity_ids[i],
+                         load->entity_ids[parent_index]);
   }
+}
 
-  uint32_t loaded_meshes = 0;
-  uint32_t imported_nodes = 0;
-  for (uint32_t i = 0; i < entity_count; ++i) {
-    SceneSourceIdentity identity = {.scene_entity_index = i,
-                                    .gltf_node_index = UINT32_MAX,
-                                    .gltf_mesh_index = UINT32_MAX,
-                                    .gltf_camera_index = UINT32_MAX,
-                                    .gltf_skin_index = UINT32_MAX,
-                                    .gltf_light_index = UINT32_MAX,
-                                    .source_fingerprint =
-                                        scene_source_fingerprint};
-    if (!vkr_scene_set_source_identity(scene, entity_ids[i], &identity)) {
-      goto animation_failure;
-    }
-    if (!imports[i].has_mesh)
-      continue;
-    VkrResourceHandleInfo resource = {0}, resolved = {0};
-    VkrResourceHandleInfo animation = {0};
-    VkrEntityId *nodes = NULL;
-    uint32_t node_count = 0;
-    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, imports[i].mesh_path,
-                                  temp_alloc, &resource, &error)) {
-      if (resource.request_id || resource.as.mesh) {
-        vkr_resource_system_unload(&resource, imports[i].mesh_path);
-      }
-      if (out_error) {
-        *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
-      }
-      goto animation_failure;
-    }
-    resolved = resource;
-    bool8_t success = resource.as.mesh || vkr_resource_system_try_get_resolved(
-                                              &resource, &resolved);
-    if (success && imports[i].has_animation) {
-      success = vkr_resource_system_load(VKR_RESOURCE_TYPE_ANIMATION,
-                                         imports[i].animation_path, temp_alloc,
-                                         &animation, &error);
-    }
-    VkrMeshLoadDesc desc = {.mesh_path = imports[i].mesh_path,
-                            .pipeline_domain = imports[i].pipeline_domain,
-                            .shader_override = imports[i].shader_override,
-                            .transform = vkr_transform_identity()};
-    if (success && resolved.as.mesh->source.nodes.length) {
-      const VkrMeshSource *source = &resolved.as.mesh->source;
-      node_count = (uint32_t)source->nodes.length;
-      nodes = vkr_allocator_alloc(temp_alloc,
-                                  source->nodes.length * sizeof(VkrEntityId),
-                                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      success = nodes && vkr_scene_instantiate_source_nodes(
-                             scene, source, entity_ids[i], i, nodes, out_error);
-      for (uint32_t n = 0; success && n < source->nodes.length; ++n) {
-        const VkrMeshSourceNode *node = &source->nodes.data[n];
-        if (!node->in_scene)
-          continue;
-        imported_nodes++;
-        if (node->mesh_variant == UINT32_MAX ||
-            !source->meshes.data[node->mesh_variant].range_count)
-          continue;
-        desc.source_mesh_index_plus_one = node->mesh_variant + 1u;
-        success = scene_loader_attach_source_mesh(
-            scene, assets, nodes[n], &desc, &resolved,
-            imports[i].shadow_caster_static, &error);
-        loaded_meshes += success;
-      }
-    } else if (success) {
-      success = scene_loader_attach_source_mesh(
-          scene, assets, entity_ids[i], &desc, &resolved,
-          imports[i].shadow_caster_static, &error);
-      loaded_meshes += success;
-    }
-    if (success && imports[i].has_animation) {
-      const char *animation_error = NULL;
-      success = vkr_scene_animation_attach(
-          scene, entity_ids[i], &resource, &animation, nodes, node_count,
-          &imports[i].animation, temp_alloc, &animation_error);
-      if (!success) {
-        log_error("Scene loader: animation attach failed: %s",
-                  animation_error ? animation_error : "unknown error");
-      }
-    }
+/* Loads entity `i`'s mesh and optional animation, instantiates authored source
+ * nodes, attaches their meshes and the animation, then releases both requests.
+ * False means the caller must detach every attached animation. */
+vkr_internal bool8_t scene_load_json_attach_entity_mesh(
+    const SceneJsonLoad *load, uint32_t i, uint32_t *loaded_meshes,
+    uint32_t *imported_nodes) {
+  VkrScene *scene = load->scene;
+  struct VkrRenderAssets *assets = load->assets;
+  VkrAllocator *temp_alloc = load->temp_alloc;
+  VkrSceneError *out_error = load->out_error;
+  const SceneEntityImport *imports = load->imports;
+  const VkrEntityId *entity_ids = load->entity_ids;
+  VkrResourceHandleInfo resource = {0}, resolved = {0};
+  VkrResourceHandleInfo animation = {0};
+  VkrEntityId *nodes = NULL;
+  uint32_t node_count = 0;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, imports[i].mesh_path,
+                                temp_alloc, &resource, &error)) {
     if (resource.request_id || resource.as.mesh) {
       vkr_resource_system_unload(&resource, imports[i].mesh_path);
     }
-    if (animation.request_id || animation.as.animation) {
-      vkr_resource_system_unload(&animation, imports[i].animation_path);
+    if (out_error) {
+      *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
     }
+    return false_v;
+  }
+  resolved = resource;
+  bool8_t success = resource.as.mesh ||
+                    vkr_resource_system_try_get_resolved(&resource, &resolved);
+  if (success && imports[i].has_animation) {
+    success = vkr_resource_system_load(VKR_RESOURCE_TYPE_ANIMATION,
+                                       imports[i].animation_path, temp_alloc,
+                                       &animation, &error);
+  }
+  VkrMeshLoadDesc desc = {.mesh_path = imports[i].mesh_path,
+                          .pipeline_domain = imports[i].pipeline_domain,
+                          .shader_override = imports[i].shader_override,
+                          .transform = vkr_transform_identity()};
+  if (success && resolved.as.mesh->source.nodes.length) {
+    const VkrMeshSource *source = &resolved.as.mesh->source;
+    node_count = (uint32_t)source->nodes.length;
+    nodes = vkr_allocator_alloc(temp_alloc,
+                                source->nodes.length * sizeof(VkrEntityId),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    success = nodes && vkr_scene_instantiate_source_nodes(
+                           scene, source, entity_ids[i], i, nodes, out_error);
+    for (uint32_t n = 0; success && n < source->nodes.length; ++n) {
+      const VkrMeshSourceNode *node = &source->nodes.data[n];
+      if (!node->in_scene)
+        continue;
+      (*imported_nodes)++;
+      if (node->mesh_variant == UINT32_MAX ||
+          !source->meshes.data[node->mesh_variant].range_count)
+        continue;
+      desc.source_mesh_index_plus_one = node->mesh_variant + 1u;
+      success = scene_loader_attach_source_mesh(
+          scene, assets, nodes[n], &desc, &resolved,
+          imports[i].shadow_caster_static, &error);
+      *loaded_meshes += success;
+    }
+  } else if (success) {
+    success = scene_loader_attach_source_mesh(
+        scene, assets, entity_ids[i], &desc, &resolved,
+        imports[i].shadow_caster_static, &error);
+    *loaded_meshes += success;
+  }
+  if (success && imports[i].has_animation) {
+    const char *animation_error = NULL;
+    success = vkr_scene_animation_attach(
+        scene, entity_ids[i], &resource, &animation, nodes, node_count,
+        &imports[i].animation, temp_alloc, &animation_error);
     if (!success) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
-      goto animation_failure;
+      log_error("Scene loader: animation attach failed: %s",
+                animation_error ? animation_error : "unknown error");
     }
   }
+  if (resource.request_id || resource.as.mesh) {
+    vkr_resource_system_unload(&resource, imports[i].mesh_path);
+  }
+  if (animation.request_id || animation.as.animation) {
+    vkr_resource_system_unload(&animation, imports[i].animation_path);
+  }
+  if (!success) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
+    return false_v;
+  }
+  return true_v;
+}
 
-  // Load text3d components
+vkr_internal uint32_t scene_load_json_attach_text3d(const SceneJsonLoad *load) {
   uint32_t loaded_text3d = 0;
-  for (uint32_t i = 0; i < entity_count; i++) {
-    if (!imports[i].has_text3d)
+  for (uint32_t i = 0; i < load->entity_count; i++) {
+    if (!load->imports[i].has_text3d)
       continue;
 
-    VkrEntityId entity = entity_ids[i];
-    SceneText3DImport *text_import = &imports[i].text3d;
+    VkrEntityId entity = load->entity_ids[i];
+    SceneText3DImport *text_import = &load->imports[i].text3d;
 
     // Try to acquire font by name if specified
     VkrFontHandle font = VKR_FONT_HANDLE_INVALID;
     if (text_import->font_name.length > 0) {
       // Create null-terminated copy for font system lookup
       String8 font_name_copy =
-          string8_duplicate(temp_alloc, &text_import->font_name);
+          string8_duplicate(load->temp_alloc, &text_import->font_name);
       VkrRendererError font_err = VKR_RENDERER_ERROR_NONE;
-      font = vkr_font_system_acquire(&assets->font_system, font_name_copy,
+      font = vkr_font_system_acquire(&load->assets->font_system, font_name_copy,
                                      true_v, &font_err);
       if (font.id == 0) {
         log_warn("Scene loader: entity %u text3d font '%.*s' not found, using "
@@ -3452,7 +3445,7 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
     }
 
     // Create null-terminated copy of text content
-    String8 text_copy = string8_duplicate(temp_alloc, &text_import->text);
+    String8 text_copy = string8_duplicate(load->temp_alloc, &text_import->text);
 
     VkrSceneText3DConfig text_config = VKR_SCENE_TEXT3D_CONFIG_DEFAULT;
     text_config.text = text_copy;
@@ -3464,7 +3457,7 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
     text_config.uv_inset_px = text_import->uv_inset_px;
 
     VkrSceneError text_err = VKR_SCENE_ERROR_NONE;
-    if (!vkr_scene_set_text3d(scene, entity, &text_config, &text_err)) {
+    if (!vkr_scene_set_text3d(load->scene, entity, &text_config, &text_err)) {
       log_error("Scene loader: failed to set text3d for entity %u (err=%d)", i,
                 (int)text_err);
       continue;
@@ -3472,15 +3465,17 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
 
     loaded_text3d++;
   }
+  return loaded_text3d;
+}
 
-  // Load shape components
+vkr_internal uint32_t scene_load_json_attach_shapes(const SceneJsonLoad *load) {
   uint32_t loaded_shapes = 0;
-  for (uint32_t i = 0; i < entity_count; i++) {
-    if (!imports[i].has_shape)
+  for (uint32_t i = 0; i < load->entity_count; i++) {
+    if (!load->imports[i].has_shape)
       continue;
 
-    VkrEntityId entity = entity_ids[i];
-    SceneShapeImport *shape_import = &imports[i].shape;
+    VkrEntityId entity = load->entity_ids[i];
+    SceneShapeImport *shape_import = &load->imports[i].shape;
 
     VkrSceneShapeConfig shape_config = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
     shape_config.type = shape_import->type;
@@ -3490,7 +3485,7 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
     shape_config.material_path = shape_import->material_path;
 
     VkrSceneError shape_err = VKR_SCENE_ERROR_NONE;
-    if (!vkr_scene_set_shape(scene, assets, entity, &shape_config,
+    if (!vkr_scene_set_shape(load->scene, load->assets, entity, &shape_config,
                              &shape_err)) {
       log_error("Scene loader: failed to set shape for entity %u (err=%d)", i,
                 (int)shape_err);
@@ -3499,15 +3494,18 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
 
     loaded_shapes++;
   }
+  return loaded_shapes;
+}
 
-  // Load point light components
+vkr_internal uint32_t
+scene_load_json_attach_point_lights(const SceneJsonLoad *load) {
   uint32_t loaded_point_lights = 0;
-  for (uint32_t i = 0; i < entity_count; i++) {
-    if (!imports[i].has_point_light)
+  for (uint32_t i = 0; i < load->entity_count; i++) {
+    if (!load->imports[i].has_point_light)
       continue;
 
-    VkrEntityId entity = entity_ids[i];
-    ScenePointLightImport *light_import = &imports[i].point_light;
+    VkrEntityId entity = load->entity_ids[i];
+    ScenePointLightImport *light_import = &load->imports[i].point_light;
     ScenePointLight light = {
         .color = light_import->color,
         .intensity = light_import->intensity,
@@ -3523,42 +3521,52 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
         .enabled = light_import->enabled,
     };
 
-    if (!vkr_scene_set_point_light(scene, entity, &light)) {
+    if (!vkr_scene_set_point_light(load->scene, entity, &light)) {
       log_error("Scene loader: failed to set point light for entity %u", i);
       continue;
     }
 
     loaded_point_lights++;
   }
+  return loaded_point_lights;
+}
 
-  // Load rectangle light components
-  for (uint32_t i = 0; i < entity_count; i++) {
-    if (!imports[i].has_rectangle_light)
+/* False means the caller must detach every attached animation. */
+vkr_internal bool8_t
+scene_load_json_attach_rectangle_lights(const SceneJsonLoad *load) {
+  for (uint32_t i = 0; i < load->entity_count; i++) {
+    if (!load->imports[i].has_rectangle_light)
       continue;
-    const SceneRectangleLightImport *light_import = &imports[i].rectangle_light;
+    const SceneRectangleLightImport *light_import =
+        &load->imports[i].rectangle_light;
     const SceneRectangleLight light = {
         .color = light_import->color,
         .radiance = light_import->radiance,
         .size = light_import->size,
         .enabled = light_import->enabled,
     };
-    if (!vkr_scene_set_rectangle_light(scene, entity_ids[i], &light)) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
+    if (!vkr_scene_set_rectangle_light(load->scene, load->entity_ids[i],
+                                       &light)) {
+      if (load->out_error)
+        *load->out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
       log_error("Scene loader: failed to set rectangle light for entity %u", i);
-      goto animation_failure;
+      return false_v;
     }
   }
+  return true_v;
+}
 
-  // Load directional light components
+vkr_internal uint32_t
+scene_load_json_attach_directional_lights(const SceneJsonLoad *load) {
   uint32_t loaded_directional_lights = 0;
   bool8_t enabled_directional_seen = false_v;
-  for (uint32_t i = 0; i < entity_count; i++) {
-    if (!imports[i].has_directional_light)
+  for (uint32_t i = 0; i < load->entity_count; i++) {
+    if (!load->imports[i].has_directional_light)
       continue;
 
-    VkrEntityId entity = entity_ids[i];
-    SceneDirectionalLightImport *light_import = &imports[i].directional_light;
+    VkrEntityId entity = load->entity_ids[i];
+    SceneDirectionalLightImport *light_import =
+        &load->imports[i].directional_light;
     SceneDirectionalLight light = {
         .color = light_import->color,
         .intensity = light_import->intensity,
@@ -3568,7 +3576,7 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
         .enabled = light_import->enabled,
     };
 
-    if (!vkr_scene_set_directional_light(scene, entity, &light)) {
+    if (!vkr_scene_set_directional_light(load->scene, entity, &light)) {
       log_error("Scene loader: failed to set directional light for entity %u",
                 i);
       continue;
@@ -3584,9 +3592,121 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
 
     loaded_directional_lights++;
   }
+  return loaded_directional_lights;
+}
+
+static bool8_t scene_load_json_owned(VkrScene *scene,
+                                     struct VkrRenderAssets *assets,
+                                     String8 json, String8 owner,
+                                     VkrAllocator *temp_alloc,
+                                     VkrSceneLoadResult *out_result,
+                                     VkrSceneError *out_error) {
+  if (out_result) {
+    *out_result = (VkrSceneLoadResult){0};
+  }
+  if (!scene || !scene->world || !assets || !temp_alloc || !json.str) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
+    return false_v;
+  }
+
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  int32_t version = 1;
+  VkrJsonReader version_reader = root;
+  if (vkr_json_get_int(&version_reader, "version", &version) &&
+      (version < 1 || version > 2)) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_UNSUPPORTED_VERSION;
+    log_error("Scene loader: unsupported scene version %d", version);
+    return false_v;
+  }
+
+  uint64_t scene_source_fingerprint = 0;
+  if (!scene_loader_source_fingerprint(json, &scene_source_fingerprint)) {
+    if (out_error) {
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    }
+    return false_v;
+  }
+  if (!scene_load_json_apply_root_imports(scene, assets, json, owner,
+                                          temp_alloc, out_error)) {
+    return false_v;
+  }
+
+  uint32_t entity_count = 0;
+  if (!scene_json_count_entities(&root, &entity_count)) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
+    log_error("Scene loader: missing or invalid entities array");
+    return false_v;
+  }
+
+  if (entity_count == 0) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_NONE;
+    return true_v;
+  }
+
+  SceneJsonLoad load = {
+      .scene = scene,
+      .assets = assets,
+      .owner = owner,
+      .temp_alloc = temp_alloc,
+      .out_error = out_error,
+      .source_fingerprint = scene_source_fingerprint,
+      .entity_count = entity_count,
+  };
+  if (!scene_load_json_parse_entities(&load, &root)) {
+    return false_v;
+  }
+  if (!scene_load_json_create_entities(&load)) {
+    return false_v;
+  }
+  scene_load_json_set_parents(&load);
+
+  uint32_t loaded_meshes = 0;
+  uint32_t imported_nodes = 0;
+  for (uint32_t i = 0; i < load.entity_count; ++i) {
+    SceneSourceIdentity identity = {.scene_entity_index = i,
+                                    .gltf_node_index = UINT32_MAX,
+                                    .gltf_mesh_index = UINT32_MAX,
+                                    .gltf_camera_index = UINT32_MAX,
+                                    .gltf_skin_index = UINT32_MAX,
+                                    .gltf_light_index = UINT32_MAX,
+                                    .source_fingerprint =
+                                        load.source_fingerprint};
+    if (!vkr_scene_set_source_identity(scene, load.entity_ids[i], &identity)) {
+      goto animation_failure;
+    }
+    if (!load.imports[i].has_mesh)
+      continue;
+    if (!scene_load_json_attach_entity_mesh(&load, i, &loaded_meshes,
+                                            &imported_nodes)) {
+      goto animation_failure;
+    }
+  }
+
+  // Load text3d components
+  const uint32_t loaded_text3d = scene_load_json_attach_text3d(&load);
+
+  // Load shape components
+  const uint32_t loaded_shapes = scene_load_json_attach_shapes(&load);
+
+  // Load point light components
+  const uint32_t loaded_point_lights =
+      scene_load_json_attach_point_lights(&load);
+
+  // Load rectangle light components
+  if (!scene_load_json_attach_rectangle_lights(&load)) {
+    goto animation_failure;
+  }
+
+  // Load directional light components
+  const uint32_t loaded_directional_lights =
+      scene_load_json_attach_directional_lights(&load);
 
   if (out_result) {
-    out_result->entity_count = entity_count + imported_nodes;
+    out_result->entity_count = load.entity_count + imported_nodes;
     out_result->mesh_count = loaded_meshes;
     out_result->text3d_count = loaded_text3d;
     out_result->shape_count = loaded_shapes;
@@ -3599,9 +3719,9 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
   return true_v;
 
 animation_failure:
-  for (uint32_t i = 0; i < entity_count; ++i) {
-    if (imports[i].has_animation) {
-      vkr_scene_animation_detach(scene, entity_ids[i]);
+  for (uint32_t i = 0; i < load.entity_count; ++i) {
+    if (load.imports[i].has_animation) {
+      vkr_scene_animation_detach(scene, load.entity_ids[i]);
     }
   }
   return false_v;
