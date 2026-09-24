@@ -1118,9 +1118,34 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* True when every texture a finished bake releases still holds the
+   references the bake queued, counting a texture once per handle it fills. */
+vkr_internal bool8_t vkr_vk_ibl_bake_holds_references(
+    VkrVulkanRenderer *renderer, const VkrVulkanPendingIblBake *job) {
+  const VkrTextureHandle handles[] = {job->equirect, job->source,
+                                      job->prefilter};
+  const uint32_t first_handle = job->convert_equirect ? 0u : 1u;
+  for (uint32_t i = first_handle; i < ArrayCount(handles); ++i) {
+    const VkrVulkanPublishedTexture *texture =
+        vkr_vk_texture_publication(renderer, handles[i]);
+    if (!texture)
+      continue;
+    uint32_t releases = 0u;
+    for (uint32_t j = first_handle; j < ArrayCount(handles); ++j) {
+      if (vkr_vk_texture_publication(renderer, handles[j]) == texture)
+        releases++;
+    }
+    if (texture->ibl_reference_count < releases)
+      return false_v;
+  }
+  return true_v;
+}
+
 /* Publishes the IBL bakes this submission recorded and compacts the pending
    list. A false return has already ended the frame through
-   vkr_vk_fail_after_submit. */
+   vkr_vk_fail_after_submit and leaves the list compacted, with the failed
+   bake and every later one still queued, so discard releases each
+   reference once. */
 vkr_internal bool8_t vkr_vk_commit_ibl_bake_recordings(
     VkrVulkanRenderer *renderer, uint64_t signal_value) {
   uint32_t pending_ibl_write = 0u;
@@ -1132,6 +1157,24 @@ vkr_internal bool8_t vkr_vk_commit_ibl_bake_recordings(
         renderer->pending_ibl_bakes[pending_ibl_write] = *job;
       pending_ibl_write++;
       continue;
+    }
+    /* Checked before this bake mutates anything: the texture loop below
+       releases one reference per handle. */
+    if (!job->is_atmosphere &&
+        !vkr_vk_ibl_bake_holds_references(renderer, job)) {
+      for (uint32_t kept = i; kept < pending_ibl_count; ++kept) {
+        if (pending_ibl_write != kept)
+          renderer->pending_ibl_bakes[pending_ibl_write] =
+              renderer->pending_ibl_bakes[kept];
+        pending_ibl_write++;
+      }
+      for (uint32_t stale = pending_ibl_write; stale < pending_ibl_count;
+           ++stale)
+        MemZero(&renderer->pending_ibl_bakes[stale],
+                sizeof(renderer->pending_ibl_bakes[stale]));
+      renderer->pending_ibl_bake_count = pending_ibl_write;
+      return vkr_vk_fail_after_submit(
+          renderer, "an IBL texture lost its ownership reference");
     }
     // Includes same-handle prefilter/cubemap and SH coefficient writes.
     vkr_vk_advance_radiance_revision(renderer);
@@ -1172,9 +1215,6 @@ vkr_internal bool8_t vkr_vk_commit_ibl_bake_recordings(
            status query consumes READY or FAILED. */
         if (job->is_atmosphere)
           continue;
-        if (!texture->ibl_reference_count)
-          return vkr_vk_fail_after_submit(
-              renderer, "an IBL texture lost its ownership reference");
         texture->ibl_reference_count--;
         if (!texture->ibl_reference_count && texture->unpublish_requested) {
           texture->live = false_v;
