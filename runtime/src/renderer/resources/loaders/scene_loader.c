@@ -3277,8 +3277,14 @@ scene_load_json_create_entities(const SceneJsonLoad *load) {
 
     load->entity_ids[i] = entity;
     vkr_scene_set_visibility(scene, entity, true_v, true_v);
-    if (!vkr_entity_has_component(scene->world, entity, scene->comp_visibility))
+    if (!vkr_entity_has_component(scene->world, entity,
+                                  scene->comp_visibility)) {
+      if (out_error) {
+        *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
+      }
+      log_error("Scene loader: failed to set visibility for entity %u", i);
       return false_v;
+    }
 
     if (!vkr_scene_set_name(scene, entity, imports[i].name)) {
       if (out_error)
@@ -3676,6 +3682,10 @@ static bool8_t scene_load_json_owned(VkrScene *scene,
                                     .source_fingerprint =
                                         load.source_fingerprint};
     if (!vkr_scene_set_source_identity(scene, load.entity_ids[i], &identity)) {
+      if (out_error) {
+        *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
+      }
+      log_error("Scene loader: failed to set source identity for entity %u", i);
       goto animation_failure;
     }
     if (!load.imports[i].has_mesh)
