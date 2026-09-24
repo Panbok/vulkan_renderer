@@ -470,22 +470,38 @@ static void test_quat_to_euler(void) {
   assert(float_equals(yaw, angle_90, 0.001f) &&
          "vkr_quat_to_euler yaw 90° failed");
 
-  // Test round-trip conversion with simple test case (identity only)
-  // Note: Full round-trip testing is complex due to multiple Euler
-  // representations for the same rotation and gimbal lock issues. We test basic
-  // functionality.
-  VkrQuat identity_check = vkr_quat_from_euler(0.0f, 0.0f, 0.0f);
-  vkr_quat_to_euler(identity_check, &roll, &pitch, &yaw);
+  // Combined rotations exercise the axis order: single-axis cases agree for
+  // XYZ and ZYX decompositions. With |pitch| < 90 degrees and roll and yaw in
+  // (-180, 180] degrees the angles are unique, so they must round-trip.
+  const float32_t combined[][3] = {
+      {0.3f, 0.2f, 0.1f},
+      {1.0f, -0.5f, 0.25f},
+      {-2.5f, 1.2f, 3.0f},
+      {0.5f, 0.0f, 0.7f},
+  };
+  for (uint32_t i = 0; i < ArrayCount(combined); ++i) {
+    const VkrQuat q =
+        vkr_quat_from_euler(combined[i][0], combined[i][1], combined[i][2]);
+    vkr_quat_to_euler(q, &roll, &pitch, &yaw);
+    assert(float_equals(roll, combined[i][0], 0.0005f) &&
+           float_equals(pitch, combined[i][1], 0.0005f) &&
+           float_equals(yaw, combined[i][2], 0.0005f) &&
+           "vkr_quat_to_euler must invert vkr_quat_from_euler");
+  }
 
-  assert(float_equals(roll, 0.0f, 0.001f) &&
-         "vkr_quat_to_euler identity round-trip roll failed");
-  assert(float_equals(pitch, 0.0f, 0.001f) &&
-         "vkr_quat_to_euler identity round-trip pitch failed");
-  assert(float_equals(yaw, 0.0f, 0.001f) &&
-         "vkr_quat_to_euler identity round-trip yaw failed");
-
-  printf("    Note: Complex round-trip testing skipped due to Euler angle "
-         "ambiguities\n");
+  // At +-90 degrees pitch only roll +- yaw is determined, so compare the
+  // rebuilt rotation instead of the angles. q and -q are the same rotation.
+  const float32_t locked[][3] = {{0.4f, VKR_HALF_PI, 0.3f},
+                                 {-0.6f, -VKR_HALF_PI, 1.1f}};
+  for (uint32_t i = 0; i < ArrayCount(locked); ++i) {
+    const VkrQuat q =
+        vkr_quat_from_euler(locked[i][0], locked[i][1], locked[i][2]);
+    vkr_quat_to_euler(q, &roll, &pitch, &yaw);
+    const VkrQuat rebuilt = vkr_quat_from_euler(roll, pitch, yaw);
+    assert((quat_equals(rebuilt, q, 0.001f) ||
+            quat_equals(rebuilt, vec4_negate(q), 0.001f)) &&
+           "vkr_quat_to_euler gimbal-lock rotation must rebuild");
+  }
 
   printf("  test_quat_to_euler PASSED\n");
 }

@@ -444,18 +444,23 @@ vkr_internal INLINE void vkr_quat_to_euler(VkrQuat q, float32_t *roll,
   float32_t wy = q.w * q.y;
   float32_t wz = q.w * q.z;
 
-  // Extract angles for XYZ order (right-handed)
-  float32_t sinp = 2.0f * (wy - xz);
+  // vkr_quat_from_euler builds qx(roll) * qy(pitch) * qz(yaw), whose matrix
+  // Rx * Ry * Rz has m02 = sin(pitch), m12 = -sin(roll) cos(pitch) and
+  // m01 = -cos(pitch) sin(yaw).
+  float32_t sinp = 2.0f * (xz + wy);
 
   if (vkr_abs_f32(sinp) >= VKR_QUAT_GIMBAL_LOCK_THRESHOLD) {
-    // Gimbal lock case: pitch = ±90°
+    // cos(pitch) is ~0, so only roll + yaw (pitch > 0) or roll - yaw
+    // (pitch < 0) is determined; yaw is fixed at 0.
     *pitch = vkr_copysign_f32(VKR_HALF_PI, sinp);
-    *roll = vkr_atan2_f32(-2.0f * (yz - wx), 1.0f - 2.0f * (xx + yy));
-    *yaw = 0.0f; // Set yaw to 0 in gimbal lock
+    const float32_t m10 = 2.0f * (xy + wz);
+    const float32_t m11 = 1.0f - 2.0f * (xx + zz);
+    *roll = vkr_atan2_f32(sinp > 0.0f ? m10 : -m10, m11);
+    *yaw = 0.0f;
   } else {
     *pitch = vkr_asin_f32(vkr_clamp_f32(sinp, -1.0f, 1.0f));
-    *roll = vkr_atan2_f32(2.0f * (yz + wx), 1.0f - 2.0f * (xx + yy));
-    *yaw = vkr_atan2_f32(2.0f * (xy + wz), 1.0f - 2.0f * (yy + zz));
+    *roll = vkr_atan2_f32(2.0f * (wx - yz), 1.0f - 2.0f * (xx + yy));
+    *yaw = vkr_atan2_f32(2.0f * (wz - xy), 1.0f - 2.0f * (yy + zz));
   }
 }
 
