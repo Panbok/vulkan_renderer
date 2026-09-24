@@ -4023,15 +4023,28 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     /* Installed before compilation, because seeding a retained subresource
        reads through this provider. */
     vkr_metal_packet_install_retained_provider(renderer);
+#if VKR_METRICS_ENABLED
+    float64_t graph_stage_start = vkr_platform_get_absolute_time();
+#endif
     if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
                                 &renderer->prepared_frame)) {
       log_error("Metal packet stage failed: graph build");
       goto graph_failure;
     }
+#if VKR_METRICS_ENABLED
+    renderer->packet_build.graph_build_ns =
+        vkr_metrics_elapsed_ns(graph_stage_start);
+    graph_stage_start = vkr_platform_get_absolute_time();
+#endif
     if (!vkr_rg_compile_schedule(renderer->graph)) {
       log_error("Metal packet stage failed: graph compile");
       goto graph_failure;
     }
+#if VKR_METRICS_ENABLED
+    renderer->packet_build.graph_compile_ns =
+        vkr_metrics_elapsed_ns(graph_stage_start);
+    renderer->packet_build.graph_timing_valid = true_v;
+#endif
     if (renderer->graph->passes.length > renderer->max_passes) {
       log_error("Metal packet stage failed: %llu passes exceed capacity %u",
                 (unsigned long long)renderer->graph->passes.length,
