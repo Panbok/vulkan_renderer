@@ -275,92 +275,9 @@ void vkr_harness_report_mark_unavailable(VkrHarnessReport *report,
                                 VKR_HARNESS_EXIT_UNAVAILABLE);
 }
 
-bool8_t vkr_harness_report_write(const char *path,
-                                 const VkrHarnessReport *report,
-                                 VkrHarnessError *out_error) {
-  if (!path || !report) {
-    return false_v;
-  }
-  const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
-  const bool8_t post_transform_cache_enabled =
-      post_cache && post_cache[0] != '\0' && !string_equals(post_cache, "0") &&
-      string_equals(report->case_manifest.renderer.render_mode, "default");
-  const char *ssr_quality = getenv("VKR_SSR_QUALITY");
-  if (!ssr_quality || ssr_quality[0] == '\0') {
-    ssr_quality = "high";
-  }
-  VkrJsonFileWriter file_writer = {0};
-  if (!vkr_json_file_writer_begin(&file_writer, vkr_harness_string(path))) {
-    vkr_harness_error_set(out_error, "report.open", "$",
-                          "Unable to begin report '%s'", path);
-    return false_v;
-  }
-  VkrJsonWriter *writer = &file_writer.writer;
-  char subsystem_mask[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
-  vkr_harness_format_subsystem_mask(subsystem_mask, report->subsystem_mask);
-  const uint32_t target_width = report->provenance.actual_target_width
-                                    ? report->provenance.actual_target_width
-                                    : report->case_manifest.width;
-  const uint32_t target_height = report->provenance.actual_target_height
-                                     ? report->provenance.actual_target_height
-                                     : report->case_manifest.height;
-  const float64_t render_scale =
-      report->case_manifest.renderer.render_scale > 0.0f
-          ? report->case_manifest.renderer.render_scale
-          : 1.0;
-  const float64_t content_scale = report->case_manifest.content_scale > 0.0f
-                                      ? report->case_manifest.content_scale
-                                      : 1.0;
-  const uint32_t render_width =
-      report->case_manifest.renderer.render_width
-          ? report->case_manifest.renderer.render_width
-          : ClampBot((uint32_t)((float64_t)target_width * render_scale + 0.5),
-                     1u);
-  const uint32_t render_height =
-      report->case_manifest.renderer.render_height
-          ? report->case_manifest.renderer.render_height
-          : ClampBot((uint32_t)((float64_t)target_height * render_scale + 0.5),
-                     1u);
-  const char *upscaler = report->case_manifest.renderer.upscaler[0]
-                             ? report->case_manifest.renderer.upscaler
-                             : "spatial";
-  const VkrHarnessMetricResult *observed_scale =
-      vkr_harness_report_find_metric(report, "frame.render_scale");
-  const VkrHarnessMetricResult *observed_width =
-      vkr_harness_report_find_metric(report, "frame.render_width");
-  const VkrHarnessMetricResult *observed_height =
-      vkr_harness_report_find_metric(report, "frame.render_height");
-  const VkrHarnessMetricResult *observed_transitions =
-      vkr_harness_report_find_metric(report,
-                                     "frame.dynamic_resolution_transitions");
-  const bool8_t scale_observed =
-      observed_scale && observed_scale->statistics.sample_count > 0u;
-  const bool8_t width_observed =
-      observed_width && observed_width->statistics.sample_count > 0u;
-  const bool8_t height_observed =
-      observed_height && observed_height->statistics.sample_count > 0u;
-  const bool8_t transitions_observed =
-      observed_transitions &&
-      observed_transitions->statistics.sample_count > 0u;
-  const float64_t observed_scale_min =
-      scale_observed ? observed_scale->statistics.min : render_scale;
-  const float64_t observed_scale_max =
-      scale_observed ? observed_scale->statistics.max : render_scale;
-  const uint64_t observed_width_min =
-      width_observed ? (uint64_t)observed_width->statistics.min : render_width;
-  const uint64_t observed_width_max =
-      width_observed ? (uint64_t)observed_width->statistics.max : render_width;
-  const uint64_t observed_height_min =
-      height_observed ? (uint64_t)observed_height->statistics.min
-                      : render_height;
-  const uint64_t observed_height_max =
-      height_observed ? (uint64_t)observed_height->statistics.max
-                      : render_height;
-  const uint64_t observed_transition_count =
-      transitions_observed ? (uint64_t)observed_transitions->statistics.max
-                           : 0u;
+vkr_internal bool8_t vkr_harness_report_write_header(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
   bool8_t ok =
-      vkr_json_writer_begin_object(writer) &&
       vkr_harness_json_emit_u64(writer, "schema_version",
                                 VKR_HARNESS_SCHEMA_VERSION) &&
       vkr_harness_json_emit_string(writer, "kind", "vkr.harness.report") &&
@@ -400,293 +317,366 @@ bool8_t vkr_harness_report_write(const char *path,
     ok = vkr_json_writer_string(
         writer, vkr_harness_string(report->incompatibility_reasons[i]));
   }
-  ok =
-      ok && vkr_json_writer_end_array(writer) &&
-      vkr_json_writer_end_object(writer) &&
-      vkr_harness_json_emit_name(writer, "provenance") &&
-      vkr_json_writer_begin_object(writer) &&
-      vkr_harness_json_emit_string(writer, "started_at",
-                                   report->provenance.started_at) &&
-      vkr_harness_json_emit_string(writer, "ended_at",
-                                   report->provenance.ended_at) &&
-      vkr_harness_json_emit_string(writer, "git_sha",
-                                   report->provenance.git_sha) &&
-      vkr_harness_json_emit_bool(writer, "dirty", report->provenance.dirty) &&
-      vkr_harness_json_emit_string(writer, "binary_sha256",
-                                   report->provenance.binary_sha256) &&
-      vkr_harness_json_emit_string(writer, "build_type",
-                                   report->provenance.build_type) &&
-      vkr_harness_json_emit_string(writer, "compiler",
-                                   report->provenance.compiler) &&
-      vkr_harness_json_emit_string(writer, "os", report->provenance.os) &&
-      vkr_harness_json_emit_string(writer, "cpu", report->provenance.cpu) &&
-      vkr_harness_json_emit_string(writer, "gpu", report->provenance.gpu) &&
-      vkr_harness_json_emit_u64(writer, "gpu_vendor_id",
-                                report->provenance.gpu_vendor_id) &&
-      vkr_harness_json_emit_u64(writer, "gpu_device_id",
-                                report->provenance.gpu_device_id) &&
-      vkr_harness_json_emit_string(writer, "driver",
-                                   report->provenance.driver) &&
-      vkr_harness_json_emit_string(writer, "world_renderer",
-                                   report->provenance.world_renderer) &&
-      vkr_harness_json_emit_string(writer, "power_mode",
-                                   report->provenance.power_mode) &&
-      vkr_harness_json_emit_string(writer, "thermal_state_start",
-                                   report->provenance.thermal_state_start) &&
-      vkr_harness_json_emit_string(writer, "thermal_state_end",
-                                   report->provenance.thermal_state_end) &&
-      vkr_harness_json_emit_i64(writer, "process_priority",
-                                report->provenance.process_priority) &&
-      vkr_json_writer_end_object(writer) &&
-      vkr_harness_json_emit_name(writer, "comparison") &&
-      vkr_json_writer_begin_object(writer) &&
-      vkr_harness_json_emit_string(writer, "environment_fingerprint",
-                                   report->environment_fingerprint) &&
-      vkr_harness_json_emit_string(writer, "workload_fingerprint",
-                                   report->workload_fingerprint) &&
-      vkr_harness_json_emit_string(writer, "policy_fingerprint",
-                                   report->policy_fingerprint) &&
-      vkr_json_writer_end_object(writer) &&
-      vkr_harness_json_emit_name(writer, "effective_config") &&
-      vkr_json_writer_begin_object(writer) &&
-      vkr_harness_json_emit_name(writer, "resolution") &&
-      vkr_json_writer_begin_array(writer) &&
-      vkr_json_writer_u64(writer, target_width) &&
-      vkr_json_writer_u64(writer, target_height) &&
-      vkr_json_writer_end_array(writer) &&
-      vkr_harness_json_emit_name(writer, "render_resolution") &&
-      vkr_json_writer_begin_array(writer) &&
-      vkr_json_writer_u64(writer, render_width) &&
-      vkr_json_writer_u64(writer, render_height) &&
-      vkr_json_writer_end_array(writer) &&
-      vkr_harness_json_emit_f64(writer, "content_scale", content_scale) &&
-      (!report->case_manifest.resize_round_trip ||
-       (vkr_harness_json_emit_name(writer, "resize_round_trip") &&
-        vkr_json_writer_begin_array(writer) &&
-        vkr_json_writer_u64(writer, report->case_manifest.resize_width) &&
-        vkr_json_writer_u64(writer, report->case_manifest.resize_height) &&
-        vkr_json_writer_end_array(writer))) &&
-      vkr_harness_json_emit_string(writer, "scene",
-                                   report->case_manifest.scene) &&
-      vkr_harness_json_emit_string(
-          writer, "target",
-          vkr_harness_target_name(report->provenance.actual_target)) &&
-      vkr_harness_json_emit_u64(writer, "target_image_count",
-                                report->provenance.actual_target_image_count) &&
-      vkr_harness_json_emit_string(writer, "color_format",
-                                   report->provenance.color_format) &&
-      vkr_harness_json_emit_string(writer, "depth_format",
-                                   report->provenance.depth_format) &&
-      vkr_harness_json_emit_string(writer, "color_space",
-                                   report->provenance.color_space) &&
-      vkr_harness_json_emit_string(writer, "world_renderer",
-                                   report->provenance.world_renderer) &&
-      vkr_harness_json_emit_string(
-          writer, "present_mode",
-          vkr_harness_present_name(report->provenance.actual_present)) &&
-      vkr_harness_json_emit_string(
-          writer, "boot_profile",
-          vkr_harness_boot_name(report->case_manifest.boot)) &&
-      vkr_harness_json_emit_string(writer, "subsystem_mask", subsystem_mask) &&
-      vkr_harness_json_emit_bool(writer, "editor",
-                                 report->case_manifest.renderer.editor) &&
-      vkr_harness_json_emit_u64(
-          writer, "editor_stop_frame",
-          report->case_manifest.renderer.editor_stop_frame) &&
-      vkr_harness_json_emit_u64(
-          writer, "editor_resume_frame",
-          report->case_manifest.renderer.editor_resume_frame) &&
-      vkr_harness_json_emit_bool(writer, "text_fixture",
-                                 report->case_manifest.renderer.text_fixture) &&
-      vkr_harness_json_emit_bool(
-          writer, "physics_fixture",
-          report->case_manifest.renderer.physics_fixture) &&
-      vkr_harness_json_emit_bool(writer, "taa_enabled",
-                                 report->case_manifest.renderer.taa_enabled) &&
-      vkr_harness_json_emit_bool(
-          writer, "tonemap_enabled",
-          report->case_manifest.renderer.tonemap_enabled) &&
-      vkr_harness_json_emit_bool(writer, "fxaa_enabled",
-                                 report->case_manifest.renderer.fxaa_enabled) &&
-      vkr_harness_json_emit_string(
-          writer, "display_transform",
-          report->case_manifest.renderer.display_transform) &&
-      vkr_harness_json_emit_f64(
-          writer, "white_balance_temperature",
-          report->case_manifest.renderer.white_balance_temperature) &&
-      vkr_harness_json_emit_f64(
-          writer, "white_balance_tint",
-          report->case_manifest.renderer.white_balance_tint) &&
-      vkr_harness_json_emit_f64(
-          writer, "color_contrast",
-          report->case_manifest.renderer.color_contrast) &&
-      vkr_harness_json_emit_f64(
-          writer, "color_saturation",
-          report->case_manifest.renderer.color_saturation) &&
-      vkr_harness_json_emit_string(writer, "renderer_backend",
-                                   report->case_manifest.renderer.backend[0]
-                                       ? report->case_manifest.renderer.backend
-                                       : "external") &&
-      vkr_harness_json_emit_u64(
-          writer, "cascades", report->case_manifest.renderer.shadow_cascades) &&
-      vkr_harness_json_emit_u64(
-          writer, "pcf_samples",
-          report->case_manifest.renderer.shadow_pcf_samples) &&
-      vkr_harness_json_emit_bool(
-          writer, "pcf_uniform_early_out",
-          report->case_manifest.renderer.shadow_pcf_early_out) &&
-      vkr_harness_json_emit_bool(writer, "shadow_sdsm",
-                                 report->case_manifest.renderer.shadow_sdsm) &&
-      vkr_harness_json_emit_f64(
-          writer, "shadow_split_lambda",
-          report->case_manifest.renderer.shadow_split_lambda) &&
-      vkr_harness_json_emit_u64(
-          writer, "shadow_map_size",
-          report->case_manifest.renderer.shadow_map_size) &&
-      vkr_harness_json_emit_string(
-          writer, "exposure_mode",
-          report->case_manifest.renderer.exposure_mode) &&
-      vkr_harness_json_emit_f64(
-          writer, "manual_exposure",
-          report->case_manifest.renderer.manual_exposure) &&
-      vkr_harness_json_emit_f64(
-          writer, "exposure_compensation_ev",
-          report->case_manifest.renderer.exposure_compensation_ev) &&
-      vkr_harness_json_emit_u64(
-          writer, "exposure_reset_frame",
-          report->case_manifest.renderer.exposure_reset_frame) &&
-      vkr_harness_json_emit_bool(
-          writer, "bloom_enabled",
-          report->case_manifest.renderer.bloom_enabled) &&
-      vkr_harness_json_emit_f64(
-          writer, "bloom_threshold",
-          report->case_manifest.renderer.bloom_threshold) &&
-      vkr_harness_json_emit_f64(writer, "bloom_knee",
-                                report->case_manifest.renderer.bloom_knee) &&
-      vkr_harness_json_emit_f64(
-          writer, "bloom_intensity",
-          report->case_manifest.renderer.bloom_intensity) &&
-      vkr_harness_json_emit_string(
-          writer, "display_output",
-          report->case_manifest.renderer.display_output) &&
-      vkr_harness_json_emit_bool(writer, "ssgi_enabled",
-                                 report->case_manifest.renderer.ssgi_enabled) &&
-      vkr_harness_json_emit_bool(writer, "ssr_enabled",
-                                 report->case_manifest.renderer.ssr_enabled) &&
-      vkr_harness_json_emit_string(writer, "ssr_quality", ssr_quality) &&
-      vkr_harness_json_emit_bool(writer, "post_transform_cache_enabled",
-                                 post_transform_cache_enabled) &&
-      vkr_harness_json_emit_bool(writer, "dof_enabled",
-                                 report->case_manifest.renderer.dof_enabled) &&
-      vkr_harness_json_emit_f64(
-          writer, "dof_focus_distance",
-          report->case_manifest.renderer.dof_focus_distance) &&
-      vkr_harness_json_emit_f64(writer, "dof_f_stop",
-                                report->case_manifest.renderer.dof_f_stop) &&
-      vkr_harness_json_emit_bool(
-          writer, "motion_blur_enabled",
-          report->case_manifest.renderer.motion_blur_enabled) &&
-      vkr_harness_json_emit_f64(
-          writer, "motion_blur_shutter_angle",
-          report->case_manifest.renderer.motion_blur_shutter_angle) &&
-      vkr_harness_json_emit_string(
-          writer, "motion_blur_entity",
-          report->case_manifest.renderer.motion_blur_entity) &&
-      vkr_harness_json_emit_name(writer, "motion_blur_entity_velocity") &&
-      vkr_json_writer_begin_array(writer) &&
-      vkr_json_writer_f64(
-          writer,
-          report->case_manifest.renderer.motion_blur_entity_velocity_x) &&
-      vkr_json_writer_f64(
-          writer,
-          report->case_manifest.renderer.motion_blur_entity_velocity_y) &&
-      vkr_json_writer_f64(
-          writer,
-          report->case_manifest.renderer.motion_blur_entity_velocity_z) &&
-      vkr_json_writer_end_array(writer) &&
-      vkr_harness_json_emit_bool(writer, "gtao_enabled",
-                                 report->case_manifest.renderer.gtao_enabled) &&
-      vkr_harness_json_emit_f64(writer, "gtao_radius",
-                                report->case_manifest.renderer.gtao_radius) &&
-      vkr_harness_json_emit_f64(writer, "gtao_power",
-                                report->case_manifest.renderer.gtao_power) &&
-      vkr_harness_json_emit_f64(
-          writer, "image_sharpness",
-          report->case_manifest.renderer.image_sharpness) &&
-      vkr_harness_json_emit_u64(
-          writer, "ibl_probe_limit",
-          report->case_manifest.renderer.ibl_probe_limit) &&
-      vkr_harness_json_emit_f64(writer, "render_scale",
-                                report->case_manifest.renderer.render_scale) &&
-      vkr_harness_json_emit_string(writer, "upscaler", upscaler) &&
-      vkr_harness_json_emit_bool(
-          writer, "dynamic_resolution",
-          report->case_manifest.renderer.dynamic_resolution) &&
-      (!report->case_manifest.renderer.dynamic_resolution ||
-       (vkr_harness_json_emit_f64(
-            writer, "dynamic_resolution_min_scale",
-            report->case_manifest.renderer.dynamic_resolution_min_scale) &&
-        vkr_harness_json_emit_f64(
-            writer, "dynamic_resolution_max_scale",
-            report->case_manifest.renderer.dynamic_resolution_max_scale) &&
-        vkr_harness_json_emit_f64(writer, "dynamic_resolution_target_frame_ms",
-                                  report->case_manifest.renderer
-                                      .dynamic_resolution_target_frame_ms) &&
-        vkr_harness_json_emit_name(writer, "dynamic_resolution_observed") &&
-        vkr_json_writer_begin_object(writer) &&
-        vkr_harness_json_emit_name(writer, "scale_range") &&
-        vkr_json_writer_begin_array(writer) &&
-        vkr_json_writer_f64(writer, observed_scale_min) &&
-        vkr_json_writer_f64(writer, observed_scale_max) &&
-        vkr_json_writer_end_array(writer) &&
-        vkr_harness_json_emit_name(writer, "width_range") &&
-        vkr_json_writer_begin_array(writer) &&
-        vkr_json_writer_u64(writer, observed_width_min) &&
-        vkr_json_writer_u64(writer, observed_width_max) &&
-        vkr_json_writer_end_array(writer) &&
-        vkr_harness_json_emit_name(writer, "height_range") &&
-        vkr_json_writer_begin_array(writer) &&
-        vkr_json_writer_u64(writer, observed_height_min) &&
-        vkr_json_writer_u64(writer, observed_height_max) &&
-        vkr_json_writer_end_array(writer) &&
-        vkr_harness_json_emit_u64(writer, "max_transition_count",
-                                  observed_transition_count) &&
-        vkr_json_writer_end_object(writer))) &&
-      vkr_harness_json_emit_string(
-          writer, "cache",
-          vkr_harness_cache_name(report->case_manifest.cache)) &&
-      vkr_harness_json_emit_u64(writer, "camera_script_version",
-                                VKR_HARNESS_CAMERA_SCRIPT_VERSION) &&
-      vkr_harness_json_emit_bool(writer, "gpu_timing",
-                                 report->profile.gpu_timing) &&
-      vkr_harness_json_emit_bool(writer, "submission_gpu_timing",
-                                 report->profile.submission_gpu_timing) &&
-      vkr_harness_json_emit_bool(writer, "metrics_compile_enabled",
-                                 VKR_METRICS_ENABLED ? true_v : false_v) &&
-      vkr_harness_json_emit_bool(writer, "events_enabled",
-                                 report->profile.event_subjects) &&
-      vkr_json_writer_end_object(writer) &&
-      vkr_harness_json_emit_name(writer, "execution") &&
-      vkr_json_writer_begin_object(writer) &&
-      vkr_harness_json_emit_u64(writer, "requested_repetitions",
-                                report->requested_repetitions) &&
-      vkr_harness_json_emit_u64(writer, "completed_repetitions",
-                                report->completed_repetitions) &&
-      vkr_harness_json_emit_u64(writer, "warmup_frames",
-                                report->case_manifest.warmup_frames) &&
-      vkr_harness_json_emit_u64(writer, "measured_frames",
-                                report->case_manifest.measure_frames) &&
-      vkr_harness_json_emit_string(writer, "warmup_stability_metric",
-                                   report->profile.warmup_stability_metric) &&
-      vkr_harness_json_emit_bool(writer, "warmup_stable",
-                                 report->warmup_stable) &&
-      vkr_harness_json_emit_bool(writer, "gpu_lane_lock_acquired",
-                                 report->gpu_lane_lock_acquired) &&
-      vkr_json_writer_end_object(writer) &&
-      vkr_harness_json_emit_name(writer, "runs") &&
-      vkr_json_writer_begin_array(writer);
-  for (uint32_t i = 0; ok && i < report->run_count; ++i) {
-    const VkrHarnessRunReference *run = &report->runs[i];
+  return ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_end_object(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_provenance(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  return vkr_harness_json_emit_name(writer, "provenance") &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_string(writer, "started_at",
+                                      report->provenance.started_at) &&
+         vkr_harness_json_emit_string(writer, "ended_at",
+                                      report->provenance.ended_at) &&
+         vkr_harness_json_emit_string(writer, "git_sha",
+                                      report->provenance.git_sha) &&
+         vkr_harness_json_emit_bool(writer, "dirty",
+                                    report->provenance.dirty) &&
+         vkr_harness_json_emit_string(writer, "binary_sha256",
+                                      report->provenance.binary_sha256) &&
+         vkr_harness_json_emit_string(writer, "build_type",
+                                      report->provenance.build_type) &&
+         vkr_harness_json_emit_string(writer, "compiler",
+                                      report->provenance.compiler) &&
+         vkr_harness_json_emit_string(writer, "os", report->provenance.os) &&
+         vkr_harness_json_emit_string(writer, "cpu", report->provenance.cpu) &&
+         vkr_harness_json_emit_string(writer, "gpu", report->provenance.gpu) &&
+         vkr_harness_json_emit_u64(writer, "gpu_vendor_id",
+                                   report->provenance.gpu_vendor_id) &&
+         vkr_harness_json_emit_u64(writer, "gpu_device_id",
+                                   report->provenance.gpu_device_id) &&
+         vkr_harness_json_emit_string(writer, "driver",
+                                      report->provenance.driver) &&
+         vkr_harness_json_emit_string(writer, "world_renderer",
+                                      report->provenance.world_renderer) &&
+         vkr_harness_json_emit_string(writer, "power_mode",
+                                      report->provenance.power_mode) &&
+         vkr_harness_json_emit_string(writer, "thermal_state_start",
+                                      report->provenance.thermal_state_start) &&
+         vkr_harness_json_emit_string(writer, "thermal_state_end",
+                                      report->provenance.thermal_state_end) &&
+         vkr_harness_json_emit_i64(writer, "process_priority",
+                                   report->provenance.process_priority) &&
+         vkr_json_writer_end_object(writer) &&
+         vkr_harness_json_emit_name(writer, "comparison") &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_string(writer, "environment_fingerprint",
+                                      report->environment_fingerprint) &&
+         vkr_harness_json_emit_string(writer, "workload_fingerprint",
+                                      report->workload_fingerprint) &&
+         vkr_harness_json_emit_string(writer, "policy_fingerprint",
+                                      report->policy_fingerprint) &&
+         vkr_json_writer_end_object(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_renderer_features(
+    VkrJsonWriter *writer, const VkrHarnessRendererConfig *renderer,
+    bool8_t post_transform_cache_enabled, const char *ssr_quality) {
+  return vkr_harness_json_emit_bool(writer, "taa_enabled",
+                                    renderer->taa_enabled) &&
+         vkr_harness_json_emit_bool(writer, "tonemap_enabled",
+                                    renderer->tonemap_enabled) &&
+         vkr_harness_json_emit_bool(writer, "fxaa_enabled",
+                                    renderer->fxaa_enabled) &&
+         vkr_harness_json_emit_string(writer, "display_transform",
+                                      renderer->display_transform) &&
+         vkr_harness_json_emit_f64(writer, "white_balance_temperature",
+                                   renderer->white_balance_temperature) &&
+         vkr_harness_json_emit_f64(writer, "white_balance_tint",
+                                   renderer->white_balance_tint) &&
+         vkr_harness_json_emit_f64(writer, "color_contrast",
+                                   renderer->color_contrast) &&
+         vkr_harness_json_emit_f64(writer, "color_saturation",
+                                   renderer->color_saturation) &&
+         vkr_harness_json_emit_string(writer, "renderer_backend",
+                                      renderer->backend[0] ? renderer->backend
+                                                           : "external") &&
+         vkr_harness_json_emit_u64(writer, "cascades",
+                                   renderer->shadow_cascades) &&
+         vkr_harness_json_emit_u64(writer, "pcf_samples",
+                                   renderer->shadow_pcf_samples) &&
+         vkr_harness_json_emit_bool(writer, "pcf_uniform_early_out",
+                                    renderer->shadow_pcf_early_out) &&
+         vkr_harness_json_emit_bool(writer, "shadow_sdsm",
+                                    renderer->shadow_sdsm) &&
+         vkr_harness_json_emit_f64(writer, "shadow_split_lambda",
+                                   renderer->shadow_split_lambda) &&
+         vkr_harness_json_emit_u64(writer, "shadow_map_size",
+                                   renderer->shadow_map_size) &&
+         vkr_harness_json_emit_string(writer, "exposure_mode",
+                                      renderer->exposure_mode) &&
+         vkr_harness_json_emit_f64(writer, "manual_exposure",
+                                   renderer->manual_exposure) &&
+         vkr_harness_json_emit_f64(writer, "exposure_compensation_ev",
+                                   renderer->exposure_compensation_ev) &&
+         vkr_harness_json_emit_u64(writer, "exposure_reset_frame",
+                                   renderer->exposure_reset_frame) &&
+         vkr_harness_json_emit_bool(writer, "bloom_enabled",
+                                    renderer->bloom_enabled) &&
+         vkr_harness_json_emit_f64(writer, "bloom_threshold",
+                                   renderer->bloom_threshold) &&
+         vkr_harness_json_emit_f64(writer, "bloom_knee",
+                                   renderer->bloom_knee) &&
+         vkr_harness_json_emit_f64(writer, "bloom_intensity",
+                                   renderer->bloom_intensity) &&
+         vkr_harness_json_emit_string(writer, "display_output",
+                                      renderer->display_output) &&
+         vkr_harness_json_emit_bool(writer, "ssgi_enabled",
+                                    renderer->ssgi_enabled) &&
+         vkr_harness_json_emit_bool(writer, "ssr_enabled",
+                                    renderer->ssr_enabled) &&
+         vkr_harness_json_emit_string(writer, "ssr_quality", ssr_quality) &&
+         vkr_harness_json_emit_bool(writer, "post_transform_cache_enabled",
+                                    post_transform_cache_enabled) &&
+         vkr_harness_json_emit_bool(writer, "dof_enabled",
+                                    renderer->dof_enabled) &&
+         vkr_harness_json_emit_f64(writer, "dof_focus_distance",
+                                   renderer->dof_focus_distance) &&
+         vkr_harness_json_emit_f64(writer, "dof_f_stop",
+                                   renderer->dof_f_stop) &&
+         vkr_harness_json_emit_bool(writer, "motion_blur_enabled",
+                                    renderer->motion_blur_enabled) &&
+         vkr_harness_json_emit_f64(writer, "motion_blur_shutter_angle",
+                                   renderer->motion_blur_shutter_angle) &&
+         vkr_harness_json_emit_string(writer, "motion_blur_entity",
+                                      renderer->motion_blur_entity) &&
+         vkr_harness_json_emit_name(writer, "motion_blur_entity_velocity") &&
+         vkr_json_writer_begin_array(writer) &&
+         vkr_json_writer_f64(writer, renderer->motion_blur_entity_velocity_x) &&
+         vkr_json_writer_f64(writer, renderer->motion_blur_entity_velocity_y) &&
+         vkr_json_writer_f64(writer, renderer->motion_blur_entity_velocity_z) &&
+         vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_bool(writer, "gtao_enabled",
+                                    renderer->gtao_enabled) &&
+         vkr_harness_json_emit_f64(writer, "gtao_radius",
+                                   renderer->gtao_radius) &&
+         vkr_harness_json_emit_f64(writer, "gtao_power",
+                                   renderer->gtao_power) &&
+         vkr_harness_json_emit_f64(writer, "image_sharpness",
+                                   renderer->image_sharpness) &&
+         vkr_harness_json_emit_u64(writer, "ibl_probe_limit",
+                                   renderer->ibl_probe_limit);
+}
+
+/** Emits the dynamic-resolution bounds and the range the run observed. A
+    metric with no samples reports the configured render scale and size. */
+vkr_internal bool8_t vkr_harness_report_write_dynamic_resolution(
+    VkrJsonWriter *writer, const VkrHarnessReport *report,
+    float64_t render_scale, uint32_t render_width, uint32_t render_height) {
+  const VkrHarnessMetricResult *observed_scale =
+      vkr_harness_report_find_metric(report, "frame.render_scale");
+  const VkrHarnessMetricResult *observed_width =
+      vkr_harness_report_find_metric(report, "frame.render_width");
+  const VkrHarnessMetricResult *observed_height =
+      vkr_harness_report_find_metric(report, "frame.render_height");
+  const VkrHarnessMetricResult *observed_transitions =
+      vkr_harness_report_find_metric(report,
+                                     "frame.dynamic_resolution_transitions");
+  const bool8_t scale_observed =
+      observed_scale && observed_scale->statistics.sample_count > 0u;
+  const bool8_t width_observed =
+      observed_width && observed_width->statistics.sample_count > 0u;
+  const bool8_t height_observed =
+      observed_height && observed_height->statistics.sample_count > 0u;
+  const bool8_t transitions_observed =
+      observed_transitions &&
+      observed_transitions->statistics.sample_count > 0u;
+  const float64_t observed_scale_min =
+      scale_observed ? observed_scale->statistics.min : render_scale;
+  const float64_t observed_scale_max =
+      scale_observed ? observed_scale->statistics.max : render_scale;
+  const uint64_t observed_width_min =
+      width_observed ? (uint64_t)observed_width->statistics.min : render_width;
+  const uint64_t observed_width_max =
+      width_observed ? (uint64_t)observed_width->statistics.max : render_width;
+  const uint64_t observed_height_min =
+      height_observed ? (uint64_t)observed_height->statistics.min
+                      : render_height;
+  const uint64_t observed_height_max =
+      height_observed ? (uint64_t)observed_height->statistics.max
+                      : render_height;
+  const uint64_t observed_transition_count =
+      transitions_observed ? (uint64_t)observed_transitions->statistics.max
+                           : 0u;
+  return vkr_harness_json_emit_f64(
+             writer, "dynamic_resolution_min_scale",
+             report->case_manifest.renderer.dynamic_resolution_min_scale) &&
+         vkr_harness_json_emit_f64(
+             writer, "dynamic_resolution_max_scale",
+             report->case_manifest.renderer.dynamic_resolution_max_scale) &&
+         vkr_harness_json_emit_f64(writer, "dynamic_resolution_target_frame_ms",
+                                   report->case_manifest.renderer
+                                       .dynamic_resolution_target_frame_ms) &&
+         vkr_harness_json_emit_name(writer, "dynamic_resolution_observed") &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_name(writer, "scale_range") &&
+         vkr_json_writer_begin_array(writer) &&
+         vkr_json_writer_f64(writer, observed_scale_min) &&
+         vkr_json_writer_f64(writer, observed_scale_max) &&
+         vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_name(writer, "width_range") &&
+         vkr_json_writer_begin_array(writer) &&
+         vkr_json_writer_u64(writer, observed_width_min) &&
+         vkr_json_writer_u64(writer, observed_width_max) &&
+         vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_name(writer, "height_range") &&
+         vkr_json_writer_begin_array(writer) &&
+         vkr_json_writer_u64(writer, observed_height_min) &&
+         vkr_json_writer_u64(writer, observed_height_max) &&
+         vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_u64(writer, "max_transition_count",
+                                   observed_transition_count) &&
+         vkr_json_writer_end_object(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_effective_config(
+    VkrJsonWriter *writer, const VkrHarnessReport *report,
+    bool8_t post_transform_cache_enabled, const char *ssr_quality) {
+  char subsystem_mask[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
+  vkr_harness_format_subsystem_mask(subsystem_mask, report->subsystem_mask);
+  const uint32_t target_width = report->provenance.actual_target_width
+                                    ? report->provenance.actual_target_width
+                                    : report->case_manifest.width;
+  const uint32_t target_height = report->provenance.actual_target_height
+                                     ? report->provenance.actual_target_height
+                                     : report->case_manifest.height;
+  const float64_t render_scale =
+      report->case_manifest.renderer.render_scale > 0.0f
+          ? report->case_manifest.renderer.render_scale
+          : 1.0;
+  const float64_t content_scale = report->case_manifest.content_scale > 0.0f
+                                      ? report->case_manifest.content_scale
+                                      : 1.0;
+  const uint32_t render_width =
+      report->case_manifest.renderer.render_width
+          ? report->case_manifest.renderer.render_width
+          : ClampBot((uint32_t)((float64_t)target_width * render_scale + 0.5),
+                     1u);
+  const uint32_t render_height =
+      report->case_manifest.renderer.render_height
+          ? report->case_manifest.renderer.render_height
+          : ClampBot((uint32_t)((float64_t)target_height * render_scale + 0.5),
+                     1u);
+  const char *upscaler = report->case_manifest.renderer.upscaler[0]
+                             ? report->case_manifest.renderer.upscaler
+                             : "spatial";
+  return vkr_harness_json_emit_name(writer, "effective_config") &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_name(writer, "resolution") &&
+         vkr_json_writer_begin_array(writer) &&
+         vkr_json_writer_u64(writer, target_width) &&
+         vkr_json_writer_u64(writer, target_height) &&
+         vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_name(writer, "render_resolution") &&
+         vkr_json_writer_begin_array(writer) &&
+         vkr_json_writer_u64(writer, render_width) &&
+         vkr_json_writer_u64(writer, render_height) &&
+         vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_f64(writer, "content_scale", content_scale) &&
+         (!report->case_manifest.resize_round_trip ||
+          (vkr_harness_json_emit_name(writer, "resize_round_trip") &&
+           vkr_json_writer_begin_array(writer) &&
+           vkr_json_writer_u64(writer, report->case_manifest.resize_width) &&
+           vkr_json_writer_u64(writer, report->case_manifest.resize_height) &&
+           vkr_json_writer_end_array(writer))) &&
+         vkr_harness_json_emit_string(writer, "scene",
+                                      report->case_manifest.scene) &&
+         vkr_harness_json_emit_string(
+             writer, "target",
+             vkr_harness_target_name(report->provenance.actual_target)) &&
+         vkr_harness_json_emit_u64(
+             writer, "target_image_count",
+             report->provenance.actual_target_image_count) &&
+         vkr_harness_json_emit_string(writer, "color_format",
+                                      report->provenance.color_format) &&
+         vkr_harness_json_emit_string(writer, "depth_format",
+                                      report->provenance.depth_format) &&
+         vkr_harness_json_emit_string(writer, "color_space",
+                                      report->provenance.color_space) &&
+         vkr_harness_json_emit_string(writer, "world_renderer",
+                                      report->provenance.world_renderer) &&
+         vkr_harness_json_emit_string(
+             writer, "present_mode",
+             vkr_harness_present_name(report->provenance.actual_present)) &&
+         vkr_harness_json_emit_string(
+             writer, "boot_profile",
+             vkr_harness_boot_name(report->case_manifest.boot)) &&
+         vkr_harness_json_emit_string(writer, "subsystem_mask",
+                                      subsystem_mask) &&
+         vkr_harness_json_emit_bool(writer, "editor",
+                                    report->case_manifest.renderer.editor) &&
+         vkr_harness_json_emit_u64(
+             writer, "editor_stop_frame",
+             report->case_manifest.renderer.editor_stop_frame) &&
+         vkr_harness_json_emit_u64(
+             writer, "editor_resume_frame",
+             report->case_manifest.renderer.editor_resume_frame) &&
+         vkr_harness_json_emit_bool(
+             writer, "text_fixture",
+             report->case_manifest.renderer.text_fixture) &&
+         vkr_harness_json_emit_bool(
+             writer, "physics_fixture",
+             report->case_manifest.renderer.physics_fixture) &&
+         vkr_harness_report_write_renderer_features(
+             writer, &report->case_manifest.renderer,
+             post_transform_cache_enabled, ssr_quality) &&
+         vkr_harness_json_emit_f64(
+             writer, "render_scale",
+             report->case_manifest.renderer.render_scale) &&
+         vkr_harness_json_emit_string(writer, "upscaler", upscaler) &&
+         vkr_harness_json_emit_bool(
+             writer, "dynamic_resolution",
+             report->case_manifest.renderer.dynamic_resolution) &&
+         (!report->case_manifest.renderer.dynamic_resolution ||
+          vkr_harness_report_write_dynamic_resolution(
+              writer, report, render_scale, render_width, render_height)) &&
+         vkr_harness_json_emit_string(
+             writer, "cache",
+             vkr_harness_cache_name(report->case_manifest.cache)) &&
+         vkr_harness_json_emit_u64(writer, "camera_script_version",
+                                   VKR_HARNESS_CAMERA_SCRIPT_VERSION) &&
+         vkr_harness_json_emit_bool(writer, "gpu_timing",
+                                    report->profile.gpu_timing) &&
+         vkr_harness_json_emit_bool(writer, "submission_gpu_timing",
+                                    report->profile.submission_gpu_timing) &&
+         vkr_harness_json_emit_bool(writer, "metrics_compile_enabled",
+                                    VKR_METRICS_ENABLED ? true_v : false_v) &&
+         vkr_harness_json_emit_bool(writer, "events_enabled",
+                                    report->profile.event_subjects) &&
+         vkr_json_writer_end_object(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_execution(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  return vkr_harness_json_emit_name(writer, "execution") &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_u64(writer, "requested_repetitions",
+                                   report->requested_repetitions) &&
+         vkr_harness_json_emit_u64(writer, "completed_repetitions",
+                                   report->completed_repetitions) &&
+         vkr_harness_json_emit_u64(writer, "warmup_frames",
+                                   report->case_manifest.warmup_frames) &&
+         vkr_harness_json_emit_u64(writer, "measured_frames",
+                                   report->case_manifest.measure_frames) &&
+         vkr_harness_json_emit_string(
+             writer, "warmup_stability_metric",
+             report->profile.warmup_stability_metric) &&
+         vkr_harness_json_emit_bool(writer, "warmup_stable",
+                                    report->warmup_stable) &&
+         vkr_harness_json_emit_bool(writer, "gpu_lane_lock_acquired",
+                                    report->gpu_lane_lock_acquired) &&
+         vkr_json_writer_end_object(writer);
+}
+
+/** Emits `runs` and `auxiliary_runs`, which share one row shape. */
+vkr_internal bool8_t vkr_harness_report_write_run_references(
+    VkrJsonWriter *writer, const char *name, const VkrHarnessRunReference *runs,
+    uint32_t run_count) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, name) &&
+               vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < run_count; ++i) {
+    const VkrHarnessRunReference *run = &runs[i];
     ok = vkr_json_writer_begin_object(writer) &&
          vkr_harness_json_emit_u64(writer, "index", run->index) &&
          vkr_harness_json_emit_string(writer, "status", run->status) &&
@@ -700,29 +690,15 @@ bool8_t vkr_harness_report_write(const char *path,
                                       run->policy_fingerprint) &&
          vkr_json_writer_end_object(writer);
   }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_harness_json_emit_name(writer, "auxiliary_runs") &&
-       vkr_json_writer_begin_array(writer);
-  for (uint32_t i = 0; ok && i < report->auxiliary_run_count; ++i) {
-    const VkrHarnessRunReference *run = &report->auxiliary_runs[i];
-    ok = vkr_json_writer_begin_object(writer) &&
-         vkr_harness_json_emit_u64(writer, "index", run->index) &&
-         vkr_harness_json_emit_string(writer, "status", run->status) &&
-         vkr_harness_json_emit_string(writer, "report", run->report) &&
-         vkr_harness_json_emit_string(writer, "sha256", run->sha256) &&
-         vkr_harness_json_emit_string(writer, "environment_fingerprint",
-                                      run->environment_fingerprint) &&
-         vkr_harness_json_emit_string(writer, "workload_fingerprint",
-                                      run->workload_fingerprint) &&
-         vkr_harness_json_emit_string(writer, "policy_fingerprint",
-                                      run->policy_fingerprint) &&
-         vkr_json_writer_end_object(writer);
-  }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_harness_json_emit_name(writer, "aggregate") &&
-       vkr_json_writer_begin_object(writer) &&
-       vkr_harness_json_emit_name(writer, "metrics") &&
-       vkr_json_writer_begin_object(writer);
+  return ok && vkr_json_writer_end_array(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_aggregate(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "aggregate") &&
+               vkr_json_writer_begin_object(writer) &&
+               vkr_harness_json_emit_name(writer, "metrics") &&
+               vkr_json_writer_begin_object(writer);
   for (uint32_t i = 0; ok && i < report->metric_count; ++i) {
     ok = vkr_harness_json_emit_name(writer, report->metrics[i].name) &&
          vkr_harness_report_write_statistics(writer, &report->metrics[i]);
@@ -759,12 +735,16 @@ bool8_t vkr_harness_report_write(const char *path,
                                   pass->gpu_unsupported_scope_count) &&
         vkr_json_writer_end_object(writer);
   }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_json_writer_end_object(writer) &&
-       vkr_harness_json_emit_name(writer, "events") &&
-       vkr_json_writer_begin_object(writer) &&
-       vkr_harness_json_emit_name(writer, "items") &&
-       vkr_json_writer_begin_array(writer);
+  return ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_end_object(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_events(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "events") &&
+               vkr_json_writer_begin_object(writer) &&
+               vkr_harness_json_emit_name(writer, "items") &&
+               vkr_json_writer_begin_array(writer);
   for (uint32_t i = 0; ok && i < report->event_count; ++i) {
     const VkrHarnessEvent *event = &report->events[i];
     ok = vkr_json_writer_begin_object(writer) &&
@@ -781,13 +761,17 @@ bool8_t vkr_harness_report_write(const char *path,
                                     event->subject_truncated) &&
          vkr_json_writer_end_object(writer);
   }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_harness_json_emit_u64(writer, "dropped", report->events_dropped) &&
-       vkr_harness_json_emit_u64(writer, "subjects_truncated",
-                                 report->event_subjects_truncated) &&
-       vkr_json_writer_end_object(writer) &&
-       vkr_harness_json_emit_name(writer, "captures") &&
-       vkr_json_writer_begin_array(writer);
+  return ok && vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_u64(writer, "dropped", report->events_dropped) &&
+         vkr_harness_json_emit_u64(writer, "subjects_truncated",
+                                   report->event_subjects_truncated) &&
+         vkr_json_writer_end_object(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_captures(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "captures") &&
+               vkr_json_writer_begin_array(writer);
   for (uint32_t i = 0; ok && i < report->capture_count; ++i) {
     const VkrHarnessCaptureResult *capture = &report->captures[i];
     ok =
@@ -869,9 +853,13 @@ bool8_t vkr_harness_report_write(const char *path,
         vkr_json_writer_end_object(writer) &&
         vkr_json_writer_end_object(writer);
   }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_harness_json_emit_name(writer, "assertions") &&
-       vkr_json_writer_begin_array(writer);
+  return ok && vkr_json_writer_end_array(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_assertions(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "assertions") &&
+               vkr_json_writer_begin_array(writer);
   for (uint32_t i = 0; ok && i < report->case_manifest.assertion_count; ++i) {
     const VkrHarnessAssertion *assertion = &report->case_manifest.assertions[i];
     float64_t actual = 0.0;
@@ -891,9 +879,13 @@ bool8_t vkr_harness_report_write(const char *path,
         vkr_harness_json_emit_f64(writer, "limit", assertion->limit) &&
         vkr_json_writer_end_object(writer);
   }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_harness_json_emit_name(writer, "diagnostics") &&
-       vkr_json_writer_begin_array(writer);
+  return ok && vkr_json_writer_end_array(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_diagnostics(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "diagnostics") &&
+               vkr_json_writer_begin_array(writer);
   for (uint32_t i = 0; ok && i < report->authority_reason_count; ++i) {
     ok = vkr_json_writer_begin_object(writer) &&
          vkr_harness_json_emit_string(writer, "code",
@@ -912,9 +904,13 @@ bool8_t vkr_harness_report_write(const char *path,
                                       "GPU timing was not requested") &&
          vkr_json_writer_end_object(writer);
   }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_harness_json_emit_name(writer, "artifacts") &&
-       vkr_json_writer_begin_array(writer);
+  return ok && vkr_json_writer_end_array(writer);
+}
+
+vkr_internal bool8_t vkr_harness_report_write_artifacts(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "artifacts") &&
+               vkr_json_writer_begin_array(writer);
   for (uint32_t i = 0; ok && i < report->artifact_count; ++i) {
     const VkrHarnessArtifact *artifact = &report->artifacts[i];
     ok = vkr_json_writer_begin_object(writer) &&
@@ -926,8 +922,49 @@ bool8_t vkr_harness_report_write(const char *path,
          vkr_harness_json_emit_string(writer, "status", artifact->status) &&
          vkr_json_writer_end_object(writer);
   }
-  ok = ok && vkr_json_writer_end_array(writer) &&
-       vkr_json_writer_end_object(writer);
+  return ok && vkr_json_writer_end_array(writer);
+}
+
+bool8_t vkr_harness_report_write(const char *path,
+                                 const VkrHarnessReport *report,
+                                 VkrHarnessError *out_error) {
+  if (!path || !report) {
+    return false_v;
+  }
+  const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
+  const bool8_t post_transform_cache_enabled =
+      post_cache && post_cache[0] != '\0' && !string_equals(post_cache, "0") &&
+      string_equals(report->case_manifest.renderer.render_mode, "default");
+  const char *ssr_quality = getenv("VKR_SSR_QUALITY");
+  if (!ssr_quality || ssr_quality[0] == '\0') {
+    ssr_quality = "high";
+  }
+  VkrJsonFileWriter file_writer = {0};
+  if (!vkr_json_file_writer_begin(&file_writer, vkr_harness_string(path))) {
+    vkr_harness_error_set(out_error, "report.open", "$",
+                          "Unable to begin report '%s'", path);
+    return false_v;
+  }
+  VkrJsonWriter *writer = &file_writer.writer;
+  const bool8_t ok =
+      vkr_json_writer_begin_object(writer) &&
+      vkr_harness_report_write_header(writer, report) &&
+      vkr_harness_report_write_provenance(writer, report) &&
+      vkr_harness_report_write_effective_config(
+          writer, report, post_transform_cache_enabled, ssr_quality) &&
+      vkr_harness_report_write_execution(writer, report) &&
+      vkr_harness_report_write_run_references(writer, "runs", report->runs,
+                                              report->run_count) &&
+      vkr_harness_report_write_run_references(writer, "auxiliary_runs",
+                                              report->auxiliary_runs,
+                                              report->auxiliary_run_count) &&
+      vkr_harness_report_write_aggregate(writer, report) &&
+      vkr_harness_report_write_events(writer, report) &&
+      vkr_harness_report_write_captures(writer, report) &&
+      vkr_harness_report_write_assertions(writer, report) &&
+      vkr_harness_report_write_diagnostics(writer, report) &&
+      vkr_harness_report_write_artifacts(writer, report) &&
+      vkr_json_writer_end_object(writer);
   if (!ok || !vkr_json_file_writer_commit(&file_writer)) {
     vkr_json_file_writer_abort(&file_writer);
     vkr_harness_error_set(out_error, "report.write", "$",

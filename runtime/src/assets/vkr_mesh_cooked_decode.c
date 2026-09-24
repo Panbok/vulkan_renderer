@@ -213,198 +213,272 @@ bool8_t vkr_mesh_cooked_source_validate(VkrAllocator *scratch_allocator,
   return true_v;
 }
 
-bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
-                               VkrAllocator *scratch_allocator,
-                               const uint8_t *data, uint64_t size,
-                               VkrMeshCookedDecoded *out_decoded) {
-  if (!result_allocator || !scratch_allocator || !data || !out_decoded ||
-      size < VKR_MESH_COOKED_HEADER_SIZE ||
-      size > VKR_MESH_COOKED_MAX_FILE_SIZE) {
-    return false_v;
-  }
-  *out_decoded = (VkrMeshCookedDecoded){0};
-
-  uint8_t header_copy[VKR_MESH_COOKED_HEADER_SIZE];
-  MemCopy(header_copy, data, sizeof(header_copy));
-  const uint32_t stored_crc =
-      vkr_load_le_u32(header_copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET);
-  MemZero(header_copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET, sizeof(uint32_t));
-  if (stored_crc != vkr_crc32(header_copy, sizeof(header_copy))) {
-    return false_v;
-  }
-
-  VkrByteReader reader = {.data = data, .size = size, .offset = 0};
-  uint32_t magic = 0;
-  uint32_t version = 0;
-  uint32_t endian_tag = 0;
-  uint32_t header_size = 0;
-  uint32_t library_version = 0;
-  uint32_t vertex_codec_version = 0;
-  uint32_t index_codec_version = 0;
-  uint32_t layout = 0;
-  uint32_t vertex_stride = 0;
-  uint32_t index_stride = 0;
-  uint32_t range_count = 0;
-  uint32_t dependency_count = 0;
-  uint64_t directory_offset = 0;
-  uint64_t dependency_offset = 0;
-  uint64_t string_offset = 0;
-  uint64_t string_size = 0;
-  uint64_t stream_offset = 0;
-  uint64_t file_size = 0;
-  uint64_t source_path_offset = 0;
-  uint32_t source_path_length = 0;
-  uint32_t flags = 0;
-  uint32_t total_vertex_count = 0;
-  uint32_t total_index_count = 0;
+/** The fixed-size header of a cooked mesh artifact, as stored. */
+typedef struct VkrMeshCookedHeaderView {
+  uint32_t magic;
+  uint32_t version;
+  uint32_t endian_tag;
+  uint32_t header_size;
+  uint32_t library_version;
+  uint32_t vertex_codec_version;
+  uint32_t index_codec_version;
+  uint32_t layout;
+  uint32_t vertex_stride;
+  uint32_t index_stride;
+  uint32_t range_count;
+  uint32_t dependency_count;
+  uint64_t directory_offset;
+  uint64_t dependency_offset;
+  uint64_t string_offset;
+  uint64_t string_size;
+  uint64_t stream_offset;
+  uint64_t file_size;
+  uint64_t source_path_offset;
+  uint32_t source_path_length;
+  uint32_t flags;
+  uint32_t total_vertex_count;
+  uint32_t total_index_count;
   uint8_t source_hash[32];
   uint8_t settings_hash[32];
-  uint32_t header_crc = 0;
-  uint32_t metadata_crc = 0;
-  VkrGpuGeometryDecodeRecord geometry_decode = {0};
-  VkrGeometryQuantizationBudgets budgets = {0};
-  VkrGeometryQuantizationMetrics quantization = {0};
-  uint32_t header_reserved[2] = {0};
+  uint32_t header_crc;
+  uint32_t metadata_crc;
+  VkrGpuGeometryDecodeRecord geometry_decode;
+  VkrGeometryQuantizationBudgets budgets;
+  VkrGeometryQuantizationMetrics quantization;
+  uint32_t header_reserved[2];
+} VkrMeshCookedHeaderView;
+
+vkr_internal bool8_t vkr_mesh_cooked_read_header(
+    VkrByteReader *reader, VkrMeshCookedHeaderView *header) {
   bool8_t ok = true_v;
-  ok = ok && vkr_byte_reader_u32(&reader, &magic);
-  ok = ok && vkr_byte_reader_u32(&reader, &version);
-  ok = ok && vkr_byte_reader_u32(&reader, &endian_tag);
-  ok = ok && vkr_byte_reader_u32(&reader, &header_size);
-  ok = ok && vkr_byte_reader_u32(&reader, &library_version);
-  ok = ok && vkr_byte_reader_u32(&reader, &vertex_codec_version);
-  ok = ok && vkr_byte_reader_u32(&reader, &index_codec_version);
-  ok = ok && vkr_byte_reader_u32(&reader, &layout);
-  ok = ok && vkr_byte_reader_u32(&reader, &vertex_stride);
-  ok = ok && vkr_byte_reader_u32(&reader, &index_stride);
-  ok = ok && vkr_byte_reader_u32(&reader, &range_count);
-  ok = ok && vkr_byte_reader_u32(&reader, &dependency_count);
-  ok = ok && vkr_byte_reader_u64(&reader, &directory_offset);
-  ok = ok && vkr_byte_reader_u64(&reader, &dependency_offset);
-  ok = ok && vkr_byte_reader_u64(&reader, &string_offset);
-  ok = ok && vkr_byte_reader_u64(&reader, &string_size);
-  ok = ok && vkr_byte_reader_u64(&reader, &stream_offset);
-  ok = ok && vkr_byte_reader_u64(&reader, &file_size);
-  ok = ok && vkr_byte_reader_u64(&reader, &source_path_offset);
-  ok = ok && vkr_byte_reader_u32(&reader, &source_path_length);
-  ok = ok && vkr_byte_reader_u32(&reader, &flags);
-  ok = ok && vkr_byte_reader_u32(&reader, &total_vertex_count);
-  ok = ok && vkr_byte_reader_u32(&reader, &total_index_count);
-  ok = ok && vkr_byte_reader_bytes(&reader, source_hash, 32u);
-  ok = ok && vkr_byte_reader_bytes(&reader, settings_hash, 32u);
-  ok = ok && vkr_byte_reader_u32(&reader, &header_crc);
-  ok = ok && vkr_byte_reader_u32(&reader, &metadata_crc);
+  ok = ok && vkr_byte_reader_u32(reader, &header->magic);
+  ok = ok && vkr_byte_reader_u32(reader, &header->version);
+  ok = ok && vkr_byte_reader_u32(reader, &header->endian_tag);
+  ok = ok && vkr_byte_reader_u32(reader, &header->header_size);
+  ok = ok && vkr_byte_reader_u32(reader, &header->library_version);
+  ok = ok && vkr_byte_reader_u32(reader, &header->vertex_codec_version);
+  ok = ok && vkr_byte_reader_u32(reader, &header->index_codec_version);
+  ok = ok && vkr_byte_reader_u32(reader, &header->layout);
+  ok = ok && vkr_byte_reader_u32(reader, &header->vertex_stride);
+  ok = ok && vkr_byte_reader_u32(reader, &header->index_stride);
+  ok = ok && vkr_byte_reader_u32(reader, &header->range_count);
+  ok = ok && vkr_byte_reader_u32(reader, &header->dependency_count);
+  ok = ok && vkr_byte_reader_u64(reader, &header->directory_offset);
+  ok = ok && vkr_byte_reader_u64(reader, &header->dependency_offset);
+  ok = ok && vkr_byte_reader_u64(reader, &header->string_offset);
+  ok = ok && vkr_byte_reader_u64(reader, &header->string_size);
+  ok = ok && vkr_byte_reader_u64(reader, &header->stream_offset);
+  ok = ok && vkr_byte_reader_u64(reader, &header->file_size);
+  ok = ok && vkr_byte_reader_u64(reader, &header->source_path_offset);
+  ok = ok && vkr_byte_reader_u32(reader, &header->source_path_length);
+  ok = ok && vkr_byte_reader_u32(reader, &header->flags);
+  ok = ok && vkr_byte_reader_u32(reader, &header->total_vertex_count);
+  ok = ok && vkr_byte_reader_u32(reader, &header->total_index_count);
+  ok = ok && vkr_byte_reader_bytes(reader, header->source_hash, 32u);
+  ok = ok && vkr_byte_reader_bytes(reader, header->settings_hash, 32u);
+  ok = ok && vkr_byte_reader_u32(reader, &header->header_crc);
+  ok = ok && vkr_byte_reader_u32(reader, &header->metadata_crc);
   for (uint32_t i = 0; i < 3u; ++i)
-    ok = ok && vkr_byte_reader_f32(&reader, &geometry_decode.position_bias[i]);
-  ok = ok && vkr_byte_reader_u32(&reader, &geometry_decode.flags);
+    ok = ok &&
+         vkr_byte_reader_f32(reader, &header->geometry_decode.position_bias[i]);
+  ok = ok && vkr_byte_reader_u32(reader, &header->geometry_decode.flags);
   for (uint32_t i = 0; i < 3u; ++i)
-    ok = ok && vkr_byte_reader_f32(&reader, &geometry_decode.position_scale[i]);
-  ok = ok && vkr_byte_reader_u32(&reader, &geometry_decode.reserved);
-  ok = ok && vkr_byte_reader_f32(&reader, &budgets.position_relative);
-  ok = ok && vkr_byte_reader_f32(&reader, &budgets.normal_degrees);
-  ok = ok && vkr_byte_reader_f32(&reader, &budgets.tangent_degrees);
-  ok = ok && vkr_byte_reader_f32(&reader, &budgets.uv_absolute);
-  ok = ok && vkr_byte_reader_f32(&reader, &budgets.color_absolute);
-  ok = ok && vkr_byte_reader_f32(&reader, &quantization.position_max);
-  ok = ok && vkr_byte_reader_f32(&reader, &quantization.normal_degrees_max);
-  ok = ok && vkr_byte_reader_f32(&reader, &quantization.tangent_degrees_max);
-  ok = ok && vkr_byte_reader_f32(&reader, &quantization.uv_max);
-  ok = ok && vkr_byte_reader_f32(&reader, &quantization.color_max);
-  ok = ok && vkr_byte_reader_u32(&reader, &header_reserved[0]);
-  ok = ok && vkr_byte_reader_u32(&reader, &header_reserved[1]);
-  if (!ok || magic != VKR_MESH_COOKED_MAGIC ||
-      (version != VKR_MESH_COOKED_VERSION &&
-       version != VKR_MESH_COOKED_SKIN_VERSION) ||
-      endian_tag != VKR_MESH_COOKED_ENDIAN_TAG ||
-      header_size != VKR_MESH_COOKED_HEADER_SIZE ||
-      library_version != vkr_meshopt_library_version() ||
-      vertex_codec_version != VKR_MESHOPT_VERTEX_CODEC_VERSION ||
-      index_codec_version != VKR_MESHOPT_INDEX_CODEC_VERSION ||
-      layout != VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1 ||
-      vertex_stride != sizeof(VkrPackedStaticVertex) ||
-      index_stride != sizeof(uint32_t) ||
-      range_count > VKR_MESH_COOKED_MAX_RANGES || dependency_count == 0 ||
-      dependency_count > VKR_MESH_COOKED_MAX_DEPENDENCIES ||
-      (range_count &&
-       (!total_vertex_count || !total_index_count ||
-        !vkr_packed_geometry_decode_is_valid(&geometry_decode))) ||
-      (!range_count &&
-       (total_vertex_count || total_index_count || !header_reserved[0])) ||
-      flags != 0 || header_reserved[0] > VKR_MESH_COOKED_MAX_RANGES ||
-      header_reserved[1] > VKR_MESH_COOKED_MAX_RANGES || file_size != size ||
-      directory_offset != VKR_MESH_COOKED_HEADER_SIZE) {
-    return false_v;
-  }
-  if (!isfinite(budgets.position_relative) ||
-      !isfinite(budgets.normal_degrees) || !isfinite(budgets.tangent_degrees) ||
-      !isfinite(budgets.uv_absolute) || !isfinite(budgets.color_absolute) ||
-      !isfinite(quantization.position_max) ||
-      !isfinite(quantization.normal_degrees_max) ||
-      !isfinite(quantization.tangent_degrees_max) ||
-      !isfinite(quantization.uv_max) || !isfinite(quantization.color_max) ||
-      budgets.position_relative <= 0.0f || budgets.normal_degrees <= 0.0f ||
-      budgets.tangent_degrees <= 0.0f || budgets.uv_absolute <= 0.0f ||
-      budgets.color_absolute <= 0.0f || quantization.position_max < 0.0f ||
-      quantization.normal_degrees_max < 0.0f ||
-      quantization.tangent_degrees_max < 0.0f || quantization.uv_max < 0.0f ||
-      quantization.color_max < 0.0f ||
-      quantization.normal_degrees_max > budgets.normal_degrees ||
-      quantization.tangent_degrees_max > budgets.tangent_degrees ||
-      quantization.uv_max > budgets.uv_absolute ||
-      quantization.color_max > budgets.color_absolute) {
-    return false_v;
-  }
+    ok = ok && vkr_byte_reader_f32(reader,
+                                   &header->geometry_decode.position_scale[i]);
+  ok = ok && vkr_byte_reader_u32(reader, &header->geometry_decode.reserved);
+  ok = ok && vkr_byte_reader_f32(reader, &header->budgets.position_relative);
+  ok = ok && vkr_byte_reader_f32(reader, &header->budgets.normal_degrees);
+  ok = ok && vkr_byte_reader_f32(reader, &header->budgets.tangent_degrees);
+  ok = ok && vkr_byte_reader_f32(reader, &header->budgets.uv_absolute);
+  ok = ok && vkr_byte_reader_f32(reader, &header->budgets.color_absolute);
+  ok = ok && vkr_byte_reader_f32(reader, &header->quantization.position_max);
+  ok = ok &&
+       vkr_byte_reader_f32(reader, &header->quantization.normal_degrees_max);
+  ok = ok &&
+       vkr_byte_reader_f32(reader, &header->quantization.tangent_degrees_max);
+  ok = ok && vkr_byte_reader_f32(reader, &header->quantization.uv_max);
+  ok = ok && vkr_byte_reader_f32(reader, &header->quantization.color_max);
+  ok = ok && vkr_byte_reader_u32(reader, &header->header_reserved[0]);
+  ok = ok && vkr_byte_reader_u32(reader, &header->header_reserved[1]);
+  return ok;
+}
 
-  uint8_t expected_settings_hash[32];
-  vkr_mesh_cooked_hash_settings(&budgets, expected_settings_hash);
-  if (MemCompare(settings_hash, expected_settings_hash,
-                 sizeof(settings_hash)) != 0) {
+/**
+ * Accepts only a header this build can decode: matching format, codec, and
+ * layout identity, counts within limits, and budgets that bound the recorded
+ * quantization error.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_header_valid(
+    const VkrMeshCookedHeaderView *header, uint64_t size) {
+  if (header->magic != VKR_MESH_COOKED_MAGIC ||
+      (header->version != VKR_MESH_COOKED_VERSION &&
+       header->version != VKR_MESH_COOKED_SKIN_VERSION) ||
+      header->endian_tag != VKR_MESH_COOKED_ENDIAN_TAG ||
+      header->header_size != VKR_MESH_COOKED_HEADER_SIZE ||
+      header->library_version != vkr_meshopt_library_version() ||
+      header->vertex_codec_version != VKR_MESHOPT_VERTEX_CODEC_VERSION ||
+      header->index_codec_version != VKR_MESHOPT_INDEX_CODEC_VERSION ||
+      header->layout != VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1 ||
+      header->vertex_stride != sizeof(VkrPackedStaticVertex) ||
+      header->index_stride != sizeof(uint32_t) ||
+      header->range_count > VKR_MESH_COOKED_MAX_RANGES ||
+      header->dependency_count == 0 ||
+      header->dependency_count > VKR_MESH_COOKED_MAX_DEPENDENCIES ||
+      (header->range_count &&
+       (!header->total_vertex_count || !header->total_index_count ||
+        !vkr_packed_geometry_decode_is_valid(&header->geometry_decode))) ||
+      (!header->range_count &&
+       (header->total_vertex_count || header->total_index_count ||
+        !header->header_reserved[0])) ||
+      header->flags != 0 ||
+      header->header_reserved[0] > VKR_MESH_COOKED_MAX_RANGES ||
+      header->header_reserved[1] > VKR_MESH_COOKED_MAX_RANGES ||
+      header->file_size != size ||
+      header->directory_offset != VKR_MESH_COOKED_HEADER_SIZE) {
     return false_v;
   }
+  if (!isfinite(header->budgets.position_relative) ||
+      !isfinite(header->budgets.normal_degrees) ||
+      !isfinite(header->budgets.tangent_degrees) ||
+      !isfinite(header->budgets.uv_absolute) ||
+      !isfinite(header->budgets.color_absolute) ||
+      !isfinite(header->quantization.position_max) ||
+      !isfinite(header->quantization.normal_degrees_max) ||
+      !isfinite(header->quantization.tangent_degrees_max) ||
+      !isfinite(header->quantization.uv_max) ||
+      !isfinite(header->quantization.color_max) ||
+      header->budgets.position_relative <= 0.0f ||
+      header->budgets.normal_degrees <= 0.0f ||
+      header->budgets.tangent_degrees <= 0.0f ||
+      header->budgets.uv_absolute <= 0.0f ||
+      header->budgets.color_absolute <= 0.0f ||
+      header->quantization.position_max < 0.0f ||
+      header->quantization.normal_degrees_max < 0.0f ||
+      header->quantization.tangent_degrees_max < 0.0f ||
+      header->quantization.uv_max < 0.0f ||
+      header->quantization.color_max < 0.0f ||
+      header->quantization.normal_degrees_max >
+          header->budgets.normal_degrees ||
+      header->quantization.tangent_degrees_max >
+          header->budgets.tangent_degrees ||
+      header->quantization.uv_max > header->budgets.uv_absolute ||
+      header->quantization.color_max > header->budgets.color_absolute) {
+    return false_v;
+  }
+  return true_v;
+}
 
+/**
+ * Checks that the header's section offsets tile the artifact and that the
+ * metadata CRC covers them. Writes where the source metadata starts.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_layout_valid(
+    const uint8_t *data, uint64_t size, const VkrMeshCookedHeaderView *header,
+    uint64_t *out_expected_string_offset) {
   uint64_t range_bytes = 0;
   uint64_t dependency_bytes = 0;
   uint64_t expected_dependency_offset = 0;
-  uint64_t expected_string_offset = 0;
   uint64_t expected_stream_offset = 0;
-  if (!vkr_checked_mul_u64(range_count, VKR_MESH_COOKED_RANGE_SIZE,
+  if (!vkr_checked_mul_u64(header->range_count, VKR_MESH_COOKED_RANGE_SIZE,
                            &range_bytes) ||
-      !vkr_checked_mul_u64(dependency_count, VKR_MESH_COOKED_DEPENDENCY_SIZE,
+      !vkr_checked_mul_u64(header->dependency_count,
+                           VKR_MESH_COOKED_DEPENDENCY_SIZE,
                            &dependency_bytes) ||
-      !vkr_checked_add_u64(directory_offset, range_bytes,
+      !vkr_checked_add_u64(header->directory_offset, range_bytes,
                            &expected_dependency_offset) ||
-      !vkr_checked_add_u64(dependency_offset, dependency_bytes,
-                           &expected_string_offset) ||
-      !vkr_checked_add_u64(string_offset, string_size,
+      !vkr_checked_add_u64(header->dependency_offset, dependency_bytes,
+                           out_expected_string_offset) ||
+      !vkr_checked_add_u64(header->string_offset, header->string_size,
                            &expected_stream_offset) ||
-      dependency_offset != expected_dependency_offset ||
-      string_offset < expected_string_offset || expected_stream_offset > size ||
-      stream_offset != vkr_align_up_u64(expected_stream_offset,
-                                        VKR_MESH_COOKED_STREAM_ALIGNMENT) ||
-      stream_offset > size || source_path_length == 0 ||
-      source_path_offset > string_size ||
-      source_path_length > string_size - source_path_offset) {
+      header->dependency_offset != expected_dependency_offset ||
+      header->string_offset < *out_expected_string_offset ||
+      expected_stream_offset > size ||
+      header->stream_offset !=
+          vkr_align_up_u64(expected_stream_offset,
+                           VKR_MESH_COOKED_STREAM_ALIGNMENT) ||
+      header->stream_offset > size || header->source_path_length == 0 ||
+      header->source_path_offset > header->string_size ||
+      header->source_path_length >
+          header->string_size - header->source_path_offset) {
     return false_v;
   }
-  if (metadata_crc !=
-      vkr_crc32(data + directory_offset, stream_offset - directory_offset)) {
+  if (header->metadata_crc !=
+      vkr_crc32(data + header->directory_offset,
+                header->stream_offset - header->directory_offset)) {
     return false_v;
   }
+  return true_v;
+}
 
-  VkrMeshSource *source = &out_decoded->source;
-  source->nodes =
-      array_create_VkrMeshSourceNode(result_allocator, header_reserved[0]);
-  source->meshes =
-      array_create_VkrMeshSourceMesh(result_allocator, header_reserved[1]);
-  if ((header_reserved[0] && !source->nodes.data) ||
-      (header_reserved[1] && !source->meshes.data))
+vkr_internal bool8_t vkr_mesh_cooked_read_skin(
+    VkrByteReader *source_reader, VkrAllocator *result_allocator,
+    const VkrMeshCookedHeaderView *header, VkrMeshSkinData *skin) {
+  if (!vkr_byte_reader_u64(source_reader, &skin->animation_fingerprint) ||
+      !vkr_byte_reader_u32(source_reader, &skin->skin_count) ||
+      !vkr_byte_reader_u32(source_reader, &skin->vertex_count) ||
+      !skin->skin_count || skin->skin_count > 65536u ||
+      skin->vertex_count != header->total_vertex_count ||
+      source_reader->offset > header->string_offset ||
+      (uint64_t)skin->skin_count * 4u + (uint64_t)skin->vertex_count * 32u !=
+          header->string_offset - source_reader->offset) {
     return false_v;
-  VkrByteReader source_reader = {
-      .data = data, .size = string_offset, .offset = expected_string_offset};
+  }
+  skin->joint_counts = vkr_allocator_alloc(
+      result_allocator, (uint64_t)skin->skin_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  skin->vertices = skin->vertex_count
+                       ? vkr_allocator_alloc(result_allocator,
+                                             (uint64_t)skin->vertex_count *
+                                                 sizeof(*skin->vertices),
+                                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                       : NULL;
+  if (!skin->joint_counts || (skin->vertex_count && !skin->vertices)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < skin->skin_count; ++i) {
+    if (!vkr_byte_reader_u32(source_reader, &skin->joint_counts[i])) {
+      return false_v;
+    }
+  }
+  for (uint32_t i = 0; i < skin->vertex_count; ++i) {
+    for (uint32_t j = 0; j < 4u; ++j) {
+      if (!vkr_byte_reader_u32(source_reader, &skin->vertices[i].joints[j])) {
+        return false_v;
+      }
+    }
+    for (uint32_t j = 0; j < 4u; ++j) {
+      if (!vkr_byte_reader_f32(source_reader, &skin->vertices[i].weights[j])) {
+        return false_v;
+      }
+    }
+  }
+  return true_v;
+}
+
+/**
+ * Reads the source scene nodes, mesh ranges, and skin block that fill the
+ * space between the dependency records and the string table.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_read_source(
+    VkrAllocator *result_allocator, const uint8_t *data,
+    const VkrMeshCookedHeaderView *header, uint64_t expected_string_offset,
+    VkrMeshSource *source, VkrMeshSkinData *skin) {
+  source->nodes = array_create_VkrMeshSourceNode(result_allocator,
+                                                 header->header_reserved[0]);
+  source->meshes = array_create_VkrMeshSourceMesh(result_allocator,
+                                                  header->header_reserved[1]);
+  if ((header->header_reserved[0] && !source->nodes.data) ||
+      (header->header_reserved[1] && !source->meshes.data))
+    return false_v;
+  VkrByteReader source_reader = {.data = data,
+                                 .size = header->string_offset,
+                                 .offset = expected_string_offset};
   uint32_t reserved = 0u;
   if (!vkr_byte_reader_u64(&source_reader, &source->fingerprint) ||
       !vkr_byte_reader_u32(&source_reader, &source->animation_count) ||
       !vkr_byte_reader_u32(&source_reader, &reserved) || reserved != 0u)
     return false_v;
+  bool8_t ok = true_v;
   for (uint32_t i = 0; i < source->nodes.length; ++i) {
     VkrMeshSourceNode *node = &source->nodes.data[i];
     *node = (VkrMeshSourceNode){0};
@@ -464,109 +538,63 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         !vkr_byte_reader_u32(&source_reader, &mesh->first_range) ||
         !vkr_byte_reader_u32(&source_reader, &mesh->range_count) ||
         mesh->first_range != next_range ||
-        mesh->range_count > range_count - next_range)
+        mesh->range_count > header->range_count - next_range)
       return false_v;
     next_range += mesh->range_count;
   }
-  VkrMeshSkinData *skin = &out_decoded->skin;
-  if (version == VKR_MESH_COOKED_SKIN_VERSION) {
-    if (!vkr_byte_reader_u64(&source_reader, &skin->animation_fingerprint) ||
-        !vkr_byte_reader_u32(&source_reader, &skin->skin_count) ||
-        !vkr_byte_reader_u32(&source_reader, &skin->vertex_count) ||
-        !skin->skin_count || skin->skin_count > 65536u ||
-        skin->vertex_count != total_vertex_count ||
-        source_reader.offset > string_offset ||
-        (uint64_t)skin->skin_count * 4u + (uint64_t)skin->vertex_count * 32u !=
-            string_offset - source_reader.offset) {
-      return false_v;
-    }
-    skin->joint_counts = vkr_allocator_alloc(
-        result_allocator, (uint64_t)skin->skin_count * sizeof(uint32_t),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    skin->vertices = skin->vertex_count
-                         ? vkr_allocator_alloc(result_allocator,
-                                               (uint64_t)skin->vertex_count *
-                                                   sizeof(*skin->vertices),
-                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
-                         : NULL;
-    if (!skin->joint_counts || (skin->vertex_count && !skin->vertices)) {
-      return false_v;
-    }
-    for (uint32_t i = 0; i < skin->skin_count; ++i) {
-      if (!vkr_byte_reader_u32(&source_reader, &skin->joint_counts[i])) {
-        return false_v;
-      }
-    }
-    for (uint32_t i = 0; i < skin->vertex_count; ++i) {
-      for (uint32_t j = 0; j < 4u; ++j) {
-        if (!vkr_byte_reader_u32(&source_reader,
-                                 &skin->vertices[i].joints[j])) {
-          return false_v;
-        }
-      }
-      for (uint32_t j = 0; j < 4u; ++j) {
-        if (!vkr_byte_reader_f32(&source_reader,
-                                 &skin->vertices[i].weights[j])) {
-          return false_v;
-        }
-      }
-    }
-  }
-  if (source_reader.offset != string_offset ||
-      (source->meshes.length && next_range != range_count))
-    return false_v;
-  if (!vkr_mesh_cooked_source_validate(scratch_allocator, source, range_count))
-    return false_v;
-
-  VkrMeshCookedDependencyView *dependencies = vkr_allocator_alloc(
-      scratch_allocator, (uint64_t)dependency_count * sizeof(*dependencies),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrMeshCookedRangeView *ranges =
-      range_count ? vkr_allocator_alloc(scratch_allocator,
-                                        (uint64_t)range_count * sizeof(*ranges),
-                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
-                  : NULL;
-  if (!dependencies || (range_count && !ranges)) {
+  if (header->version == VKR_MESH_COOKED_SKIN_VERSION &&
+      !vkr_mesh_cooked_read_skin(&source_reader, result_allocator, header,
+                                 skin)) {
     return false_v;
   }
-  MemZero(dependencies, (uint64_t)dependency_count * sizeof(*dependencies));
-  if (range_count)
-    MemZero(ranges, (uint64_t)range_count * sizeof(*ranges));
+  if (source_reader.offset != header->string_offset ||
+      (source->meshes.length && next_range != header->range_count))
+    return false_v;
+  return true_v;
+}
 
-  uint64_t source_bytes = 0;
-  reader.offset = dependency_offset;
-  for (uint32_t i = 0; i < dependency_count; ++i) {
+vkr_internal bool8_t vkr_mesh_cooked_read_dependencies(
+    VkrByteReader *reader, const uint8_t *data,
+    const VkrMeshCookedHeaderView *header,
+    VkrMeshCookedDependencyView *dependencies, uint64_t *source_bytes) {
+  for (uint32_t i = 0; i < header->dependency_count; ++i) {
     uint64_t path_offset = 0;
     uint32_t path_length = 0;
     uint32_t dep_reserved = 0;
     uint64_t tail_reserved = 0;
-    if (!vkr_byte_reader_u64(&reader, &path_offset) ||
-        !vkr_byte_reader_u32(&reader, &path_length) ||
-        !vkr_byte_reader_u32(&reader, &dep_reserved) ||
-        !vkr_byte_reader_u64(&reader, &dependencies[i].byte_size) ||
-        !vkr_byte_reader_bytes(&reader, dependencies[i].hash, 32u) ||
-        !vkr_byte_reader_u64(&reader, &tail_reserved) || dep_reserved != 0 ||
+    if (!vkr_byte_reader_u64(reader, &path_offset) ||
+        !vkr_byte_reader_u32(reader, &path_length) ||
+        !vkr_byte_reader_u32(reader, &dep_reserved) ||
+        !vkr_byte_reader_u64(reader, &dependencies[i].byte_size) ||
+        !vkr_byte_reader_bytes(reader, dependencies[i].hash, 32u) ||
+        !vkr_byte_reader_u64(reader, &tail_reserved) || dep_reserved != 0 ||
         tail_reserved != 0 || path_length == 0 ||
-        !vkr_mesh_cooked_string_view(data, string_offset, string_size,
-                                     path_offset, path_length, false_v,
-                                     &dependencies[i].path)) {
+        !vkr_mesh_cooked_string_view(
+            data, header->string_offset, header->string_size, path_offset,
+            path_length, false_v, &dependencies[i].path)) {
       return false_v;
     }
-    if (UINT64_MAX - source_bytes < dependencies[i].byte_size) {
+    if (UINT64_MAX - *source_bytes < dependencies[i].byte_size) {
       return false_v;
     }
-    source_bytes += dependencies[i].byte_size;
+    *source_bytes += dependencies[i].byte_size;
   }
-  if (reader.offset != expected_string_offset) {
-    return false_v;
-  }
+  return true_v;
+}
 
-  reader.offset = directory_offset;
+/**
+ * Reads and validates every range record against the header, the string
+ * table, and its encoded streams, which must tile the stream section in order.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
+    VkrByteReader *reader, const uint8_t *data, uint64_t size,
+    const VkrMeshCookedHeaderView *header, VkrMeshCookedRangeView *ranges) {
   uint64_t accumulated_vertices = 0;
   uint64_t accumulated_indices = 0;
-  uint64_t prior_stream_end = stream_offset;
+  uint64_t prior_stream_end = header->stream_offset;
   VkrGeometryQuantizationMetrics range_quantization_max = {0};
-  for (uint32_t i = 0; i < range_count; ++i) {
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; i < header->range_count; ++i) {
     VkrMeshCookedRangeView *range = &ranges[i];
     uint32_t pipeline_domain = 0;
     uint64_t material_offset = 0;
@@ -575,52 +603,51 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     uint64_t shader_offset = 0;
     uint32_t range_reserved = 0;
     uint32_t quantization_reserved = 0;
-    if (!vkr_byte_reader_u32(&reader, &range->range_id) ||
-        !vkr_byte_reader_u32(&reader, &range->first_index) ||
-        !vkr_byte_reader_u32(&reader, &range->index_count) ||
-        !vkr_byte_reader_u32(&reader, &range->vertex_count) ||
-        !vkr_byte_reader_i32(&reader, &range->vertex_offset) ||
-        !vkr_byte_reader_u32(&reader, &pipeline_domain) ||
-        !vkr_byte_reader_u64(&reader, &material_offset) ||
-        !vkr_byte_reader_u32(&reader, &material_length) ||
-        !vkr_byte_reader_u32(&reader, &shader_length) ||
-        !vkr_byte_reader_u64(&reader, &shader_offset) ||
-        !vkr_byte_reader_u64(&reader, &range->vertex_stream_offset) ||
-        !vkr_byte_reader_u64(&reader, &range->vertex_encoded_size) ||
-        !vkr_byte_reader_u64(&reader, &range->vertex_decoded_size) ||
-        !vkr_byte_reader_u32(&reader, &range->vertex_crc) ||
-        !vkr_byte_reader_u32(&reader, &range->index_crc) ||
-        !vkr_byte_reader_u64(&reader, &range->index_stream_offset) ||
-        !vkr_byte_reader_u64(&reader, &range->index_encoded_size) ||
-        !vkr_byte_reader_u64(&reader, &range->index_decoded_size) ||
-        !vkr_byte_reader_f32(&reader, &range->center.x) ||
-        !vkr_byte_reader_f32(&reader, &range->center.y) ||
-        !vkr_byte_reader_f32(&reader, &range->center.z) ||
-        !vkr_byte_reader_f32(&reader, &range->min_extents.x) ||
-        !vkr_byte_reader_f32(&reader, &range->min_extents.y) ||
-        !vkr_byte_reader_f32(&reader, &range->min_extents.z) ||
-        !vkr_byte_reader_f32(&reader, &range->max_extents.x) ||
-        !vkr_byte_reader_f32(&reader, &range->max_extents.y) ||
-        !vkr_byte_reader_f32(&reader, &range->max_extents.z) ||
-        !vkr_byte_reader_u32(&reader, &range_reserved) ||
-        !vkr_byte_reader_f32(&reader, &range->quantization.position_max) ||
-        !vkr_byte_reader_f32(&reader,
-                             &range->quantization.normal_degrees_max) ||
-        !vkr_byte_reader_f32(&reader,
+    if (!vkr_byte_reader_u32(reader, &range->range_id) ||
+        !vkr_byte_reader_u32(reader, &range->first_index) ||
+        !vkr_byte_reader_u32(reader, &range->index_count) ||
+        !vkr_byte_reader_u32(reader, &range->vertex_count) ||
+        !vkr_byte_reader_i32(reader, &range->vertex_offset) ||
+        !vkr_byte_reader_u32(reader, &pipeline_domain) ||
+        !vkr_byte_reader_u64(reader, &material_offset) ||
+        !vkr_byte_reader_u32(reader, &material_length) ||
+        !vkr_byte_reader_u32(reader, &shader_length) ||
+        !vkr_byte_reader_u64(reader, &shader_offset) ||
+        !vkr_byte_reader_u64(reader, &range->vertex_stream_offset) ||
+        !vkr_byte_reader_u64(reader, &range->vertex_encoded_size) ||
+        !vkr_byte_reader_u64(reader, &range->vertex_decoded_size) ||
+        !vkr_byte_reader_u32(reader, &range->vertex_crc) ||
+        !vkr_byte_reader_u32(reader, &range->index_crc) ||
+        !vkr_byte_reader_u64(reader, &range->index_stream_offset) ||
+        !vkr_byte_reader_u64(reader, &range->index_encoded_size) ||
+        !vkr_byte_reader_u64(reader, &range->index_decoded_size) ||
+        !vkr_byte_reader_f32(reader, &range->center.x) ||
+        !vkr_byte_reader_f32(reader, &range->center.y) ||
+        !vkr_byte_reader_f32(reader, &range->center.z) ||
+        !vkr_byte_reader_f32(reader, &range->min_extents.x) ||
+        !vkr_byte_reader_f32(reader, &range->min_extents.y) ||
+        !vkr_byte_reader_f32(reader, &range->min_extents.z) ||
+        !vkr_byte_reader_f32(reader, &range->max_extents.x) ||
+        !vkr_byte_reader_f32(reader, &range->max_extents.y) ||
+        !vkr_byte_reader_f32(reader, &range->max_extents.z) ||
+        !vkr_byte_reader_u32(reader, &range_reserved) ||
+        !vkr_byte_reader_f32(reader, &range->quantization.position_max) ||
+        !vkr_byte_reader_f32(reader, &range->quantization.normal_degrees_max) ||
+        !vkr_byte_reader_f32(reader,
                              &range->quantization.tangent_degrees_max) ||
-        !vkr_byte_reader_f32(&reader, &range->quantization.uv_max) ||
-        !vkr_byte_reader_f32(&reader, &range->quantization.color_max) ||
-        !vkr_byte_reader_u32(&reader, &quantization_reserved)) {
+        !vkr_byte_reader_f32(reader, &range->quantization.uv_max) ||
+        !vkr_byte_reader_f32(reader, &range->quantization.color_max) ||
+        !vkr_byte_reader_u32(reader, &quantization_reserved)) {
       return false_v;
     }
     for (uint32_t axis = 0; axis < 3u; ++axis)
-      ok = ok &&
-           vkr_byte_reader_f32(&reader, &range->decode.position_bias[axis]);
-    ok = ok && vkr_byte_reader_u32(&reader, &range->decode.flags);
+      ok =
+          ok && vkr_byte_reader_f32(reader, &range->decode.position_bias[axis]);
+    ok = ok && vkr_byte_reader_u32(reader, &range->decode.flags);
     for (uint32_t axis = 0; axis < 3u; ++axis)
       ok = ok &&
-           vkr_byte_reader_f32(&reader, &range->decode.position_scale[axis]);
-    ok = ok && vkr_byte_reader_u32(&reader, &range->decode.reserved);
+           vkr_byte_reader_f32(reader, &range->decode.position_scale[axis]);
+    ok = ok && vkr_byte_reader_u32(reader, &range->decode.reserved);
     if (!ok) {
       return false_v;
     }
@@ -634,10 +661,10 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     const float32_t range_sz = range->decode.position_scale[2];
     const float32_t range_position_budget =
         Max(hypotf(hypotf(range_sx, range_sy), range_sz) *
-                budgets.position_relative,
+                header->budgets.position_relative,
             1.0e-7f);
-    if ((i == 0u &&
-         !vkr_mesh_cooked_decode_equal(&geometry_decode, &range->decode)) ||
+    if ((i == 0u && !vkr_mesh_cooked_decode_equal(&header->geometry_decode,
+                                                  &range->decode)) ||
         range->range_id != i || range->first_index != accumulated_indices ||
         range->index_count == 0 || range->index_count % 3u != 0 ||
         range->vertex_count == 0 || range->vertex_offset != 0 ||
@@ -651,13 +678,15 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         !isfinite(range->quantization.uv_max) ||
         !isfinite(range->quantization.color_max) ||
         range->quantization.position_max > range_position_budget ||
-        range->quantization.normal_degrees_max > budgets.normal_degrees ||
-        range->quantization.tangent_degrees_max > budgets.tangent_degrees ||
-        range->quantization.uv_max > budgets.uv_absolute ||
-        range->quantization.color_max > budgets.color_absolute ||
-        !vkr_checked_mul_u64(range->vertex_count, vertex_stride,
+        range->quantization.normal_degrees_max >
+            header->budgets.normal_degrees ||
+        range->quantization.tangent_degrees_max >
+            header->budgets.tangent_degrees ||
+        range->quantization.uv_max > header->budgets.uv_absolute ||
+        range->quantization.color_max > header->budgets.color_absolute ||
+        !vkr_checked_mul_u64(range->vertex_count, header->vertex_stride,
                              &expected_vertex_bytes) ||
-        !vkr_checked_mul_u64(range->index_count, index_stride,
+        !vkr_checked_mul_u64(range->index_count, header->index_stride,
                              &expected_index_bytes) ||
         range->vertex_decoded_size != expected_vertex_bytes ||
         range->index_decoded_size != expected_index_bytes ||
@@ -674,12 +703,12 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         !vkr_checked_add_u64(range->index_stream_offset,
                              range->index_encoded_size, &index_stream_end) ||
         index_stream_end > size ||
-        !vkr_mesh_cooked_string_view(data, string_offset, string_size,
-                                     material_offset, material_length, true_v,
-                                     &range->material_name) ||
-        !vkr_mesh_cooked_string_view(data, string_offset, string_size,
-                                     shader_offset, shader_length, true_v,
-                                     &range->shader_override) ||
+        !vkr_mesh_cooked_string_view(
+            data, header->string_offset, header->string_size, material_offset,
+            material_length, true_v, &range->material_name) ||
+        !vkr_mesh_cooked_string_view(
+            data, header->string_offset, header->string_size, shader_offset,
+            shader_length, true_v, &range->shader_override) ||
         !isfinite(range->center.x) || !isfinite(range->center.y) ||
         !isfinite(range->center.z) || !isfinite(range->min_extents.x) ||
         !isfinite(range->min_extents.y) || !isfinite(range->min_extents.z) ||
@@ -694,10 +723,10 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                   range->index_encoded_size) != range->index_crc ||
         vkr_meshopt_vertex_codec_version(data + range->vertex_stream_offset,
                                          range->vertex_encoded_size) !=
-            (int)vertex_codec_version ||
+            (int)header->vertex_codec_version ||
         vkr_meshopt_index_codec_version(data + range->index_stream_offset,
                                         range->index_encoded_size) !=
-            (int)index_codec_version) {
+            (int)header->index_codec_version) {
       return false_v;
     }
     range_quantization_max.position_max = Max(
@@ -720,26 +749,115 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     prior_stream_end =
         vkr_align_up_u64(index_stream_end, VKR_MESH_COOKED_STREAM_ALIGNMENT);
   }
-  if (reader.offset != dependency_offset ||
-      accumulated_vertices != total_vertex_count ||
-      accumulated_indices != total_index_count || prior_stream_end != size) {
+  if (reader->offset != header->dependency_offset ||
+      accumulated_vertices != header->total_vertex_count ||
+      accumulated_indices != header->total_index_count ||
+      prior_stream_end != size) {
     return false_v;
   }
   if (!vkr_mesh_cooked_quantization_equal(&range_quantization_max,
-                                          &quantization)) {
+                                          &header->quantization)) {
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
+                               VkrAllocator *scratch_allocator,
+                               const uint8_t *data, uint64_t size,
+                               VkrMeshCookedDecoded *out_decoded) {
+  if (!result_allocator || !scratch_allocator || !data || !out_decoded ||
+      size < VKR_MESH_COOKED_HEADER_SIZE ||
+      size > VKR_MESH_COOKED_MAX_FILE_SIZE) {
+    return false_v;
+  }
+  *out_decoded = (VkrMeshCookedDecoded){0};
+
+  uint8_t header_copy[VKR_MESH_COOKED_HEADER_SIZE];
+  MemCopy(header_copy, data, sizeof(header_copy));
+  const uint32_t stored_crc =
+      vkr_load_le_u32(header_copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET);
+  MemZero(header_copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET, sizeof(uint32_t));
+  if (stored_crc != vkr_crc32(header_copy, sizeof(header_copy))) {
+    return false_v;
+  }
+
+  VkrByteReader reader = {.data = data, .size = size, .offset = 0};
+  VkrMeshCookedHeaderView header = {0};
+  if (!vkr_mesh_cooked_read_header(&reader, &header) ||
+      !vkr_mesh_cooked_header_valid(&header, size)) {
+    return false_v;
+  }
+
+  uint8_t expected_settings_hash[32];
+  vkr_mesh_cooked_hash_settings(&header.budgets, expected_settings_hash);
+  if (MemCompare(header.settings_hash, expected_settings_hash,
+                 sizeof(header.settings_hash)) != 0) {
+    return false_v;
+  }
+
+  uint64_t expected_string_offset = 0;
+  if (!vkr_mesh_cooked_layout_valid(data, size, &header,
+                                    &expected_string_offset)) {
+    return false_v;
+  }
+
+  VkrMeshSource *source = &out_decoded->source;
+  VkrMeshSkinData *skin = &out_decoded->skin;
+  if (!vkr_mesh_cooked_read_source(result_allocator, data, &header,
+                                   expected_string_offset, source, skin)) {
+    return false_v;
+  }
+  if (!vkr_mesh_cooked_source_validate(scratch_allocator, source,
+                                       header.range_count))
+    return false_v;
+
+  VkrMeshCookedDependencyView *dependencies = vkr_allocator_alloc(
+      scratch_allocator,
+      (uint64_t)header.dependency_count * sizeof(*dependencies),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrMeshCookedRangeView *ranges =
+      header.range_count
+          ? vkr_allocator_alloc(scratch_allocator,
+                                (uint64_t)header.range_count * sizeof(*ranges),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
+  if (!dependencies || (header.range_count && !ranges)) {
+    return false_v;
+  }
+  MemZero(dependencies,
+          (uint64_t)header.dependency_count * sizeof(*dependencies));
+  if (header.range_count)
+    MemZero(ranges, (uint64_t)header.range_count * sizeof(*ranges));
+
+  uint64_t source_bytes = 0;
+  reader.offset = header.dependency_offset;
+  if (!vkr_mesh_cooked_read_dependencies(&reader, data, &header, dependencies,
+                                         &source_bytes)) {
+    return false_v;
+  }
+  if (reader.offset != expected_string_offset) {
+    return false_v;
+  }
+
+  reader.offset = header.directory_offset;
+  if (!vkr_mesh_cooked_read_ranges(&reader, data, size, &header, ranges)) {
     return false_v;
   }
 
   String8 source_path_view = {0};
-  if (!vkr_mesh_cooked_string_view(data, string_offset, string_size,
-                                   source_path_offset, source_path_length,
-                                   false_v, &source_path_view)) {
+  if (!vkr_mesh_cooked_string_view(
+          data, header.string_offset, header.string_size,
+          header.source_path_offset, header.source_path_length, false_v,
+          &source_path_view)) {
     return false_v;
   }
   uint64_t vertex_bytes = 0;
   uint64_t index_bytes = 0;
-  if (!vkr_checked_mul_u64(total_vertex_count, vertex_stride, &vertex_bytes) ||
-      !vkr_checked_mul_u64(total_index_count, index_stride, &index_bytes)) {
+  if (!vkr_checked_mul_u64(header.total_vertex_count, header.vertex_stride,
+                           &vertex_bytes) ||
+      !vkr_checked_mul_u64(header.total_index_count, header.index_stride,
+                           &index_bytes)) {
     return false_v;
   }
   VkrPackedStaticVertex *vertices =
@@ -751,25 +869,26 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
                           : NULL;
   Array_VkrGeometryUploadRange output_ranges =
-      array_create_VkrGeometryUploadRange(result_allocator, range_count);
+      array_create_VkrGeometryUploadRange(result_allocator, header.range_count);
   VkrGpuGeometryDecodeRecord *decodes =
-      range_count ? vkr_allocator_alloc(result_allocator,
-                                        (uint64_t)range_count *
-                                            sizeof(VkrGpuGeometryDecodeRecord),
-                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
-                  : NULL;
-  if (range_count &&
+      header.range_count
+          ? vkr_allocator_alloc(result_allocator,
+                                (uint64_t)header.range_count *
+                                    sizeof(VkrGpuGeometryDecodeRecord),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
+  if (header.range_count &&
       (!vertices || !indices || !output_ranges.data || !decodes)) {
     return false_v;
   }
 
   uint32_t vertex_base = 0;
-  for (uint32_t i = 0; i < range_count; ++i) {
+  for (uint32_t i = 0; i < header.range_count; ++i) {
     const VkrMeshCookedRangeView *range = &ranges[i];
     VkrPackedStaticVertex *range_vertices = vertices + vertex_base;
     uint32_t *range_indices = indices + range->first_index;
     if (vkr_meshopt_decode_vertices(range_vertices, range->vertex_count,
-                                    vertex_stride,
+                                    header.vertex_stride,
                                     data + range->vertex_stream_offset,
                                     range->vertex_encoded_size) != 0 ||
         vkr_meshopt_decode_indices(range_indices, range->index_count,
@@ -807,32 +926,33 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     vertex_base += range->vertex_count;
   }
 
-  if (version == VKR_MESH_COOKED_SKIN_VERSION &&
-      !vkr_mesh_skin_validate(skin, source, output_ranges.data, range_count,
-                              indices, total_index_count, total_vertex_count)) {
+  if (header.version == VKR_MESH_COOKED_SKIN_VERSION &&
+      !vkr_mesh_skin_validate(
+          skin, source, output_ranges.data, header.range_count, indices,
+          header.total_index_count, header.total_vertex_count)) {
     return false_v;
   }
 
   out_decoded->mesh_buffer = (VkrGeometryUploadBuffer){
-      .vertex_size = vertex_stride,
-      .vertex_count = total_vertex_count,
+      .vertex_size = header.vertex_stride,
+      .vertex_count = header.total_vertex_count,
       .vertices = vertices,
-      .index_size = index_stride,
-      .index_count = total_index_count,
+      .index_size = header.index_stride,
+      .index_count = header.total_index_count,
       .indices = indices,
       .vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1,
       .decodes = decodes,
-      .decode_count = range_count,
+      .decode_count = header.range_count,
   };
   out_decoded->ranges = output_ranges;
-  out_decoded->quantization = quantization;
+  out_decoded->quantization = header.quantization;
   out_decoded->source_bytes = source_bytes;
   out_decoded->cooked_bytes = size;
   out_decoded->decoded_bytes =
       vertex_bytes + index_bytes +
       (uint64_t)skin->skin_count * sizeof(uint32_t) +
       (uint64_t)skin->vertex_count * sizeof(VkrMeshSkinVertex) +
-      (uint64_t)range_count * sizeof(VkrGpuGeometryDecodeRecord);
+      (uint64_t)header.range_count * sizeof(VkrGpuGeometryDecodeRecord);
   return true_v;
 }
 

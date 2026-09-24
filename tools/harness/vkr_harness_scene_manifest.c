@@ -503,6 +503,198 @@ vkr_harness_scene_manifest_digest(VkrHarnessSceneManifest *manifest) {
   vkr_harness_sha256_end(&hash, manifest->sha256);
 }
 
+/**
+ * Records every dependency named by a quoted string in a JSON or glTF file.
+ * Returns false, with `out_error` set, on a malformed string or a reference
+ * that cannot be recorded.
+ */
+vkr_internal bool8_t vkr_harness_scene_manifest_scan_json(
+    const char *resolved_root, VkrHarnessSceneManifest *out_manifest,
+    const VkrHarnessSceneAsset *asset, VkrHarnessAssetContext context,
+    const uint8_t *parse_bytes, uint64_t parse_size,
+    VkrAllocator *file_allocator, VkrHarnessError *out_error) {
+  bool8_t ok = true_v;
+  // JSON/glTF quoted URIs and paths. Cubemap sources are expressed as a
+  // base path plus extension, so expand the renderer's six-face convention.
+  bool8_t expect_cubemap_base = false_v;
+  bool8_t expect_cubemap_extension = false_v;
+  char cubemap_base[VKR_HARNESS_PATH_MAX] = {0};
+  for (uint64_t i = 0; ok && i < parse_size; ++i) {
+    if (parse_bytes[i] != '"') {
+      continue;
+    }
+    VkrJsonReader reader = vkr_json_reader_create(parse_bytes, parse_size);
+    reader.pos = i;
+    String8 raw = {0};
+    if (!vkr_json_parse_string(&reader, &raw)) {
+      ok = false_v;
+      vkr_harness_error_set(out_error, "scene_manifest.json_string", "$.scene",
+                            "Malformed JSON dependency string in %s",
+                            asset->path);
+      break;
+    }
+    uint64_t end = reader.pos - 1u;
+    if (!raw.length || raw.length >= VKR_HARNESS_PATH_MAX) {
+      i = end;
+      continue;
+    }
+    char token[VKR_HARNESS_PATH_MAX];
+    VkrAllocatorScope token_scope = vkr_allocator_begin_scope(file_allocator);
+    String8 decoded = {0};
+    reader.pos = i;
+    bool8_t decoded_ok =
+        vkr_allocator_scope_is_valid(&token_scope) &&
+        vkr_json_parse_string_decoded(&reader, file_allocator, &decoded);
+    if (decoded_ok) {
+      MemCopy(token, decoded.str, decoded.length);
+      token[decoded.length] = '\0';
+    }
+    if (vkr_allocator_scope_is_valid(&token_scope)) {
+      vkr_allocator_end_scope(&token_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+    if (!decoded_ok) {
+      ok = false_v;
+      vkr_harness_error_set(out_error, "scene_manifest.json_string", "$.scene",
+                            "Invalid Unicode dependency string in %s",
+                            asset->path);
+      break;
+    }
+    if (expect_cubemap_base) {
+      string_format(cubemap_base, sizeof(cubemap_base), "%s", token);
+      expect_cubemap_base = false_v;
+    } else if (expect_cubemap_extension) {
+      static const char *faces[] = {"r", "l", "u", "d", "f", "b"};
+      for (uint32_t face = 0; face < ArrayCount(faces); ++face) {
+        char face_path[VKR_HARNESS_PATH_MAX];
+        string_format(face_path, sizeof(face_path), "%s_%s.%s", cubemap_base,
+                      faces[face], token);
+        if (!vkr_harness_scene_manifest_add_reference(
+                resolved_root, asset->path, out_manifest, face_path, true_v,
+                out_error)) {
+          ok = false_v;
+          break;
+        }
+      }
+      cubemap_base[0] = '\0';
+      expect_cubemap_extension = false_v;
+      if (!ok) {
+        break;
+      }
+    } else if (string_equals(token, "base_path")) {
+      expect_cubemap_base = true_v;
+    } else if (cubemap_base[0] && string_equals(token, "extension")) {
+      expect_cubemap_extension = true_v;
+    }
+    uint64_t after = end + 1;
+    while (after < parse_size &&
+           (parse_bytes[after] == ' ' || parse_bytes[after] == '\t' ||
+            parse_bytes[after] == '\r' || parse_bytes[after] == '\n')) {
+      ++after;
+    }
+    const bool8_t key = after < parse_size && parse_bytes[after] == ':';
+    if (!key && vkr_harness_scene_asset_extension(token, context) &&
+        !vkr_harness_scene_manifest_add_reference(resolved_root, asset->path,
+                                                  out_manifest, token, true_v,
+                                                  out_error)) {
+      ok = false_v;
+      break;
+    }
+    i = end;
+  }
+  return ok;
+}
+
+/**
+ * Records every dependency named by a line token in an OBJ, MTL, material, or
+ * font file. Returns false, with `out_error` set, on a reference that cannot
+ * be recorded.
+ */
+vkr_internal bool8_t vkr_harness_scene_manifest_scan_lines(
+    const char *resolved_root, VkrHarnessSceneManifest *out_manifest,
+    const VkrHarnessSceneAsset *asset, VkrHarnessAssetContext context,
+    const uint8_t *parse_bytes, uint64_t parse_size,
+    VkrHarnessError *out_error) {
+  bool8_t ok = true_v;
+  // OBJ/MTL/material line tokens. Queries are retained until resolution so
+  // material sampler controls do not alter the referenced file identity.
+  for (uint64_t i = 0; ok && i < parse_size;) {
+    while (i < parse_size && (parse_bytes[i] == ' ' || parse_bytes[i] == '\t' ||
+                              parse_bytes[i] == '\r' ||
+                              parse_bytes[i] == '\n' || parse_bytes[i] == '=' ||
+                              parse_bytes[i] == ',' || parse_bytes[i] == '"')) {
+      i++;
+    }
+    if (i >= parse_size) {
+      break;
+    }
+    if (parse_bytes[i] == '#') {
+      while (i < parse_size && parse_bytes[i] != '\n') {
+        i++;
+      }
+      continue;
+    }
+    uint64_t end = i;
+    // '=' separates a material key from its value, but it also appears inside
+    // a sampler query. Once the token enters a query it runs to the real
+    // delimiter, so the retained reference keeps the whole '?cs=srgb'.
+    bool8_t in_query = false_v;
+    while (end < parse_size && parse_bytes[end] != ' ' &&
+           parse_bytes[end] != '\t' && parse_bytes[end] != '\r' &&
+           parse_bytes[end] != '\n' && parse_bytes[end] != ',' &&
+           parse_bytes[end] != '"' && (in_query || parse_bytes[end] != '=')) {
+      in_query = in_query || parse_bytes[end] == '?';
+      end++;
+    }
+    if (end > i && end - i < VKR_HARNESS_PATH_MAX) {
+      char token[VKR_HARNESS_PATH_MAX];
+      MemCopy(token, parse_bytes + i, end - i);
+      token[end - i] = '\0';
+      bool8_t runtime_reference = true_v;
+      const uint64_t owner_length = string_length(asset->path);
+      const bool8_t owner_is_mtl =
+          owner_length >= 4u &&
+          string_equals(asset->path + owner_length - 4u, ".mtl");
+      const bool8_t owner_is_obj =
+          owner_length >= 4u &&
+          string_equals(asset->path + owner_length - 4u, ".obj");
+      if (owner_is_mtl || owner_is_obj) {
+        uint64_t line_start = i;
+        while (line_start > 0u && parse_bytes[line_start - 1u] != '\n' &&
+               parse_bytes[line_start - 1u] != '\r') {
+          line_start--;
+        }
+        while (line_start < parse_size && (parse_bytes[line_start] == ' ' ||
+                                           parse_bytes[line_start] == '\t')) {
+          line_start++;
+        }
+        const uint64_t remaining = parse_size - line_start;
+        runtime_reference =
+            owner_is_obj
+                ? (remaining >= 6u &&
+                   MemCompare(parse_bytes + line_start, "mtllib", 6u) == 0)
+                : ((remaining >= 6u &&
+                    MemCompare(parse_bytes + line_start, "map_Kd", 6u) == 0) ||
+                   (remaining >= 6u &&
+                    MemCompare(parse_bytes + line_start, "map_Ks", 6u) == 0) ||
+                   (remaining >= 8u && MemCompare(parse_bytes + line_start,
+                                                  "map_bump", 8u) == 0) ||
+                   (remaining >= 4u &&
+                    MemCompare(parse_bytes + line_start, "bump", 4u) == 0));
+      }
+      if (runtime_reference &&
+          vkr_harness_scene_asset_extension(token, context) &&
+          !vkr_harness_scene_manifest_add_reference(resolved_root, asset->path,
+                                                    out_manifest, token, true_v,
+                                                    out_error)) {
+        ok = false_v;
+        break;
+      }
+    }
+    i = end + (end == i ? 1u : 0u);
+  }
+  return ok;
+}
+
 bool8_t vkr_harness_scene_manifest_build_context(
     const char *repo_root, const char *scene, VkrHarnessAssetContext context,
     Arena *arena, VkrHarnessSceneManifest *out_manifest,
@@ -633,172 +825,15 @@ bool8_t vkr_harness_scene_manifest_build_context(
       }
     }
 
-    // JSON/glTF quoted URIs and paths. Cubemap sources are expressed as a
-    // base path plus extension, so expand the renderer's six-face convention.
-    bool8_t expect_cubemap_base = false_v;
-    bool8_t expect_cubemap_extension = false_v;
-    char cubemap_base[VKR_HARNESS_PATH_MAX] = {0};
-    for (uint64_t i = 0; ok && (is_json || is_glb) && i < parse_size; ++i) {
-      if (parse_bytes[i] != '"') {
-        continue;
-      }
-      VkrJsonReader reader = vkr_json_reader_create(parse_bytes, parse_size);
-      reader.pos = i;
-      String8 raw = {0};
-      if (!vkr_json_parse_string(&reader, &raw)) {
-        ok = false_v;
-        vkr_harness_error_set(
-            out_error, "scene_manifest.json_string", "$.scene",
-            "Malformed JSON dependency string in %s", asset->path);
-        break;
-      }
-      uint64_t end = reader.pos - 1u;
-      if (!raw.length || raw.length >= VKR_HARNESS_PATH_MAX) {
-        i = end;
-        continue;
-      }
-      char token[VKR_HARNESS_PATH_MAX];
-      VkrAllocatorScope token_scope =
-          vkr_allocator_begin_scope(&file_allocator);
-      String8 decoded = {0};
-      reader.pos = i;
-      bool8_t decoded_ok =
-          vkr_allocator_scope_is_valid(&token_scope) &&
-          vkr_json_parse_string_decoded(&reader, &file_allocator, &decoded);
-      if (decoded_ok) {
-        MemCopy(token, decoded.str, decoded.length);
-        token[decoded.length] = '\0';
-      }
-      if (vkr_allocator_scope_is_valid(&token_scope)) {
-        vkr_allocator_end_scope(&token_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-      }
-      if (!decoded_ok) {
-        ok = false_v;
-        vkr_harness_error_set(
-            out_error, "scene_manifest.json_string", "$.scene",
-            "Invalid Unicode dependency string in %s", asset->path);
-        break;
-      }
-      if (expect_cubemap_base) {
-        string_format(cubemap_base, sizeof(cubemap_base), "%s", token);
-        expect_cubemap_base = false_v;
-      } else if (expect_cubemap_extension) {
-        static const char *faces[] = {"r", "l", "u", "d", "f", "b"};
-        for (uint32_t face = 0; face < ArrayCount(faces); ++face) {
-          char face_path[VKR_HARNESS_PATH_MAX];
-          string_format(face_path, sizeof(face_path), "%s_%s.%s", cubemap_base,
-                        faces[face], token);
-          if (!vkr_harness_scene_manifest_add_reference(
-                  resolved_root, asset->path, out_manifest, face_path, true_v,
-                  out_error)) {
-            ok = false_v;
-            break;
-          }
-        }
-        cubemap_base[0] = '\0';
-        expect_cubemap_extension = false_v;
-        if (!ok) {
-          break;
-        }
-      } else if (string_equals(token, "base_path")) {
-        expect_cubemap_base = true_v;
-      } else if (cubemap_base[0] && string_equals(token, "extension")) {
-        expect_cubemap_extension = true_v;
-      }
-      uint64_t after = end + 1;
-      while (after < parse_size &&
-             (parse_bytes[after] == ' ' || parse_bytes[after] == '\t' ||
-              parse_bytes[after] == '\r' || parse_bytes[after] == '\n')) {
-        ++after;
-      }
-      const bool8_t key = after < parse_size && parse_bytes[after] == ':';
-      if (!key && vkr_harness_scene_asset_extension(token, context) &&
-          !vkr_harness_scene_manifest_add_reference(resolved_root, asset->path,
-                                                    out_manifest, token, true_v,
-                                                    out_error)) {
-        ok = false_v;
-        break;
-      }
-      i = end;
+    if (ok && (is_json || is_glb)) {
+      ok = vkr_harness_scene_manifest_scan_json(
+          resolved_root, out_manifest, asset, context, parse_bytes, parse_size,
+          &file_allocator, out_error);
     }
-
-    // OBJ/MTL/material line tokens. Queries are retained until resolution so
-    // material sampler controls do not alter the referenced file identity.
-    for (uint64_t i = 0; ok && scan_lines && i < parse_size;) {
-      while (i < parse_size &&
-             (parse_bytes[i] == ' ' || parse_bytes[i] == '\t' ||
-              parse_bytes[i] == '\r' || parse_bytes[i] == '\n' ||
-              parse_bytes[i] == '=' || parse_bytes[i] == ',' ||
-              parse_bytes[i] == '"')) {
-        i++;
-      }
-      if (i >= parse_size) {
-        break;
-      }
-      if (parse_bytes[i] == '#') {
-        while (i < parse_size && parse_bytes[i] != '\n') {
-          i++;
-        }
-        continue;
-      }
-      uint64_t end = i;
-      // '=' separates a material key from its value, but it also appears inside
-      // a sampler query. Once the token enters a query it runs to the real
-      // delimiter, so the retained reference keeps the whole '?cs=srgb'.
-      bool8_t in_query = false_v;
-      while (end < parse_size && parse_bytes[end] != ' ' &&
-             parse_bytes[end] != '\t' && parse_bytes[end] != '\r' &&
-             parse_bytes[end] != '\n' && parse_bytes[end] != ',' &&
-             parse_bytes[end] != '"' && (in_query || parse_bytes[end] != '=')) {
-        in_query = in_query || parse_bytes[end] == '?';
-        end++;
-      }
-      if (end > i && end - i < VKR_HARNESS_PATH_MAX) {
-        char token[VKR_HARNESS_PATH_MAX];
-        MemCopy(token, parse_bytes + i, end - i);
-        token[end - i] = '\0';
-        bool8_t runtime_reference = true_v;
-        const uint64_t owner_length = string_length(asset->path);
-        const bool8_t owner_is_mtl =
-            owner_length >= 4u &&
-            string_equals(asset->path + owner_length - 4u, ".mtl");
-        const bool8_t owner_is_obj =
-            owner_length >= 4u &&
-            string_equals(asset->path + owner_length - 4u, ".obj");
-        if (owner_is_mtl || owner_is_obj) {
-          uint64_t line_start = i;
-          while (line_start > 0u && parse_bytes[line_start - 1u] != '\n' &&
-                 parse_bytes[line_start - 1u] != '\r') {
-            line_start--;
-          }
-          while (line_start < parse_size && (parse_bytes[line_start] == ' ' ||
-                                             parse_bytes[line_start] == '\t')) {
-            line_start++;
-          }
-          const uint64_t remaining = parse_size - line_start;
-          runtime_reference =
-              owner_is_obj
-                  ? (remaining >= 6u &&
-                     MemCompare(parse_bytes + line_start, "mtllib", 6u) == 0)
-                  : ((remaining >= 6u && MemCompare(parse_bytes + line_start,
-                                                    "map_Kd", 6u) == 0) ||
-                     (remaining >= 6u && MemCompare(parse_bytes + line_start,
-                                                    "map_Ks", 6u) == 0) ||
-                     (remaining >= 8u && MemCompare(parse_bytes + line_start,
-                                                    "map_bump", 8u) == 0) ||
-                     (remaining >= 4u &&
-                      MemCompare(parse_bytes + line_start, "bump", 4u) == 0));
-        }
-        if (runtime_reference &&
-            vkr_harness_scene_asset_extension(token, context) &&
-            !vkr_harness_scene_manifest_add_reference(
-                resolved_root, asset->path, out_manifest, token, true_v,
-                out_error)) {
-          ok = false_v;
-          break;
-        }
-      }
-      i = end + (end == i ? 1u : 0u);
+    if (ok && scan_lines) {
+      ok = vkr_harness_scene_manifest_scan_lines(resolved_root, out_manifest,
+                                                 asset, context, parse_bytes,
+                                                 parse_size, out_error);
     }
 
     // Runtime texture loading prefers a packed sibling when one exists.

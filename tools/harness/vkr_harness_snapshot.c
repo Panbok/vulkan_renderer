@@ -179,6 +179,207 @@ vkr_internal bool8_t vkr_harness_snapshot_merge_summary(
   return true_v;
 }
 
+/**
+ * Adopts the first completed child's renderer extent, content scale, and
+ * device provenance as the run's own.
+ */
+vkr_internal void
+vkr_harness_snapshot_adopt_provenance(VkrHarnessReport *report,
+                                      const VkrHarnessCaptureSummary *summary) {
+  report->case_manifest.renderer.render_width =
+      summary->case_manifest.renderer.render_width;
+  report->case_manifest.renderer.render_height =
+      summary->case_manifest.renderer.render_height;
+  report->case_manifest.content_scale = summary->case_manifest.content_scale;
+  string_format(report->provenance.gpu, sizeof(report->provenance.gpu), "%s",
+                summary->provenance.gpu);
+  string_format(report->provenance.driver, sizeof(report->provenance.driver),
+                "%s", summary->provenance.driver);
+  string_format(report->provenance.color_format,
+                sizeof(report->provenance.color_format), "%s",
+                summary->provenance.color_format);
+  string_format(report->provenance.depth_format,
+                sizeof(report->provenance.depth_format), "%s",
+                summary->provenance.depth_format);
+  string_format(report->provenance.color_space,
+                sizeof(report->provenance.color_space), "%s",
+                summary->provenance.color_space);
+  string_format(report->provenance.world_renderer,
+                sizeof(report->provenance.world_renderer), "%s",
+                summary->provenance.world_renderer);
+  report->provenance.gpu_vendor_id = summary->provenance.gpu_vendor_id;
+  report->provenance.gpu_device_id = summary->provenance.gpu_device_id;
+  report->provenance.actual_present = summary->provenance.actual_present;
+  report->provenance.actual_target = summary->provenance.actual_target;
+  report->provenance.actual_target_image_count =
+      summary->provenance.actual_target_image_count;
+  report->provenance.actual_target_width =
+      summary->provenance.actual_target_width;
+  report->provenance.actual_target_height =
+      summary->provenance.actual_target_height;
+}
+
+/**
+ * Records one replay child in the report and adopts its verified captures.
+ * Returns false when the child did not produce a usable summary, which ends
+ * the run's replay loop.
+ */
+vkr_internal bool8_t vkr_harness_snapshot_adopt_child(
+    VkrHarnessReport *report, Arena *summary_arena, uint32_t index,
+    int child_exit, const char *child_relative, const char *child_dir,
+    bool8_t *replay_scale_compatible) {
+  char child_report[VKR_HARNESS_PATH_MAX];
+  char child_summary[VKR_HARNESS_PATH_MAX];
+  VkrHarnessRunReference *reference =
+      &report->auxiliary_runs[report->auxiliary_run_count++];
+  reference->index = index;
+  string_format(reference->status, sizeof(reference->status), "%s",
+                child_exit == VKR_HARNESS_EXIT_PASS ? "pass" : "incomplete");
+  string_format(reference->report, sizeof(reference->report), "%s/report.json",
+                child_relative);
+  string_format(child_report, sizeof(child_report), "%s/report.json",
+                child_dir);
+  string_format(child_summary, sizeof(child_summary), "%s/capture-summary.bin",
+                child_dir);
+  Scratch summary_scratch = scratch_create(summary_arena);
+  VkrHarnessCaptureSummary summary = {0};
+  if (child_exit != VKR_HARNESS_EXIT_PASS ||
+      !vkr_harness_sha256_file(child_report, reference->sha256) ||
+      !vkr_harness_capture_summary_read(child_summary, summary_arena,
+                                        &summary)) {
+    scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
+    return false_v;
+  }
+  if (!isfinite(summary.case_manifest.content_scale) ||
+      summary.case_manifest.content_scale <= 0.0f ||
+      (report->completed_repetitions > 0u &&
+       summary.case_manifest.content_scale !=
+           report->case_manifest.content_scale)) {
+    *replay_scale_compatible = false_v;
+    scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
+    return false_v;
+  }
+  if (!vkr_harness_snapshot_merge_summary(report, child_relative, child_dir,
+                                          &summary) ||
+      !vkr_harness_report_add_artifact(report, "capture.auxiliary_report",
+                                       reference->report, "application/json",
+                                       child_report)) {
+    scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
+    return false_v;
+  }
+  string_format(reference->environment_fingerprint,
+                sizeof(reference->environment_fingerprint), "%s",
+                summary.environment_fingerprint);
+  string_format(reference->workload_fingerprint,
+                sizeof(reference->workload_fingerprint), "%s",
+                summary.workload_fingerprint);
+  string_format(reference->policy_fingerprint,
+                sizeof(reference->policy_fingerprint), "%s",
+                summary.policy_fingerprint);
+  if (report->completed_repetitions == 0u) {
+    vkr_harness_snapshot_adopt_provenance(report, &summary);
+  }
+  scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
+  report->completed_repetitions++;
+  return true_v;
+}
+
+/**
+ * Computes the run's fingerprints for the case as executed and reports whether
+ * every completed child recorded the same three.
+ */
+vkr_internal bool8_t vkr_harness_snapshot_fingerprints_agree(
+    VkrHarnessReport *report, const VkrHarnessCase *case_manifest,
+    const VkrHarnessProfile *profile, const char *scene_content_digest,
+    VkrHarnessError *error) {
+  VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
+  const uint32_t environment_count =
+      vkr_harness_environment_fields(&report->provenance, false_v, environment);
+  VkrHarnessCase effective_case = *case_manifest;
+  effective_case.target_image_count =
+      report->provenance.actual_target_image_count;
+  effective_case.content_scale = report->case_manifest.content_scale;
+  bool8_t comparison_compatible =
+      vkr_harness_case_fingerprints_with_scene_digest(
+          VKR_HARNESS_TOOL_SNAPSHOT, &effective_case, profile,
+          report->subsystem_mask, environment, environment_count,
+          scene_content_digest, report->environment_fingerprint,
+          report->workload_fingerprint, report->policy_fingerprint, error);
+  for (uint32_t i = 0u;
+       comparison_compatible && i < report->completed_repetitions; ++i) {
+    const VkrHarnessRunReference *reference = &report->auxiliary_runs[i];
+    comparison_compatible = string_equals(reference->environment_fingerprint,
+                                          report->environment_fingerprint) &&
+                            string_equals(reference->workload_fingerprint,
+                                          report->workload_fingerprint) &&
+                            string_equals(reference->policy_fingerprint,
+                                          report->policy_fingerprint);
+  }
+  return comparison_compatible;
+}
+
+/** Compares a complete run's captures with the current baseline. */
+vkr_internal void vkr_harness_snapshot_compare_baseline(
+    VkrHarnessReport *report, const char *repo_root, const char *run_root,
+    Arena *summary_arena, bool8_t cross_backend, VkrHarnessError *error) {
+  char baseline_root[VKR_HARNESS_PATH_MAX];
+  VkrHarnessCaptureSummary baseline = {0};
+  VkrHarnessError baseline_error = {0};
+  if (!vkr_harness_baseline_current(
+          repo_root, report->profile.id, report->case_manifest.id,
+          summary_arena, baseline_root, &baseline, &baseline_error)) {
+    if (string_equals(baseline_error.code, "baseline.missing")) {
+      vkr_harness_report_add_authority_reason(report, "baseline.missing");
+    } else {
+      vkr_harness_report_mark_incomplete(report, "baseline.load_failed");
+    }
+  } else {
+    VkrHarnessCaptureSummary actual = {
+        .case_manifest = report->case_manifest,
+        .provenance = report->provenance,
+    };
+    string_format(actual.environment_fingerprint,
+                  sizeof(actual.environment_fingerprint), "%s",
+                  report->environment_fingerprint);
+    string_format(actual.workload_fingerprint,
+                  sizeof(actual.workload_fingerprint), "%s",
+                  report->workload_fingerprint);
+    string_format(actual.policy_fingerprint, sizeof(actual.policy_fingerprint),
+                  "%s", report->policy_fingerprint);
+    const char *incompatibility =
+        vkr_harness_baseline_incompatibility(&actual, &baseline, cross_backend);
+    if (incompatibility) {
+      vkr_harness_report_set_status(report, "missing_baseline",
+                                    VKR_HARNESS_EXIT_MISSING_BASELINE);
+      vkr_harness_report_add_incompatibility(report, incompatibility);
+    } else {
+      /* Decoded images and diff buffers are scoped to their own arena so a
+         wide capture set does not grow the arena the report tables alias. */
+      Arena *comparison_transient = arena_create();
+      VkrHarnessArenas comparison_arenas = {.persistent = summary_arena,
+                                            .transient = comparison_transient};
+      const VkrHarnessExitCode comparison =
+          comparison_transient
+              ? vkr_harness_compare_capture_sets(
+                    run_root, baseline_root, report->captures,
+                    report->capture_count, baseline.captures,
+                    baseline.capture_count, &comparison_arenas, error)
+              : VKR_HARNESS_EXIT_ERROR;
+      arena_destroy(comparison_transient);
+      if (comparison == VKR_HARNESS_EXIT_FAIL) {
+        vkr_harness_report_set_status(report, "fail", comparison);
+      } else if (comparison == VKR_HARNESS_EXIT_MISSING_BASELINE) {
+        vkr_harness_report_set_status(report, "missing_baseline", comparison);
+        vkr_harness_report_add_incompatibility(report,
+                                               "baseline.capture_incompatible");
+      } else if (comparison == VKR_HARNESS_EXIT_ERROR) {
+        vkr_harness_report_mark_incomplete(report, "baseline.compare_failed");
+      }
+      vkr_harness_compare_publish_diffs(report, run_root);
+    }
+  }
+}
+
 int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path,
                              const char *artifact_root_override,
@@ -307,8 +508,6 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     const VkrHarnessCaptureReplay *replay = &replays[i];
     char child_relative[VKR_HARNESS_PATH_MAX];
     char child_dir[VKR_HARNESS_PATH_MAX];
-    char child_report[VKR_HARNESS_PATH_MAX];
-    char child_summary[VKR_HARNESS_PATH_MAX];
     string_format(child_relative, sizeof(child_relative), "captures/%u", i);
     string_format(child_dir, sizeof(child_dir), "%s/%s", run_root,
                   child_relative);
@@ -338,112 +537,15 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
         replay->capture_index, replay->mode, cache_path,
         case_manifest.repetition_timeout_ms, false_v, scene_manifest.sha256,
         &case_manifest.renderer);
-    VkrHarnessRunReference *reference =
-        &report.auxiliary_runs[report.auxiliary_run_count++];
-    reference->index = i;
-    string_format(reference->status, sizeof(reference->status), "%s",
-                  child_exit == VKR_HARNESS_EXIT_PASS ? "pass" : "incomplete");
-    string_format(reference->report, sizeof(reference->report),
-                  "%s/report.json", child_relative);
-    string_format(child_report, sizeof(child_report), "%s/report.json",
-                  child_dir);
-    string_format(child_summary, sizeof(child_summary),
-                  "%s/capture-summary.bin", child_dir);
-    Scratch summary_scratch = scratch_create(summary_arena);
-    VkrHarnessCaptureSummary summary = {0};
-    if (child_exit != VKR_HARNESS_EXIT_PASS ||
-        !vkr_harness_sha256_file(child_report, reference->sha256) ||
-        !vkr_harness_capture_summary_read(child_summary, summary_arena,
-                                          &summary)) {
-      scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (!vkr_harness_snapshot_adopt_child(&report, summary_arena, i, child_exit,
+                                          child_relative, child_dir,
+                                          &replay_scale_compatible)) {
       break;
     }
-    if (!isfinite(summary.case_manifest.content_scale) ||
-        summary.case_manifest.content_scale <= 0.0f ||
-        (report.completed_repetitions > 0u &&
-         summary.case_manifest.content_scale !=
-             report.case_manifest.content_scale)) {
-      replay_scale_compatible = false_v;
-      scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
-      break;
-    }
-    if (!vkr_harness_snapshot_merge_summary(&report, child_relative, child_dir,
-                                            &summary) ||
-        !vkr_harness_report_add_artifact(&report, "capture.auxiliary_report",
-                                         reference->report, "application/json",
-                                         child_report)) {
-      scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
-      break;
-    }
-    string_format(reference->environment_fingerprint,
-                  sizeof(reference->environment_fingerprint), "%s",
-                  summary.environment_fingerprint);
-    string_format(reference->workload_fingerprint,
-                  sizeof(reference->workload_fingerprint), "%s",
-                  summary.workload_fingerprint);
-    string_format(reference->policy_fingerprint,
-                  sizeof(reference->policy_fingerprint), "%s",
-                  summary.policy_fingerprint);
-    if (report.completed_repetitions == 0u) {
-      report.case_manifest.renderer.render_width =
-          summary.case_manifest.renderer.render_width;
-      report.case_manifest.renderer.render_height =
-          summary.case_manifest.renderer.render_height;
-      report.case_manifest.content_scale = summary.case_manifest.content_scale;
-      string_format(report.provenance.gpu, sizeof(report.provenance.gpu), "%s",
-                    summary.provenance.gpu);
-      string_format(report.provenance.driver, sizeof(report.provenance.driver),
-                    "%s", summary.provenance.driver);
-      string_format(report.provenance.color_format,
-                    sizeof(report.provenance.color_format), "%s",
-                    summary.provenance.color_format);
-      string_format(report.provenance.depth_format,
-                    sizeof(report.provenance.depth_format), "%s",
-                    summary.provenance.depth_format);
-      string_format(report.provenance.color_space,
-                    sizeof(report.provenance.color_space), "%s",
-                    summary.provenance.color_space);
-      string_format(report.provenance.world_renderer,
-                    sizeof(report.provenance.world_renderer), "%s",
-                    summary.provenance.world_renderer);
-      report.provenance.gpu_vendor_id = summary.provenance.gpu_vendor_id;
-      report.provenance.gpu_device_id = summary.provenance.gpu_device_id;
-      report.provenance.actual_present = summary.provenance.actual_present;
-      report.provenance.actual_target = summary.provenance.actual_target;
-      report.provenance.actual_target_image_count =
-          summary.provenance.actual_target_image_count;
-      report.provenance.actual_target_width =
-          summary.provenance.actual_target_width;
-      report.provenance.actual_target_height =
-          summary.provenance.actual_target_height;
-    }
-    scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
-    report.completed_repetitions++;
   }
 
-  VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
-  const uint32_t environment_count =
-      vkr_harness_environment_fields(&report.provenance, false_v, environment);
-  VkrHarnessCase effective_case = case_manifest;
-  effective_case.target_image_count =
-      report.provenance.actual_target_image_count;
-  effective_case.content_scale = report.case_manifest.content_scale;
-  bool8_t comparison_compatible =
-      vkr_harness_case_fingerprints_with_scene_digest(
-          VKR_HARNESS_TOOL_SNAPSHOT, &effective_case, &profile,
-          report.subsystem_mask, environment, environment_count,
-          scene_manifest.sha256, report.environment_fingerprint,
-          report.workload_fingerprint, report.policy_fingerprint, &error);
-  for (uint32_t i = 0u;
-       comparison_compatible && i < report.completed_repetitions; ++i) {
-    const VkrHarnessRunReference *reference = &report.auxiliary_runs[i];
-    comparison_compatible =
-        string_equals(reference->environment_fingerprint,
-                      report.environment_fingerprint) &&
-        string_equals(reference->workload_fingerprint,
-                      report.workload_fingerprint) &&
-        string_equals(reference->policy_fingerprint, report.policy_fingerprint);
-  }
+  const bool8_t comparison_compatible = vkr_harness_snapshot_fingerprints_agree(
+      &report, &case_manifest, &profile, scene_manifest.sha256, &error);
   vkr_harness_timestamp_utc(report.provenance.ended_at);
   const bool8_t complete =
       report.completed_repetitions == replay_count && comparison_compatible;
@@ -457,65 +559,8 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     vkr_harness_report_mark_incomplete(&report,
                                        "comparison.content_scale_mismatch");
   if (complete) {
-    char baseline_root[VKR_HARNESS_PATH_MAX];
-    VkrHarnessCaptureSummary baseline = {0};
-    VkrHarnessError baseline_error = {0};
-    if (!vkr_harness_baseline_current(repo_root, profile.id, case_manifest.id,
-                                      summary_arena, baseline_root, &baseline,
-                                      &baseline_error)) {
-      if (string_equals(baseline_error.code, "baseline.missing")) {
-        vkr_harness_report_add_authority_reason(&report, "baseline.missing");
-      } else {
-        vkr_harness_report_mark_incomplete(&report, "baseline.load_failed");
-      }
-    } else {
-      VkrHarnessCaptureSummary actual = {
-          .case_manifest = report.case_manifest,
-          .provenance = report.provenance,
-      };
-      string_format(actual.environment_fingerprint,
-                    sizeof(actual.environment_fingerprint), "%s",
-                    report.environment_fingerprint);
-      string_format(actual.workload_fingerprint,
-                    sizeof(actual.workload_fingerprint), "%s",
-                    report.workload_fingerprint);
-      string_format(actual.policy_fingerprint,
-                    sizeof(actual.policy_fingerprint), "%s",
-                    report.policy_fingerprint);
-      const char *incompatibility = vkr_harness_baseline_incompatibility(
-          &actual, &baseline, cross_backend);
-      if (incompatibility) {
-        vkr_harness_report_set_status(&report, "missing_baseline",
-                                      VKR_HARNESS_EXIT_MISSING_BASELINE);
-        vkr_harness_report_add_incompatibility(&report, incompatibility);
-      } else {
-        /* Decoded images and diff buffers are scoped to their own arena so a
-           wide capture set does not grow the arena the report tables alias. */
-        Arena *comparison_transient = arena_create();
-        VkrHarnessArenas comparison_arenas = {
-            .persistent = summary_arena, .transient = comparison_transient};
-        const VkrHarnessExitCode comparison =
-            comparison_transient
-                ? vkr_harness_compare_capture_sets(
-                      run_root, baseline_root, report.captures,
-                      report.capture_count, baseline.captures,
-                      baseline.capture_count, &comparison_arenas, &error)
-                : VKR_HARNESS_EXIT_ERROR;
-        arena_destroy(comparison_transient);
-        if (comparison == VKR_HARNESS_EXIT_FAIL) {
-          vkr_harness_report_set_status(&report, "fail", comparison);
-        } else if (comparison == VKR_HARNESS_EXIT_MISSING_BASELINE) {
-          vkr_harness_report_set_status(&report, "missing_baseline",
-                                        comparison);
-          vkr_harness_report_add_incompatibility(
-              &report, "baseline.capture_incompatible");
-        } else if (comparison == VKR_HARNESS_EXIT_ERROR) {
-          vkr_harness_report_mark_incomplete(&report,
-                                             "baseline.compare_failed");
-        }
-        vkr_harness_compare_publish_diffs(&report, run_root);
-      }
-    }
+    vkr_harness_snapshot_compare_baseline(&report, repo_root, run_root,
+                                          summary_arena, cross_backend, &error);
   }
   char aggregate_summary[VKR_HARNESS_PATH_MAX];
   string_format(aggregate_summary, sizeof(aggregate_summary),

@@ -208,6 +208,511 @@ vkr_mesh_cooked_write_source_metadata(VkrByteWriter *writer,
   return ok;
 }
 
+/**
+ * Aggregates of the encoded ranges and the byte layout they imply: every value
+ * the artifact header records besides constants and encode settings.
+ */
+typedef struct VkrMeshCookedHeaderBuild {
+  uint64_t string_size;
+  uint64_t total_vertices;
+  uint64_t total_indices;
+  VkrGpuGeometryDecodeRecord geometry_decode;
+  VkrGeometryQuantizationMetrics quantization_max;
+  uint8_t source_hash[32];
+  uint8_t settings_hash[32];
+  uint64_t directory_offset;
+  uint64_t dependency_offset;
+  uint64_t string_offset;
+  uint64_t stream_offset;
+  uint64_t file_size;
+} VkrMeshCookedHeaderBuild;
+
+/**
+ * Rejects non-finite source vertices and, for a skinned mesh, indexed access
+ * or skin bindings the ranges cannot satisfy.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_validate_vertices(
+    const VkrMeshCookedEncodeInfo *info, bool8_t has_skin) {
+  const VkrVertex3d *source_vertices =
+      (const VkrVertex3d *)info->mesh_buffer.vertices;
+  const uint32_t *source_indices = (const uint32_t *)info->mesh_buffer.indices;
+  for (uint32_t i = 0; i < info->mesh_buffer.vertex_count; ++i) {
+    if (!vkr_mesh_cooked_vertex_is_finite(&source_vertices[i])) {
+      return false_v;
+    }
+  }
+  if (has_skin) {
+    /* Validate indexed access before the binding validator consumes ranges. */
+    for (uint32_t i = 0; i < info->range_count; ++i) {
+      const VkrGeometryUploadRange *range = &info->ranges[i];
+      if (range->first_index > info->mesh_buffer.index_count ||
+          range->index_count >
+              info->mesh_buffer.index_count - range->first_index ||
+          range->vertex_offset != 0) {
+        return false_v;
+      }
+      for (uint32_t j = 0; j < range->index_count; ++j) {
+        if (source_indices[range->first_index + j] >=
+            info->mesh_buffer.vertex_count) {
+          return false_v;
+        }
+      }
+    }
+    if (!vkr_mesh_skin_validate(&info->skin, &info->source, info->ranges,
+                                info->range_count, source_indices,
+                                info->mesh_buffer.index_count,
+                                info->mesh_buffer.vertex_count)) {
+      return false_v;
+    }
+  } else if (info->skin.vertex_count || info->skin.vertices ||
+             info->skin.joint_counts || info->skin.animation_fingerprint) {
+    return false_v;
+  }
+  return true_v;
+}
+
+/**
+ * Validates upload range `i`, reorders it for vertex locality, quantizes and
+ * compresses its streams into `out_range`, and accumulates it into `header`.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_encode_range(
+    VkrAllocator *scratch_allocator, const VkrMeshCookedEncodeInfo *info,
+    uint32_t i, bool8_t has_skin, VkrMeshCookedHeaderBuild *header,
+    VkrMeshCookedRangeBuild *out_range) {
+  const VkrVertex3d *source_vertices =
+      (const VkrVertex3d *)info->mesh_buffer.vertices;
+  const uint32_t *source_indices = (const uint32_t *)info->mesh_buffer.indices;
+  const VkrGeometryUploadRange *range = &info->ranges[i];
+  if (range->range_id != i || range->index_count == 0 ||
+      range->index_count % 3u != 0 ||
+      range->first_index > info->mesh_buffer.index_count ||
+      range->index_count > info->mesh_buffer.index_count - range->first_index ||
+      range->pipeline_domain >= VKR_PIPELINE_DOMAIN_COUNT ||
+      !vkr_mesh_cooked_string_is_valid(range->material_name, true_v) ||
+      !vkr_mesh_cooked_string_is_valid(range->shader_override, true_v)) {
+    return false_v;
+  }
+
+  uint32_t min_vertex = UINT32_MAX;
+  uint32_t max_vertex = 0;
+  for (uint32_t j = 0; j < range->index_count; ++j) {
+    uint32_t index = source_indices[range->first_index + j];
+    if (index >= info->mesh_buffer.vertex_count) {
+      return false_v;
+    }
+    min_vertex = index < min_vertex ? index : min_vertex;
+    max_vertex = index > max_vertex ? index : max_vertex;
+  }
+  uint64_t span64 = (uint64_t)max_vertex - min_vertex + 1u;
+  if (span64 > UINT32_MAX) {
+    return false_v;
+  }
+  uint32_t span = (uint32_t)span64;
+  uint32_t *source_local_indices = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)range->index_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *optimized_indices = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)range->index_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *optimized_vertices = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)span * sizeof(VkrVertex3d),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!source_local_indices || !optimized_indices || !optimized_vertices) {
+    return false_v;
+  }
+  for (uint32_t j = 0; j < range->index_count; ++j) {
+    source_local_indices[j] =
+        source_indices[range->first_index + j] - min_vertex;
+  }
+
+  VkrMeshSkinVertex *optimized_skin = NULL;
+  size_t optimized_vertex_count = 0;
+  if (has_skin) {
+    VkrMeshCookedSkinVertex *combined = vkr_allocator_alloc(
+        scratch_allocator, (uint64_t)span * sizeof(*combined),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkrMeshCookedSkinVertex *remapped = vkr_allocator_alloc(
+        scratch_allocator, (uint64_t)span * sizeof(*remapped),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    optimized_skin = vkr_allocator_alloc(
+        scratch_allocator, (uint64_t)span * sizeof(*optimized_skin),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!combined || !remapped || !optimized_skin) {
+      return false_v;
+    }
+    MemZero(combined, (uint64_t)span * sizeof(*combined));
+    for (uint32_t j = 0; j < span; ++j) {
+      combined[j].vertex = source_vertices[min_vertex + j];
+      combined[j].skin = info->skin.vertices[min_vertex + j];
+    }
+    optimized_vertex_count = vkr_meshopt_optimize_range(
+        remapped, optimized_indices, combined, source_local_indices, span,
+        range->index_count, sizeof(*combined));
+    for (size_t j = 0; j < optimized_vertex_count; ++j) {
+      optimized_vertices[j] = remapped[j].vertex;
+      optimized_skin[j] = remapped[j].skin;
+    }
+  } else {
+    optimized_vertex_count = vkr_meshopt_optimize_range(
+        optimized_vertices, optimized_indices, source_vertices + min_vertex,
+        source_local_indices, span, range->index_count, sizeof(VkrVertex3d));
+  }
+  if (optimized_vertex_count == 0 || optimized_vertex_count > UINT32_MAX) {
+    log_error("MeshCooked: range %u meshoptimizer locality pass failed", i);
+    return false_v;
+  }
+  Vec3 optimized_center = vec3_zero();
+  Vec3 optimized_min = vec3_zero();
+  Vec3 optimized_max = vec3_zero();
+  if (!vkr_mesh_cooked_compute_range_bounds(
+          optimized_vertices, (uint32_t)optimized_vertex_count,
+          &optimized_center, &optimized_min, &optimized_max)) {
+    log_error("MeshCooked: range %u has invalid optimized bounds", i);
+    return false_v;
+  }
+
+  VkrPackedStaticVertex *packed_vertices = vkr_allocator_alloc(
+      scratch_allocator, optimized_vertex_count * sizeof(VkrPackedStaticVertex),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrGpuGeometryDecodeRecord range_decode = {0};
+  VkrGeometryQuantizationMetrics range_quantization = {0};
+  if (!packed_vertices) {
+    return false_v;
+  }
+  if (!vkr_packed_geometry_pack(optimized_vertices,
+                                (uint32_t)optimized_vertex_count, optimized_min,
+                                optimized_max, &info->budgets, packed_vertices,
+                                &range_decode, &range_quantization)) {
+    log_error("MeshCooked: range %u exceeds quantization budgets "
+              "(position=%g normal=%g tangent=%g uv=%g color=%g)",
+              i, range_quantization.position_max,
+              range_quantization.normal_degrees_max,
+              range_quantization.tangent_degrees_max, range_quantization.uv_max,
+              range_quantization.color_max);
+    return false_v;
+  }
+  if (i == 0)
+    header->geometry_decode = range_decode;
+  header->quantization_max.position_max = Max(
+      header->quantization_max.position_max, range_quantization.position_max);
+  header->quantization_max.normal_degrees_max =
+      Max(header->quantization_max.normal_degrees_max,
+          range_quantization.normal_degrees_max);
+  header->quantization_max.tangent_degrees_max =
+      Max(header->quantization_max.tangent_degrees_max,
+          range_quantization.tangent_degrees_max);
+  header->quantization_max.uv_max =
+      Max(header->quantization_max.uv_max, range_quantization.uv_max);
+  header->quantization_max.color_max =
+      Max(header->quantization_max.color_max, range_quantization.color_max);
+
+  size_t vertex_bound = vkr_meshopt_vertex_encode_bound(
+      optimized_vertex_count, sizeof(VkrPackedStaticVertex));
+  size_t index_bound = vkr_meshopt_index_encode_bound(range->index_count,
+                                                      optimized_vertex_count);
+  uint8_t *encoded_vertices = vkr_allocator_alloc(
+      scratch_allocator, vertex_bound, VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  uint8_t *encoded_indices = vkr_allocator_alloc(
+      scratch_allocator, index_bound, VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  if (!encoded_vertices || !encoded_indices) {
+    return false_v;
+  }
+  size_t vertex_encoded_size = vkr_meshopt_encode_vertices(
+      encoded_vertices, vertex_bound, packed_vertices, optimized_vertex_count,
+      sizeof(VkrPackedStaticVertex));
+  size_t index_encoded_size = vkr_meshopt_encode_indices(
+      encoded_indices, index_bound, optimized_indices, range->index_count,
+      optimized_vertex_count);
+  if (vertex_encoded_size == 0 || index_encoded_size == 0 ||
+      vkr_meshopt_vertex_codec_version(encoded_vertices, vertex_encoded_size) !=
+          (int)VKR_MESHOPT_VERTEX_CODEC_VERSION ||
+      vkr_meshopt_index_codec_version(encoded_indices, index_encoded_size) !=
+          (int)VKR_MESHOPT_INDEX_CODEC_VERSION) {
+    return false_v;
+  }
+
+  *out_range = (VkrMeshCookedRangeBuild){
+      .source = range,
+      .encoded_vertices = encoded_vertices,
+      .skin_vertices = optimized_skin,
+      .encoded_vertex_size = vertex_encoded_size,
+      .encoded_indices = encoded_indices,
+      .encoded_index_size = index_encoded_size,
+      .vertex_count = (uint32_t)optimized_vertex_count,
+      .index_count = range->index_count,
+      .first_index = (uint32_t)header->total_indices,
+      .material_offset = header->string_size,
+      .vertex_crc = vkr_crc32(encoded_vertices, vertex_encoded_size),
+      .index_crc = vkr_crc32(encoded_indices, index_encoded_size),
+      .quantization = range_quantization,
+      .decode = range_decode,
+      .center = optimized_center,
+      .min_extents = optimized_min,
+      .max_extents = optimized_max,
+  };
+  if (!vkr_checked_add_u64(header->string_size, range->material_name.length,
+                           &header->string_size)) {
+    return false_v;
+  }
+  out_range->shader_offset = header->string_size;
+  if (!vkr_checked_add_u64(header->string_size, range->shader_override.length,
+                           &header->string_size)) {
+    return false_v;
+  }
+  header->total_vertices += optimized_vertex_count;
+  header->total_indices += range->index_count;
+  if (header->total_vertices > UINT32_MAX ||
+      header->total_indices > UINT32_MAX) {
+    return false_v;
+  }
+  return true_v;
+}
+
+/**
+ * Places each artifact section and every range's aligned streams, rejecting a
+ * layout that overflows or exceeds the artifact size limit.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_compute_layout(
+    const VkrMeshCookedEncodeInfo *info, bool8_t has_skin,
+    VkrMeshCookedRangeBuild *ranges, VkrMeshCookedHeaderBuild *header) {
+  uint64_t range_bytes = 0;
+  uint64_t dependency_bytes = 0;
+  if (!vkr_checked_mul_u64(info->range_count, VKR_MESH_COOKED_RANGE_SIZE,
+                           &range_bytes) ||
+      !vkr_checked_mul_u64(info->dependency_count,
+                           VKR_MESH_COOKED_DEPENDENCY_SIZE,
+                           &dependency_bytes)) {
+    return false_v;
+  }
+  const VkrMeshSource *source = &info->source;
+  uint64_t source_bytes =
+      16u + source->nodes.length * 128u + source->meshes.length * 12u;
+  for (uint64_t i = 0; i < source->nodes.length; ++i) {
+    if (source->nodes.data[i].name.length > VKR_MESH_COOKED_MAX_STRING_LENGTH ||
+        !vkr_checked_add_u64(source_bytes, source->nodes.data[i].name.length,
+                             &source_bytes))
+      return false_v;
+  }
+  if (has_skin &&
+      !vkr_checked_add_u64(source_bytes,
+                           16u + (uint64_t)info->skin.skin_count * 4u +
+                               header->total_vertices * 32u,
+                           &source_bytes)) {
+    return false_v;
+  }
+  header->directory_offset = VKR_MESH_COOKED_HEADER_SIZE;
+  if (!vkr_checked_add_u64(header->directory_offset, range_bytes,
+                           &header->dependency_offset) ||
+      !vkr_checked_add_u64(header->dependency_offset,
+                           dependency_bytes + source_bytes,
+                           &header->string_offset) ||
+      !vkr_checked_add_u64(header->string_offset, header->string_size,
+                           &header->stream_offset)) {
+    return false_v;
+  }
+  header->stream_offset =
+      vkr_align_up_u64(header->stream_offset, VKR_MESH_COOKED_STREAM_ALIGNMENT);
+  header->file_size = header->stream_offset;
+  for (uint32_t i = 0; i < info->range_count; ++i) {
+    ranges[i].vertex_stream_offset = header->file_size;
+    if (!vkr_checked_add_u64(header->file_size, ranges[i].encoded_vertex_size,
+                             &header->file_size)) {
+      return false_v;
+    }
+    header->file_size =
+        vkr_align_up_u64(header->file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
+    ranges[i].index_stream_offset = header->file_size;
+    if (!vkr_checked_add_u64(header->file_size, ranges[i].encoded_index_size,
+                             &header->file_size)) {
+      return false_v;
+    }
+    header->file_size =
+        vkr_align_up_u64(header->file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
+  }
+  if (header->file_size > VKR_MESH_COOKED_MAX_FILE_SIZE ||
+      header->file_size > SIZE_MAX) {
+    return false_v;
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_mesh_cooked_write_header(
+    VkrByteWriter *writer, const VkrMeshCookedEncodeInfo *info,
+    bool8_t has_skin, const VkrMeshCookedHeaderBuild *header) {
+  const VkrMeshSource *source = &info->source;
+  bool8_t ok = true_v;
+  ok = ok && vkr_byte_writer_u32(writer, VKR_MESH_COOKED_MAGIC);
+  ok = ok && vkr_byte_writer_u32(writer, has_skin ? VKR_MESH_COOKED_SKIN_VERSION
+                                                  : VKR_MESH_COOKED_VERSION);
+  ok = ok && vkr_byte_writer_u32(writer, VKR_MESH_COOKED_ENDIAN_TAG);
+  ok = ok && vkr_byte_writer_u32(writer, VKR_MESH_COOKED_HEADER_SIZE);
+  ok = ok && vkr_byte_writer_u32(writer, vkr_meshopt_library_version());
+  ok = ok && vkr_byte_writer_u32(writer, VKR_MESHOPT_VERTEX_CODEC_VERSION);
+  ok = ok && vkr_byte_writer_u32(writer, VKR_MESHOPT_INDEX_CODEC_VERSION);
+  ok = ok &&
+       vkr_byte_writer_u32(writer, VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1);
+  ok = ok && vkr_byte_writer_u32(writer, sizeof(VkrPackedStaticVertex));
+  ok = ok && vkr_byte_writer_u32(writer, sizeof(uint32_t));
+  ok = ok && vkr_byte_writer_u32(writer, info->range_count);
+  ok = ok && vkr_byte_writer_u32(writer, info->dependency_count);
+  ok = ok && vkr_byte_writer_u64(writer, header->directory_offset);
+  ok = ok && vkr_byte_writer_u64(writer, header->dependency_offset);
+  ok = ok && vkr_byte_writer_u64(writer, header->string_offset);
+  ok = ok && vkr_byte_writer_u64(writer, header->string_size);
+  ok = ok && vkr_byte_writer_u64(writer, header->stream_offset);
+  ok = ok && vkr_byte_writer_u64(writer, header->file_size);
+  ok = ok && vkr_byte_writer_u64(writer, 0u);
+  ok = ok && vkr_byte_writer_u32(writer, (uint32_t)info->source_path.length);
+  ok = ok && vkr_byte_writer_u32(writer, 0u);
+  ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_vertices);
+  ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_indices);
+  ok = ok && vkr_byte_writer_bytes(writer, header->source_hash, 32u);
+  ok = ok && vkr_byte_writer_bytes(writer, header->settings_hash, 32u);
+  ok = ok && vkr_byte_writer_u32(writer, 0u);
+  ok = ok && vkr_byte_writer_u32(writer, 0u);
+  for (uint32_t i = 0; i < 3u; ++i)
+    ok = ok &&
+         vkr_byte_writer_f32(writer, header->geometry_decode.position_bias[i]);
+  ok = ok && vkr_byte_writer_u32(writer, header->geometry_decode.flags);
+  for (uint32_t i = 0; i < 3u; ++i)
+    ok = ok &&
+         vkr_byte_writer_f32(writer, header->geometry_decode.position_scale[i]);
+  ok = ok && vkr_byte_writer_u32(writer, header->geometry_decode.reserved);
+  ok = ok && vkr_byte_writer_f32(writer, info->budgets.position_relative);
+  ok = ok && vkr_byte_writer_f32(writer, info->budgets.normal_degrees);
+  ok = ok && vkr_byte_writer_f32(writer, info->budgets.tangent_degrees);
+  ok = ok && vkr_byte_writer_f32(writer, info->budgets.uv_absolute);
+  ok = ok && vkr_byte_writer_f32(writer, info->budgets.color_absolute);
+  ok = ok && vkr_byte_writer_f32(writer, header->quantization_max.position_max);
+  ok = ok &&
+       vkr_byte_writer_f32(writer, header->quantization_max.normal_degrees_max);
+  ok = ok && vkr_byte_writer_f32(writer,
+                                 header->quantization_max.tangent_degrees_max);
+  ok = ok && vkr_byte_writer_f32(writer, header->quantization_max.uv_max);
+  ok = ok && vkr_byte_writer_f32(writer, header->quantization_max.color_max);
+  ok = ok && vkr_byte_writer_u32(writer, (uint32_t)source->nodes.length);
+  ok = ok && vkr_byte_writer_u32(writer, (uint32_t)source->meshes.length);
+  return ok;
+}
+
+vkr_internal bool8_t vkr_mesh_cooked_write_range_directory(
+    VkrByteWriter *writer, const VkrMeshCookedRangeBuild *ranges,
+    uint32_t range_count) {
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; ok && i < range_count; ++i) {
+    const VkrMeshCookedRangeBuild *range = &ranges[i];
+    const VkrGeometryUploadRange *upload_range = range->source;
+    ok = ok && vkr_byte_writer_u32(writer, i);
+    ok = ok && vkr_byte_writer_u32(writer, range->first_index);
+    ok = ok && vkr_byte_writer_u32(writer, range->index_count);
+    ok = ok && vkr_byte_writer_u32(writer, range->vertex_count);
+    ok = ok && vkr_byte_writer_i32(writer, 0);
+    ok = ok && vkr_byte_writer_u32(writer, upload_range->pipeline_domain);
+    ok = ok && vkr_byte_writer_u64(writer, range->material_offset);
+    ok = ok && vkr_byte_writer_u32(
+                   writer, (uint32_t)upload_range->material_name.length);
+    ok = ok && vkr_byte_writer_u32(
+                   writer, (uint32_t)upload_range->shader_override.length);
+    ok = ok && vkr_byte_writer_u64(writer, range->shader_offset);
+    ok = ok && vkr_byte_writer_u64(writer, range->vertex_stream_offset);
+    ok = ok && vkr_byte_writer_u64(writer, range->encoded_vertex_size);
+    ok = ok && vkr_byte_writer_u64(writer, (uint64_t)range->vertex_count *
+                                               sizeof(VkrPackedStaticVertex));
+    ok = ok && vkr_byte_writer_u32(writer, range->vertex_crc);
+    ok = ok && vkr_byte_writer_u32(writer, range->index_crc);
+    ok = ok && vkr_byte_writer_u64(writer, range->index_stream_offset);
+    ok = ok && vkr_byte_writer_u64(writer, range->encoded_index_size);
+    ok = ok && vkr_byte_writer_u64(writer, (uint64_t)range->index_count *
+                                               sizeof(uint32_t));
+    ok = ok && vkr_byte_writer_f32(writer, range->center.x);
+    ok = ok && vkr_byte_writer_f32(writer, range->center.y);
+    ok = ok && vkr_byte_writer_f32(writer, range->center.z);
+    ok = ok && vkr_byte_writer_f32(writer, range->min_extents.x);
+    ok = ok && vkr_byte_writer_f32(writer, range->min_extents.y);
+    ok = ok && vkr_byte_writer_f32(writer, range->min_extents.z);
+    ok = ok && vkr_byte_writer_f32(writer, range->max_extents.x);
+    ok = ok && vkr_byte_writer_f32(writer, range->max_extents.y);
+    ok = ok && vkr_byte_writer_f32(writer, range->max_extents.z);
+    ok = ok && vkr_byte_writer_u32(writer, 0u);
+    ok = ok && vkr_byte_writer_f32(writer, range->quantization.position_max);
+    ok = ok &&
+         vkr_byte_writer_f32(writer, range->quantization.normal_degrees_max);
+    ok = ok &&
+         vkr_byte_writer_f32(writer, range->quantization.tangent_degrees_max);
+    ok = ok && vkr_byte_writer_f32(writer, range->quantization.uv_max);
+    ok = ok && vkr_byte_writer_f32(writer, range->quantization.color_max);
+    ok = ok && vkr_byte_writer_u32(writer, 0u);
+    for (uint32_t axis = 0; axis < 3u; ++axis)
+      ok = ok && vkr_byte_writer_f32(writer, range->decode.position_bias[axis]);
+    ok = ok && vkr_byte_writer_u32(writer, range->decode.flags);
+    for (uint32_t axis = 0; axis < 3u; ++axis)
+      ok =
+          ok && vkr_byte_writer_f32(writer, range->decode.position_scale[axis]);
+    ok = ok && vkr_byte_writer_u32(writer, range->decode.reserved);
+  }
+  return ok;
+}
+
+/** Writes the dependency records, source metadata, and optional skin block. */
+vkr_internal bool8_t vkr_mesh_cooked_write_metadata(
+    VkrByteWriter *writer, const VkrMeshCookedEncodeInfo *info,
+    const VkrMeshCookedDependencyBuild *dependencies,
+    const VkrMeshCookedRangeBuild *ranges, bool8_t has_skin,
+    const VkrMeshCookedHeaderBuild *header) {
+  const VkrMeshSource *source = &info->source;
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; ok && i < info->dependency_count; ++i) {
+    ok = ok && vkr_byte_writer_u64(writer, dependencies[i].string_offset);
+    ok = ok &&
+         vkr_byte_writer_u32(writer, (uint32_t)dependencies[i].path.length);
+    ok = ok && vkr_byte_writer_u32(writer, 0u);
+    ok = ok && vkr_byte_writer_u64(writer, dependencies[i].byte_size);
+    ok = ok && vkr_byte_writer_bytes(writer, dependencies[i].hash, 32u);
+    ok = ok && vkr_byte_writer_u64(writer, 0u);
+  }
+  ok = ok && vkr_mesh_cooked_write_source_metadata(writer, source);
+  if (has_skin) {
+    ok = ok && vkr_byte_writer_u64(writer, info->skin.animation_fingerprint);
+    ok = ok && vkr_byte_writer_u32(writer, info->skin.skin_count);
+    ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_vertices);
+    for (uint32_t i = 0; ok && i < info->skin.skin_count; ++i) {
+      ok = vkr_byte_writer_u32(writer, info->skin.joint_counts[i]);
+    }
+    for (uint32_t i = 0; ok && i < info->range_count; ++i) {
+      for (uint32_t j = 0; ok && j < ranges[i].vertex_count; ++j) {
+        const VkrMeshSkinVertex *vertex = &ranges[i].skin_vertices[j];
+        for (uint32_t k = 0; k < 4u; ++k) {
+          ok = ok && vkr_byte_writer_u32(writer, vertex->joints[k]);
+        }
+        for (uint32_t k = 0; k < 4u; ++k) {
+          ok = ok && vkr_byte_writer_f32(writer, vertex->weights[k]);
+        }
+      }
+    }
+  }
+  return ok;
+}
+
+vkr_internal bool8_t vkr_mesh_cooked_write_strings(
+    VkrByteWriter *writer, const VkrMeshCookedEncodeInfo *info,
+    const VkrMeshCookedDependencyBuild *dependencies,
+    const VkrMeshCookedRangeBuild *ranges) {
+  bool8_t ok = vkr_byte_writer_bytes(writer, info->source_path.str,
+                                     info->source_path.length);
+  for (uint32_t i = 0; ok && i < info->dependency_count; ++i) {
+    ok = vkr_byte_writer_bytes(writer, dependencies[i].path.str,
+                               dependencies[i].path.length);
+  }
+  for (uint32_t i = 0; ok && i < info->range_count; ++i) {
+    ok = vkr_byte_writer_bytes(writer, ranges[i].source->material_name.str,
+                               ranges[i].source->material_name.length);
+    ok = ok &&
+         vkr_byte_writer_bytes(writer, ranges[i].source->shader_override.str,
+                               ranges[i].source->shader_override.length);
+  }
+  return ok;
+}
+
 bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
                                const VkrMeshCookedEncodeInfo *info,
                                uint8_t **out_data, uint64_t *out_size) {
@@ -260,7 +765,7 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
   if (info->range_count)
     MemZero(ranges, (uint64_t)info->range_count * sizeof(*ranges));
 
-  uint64_t string_size = info->source_path.length;
+  VkrMeshCookedHeaderBuild header = {.string_size = info->source_path.length};
   for (uint32_t i = 0; i < info->dependency_count; ++i) {
     if (!vkr_mesh_cooked_string_is_valid(info->dependency_paths[i], false_v)) {
       return false_v;
@@ -272,471 +777,65 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
     if (!vkr_mesh_cooked_string_is_valid(dependencies[i].path, false_v)) {
       return false_v;
     }
-    dependencies[i].string_offset = string_size;
-    if (!vkr_checked_add_u64(string_size, dependencies[i].path.length,
-                             &string_size)) {
+    dependencies[i].string_offset = header.string_size;
+    if (!vkr_checked_add_u64(header.string_size, dependencies[i].path.length,
+                             &header.string_size)) {
       return false_v;
     }
   }
 
-  const VkrVertex3d *source_vertices =
-      (const VkrVertex3d *)info->mesh_buffer.vertices;
-  const uint32_t *source_indices = (const uint32_t *)info->mesh_buffer.indices;
-  for (uint32_t i = 0; i < info->mesh_buffer.vertex_count; ++i) {
-    if (!vkr_mesh_cooked_vertex_is_finite(&source_vertices[i])) {
-      return false_v;
-    }
-  }
   const bool8_t has_skin = info->skin.skin_count != 0u;
-  if (has_skin) {
-    /* Validate indexed access before the binding validator consumes ranges. */
-    for (uint32_t i = 0; i < info->range_count; ++i) {
-      const VkrGeometryUploadRange *range = &info->ranges[i];
-      if (range->first_index > info->mesh_buffer.index_count ||
-          range->index_count >
-              info->mesh_buffer.index_count - range->first_index ||
-          range->vertex_offset != 0) {
-        return false_v;
-      }
-      for (uint32_t j = 0; j < range->index_count; ++j) {
-        if (source_indices[range->first_index + j] >=
-            info->mesh_buffer.vertex_count) {
-          return false_v;
-        }
-      }
-    }
-    if (!vkr_mesh_skin_validate(&info->skin, &info->source, info->ranges,
-                                info->range_count, source_indices,
-                                info->mesh_buffer.index_count,
-                                info->mesh_buffer.vertex_count)) {
-      return false_v;
-    }
-  } else if (info->skin.vertex_count || info->skin.vertices ||
-             info->skin.joint_counts || info->skin.animation_fingerprint) {
+  if (!vkr_mesh_cooked_validate_vertices(info, has_skin)) {
     return false_v;
   }
-  VkrGpuGeometryDecodeRecord geometry_decode = {0};
-  VkrGeometryQuantizationMetrics quantization_max = {0};
-  uint64_t total_vertices = 0;
-  uint64_t total_indices = 0;
   for (uint32_t i = 0; i < info->range_count; ++i) {
-    const VkrGeometryUploadRange *range = &info->ranges[i];
-    if (range->range_id != i || range->index_count == 0 ||
-        range->index_count % 3u != 0 ||
-        range->first_index > info->mesh_buffer.index_count ||
-        range->index_count >
-            info->mesh_buffer.index_count - range->first_index ||
-        range->pipeline_domain >= VKR_PIPELINE_DOMAIN_COUNT ||
-        !vkr_mesh_cooked_string_is_valid(range->material_name, true_v) ||
-        !vkr_mesh_cooked_string_is_valid(range->shader_override, true_v)) {
-      return false_v;
-    }
-
-    uint32_t min_vertex = UINT32_MAX;
-    uint32_t max_vertex = 0;
-    for (uint32_t j = 0; j < range->index_count; ++j) {
-      uint32_t index = source_indices[range->first_index + j];
-      if (index >= info->mesh_buffer.vertex_count) {
-        return false_v;
-      }
-      min_vertex = index < min_vertex ? index : min_vertex;
-      max_vertex = index > max_vertex ? index : max_vertex;
-    }
-    uint64_t span64 = (uint64_t)max_vertex - min_vertex + 1u;
-    if (span64 > UINT32_MAX) {
-      return false_v;
-    }
-    uint32_t span = (uint32_t)span64;
-    uint32_t *source_local_indices = vkr_allocator_alloc(
-        scratch_allocator, (uint64_t)range->index_count * sizeof(uint32_t),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    uint32_t *optimized_indices = vkr_allocator_alloc(
-        scratch_allocator, (uint64_t)range->index_count * sizeof(uint32_t),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    VkrVertex3d *optimized_vertices = vkr_allocator_alloc(
-        scratch_allocator, (uint64_t)span * sizeof(VkrVertex3d),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!source_local_indices || !optimized_indices || !optimized_vertices) {
-      return false_v;
-    }
-    for (uint32_t j = 0; j < range->index_count; ++j) {
-      source_local_indices[j] =
-          source_indices[range->first_index + j] - min_vertex;
-    }
-
-    VkrMeshSkinVertex *optimized_skin = NULL;
-    size_t optimized_vertex_count = 0;
-    if (has_skin) {
-      VkrMeshCookedSkinVertex *combined = vkr_allocator_alloc(
-          scratch_allocator, (uint64_t)span * sizeof(*combined),
-          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      VkrMeshCookedSkinVertex *remapped = vkr_allocator_alloc(
-          scratch_allocator, (uint64_t)span * sizeof(*remapped),
-          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      optimized_skin = vkr_allocator_alloc(
-          scratch_allocator, (uint64_t)span * sizeof(*optimized_skin),
-          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      if (!combined || !remapped || !optimized_skin) {
-        return false_v;
-      }
-      MemZero(combined, (uint64_t)span * sizeof(*combined));
-      for (uint32_t j = 0; j < span; ++j) {
-        combined[j].vertex = source_vertices[min_vertex + j];
-        combined[j].skin = info->skin.vertices[min_vertex + j];
-      }
-      optimized_vertex_count = vkr_meshopt_optimize_range(
-          remapped, optimized_indices, combined, source_local_indices, span,
-          range->index_count, sizeof(*combined));
-      for (size_t j = 0; j < optimized_vertex_count; ++j) {
-        optimized_vertices[j] = remapped[j].vertex;
-        optimized_skin[j] = remapped[j].skin;
-      }
-    } else {
-      optimized_vertex_count = vkr_meshopt_optimize_range(
-          optimized_vertices, optimized_indices, source_vertices + min_vertex,
-          source_local_indices, span, range->index_count, sizeof(VkrVertex3d));
-    }
-    if (optimized_vertex_count == 0 || optimized_vertex_count > UINT32_MAX) {
-      log_error("MeshCooked: range %u meshoptimizer locality pass failed", i);
-      return false_v;
-    }
-    Vec3 optimized_center = vec3_zero();
-    Vec3 optimized_min = vec3_zero();
-    Vec3 optimized_max = vec3_zero();
-    if (!vkr_mesh_cooked_compute_range_bounds(
-            optimized_vertices, (uint32_t)optimized_vertex_count,
-            &optimized_center, &optimized_min, &optimized_max)) {
-      log_error("MeshCooked: range %u has invalid optimized bounds", i);
-      return false_v;
-    }
-
-    VkrPackedStaticVertex *packed_vertices = vkr_allocator_alloc(
-        scratch_allocator,
-        optimized_vertex_count * sizeof(VkrPackedStaticVertex),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    VkrGpuGeometryDecodeRecord range_decode = {0};
-    VkrGeometryQuantizationMetrics range_quantization = {0};
-    if (!packed_vertices) {
-      return false_v;
-    }
-    if (!vkr_packed_geometry_pack(
-            optimized_vertices, (uint32_t)optimized_vertex_count, optimized_min,
-            optimized_max, &info->budgets, packed_vertices, &range_decode,
-            &range_quantization)) {
-      log_error("MeshCooked: range %u exceeds quantization budgets "
-                "(position=%g normal=%g tangent=%g uv=%g color=%g)",
-                i, range_quantization.position_max,
-                range_quantization.normal_degrees_max,
-                range_quantization.tangent_degrees_max,
-                range_quantization.uv_max, range_quantization.color_max);
-      return false_v;
-    }
-    if (i == 0)
-      geometry_decode = range_decode;
-    quantization_max.position_max =
-        Max(quantization_max.position_max, range_quantization.position_max);
-    quantization_max.normal_degrees_max =
-        Max(quantization_max.normal_degrees_max,
-            range_quantization.normal_degrees_max);
-    quantization_max.tangent_degrees_max =
-        Max(quantization_max.tangent_degrees_max,
-            range_quantization.tangent_degrees_max);
-    quantization_max.uv_max =
-        Max(quantization_max.uv_max, range_quantization.uv_max);
-    quantization_max.color_max =
-        Max(quantization_max.color_max, range_quantization.color_max);
-
-    size_t vertex_bound = vkr_meshopt_vertex_encode_bound(
-        optimized_vertex_count, sizeof(VkrPackedStaticVertex));
-    size_t index_bound = vkr_meshopt_index_encode_bound(range->index_count,
-                                                        optimized_vertex_count);
-    uint8_t *encoded_vertices = vkr_allocator_alloc(
-        scratch_allocator, vertex_bound, VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-    uint8_t *encoded_indices = vkr_allocator_alloc(
-        scratch_allocator, index_bound, VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-    if (!encoded_vertices || !encoded_indices) {
-      return false_v;
-    }
-    size_t vertex_encoded_size = vkr_meshopt_encode_vertices(
-        encoded_vertices, vertex_bound, packed_vertices, optimized_vertex_count,
-        sizeof(VkrPackedStaticVertex));
-    size_t index_encoded_size = vkr_meshopt_encode_indices(
-        encoded_indices, index_bound, optimized_indices, range->index_count,
-        optimized_vertex_count);
-    if (vertex_encoded_size == 0 || index_encoded_size == 0 ||
-        vkr_meshopt_vertex_codec_version(encoded_vertices,
-                                         vertex_encoded_size) !=
-            (int)VKR_MESHOPT_VERTEX_CODEC_VERSION ||
-        vkr_meshopt_index_codec_version(encoded_indices, index_encoded_size) !=
-            (int)VKR_MESHOPT_INDEX_CODEC_VERSION) {
-      return false_v;
-    }
-
-    ranges[i] = (VkrMeshCookedRangeBuild){
-        .source = range,
-        .encoded_vertices = encoded_vertices,
-        .skin_vertices = optimized_skin,
-        .encoded_vertex_size = vertex_encoded_size,
-        .encoded_indices = encoded_indices,
-        .encoded_index_size = index_encoded_size,
-        .vertex_count = (uint32_t)optimized_vertex_count,
-        .index_count = range->index_count,
-        .first_index = (uint32_t)total_indices,
-        .material_offset = string_size,
-        .vertex_crc = vkr_crc32(encoded_vertices, vertex_encoded_size),
-        .index_crc = vkr_crc32(encoded_indices, index_encoded_size),
-        .quantization = range_quantization,
-        .decode = range_decode,
-        .center = optimized_center,
-        .min_extents = optimized_min,
-        .max_extents = optimized_max,
-    };
-    if (!vkr_checked_add_u64(string_size, range->material_name.length,
-                             &string_size)) {
-      return false_v;
-    }
-    ranges[i].shader_offset = string_size;
-    if (!vkr_checked_add_u64(string_size, range->shader_override.length,
-                             &string_size)) {
-      return false_v;
-    }
-    total_vertices += optimized_vertex_count;
-    total_indices += range->index_count;
-    if (total_vertices > UINT32_MAX || total_indices > UINT32_MAX) {
+    if (!vkr_mesh_cooked_encode_range(scratch_allocator, info, i, has_skin,
+                                      &header, &ranges[i])) {
       return false_v;
     }
   }
 
-  uint8_t source_hash[32];
   if (!vkr_mesh_cooked_hash_dependencies(scratch_allocator, dependencies,
-                                         info->dependency_count, source_hash)) {
+                                         info->dependency_count,
+                                         header.source_hash)) {
     return false_v;
   }
-  uint8_t settings_hash[32];
-  vkr_mesh_cooked_hash_settings(&info->budgets, settings_hash);
+  vkr_mesh_cooked_hash_settings(&info->budgets, header.settings_hash);
 
-  uint64_t range_bytes = 0;
-  uint64_t dependency_bytes = 0;
-  if (!vkr_checked_mul_u64(info->range_count, VKR_MESH_COOKED_RANGE_SIZE,
-                           &range_bytes) ||
-      !vkr_checked_mul_u64(info->dependency_count,
-                           VKR_MESH_COOKED_DEPENDENCY_SIZE,
-                           &dependency_bytes)) {
-    return false_v;
-  }
-  const VkrMeshSource *source = &info->source;
-  uint64_t source_bytes =
-      16u + source->nodes.length * 128u + source->meshes.length * 12u;
-  for (uint64_t i = 0; i < source->nodes.length; ++i) {
-    if (source->nodes.data[i].name.length > VKR_MESH_COOKED_MAX_STRING_LENGTH ||
-        !vkr_checked_add_u64(source_bytes, source->nodes.data[i].name.length,
-                             &source_bytes))
-      return false_v;
-  }
-  if (has_skin &&
-      !vkr_checked_add_u64(source_bytes,
-                           16u + (uint64_t)info->skin.skin_count * 4u +
-                               total_vertices * 32u,
-                           &source_bytes)) {
-    return false_v;
-  }
-  const uint64_t directory_offset = VKR_MESH_COOKED_HEADER_SIZE;
-  uint64_t dependency_offset = 0;
-  uint64_t string_offset = 0;
-  uint64_t stream_offset = 0;
-  if (!vkr_checked_add_u64(directory_offset, range_bytes, &dependency_offset) ||
-      !vkr_checked_add_u64(dependency_offset, dependency_bytes + source_bytes,
-                           &string_offset) ||
-      !vkr_checked_add_u64(string_offset, string_size, &stream_offset)) {
-    return false_v;
-  }
-  stream_offset =
-      vkr_align_up_u64(stream_offset, VKR_MESH_COOKED_STREAM_ALIGNMENT);
-  uint64_t file_size = stream_offset;
-  for (uint32_t i = 0; i < info->range_count; ++i) {
-    ranges[i].vertex_stream_offset = file_size;
-    if (!vkr_checked_add_u64(file_size, ranges[i].encoded_vertex_size,
-                             &file_size)) {
-      return false_v;
-    }
-    file_size = vkr_align_up_u64(file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
-    ranges[i].index_stream_offset = file_size;
-    if (!vkr_checked_add_u64(file_size, ranges[i].encoded_index_size,
-                             &file_size)) {
-      return false_v;
-    }
-    file_size = vkr_align_up_u64(file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
-  }
-  if (file_size > VKR_MESH_COOKED_MAX_FILE_SIZE || file_size > SIZE_MAX) {
+  if (!vkr_mesh_cooked_compute_layout(info, has_skin, ranges, &header)) {
     return false_v;
   }
 
-  uint8_t *artifact = vkr_allocator_alloc(scratch_allocator, file_size,
+  uint8_t *artifact = vkr_allocator_alloc(scratch_allocator, header.file_size,
                                           VKR_ALLOCATOR_MEMORY_TAG_FILE);
   if (!artifact) {
     return false_v;
   }
-  MemZero(artifact, file_size);
-  VkrByteWriter writer = {.data = artifact, .size = file_size, .offset = 0};
-  bool8_t ok = true_v;
-  ok = ok && vkr_byte_writer_u32(&writer, VKR_MESH_COOKED_MAGIC);
-  ok =
-      ok && vkr_byte_writer_u32(&writer, has_skin ? VKR_MESH_COOKED_SKIN_VERSION
-                                                  : VKR_MESH_COOKED_VERSION);
-  ok = ok && vkr_byte_writer_u32(&writer, VKR_MESH_COOKED_ENDIAN_TAG);
-  ok = ok && vkr_byte_writer_u32(&writer, VKR_MESH_COOKED_HEADER_SIZE);
-  ok = ok && vkr_byte_writer_u32(&writer, vkr_meshopt_library_version());
-  ok = ok && vkr_byte_writer_u32(&writer, VKR_MESHOPT_VERTEX_CODEC_VERSION);
-  ok = ok && vkr_byte_writer_u32(&writer, VKR_MESHOPT_INDEX_CODEC_VERSION);
-  ok = ok &&
-       vkr_byte_writer_u32(&writer, VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1);
-  ok = ok && vkr_byte_writer_u32(&writer, sizeof(VkrPackedStaticVertex));
-  ok = ok && vkr_byte_writer_u32(&writer, sizeof(uint32_t));
-  ok = ok && vkr_byte_writer_u32(&writer, info->range_count);
-  ok = ok && vkr_byte_writer_u32(&writer, info->dependency_count);
-  ok = ok && vkr_byte_writer_u64(&writer, directory_offset);
-  ok = ok && vkr_byte_writer_u64(&writer, dependency_offset);
-  ok = ok && vkr_byte_writer_u64(&writer, string_offset);
-  ok = ok && vkr_byte_writer_u64(&writer, string_size);
-  ok = ok && vkr_byte_writer_u64(&writer, stream_offset);
-  ok = ok && vkr_byte_writer_u64(&writer, file_size);
-  ok = ok && vkr_byte_writer_u64(&writer, 0u);
-  ok = ok && vkr_byte_writer_u32(&writer, (uint32_t)info->source_path.length);
-  ok = ok && vkr_byte_writer_u32(&writer, 0u);
-  ok = ok && vkr_byte_writer_u32(&writer, (uint32_t)total_vertices);
-  ok = ok && vkr_byte_writer_u32(&writer, (uint32_t)total_indices);
-  ok = ok && vkr_byte_writer_bytes(&writer, source_hash, 32u);
-  ok = ok && vkr_byte_writer_bytes(&writer, settings_hash, 32u);
-  ok = ok && vkr_byte_writer_u32(&writer, 0u);
-  ok = ok && vkr_byte_writer_u32(&writer, 0u);
-  for (uint32_t i = 0; i < 3u; ++i)
-    ok = ok && vkr_byte_writer_f32(&writer, geometry_decode.position_bias[i]);
-  ok = ok && vkr_byte_writer_u32(&writer, geometry_decode.flags);
-  for (uint32_t i = 0; i < 3u; ++i)
-    ok = ok && vkr_byte_writer_f32(&writer, geometry_decode.position_scale[i]);
-  ok = ok && vkr_byte_writer_u32(&writer, geometry_decode.reserved);
-  ok = ok && vkr_byte_writer_f32(&writer, info->budgets.position_relative);
-  ok = ok && vkr_byte_writer_f32(&writer, info->budgets.normal_degrees);
-  ok = ok && vkr_byte_writer_f32(&writer, info->budgets.tangent_degrees);
-  ok = ok && vkr_byte_writer_f32(&writer, info->budgets.uv_absolute);
-  ok = ok && vkr_byte_writer_f32(&writer, info->budgets.color_absolute);
-  ok = ok && vkr_byte_writer_f32(&writer, quantization_max.position_max);
-  ok = ok && vkr_byte_writer_f32(&writer, quantization_max.normal_degrees_max);
-  ok = ok && vkr_byte_writer_f32(&writer, quantization_max.tangent_degrees_max);
-  ok = ok && vkr_byte_writer_f32(&writer, quantization_max.uv_max);
-  ok = ok && vkr_byte_writer_f32(&writer, quantization_max.color_max);
-  ok = ok && vkr_byte_writer_u32(&writer, (uint32_t)source->nodes.length);
-  ok = ok && vkr_byte_writer_u32(&writer, (uint32_t)source->meshes.length);
-  if (!ok || writer.offset != VKR_MESH_COOKED_HEADER_SIZE) {
+  MemZero(artifact, header.file_size);
+  VkrByteWriter writer = {
+      .data = artifact, .size = header.file_size, .offset = 0};
+  if (!vkr_mesh_cooked_write_header(&writer, info, has_skin, &header) ||
+      writer.offset != VKR_MESH_COOKED_HEADER_SIZE) {
     return false_v;
   }
 
-  writer.offset = directory_offset;
-  for (uint32_t i = 0; ok && i < info->range_count; ++i) {
-    const VkrMeshCookedRangeBuild *range = &ranges[i];
-    const VkrGeometryUploadRange *upload_range = range->source;
-    ok = ok && vkr_byte_writer_u32(&writer, i);
-    ok = ok && vkr_byte_writer_u32(&writer, range->first_index);
-    ok = ok && vkr_byte_writer_u32(&writer, range->index_count);
-    ok = ok && vkr_byte_writer_u32(&writer, range->vertex_count);
-    ok = ok && vkr_byte_writer_i32(&writer, 0);
-    ok = ok && vkr_byte_writer_u32(&writer, upload_range->pipeline_domain);
-    ok = ok && vkr_byte_writer_u64(&writer, range->material_offset);
-    ok = ok && vkr_byte_writer_u32(
-                   &writer, (uint32_t)upload_range->material_name.length);
-    ok = ok && vkr_byte_writer_u32(
-                   &writer, (uint32_t)upload_range->shader_override.length);
-    ok = ok && vkr_byte_writer_u64(&writer, range->shader_offset);
-    ok = ok && vkr_byte_writer_u64(&writer, range->vertex_stream_offset);
-    ok = ok && vkr_byte_writer_u64(&writer, range->encoded_vertex_size);
-    ok = ok && vkr_byte_writer_u64(&writer, (uint64_t)range->vertex_count *
-                                                sizeof(VkrPackedStaticVertex));
-    ok = ok && vkr_byte_writer_u32(&writer, range->vertex_crc);
-    ok = ok && vkr_byte_writer_u32(&writer, range->index_crc);
-    ok = ok && vkr_byte_writer_u64(&writer, range->index_stream_offset);
-    ok = ok && vkr_byte_writer_u64(&writer, range->encoded_index_size);
-    ok = ok && vkr_byte_writer_u64(&writer, (uint64_t)range->index_count *
-                                                sizeof(uint32_t));
-    ok = ok && vkr_byte_writer_f32(&writer, range->center.x);
-    ok = ok && vkr_byte_writer_f32(&writer, range->center.y);
-    ok = ok && vkr_byte_writer_f32(&writer, range->center.z);
-    ok = ok && vkr_byte_writer_f32(&writer, range->min_extents.x);
-    ok = ok && vkr_byte_writer_f32(&writer, range->min_extents.y);
-    ok = ok && vkr_byte_writer_f32(&writer, range->min_extents.z);
-    ok = ok && vkr_byte_writer_f32(&writer, range->max_extents.x);
-    ok = ok && vkr_byte_writer_f32(&writer, range->max_extents.y);
-    ok = ok && vkr_byte_writer_f32(&writer, range->max_extents.z);
-    ok = ok && vkr_byte_writer_u32(&writer, 0u);
-    ok = ok && vkr_byte_writer_f32(&writer, range->quantization.position_max);
-    ok = ok &&
-         vkr_byte_writer_f32(&writer, range->quantization.normal_degrees_max);
-    ok = ok &&
-         vkr_byte_writer_f32(&writer, range->quantization.tangent_degrees_max);
-    ok = ok && vkr_byte_writer_f32(&writer, range->quantization.uv_max);
-    ok = ok && vkr_byte_writer_f32(&writer, range->quantization.color_max);
-    ok = ok && vkr_byte_writer_u32(&writer, 0u);
-    for (uint32_t axis = 0; axis < 3u; ++axis)
-      ok =
-          ok && vkr_byte_writer_f32(&writer, range->decode.position_bias[axis]);
-    ok = ok && vkr_byte_writer_u32(&writer, range->decode.flags);
-    for (uint32_t axis = 0; axis < 3u; ++axis)
-      ok = ok &&
-           vkr_byte_writer_f32(&writer, range->decode.position_scale[axis]);
-    ok = ok && vkr_byte_writer_u32(&writer, range->decode.reserved);
-  }
-  if (!ok || writer.offset != dependency_offset) {
+  writer.offset = header.directory_offset;
+  if (!vkr_mesh_cooked_write_range_directory(&writer, ranges,
+                                             info->range_count) ||
+      writer.offset != header.dependency_offset) {
     return false_v;
   }
 
-  writer.offset = dependency_offset;
-  for (uint32_t i = 0; ok && i < info->dependency_count; ++i) {
-    ok = ok && vkr_byte_writer_u64(&writer, dependencies[i].string_offset);
-    ok = ok &&
-         vkr_byte_writer_u32(&writer, (uint32_t)dependencies[i].path.length);
-    ok = ok && vkr_byte_writer_u32(&writer, 0u);
-    ok = ok && vkr_byte_writer_u64(&writer, dependencies[i].byte_size);
-    ok = ok && vkr_byte_writer_bytes(&writer, dependencies[i].hash, 32u);
-    ok = ok && vkr_byte_writer_u64(&writer, 0u);
-  }
-  ok = ok && vkr_mesh_cooked_write_source_metadata(&writer, source);
-  if (has_skin) {
-    ok = ok && vkr_byte_writer_u64(&writer, info->skin.animation_fingerprint);
-    ok = ok && vkr_byte_writer_u32(&writer, info->skin.skin_count);
-    ok = ok && vkr_byte_writer_u32(&writer, (uint32_t)total_vertices);
-    for (uint32_t i = 0; ok && i < info->skin.skin_count; ++i) {
-      ok = vkr_byte_writer_u32(&writer, info->skin.joint_counts[i]);
-    }
-    for (uint32_t i = 0; ok && i < info->range_count; ++i) {
-      for (uint32_t j = 0; ok && j < ranges[i].vertex_count; ++j) {
-        const VkrMeshSkinVertex *vertex = &ranges[i].skin_vertices[j];
-        for (uint32_t k = 0; k < 4u; ++k) {
-          ok = ok && vkr_byte_writer_u32(&writer, vertex->joints[k]);
-        }
-        for (uint32_t k = 0; k < 4u; ++k) {
-          ok = ok && vkr_byte_writer_f32(&writer, vertex->weights[k]);
-        }
-      }
-    }
-  }
-  if (!ok || writer.offset != string_offset) {
+  writer.offset = header.dependency_offset;
+  if (!vkr_mesh_cooked_write_metadata(&writer, info, dependencies, ranges,
+                                      has_skin, &header) ||
+      writer.offset != header.string_offset) {
     return false_v;
   }
 
-  writer.offset = string_offset;
-  ok = vkr_byte_writer_bytes(&writer, info->source_path.str,
-                             info->source_path.length);
-  for (uint32_t i = 0; ok && i < info->dependency_count; ++i) {
-    ok = vkr_byte_writer_bytes(&writer, dependencies[i].path.str,
-                               dependencies[i].path.length);
-  }
-  for (uint32_t i = 0; ok && i < info->range_count; ++i) {
-    ok = vkr_byte_writer_bytes(&writer, ranges[i].source->material_name.str,
-                               ranges[i].source->material_name.length);
-    ok = ok &&
-         vkr_byte_writer_bytes(&writer, ranges[i].source->shader_override.str,
-                               ranges[i].source->shader_override.length);
-  }
-  if (!ok || writer.offset != string_offset + string_size) {
+  writer.offset = header.string_offset;
+  if (!vkr_mesh_cooked_write_strings(&writer, info, dependencies, ranges) ||
+      writer.offset != header.string_offset + header.string_size) {
     return false_v;
   }
 
@@ -746,14 +845,14 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
     MemCopy(artifact + ranges[i].index_stream_offset, ranges[i].encoded_indices,
             ranges[i].encoded_index_size);
   }
-  vkr_store_le_u32(
-      artifact + VKR_MESH_COOKED_METADATA_CRC_OFFSET,
-      vkr_crc32(artifact + directory_offset, stream_offset - directory_offset));
+  vkr_store_le_u32(artifact + VKR_MESH_COOKED_METADATA_CRC_OFFSET,
+                   vkr_crc32(artifact + header.directory_offset,
+                             header.stream_offset - header.directory_offset));
   vkr_store_le_u32(artifact + VKR_MESH_COOKED_HEADER_CRC_OFFSET,
                    vkr_crc32(artifact, VKR_MESH_COOKED_HEADER_SIZE));
 
   *out_data = artifact;
-  *out_size = file_size;
+  *out_size = header.file_size;
   return true_v;
 }
 
