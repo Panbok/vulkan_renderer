@@ -47,9 +47,6 @@ typedef struct VkrMeshManagerConfig {
  * @param index_count Index count for the range (0 uses full geometry).
  * @param vertex_offset Vertex offset applied to indices (typically 0 when
  * indices are absolute).
- * @param opaque_first_index Starting index in the compacted opaque buffer.
- * @param opaque_index_count Index count for the opaque-only range.
- * @param opaque_vertex_offset Vertex offset for opaque-only range.
  * @param center Range-local center in mesh space.
  * @param min_extents Minimum extents relative to center.
  * @param max_extents Maximum extents relative to center.
@@ -69,9 +66,6 @@ typedef struct VkrSubMeshDesc {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
-  uint32_t opaque_first_index;
-  uint32_t opaque_index_count;
-  int32_t opaque_vertex_offset;
   Vec3 center;
   Vec3 min_extents;
   Vec3 max_extents;

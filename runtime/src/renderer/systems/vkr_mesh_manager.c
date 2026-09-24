@@ -189,11 +189,6 @@ vkr_internal void vkr_mesh_manager_asset_instance_index_remove_instance(
     VkrMeshManager *manager, uint32_t instance_slot,
     VkrMeshAssetHandle asset_handle);
 
-typedef struct VkrOpaqueRangeInfo {
-  uint32_t first_index;
-  uint32_t index_count;
-} VkrOpaqueRangeInfo;
-
 vkr_internal bool8_t vkr_mesh_manager_publish_loaded_mesh(
     VkrMeshManager *manager, VkrGeometryHandle geometry,
     const VkrMeshLoaderResult *mesh_result, VkrRendererError *out_error) {
@@ -240,21 +235,6 @@ vkr_internal bool8_t vkr_mesh_manager_publish_loaded_mesh(
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
   return false_v;
-}
-
-vkr_internal bool8_t vkr_mesh_manager_material_uses_cutout(
-    VkrMaterialSystem *material_system, VkrMaterialHandle handle) {
-  if (!material_system || handle.id == 0) {
-    return false_v;
-  }
-
-  VkrMaterial *material =
-      vkr_material_system_get_by_handle(material_system, handle);
-  if (!material && material_system->default_material.id != 0) {
-    material = vkr_material_system_get_by_handle(
-        material_system, material_system->default_material);
-  }
-  return vkr_material_system_material_uses_cutout(material_system, material);
 }
 
 /**
@@ -1360,9 +1340,6 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
         .first_index = first_index,
         .index_count = index_count,
         .vertex_offset = vertex_offset,
-        .opaque_first_index = sub_desc->opaque_first_index,
-        .opaque_index_count = sub_desc->opaque_index_count,
-        .opaque_vertex_offset = sub_desc->opaque_vertex_offset,
         .center = center,
         .min_extents = min_extents,
         .max_extents = max_extents,
@@ -1455,101 +1432,6 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
   return true_v;
 }
 
-/* Compacts the indices of non-cutout submeshes and records each submesh's
- * opaque range when only part of a 32-bit merged index buffer is opaque.
- * False means scratch storage failed or the ranges overflowed. */
-vkr_internal bool8_t vkr_mesh_manager_build_opaque_ranges(
-    VkrMeshManager *manager, const VkrMeshLoaderResult *mesh_result,
-    uint32_t subset_count, VkrOpaqueRangeInfo **out_opaque_ranges,
-    bool8_t *out_build_opaque_indices, VkrRendererError *out_error) {
-  VkrAllocator *scratch_allocator = &manager->scratch_allocator;
-  bool8_t subsets_success = true_v;
-  VkrOpaqueRangeInfo *opaque_ranges = NULL;
-  uint32_t *opaque_indices = NULL;
-  uint32_t opaque_index_count = 0;
-  bool8_t build_opaque_indices = false_v;
-
-  if (mesh_result->mesh_buffer.index_size != sizeof(uint32_t)) {
-    log_warn(
-        "MeshManager: merged buffer index size %u; opaque compaction skipped",
-        mesh_result->mesh_buffer.index_size);
-  } else {
-    uint32_t total_indices = mesh_result->mesh_buffer.index_count;
-    for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-      const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
-      if (!vkr_mesh_manager_material_uses_cutout(
-              manager->material_system,
-              mesh_result->material_handles.data[i])) {
-        opaque_index_count += range->index_count;
-      }
-    }
-
-    if (opaque_index_count > 0 && opaque_index_count < total_indices) {
-      build_opaque_indices = true_v;
-      opaque_ranges = vkr_allocator_alloc(scratch_allocator,
-                                          (uint64_t)subset_count *
-                                              sizeof(VkrOpaqueRangeInfo),
-                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      if (!opaque_ranges) {
-        if (out_error) {
-          *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-        }
-        subsets_success = false_v;
-      } else {
-        MemZero(opaque_ranges,
-                (uint64_t)subset_count * sizeof(VkrOpaqueRangeInfo));
-      }
-
-      if (subsets_success) {
-        opaque_indices = vkr_allocator_alloc(
-            scratch_allocator, (uint64_t)opaque_index_count * sizeof(uint32_t),
-            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        if (!opaque_indices) {
-          if (out_error) {
-            *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-          }
-          subsets_success = false_v;
-        }
-      }
-
-      if (subsets_success) {
-        uint32_t *src_indices = (uint32_t *)mesh_result->mesh_buffer.indices;
-        uint32_t opaque_write = 0;
-        for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-          const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
-          if (vkr_mesh_manager_material_uses_cutout(
-                  manager->material_system,
-                  mesh_result->material_handles.data[i])) {
-            continue;
-          }
-          if (opaque_write + range->index_count > opaque_index_count) {
-            log_warn("MeshManager: opaque index buffer overflow");
-            subsets_success = false_v;
-            break;
-          }
-
-          if (opaque_ranges) {
-            opaque_ranges[i].first_index = opaque_write;
-            opaque_ranges[i].index_count = range->index_count;
-          }
-          MemCopy(opaque_indices + opaque_write,
-                  src_indices + range->first_index,
-                  (uint64_t)range->index_count * sizeof(uint32_t));
-          opaque_write += range->index_count;
-        }
-        if (opaque_write != opaque_index_count) {
-          log_warn("MeshManager: opaque index count mismatch (%u vs %u)",
-                   opaque_write, opaque_index_count);
-        }
-      }
-    }
-  }
-
-  *out_opaque_ranges = opaque_ranges;
-  *out_build_opaque_indices = build_opaque_indices;
-  return subsets_success;
-}
-
 /* Acquires the merged mesh-buffer geometry by name, creating it from the mesh
  * buffer with the union bounds of every range when it is not loaded yet. */
 vkr_internal bool8_t vkr_mesh_manager_acquire_merged_geometry(
@@ -1639,8 +1521,6 @@ typedef struct VkrMeshResourceBuild {
   uint32_t built_count;
   VkrGeometryHandle merged_geometry;
   VkrGeometryHandle *resolved_subset_geometries;
-  VkrOpaqueRangeInfo *opaque_ranges;
-  bool8_t build_opaque_indices;
 } VkrMeshResourceBuild;
 
 /* Appends the descriptor of merged submesh `i`, taking one more reference on
@@ -1651,8 +1531,6 @@ vkr_internal bool8_t vkr_mesh_manager_describe_merged_submesh(
   VkrMeshLoaderResult *mesh_result = build->mesh_result;
   const VkrMeshLoadDesc *desc = build->desc;
   VkrRendererError *out_error = build->out_error;
-  const VkrOpaqueRangeInfo *opaque_ranges = build->opaque_ranges;
-  const bool8_t build_opaque_indices = build->build_opaque_indices;
   const VkrGeometryUploadRange *range =
       array_get_VkrGeometryUploadRange(&mesh_result->submeshes, i);
   if (!range) {
@@ -1694,13 +1572,6 @@ vkr_internal bool8_t vkr_mesh_manager_describe_merged_submesh(
       .first_index = range->first_index,
       .index_count = range->index_count,
       .vertex_offset = range->vertex_offset,
-      .opaque_first_index = (build_opaque_indices && opaque_ranges)
-                                ? opaque_ranges[i].first_index
-                                : 0,
-      .opaque_index_count = (build_opaque_indices && opaque_ranges)
-                                ? opaque_ranges[i].index_count
-                                : 0,
-      .opaque_vertex_offset = range->vertex_offset,
       .center = range->center,
       .min_extents = range->min_extents,
       .max_extents = range->max_extents,
@@ -1856,16 +1727,10 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
       .built_count = 0,
       .merged_geometry = VKR_GEOMETRY_HANDLE_INVALID,
       .resolved_subset_geometries = NULL,
-      .opaque_ranges = NULL,
-      .build_opaque_indices = false_v,
   };
   bool8_t subsets_success = true_v;
 
   if (use_merged) {
-    subsets_success = vkr_mesh_manager_build_opaque_ranges(
-        manager, mesh_result, subset_count, &build.opaque_ranges,
-        &build.build_opaque_indices, out_error);
-
     if (!vkr_mesh_manager_acquire_merged_geometry(
             manager, mesh_result, &build.merged_geometry, out_error)) {
       subsets_success = false_v;

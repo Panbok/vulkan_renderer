@@ -81,10 +81,6 @@ typedef struct VkrSubMesh {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
-  /** Optional opaque-only range in a compacted index buffer. */
-  uint32_t opaque_first_index;
-  uint32_t opaque_index_count;
-  int32_t opaque_vertex_offset;
   /** Local-space bounds for the draw range (center + extents). */
   Vec3 center;
   Vec3 min_extents;
@@ -170,10 +166,6 @@ typedef struct VkrMeshAssetSubmesh {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
-
-  uint32_t opaque_first_index;
-  uint32_t opaque_index_count;
-  int32_t opaque_vertex_offset;
 
   Vec3 center;
   Vec3 min_extents;
