@@ -197,30 +197,16 @@ vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
   return VKR_RENDERER_ERROR_NONE;
 }
 
-VkrRendererError
-vkr_frame_input_validate(const VkrFrameInput *packet,
-                         VkrValidationError *out_validation_error) {
-  if (!packet) {
-    return vkr_renderer_validation_fail(out_validation_error,
-                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
-                                        "packet", "must not be null");
-  }
-
+/* Every validator below names its error output `out_validation_error`, so
+   this returns the first failure from whichever stage finds it. */
 #define VKR_REJECT_PACKET(CODE, FIELD, MESSAGE)                                \
   do {                                                                         \
     return vkr_renderer_validation_fail(out_validation_error, CODE, FIELD,     \
                                         MESSAGE);                              \
   } while (0)
 
-  if (packet->version != VKR_FRAME_INPUT_VERSION)
-    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
-                      "packet.version",
-                      "does not match VKR_FRAME_INPUT_VERSION");
-  if (!isfinite(packet->frame.delta_time) || packet->frame.delta_time < 0.0)
-    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.frame.delta_time",
-                      "must be finite and nonnegative");
-
+vkr_internal VkrRendererError vkr_frame_input_validate_exposure_and_grading(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   /* Tonemapping multiplies by the manual value and the metering passes raise
      two to the compensation bias with no recovery branch, so both are proven
      here instead. */
@@ -272,7 +258,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.image_sharpness",
                       "must be finite and within [0, 1]");
+  return VKR_RENDERER_ERROR_NONE;
+}
 
+vkr_internal VkrRendererError vkr_frame_input_validate_effects(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   if (packet->globals.bloom_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.bloom_enabled", "must be zero or one");
@@ -346,16 +336,80 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(
         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.globals.gtao_power",
         "must be finite and greater than zero when GTAO is enabled");
+  return VKR_RENDERER_ERROR_NONE;
+}
 
-  if (packet->skybox) {
-    const Vec3 solar = packet->skybox->solar_disk_radiance;
-    if (!isfinite(solar.x) || !isfinite(solar.y) || !isfinite(solar.z) ||
-        solar.x < 0.0f || solar.y < 0.0f || solar.z < 0.0f)
-      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.skybox.solar_disk_radiance",
-                        "must be finite and non-negative");
+vkr_internal VkrRendererError vkr_frame_input_validate_world_skinning_bindings(
+    const VkrWorldPassPayload *world,
+    VkrValidationError *out_validation_error) {
+  for (uint32_t stream = 0; stream < 3; ++stream) {
+    const uint32_t count = stream == 0 ? world->gpu_candidate_count
+                           : stream == 1
+                               ? world->transmission_gpu_candidate_count
+                               : world->instance_count;
+    for (uint32_t i = 0; i < count; ++i) {
+      const VkrInstanceDataGPU *instance =
+          stream == 0   ? &world->gpu_candidates[i].instance
+          : stream == 1 ? &world->transmission_gpu_candidates[i].instance
+                        : &world->instances[i];
+      if (instance->skinning_index > world->skinning_count) {
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.world.instances.skinning_index",
+                          "binding is out of range");
+      }
+      if (instance->skinning_index) {
+        if (stream == 0 && i < world->static_candidate_count) {
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.world.static_candidate_count",
+                            "skinning requires dynamic residency");
+        }
+        const VkrSkinningInput *skin =
+            &world->skinning[instance->skinning_index - 1u];
+        if (skin->temporal_index != instance->temporal_index ||
+            skin->temporal_generation != instance->temporal_generation) {
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.world.instances.skinning_index",
+                            "binding identity differs");
+        }
+        if (stream < 2) {
+          const VkrGeometryHandle geometry =
+              stream == 0 ? world->gpu_candidates[i].geometry
+                          : world->transmission_gpu_candidates[i].geometry;
+          if (geometry.id != skin->geometry.id ||
+              geometry.generation != skin->geometry.generation) {
+            VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                              "packet.world.skinning.geometry",
+                              "binding geometry differs");
+          }
+        }
+      }
+    }
   }
+  if (world->skinning_count) {
+    for (uint32_t i = 0u; i < world->transparent_draw_count; ++i) {
+      const VkrDrawItem *draw = &world->transparent_draws[i];
+      for (uint32_t j = 0u; j < draw->instance_count; ++j) {
+        const VkrInstanceDataGPU *instance =
+            &world->instances[draw->first_instance + j];
+        if (!instance->skinning_index) {
+          continue;
+        }
+        const VkrSkinningInput *skin =
+            &world->skinning[instance->skinning_index - 1u];
+        if (draw->geometry.id != skin->geometry.id ||
+            draw->geometry.generation != skin->geometry.generation) {
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.world.transparent_draws.geometry",
+                            "binding geometry differs");
+        }
+      }
+    }
+  }
+  return VKR_RENDERER_ERROR_NONE;
+}
 
+vkr_internal VkrRendererError vkr_frame_input_validate_world(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
     VkrSkinningHistory skinning_layout;
@@ -442,68 +496,10 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
         out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
-    for (uint32_t stream = 0; stream < 3; ++stream) {
-      const uint32_t count = stream == 0 ? world->gpu_candidate_count
-                             : stream == 1
-                                 ? world->transmission_gpu_candidate_count
-                                 : world->instance_count;
-      for (uint32_t i = 0; i < count; ++i) {
-        const VkrInstanceDataGPU *instance =
-            stream == 0   ? &world->gpu_candidates[i].instance
-            : stream == 1 ? &world->transmission_gpu_candidates[i].instance
-                          : &world->instances[i];
-        if (instance->skinning_index > world->skinning_count) {
-          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                            "packet.world.instances.skinning_index",
-                            "binding is out of range");
-        }
-        if (instance->skinning_index) {
-          if (stream == 0 && i < world->static_candidate_count) {
-            VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                              "packet.world.static_candidate_count",
-                              "skinning requires dynamic residency");
-          }
-          const VkrSkinningInput *skin =
-              &world->skinning[instance->skinning_index - 1u];
-          if (skin->temporal_index != instance->temporal_index ||
-              skin->temporal_generation != instance->temporal_generation) {
-            VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                              "packet.world.instances.skinning_index",
-                              "binding identity differs");
-          }
-          if (stream < 2) {
-            const VkrGeometryHandle geometry =
-                stream == 0 ? world->gpu_candidates[i].geometry
-                            : world->transmission_gpu_candidates[i].geometry;
-            if (geometry.id != skin->geometry.id ||
-                geometry.generation != skin->geometry.generation) {
-              VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                                "packet.world.skinning.geometry",
-                                "binding geometry differs");
-            }
-          }
-        }
-      }
-    }
-    if (world->skinning_count) {
-      for (uint32_t i = 0u; i < world->transparent_draw_count; ++i) {
-        const VkrDrawItem *draw = &world->transparent_draws[i];
-        for (uint32_t j = 0u; j < draw->instance_count; ++j) {
-          const VkrInstanceDataGPU *instance =
-              &world->instances[draw->first_instance + j];
-          if (!instance->skinning_index) {
-            continue;
-          }
-          const VkrSkinningInput *skin =
-              &world->skinning[instance->skinning_index - 1u];
-          if (draw->geometry.id != skin->geometry.id ||
-              draw->geometry.generation != skin->geometry.generation) {
-            VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                              "packet.world.transparent_draws.geometry",
-                              "binding geometry differs");
-          }
-        }
-      }
+    error = vkr_frame_input_validate_world_skinning_bindings(
+        world, out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE) {
+      return error;
     }
     error = vkr_renderer_validate_text_draws(
         world->text_draws, world->text_draw_count, "packet.world.text_draws",
@@ -511,6 +507,12 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
   }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+vkr_internal VkrRendererError vkr_frame_input_validate_animation_preview(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
+  const VkrWorldPassPayload *world = packet->world;
   if (packet->animation_preview) {
     const VkrAnimationPreviewInput *preview = packet->animation_preview;
     if (!vkr_renderer_matrix_finite(&preview->view_projection)) {
@@ -551,6 +553,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
       }
     }
   }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   const VkrLocalShadowPassPayload *local = packet->local_shadow;
   if (local) {
     if (!packet->world || packet->world->gpu_shadow_candidate_count == 0u ||
@@ -637,6 +644,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                           "invalid projection or texel bias units");
     }
   }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   const VkrShadowPassPayload *shadow = packet->shadow;
   if (shadow) {
     if (shadow->cascade_count == 0u ||
@@ -736,16 +748,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                           "must be finite and non-negative");
     }
   }
+  return VKR_RENDERER_ERROR_NONE;
+}
 
-  const VkrUiPassPayload *ui = packet->ui;
-  if (ui) {
-    VkrRendererError error = vkr_renderer_validate_ui_draw_list(
-        &ui->draw_list, packet->frame.window_width, packet->frame.window_height,
-        out_validation_error);
-    if (error != VKR_RENDERER_ERROR_NONE)
-      return error;
-  }
-
+vkr_internal VkrRendererError vkr_frame_input_validate_editor(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   const VkrEditorPassPayload *editor = packet->editor;
   if (packet->frame.editor_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
@@ -823,7 +830,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                         "packet.frame.viewport_width",
                         "editor frames require an explicit viewport extent");
   }
+  return VKR_RENDERER_ERROR_NONE;
+}
 
+vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   const VkrFrameLighting *lighting = packet->lighting;
   if (lighting) {
     const Mat4 subsurface_projection = packet->globals.projection;
@@ -903,6 +914,82 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
                           "packet.lighting.ibl_probes[].sh_slot",
                           "exceeds the coefficient pool capacity");
     }
+  }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError
+vkr_frame_input_validate(const VkrFrameInput *packet,
+                         VkrValidationError *out_validation_error) {
+  if (!packet) {
+    return vkr_renderer_validation_fail(out_validation_error,
+                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
+                                        "packet", "must not be null");
+  }
+
+  if (packet->version != VKR_FRAME_INPUT_VERSION)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
+                      "packet.version",
+                      "does not match VKR_FRAME_INPUT_VERSION");
+  if (!isfinite(packet->frame.delta_time) || packet->frame.delta_time < 0.0)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.frame.delta_time",
+                      "must be finite and nonnegative");
+
+  VkrRendererError error = vkr_frame_input_validate_exposure_and_grading(
+      packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+  error = vkr_frame_input_validate_effects(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+
+  if (packet->skybox) {
+    const Vec3 solar = packet->skybox->solar_disk_radiance;
+    if (!isfinite(solar.x) || !isfinite(solar.y) || !isfinite(solar.z) ||
+        solar.x < 0.0f || solar.y < 0.0f || solar.z < 0.0f)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.skybox.solar_disk_radiance",
+                        "must be finite and non-negative");
+  }
+
+  error = vkr_frame_input_validate_world(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+  error =
+      vkr_frame_input_validate_animation_preview(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+  error = vkr_frame_input_validate_local_shadow(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+  error = vkr_frame_input_validate_shadow(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+
+  const VkrUiPassPayload *ui = packet->ui;
+  if (ui) {
+    error = vkr_renderer_validate_ui_draw_list(
+        &ui->draw_list, packet->frame.window_width, packet->frame.window_height,
+        out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+  }
+
+  error = vkr_frame_input_validate_editor(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+
+  error = vkr_frame_input_validate_lighting(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
   }
 
   if (packet->debug && packet->debug->shadow_debug_mode > 3u)

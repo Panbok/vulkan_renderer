@@ -335,17 +335,8 @@ _Static_assert(ArrayCount(vkr_renderer_impl_memory_metric_descriptions) <=
 #undef VKR_IMPL_METAL_COUNTER
 #undef VKR_IMPL_METAL_GAUGE
 
-bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
-                                      VkrMetrics *metrics) {
-  if (!renderer_metrics || !metrics || metrics->sealed) {
-    return false_v;
-  }
-  MemZero(renderer_metrics, sizeof(*renderer_metrics));
-  renderer_metrics->metrics = metrics;
-  renderer_metrics->previous.gpu_memory_interval_contiguous = true_v;
-  renderer_metrics->previous.impl_memory_interval_contiguous = true_v;
-  VkrRendererMetricIds *ids = &renderer_metrics->ids;
-
+vkr_internal bool8_t vkr_renderer_metrics_register_workload(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_F64(frame_render_scale, "frame.render_scale",
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_RATIO);
   VKR_REGISTER_U64(frame_render_width, "frame.render_width",
@@ -409,7 +400,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(lighting_point_grid_global_lights,
                    "lighting.point.grid.global_lights", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_visibility(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64_REQUIRED(visibility_objects_tested,
                             "visibility.objects_tested", VKR_METRIC_DOMAIN_DRAW,
                             VKR_METRIC_UNIT_COUNT);
@@ -519,6 +514,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
             &ids->hzb_history_rejections[i]))
       return false_v;
   }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_renderer_metrics_register_exposure(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(exposure_accepted_texels, "post.exposure.accepted_texels",
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_F64(exposure_retained_low_bin, "post.exposure.retained_low_bin",
@@ -537,6 +537,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_RATIO);
   VKR_REGISTER_U64(exposure_reset_reasons, "post.exposure.reset_reasons",
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_renderer_metrics_register_geometry_megabuffer(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(geometry_megabuffer_vertex_capacity,
                    "geometry.megabuffer.vertex_capacity_bytes",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
@@ -588,6 +593,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(geometry_megabuffer_generation,
                    "geometry.megabuffer.generation",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_renderer_metrics_register_assets(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(mesh_source_bytes, "asset.mesh.source_bytes",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
   VKR_REGISTER_U64(mesh_cooked_bytes, "asset.mesh.cooked_bytes",
@@ -673,7 +683,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(material_texture_stream_automatic_pressure_active,
                    "asset.material.texture_stream.automatic_pressure_active",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_shadows(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     char name[64];
 #define VKR_REGISTER_CASCADE(FIELD, SUFFIX)                                    \
@@ -705,7 +719,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_F64(shadow_sdsm_linear_far, "draw.shadow.sdsm.linear_far",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_backend(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(rg_live_images, "rendergraph.images.live",
                    VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(rg_peak_images, "rendergraph.images.peak",
@@ -746,7 +764,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
           VKR_METRIC_SCALAR_U64, &ids->gpu_submission)) {
     return false_v;
   }
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_packet_build(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
 #define VKR_REGISTER_PACKET_BUILD_NS(FIELD, NAME)                              \
   if (!vkr_renderer_metric_register(                                           \
           metrics, NAME, VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_DURATION,    \
@@ -776,7 +798,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(packet_geometry_row_bytes, "packet.geometry_row_bytes",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_boot(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
 #define VKR_REGISTER_BOOT(FIELD, NAME)                                         \
   if (!vkr_renderer_metric_register(                                           \
           metrics, NAME, VKR_METRIC_DOMAIN_BOOT, VKR_METRIC_KIND_DURATION,     \
@@ -789,7 +815,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_BOOT(boot_graph, "boot.graph");
   VKR_REGISTER_BOOT(boot_scene, "boot.scene");
 #undef VKR_REGISTER_BOOT
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_jobs(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(job_queue_depth, "job.queue_depth", VKR_METRIC_DOMAIN_JOB,
                    VKR_METRIC_UNIT_COUNT);
   // Both are point samples taken on the render thread, not time-weighted
@@ -800,14 +830,22 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_JOB, VKR_METRIC_UNIT_RATIO);
   VKR_REGISTER_COUNTER(job_completed_total, "job.completed",
                        VKR_METRIC_DOMAIN_JOB);
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_instance_buffer(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(instance_occupancy, "instance_buffer.occupancy",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(instance_capacity, "instance_buffer.capacity",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(instance_overflows, "instance_buffer.overflows",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_gpu_memory(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(gpu_live_allocations, "memory.gpu.allocations.live",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(gpu_peak_allocations, "memory.gpu.allocations.peak",
@@ -844,7 +882,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
       }
     }
   }
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_pipelines(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_COUNTER(pipelines_created, "pipeline.created",
                        VKR_METRIC_DOMAIN_PIPELINE);
   VKR_REGISTER_COUNTER(pipeline_binds, "pipeline.binds",
@@ -859,7 +901,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(frame_redundant_binds_avoided,
                    "pipeline.frame_redundant_binds_avoided",
                    VKR_METRIC_DOMAIN_PIPELINE, VKR_METRIC_UNIT_COUNT);
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_cpu_memory(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(cpu_live_bytes, "memory.cpu.bytes.live",
                    VKR_METRIC_DOMAIN_MEMORY_CPU, VKR_METRIC_UNIT_BYTES);
   vkr_local_persist const char *tag_names[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
@@ -877,7 +923,11 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
       return false_v;
     }
   }
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_renderer_metrics_register_events(
+    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   if (!vkr_renderer_event_register(metrics, "pipeline.create",
                                    VKR_METRIC_DOMAIN_PIPELINE,
                                    &ids->pipeline_create_event) ||
@@ -908,6 +958,39 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                      &ids->asset_load_event[i])) {
       return false_v;
     }
+  }
+  return true_v;
+}
+
+bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
+                                      VkrMetrics *metrics) {
+  if (!renderer_metrics || !metrics || metrics->sealed) {
+    return false_v;
+  }
+  MemZero(renderer_metrics, sizeof(*renderer_metrics));
+  renderer_metrics->metrics = metrics;
+  renderer_metrics->previous.gpu_memory_interval_contiguous = true_v;
+  renderer_metrics->previous.impl_memory_interval_contiguous = true_v;
+  VkrRendererMetricIds *ids = &renderer_metrics->ids;
+
+  // Sections take consecutive catalog slots, so this order fixes every
+  // metric ID.
+  if (!vkr_renderer_metrics_register_workload(metrics, ids) ||
+      !vkr_renderer_metrics_register_visibility(metrics, ids) ||
+      !vkr_renderer_metrics_register_exposure(metrics, ids) ||
+      !vkr_renderer_metrics_register_geometry_megabuffer(metrics, ids) ||
+      !vkr_renderer_metrics_register_assets(metrics, ids) ||
+      !vkr_renderer_metrics_register_shadows(metrics, ids) ||
+      !vkr_renderer_metrics_register_backend(metrics, ids) ||
+      !vkr_renderer_metrics_register_packet_build(metrics, ids) ||
+      !vkr_renderer_metrics_register_boot(metrics, ids) ||
+      !vkr_renderer_metrics_register_jobs(metrics, ids) ||
+      !vkr_renderer_metrics_register_instance_buffer(metrics, ids) ||
+      !vkr_renderer_metrics_register_gpu_memory(metrics, ids) ||
+      !vkr_renderer_metrics_register_pipelines(metrics, ids) ||
+      !vkr_renderer_metrics_register_cpu_memory(metrics, ids) ||
+      !vkr_renderer_metrics_register_events(metrics, ids)) {
+    return false_v;
   }
 
   renderer_metrics->producers = (VkrRendererMetricsProducerConfig){
@@ -1277,33 +1360,15 @@ vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
   renderer_metrics->previous.impl_memory_interval_contiguous = true_v;
 }
 
-void vkr_renderer_metrics_collect(
-    VkrRendererMetrics *renderer_metrics,
-    const VkrRendererMetricsCollectContext *context) {
-#if !VKR_METRICS_ENABLED
-  (void)renderer_metrics;
-  (void)context;
-  return;
-#else
-  VkrMetrics *metrics = renderer_metrics->metrics;
-  VkrRendererMetricIds *ids = &renderer_metrics->ids;
-  VkrRenderer *renderer = (VkrRenderer *)context->renderer;
-  const VkrWorldBatchMetrics *world = &context->frame_metrics->world;
-  const VkrShadowMetrics *shadow = &context->frame_metrics->shadow;
-  const VkrVisibilityStats *visibility = context->visibility;
-
+#if VKR_METRICS_ENABLED
 #define VKR_SET_U64(FIELD, VALUE)                                              \
   vkr_metrics_gauge_set_u64(metrics, ids->FIELD, (uint64_t)(VALUE))
 #define VKR_SET_F64(FIELD, VALUE)                                              \
   vkr_metrics_gauge_set_f64(metrics, ids->FIELD, (float64_t)(VALUE))
-  VKR_SET_F64(frame_render_scale, renderer->render_scale);
-  VKR_SET_U64(frame_render_width, renderer->render_width);
-  VKR_SET_U64(frame_render_height, renderer->render_height);
-  VKR_SET_U64(frame_dynamic_resolution_transitions,
-              renderer->dynamic_resolution_state.transition_count);
-  VKR_SET_F64(ui_dirty_tile_ratio, context->application.ui_dirty_tile_ratio);
-  VKR_SET_U64(ui_dirty_tiles, context->application.ui_dirty_tiles);
-  VKR_SET_U64(ui_tile_count, context->application.ui_tile_count);
+
+vkr_internal void vkr_renderer_metrics_collect_exposure(
+    VkrMetrics *metrics, const VkrRendererMetricIds *ids,
+    const VkrRendererMetricsCollectContext *context) {
   const VkrExposureDebugSample *exposure = &context->frame_metrics->exposure;
   if (exposure->valid) {
     VKR_SET_U64(exposure_accepted_texels, exposure->state.accepted_texel_count);
@@ -1327,6 +1392,11 @@ void vkr_renderer_metrics_collect(
                        VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                        VKR_METRIC_REASON_NOT_SAMPLED);
   }
+}
+
+vkr_internal void vkr_renderer_metrics_collect_submission_timings(
+    VkrMetrics *metrics, const VkrRendererMetricIds *ids,
+    const VkrRendererMetricsCollectContext *context) {
   if (!metrics->config.submission_gpu_timings) {
     vkr_metrics_mark(metrics, ids->gpu_submission,
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE,
@@ -1350,7 +1420,11 @@ void vkr_renderer_metrics_collect(
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                      VKR_METRIC_REASON_NOT_SAMPLED);
   }
+}
 
+vkr_internal void vkr_renderer_metrics_collect_packet_build(
+    VkrMetrics *metrics, const VkrRendererMetricIds *ids,
+    const VkrRendererMetricsCollectContext *context) {
   /* Publishing the durations without their byte counts, or either without the
      other, would let a run report a cheaper frame that had merely dropped
      draws. The block is published whole or marked unavailable whole. */
@@ -1412,74 +1486,12 @@ void vkr_renderer_metrics_collect(
                        VKR_METRIC_REASON_NOT_SAMPLED);
     }
   }
+}
 
-#define VKR_SET_BOOT(FIELD, VALUE)                                             \
-  do {                                                                         \
-    if ((VALUE) > 0) {                                                         \
-      vkr_metrics_duration_add_ns(metrics, ids->FIELD, (VALUE));               \
-    } else {                                                                   \
-      vkr_metrics_mark(metrics, ids->FIELD,                                    \
-                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,                    \
-                       VKR_METRIC_REASON_NOT_READY);                           \
-    }                                                                          \
-  } while (0)
-  VKR_SET_BOOT(boot_instance, renderer->boot_metrics.instance_ns);
-  VKR_SET_BOOT(boot_device, renderer->boot_metrics.device_ns);
-  VKR_SET_BOOT(boot_target, renderer->boot_metrics.target_ns);
-  VKR_SET_BOOT(boot_systems, renderer->boot_metrics.systems_ns);
-  VKR_SET_BOOT(boot_graph, renderer->boot_metrics.graph_ns);
-  VKR_SET_BOOT(boot_scene, renderer_metrics->boot_scene_ns);
-#undef VKR_SET_BOOT
-
-  // Publishes a cumulative pull source as this frame's delta. `begin_frame`
-  // zeroes counter slots, so a single add produces exactly the interval value.
-#define VKR_SET_DELTA(FIELD, BASELINE, VALUE)                                  \
-  do {                                                                         \
-    const uint64_t current_ = (uint64_t)(VALUE);                               \
-    vkr_metrics_counter_add(                                                   \
-        metrics, ids->FIELD,                                                   \
-        vkr_renderer_metrics_cumulative_delta(                                 \
-            current_, &renderer_metrics->previous.BASELINE));                  \
-  } while (0)
-
-  VkrJobSystemMetrics jobs = {0};
-  vkr_job_system_get_metrics(context->job_system, &jobs);
-  VKR_SET_U64(job_queue_depth, jobs.queue_depth);
-  VKR_SET_U64(job_workers_busy, jobs.busy_workers);
-  VKR_SET_F64(job_worker_busy_ratio,
-              jobs.worker_count > 0
-                  ? (float64_t)jobs.busy_workers / (float64_t)jobs.worker_count
-                  : 0.0);
-  VKR_SET_DELTA(job_completed_total, jobs_completed, jobs.jobs_completed_total);
-
-  VKR_SET_U64(instance_overflows, 0u);
-  VKR_SET_U64(world_draws_collected, world->draws_collected);
-  VKR_SET_U64(world_opaque_draws, world->opaque_draws);
-  VKR_SET_U64(world_transmission_draws, world->transmission_draws);
-  VKR_SET_U64(world_transparent_draws, world->transparent_draws);
-  VKR_SET_U64(world_opaque_batches, world->opaque_batches);
-  VKR_SET_U64(world_draws_issued, world->draws_issued);
-  VKR_SET_U64(world_draw_calls_issued, world->draw_calls_issued);
-  VKR_SET_U64(world_batches_created, world->batches_created);
-  VKR_SET_U64(world_draws_merged, world->draws_merged);
-  VKR_SET_U64(world_indirect_draws_issued, world->indirect_draws_issued);
-  VKR_SET_U64(world_indirect_calls_issued, world->indirect_calls_issued);
-  VKR_SET_F64(world_avg_batch_size, world->avg_batch_size);
-  VKR_SET_U64(world_max_batch_size, world->max_batch_size);
-  VKR_SET_U64(lighting_ibl_probes_packed, renderer->ibl_probes_packed);
-  VKR_SET_U64(lighting_point_selected,
-              context->application.lighting_point_selected);
-  VKR_SET_U64(lighting_point_dropped,
-              context->application.lighting_point_dropped);
-  VKR_SET_U64(lighting_point_grid_cells,
-              context->application.lighting_point_grid_cells);
-  VKR_SET_U64(lighting_point_grid_references,
-              context->application.lighting_point_grid_references);
-  VKR_SET_U64(lighting_point_grid_max_lights_per_cell,
-              context->application.lighting_point_grid_max_lights_per_cell);
-  VKR_SET_U64(lighting_point_grid_global_lights,
-              context->application.lighting_point_grid_global_lights);
-
+vkr_internal void vkr_renderer_metrics_collect_visibility(
+    VkrMetrics *metrics, const VkrRendererMetricIds *ids,
+    const VkrRenderer *renderer, const VkrWorldBatchMetrics *world,
+    const VkrVisibilityStats *visibility) {
   VKR_SET_U64(visibility_objects_tested, visibility->objects_tested);
   VKR_SET_U64(visibility_culled_camera, visibility->objects_culled_camera);
   VKR_SET_U64(visibility_without_bounds, visibility->objects_without_bounds);
@@ -1580,6 +1592,12 @@ void vkr_renderer_metrics_collect(
         metrics, ids->visibility_transmission_coverage_extent_height,
         VKR_METRIC_AVAILABILITY_UNAVAILABLE, VKR_METRIC_REASON_NOT_SAMPLED);
   }
+}
+
+vkr_internal void vkr_renderer_metrics_collect_assets(
+    VkrMetrics *metrics, const VkrRendererMetricIds *ids,
+    const VkrRendererMetricsCollectContext *context,
+    const VkrWorldBatchMetrics *world) {
   const VkrGeometryMegabufferMetrics *mega = &world->geometry_megabuffer;
   VKR_SET_U64(geometry_megabuffer_vertex_capacity, mega->vertex_capacity_bytes);
   VKR_SET_U64(geometry_megabuffer_index_capacity, mega->index_capacity_bytes);
@@ -1684,7 +1702,12 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(
       material_texture_stream_automatic_pressure_active,
       context->application.material_texture_stream_automatic_pressure_active);
+}
 
+vkr_internal void
+vkr_renderer_metrics_collect_shadows(VkrMetrics *metrics,
+                                     const VkrRendererMetricIds *ids,
+                                     const VkrShadowMetrics *shadow) {
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_draws_opaque[i],
                               shadow->shadow_indirect_draws_opaque[i]);
@@ -1710,7 +1733,12 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(shadow_sdsm_occupied_pixels, shadow->sdsm_occupied_count);
   VKR_SET_F64(shadow_sdsm_linear_near, shadow->sdsm_linear_near);
   VKR_SET_F64(shadow_sdsm_linear_far, shadow->sdsm_linear_far);
+}
 
+vkr_internal void
+vkr_renderer_metrics_collect_backend(VkrMetrics *metrics,
+                                     const VkrRendererMetricIds *ids,
+                                     VkrRenderer *renderer) {
   VkrRenderGraphResourceStats rg = {0};
   bool8_t rg_stats_valid = false_v;
   if (renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN) {
@@ -1751,7 +1779,13 @@ void vkr_renderer_metrics_collect(
           renderer, &command_slot_wait_count)) {
     VKR_SET_U64(frame_command_slot_waits, command_slot_wait_count);
   }
+}
 
+vkr_internal void
+vkr_renderer_metrics_collect_gpu_memory(VkrRendererMetrics *renderer_metrics,
+                                        VkrRenderer *renderer) {
+  VkrMetrics *metrics = renderer_metrics->metrics;
+  const VkrRendererMetricIds *ids = &renderer_metrics->ids;
   VkrDeviceMemoryStats gpu = {0};
   if (vkr_renderer_get_device_memory_stats(renderer, &gpu)) {
     const bool8_t counters_valid =
@@ -1864,9 +1898,11 @@ void vkr_renderer_metrics_collect(
       }
     }
   }
+}
 
-  vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
-
+vkr_internal void
+vkr_renderer_metrics_collect_pipelines(VkrMetrics *metrics,
+                                       const VkrRendererMetricIds *ids) {
   // Both selected implementations construct their complete immutable pipeline
   // set during renderer initialization: every vkCreate*Pipelines call sits in
   // the Vulkan setup path, and every Metal newRender/ComputePipelineState call
@@ -1892,6 +1928,118 @@ void vkr_renderer_metrics_collect(
   vkr_metrics_mark(metrics, ids->frame_redundant_binds_avoided,
                    VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                    VKR_METRIC_REASON_UNSUPPORTED);
+}
+
+#endif
+
+void vkr_renderer_metrics_collect(
+    VkrRendererMetrics *renderer_metrics,
+    const VkrRendererMetricsCollectContext *context) {
+#if !VKR_METRICS_ENABLED
+  (void)renderer_metrics;
+  (void)context;
+  return;
+#else
+  VkrMetrics *metrics = renderer_metrics->metrics;
+  VkrRendererMetricIds *ids = &renderer_metrics->ids;
+  VkrRenderer *renderer = (VkrRenderer *)context->renderer;
+  const VkrWorldBatchMetrics *world = &context->frame_metrics->world;
+  const VkrShadowMetrics *shadow = &context->frame_metrics->shadow;
+  const VkrVisibilityStats *visibility = context->visibility;
+
+  VKR_SET_F64(frame_render_scale, renderer->render_scale);
+  VKR_SET_U64(frame_render_width, renderer->render_width);
+  VKR_SET_U64(frame_render_height, renderer->render_height);
+  VKR_SET_U64(frame_dynamic_resolution_transitions,
+              renderer->dynamic_resolution_state.transition_count);
+  VKR_SET_F64(ui_dirty_tile_ratio, context->application.ui_dirty_tile_ratio);
+  VKR_SET_U64(ui_dirty_tiles, context->application.ui_dirty_tiles);
+  VKR_SET_U64(ui_tile_count, context->application.ui_tile_count);
+  vkr_renderer_metrics_collect_exposure(metrics, ids, context);
+  vkr_renderer_metrics_collect_submission_timings(metrics, ids, context);
+
+  vkr_renderer_metrics_collect_packet_build(metrics, ids, context);
+
+#define VKR_SET_BOOT(FIELD, VALUE)                                             \
+  do {                                                                         \
+    if ((VALUE) > 0) {                                                         \
+      vkr_metrics_duration_add_ns(metrics, ids->FIELD, (VALUE));               \
+    } else {                                                                   \
+      vkr_metrics_mark(metrics, ids->FIELD,                                    \
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,                    \
+                       VKR_METRIC_REASON_NOT_READY);                           \
+    }                                                                          \
+  } while (0)
+  VKR_SET_BOOT(boot_instance, renderer->boot_metrics.instance_ns);
+  VKR_SET_BOOT(boot_device, renderer->boot_metrics.device_ns);
+  VKR_SET_BOOT(boot_target, renderer->boot_metrics.target_ns);
+  VKR_SET_BOOT(boot_systems, renderer->boot_metrics.systems_ns);
+  VKR_SET_BOOT(boot_graph, renderer->boot_metrics.graph_ns);
+  VKR_SET_BOOT(boot_scene, renderer_metrics->boot_scene_ns);
+#undef VKR_SET_BOOT
+
+  // Publishes a cumulative pull source as this frame's delta. `begin_frame`
+  // zeroes counter slots, so a single add produces exactly the interval value.
+#define VKR_SET_DELTA(FIELD, BASELINE, VALUE)                                  \
+  do {                                                                         \
+    const uint64_t current_ = (uint64_t)(VALUE);                               \
+    vkr_metrics_counter_add(                                                   \
+        metrics, ids->FIELD,                                                   \
+        vkr_renderer_metrics_cumulative_delta(                                 \
+            current_, &renderer_metrics->previous.BASELINE));                  \
+  } while (0)
+
+  VkrJobSystemMetrics jobs = {0};
+  vkr_job_system_get_metrics(context->job_system, &jobs);
+  VKR_SET_U64(job_queue_depth, jobs.queue_depth);
+  VKR_SET_U64(job_workers_busy, jobs.busy_workers);
+  VKR_SET_F64(job_worker_busy_ratio,
+              jobs.worker_count > 0
+                  ? (float64_t)jobs.busy_workers / (float64_t)jobs.worker_count
+                  : 0.0);
+  VKR_SET_DELTA(job_completed_total, jobs_completed, jobs.jobs_completed_total);
+
+  VKR_SET_U64(instance_overflows, 0u);
+  VKR_SET_U64(world_draws_collected, world->draws_collected);
+  VKR_SET_U64(world_opaque_draws, world->opaque_draws);
+  VKR_SET_U64(world_transmission_draws, world->transmission_draws);
+  VKR_SET_U64(world_transparent_draws, world->transparent_draws);
+  VKR_SET_U64(world_opaque_batches, world->opaque_batches);
+  VKR_SET_U64(world_draws_issued, world->draws_issued);
+  VKR_SET_U64(world_draw_calls_issued, world->draw_calls_issued);
+  VKR_SET_U64(world_batches_created, world->batches_created);
+  VKR_SET_U64(world_draws_merged, world->draws_merged);
+  VKR_SET_U64(world_indirect_draws_issued, world->indirect_draws_issued);
+  VKR_SET_U64(world_indirect_calls_issued, world->indirect_calls_issued);
+  VKR_SET_F64(world_avg_batch_size, world->avg_batch_size);
+  VKR_SET_U64(world_max_batch_size, world->max_batch_size);
+  VKR_SET_U64(lighting_ibl_probes_packed, renderer->ibl_probes_packed);
+  VKR_SET_U64(lighting_point_selected,
+              context->application.lighting_point_selected);
+  VKR_SET_U64(lighting_point_dropped,
+              context->application.lighting_point_dropped);
+  VKR_SET_U64(lighting_point_grid_cells,
+              context->application.lighting_point_grid_cells);
+  VKR_SET_U64(lighting_point_grid_references,
+              context->application.lighting_point_grid_references);
+  VKR_SET_U64(lighting_point_grid_max_lights_per_cell,
+              context->application.lighting_point_grid_max_lights_per_cell);
+  VKR_SET_U64(lighting_point_grid_global_lights,
+              context->application.lighting_point_grid_global_lights);
+
+  vkr_renderer_metrics_collect_visibility(metrics, ids, renderer, world,
+                                          visibility);
+  vkr_renderer_metrics_collect_assets(metrics, ids, context, world);
+
+  vkr_renderer_metrics_collect_shadows(metrics, ids, shadow);
+
+  vkr_renderer_metrics_collect_backend(metrics, ids, renderer);
+
+  vkr_renderer_metrics_collect_gpu_memory(renderer_metrics, renderer);
+
+  vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
+
+  vkr_renderer_metrics_collect_pipelines(metrics, ids);
 
   VkrAllocatorStatistics cpu = vkr_allocator_get_global_statistics();
   VKR_SET_U64(cpu_live_bytes, cpu.total_allocated);

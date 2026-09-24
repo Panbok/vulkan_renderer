@@ -2616,17 +2616,186 @@ vkr_rg_json_resolve_use_slice(const VkrRgJsonResourceUse *use,
   return out_slice->mip_count > 0u && out_slice->layer_count > 0u;
 }
 
-bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
-                               const VkrRgJsonGraph *json_graph,
-                               const VkrRenderGraphFrameInfo *frame) {
-  if (!rg || !json_graph || !frame) {
-    log_error("RenderGraph build failed: invalid args");
+vkr_internal bool8_t vkr_rg_json_import_image(
+    VkrRenderGraph *rg, const VkrRgJsonResource *resource,
+    const VkrRenderGraphFrameInfo *frame, String8 resolved_name) {
+  VkrRgImageAccessFlags access = VKR_RG_IMAGE_ACCESS_NONE;
+  VkrTextureLayout layout = VKR_TEXTURE_LAYOUT_UNDEFINED;
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.flags = vkr_rg_json_resource_flags(resource->flags);
+  if (resource->image.layers_is_set ||
+      resource->image.layers_source.length > 0) {
+    desc.flags |= VKR_RG_RESOURCE_FLAG_FORCE_ARRAY;
+  }
+  desc.width = frame->target_width;
+  desc.height = frame->target_height;
+  desc.depth = resource->image.depth;
+  desc.type = resource->image.type;
+  desc.mip_levels = vkr_rg_json_mip_levels(&resource->image, desc.width,
+                                           desc.height, desc.depth);
+  desc.usage = resource->image.usage;
+  uint32_t layers = 1;
+  if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
+    return false_v;
+  }
+  desc.layers = layers;
+  /* `swapchain` and `swapchain_depth` are compatibility names for the
+     present target's color and depth attachments, whichever kind of
+     target the renderer opened. Their arrival state comes from the
+     target, never from an assumption about acquisition. */
+  if (vkr_string8_equals_cstr_i(&resource->image.import_name, "swapchain")) {
+    access = (VkrRgImageAccessFlags)frame->target_color_initial_state.access;
+    layout = frame->target_color_initial_state.layout;
+    desc.format = frame->target_color_format;
+    desc.layers = 1;
+    if (desc.usage.set == 0) {
+      desc.usage =
+          vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_COLOR_ATTACHMENT);
+    }
+  } else if (vkr_string8_equals_cstr_i(&resource->image.import_name,
+                                       "swapchain_depth")) {
+    access = (VkrRgImageAccessFlags)frame->target_depth_initial_state.access;
+    layout = frame->target_depth_initial_state.layout;
+    desc.format = frame->target_depth_format;
+    desc.layers = 1;
+    if (desc.usage.set == 0) {
+      desc.usage = vkr_texture_usage_flags_from_bits(
+          VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT);
+    }
+  } else {
+    log_error("RenderGraph JSON: unknown import '%.*s'",
+              (int)resource->image.import_name.length,
+              resource->image.import_name.str);
     return false_v;
   }
 
-  VkrAllocator *frame_allocator =
-      rg->frame_allocator ? rg->frame_allocator : rg->allocator;
+  if (!vkr_rg_image_handle_valid(vkr_rg_import_image(rg, resolved_name, NULL,
+                                                     access, layout, &desc))) {
+    return false_v;
+  }
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_rg_json_create_image(
+    VkrRenderGraph *rg, const VkrRgJsonResource *resource,
+    const VkrRenderGraphFrameInfo *frame, String8 resolved_name) {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  if (!vkr_rg_json_resolve_extent(&resource->image.extent, frame, &width,
+                                  &height)) {
+    return false_v;
+  }
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = width;
+  desc.height = height;
+  desc.depth = resource->image.depth;
+  desc.type = resource->image.type;
+  desc.mip_levels =
+      vkr_rg_json_mip_levels(&resource->image, width, height, desc.depth);
+  desc.usage = resource->image.usage;
+  desc.flags = vkr_rg_json_resource_flags(resource->flags);
+  if (resource->image.layers_is_set ||
+      resource->image.layers_source.length > 0) {
+    desc.flags |= VKR_RG_RESOURCE_FLAG_FORCE_ARRAY;
+  }
+  uint32_t layers = 1;
+  if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
+    return false_v;
+  }
+  desc.layers = layers;
+  switch (resource->image.format_source) {
+  case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN:
+    desc.format = frame->target_color_format;
+    break;
+  case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN_DEPTH:
+    desc.format = frame->target_depth_format;
+    break;
+  case VKR_RG_JSON_IMAGE_FORMAT_SHADOW_DEPTH:
+    desc.format = frame->shadow_depth_format;
+    break;
+  case VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT:
+  default:
+    desc.format = resource->image.format;
+    break;
+  }
+
+  if (!vkr_rg_image_handle_valid(
+          vkr_rg_create_image(rg, resolved_name, &desc))) {
+    return false_v;
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_rg_json_create_buffer(
+    VkrRenderGraph *rg, const VkrRgJsonResource *resource,
+    const VkrRenderGraphFrameInfo *frame, String8 resolved_name) {
+  VkrRgBufferDesc desc = {0};
+  if (resource->buffer.size_mode == VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS) {
+    const uint64_t pixels =
+        (uint64_t)frame->viewport_width * frame->viewport_height;
+    if (!pixels || resource->buffer.bytes_per_pixel > UINT64_MAX / pixels) {
+      log_error("RenderGraph buffer '%.*s': viewport-pixel size "
+                "overflow",
+                (int)resolved_name.length, resolved_name.str);
+      return false_v;
+    }
+    desc.size = pixels * resource->buffer.bytes_per_pixel;
+  } else if (resource->buffer.size_mode ==
+             VKR_RG_JSON_BUFFER_SIZE_DRAW_ELEMENTS) {
+    uint32_t count = 0u;
+    uint32_t max_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
+    switch (resource->buffer.draw_count_source) {
+    case VKR_RG_JSON_DRAW_COUNT_SKINNING_VERTICES:
+      count = frame->skinning_vertex_capacity;
+      max_count = VKR_SKINNING_VERTEX_CAPACITY;
+      break;
+    case VKR_RG_JSON_DRAW_COUNT_CANDIDATES:
+      count = frame->gpu_draw_candidate_capacity;
+      break;
+    case VKR_RG_JSON_DRAW_COUNT_VIEWS:
+      count = 1u + frame->shadow_cascade_count +
+              frame->local_shadow_view_count +
+              frame->local_shadow_transmission_view_count;
+      break;
+    case VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS:
+    case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
+      count = frame->gpu_draw_visible_capacity;
+      max_count = VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u;
+      break;
+    case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES:
+      count = frame->transmission_gpu_draw_candidate_capacity;
+      break;
+    case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE:
+      count = frame->transmission_gpu_draw_visible_capacity;
+      max_count = VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u;
+      break;
+    }
+    if (!count || count > max_count) {
+      log_error("RenderGraph buffer '%.*s': invalid draw capacity %u",
+                (int)resolved_name.length, resolved_name.str, count);
+      return false_v;
+    }
+    desc.size = (uint64_t)count * resource->buffer.bytes_per_element;
+    if (resource->buffer.draw_count_source == VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS)
+      desc.size *= 1u + frame->shadow_cascade_count +
+                   frame->local_shadow_view_count +
+                   frame->local_shadow_transmission_view_count;
+  } else {
+    desc.size = resource->buffer.size;
+  }
+  desc.usage = resource->buffer.usage;
+  desc.flags = vkr_rg_json_resource_flags(resource->flags);
+  if (!vkr_rg_buffer_handle_valid(
+          vkr_rg_create_buffer(rg, resolved_name, &desc))) {
+    return false_v;
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_rg_json_build_resources(
+    VkrRenderGraph *rg, const VkrRgJsonGraph *json_graph,
+    const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator) {
   for (uint64_t i = 0; i < json_graph->resources.length; ++i) {
     VkrRgJsonResource *resource =
         vector_get_VkrRgJsonResource(&json_graph->resources, i);
@@ -2649,195 +2818,263 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
         return false_v;
       }
 
+      bool8_t declared = false_v;
       if (resource->type == VKR_RG_JSON_RESOURCE_IMAGE) {
         if (resource->image.is_import) {
-          VkrRgImageAccessFlags access = VKR_RG_IMAGE_ACCESS_NONE;
-          VkrTextureLayout layout = VKR_TEXTURE_LAYOUT_UNDEFINED;
-          VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
-          desc.flags = vkr_rg_json_resource_flags(resource->flags);
-          if (resource->image.layers_is_set ||
-              resource->image.layers_source.length > 0) {
-            desc.flags |= VKR_RG_RESOURCE_FLAG_FORCE_ARRAY;
-          }
-          desc.width = frame->target_width;
-          desc.height = frame->target_height;
-          desc.depth = resource->image.depth;
-          desc.type = resource->image.type;
-          desc.mip_levels = vkr_rg_json_mip_levels(&resource->image, desc.width,
-                                                   desc.height, desc.depth);
-          desc.usage = resource->image.usage;
-          uint32_t layers = 1;
-          if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+          declared =
+              vkr_rg_json_import_image(rg, resource, frame, resolved_name);
+        } else {
+          declared =
+              vkr_rg_json_create_image(rg, resource, frame, resolved_name);
+        }
+      } else {
+        declared =
+            vkr_rg_json_create_buffer(rg, resource, frame, resolved_name);
+      }
+
+      vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+      if (!declared) {
+        return false_v;
+      }
+    }
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_rg_json_add_pass_attachments(
+    VkrRenderGraph *rg, VkrRgPassBuilder *pb, const VkrRgJsonPass *pass,
+    VkrAllocator *frame_allocator, uint32_t r) {
+  for (uint64_t c = 0; c < pass->attachments.colors.length; ++c) {
+    VkrRgJsonAttachment *att =
+        vector_get_VkrRgJsonAttachment(&pass->attachments.colors, c);
+    String8 resolved_image = {0};
+    bool8_t owned_image = false_v;
+    if (!vkr_rg_expand_name(frame_allocator, att->image, r, &resolved_image,
+                            &owned_image)) {
+      return false_v;
+    }
+    VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_image);
+    vkr_rg_release_name(frame_allocator, resolved_image, owned_image);
+    if (!vkr_rg_image_handle_valid(handle)) {
+      log_error("RenderGraph JSON: missing image '%.*s'",
+                (int)att->image.length, att->image.str);
+      return false_v;
+    }
+
+    VkrRgAttachmentDesc desc = {
+        .slice = VKR_RG_IMAGE_SLICE_DEFAULT,
+        .load_op = att->load_op,
+        .store_op = att->store_op,
+    };
+    if (att->has_clear) {
+      desc.clear_value = att->clear_value;
+    }
+    if (!vkr_rg_json_apply_slice(att, r, &desc)) {
+      log_error("RenderGraph JSON: attachment slice layer_count must be >= 1");
+      return false_v;
+    }
+
+    if (!vkr_rg_pass_add_color_attachment(pb, handle, &desc)) {
+
+      return false_v;
+    }
+  }
+
+  if (pass->attachments.has_depth) {
+    const VkrRgJsonAttachment *att = &pass->attachments.depth;
+    String8 resolved_image = {0};
+    bool8_t owned_image = false_v;
+    if (!vkr_rg_expand_name(frame_allocator, att->image, r, &resolved_image,
+                            &owned_image)) {
+      return false_v;
+    }
+    VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_image);
+    vkr_rg_release_name(frame_allocator, resolved_image, owned_image);
+    if (!vkr_rg_image_handle_valid(handle)) {
+      log_error("RenderGraph JSON: missing image '%.*s'",
+                (int)att->image.length, att->image.str);
+      return false_v;
+    }
+
+    VkrRgAttachmentDesc desc = {
+        .slice = VKR_RG_IMAGE_SLICE_DEFAULT,
+        .load_op = att->load_op,
+        .store_op = att->store_op,
+    };
+    if (att->has_clear) {
+      desc.clear_value = att->clear_value;
+    }
+    if (!vkr_rg_json_apply_slice(att, r, &desc)) {
+      log_error("RenderGraph JSON: attachment slice layer_count must be >= 1");
+      return false_v;
+    }
+
+    if (!vkr_rg_pass_set_depth_attachment(pb, handle, &desc,
+                                          pass->attachments.depth_read_only)) {
+
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_rg_json_add_pass_reads(
+    VkrRenderGraph *rg, VkrRgPassBuilder *pb, const VkrRgJsonPass *pass,
+    const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator,
+    uint32_t r) {
+  for (uint64_t u = 0; u < pass->reads.length; ++u) {
+    VkrRgJsonResourceUse *use =
+        vector_get_VkrRgJsonResourceUse(&pass->reads, u);
+    if (!vkr_rg_json_condition_enabled(&use->condition, frame))
+      continue;
+
+    uint32_t use_repeat = 1;
+    if (!vkr_rg_json_repeat_count(&use->repeat, frame, &use_repeat)) {
+      return false_v;
+    }
+
+    for (uint32_t ur = 0; ur < use_repeat; ++ur) {
+      String8 resolved_name = {0};
+      bool8_t owned_name = false_v;
+      if (!vkr_rg_expand_name(frame_allocator, use->name, ur, &resolved_name,
+                              &owned_name)) {
+        return false_v;
+      }
+
+      if (use->is_image) {
+        VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_name);
+        vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+        if (!vkr_rg_image_handle_valid(handle)) {
+          log_error("RenderGraph JSON: missing image '%.*s'",
+                    (int)use->name.length, use->name.str);
+          return false_v;
+        }
+
+        uint32_t binding = use->binding.is_set ? use->binding.value : 0;
+        uint32_t array_index =
+            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        if (use->has_slice) {
+          VkrRgImageSlice slice = {0};
+          if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
+                                             &slice))
             return false_v;
-          }
-          desc.layers = layers;
-          /* `swapchain` and `swapchain_depth` are compatibility names for the
-             present target's color and depth attachments, whichever kind of
-             target the renderer opened. Their arrival state comes from the
-             target, never from an assumption about acquisition. */
-          if (vkr_string8_equals_cstr_i(&resource->image.import_name,
-                                        "swapchain")) {
-            access =
-                (VkrRgImageAccessFlags)frame->target_color_initial_state.access;
-            layout = frame->target_color_initial_state.layout;
-            desc.format = frame->target_color_format;
-            desc.layers = 1;
-            if (desc.usage.set == 0) {
-              desc.usage = vkr_texture_usage_flags_from_bits(
-                  VKR_TEXTURE_USAGE_COLOR_ATTACHMENT);
-            }
-          } else if (vkr_string8_equals_cstr_i(&resource->image.import_name,
-                                               "swapchain_depth")) {
-            access =
-                (VkrRgImageAccessFlags)frame->target_depth_initial_state.access;
-            layout = frame->target_depth_initial_state.layout;
-            desc.format = frame->target_depth_format;
-            desc.layers = 1;
-            if (desc.usage.set == 0) {
-              desc.usage = vkr_texture_usage_flags_from_bits(
-                  VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT);
-            }
-          } else {
-            log_error("RenderGraph JSON: unknown import '%.*s'",
-                      (int)resource->image.import_name.length,
-                      resource->image.import_name.str);
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            return false_v;
-          }
-
-          if (!vkr_rg_image_handle_valid(vkr_rg_import_image(
-                  rg, resolved_name, NULL, access, layout, &desc))) {
-
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-
+          if (!vkr_rg_pass_read_image_slice_at_stages(
+                  pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                  vkr_gpu_stages_for_image_access(
+                      (VkrRgImageAccessFlags)use->image_access, false_v),
+                  binding, array_index, slice)) {
             return false_v;
           }
         } else {
-          uint32_t width = 0;
-          uint32_t height = 0;
-          if (!vkr_rg_json_resolve_extent(&resource->image.extent, frame,
-                                          &width, &height)) {
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            return false_v;
-          }
-
-          VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
-          desc.width = width;
-          desc.height = height;
-          desc.depth = resource->image.depth;
-          desc.type = resource->image.type;
-          desc.mip_levels = vkr_rg_json_mip_levels(&resource->image, width,
-                                                   height, desc.depth);
-          desc.usage = resource->image.usage;
-          desc.flags = vkr_rg_json_resource_flags(resource->flags);
-          if (resource->image.layers_is_set ||
-              resource->image.layers_source.length > 0) {
-            desc.flags |= VKR_RG_RESOURCE_FLAG_FORCE_ARRAY;
-          }
-          uint32_t layers = 1;
-          if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            return false_v;
-          }
-          desc.layers = layers;
-          switch (resource->image.format_source) {
-          case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN:
-            desc.format = frame->target_color_format;
-            break;
-          case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN_DEPTH:
-            desc.format = frame->target_depth_format;
-            break;
-          case VKR_RG_JSON_IMAGE_FORMAT_SHADOW_DEPTH:
-            desc.format = frame->shadow_depth_format;
-            break;
-          case VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT:
-          default:
-            desc.format = resource->image.format;
-            break;
-          }
-
-          if (!vkr_rg_image_handle_valid(
-                  vkr_rg_create_image(rg, resolved_name, &desc))) {
-
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-
+          if (!vkr_rg_pass_read_image(pb, handle,
+                                      (VkrRgImageAccessFlags)use->image_access,
+                                      binding, array_index)) {
             return false_v;
           }
         }
       } else {
-        VkrRgBufferDesc desc = {0};
-        if (resource->buffer.size_mode ==
-            VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS) {
-          const uint64_t pixels =
-              (uint64_t)frame->viewport_width * frame->viewport_height;
-          if (!pixels ||
-              resource->buffer.bytes_per_pixel > UINT64_MAX / pixels) {
-            log_error("RenderGraph buffer '%.*s': viewport-pixel size "
-                      "overflow",
-                      (int)resolved_name.length, resolved_name.str);
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            return false_v;
-          }
-          desc.size = pixels * resource->buffer.bytes_per_pixel;
-        } else if (resource->buffer.size_mode ==
-                   VKR_RG_JSON_BUFFER_SIZE_DRAW_ELEMENTS) {
-          uint32_t count = 0u;
-          uint32_t max_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
-          switch (resource->buffer.draw_count_source) {
-          case VKR_RG_JSON_DRAW_COUNT_SKINNING_VERTICES:
-            count = frame->skinning_vertex_capacity;
-            max_count = VKR_SKINNING_VERTEX_CAPACITY;
-            break;
-          case VKR_RG_JSON_DRAW_COUNT_CANDIDATES:
-            count = frame->gpu_draw_candidate_capacity;
-            break;
-          case VKR_RG_JSON_DRAW_COUNT_VIEWS:
-            count = 1u + frame->shadow_cascade_count +
-                    frame->local_shadow_view_count +
-                    frame->local_shadow_transmission_view_count;
-            break;
-          case VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS:
-          case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
-            count = frame->gpu_draw_visible_capacity;
-            max_count = VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u;
-            break;
-          case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES:
-            count = frame->transmission_gpu_draw_candidate_capacity;
-            break;
-          case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE:
-            count = frame->transmission_gpu_draw_visible_capacity;
-            max_count = VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u;
-            break;
-          }
-          if (!count || count > max_count) {
-            log_error("RenderGraph buffer '%.*s': invalid draw capacity %u",
-                      (int)resolved_name.length, resolved_name.str, count);
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            return false_v;
-          }
-          desc.size = (uint64_t)count * resource->buffer.bytes_per_element;
-          if (resource->buffer.draw_count_source ==
-              VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS)
-            desc.size *= 1u + frame->shadow_cascade_count +
-                         frame->local_shadow_view_count +
-                         frame->local_shadow_transmission_view_count;
-        } else {
-          desc.size = resource->buffer.size;
+        VkrRgBufferHandle handle = vkr_rg_find_buffer(rg, resolved_name);
+        vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+        if (!vkr_rg_buffer_handle_valid(handle)) {
+          log_error("RenderGraph JSON: missing buffer '%.*s'",
+                    (int)use->name.length, use->name.str);
+          return false_v;
         }
-        desc.usage = resource->buffer.usage;
-        desc.flags = vkr_rg_json_resource_flags(resource->flags);
-        if (!vkr_rg_buffer_handle_valid(
-                vkr_rg_create_buffer(rg, resolved_name, &desc))) {
-          vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+
+        uint32_t binding = use->binding.is_set ? use->binding.value : 0;
+        uint32_t array_index =
+            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        if (!vkr_rg_pass_read_buffer(pb, handle,
+                                     (VkrRgBufferAccessFlags)use->buffer_access,
+                                     binding, array_index)) {
           return false_v;
         }
       }
-
-      vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
     }
   }
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_rg_json_add_pass_writes(
+    VkrRenderGraph *rg, VkrRgPassBuilder *pb, const VkrRgJsonPass *pass,
+    const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator,
+    uint32_t r) {
+  for (uint64_t u = 0; u < pass->writes.length; ++u) {
+    VkrRgJsonResourceUse *use =
+        vector_get_VkrRgJsonResourceUse(&pass->writes, u);
+    if (!vkr_rg_json_condition_enabled(&use->condition, frame))
+      continue;
+
+    uint32_t use_repeat = 1;
+    if (!vkr_rg_json_repeat_count(&use->repeat, frame, &use_repeat)) {
+      return false_v;
+    }
+
+    for (uint32_t ur = 0; ur < use_repeat; ++ur) {
+      String8 resolved_name = {0};
+      bool8_t owned_name = false_v;
+      if (!vkr_rg_expand_name(frame_allocator, use->name, ur, &resolved_name,
+                              &owned_name)) {
+        return false_v;
+      }
+
+      if (use->is_image) {
+        VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_name);
+        vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+        if (!vkr_rg_image_handle_valid(handle)) {
+          log_error("RenderGraph JSON: missing image '%.*s'",
+                    (int)use->name.length, use->name.str);
+          return false_v;
+        }
+
+        uint32_t binding = use->binding.is_set ? use->binding.value : 0;
+        uint32_t array_index =
+            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        if (use->has_slice) {
+          VkrRgImageSlice slice = {0};
+          if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
+                                             &slice))
+            return false_v;
+          if (!vkr_rg_pass_write_image_slice_at_stages(
+                  pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                  vkr_gpu_stages_for_image_access(
+                      (VkrRgImageAccessFlags)use->image_access, false_v),
+                  binding, array_index, slice)) {
+            return false_v;
+          }
+        } else {
+          if (!vkr_rg_pass_write_image(pb, handle,
+                                       (VkrRgImageAccessFlags)use->image_access,
+                                       binding, array_index)) {
+            return false_v;
+          }
+        }
+      } else {
+        VkrRgBufferHandle handle = vkr_rg_find_buffer(rg, resolved_name);
+        vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+        if (!vkr_rg_buffer_handle_valid(handle)) {
+          log_error("RenderGraph JSON: missing buffer '%.*s'",
+                    (int)use->name.length, use->name.str);
+          return false_v;
+        }
+
+        uint32_t binding = use->binding.is_set ? use->binding.value : 0;
+        uint32_t array_index =
+            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        if (!vkr_rg_pass_write_buffer(
+                pb, handle, (VkrRgBufferAccessFlags)use->buffer_access, binding,
+                array_index)) {
+          return false_v;
+        }
+      }
+    }
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_rg_json_build_passes(
+    VkrRenderGraph *rg, const VkrRgJsonGraph *json_graph,
+    const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator) {
   for (uint64_t i = 0; i < json_graph->passes.length; ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&json_graph->passes, i);
 
@@ -2899,224 +3136,27 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
 
       graph_pass->desc.repeat_index = r;
 
-      for (uint64_t c = 0; c < pass->attachments.colors.length; ++c) {
-        VkrRgJsonAttachment *att =
-            vector_get_VkrRgJsonAttachment(&pass->attachments.colors, c);
-        String8 resolved_image = {0};
-        bool8_t owned_image = false_v;
-        if (!vkr_rg_expand_name(frame_allocator, att->image, r, &resolved_image,
-                                &owned_image)) {
-          return false_v;
-        }
-        VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_image);
-        vkr_rg_release_name(frame_allocator, resolved_image, owned_image);
-        if (!vkr_rg_image_handle_valid(handle)) {
-          log_error("RenderGraph JSON: missing image '%.*s'",
-                    (int)att->image.length, att->image.str);
-          return false_v;
-        }
-
-        VkrRgAttachmentDesc desc = {
-            .slice = VKR_RG_IMAGE_SLICE_DEFAULT,
-            .load_op = att->load_op,
-            .store_op = att->store_op,
-        };
-        if (att->has_clear) {
-          desc.clear_value = att->clear_value;
-        }
-        if (!vkr_rg_json_apply_slice(att, r, &desc)) {
-          log_error(
-              "RenderGraph JSON: attachment slice layer_count must be >= 1");
-          return false_v;
-        }
-
-        if (!vkr_rg_pass_add_color_attachment(&pb, handle, &desc)) {
-
-          return false_v;
-        }
+      if (!vkr_rg_json_add_pass_attachments(rg, &pb, pass, frame_allocator,
+                                            r)) {
+        return false_v;
       }
 
-      if (pass->attachments.has_depth) {
-        VkrRgJsonAttachment *att = &pass->attachments.depth;
-        String8 resolved_image = {0};
-        bool8_t owned_image = false_v;
-        if (!vkr_rg_expand_name(frame_allocator, att->image, r, &resolved_image,
-                                &owned_image)) {
-          return false_v;
-        }
-        VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_image);
-        vkr_rg_release_name(frame_allocator, resolved_image, owned_image);
-        if (!vkr_rg_image_handle_valid(handle)) {
-          log_error("RenderGraph JSON: missing image '%.*s'",
-                    (int)att->image.length, att->image.str);
-          return false_v;
-        }
-
-        VkrRgAttachmentDesc desc = {
-            .slice = VKR_RG_IMAGE_SLICE_DEFAULT,
-            .load_op = att->load_op,
-            .store_op = att->store_op,
-        };
-        if (att->has_clear) {
-          desc.clear_value = att->clear_value;
-        }
-        if (!vkr_rg_json_apply_slice(att, r, &desc)) {
-          log_error(
-              "RenderGraph JSON: attachment slice layer_count must be >= 1");
-          return false_v;
-        }
-
-        if (!vkr_rg_pass_set_depth_attachment(
-                &pb, handle, &desc, pass->attachments.depth_read_only)) {
-
-          return false_v;
-        }
+      if (!vkr_rg_json_add_pass_reads(rg, &pb, pass, frame, frame_allocator,
+                                      r)) {
+        return false_v;
       }
 
-      for (uint64_t u = 0; u < pass->reads.length; ++u) {
-        VkrRgJsonResourceUse *use =
-            vector_get_VkrRgJsonResourceUse(&pass->reads, u);
-        if (!vkr_rg_json_condition_enabled(&use->condition, frame))
-          continue;
-
-        uint32_t use_repeat = 1;
-        if (!vkr_rg_json_repeat_count(&use->repeat, frame, &use_repeat)) {
-          return false_v;
-        }
-
-        for (uint32_t ur = 0; ur < use_repeat; ++ur) {
-          String8 resolved_name = {0};
-          bool8_t owned_name = false_v;
-          if (!vkr_rg_expand_name(frame_allocator, use->name, ur,
-                                  &resolved_name, &owned_name)) {
-            return false_v;
-          }
-
-          if (use->is_image) {
-            VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_name);
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            if (!vkr_rg_image_handle_valid(handle)) {
-              log_error("RenderGraph JSON: missing image '%.*s'",
-                        (int)use->name.length, use->name.str);
-              return false_v;
-            }
-
-            uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-            uint32_t array_index = vkr_rg_resolve_index(
-                &use->array_index, use_repeat > 1 ? ur : r);
-            if (use->has_slice) {
-              VkrRgImageSlice slice = {0};
-              if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
-                                                 &slice))
-                return false_v;
-              if (!vkr_rg_pass_read_image_slice_at_stages(
-                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
-                      vkr_gpu_stages_for_image_access(
-                          (VkrRgImageAccessFlags)use->image_access, false_v),
-                      binding, array_index, slice)) {
-                return false_v;
-              }
-            } else {
-              if (!vkr_rg_pass_read_image(
-                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
-                      binding, array_index)) {
-                return false_v;
-              }
-            }
-          } else {
-            VkrRgBufferHandle handle = vkr_rg_find_buffer(rg, resolved_name);
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            if (!vkr_rg_buffer_handle_valid(handle)) {
-              log_error("RenderGraph JSON: missing buffer '%.*s'",
-                        (int)use->name.length, use->name.str);
-              return false_v;
-            }
-
-            uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-            uint32_t array_index = vkr_rg_resolve_index(
-                &use->array_index, use_repeat > 1 ? ur : r);
-            if (!vkr_rg_pass_read_buffer(
-                    &pb, handle, (VkrRgBufferAccessFlags)use->buffer_access,
-                    binding, array_index)) {
-              return false_v;
-            }
-          }
-        }
-      }
-
-      for (uint64_t u = 0; u < pass->writes.length; ++u) {
-        VkrRgJsonResourceUse *use =
-            vector_get_VkrRgJsonResourceUse(&pass->writes, u);
-        if (!vkr_rg_json_condition_enabled(&use->condition, frame))
-          continue;
-
-        uint32_t use_repeat = 1;
-        if (!vkr_rg_json_repeat_count(&use->repeat, frame, &use_repeat)) {
-          return false_v;
-        }
-
-        for (uint32_t ur = 0; ur < use_repeat; ++ur) {
-          String8 resolved_name = {0};
-          bool8_t owned_name = false_v;
-          if (!vkr_rg_expand_name(frame_allocator, use->name, ur,
-                                  &resolved_name, &owned_name)) {
-            return false_v;
-          }
-
-          if (use->is_image) {
-            VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_name);
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            if (!vkr_rg_image_handle_valid(handle)) {
-              log_error("RenderGraph JSON: missing image '%.*s'",
-                        (int)use->name.length, use->name.str);
-              return false_v;
-            }
-
-            uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-            uint32_t array_index = vkr_rg_resolve_index(
-                &use->array_index, use_repeat > 1 ? ur : r);
-            if (use->has_slice) {
-              VkrRgImageSlice slice = {0};
-              if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
-                                                 &slice))
-                return false_v;
-              if (!vkr_rg_pass_write_image_slice_at_stages(
-                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
-                      vkr_gpu_stages_for_image_access(
-                          (VkrRgImageAccessFlags)use->image_access, false_v),
-                      binding, array_index, slice)) {
-                return false_v;
-              }
-            } else {
-              if (!vkr_rg_pass_write_image(
-                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
-                      binding, array_index)) {
-                return false_v;
-              }
-            }
-          } else {
-            VkrRgBufferHandle handle = vkr_rg_find_buffer(rg, resolved_name);
-            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
-            if (!vkr_rg_buffer_handle_valid(handle)) {
-              log_error("RenderGraph JSON: missing buffer '%.*s'",
-                        (int)use->name.length, use->name.str);
-              return false_v;
-            }
-
-            uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-            uint32_t array_index = vkr_rg_resolve_index(
-                &use->array_index, use_repeat > 1 ? ur : r);
-            if (!vkr_rg_pass_write_buffer(
-                    &pb, handle, (VkrRgBufferAccessFlags)use->buffer_access,
-                    binding, array_index)) {
-              return false_v;
-            }
-          }
-        }
+      if (!vkr_rg_json_add_pass_writes(rg, &pb, pass, frame, frame_allocator,
+                                       r)) {
+        return false_v;
       }
     }
   }
+  return true_v;
+}
 
+vkr_internal bool8_t vkr_rg_json_apply_outputs(
+    VkrRenderGraph *rg, const VkrRgJsonGraph *json_graph) {
   if (json_graph->outputs.present.length > 0) {
     VkrRgImageHandle handle =
         vkr_rg_find_image(rg, json_graph->outputs.present);
@@ -3155,6 +3195,31 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
     if (!vkr_rg_export_buffer(rg, handle)) {
       return false_v;
     }
+  }
+  return true_v;
+}
+
+bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
+                               const VkrRgJsonGraph *json_graph,
+                               const VkrRenderGraphFrameInfo *frame) {
+  if (!rg || !json_graph || !frame) {
+    log_error("RenderGraph build failed: invalid args");
+    return false_v;
+  }
+
+  VkrAllocator *frame_allocator =
+      rg->frame_allocator ? rg->frame_allocator : rg->allocator;
+
+  if (!vkr_rg_json_build_resources(rg, json_graph, frame, frame_allocator)) {
+    return false_v;
+  }
+
+  if (!vkr_rg_json_build_passes(rg, json_graph, frame, frame_allocator)) {
+    return false_v;
+  }
+
+  if (!vkr_rg_json_apply_outputs(rg, json_graph)) {
+    return false_v;
   }
 
   return true_v;
