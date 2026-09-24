@@ -569,11 +569,12 @@ static INLINE Mat4 mat4_euler_rotate(Vec3 axis, float32_t angle) {
   float32_t s = vkr_sin_f32(angle);
   float32_t c = vkr_cos_f32(angle);
   float32_t t = 1.0f - c;
+  // Columns are the images of +X, +Y and +Z, matching vkr_quat_to_mat4.
   return mat4_new(
-      t * axis.x * axis.x + c, t * axis.x * axis.y - s * axis.z,
-      t * axis.x * axis.z + s * axis.y, 0.0f, t * axis.x * axis.y + s * axis.z,
-      t * axis.y * axis.y + c, t * axis.y * axis.z - s * axis.x, 0.0f,
-      t * axis.x * axis.z - s * axis.y, t * axis.y * axis.z + s * axis.x,
+      t * axis.x * axis.x + c, t * axis.x * axis.y + s * axis.z,
+      t * axis.x * axis.z - s * axis.y, 0.0f, t * axis.x * axis.y - s * axis.z,
+      t * axis.y * axis.y + c, t * axis.y * axis.z + s * axis.x, 0.0f,
+      t * axis.x * axis.z + s * axis.y, t * axis.y * axis.z - s * axis.x,
       t * axis.z * axis.z + c, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
 }
 
@@ -599,7 +600,7 @@ static INLINE Mat4 mat4_euler_rotate_x(float32_t angle) {
   float32_t s = vkr_sin_f32(angle);
   float32_t c = vkr_cos_f32(angle);
   // Right-handed rotation around X: positive angle rotates Y toward Z
-  return mat4_new(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, -s, 0.0f, 0.0f, s, c, 0.0f,
+  return mat4_new(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, s, 0.0f, 0.0f, -s, c, 0.0f,
                   0.0f, 0.0f, 0.0f, 1.0f);
 }
 
@@ -625,7 +626,7 @@ static INLINE Mat4 mat4_euler_rotate_y(float32_t angle) {
   float32_t s = vkr_sin_f32(angle);
   float32_t c = vkr_cos_f32(angle);
   // Right-handed rotation around Y: positive angle rotates Z toward X
-  return mat4_new(c, 0.0f, s, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, -s, 0.0f, c, 0.0f,
+  return mat4_new(c, 0.0f, -s, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, s, 0.0f, c, 0.0f,
                   0.0f, 0.0f, 0.0f, 1.0f);
 }
 
@@ -652,7 +653,7 @@ static INLINE Mat4 mat4_euler_rotate_z(float32_t angle) {
   float32_t s = vkr_sin_f32(angle);
   float32_t c = vkr_cos_f32(angle);
   // Right-handed rotation around Z: positive angle rotates X toward Y
-  return mat4_new(c, -s, 0.0f, 0.0f, s, c, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+  return mat4_new(c, s, 0.0f, 0.0f, -s, c, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
                   0.0f, 0.0f, 0.0f, 1.0f);
 }
 

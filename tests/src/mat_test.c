@@ -78,28 +78,55 @@ static void test_mat4_constructors(void) {
 static void test_mat4_rotation_constructors(void) {
   printf("  Running test_mat4_rotation_constructors...\n");
 
-  // Test mat4_euler_rotate_x (90 degrees)
+  // Right-handed: +90 degrees about X turns +Y to +Z, about Y turns +X to -Z,
+  // and about Z turns +X to +Y, as vkr_quat_from_axis_angle does.
   Mat4 rot_x = mat4_euler_rotate_x(vkr_to_radians(90.0f));
   Vec3 test_y = vec3_up();
   Vec3 rotated_y =
       vec4_to_vec3(mat4_mul_vec4(rot_x, vec3_to_vec4(test_y, 1.0f)));
-  assert(vec3_equals(rotated_y, vec3_forward(), 0.001f) && "X rotation failed");
+  assert(vec3_equals(rotated_y, vec3_back(), 0.001f) && "X rotation failed");
 
-  // Test mat4_euler_rotate_y (90 degrees)
   Mat4 rot_y = mat4_euler_rotate_y(vkr_to_radians(90.0f));
   Vec3 test_x = vec3_right();
   Vec3 rotated_x =
       vec4_to_vec3(mat4_mul_vec4(rot_y, vec3_to_vec4(test_x, 1.0f)));
-  assert(vec3_equals(rotated_x, vec3_back(), 0.001f) && "Y rotation failed");
+  assert(vec3_equals(rotated_x, vec3_forward(), 0.001f) && "Y rotation failed");
 
-  // Test mat4_euler_rotate_z (90 degrees)
-  // In right-handed system: +90° around +Z rotates +X toward -Y (clockwise when
-  // looking down +Z)
   Mat4 rot_z = mat4_euler_rotate_z(vkr_to_radians(90.0f));
   Vec3 test_x_z = vec3_right();
   Vec3 rotated_x_z =
       vec4_to_vec3(mat4_mul_vec4(rot_z, vec3_to_vec4(test_x_z, 1.0f)));
-  assert(vec3_equals(rotated_x_z, vec3_down(), 0.001f) && "Z rotation failed");
+  assert(vec3_equals(rotated_x_z, vec3_up(), 0.001f) && "Z rotation failed");
+
+  // Matrix and quaternion rotations must agree for any axis and angle.
+  const Vec3 axes[] = {vec3_right(), vec3_up(), vec3_back(),
+                       vec3_new(0.2f, -0.5f, 0.9f)};
+  const float32_t angles[] = {0.7f, -1.3f, 2.9f};
+  for (uint32_t i = 0; i < ArrayCount(axes); ++i) {
+    for (uint32_t j = 0; j < ArrayCount(angles); ++j) {
+      const Mat4 expected =
+          vkr_quat_to_mat4(vkr_quat_from_axis_angle(axes[i], angles[j]));
+      assert(mat4_equals(mat4_euler_rotate(axes[i], angles[j]), expected,
+                         0.0001f) &&
+             "Axis rotation disagrees with vkr_quat_to_mat4");
+    }
+  }
+  for (uint32_t j = 0; j < ArrayCount(angles); ++j) {
+    const float32_t angle = angles[j];
+    assert(mat4_equals(
+               mat4_euler_rotate_x(angle),
+               vkr_quat_to_mat4(vkr_quat_from_axis_angle(vec3_right(), angle)),
+               0.0001f) &&
+           mat4_equals(
+               mat4_euler_rotate_y(angle),
+               vkr_quat_to_mat4(vkr_quat_from_axis_angle(vec3_up(), angle)),
+               0.0001f) &&
+           mat4_equals(
+               mat4_euler_rotate_z(angle),
+               vkr_quat_to_mat4(vkr_quat_from_axis_angle(vec3_back(), angle)),
+               0.0001f) &&
+           "Single-axis rotation disagrees with vkr_quat_to_mat4");
+  }
 
   // Test arbitrary axis rotation
   Vec3 axis = vec3_normalize(vec3_new(1.0f, 1.0f, 1.0f));
@@ -251,17 +278,19 @@ static void test_mat4_vector_extraction(void) {
   Vec3 up = mat4_up(transform);
   Vec3 forward = mat4_forward(transform);
 
-  // After 90° Y rotation: right becomes backward, forward becomes right
-  assert(vec3_equals(right, vec3_back(), 0.001f) && "mat4_right failed");
+  // After +90 degrees about Y: right becomes forward (-Z) and forward
+  // becomes left (-X).
+  assert(vec3_equals(right, vec3_forward(), 0.001f) && "mat4_right failed");
   assert(vec3_equals(up, vec3_up(), 0.001f) && "mat4_up failed");
-  assert(vec3_equals(forward, vec3_right(), 0.001f) && "mat4_forward failed");
+  assert(vec3_equals(forward, vec3_left(), 0.001f) && "mat4_forward failed");
 
   // Test vector conversion functions
   Vec3 first_col = mat4_to_vec3(transform);
-  assert(vec3_equals(first_col, vec3_back(), 0.001f) && "mat4_to_vec3 failed");
+  assert(vec3_equals(first_col, vec3_forward(), 0.001f) &&
+         "mat4_to_vec3 failed");
 
   Vec4 first_col_4d = mat4_to_vec4(transform);
-  assert(vec4_equals(first_col_4d, vec4_new(0.0f, 0.0f, 1.0f, 0.0f), 0.001f) &&
+  assert(vec4_equals(first_col_4d, vec4_new(0.0f, 0.0f, -1.0f, 0.0f), 0.001f) &&
          "mat4_to_vec4 failed");
 
   printf("  test_mat4_vector_extraction PASSED\n");
