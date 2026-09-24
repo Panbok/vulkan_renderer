@@ -140,32 +140,6 @@ float3 vkr_metal_packet_direct_specular(float3 normal, float3 view,
   return specular * scale;
 }
 
-VkrMetalPacketDirectResult
-vkr_metal_packet_direct_deferred(float3 normal, float3 view, float3 light,
-                                 float3 radiance, float3 diffuse_albedo,
-                                 float roughness, float3 f0,
-                                 VkrGgxMaterialEnergy energy) {
-  float3 half_vector = view + light;
-  float no_l = max(dot(normal, light), 0.0);
-  float half_inverse_length =
-      vkr_direct_half_vector_inverse_length(no_l, half_vector);
-  if (half_inverse_length == 0.0f)
-    return {energy.back_diffuse_weight * diffuse_albedo *
-                (max(-dot(normal, light), 0.0f) / vkr_metal_packet_pbr_pi) * radiance,
-            float3(0.0f), float3(0.0f)};
-  half_vector *= half_inverse_length;
-  float3 fresnel =
-      vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
-  float distribution =
-      vkr_ggx_surface_distribution(normal, half_vector, roughness, energy);
-  float3 specular = distribution * vkr_ggx_surface_visibility(no_l, light, energy) * fresnel *
-                    energy.specular_scale;
-  float3 scale = radiance * no_l;
-  return {energy.diffuse_weight * diffuse_albedo / vkr_metal_packet_pbr_pi *
-              scale,
-          specular * scale, scale / vkr_metal_packet_pbr_pi};
-}
-
 float3 vkr_metal_packet_clearcoat_direct(float3 view, float3 light,
                                          float3 radiance,
                                          VkrClearcoatLayer coat) {
@@ -264,7 +238,7 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
   float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
   float3 specular_amplitude = vkr_ltc_specular_amplitude(
       sample, energy.no_v, f0, f90, energy.specular_scale);
-    VkrAnisotropyLtc anisotropic_sample;
+    VkrAnisotropyLtc anisotropic_sample = {};
     bool anisotropic = energy.anisotropy_strength > 0.0f;
     if (anisotropic) {
         VkrAnisotropyLookup lookup = vkr_anisotropy_lookup(
@@ -361,54 +335,6 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
   return result;
 }
 
-template <bool EvaluateDiffuse>
-VkrMetalPacketDirectResult vkr_metal_packet_rectangle_lights(
-    constant VkrMetalPacketFrameRoot *frame, float3 world_position,
-    float3 normal, float3 view, float3 diffuse_albedo, float metallic,
-    float roughness, float3 f0, VkrGgxMaterialEnergy energy) {
-  float3 coat_result = 0.0f;
-  float3 sheen_result = 0.0f;
-  return vkr_metal_packet_layered_rectangle_lights<EvaluateDiffuse>(
-      frame, world_position, normal, view, diffuse_albedo, metallic,
-      roughness, f0, energy, false, VkrClearcoatLayer{}, false,
-      VkrSheenLayer{}, coat_result, sheen_result);
-}
-
-float3 vkr_metal_packet_clearcoat_rectangle_lights(
-    constant VkrMetalPacketFrameRoot *frame, float3 world_position,
-    float3 view, VkrClearcoatLayer coat) {
-  return coat.factor *
-         vkr_metal_packet_rectangle_lights<false>(
-             frame, world_position, coat.normal, view, float3(0.0f), 0.0f,
-             coat.roughness, float3(VKR_CLEARCOAT_F0), coat.energy)
-             .specular;
-}
-
-float3 vkr_metal_packet_sheen_rectangle_lights(
-    constant VkrMetalPacketFrameRoot *frame, float3 world_position,
-    float3 normal, float3 view, VkrSheenLayer sheen) {
-  if (frame->ltc->light_count == 0u)
-    return 0.0f;
-  VkrSheenLtcSample sample = vkr_metal_packet_prepare_sheen_rectangle(
-      frame, normal, view, sheen);
-  VkrLtcFrame ltc_frame = vkr_ltc_make_frame(normal, view);
-  float3 result = 0.0f;
-  uint light_count = min(frame->ltc->light_count, 8u);
-  for (uint index = 0u; index < light_count; ++index) {
-    const device VkrGpuRectangleLightRow &row = frame->ltc->lights[index];
-    float3 center = row.center_half_width.xyz;
-    float3 right = row.right_half_height.xyz * row.center_half_width.w;
-    float3 up = row.up_radiance.xyz * row.right_half_height.w;
-    if (dot(world_position - center, -cross(right, up)) <= 0.0f)
-      continue;
-    VkrLtcRectangle rectangle = vkr_ltc_project_rectangle_in_frame(
-        center - world_position, right, up, ltc_frame);
-    result += row.color.rgb * row.up_radiance.w * sheen.color *
-              vkr_sheen_ltc_rectangle(rectangle, sample);
-  }
-  return result;
-}
-
 float vkr_metal_packet_specular_ao(float ao, float no_v, float roughness) {
   return saturate(pow(no_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
 }
@@ -462,6 +388,92 @@ uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketFrameRoot *root,
   uint index = uint(cell.x) +
                dimensions.x * (uint(cell.y) + dimensions.y * uint(cell.z));
   return result | root->point_light_masks[index];
+}
+
+// Every enabled punctual light for one shaded point, traversed once for the
+// base, coat and sheen lobes (ADR-062). A coat whose receiver normal differs
+// from the base shadow normal takes its own local-shadow query; sheen shares
+// the base visibility, which only differs for a backlit sheet whose front
+// sheen response is zero. `albedo` and `metallic` follow
+// vkr_metal_packet_direct: deferred lighting passes G-buffer diffuse albedo
+// and zero metallic. Without EvaluateDiffuse the base contributes specular
+// only, as for fully transmissive surfaces. Sums accumulate into the caller's
+// running totals per light, preserving each pass's summation order.
+template <bool EvaluateDiffuse>
+void vkr_metal_packet_punctual_layered(
+    constant VkrMetalPacketFrameRoot *frame, float3 world_position,
+    float3 normal, float3 view, float3 albedo, float metallic,
+    float roughness, float3 f0, VkrGgxMaterialEnergy energy,
+    bool coat_active, VkrClearcoatLayer coat, bool sheen_active,
+    VkrSheenLayer sheen, float sheen_normalization,
+    thread float3 &irradiance_sum, thread float3 &diffuse_sum,
+    thread float3 &specular_sum, thread float3 &coat_sum,
+    thread float3 &sheen_sum) {
+  uint4 point_mask = vkr_metal_packet_point_light_mask(frame, world_position);
+  uint point_count = min(frame->point_light_count, 128u);
+  for (uint word = 0u; word < 4u; ++word) {
+    /* The mask comes from a per-pixel cluster cell, so lanes straddling a cell
+       boundary carry different masks and the SIMD-group already pays for the
+       union of their set bits. Iterating that union explicitly makes
+       `light_index` SIMD-uniform, which lets the light rows load as scalars
+       instead of per-lane vectors. Each lane still accumulates only its own
+       bits, so the summation order and result are unchanged. */
+    uint remaining = simd_or(point_mask[word]);
+    while (remaining != 0u) {
+      uint bit = ctz(remaining);
+      remaining &= remaining - 1u;
+      uint light_index = word * 32u + bit;
+      if (light_index >= point_count)
+        continue;
+      const device VkrGpuPointLightRow &light =
+          frame->point_light_data[light_index];
+      float4 p0 = light.p0;
+      float4 p1 = light.p1;
+      float4 p2 = light.p2;
+      float4 p3 = light.p3;
+      if ((point_mask[word] & (1u << bit)) == 0u)
+        continue;
+      VkrPunctualLightTerm term =
+          vkr_punctual_light_term(p0, p1, p2, p3, world_position);
+      if (!term.in_range || term.cone <= 0.0f)
+        continue;
+      uint kind = term.kind;
+      float3 light_direction = term.direction;
+      float attenuation = term.attenuation * term.cone;
+      bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
+                      dot(normal, light_direction) < 0.0f;
+      float3 shadow_normal = back_lit ? -normal : normal;
+      float3 base_attenuation =
+          attenuation * vkr_metal_packet_local_shadow_sample(
+                            frame, uint(p3.w), kind, world_position,
+                            shadow_normal);
+      float3 coat_attenuation = base_attenuation;
+      if (coat_active && any(coat.normal != shadow_normal)) {
+        coat_attenuation =
+            attenuation * vkr_metal_packet_local_shadow_sample(
+                frame, uint(p3.w), kind, world_position, coat.normal);
+      }
+      if (EvaluateDiffuse) {
+        VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
+            normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+            albedo, metallic, roughness, f0, energy);
+        irradiance_sum += direct.irradiance;
+        diffuse_sum += direct.diffuse;
+        specular_sum += direct.specular;
+      } else {
+        specular_sum += vkr_metal_packet_direct_specular(
+            normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+            roughness, f0, energy);
+      }
+      if (coat_active)
+        coat_sum += vkr_metal_packet_clearcoat_direct(
+            view, light_direction, p1.rgb * p2.x * coat_attenuation, coat);
+      if (sheen_active)
+        sheen_sum += vkr_metal_packet_sheen_direct(
+            normal, view, light_direction, p1.rgb * p2.x * base_attenuation,
+            sheen, sheen_normalization);
+    }
+  }
 }
 
 // w is one only where baked room coverage is valid. RGB is scene-linear E/pi.

@@ -1628,7 +1628,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     }
     VkrVulkanDirectResult punctual = packet_punctual_layered(
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy,
-        clearcoat_active, clearcoat, sheen_active, sheen,
+        true, clearcoat_active, clearcoat, sheen_active, sheen,
         sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct);
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
@@ -3220,7 +3220,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                                                 surface.uv_dy)
                                     .r;
         bool clearcoat_active = vkr_clearcoat_active(clearcoat_factor);
-        VkrClearcoatLayer clearcoat;
+        VkrClearcoatLayer clearcoat = (VkrClearcoatLayer)0;
         if (clearcoat_active)
         {
             float clearcoat_roughness = material.material_clearcoat.y;
@@ -3273,8 +3273,8 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                                            surface.uv_dy)
                                .rgb;
         bool sheen_active = vkr_sheen_active(sheen_color);
-        VkrSheenLayer sheen;
-        VkrSheenLtcSample sheen_ltc;
+        VkrSheenLayer sheen = (VkrSheenLayer)0;
+        VkrSheenLtcSample sheen_ltc = (VkrSheenLtcSample)0;
         if (sheen_active)
         {
             float sheen_roughness = material.material_sheen.w;
@@ -3331,46 +3331,22 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                     surface.normal, view, light, radiance, sheen,
                     sheen_ltc.energy_normalization);
         }
-        if (diffuse_enabled)
-        {
-            VkrVulkanDirectResult punctual = packet_punctual(
-                frame, world, surface.normal, view, surface.base.rgb,
-                surface.metallic, surface.roughness, f0, energy);
-            analytic_diffuse += punctual.diffuse;
-            analytic_specular += punctual.specular;
-        }
-        else
-        {
-            analytic_specular += packet_punctual_specular(
-                frame, world, surface.normal, view, surface.roughness, f0, energy);
-        }
-        if (clearcoat_active)
-        {
-            VkrVulkanDirectResult coat_punctual = packet_punctual(
-                frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
-                clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy);
-            clearcoat_direct += coat_punctual.specular * clearcoat.factor;
-        }
-        if (sheen_active)
-            sheen_direct += packet_punctual_sheen(
-                frame, world, surface.normal, view, sheen,
-                sheen_ltc.energy_normalization);
-        VkrVulkanDirectResult rectangles = packet_rectangle_lights(
+        // Each light list is traversed once for the base, coat and sheen
+        // lobes; a fully transmissive base contributes specular only.
+        VkrVulkanDirectResult punctual = packet_punctual_layered(
             frame, world, surface.normal, view, surface.base.rgb,
-            surface.metallic, surface.roughness, f0, energy, diffuse_enabled);
+            surface.metallic, surface.roughness, f0, energy, diffuse_enabled,
+            clearcoat_active, clearcoat, sheen_active, sheen,
+            sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct);
+        analytic_diffuse += punctual.diffuse;
+        analytic_specular += punctual.specular;
+        VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
+            frame, world, surface.normal, view, surface.base.rgb,
+            surface.metallic, surface.roughness, f0, energy, diffuse_enabled,
+            clearcoat_active, clearcoat, sheen_active, sheen, sheen_ltc,
+            clearcoat_direct, sheen_direct);
         analytic_diffuse += rectangles.diffuse;
         analytic_specular += rectangles.specular;
-        if (clearcoat_active)
-        {
-            VkrVulkanDirectResult coat_rectangles = packet_rectangle_lights(
-                frame, world, clearcoat.normal, view, float3(0.0f), 0.0f,
-                clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy,
-                false);
-            clearcoat_direct += coat_rectangles.specular * clearcoat.factor;
-        }
-        if (sheen_active)
-            sheen_direct += packet_sheen_rectangle_lights(
-                frame, world, surface.normal, view, sheen, sheen_ltc);
         if (diagnostic_enabled &&
             (frame.render_mode == 1u || frame.render_mode == 4u ||
              frame.render_mode == 5u))

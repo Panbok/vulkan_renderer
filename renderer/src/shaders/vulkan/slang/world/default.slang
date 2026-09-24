@@ -165,7 +165,7 @@ VkrVulkanDirectResult packet_layered_rectangle_lights(
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
     float3 specular_amplitude = vkr_ltc_specular_amplitude(
         sample, energy.no_v, f0, f90, energy.specular_scale);
-    VkrAnisotropyLtc anisotropic_sample;
+    VkrAnisotropyLtc anisotropic_sample = (VkrAnisotropyLtc)0;
     bool anisotropic = energy.anisotropy_strength > 0.0f;
     if (anisotropic) {
         VkrAnisotropyLookup lookup = vkr_anisotropy_lookup(
@@ -263,47 +263,6 @@ VkrVulkanDirectResult packet_layered_rectangle_lights(
     if (sheen_active)
     {
         sheen_result += sheen_sum;
-    }
-    return result;
-}
-
-VkrVulkanDirectResult packet_rectangle_lights(
-    VkrVulkanPacketFrameRoot *frame, float3 world_position, float3 normal,
-    float3 view, float3 diffuse_albedo, float metallic, float roughness,
-    float3 f0, VkrGgxMaterialEnergy energy, bool diffuse_enabled)
-{
-    float3 coat_result = 0.0f;
-    float3 sheen_result = 0.0f;
-    return packet_layered_rectangle_lights(
-        frame, world_position, normal, view, diffuse_albedo, metallic,
-        roughness, f0, energy, diffuse_enabled, false, (VkrClearcoatLayer)0,
-        false, (VkrSheenLayer)0, (VkrSheenLtcSample)0, coat_result, sheen_result);
-}
-
-float3 packet_sheen_rectangle_lights(VkrVulkanPacketFrameRoot *frame,
-                                    float3 world_position, float3 normal,
-                                    float3 view, VkrSheenLayer sheen,
-                                    VkrSheenLtcSample sample)
-{
-    VkrVulkanLtc ltc = frame.ltc[0];
-    if (ltc.count == 0u)
-        return 0.0f;
-    sample = packet_prepare_sheen_rectangle(frame, normal, view, sheen, sample);
-    VkrLtcFrame ltc_frame = vkr_ltc_make_frame(normal, view);
-    float3 result = 0.0f;
-    uint light_count = min(ltc.count, 8u);
-    for (uint index = 0u; index < light_count; ++index)
-    {
-        VkrGpuRectangleLightRow row = ltc.lights[index];
-        float3 center = row.center_half_width.xyz;
-        float3 right = row.right_half_height.xyz * row.center_half_width.w;
-        float3 up = row.up_radiance.xyz * row.right_half_height.w;
-        if (dot(world_position - center, -cross(right, up)) <= 0.0f)
-            continue;
-        VkrLtcRectangle rectangle = vkr_ltc_project_rectangle_in_frame(
-            center - world_position, right, up, ltc_frame);
-        result += row.color.rgb * row.up_radiance.w * sheen.color *
-                  vkr_sheen_ltc_rectangle(rectangle, sample);
     }
     return result;
 }
@@ -977,15 +936,18 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
         frame, uv, first_view + face, projected.z);
 }
 
-// Every enabled punctual light for one shaded point. `albedo` and `metallic`
-// follow packet_direct: the forward path passes base color with its metallic
-// factor, the deferred path passes G-buffer diffuse albedo and zero. Both
-// spell the same product, so the two paths shade identically.
+// Every enabled punctual light for one shaded point, traversed once for the
+// base, coat and sheen lobes. `albedo` and `metallic` follow packet_direct: the
+// forward and transmission paths pass base color with its metallic factor, the
+// deferred path passes G-buffer diffuse albedo and zero. Both spell the same
+// product, so the paths shade identically. Without `diffuse_enabled` the base
+// contributes specular only, as for fully transmissive surfaces.
 VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
                                       float3 world_position, float3 normal,
                                       float3 view, float3 albedo,
                                       float metallic, float roughness,
                                       float3 f0, VkrGgxMaterialEnergy energy,
+                                      bool diffuse_enabled,
                                       bool coat_active, VkrClearcoatLayer coat,
                                       bool sheen_active, VkrSheenLayer sheen,
                                       float sheen_normalization,
@@ -1031,12 +993,23 @@ VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
             float attenuation = term.attenuation * term.cone;
             float3 visibility = packet_local_shadow(frame, light, kind, world_position,
                 vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy));
-            VkrVulkanDirectResult direct = packet_direct(
-                normal, view, light_direction, p1.rgb * p2.x * attenuation * visibility,
-                albedo, metallic, roughness, f0, energy);
-            result.irradiance += direct.irradiance;
-            result.diffuse += direct.diffuse;
-            result.specular += direct.specular;
+            if (diffuse_enabled)
+            {
+                VkrVulkanDirectResult direct = packet_direct(
+                    normal, view, light_direction,
+                    p1.rgb * p2.x * attenuation * visibility,
+                    albedo, metallic, roughness, f0, energy);
+                result.irradiance += direct.irradiance;
+                result.diffuse += direct.diffuse;
+                result.specular += direct.specular;
+            }
+            else
+            {
+                result.specular += packet_direct_specular(
+                    normal, view, light_direction,
+                    p1.rgb * p2.x * attenuation * visibility,
+                    roughness, f0, energy);
+            }
             // Sheen shares the front base normal. Backlit sheet visibility is
             // irrelevant to its zero response; an independent coat keeps its bias.
             if (coat_active)
@@ -1069,101 +1042,6 @@ VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
     if (sheen_active)
     {
         sheen_result += sheen_sum;
-    }
-    return result;
-}
-
-VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
-                                      float3 world_position, float3 normal,
-                                      float3 view, float3 albedo,
-                                      float metallic, float roughness,
-                                      float3 f0, VkrGgxMaterialEnergy energy)
-{
-    float3 coat_result = 0.0f;
-    float3 sheen_result = 0.0f;
-    return packet_punctual_layered(
-        frame, world_position, normal, view, albedo, metallic, roughness, f0,
-        energy, false, (VkrClearcoatLayer)0, false, (VkrSheenLayer)0, 0.0f,
-        coat_result, sheen_result);
-}
-
-float3 packet_punctual_specular(VkrVulkanPacketFrameRoot *frame,
-                                float3 world_position, float3 normal,
-                                float3 view, float roughness, float3 f0, VkrGgxMaterialEnergy energy)
-{
-    float3 result = 0.0f;
-    uint4 point_mask = packet_point_light_mask(frame, world_position);
-    uint point_count = min(frame.point_light_count, 128u);
-    for (uint word = 0u; word < 4u; ++word)
-    {
-        uint remaining = WaveActiveBitOr(point_mask[word]);
-        while (remaining != 0u)
-        {
-            uint bit = uint(firstbitlow(remaining));
-            remaining &= remaining - 1u;
-            uint light_index = word * 32u + bit;
-            if (light_index >= point_count)
-                continue;
-            VkrGpuPointLightRow light = frame.point_light_data[light_index];
-            float4 p0 = light.p0;
-            float4 p1 = light.p1;
-            float4 p2 = light.p2;
-            float4 p3 = light.p3;
-            if ((point_mask[word] & (1u << bit)) == 0u)
-                continue;
-            VkrPunctualLightTerm term =
-                vkr_punctual_light_term(p0, p1, p2, p3, world_position);
-            if (!term.in_range || term.cone <= 0.0f)
-                continue;
-            uint kind = term.kind;
-            float3 light_direction = term.direction;
-            float attenuation = term.attenuation * term.cone;
-            float3 visibility = packet_local_shadow(frame, light, kind, world_position, normal);
-            result += packet_direct_specular(
-                normal, view, light_direction, p1.rgb * p2.x * attenuation * visibility,
-                roughness, f0, energy);
-        }
-    }
-    return result;
-}
-
-float3 packet_punctual_sheen(VkrVulkanPacketFrameRoot *frame,
-                             float3 world_position, float3 normal,
-                             float3 view, VkrSheenLayer sheen,
-                             float energy_normalization)
-{
-    float3 result = 0.0f;
-    uint4 point_mask = packet_point_light_mask(frame, world_position);
-    uint point_count = min(frame.point_light_count, 128u);
-    for (uint word = 0u; word < 4u; ++word)
-    {
-        uint remaining = WaveActiveBitOr(point_mask[word]);
-        while (remaining != 0u)
-        {
-            uint bit = uint(firstbitlow(remaining));
-            remaining &= remaining - 1u;
-            uint light_index = word * 32u + bit;
-            if (light_index >= point_count ||
-                (point_mask[word] & (1u << bit)) == 0u)
-                continue;
-            VkrGpuPointLightRow light = frame.point_light_data[light_index];
-            float4 p0 = light.p0;
-            float4 p1 = light.p1;
-            float4 p2 = light.p2;
-            float4 p3 = light.p3;
-            VkrPunctualLightTerm term =
-                vkr_punctual_light_term(p0, p1, p2, p3, world_position);
-            if (!term.in_range || term.cone <= 0.0f)
-                continue;
-            uint kind = term.kind;
-            float3 light_direction = term.direction;
-            float attenuation = term.attenuation * term.cone;
-            float3 visibility = packet_local_shadow(frame, light, kind,
-                                                world_position, normal);
-            result += packet_sheen_direct(
-                normal, view, light_direction, p1.rgb * p2.x * attenuation * visibility,
-                sheen, energy_normalization);
-        }
     }
     return result;
 }
@@ -1584,7 +1462,7 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
         clearcoat_factor *= g_textures[NonUniformResourceIndex(material.clearcoat_texture)]
             .Sample(g_samplers[NonUniformResourceIndex(material.clearcoat_sampler)], input.uv).r;
     bool clearcoat_active = vkr_clearcoat_active(clearcoat_factor);
-    VkrClearcoatLayer clearcoat;
+    VkrClearcoatLayer clearcoat = (VkrClearcoatLayer)0;
     if (clearcoat_active)
     {
         float clearcoat_roughness = material.material_clearcoat.y;
@@ -1617,8 +1495,8 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
             .rgb;
     }
     bool sheen_active = vkr_sheen_active(sheen_color);
-    VkrSheenLayer sheen;
-    VkrSheenLtcSample sheen_ltc;
+    VkrSheenLayer sheen = (VkrSheenLayer)0;
+    VkrSheenLtcSample sheen_ltc = (VkrSheenLtcSample)0;
     if (sheen_active)
     {
         float sheen_roughness = material.material_sheen.w;
@@ -1672,37 +1550,20 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
                     frame.directional_color_intensity.w * directional_shadow,
                 sheen, sheen_ltc.energy_normalization);
     }
-    VkrVulkanDirectResult punctual =
-        packet_punctual(frame, input.world_position, normal, view, base.rgb,
-                        metallic, roughness, f0, energy);
+    // Each light list is traversed once for the base, coat and sheen lobes.
+    VkrVulkanDirectResult punctual = packet_punctual_layered(
+        frame, input.world_position, normal, view, base.rgb, metallic,
+        roughness, f0, energy, true, clearcoat_active, clearcoat,
+        sheen_active, sheen, sheen_ltc.energy_normalization,
+        clearcoat_direct, sheen_direct);
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
-    if (clearcoat_active)
-    {
-        VkrVulkanDirectResult coat_punctual = packet_punctual(
-            frame, input.world_position, clearcoat.normal, view, float3(0.0f),
-            0.0f, clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy);
-        clearcoat_direct += coat_punctual.specular * clearcoat.factor;
-    }
-    if (sheen_active)
-        sheen_direct += packet_punctual_sheen(
-            frame, input.world_position, normal, view, sheen,
-            sheen_ltc.energy_normalization);
-    VkrVulkanDirectResult rectangles = packet_rectangle_lights(
+    VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
         frame, input.world_position, normal, view, base.rgb, metallic,
-        roughness, f0, energy, true);
+        roughness, f0, energy, true, clearcoat_active, clearcoat,
+        sheen_active, sheen, sheen_ltc, clearcoat_direct, sheen_direct);
     analytic_diffuse += rectangles.diffuse;
     analytic_specular += rectangles.specular;
-    if (clearcoat_active)
-    {
-        VkrVulkanDirectResult coat_rectangles = packet_rectangle_lights(
-            frame, input.world_position, clearcoat.normal, view, float3(0.0f),
-            0.0f, clearcoat.roughness, float3(VKR_CLEARCOAT_F0), clearcoat.energy, false);
-        clearcoat_direct += coat_rectangles.specular * clearcoat.factor;
-    }
-    if (sheen_active)
-        sheen_direct += packet_sheen_rectangle_lights(
-            frame, input.world_position, normal, view, sheen, sheen_ltc);
     float3 indirect_diffuse;
     float3 indirect_specular = 0.0f;
     float3 clearcoat_indirect = 0.0f;

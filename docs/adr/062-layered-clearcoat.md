@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-24
 authority: adr
 ---
 
@@ -44,15 +44,18 @@ Opaque indirect coat lighting and SSR probe removal also use the coat normal for
 GTAO cone occlusion, decoding bent direction against that normal and using the
 packed coat roughness. SSR's incoming history uses filtered coat roughness.
 This keeps probe removal equal to the term deferred lighting actually added.
-Deferred punctual and rectangle lighting traverse each active list once for
-the base, coat and sheen. Punctual lights share row loads, geometry and
-attenuation; a coat whose receiver-bias normal differs from the base uses its
-own local-shadow query on both native backends. Sheen uses the front base normal;
-a backlit thin sheet retains its light-facing diffuse bias and zero front sheen
-response. Rectangle layers retain their own LTC frames and integrals, including
-the sheen frame when an anisotropic base rotates its axes. Directional lights
-retain the existing common base-normal shadow policy. These source changes do
-not establish measured savings or native parity.
+Deferred, forward and transmission lighting traverse each active punctual and
+rectangle list once for the base, coat and sheen. Each backend has one punctual
+helper and one rectangle helper for all three passes; transmission skips the
+base diffuse lobe on fully transmissive surfaces outside diagnostic views.
+Punctual lights share row loads, geometry and attenuation; a coat whose
+receiver-bias normal differs from the base uses its own local-shadow query.
+Sheen uses the front base normal; a backlit thin sheet retains its light-facing
+diffuse bias and zero front sheen response. Rectangle layers retain their own
+LTC frames and integrals, including the sheen frame when an anisotropic base
+rotates its axes. Directional lights retain the existing common base-normal
+shadow policy. These source changes do not establish measured savings or native
+parity.
 
 Runtime lights, LTC and probe/global IBL share this allocation. The offline
 path/photon BSDF uses the same layer and a corresponding mixture PDF. It tracks
@@ -137,6 +140,16 @@ absolute RGB error is 0.00048828125. The zero-coat final image is byte-identical
 to the retained pre-change image; three HDR pixels differ by one FP16 step
 (0.00048828125). Independent CPU integration and sampling check aligned furnace
 energy, tilted/opposed normals and thin/thick glass event classification.
+
+Metal forward and transmission lighting take the coat's own local-shadow query
+through the deferred punctual helper, `vkr_metal_packet_punctual_layered` in
+[`lighting.metalh`](../../renderer/src/shaders/metal/msl/world/lighting.metalh);
+they formerly reused the base normal's query. No existing case lights a coated
+forward or transmission surface with a shadowed punctual light, so the shared
+call is the only evidence for that correction. The Metal clearcoat, sheen and
+sheen-rectangle fixtures stay byte-identical across the change, and the Bistro
+glassware case keeps identical lighting channels. Vulkan compiles and its
+SPIR-V validates.
 
 The 512×384 material fixture checks factor and roughness response, independent
 coat normals and green light through coated glass. A floor with base roughness

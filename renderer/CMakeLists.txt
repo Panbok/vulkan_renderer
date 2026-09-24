@@ -341,9 +341,11 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/local_shadow_transmission.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/editor/overlay.metal"
-        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/shadow/sampling.metalh"
+        # Lighting follows shadow sampling: its punctual traversal applies the
+        # local-shadow receiver to every lobe.
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/fullscreen.metalh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/skinning_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/skinning.metal"

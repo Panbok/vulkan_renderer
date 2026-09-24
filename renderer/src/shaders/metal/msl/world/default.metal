@@ -137,7 +137,7 @@ static float4 vkr_metal_packet_shade(
                             .sample(material.clearcoat_sampler, input.texcoord)
                             .r;
   bool clearcoat_active = vkr_clearcoat_active(clearcoat_factor);
-  VkrClearcoatLayer clearcoat;
+  VkrClearcoatLayer clearcoat = {};
   if (clearcoat_active) {
     float clearcoat_roughness = material.material_clearcoat.y;
     if ((material.flags & 64u) != 0u)
@@ -171,7 +171,7 @@ static float4 vkr_metal_packet_shade(
                        .sample(material.sheen_color_sampler, input.texcoord).rgb;
   bool sheen_active = vkr_sheen_active(sheen_color);
   float sheen_roughness = 0.0f;
-  VkrSheenLayer sheen;
+  VkrSheenLayer sheen = {};
   float sheen_normalization = 0.0f;
   if (sheen_active) {
     sheen_roughness = material.material_sheen.w;
@@ -218,73 +218,22 @@ static float4 vkr_metal_packet_shade(
               frame->directional_color_intensity.w * layer_shadow,
           sheen, sheen_normalization);
   }
-  uint4 point_mask =
-      vkr_metal_packet_point_light_mask(frame, input.world_position);
-  uint point_count = min(frame->point_light_count, 128u);
-  for (uint word = 0u; word < 4u; ++word) {
-    /* SIMD-uniform light index; see vkr_metal_packet_deferred_lighting. */
-    uint remaining = simd_or(point_mask[word]);
-    while (remaining != 0u) {
-      uint bit = ctz(remaining);
-      remaining &= remaining - 1u;
-      uint light_index = word * 32u + bit;
-      if (light_index >= point_count)
-        continue;
-      const device VkrGpuPointLightRow &light =
-          frame->point_light_data[light_index];
-      float4 p0 = light.p0;
-      float4 p1 = light.p1;
-      float4 p2 = light.p2;
-      float4 p3 = light.p3;
-      if ((point_mask[word] & (1u << bit)) == 0u)
-        continue;
-      VkrPunctualLightTerm term =
-          vkr_punctual_light_term(p0, p1, p2, p3, input.world_position);
-      if (!term.in_range || term.cone <= 0.0f)
-        continue;
-      uint kind = term.kind;
-      float3 light_direction = term.direction;
-      float attenuation = term.attenuation * term.cone;
-      bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
-                      dot(normal, light_direction) < 0.0f;
-      float3 base_attenuation =
-          attenuation * vkr_metal_packet_local_shadow_sample(
-                            frame, uint(p3.w), kind, input.world_position,
-                            back_lit ? -normal : normal);
-      float3 layer_attenuation;
-      if (back_lit && clearcoat_active)
-        layer_attenuation = attenuation * vkr_metal_packet_local_shadow_sample(
-                                              frame, uint(p3.w), kind,
-                                              input.world_position, normal);
-      else
-        layer_attenuation = base_attenuation;
-      VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
-          normal, view, light_direction, p1.rgb * p2.x * base_attenuation, base.rgb,
-          metallic, roughness, f0, energy);
-      analytic_diffuse += direct.diffuse;
-      analytic_specular += direct.specular;
-      if (clearcoat_active)
-        clearcoat_direct += vkr_metal_packet_clearcoat_direct(
-            view, light_direction, p1.rgb * p2.x * layer_attenuation,
-            clearcoat);
-      if (sheen_active)
-        sheen_direct += vkr_metal_packet_sheen_direct(
-            normal, view, light_direction, p1.rgb * p2.x * layer_attenuation,
-            sheen, sheen_normalization);
-    }
-  }
+  // Each light list is traversed once for the base, coat and sheen lobes. A
+  // coat whose normal differs from the base shadow normal takes its own
+  // local-shadow query, as in deferred lighting (ADR-062).
+  float3 punctual_irradiance = 0.0f;
+  vkr_metal_packet_punctual_layered<true>(
+      frame, input.world_position, normal, view, base.rgb, metallic,
+      roughness, f0, energy, clearcoat_active, clearcoat, sheen_active, sheen,
+      sheen_normalization, punctual_irradiance, analytic_diffuse,
+      analytic_specular, clearcoat_direct, sheen_direct);
   VkrMetalPacketDirectResult rectangles =
-      vkr_metal_packet_rectangle_lights<true>(
+      vkr_metal_packet_layered_rectangle_lights<true>(
           frame, input.world_position, normal, view, base.rgb, metallic,
-          roughness, f0, energy);
+          roughness, f0, energy, clearcoat_active, clearcoat, sheen_active,
+          sheen, clearcoat_direct, sheen_direct);
   analytic_diffuse += rectangles.diffuse;
   analytic_specular += rectangles.specular;
-  if (clearcoat_active)
-    clearcoat_direct += vkr_metal_packet_clearcoat_rectangle_lights(
-        frame, input.world_position, view, clearcoat);
-  if (sheen_active)
-    sheen_direct += vkr_metal_packet_sheen_rectangle_lights(
-        frame, input.world_position, normal, view, sheen);
   float3 clearcoat_indirect = 0.0;
   float3 sheen_indirect = 0.0;
   float3 indirect_specular = 0.0;

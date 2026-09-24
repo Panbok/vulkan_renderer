@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-22
+updated: 2026-09-24
 authority: adr
 ---
 
@@ -414,9 +414,10 @@ The renderer-features performance corrections reconstruct normal-map Z before
 strength, preserve explicit glTF zero strength, and version paired cooked recipes.
 Fog composition preserves scene HDR and ray reconstruction extrapolates beyond
 raster far depth. Material planes are conditionally declared from an opaque
-feature aggregate; both native paths guard absent texture bindings. Deferred
-lighting shares active lobe traversal and skips discarded environment diffuse;
-SSGI excludes camera-directed specular from its source.
+feature aggregate; both native paths guard absent texture bindings. Deferred,
+forward and transmission lighting share active lobe traversal. Deferred lighting
+skips discarded environment diffuse, and SSGI excludes camera-directed specular
+from its source.
 
 SSGI depth-base now writes current-frame RG32UI receiver metadata with bit-preserved
 32-bit depth and an exact local offset. Trace, temporal and composite reuse it.
