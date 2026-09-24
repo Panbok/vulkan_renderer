@@ -641,6 +641,220 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                        : (VkrAssetPublisher){0};
 }
 
+/* Ends a texture upload batch that destruction interrupts before submit. */
+vkr_internal void
+vkr_metal_packet_discard_texture_upload_batch(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
+  if (batch->active) {
+    /* These uploads were never submitted. End their retained encoder before
+     * resetting its slot, then retire only actual submitted resource uses.
+     */
+    [batch->encoder endEncoding];
+    [batch->encoder release];
+    batch->encoder = nil;
+    [renderer->command_buffer endCommandBuffer];
+    vkr_metal_memory_device_cancel_ring(
+        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice);
+    vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+    *batch = (VkrMetalPacketTextureUploadBatch){0};
+    vkr_metal_packet_discard_unsubmitted_uses(renderer);
+  }
+}
+
+/* Releases the per-pass render descriptors and cached encoder labels. */
+vkr_internal void
+vkr_metal_packet_release_pass_descriptors(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  if (renderer->render_passes) {
+    for (uint32_t i = 0; i < renderer->max_passes; ++i)
+      [renderer->render_passes[i] release];
+  }
+  if (renderer->pass_labels) {
+    for (uint32_t i = 0; i < renderer->max_passes; ++i) {
+      [renderer->pass_labels[i].value release];
+      renderer->pass_labels[i].value = nil;
+    }
+  }
+}
+
+/* Releases each command slot's GPU-draw residency sets, indirect command
+ * buffers, timestamp heap, command buffer and allocator. */
+vkr_internal void
+vkr_metal_packet_release_command_slots(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  if (renderer->command_slots) {
+    for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
+      VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+      for (uint32_t group = 0u;
+           group < VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX; ++group) {
+        if (group < slot->gpu_draw_icb_residency_count)
+          [slot->gpu_draw_icb_residencies[group] endResidency];
+        if (slot->gpu_draw_icbs[group])
+          [slot->gpu_draw_icb_residencies[group]
+              removeAllocation:slot->gpu_draw_icbs[group]];
+        if (group == 0u && slot->transmission_gpu_draw_icb)
+          [slot->gpu_draw_icb_residencies[group]
+              removeAllocation:slot->transmission_gpu_draw_icb];
+        [slot->gpu_draw_icb_residencies[group] commit];
+        vkr_metal_packet_release_budgeted_resource(renderer,
+                                                   slot->gpu_draw_icbs[group]);
+        [slot->gpu_draw_icb_residencies[group] release];
+      }
+      vkr_metal_packet_release_budgeted_resource(
+          renderer, slot->transmission_gpu_draw_icb);
+      [slot->timestamp_heap release];
+      [slot->buffer release];
+      [slot->allocator release];
+    }
+  }
+}
+
+/* Releases commit-feedback options and their copied handler blocks. */
+vkr_internal void vkr_metal_packet_release_commit_feedback_records(
+    VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
+  if (renderer->commit_feedback_records) {
+    for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
+      [renderer->commit_feedback_records[i].options release];
+      if (renderer->commit_feedback_records[i].handler)
+        Block_release(renderer->commit_feedback_records[i].handler);
+      if (renderer->commit_feedback_records[i].ready_handler)
+        Block_release(renderer->commit_feedback_records[i].ready_handler);
+    }
+  }
+}
+
+/* Releases the argument tables, depth states, pipeline states, SH coefficient
+ * pool and fragment library created with the pipelines. */
+vkr_internal void
+vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  [renderer->argument_table release];
+  [renderer->gpu_draw_icb_argument_encoder release];
+  [renderer->depth_read_state release];
+  [renderer->depth_write_state release];
+  [renderer->ui_rect_pipeline release];
+  [renderer->world_text_pipeline release];
+  [renderer->picking_text_pipeline release];
+  [renderer->tonemap_pipeline release];
+  [renderer->display_linear_pipeline release];
+  [renderer->ibl_equirect_pipeline release];
+  [renderer->ibl_prefilter_pipeline release];
+  [renderer->ibl_sh_pipeline release];
+  [renderer->atmosphere_sun_pipeline release];
+  [renderer->atmosphere_source_pipeline release];
+  [renderer->atmosphere_multiple_scattering_pipeline release];
+  [renderer->atmosphere_transmittance_pipeline release];
+  /* The pool has renderer lifetime and is released only here, after normal
+     device teardown has drained outstanding readers. */
+  vkr_metal_packet_release_budgeted_resource(renderer,
+                                             renderer->sh_coefficients);
+  [renderer->gpu_draw_encode_pipeline release];
+  [renderer->gpu_draw_encode_inherited_pipeline release];
+  [renderer->skinning_pipeline release];
+  [renderer->temporal_transform_pipeline release];
+  for (uint32_t i = 0u; i < ArrayCount(renderer->gbuffer_resolve_pipelines);
+       ++i)
+    [renderer->gbuffer_resolve_pipelines[i] release];
+  [renderer->gtao_denoise_pipeline release];
+  [renderer->ssr_composite_pipeline release];
+  [renderer->ssgi_composite_pipeline release];
+  [renderer->ssgi_temporal_pipeline release];
+  [renderer->ssgi_trace_pipeline release];
+  [renderer->ssgi_depth_mip_pipeline release];
+  [renderer->ssgi_depth_base_pipeline release];
+  [renderer->fog_pipeline release];
+  [renderer->froxel_apply_pipeline release];
+  [renderer->froxel_integrate_pipeline release];
+  [renderer->froxel_inject_pipeline release];
+  [renderer->ssr_temporal_pipeline release];
+  [renderer->ssr_trace_pipeline release];
+  [renderer->ssr_depth_mip_pipeline release];
+  [renderer->ssr_depth_base_pipeline release];
+  [renderer->gtao_evaluate_pipeline release];
+  [renderer->gtao_depth_mip_pipeline release];
+  [renderer->gtao_depth_prefilter_pipeline release];
+  [renderer->deferred_lighting_pipeline release];
+  [renderer->temporal_resolve_pipeline release];
+  [renderer->metalfx_stabilize_pipeline release];
+  [renderer->transmission_shade_pipeline release];
+  [renderer->transmission_shade_partitioned_pipeline release];
+  [renderer->transmission_shade_production_pipeline release];
+  [renderer->transmission_shade_production_temporal_pipeline release];
+  [renderer->transmission_shade_partitioned_production_pipeline release];
+  [renderer->transmission_shade_partitioned_production_temporal_pipeline
+          release];
+  [renderer->transmission_coverage_pipeline release];
+  [renderer->transmission_compact_clear_pipeline release];
+  [renderer->transmission_compact_pipeline release];
+  [renderer->transmission_compact_finalize_pipeline release];
+  [renderer->picking_resolve_pipeline release];
+  [renderer->hzb_build_pipeline release];
+  [renderer->sdsm_reduce_pipeline release];
+  [renderer->subsurface_pipeline release];
+  for (uint32_t i = 0u; i < ArrayCount(renderer->motion_blur_pipelines); ++i)
+    [renderer->motion_blur_pipelines[i] release];
+  for (uint32_t i = 0u; i < ArrayCount(renderer->dof_pipelines); ++i)
+    [renderer->dof_pipelines[i] release];
+  [renderer->bloom_combine_pipeline release];
+  [renderer->bloom_upsample_pipeline release];
+  [renderer->bloom_downsample_box4_pipeline release];
+  [renderer->bloom_downsample_tent13_pipeline release];
+  [renderer->bloom_prefilter_pipeline release];
+  [renderer->exposure_resolve_pipeline release];
+  [renderer->exposure_histogram_pipeline release];
+  [renderer->exposure_clear_pipeline release];
+  [renderer->gpu_draw_prefix_pipeline release];
+  [renderer->gpu_draw_classify_pipeline release];
+  [renderer->vbuffer_pipeline release];
+  [renderer->transmission_vbuffer_pipeline release];
+  [renderer->gpu_shadow_pipeline release];
+  for (uint32_t i = 0u;
+       i < ArrayCount(renderer->local_shadow_transmission_pipelines); ++i)
+    [renderer->local_shadow_transmission_pipelines[i] release];
+  [renderer->gpu_shadow_opaque_pipeline release];
+  [renderer->vbuffer_opaque_pipeline release];
+  [renderer->blend_pipeline release];
+  [renderer->ui_pipeline release];
+  [renderer->picking_pipeline release];
+  [renderer->editor_overlay_pipeline release];
+  [renderer->editor_overlay_picking_pipeline release];
+  [renderer->animation_preview_pipeline release];
+  [renderer->fragment_library release];
+}
+
+/* Releases per-mesh submesh arrays, the geometry range table, the record
+ * reservation and the capture reservation. */
+vkr_internal void
+vkr_metal_packet_release_record_storage(VkrMetalPacketRenderer *renderer) {
+  /* Every record array lives in one tagged reservation. Release its aggregate
+     accounting immediately before the backing store, matching bulk-lifetime
+     allocator ownership. */
+  VkrAllocator *allocator = renderer->allocator;
+  // Also unwind partial initialization or a failed drain before record
+  // storage.
+  if (renderer->meshes) {
+    for (uint32_t i = 0; i < renderer->max_meshes; ++i) {
+      VkrMetalPacketMesh *mesh = &renderer->meshes[i];
+      if (mesh->submeshes)
+        vkr_allocator_free(allocator, mesh->submeshes,
+                           (uint64_t)mesh->submesh_count *
+                               sizeof(*mesh->submeshes),
+                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    }
+  }
+  vkr_geometry_ranges_destroy(&renderer->geometry_ranges);
+  if (renderer->record_allocator.ctx) {
+    vkr_allocator_release_global_accounting(&renderer->record_allocator);
+    vkr_dmemory_allocator_destroy(&renderer->record_allocator);
+  }
+  if (renderer->capture_storage_allocator.ctx) {
+    vkr_allocator_release_global_accounting(
+        &renderer->capture_storage_allocator);
+    vkr_dmemory_allocator_destroy(&renderer->capture_storage_allocator);
+  }
+}
+
 void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
   @autoreleasepool {
     if (!renderer)
@@ -648,167 +862,19 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     VKR_METAL_DIAGNOSTIC(renderer, "renderer_destroy_begin", "shutdown=1");
     VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
     if (@available(macOS 26.0, *)) {
-      VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
-      if (batch->active) {
-        /* These uploads were never submitted. End their retained encoder before
-         * resetting its slot, then retire only actual submitted resource uses.
-         */
-        [batch->encoder endEncoding];
-        [batch->encoder release];
-        batch->encoder = nil;
-        [renderer->command_buffer endCommandBuffer];
-        vkr_metal_memory_device_cancel_ring(
-            renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice);
-        vkr_metal_packet_release_unsubmitted_command_slot(renderer);
-        *batch = (VkrMetalPacketTextureUploadBatch){0};
-        vkr_metal_packet_discard_unsubmitted_uses(renderer);
-      }
+      vkr_metal_packet_discard_texture_upload_batch(renderer);
       if (renderer->frame_prepared)
         vkr_metal_packet_finish_frame(renderer, false_v, false_v);
       if (renderer->memory && renderer->materials && renderer->images)
         (void)vkr_metal_packet_renderer_drain(renderer, NULL, NULL);
-      if (renderer->render_passes) {
-        for (uint32_t i = 0; i < renderer->max_passes; ++i)
-          [renderer->render_passes[i] release];
-      }
-      if (renderer->pass_labels) {
-        for (uint32_t i = 0; i < renderer->max_passes; ++i) {
-          [renderer->pass_labels[i].value release];
-          renderer->pass_labels[i].value = nil;
-        }
-      }
-      if (renderer->command_slots) {
-        for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
-          VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
-          for (uint32_t group = 0u;
-               group < VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX; ++group) {
-            if (group < slot->gpu_draw_icb_residency_count)
-              [slot->gpu_draw_icb_residencies[group] endResidency];
-            if (slot->gpu_draw_icbs[group])
-              [slot->gpu_draw_icb_residencies[group]
-                  removeAllocation:slot->gpu_draw_icbs[group]];
-            if (group == 0u && slot->transmission_gpu_draw_icb)
-              [slot->gpu_draw_icb_residencies[group]
-                  removeAllocation:slot->transmission_gpu_draw_icb];
-            [slot->gpu_draw_icb_residencies[group] commit];
-            vkr_metal_packet_release_budgeted_resource(
-                renderer, slot->gpu_draw_icbs[group]);
-            [slot->gpu_draw_icb_residencies[group] release];
-          }
-          vkr_metal_packet_release_budgeted_resource(
-              renderer, slot->transmission_gpu_draw_icb);
-          [slot->timestamp_heap release];
-          [slot->buffer release];
-          [slot->allocator release];
-        }
-      }
-      if (renderer->commit_feedback_records) {
-        for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
-             ++i) {
-          [renderer->commit_feedback_records[i].options release];
-          if (renderer->commit_feedback_records[i].handler)
-            Block_release(renderer->commit_feedback_records[i].handler);
-          if (renderer->commit_feedback_records[i].ready_handler)
-            Block_release(renderer->commit_feedback_records[i].ready_handler);
-        }
-      }
+      vkr_metal_packet_release_pass_descriptors(renderer);
+      vkr_metal_packet_release_command_slots(renderer);
+      vkr_metal_packet_release_commit_feedback_records(renderer);
       if (renderer->samplers) {
         for (uint32_t i = 0; i < renderer->sampler_count; ++i)
           [renderer->samplers[i].state release];
       }
-      [renderer->argument_table release];
-      [renderer->gpu_draw_icb_argument_encoder release];
-      [renderer->depth_read_state release];
-      [renderer->depth_write_state release];
-      [renderer->ui_rect_pipeline release];
-      [renderer->world_text_pipeline release];
-      [renderer->picking_text_pipeline release];
-      [renderer->tonemap_pipeline release];
-      [renderer->display_linear_pipeline release];
-      [renderer->ibl_equirect_pipeline release];
-      [renderer->ibl_prefilter_pipeline release];
-      [renderer->ibl_sh_pipeline release];
-      [renderer->atmosphere_sun_pipeline release];
-      [renderer->atmosphere_source_pipeline release];
-      [renderer->atmosphere_multiple_scattering_pipeline release];
-      [renderer->atmosphere_transmittance_pipeline release];
-      /* The pool has renderer lifetime and is released only here, after normal
-         device teardown has drained outstanding readers. */
-      vkr_metal_packet_release_budgeted_resource(renderer,
-                                                 renderer->sh_coefficients);
-      [renderer->gpu_draw_encode_pipeline release];
-      [renderer->gpu_draw_encode_inherited_pipeline release];
-      [renderer->skinning_pipeline release];
-      [renderer->temporal_transform_pipeline release];
-      for (uint32_t i = 0u; i < ArrayCount(renderer->gbuffer_resolve_pipelines);
-           ++i)
-        [renderer->gbuffer_resolve_pipelines[i] release];
-      [renderer->gtao_denoise_pipeline release];
-      [renderer->ssr_composite_pipeline release];
-      [renderer->ssgi_composite_pipeline release];
-      [renderer->ssgi_temporal_pipeline release];
-      [renderer->ssgi_trace_pipeline release];
-      [renderer->ssgi_depth_mip_pipeline release];
-      [renderer->ssgi_depth_base_pipeline release];
-      [renderer->fog_pipeline release];
-      [renderer->froxel_apply_pipeline release];
-      [renderer->froxel_integrate_pipeline release];
-      [renderer->froxel_inject_pipeline release];
-      [renderer->ssr_temporal_pipeline release];
-      [renderer->ssr_trace_pipeline release];
-      [renderer->ssr_depth_mip_pipeline release];
-      [renderer->ssr_depth_base_pipeline release];
-      [renderer->gtao_evaluate_pipeline release];
-      [renderer->gtao_depth_mip_pipeline release];
-      [renderer->gtao_depth_prefilter_pipeline release];
-      [renderer->deferred_lighting_pipeline release];
-      [renderer->temporal_resolve_pipeline release];
-      [renderer->metalfx_stabilize_pipeline release];
-      [renderer->transmission_shade_pipeline release];
-      [renderer->transmission_shade_partitioned_pipeline release];
-      [renderer->transmission_shade_production_pipeline release];
-      [renderer->transmission_shade_production_temporal_pipeline release];
-      [renderer->transmission_shade_partitioned_production_pipeline release];
-      [renderer->transmission_shade_partitioned_production_temporal_pipeline
-              release];
-      [renderer->transmission_coverage_pipeline release];
-      [renderer->transmission_compact_clear_pipeline release];
-      [renderer->transmission_compact_pipeline release];
-      [renderer->transmission_compact_finalize_pipeline release];
-      [renderer->picking_resolve_pipeline release];
-      [renderer->hzb_build_pipeline release];
-      [renderer->sdsm_reduce_pipeline release];
-      [renderer->subsurface_pipeline release];
-      for (uint32_t i = 0u; i < ArrayCount(renderer->motion_blur_pipelines);
-           ++i)
-        [renderer->motion_blur_pipelines[i] release];
-      for (uint32_t i = 0u; i < ArrayCount(renderer->dof_pipelines); ++i)
-        [renderer->dof_pipelines[i] release];
-      [renderer->bloom_combine_pipeline release];
-      [renderer->bloom_upsample_pipeline release];
-      [renderer->bloom_downsample_box4_pipeline release];
-      [renderer->bloom_downsample_tent13_pipeline release];
-      [renderer->bloom_prefilter_pipeline release];
-      [renderer->exposure_resolve_pipeline release];
-      [renderer->exposure_histogram_pipeline release];
-      [renderer->exposure_clear_pipeline release];
-      [renderer->gpu_draw_prefix_pipeline release];
-      [renderer->gpu_draw_classify_pipeline release];
-      [renderer->vbuffer_pipeline release];
-      [renderer->transmission_vbuffer_pipeline release];
-      [renderer->gpu_shadow_pipeline release];
-      for (uint32_t i = 0u;
-           i < ArrayCount(renderer->local_shadow_transmission_pipelines); ++i)
-        [renderer->local_shadow_transmission_pipelines[i] release];
-      [renderer->gpu_shadow_opaque_pipeline release];
-      [renderer->vbuffer_opaque_pipeline release];
-      [renderer->blend_pipeline release];
-      [renderer->ui_pipeline release];
-      [renderer->picking_pipeline release];
-      [renderer->editor_overlay_pipeline release];
-      [renderer->editor_overlay_picking_pipeline release];
-      [renderer->animation_preview_pipeline release];
-      [renderer->fragment_library release];
+      vkr_metal_packet_release_pipelines(renderer);
       [renderer->metalfx_temporal_scaler release];
       [renderer->compiler release];
       [renderer->compiler_options release];
@@ -828,32 +894,8 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     vkr_metal_memory_device_destroy(renderer->memory);
     vkr_metal_diagnostics_flush(&renderer->diagnostics);
     vkr_metal_diagnostics_close(&renderer->diagnostics);
-    /* Every record array lives in one tagged reservation. Release its aggregate
-       accounting immediately before the backing store, matching bulk-lifetime
-       allocator ownership. */
     VkrAllocator *allocator = renderer->allocator;
-    // Also unwind partial initialization or a failed drain before record
-    // storage.
-    if (renderer->meshes) {
-      for (uint32_t i = 0; i < renderer->max_meshes; ++i) {
-        VkrMetalPacketMesh *mesh = &renderer->meshes[i];
-        if (mesh->submeshes)
-          vkr_allocator_free(allocator, mesh->submeshes,
-                             (uint64_t)mesh->submesh_count *
-                                 sizeof(*mesh->submeshes),
-                             VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-      }
-    }
-    vkr_geometry_ranges_destroy(&renderer->geometry_ranges);
-    if (renderer->record_allocator.ctx) {
-      vkr_allocator_release_global_accounting(&renderer->record_allocator);
-      vkr_dmemory_allocator_destroy(&renderer->record_allocator);
-    }
-    if (renderer->capture_storage_allocator.ctx) {
-      vkr_allocator_release_global_accounting(
-          &renderer->capture_storage_allocator);
-      vkr_dmemory_allocator_destroy(&renderer->capture_storage_allocator);
-    }
+    vkr_metal_packet_release_record_storage(renderer);
     vkr_metal_packet_free_sized(allocator, renderer, sizeof(*renderer));
   }
 }
