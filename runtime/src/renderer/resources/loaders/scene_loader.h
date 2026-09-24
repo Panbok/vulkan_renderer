@@ -30,6 +30,13 @@ typedef struct VkrSceneLoadResult {
 /**
  * @brief Load a scene from a JSON file path.
  *
+ * Runs the same prepare and finalize stages as a scene resource load, into
+ * the caller's scene. Mesh, animation and material dependencies must load
+ * synchronously, as they do inside a synchronous resource load and without a
+ * job system; one that is still loading fails the load. A failed load
+ * detaches the animations it attached; the entities it created stay in
+ * `scene`.
+ *
  * @param scene Target scene (must be initialized).
  * @param assets Published asset owner for mesh and text loading.
  * @param path Path to the .scene.json file.
@@ -45,7 +52,8 @@ bool8_t vkr_scene_load_from_file(VkrScene *scene,
                                  VkrSceneError *out_error);
 
 /**
- * @brief Load a scene from a JSON buffer.
+ * @brief Load a scene from a JSON buffer, as vkr_scene_load_from_file does,
+ * with paths resolved from the repository root.
  *
  * @param scene Target scene (must be initialized).
  * @param assets Published asset owner for mesh and text loading.

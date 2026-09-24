@@ -210,6 +210,13 @@ typedef struct SceneShapeMaterialAsyncState {
 
 typedef struct VkrSceneLoaderAsyncPayload {
   struct VkrRenderAssets *assets;
+  /* Owns the payload's storage: the thread-safe scene allocator for resource
+     loads, the caller's temp allocator (and no mutex) for synchronous loads. */
+  VkrAllocator *allocator;
+  VkrMutex mutex;
+  /* The scene being published: the payload handle's scene for a resource
+     load, the caller's scene for a synchronous load. */
+  VkrScene *scene;
   char *json_storage;
   uint64_t json_length;
   uint8_t *path_storage;
@@ -227,6 +234,7 @@ typedef struct VkrSceneLoaderAsyncPayload {
   SceneFroxelFogImport froxel_fog_import;
   VkrTexturePreparedLoad environment_prepared;
   bool8_t environment_prepared_ready;
+  bool8_t environment_prepare_failed;
   bool8_t environment_applied;
   bool8_t atmosphere_applied;
   bool8_t fog_applied;
@@ -311,7 +319,7 @@ scene_loader_reset_scene_environment(VkrScene *scene,
 vkr_internal void scene_loader_apply_environment_import(
     VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneEnvironmentImport *environment_import,
-    const VkrTexturePreparedLoad *prepared_environment);
+    const VkrTexturePreparedLoad *prepared_environment, bool8_t prepare_failed);
 vkr_internal bool8_t scene_loader_apply_atmosphere_import(
     VkrScene *scene, const SceneAtmosphereImport *atmosphere_import);
 vkr_internal void
@@ -1698,7 +1706,8 @@ scene_loader_reset_scene_environment(VkrScene *scene, VkrRenderAssets *assets) {
 vkr_internal void scene_loader_apply_environment_import(
     VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneEnvironmentImport *environment_import,
-    const VkrTexturePreparedLoad *prepared_environment) {
+    const VkrTexturePreparedLoad *prepared_environment,
+    bool8_t prepare_failed) {
   if (!scene) {
     return;
   }
@@ -1733,6 +1742,12 @@ vkr_internal void scene_loader_apply_environment_import(
     scene->environment.enabled = false_v;
     scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
     return;
+  }
+
+  /* Preparation already failed to load the source; record the failed load
+     instead of retrying it on this thread. */
+  if (prepare_failed) {
+    goto failed;
   }
 
   if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP) {
@@ -2952,791 +2967,6 @@ static bool8_t scene_resolve_path(VkrAllocator *allocator, String8 owner,
   return true_v;
 }
 
-static bool8_t
-scene_resolve_environment_paths(VkrAllocator *allocator, String8 owner,
-                                SceneEnvironmentImport *environment) {
-  return scene_resolve_path(allocator, owner, &environment->cubemap_path) &&
-         scene_resolve_path(allocator, owner,
-                            &environment->cubemap_base_path) &&
-         scene_resolve_path(allocator, owner, &environment->equirect_path);
-}
-
-static bool8_t scene_resolve_probe_paths(VkrAllocator *allocator, String8 owner,
-                                         SceneReflectionProbeImport *probes,
-                                         uint32_t count) {
-  for (uint32_t i = 0; i < count; ++i) {
-    if (!scene_resolve_path(allocator, owner, &probes[i].cubemap_path) ||
-        !scene_resolve_path(allocator, owner, &probes[i].cubemap_base_path)) {
-      return false_v;
-    }
-  }
-  return true_v;
-}
-
-static bool8_t scene_resolve_entity_paths(VkrAllocator *allocator,
-                                          String8 owner,
-                                          SceneEntityImport *entity) {
-  return scene_resolve_path(allocator, owner, &entity->mesh_path) &&
-         scene_resolve_path(allocator, owner, &entity->animation_path) &&
-         scene_resolve_path(allocator, owner, &entity->shape.material_path) &&
-         scene_resolve_path(allocator, owner, &entity->text3d.font_name);
-}
-
-static bool8_t
-scene_load_json_owned(VkrScene *scene, struct VkrRenderAssets *assets,
-                      String8 json, String8 owner, VkrAllocator *temp_alloc,
-                      VkrSceneLoadResult *out_result, VkrSceneError *out_error);
-
-bool8_t vkr_scene_load_from_file(VkrScene *scene,
-                                 struct VkrRenderAssets *assets, String8 path,
-                                 VkrAllocator *temp_alloc,
-                                 VkrSceneLoadResult *out_result,
-                                 VkrSceneError *out_error) {
-  if (out_result) {
-    *out_result = (VkrSceneLoadResult){0};
-  }
-  if (!scene || !assets || !temp_alloc || !path.str) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
-    return false_v;
-  }
-
-  FilePath file_path = vkr_asset_path_file(temp_alloc, path);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  FileHandle handle = {0};
-  FileError fe = file_open(&file_path, mode, &handle);
-  if (fe != FILE_ERROR_NONE) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_FILE_NOT_FOUND;
-    log_error("Scene loader: failed to open '%.*s': %s", (int)path.length,
-              path.str, file_get_error_string(fe).str);
-    return false_v;
-  }
-
-  String8 json = {0};
-  fe = file_read_string(&handle, temp_alloc, &json);
-  file_close(&handle);
-  if (fe != FILE_ERROR_NONE) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_FILE_READ_FAILED;
-    log_error("Scene loader: failed to read '%.*s': %s", (int)path.length,
-              path.str, file_get_error_string(fe).str);
-    return false_v;
-  }
-
-  return scene_load_json_owned(scene, assets, json, path, temp_alloc,
-                               out_result, out_error);
-}
-
-bool8_t vkr_scene_load_from_json(VkrScene *scene,
-                                 struct VkrRenderAssets *assets, String8 json,
-                                 VkrAllocator *temp_alloc,
-                                 VkrSceneLoadResult *out_result,
-                                 VkrSceneError *out_error) {
-  return scene_load_json_owned(scene, assets, json, (String8){0}, temp_alloc,
-                               out_result, out_error);
-}
-
-/** Borrowed load inputs and parsed entities shared by the synchronous
- * publication stages; `imports` and `entity_ids` live in `temp_alloc`. */
-typedef struct SceneJsonLoad {
-  VkrScene *scene;
-  struct VkrRenderAssets *assets;
-  String8 owner;
-  VkrAllocator *temp_alloc;
-  VkrSceneError *out_error;
-  uint64_t source_fingerprint;
-  SceneEntityImport *imports;
-  VkrEntityId *entity_ids;
-  uint32_t entity_count;
-} SceneJsonLoad;
-
-/* Validates and applies the root-level authored settings before any entity. */
-vkr_internal bool8_t scene_load_json_apply_root_imports(
-    VkrScene *scene, struct VkrRenderAssets *assets, String8 json,
-    String8 owner, VkrAllocator *temp_alloc, VkrSceneError *out_error) {
-  const SceneFogImport fog_import = scene_loader_parse_fog_import(json);
-  if (!fog_import.valid) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    return false_v;
-  }
-  const SceneFroxelFogImport froxel_fog_import =
-      scene_loader_parse_froxel_fog_import(json);
-  if (!froxel_fog_import.valid) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    return false_v;
-  }
-  const SceneSubsurfaceImport subsurface_import =
-      scene_loader_parse_subsurface_import(json);
-  if (!subsurface_import.valid) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    return false_v;
-  }
-  scene->fog = fog_import.settings;
-  scene->froxel_fog = froxel_fog_import.settings;
-
-  // Store renderer frontend reference for layer message sending only after
-  // root-level authored settings have passed their input boundary.
-  scene->assets = assets;
-
-  const SceneAtmosphereImport atmosphere_import =
-      scene_loader_parse_atmosphere_import(json);
-  if (!atmosphere_import.valid) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    return false_v;
-  }
-  if (atmosphere_import.settings.enabled) {
-    /* A procedural atmosphere is the global source; do not load an HDR source
-       that this scene generation will immediately replace. */
-    scene_loader_reset_scene_environment(scene, assets);
-  } else {
-    SceneEnvironmentImport environment_import =
-        scene_loader_parse_environment_import(json);
-    if (!scene_resolve_environment_paths(temp_alloc, owner,
-                                         &environment_import)) {
-      if (out_error) {
-        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-      }
-      return false_v;
-    }
-    scene_loader_apply_environment_import(scene, assets, &environment_import,
-                                          NULL);
-  }
-  if (!scene_loader_apply_atmosphere_import(scene, &atmosphere_import)) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    return false_v;
-  }
-
-  SceneDiffuseVolumeImport diffuse_volume_import =
-      scene_loader_parse_diffuse_volume_import(json);
-  if (!scene_resolve_path(temp_alloc, owner, &diffuse_volume_import.path)) {
-    if (out_error) {
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    }
-    return false_v;
-  }
-  VkrDiffuseVolumeBinding diffuse_volume_binding = {
-      .texture = VKR_TEXTURE_HANDLE_INVALID,
-  };
-  VkrTexturePreparedLoad diffuse_volume_prepared = {0};
-  if (diffuse_volume_import.has_block && diffuse_volume_import.valid &&
-      !scene_loader_prepare_diffuse_volume(diffuse_volume_import.path,
-                                           temp_alloc, &diffuse_volume_binding,
-                                           &diffuse_volume_prepared)) {
-    diffuse_volume_import.valid = false_v;
-  }
-  scene_loader_apply_diffuse_volume_import(
-      scene, assets, &diffuse_volume_import, &diffuse_volume_binding,
-      diffuse_volume_prepared.upload_data ? &diffuse_volume_prepared : NULL);
-  vkr_texture_system_release_prepared_load(&diffuse_volume_prepared);
-
-  VkrRendererError subsurface_error = VKR_RENDERER_ERROR_NONE;
-  if (!scene_loader_apply_subsurface_import(scene, assets, &subsurface_import,
-                                            &subsurface_error)) {
-    String8 error_text = vkr_renderer_get_error_string(subsurface_error);
-    log_error("Scene loader: subsurface upload failed: %.*s",
-              (int)error_text.length, error_text.str);
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
-    return false_v;
-  }
-
-  SceneReflectionProbeImport
-      reflection_probe_imports[VKR_SCENE_REFLECTION_PROBE_MAX] = {0};
-  uint32_t reflection_probe_import_count =
-      scene_loader_parse_reflection_probe_imports(json,
-                                                  reflection_probe_imports);
-  if (!scene_resolve_probe_paths(temp_alloc, owner, reflection_probe_imports,
-                                 reflection_probe_import_count)) {
-    if (out_error) {
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    }
-    return false_v;
-  }
-  scene_loader_apply_reflection_probe_imports(
-      scene, assets, reflection_probe_imports, reflection_probe_import_count,
-      NULL, NULL);
-  (void)vkr_world_resources_prepare_scene_reflection_probes(
-      assets, &assets->world_resources, scene);
-  return true_v;
-}
-
-/* Parses the entities array into temp storage and enforces the player, weapon
- * and rectangle-light limits before any entity is created. Shrinks
- * `entity_count` to the number of parsed entities. */
-vkr_internal bool8_t scene_load_json_parse_entities(SceneJsonLoad *load,
-                                                    const VkrJsonReader *root) {
-  VkrSceneError *out_error = load->out_error;
-  SceneEntityImport *imports = vkr_allocator_alloc(
-      load->temp_alloc, load->entity_count * sizeof(SceneEntityImport),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrEntityId *entity_ids = vkr_allocator_alloc(
-      load->temp_alloc, load->entity_count * sizeof(VkrEntityId),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!imports || !entity_ids) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
-    return false_v;
-  }
-  load->imports = imports;
-  load->entity_ids = entity_ids;
-
-  VkrJsonReader entities_reader = *root;
-  if (!vkr_json_find_array(&entities_reader, "entities")) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    return false_v;
-  }
-
-  uint32_t parsed = 0;
-  uint32_t rectangle_light_count = 0;
-  uint32_t player_count = 0;
-  uint32_t player_weapon_count = 0;
-  while (vkr_json_next_array_element(&entities_reader)) {
-    if (parsed >= load->entity_count) {
-      break;
-    }
-
-    VkrJsonReader entity_obj = {0};
-    if (!vkr_json_enter_object(&entities_reader, &entity_obj)) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-      log_error("Scene loader: entity %u is not an object", parsed);
-      return false_v;
-    }
-
-    if (!scene_json_parse_entity(&entity_obj, parsed, &imports[parsed]) ||
-        (imports[parsed].has_player && ++player_count > 1) ||
-        (imports[parsed].has_player_weapon && ++player_weapon_count > 1)) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-      return false_v;
-    }
-    if (!scene_resolve_entity_paths(load->temp_alloc, load->owner,
-                                    &imports[parsed])) {
-      if (out_error) {
-        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-      }
-      return false_v;
-    }
-    if (imports[parsed].has_rectangle_light &&
-        ++rectangle_light_count > VKR_MAX_SCENE_RECTANGLE_LIGHTS) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-      log_error("Scene loader: scene exceeds %u rectangle lights",
-                VKR_MAX_SCENE_RECTANGLE_LIGHTS);
-      return false_v;
-    }
-    parsed++;
-  }
-
-  if (player_weapon_count && !player_count) {
-    if (out_error) {
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    }
-    return false_v;
-  }
-
-  if (parsed != load->entity_count) {
-    load->entity_count = parsed;
-  }
-  return true_v;
-}
-
-/* Creates one entity per import with its visibility, name, transform and
- * player bindings, recording each id for the later stages. */
-vkr_internal bool8_t
-scene_load_json_create_entities(const SceneJsonLoad *load) {
-  VkrScene *scene = load->scene;
-  const SceneEntityImport *imports = load->imports;
-  VkrSceneError *out_error = load->out_error;
-  for (uint32_t i = 0; i < load->entity_count; i++) {
-    if ((imports[i].has_player &&
-         scene->player_entity.u64 != VKR_ENTITY_ID_INVALID.u64) ||
-        (imports[i].has_player_weapon &&
-         scene->player_weapon_entity.u64 != VKR_ENTITY_ID_INVALID.u64)) {
-      if (out_error) {
-        *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-      }
-      return false_v;
-    }
-    VkrSceneError create_err = VKR_SCENE_ERROR_NONE;
-    VkrEntityId entity = vkr_scene_create_entity(scene, &create_err);
-    if (entity.u64 == VKR_ENTITY_ID_INVALID.u64) {
-      if (out_error)
-        *out_error = create_err;
-      log_error("Scene loader: failed to create entity %u", i);
-      return false_v;
-    }
-
-    load->entity_ids[i] = entity;
-    vkr_scene_set_visibility(scene, entity, true_v, true_v);
-    if (!vkr_entity_has_component(scene->world, entity,
-                                  scene->comp_visibility)) {
-      if (out_error) {
-        *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
-      }
-      log_error("Scene loader: failed to set visibility for entity %u", i);
-      return false_v;
-    }
-
-    if (!vkr_scene_set_name(scene, entity, imports[i].name)) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
-      log_error("Scene loader: failed to set name for entity %u", i);
-      return false_v;
-    }
-
-    const bool8_t transformed =
-        imports[i].has_matrix
-            ? vkr_scene_set_local_matrix(scene, entity, imports[i].matrix)
-            : vkr_scene_set_transform(scene, entity, imports[i].position,
-                                      imports[i].rotation, imports[i].scale);
-    if (!transformed) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
-      log_error("Scene loader: failed to set transform for entity %u", i);
-      return false_v;
-    }
-    if (imports[i].has_player) {
-      scene->player_entity = entity;
-      scene->player_yaw = imports[i].player_yaw;
-    }
-    if (imports[i].has_player_weapon) {
-      scene->player_weapon_entity = entity;
-      scene->player_weapon_bone = imports[i].player_weapon_bone;
-    }
-  }
-  return true_v;
-}
-
-vkr_internal void scene_load_json_set_parents(const SceneJsonLoad *load) {
-  for (uint32_t i = 0; i < load->entity_count; i++) {
-    int32_t parent_index = load->imports[i].parent_index;
-    if (parent_index < 0) {
-      continue;
-    }
-    if ((uint32_t)parent_index >= load->entity_count) {
-      log_warn("Scene loader: entity %u parent index %d is out of range", i,
-               parent_index);
-      continue;
-    }
-    vkr_scene_set_parent(load->scene, load->entity_ids[i],
-                         load->entity_ids[parent_index]);
-  }
-}
-
-/* Loads entity `i`'s mesh and optional animation, instantiates authored source
- * nodes, attaches their meshes and the animation, then releases both requests.
- * False means the caller must detach every attached animation. */
-vkr_internal bool8_t scene_load_json_attach_entity_mesh(
-    const SceneJsonLoad *load, uint32_t i, uint32_t *loaded_meshes,
-    uint32_t *imported_nodes) {
-  VkrScene *scene = load->scene;
-  struct VkrRenderAssets *assets = load->assets;
-  VkrAllocator *temp_alloc = load->temp_alloc;
-  VkrSceneError *out_error = load->out_error;
-  const SceneEntityImport *imports = load->imports;
-  const VkrEntityId *entity_ids = load->entity_ids;
-  VkrResourceHandleInfo resource = {0}, resolved = {0};
-  VkrResourceHandleInfo animation = {0};
-  VkrEntityId *nodes = NULL;
-  uint32_t node_count = 0;
-  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, imports[i].mesh_path,
-                                temp_alloc, &resource, &error)) {
-    if (resource.request_id || resource.as.mesh) {
-      vkr_resource_system_unload(&resource, imports[i].mesh_path);
-    }
-    if (out_error) {
-      *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
-    }
-    return false_v;
-  }
-  resolved = resource;
-  bool8_t success = resource.as.mesh ||
-                    vkr_resource_system_try_get_resolved(&resource, &resolved);
-  if (success && imports[i].has_animation) {
-    success = vkr_resource_system_load(VKR_RESOURCE_TYPE_ANIMATION,
-                                       imports[i].animation_path, temp_alloc,
-                                       &animation, &error);
-  }
-  VkrMeshLoadDesc desc = {.mesh_path = imports[i].mesh_path,
-                          .pipeline_domain = imports[i].pipeline_domain,
-                          .shader_override = imports[i].shader_override,
-                          .transform = vkr_transform_identity()};
-  if (success && resolved.as.mesh->source.nodes.length) {
-    const VkrMeshSource *source = &resolved.as.mesh->source;
-    node_count = (uint32_t)source->nodes.length;
-    nodes = vkr_allocator_alloc(temp_alloc,
-                                source->nodes.length * sizeof(VkrEntityId),
-                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    success = nodes && vkr_scene_instantiate_source_nodes(
-                           scene, source, entity_ids[i], i, nodes, out_error);
-    for (uint32_t n = 0; success && n < source->nodes.length; ++n) {
-      const VkrMeshSourceNode *node = &source->nodes.data[n];
-      if (!node->in_scene)
-        continue;
-      (*imported_nodes)++;
-      if (node->mesh_variant == UINT32_MAX ||
-          !source->meshes.data[node->mesh_variant].range_count)
-        continue;
-      desc.source_mesh_index_plus_one = node->mesh_variant + 1u;
-      success = scene_loader_attach_source_mesh(
-          scene, assets, nodes[n], &desc, &resolved,
-          imports[i].shadow_caster_static, &error);
-      *loaded_meshes += success;
-    }
-  } else if (success) {
-    success = scene_loader_attach_source_mesh(
-        scene, assets, entity_ids[i], &desc, &resolved,
-        imports[i].shadow_caster_static, &error);
-    *loaded_meshes += success;
-  }
-  if (success && imports[i].has_animation) {
-    const char *animation_error = NULL;
-    success = vkr_scene_animation_attach(
-        scene, entity_ids[i], &resource, &animation, nodes, node_count,
-        &imports[i].animation, temp_alloc, &animation_error);
-    if (!success) {
-      log_error("Scene loader: animation attach failed: %s",
-                animation_error ? animation_error : "unknown error");
-    }
-  }
-  if (resource.request_id || resource.as.mesh) {
-    vkr_resource_system_unload(&resource, imports[i].mesh_path);
-  }
-  if (animation.request_id || animation.as.animation) {
-    vkr_resource_system_unload(&animation, imports[i].animation_path);
-  }
-  if (!success) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
-    return false_v;
-  }
-  return true_v;
-}
-
-vkr_internal uint32_t scene_load_json_attach_text3d(const SceneJsonLoad *load) {
-  uint32_t loaded_text3d = 0;
-  for (uint32_t i = 0; i < load->entity_count; i++) {
-    if (!load->imports[i].has_text3d)
-      continue;
-
-    VkrEntityId entity = load->entity_ids[i];
-    SceneText3DImport *text_import = &load->imports[i].text3d;
-
-    // Try to acquire font by name if specified
-    VkrFontHandle font = VKR_FONT_HANDLE_INVALID;
-    if (text_import->font_name.length > 0) {
-      // Create null-terminated copy for font system lookup
-      String8 font_name_copy =
-          string8_duplicate(load->temp_alloc, &text_import->font_name);
-      VkrRendererError font_err = VKR_RENDERER_ERROR_NONE;
-      font = vkr_font_system_acquire(&load->assets->font_system, font_name_copy,
-                                     true_v, &font_err);
-      if (font.id == 0) {
-        log_warn("Scene loader: entity %u text3d font '%.*s' not found, using "
-                 "default",
-                 i, (int)text_import->font_name.length,
-                 text_import->font_name.str);
-        font = VKR_FONT_HANDLE_INVALID;
-      }
-    }
-
-    // Create null-terminated copy of text content
-    String8 text_copy = string8_duplicate(load->temp_alloc, &text_import->text);
-
-    VkrSceneText3DConfig text_config = VKR_SCENE_TEXT3D_CONFIG_DEFAULT;
-    text_config.text = text_copy;
-    text_config.font = font;
-    text_config.font_size = text_import->font_size;
-    text_config.color = text_import->color;
-    text_config.texture_width = text_import->texture_width;
-    text_config.texture_height = text_import->texture_height;
-    text_config.uv_inset_px = text_import->uv_inset_px;
-
-    VkrSceneError text_err = VKR_SCENE_ERROR_NONE;
-    if (!vkr_scene_set_text3d(load->scene, entity, &text_config, &text_err)) {
-      log_error("Scene loader: failed to set text3d for entity %u (err=%d)", i,
-                (int)text_err);
-      continue;
-    }
-
-    loaded_text3d++;
-  }
-  return loaded_text3d;
-}
-
-vkr_internal uint32_t scene_load_json_attach_shapes(const SceneJsonLoad *load) {
-  uint32_t loaded_shapes = 0;
-  for (uint32_t i = 0; i < load->entity_count; i++) {
-    if (!load->imports[i].has_shape)
-      continue;
-
-    VkrEntityId entity = load->entity_ids[i];
-    SceneShapeImport *shape_import = &load->imports[i].shape;
-
-    VkrSceneShapeConfig shape_config = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
-    shape_config.type = shape_import->type;
-    shape_config.dimensions = shape_import->dimensions;
-    shape_config.color = shape_import->color;
-    shape_config.material_name = shape_import->material_name;
-    shape_config.material_path = shape_import->material_path;
-
-    VkrSceneError shape_err = VKR_SCENE_ERROR_NONE;
-    if (!vkr_scene_set_shape(load->scene, load->assets, entity, &shape_config,
-                             &shape_err)) {
-      log_error("Scene loader: failed to set shape for entity %u (err=%d)", i,
-                (int)shape_err);
-      continue;
-    }
-
-    loaded_shapes++;
-  }
-  return loaded_shapes;
-}
-
-vkr_internal uint32_t
-scene_load_json_attach_point_lights(const SceneJsonLoad *load) {
-  uint32_t loaded_point_lights = 0;
-  for (uint32_t i = 0; i < load->entity_count; i++) {
-    if (!load->imports[i].has_point_light)
-      continue;
-
-    VkrEntityId entity = load->entity_ids[i];
-    ScenePointLightImport *light_import = &load->imports[i].point_light;
-    ScenePointLight light = {
-        .color = light_import->color,
-        .intensity = light_import->intensity,
-        .constant = light_import->constant,
-        .linear = light_import->linear,
-        .quadratic = light_import->quadratic,
-        .range = light_import->range,
-        .direction_local = light_import->direction_local,
-        .inner_cone_angle = light_import->inner_cone_angle,
-        .outer_cone_angle = light_import->outer_cone_angle,
-        .casts_shadow = light_import->casts_shadow,
-        .kind = light_import->kind,
-        .enabled = light_import->enabled,
-    };
-
-    if (!vkr_scene_set_point_light(load->scene, entity, &light)) {
-      log_error("Scene loader: failed to set point light for entity %u", i);
-      continue;
-    }
-
-    loaded_point_lights++;
-  }
-  return loaded_point_lights;
-}
-
-/* False means the caller must detach every attached animation. */
-vkr_internal bool8_t
-scene_load_json_attach_rectangle_lights(const SceneJsonLoad *load) {
-  for (uint32_t i = 0; i < load->entity_count; i++) {
-    if (!load->imports[i].has_rectangle_light)
-      continue;
-    const SceneRectangleLightImport *light_import =
-        &load->imports[i].rectangle_light;
-    const SceneRectangleLight light = {
-        .color = light_import->color,
-        .radiance = light_import->radiance,
-        .size = light_import->size,
-        .enabled = light_import->enabled,
-    };
-    if (!vkr_scene_set_rectangle_light(load->scene, load->entity_ids[i],
-                                       &light)) {
-      if (load->out_error)
-        *load->out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
-      log_error("Scene loader: failed to set rectangle light for entity %u", i);
-      return false_v;
-    }
-  }
-  return true_v;
-}
-
-vkr_internal uint32_t
-scene_load_json_attach_directional_lights(const SceneJsonLoad *load) {
-  uint32_t loaded_directional_lights = 0;
-  bool8_t enabled_directional_seen = false_v;
-  for (uint32_t i = 0; i < load->entity_count; i++) {
-    if (!load->imports[i].has_directional_light)
-      continue;
-
-    VkrEntityId entity = load->entity_ids[i];
-    SceneDirectionalLightImport *light_import =
-        &load->imports[i].directional_light;
-    SceneDirectionalLight light = {
-        .color = light_import->color,
-        .intensity = light_import->intensity,
-        .direction_local = light_import->direction_local,
-        .sun_angular_diameter_degrees =
-            light_import->sun_angular_diameter_degrees,
-        .enabled = light_import->enabled,
-    };
-
-    if (!vkr_scene_set_directional_light(load->scene, entity, &light)) {
-      log_error("Scene loader: failed to set directional light for entity %u",
-                i);
-      continue;
-    }
-
-    if (light.enabled) {
-      if (enabled_directional_seen) {
-        log_warn("Scene loader: multiple enabled directional lights present");
-      } else {
-        enabled_directional_seen = true_v;
-      }
-    }
-
-    loaded_directional_lights++;
-  }
-  return loaded_directional_lights;
-}
-
-static bool8_t scene_load_json_owned(VkrScene *scene,
-                                     struct VkrRenderAssets *assets,
-                                     String8 json, String8 owner,
-                                     VkrAllocator *temp_alloc,
-                                     VkrSceneLoadResult *out_result,
-                                     VkrSceneError *out_error) {
-  if (out_result) {
-    *out_result = (VkrSceneLoadResult){0};
-  }
-  if (!scene || !scene->world || !assets || !temp_alloc || !json.str) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
-    return false_v;
-  }
-
-  VkrJsonReader root = vkr_json_reader_from_string(json);
-  int32_t version = 1;
-  VkrJsonReader version_reader = root;
-  if (vkr_json_get_int(&version_reader, "version", &version) &&
-      (version < 1 || version > 2)) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_UNSUPPORTED_VERSION;
-    log_error("Scene loader: unsupported scene version %d", version);
-    return false_v;
-  }
-
-  uint64_t scene_source_fingerprint = 0;
-  if (!scene_loader_source_fingerprint(json, &scene_source_fingerprint)) {
-    if (out_error) {
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    }
-    return false_v;
-  }
-  if (!scene_load_json_apply_root_imports(scene, assets, json, owner,
-                                          temp_alloc, out_error)) {
-    return false_v;
-  }
-
-  uint32_t entity_count = 0;
-  if (!scene_json_count_entities(&root, &entity_count)) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_PARSE_FAILED;
-    log_error("Scene loader: missing or invalid entities array");
-    return false_v;
-  }
-
-  if (entity_count == 0) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_NONE;
-    return true_v;
-  }
-
-  SceneJsonLoad load = {
-      .scene = scene,
-      .assets = assets,
-      .owner = owner,
-      .temp_alloc = temp_alloc,
-      .out_error = out_error,
-      .source_fingerprint = scene_source_fingerprint,
-      .entity_count = entity_count,
-  };
-  if (!scene_load_json_parse_entities(&load, &root)) {
-    return false_v;
-  }
-  if (!scene_load_json_create_entities(&load)) {
-    return false_v;
-  }
-  scene_load_json_set_parents(&load);
-
-  uint32_t loaded_meshes = 0;
-  uint32_t imported_nodes = 0;
-  for (uint32_t i = 0; i < load.entity_count; ++i) {
-    SceneSourceIdentity identity = {.scene_entity_index = i,
-                                    .gltf_node_index = UINT32_MAX,
-                                    .gltf_mesh_index = UINT32_MAX,
-                                    .gltf_camera_index = UINT32_MAX,
-                                    .gltf_skin_index = UINT32_MAX,
-                                    .gltf_light_index = UINT32_MAX,
-                                    .source_fingerprint =
-                                        load.source_fingerprint};
-    if (!vkr_scene_set_source_identity(scene, load.entity_ids[i], &identity)) {
-      if (out_error) {
-        *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
-      }
-      log_error("Scene loader: failed to set source identity for entity %u", i);
-      goto animation_failure;
-    }
-    if (!load.imports[i].has_mesh)
-      continue;
-    if (!scene_load_json_attach_entity_mesh(&load, i, &loaded_meshes,
-                                            &imported_nodes)) {
-      goto animation_failure;
-    }
-  }
-
-  // Load text3d components
-  const uint32_t loaded_text3d = scene_load_json_attach_text3d(&load);
-
-  // Load shape components
-  const uint32_t loaded_shapes = scene_load_json_attach_shapes(&load);
-
-  // Load point light components
-  const uint32_t loaded_point_lights =
-      scene_load_json_attach_point_lights(&load);
-
-  // Load rectangle light components
-  if (!scene_load_json_attach_rectangle_lights(&load)) {
-    goto animation_failure;
-  }
-
-  // Load directional light components
-  const uint32_t loaded_directional_lights =
-      scene_load_json_attach_directional_lights(&load);
-
-  if (out_result) {
-    out_result->entity_count = load.entity_count + imported_nodes;
-    out_result->mesh_count = loaded_meshes;
-    out_result->text3d_count = loaded_text3d;
-    out_result->shape_count = loaded_shapes;
-    out_result->directional_light_count = loaded_directional_lights;
-    out_result->point_light_count = loaded_point_lights;
-  }
-
-  if (out_error)
-    *out_error = VKR_SCENE_ERROR_NONE;
-  return true_v;
-
-animation_failure:
-  for (uint32_t i = 0; i < load.entity_count; ++i) {
-    if (load.imports[i].has_animation) {
-      vkr_scene_animation_detach(scene, load.entity_ids[i]);
-    }
-  }
-  return false_v;
-}
-
 vkr_internal bool8_t scene_loader_alloc_copy_string(VkrAllocator *allocator,
                                                     VkrMutex mutex,
                                                     String8 source,
@@ -3940,6 +3170,7 @@ vkr_internal bool8_t scene_loader_ensure_scene_handle(
 
   scene->assets = payload->assets;
   payload->scene_handle = handle;
+  payload->scene = scene;
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
@@ -3956,7 +3187,7 @@ scene_loader_sync_partial(VkrSceneLoaderAsyncPayload *payload) {
 vkr_internal bool8_t scene_loader_apply_component_for_entity(
     VkrSceneLoaderAsyncPayload *payload, uint32_t entity_index,
     VkrRendererError *out_error) {
-  if (!payload || !payload->assets || !payload->scene_handle || !out_error) {
+  if (!payload || !payload->assets || !payload->scene || !out_error) {
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     }
@@ -3968,12 +3199,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
     return false_v;
   }
 
-  VkrScene *scene = vkr_scene_handle_get_scene(payload->scene_handle);
-  if (!scene) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return false_v;
-  }
-
+  VkrScene *scene = payload->scene;
   SceneEntityImport *entity_import = &payload->imports[entity_index];
   VkrEntityId entity = payload->entity_ids[entity_index];
 
@@ -4050,7 +3276,8 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
     shape_config.dimensions = entity_import->shape.dimensions;
     shape_config.color = entity_import->shape.color;
     shape_config.material_name = entity_import->shape.material_name;
-    // Async scene finalize never forces a blocking material load fallback.
+    // The material request made while preparing supplies the material;
+    // finalize never loads one itself.
     shape_config.material_path = (String8){0};
 
     VkrSceneError shape_error = VKR_SCENE_ERROR_NONE;
@@ -4147,7 +3374,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
 vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
     VkrSceneLoaderAsyncPayload *payload, uint32_t entity_index,
     VkrRendererError *out_error) {
-  if (!payload || !payload->assets || !payload->scene_handle || !out_error) {
+  if (!payload || !payload->assets || !payload->scene || !out_error) {
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     }
@@ -4236,13 +3463,12 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
   }
   const VkrMeshSource *source = &resolved.as.mesh->source;
   if (source->nodes.length) {
-    VkrScene *scene = vkr_scene_handle_get_scene(payload->scene_handle);
+    VkrScene *scene = payload->scene;
     if (!mesh_state->source_nodes) {
       mesh_state->source_node_count = (uint32_t)source->nodes.length;
       mesh_state->source_nodes = vkr_allocator_alloc_ts(
-          &payload->assets->scene_async_allocator,
-          source->nodes.length * sizeof(VkrEntityId),
-          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
+          payload->allocator, source->nodes.length * sizeof(VkrEntityId),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->mutex);
       VkrSceneError error = VKR_SCENE_ERROR_NONE;
       if (!mesh_state->source_nodes ||
           !vkr_scene_instantiate_source_nodes(
@@ -4315,12 +3541,13 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
       .shader_override = entity_import->shader_override,
   };
 
+  /* Scene sync replaces the instance transform with the entity's world
+     matrix; the authored TRS only seeds it until then. */
   VkrRendererError mesh_error = VKR_RENDERER_ERROR_NONE;
-  VkrMeshInstanceHandle instance =
-      vkr_mesh_manager_create_instance_from_resource(
-          &payload->assets->mesh_manager, &mesh_desc, &mesh_state->request_info,
-          0, true_v, &mesh_error);
-  if (instance.id == 0 || mesh_error != VKR_RENDERER_ERROR_NONE) {
+  if (!scene_loader_attach_source_mesh(
+          payload->scene, payload->assets, payload->entity_ids[entity_index],
+          &mesh_desc, &mesh_state->request_info,
+          entity_import->shadow_caster_static, &mesh_error)) {
     if (mesh_error == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
       /*
        * Async mesh/material/texture dependencies are still converging. Keep the
@@ -4335,7 +3562,8 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
             ? mesh_error
             : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     String8 error_string = vkr_renderer_get_error_string(failure);
-    log_error("Scene loader: failed to create mesh instance for '%.*s': %.*s",
+    log_error("Scene loader: failed to attach a mesh instance for '%.*s': "
+              "%.*s",
               (int)entity_import->mesh_path.length,
               entity_import->mesh_path.str, (int)error_string.length,
               error_string.str);
@@ -4349,28 +3577,6 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
     *out_error = failure;
     return false_v;
   }
-
-  VkrScene *scene = vkr_scene_handle_get_scene(payload->scene_handle);
-  VkrEntityId entity = payload->entity_ids[entity_index];
-
-  if (!vkr_scene_set_mesh_renderer(scene, entity, instance)) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return false_v;
-  }
-
-  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
-  if (!vkr_scene_track_instance(scene, instance, &scene_error)) {
-    *out_error = scene_error_to_renderer_error(scene_error);
-    return false_v;
-  }
-
-  /* The asynchronous attach path creates instances too, so it needs the same
-     classification as the batch path; without it every async-loaded scene
-     mesh stays DYNAMIC and the static span is empty. */
-  (void)vkr_mesh_manager_instance_set_shadow_mobility(
-      &payload->assets->mesh_manager, instance,
-      entity_import->shadow_caster_static ? VKR_SHADOW_CASTER_MOBILITY_STATIC
-                                          : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
 
   payload->load_result.mesh_count++;
   mesh_state->attached = true_v;
@@ -4456,9 +3662,9 @@ static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
   if (!bytes) {
     return true_v;
   }
-  payload->path_storage = vkr_allocator_alloc_ts(
-      &payload->assets->scene_async_allocator, bytes,
-      VKR_ALLOCATOR_MEMORY_TAG_STRING, payload->assets->scene_async_mutex);
+  payload->path_storage =
+      vkr_allocator_alloc_ts(payload->allocator, bytes,
+                             VKR_ALLOCATOR_MEMORY_TAG_STRING, payload->mutex);
   if (!payload->path_storage) {
     return false_v;
   }
@@ -4474,57 +3680,30 @@ static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_scene_loader_prepare_async(
-    VkrResourceLoader *self, String8 name, VkrAllocator *temp_alloc,
-    void **out_payload, VkrRendererError *out_error) {
-  assert_log(self != NULL, "Self is NULL");
-  assert_log(name.str != NULL, "Name is NULL");
-  assert_log(temp_alloc != NULL, "Temp allocator is NULL");
-  assert_log(out_payload != NULL, "Out payload is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
+/* Parses a scene document into a payload whose storage comes from `allocator`
+   (`mutex` may be NULL), resolves its paths against `owner`, prepares its
+   environment and probe textures, and requests every mesh, animation and shape
+   material dependency. `out_scene_error`, when given, receives a parser
+   error. */
+vkr_internal bool8_t scene_loader_prepare_payload(
+    struct VkrRenderAssets *assets, VkrAllocator *allocator, VkrMutex mutex,
+    String8 json, String8 owner, VkrAllocator *temp_alloc,
+    VkrSceneLoaderAsyncPayload **out_payload, VkrRendererError *out_error,
+    VkrSceneError *out_scene_error) {
   *out_payload = NULL;
   *out_error = VKR_RENDERER_ERROR_NONE;
 
-  struct VkrRenderAssets *assets =
-      (struct VkrRenderAssets *)self->resource_system;
-  if (!assets) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return false_v;
-  }
-
-  FilePath file_path = vkr_asset_path_file(temp_alloc, name);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  FileHandle handle = {0};
-  FileError file_error = file_open(&file_path, mode, &handle);
-  if (file_error != FILE_ERROR_NONE) {
-    *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    log_error("Scene loader: failed to open '%.*s': %s", (int)name.length,
-              name.str, file_get_error_string(file_error).str);
-    return false_v;
-  }
-
-  String8 json = {0};
-  file_error = file_read_string(&handle, temp_alloc, &json);
-  file_close(&handle);
-  if (file_error != FILE_ERROR_NONE) {
-    *out_error = VKR_RENDERER_ERROR_UNKNOWN;
-    log_error("Scene loader: failed to read '%.*s': %s", (int)name.length,
-              name.str, file_get_error_string(file_error).str);
-    return false_v;
-  }
-
   VkrSceneLoaderAsyncPayload *payload =
       (VkrSceneLoaderAsyncPayload *)vkr_allocator_alloc_ts(
-          &assets->scene_async_allocator, sizeof(*payload),
-          VKR_ALLOCATOR_MEMORY_TAG_STRUCT, assets->scene_async_mutex);
+          allocator, sizeof(*payload), VKR_ALLOCATOR_MEMORY_TAG_STRUCT, mutex);
   if (!payload) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
   MemZero(payload, sizeof(*payload));
   payload->assets = assets;
+  payload->allocator = allocator;
+  payload->mutex = mutex;
   payload->environment_import = scene_environment_import_defaults();
   payload->atmosphere_import = scene_atmosphere_import_defaults();
   payload->fog_import = scene_fog_import_defaults();
@@ -4537,8 +3716,7 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   payload->ownership_transferred = false_v;
 
   String8 json_copy = {0};
-  if (!scene_loader_alloc_copy_string(&assets->scene_async_allocator,
-                                      assets->scene_async_mutex, json,
+  if (!scene_loader_alloc_copy_string(allocator, mutex, json,
                                       &payload->json_storage, &json_copy)) {
     scene_loader_destroy_async_payload(payload);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -4568,11 +3746,13 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   if (!scene_loader_parse_json_imports(
-          &assets->scene_async_allocator, assets->scene_async_mutex, json_copy,
-          &payload->imports, &payload->entity_count, &payload->imports_capacity,
-          &scene_error)) {
+          allocator, mutex, json_copy, &payload->imports,
+          &payload->entity_count, &payload->imports_capacity, &scene_error)) {
     scene_loader_destroy_async_payload(payload);
     *out_error = scene_error_to_renderer_error(scene_error);
+    if (out_scene_error) {
+      *out_scene_error = scene_error;
+    }
     return false_v;
   }
   for (uint32_t index = 0; index < payload->entity_count; ++index) {
@@ -4602,7 +3782,7 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   payload->reflection_probe_import_count =
       scene_loader_parse_reflection_probe_imports(
           json_copy, payload->reflection_probe_imports);
-  if (!scene_resolve_async_paths(payload, name, temp_alloc)) {
+  if (!scene_resolve_async_paths(payload, owner, temp_alloc)) {
     scene_loader_destroy_async_payload(payload);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
@@ -4627,7 +3807,7 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
       payload->environment_prepared_ready = true_v;
     } else {
       vkr_texture_system_release_prepared_load(&payload->environment_prepared);
-      payload->environment_import.valid = false_v;
+      payload->environment_prepare_failed = true_v;
       log_warn("Scene loader: failed to prepare environment '%.*s'",
                (int)environment_path.length, environment_path.str);
     }
@@ -4679,15 +3859,13 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     uint64_t shape_state_bytes =
         sizeof(SceneShapeMaterialAsyncState) * payload->entity_count;
     payload->entity_ids = (VkrEntityId *)vkr_allocator_alloc_ts(
-        &assets->scene_async_allocator, entity_id_bytes,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, assets->scene_async_mutex);
+        allocator, entity_id_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
     payload->mesh_states = (SceneMeshAsyncState *)vkr_allocator_alloc_ts(
-        &assets->scene_async_allocator, mesh_state_bytes,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, assets->scene_async_mutex);
+        allocator, mesh_state_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
     payload->shape_material_states =
         (SceneShapeMaterialAsyncState *)vkr_allocator_alloc_ts(
-            &assets->scene_async_allocator, shape_state_bytes,
-            VKR_ALLOCATOR_MEMORY_TAG_ARRAY, assets->scene_async_mutex);
+            allocator, shape_state_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY,
+            mutex);
     if (!payload->entity_ids || !payload->mesh_states ||
         !payload->shape_material_states) {
       scene_loader_destroy_async_payload(payload);
@@ -4749,23 +3927,63 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_scene_loader_finalize_async(
-    VkrResourceLoader *self, String8 name, void *payload,
-    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error) {
-  (void)name;
+vkr_internal bool8_t vkr_scene_loader_prepare_async(
+    VkrResourceLoader *self, String8 name, VkrAllocator *temp_alloc,
+    void **out_payload, VkrRendererError *out_error) {
   assert_log(self != NULL, "Self is NULL");
-  assert_log(payload != NULL, "Payload is NULL");
-  assert_log(out_handle != NULL, "Out handle is NULL");
+  assert_log(name.str != NULL, "Name is NULL");
+  assert_log(temp_alloc != NULL, "Temp allocator is NULL");
+  assert_log(out_payload != NULL, "Out payload is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  VkrSceneLoaderAsyncPayload *async_payload =
-      (VkrSceneLoaderAsyncPayload *)payload;
+  *out_payload = NULL;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
-  if (!scene_loader_ensure_scene_handle(async_payload, out_error)) {
+  struct VkrRenderAssets *assets =
+      (struct VkrRenderAssets *)self->resource_system;
+  if (!assets) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
-  VkrScene *scene = vkr_scene_handle_get_scene(async_payload->scene_handle);
+  FilePath file_path = vkr_asset_path_file(temp_alloc, name);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle handle = {0};
+  FileError file_error = file_open(&file_path, mode, &handle);
+  if (file_error != FILE_ERROR_NONE) {
+    *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    log_error("Scene loader: failed to open '%.*s': %s", (int)name.length,
+              name.str, file_get_error_string(file_error).str);
+    return false_v;
+  }
+
+  String8 json = {0};
+  file_error = file_read_string(&handle, temp_alloc, &json);
+  file_close(&handle);
+  if (file_error != FILE_ERROR_NONE) {
+    *out_error = VKR_RENDERER_ERROR_UNKNOWN;
+    log_error("Scene loader: failed to read '%.*s': %s", (int)name.length,
+              name.str, file_get_error_string(file_error).str);
+    return false_v;
+  }
+
+  VkrSceneLoaderAsyncPayload *prepared = NULL;
+  if (!scene_loader_prepare_payload(assets, &assets->scene_async_allocator,
+                                    assets->scene_async_mutex, json, name,
+                                    temp_alloc, &prepared, out_error, NULL)) {
+    return false_v;
+  }
+  *out_payload = prepared;
+  return true_v;
+}
+
+/* Runs the next finalize stage chunk into `async_payload->scene`. True once
+   every stage is complete. RESOURCE_NOT_LOADED means another call is needed:
+   the stage advanced or a dependency is still loading. */
+vkr_internal bool8_t scene_loader_finalize_step(
+    VkrSceneLoaderAsyncPayload *async_payload, VkrRendererError *out_error) {
+  VkrScene *scene = async_payload->scene;
   if (!scene) {
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
@@ -4782,7 +4000,8 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
         scene, async_payload->assets, &async_payload->environment_import,
         async_payload->environment_prepared_ready
             ? &async_payload->environment_prepared
-            : NULL);
+            : NULL,
+        async_payload->environment_prepare_failed);
     if (async_payload->environment_prepared_ready) {
       vkr_texture_system_release_prepared_load(
           &async_payload->environment_prepared);
@@ -5014,6 +4233,29 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
     scene_loader_sync_partial(async_payload);
     async_payload->stage = SCENE_ASYNC_STAGE_COMPLETE;
   }
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_scene_loader_finalize_async(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error) {
+  (void)name;
+  assert_log(self != NULL, "Self is NULL");
+  assert_log(payload != NULL, "Payload is NULL");
+  assert_log(out_handle != NULL, "Out handle is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  VkrSceneLoaderAsyncPayload *async_payload =
+      (VkrSceneLoaderAsyncPayload *)payload;
+
+  if (!scene_loader_ensure_scene_handle(async_payload, out_error)) {
+    return false_v;
+  }
+
+  if (!scene_loader_finalize_step(async_payload, out_error)) {
+    return false_v;
+  }
 
   out_handle->type = VKR_RESOURCE_TYPE_SCENE;
   out_handle->loader_id = self->id;
@@ -5092,11 +4334,10 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
                                      payload->imports[i].animation_path);
         }
         if (mesh_state->source_nodes) {
-          vkr_allocator_free_ts(
-              &payload->assets->scene_async_allocator, mesh_state->source_nodes,
-              (uint64_t)mesh_state->source_node_count * sizeof(VkrEntityId),
-              VKR_ALLOCATOR_MEMORY_TAG_ARRAY,
-              payload->assets->scene_async_mutex);
+          vkr_allocator_free_ts(payload->allocator, mesh_state->source_nodes,
+                                (uint64_t)mesh_state->source_node_count *
+                                    sizeof(VkrEntityId),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->mutex);
           mesh_state->source_nodes = NULL;
         }
 
@@ -5130,47 +4371,42 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
   }
 
   if (payload->shape_material_states) {
-    vkr_allocator_free_ts(
-        &payload->assets->scene_async_allocator, payload->shape_material_states,
-        sizeof(SceneShapeMaterialAsyncState) * payload->entity_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
+    vkr_allocator_free_ts(payload->allocator, payload->shape_material_states,
+                          sizeof(SceneShapeMaterialAsyncState) *
+                              payload->entity_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->mutex);
     payload->shape_material_states = NULL;
   }
   if (payload->mesh_states) {
-    vkr_allocator_free_ts(
-        &payload->assets->scene_async_allocator, payload->mesh_states,
-        sizeof(SceneMeshAsyncState) * payload->entity_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
+    vkr_allocator_free_ts(payload->allocator, payload->mesh_states,
+                          sizeof(SceneMeshAsyncState) * payload->entity_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->mutex);
     payload->mesh_states = NULL;
   }
   if (payload->entity_ids) {
-    vkr_allocator_free_ts(
-        &payload->assets->scene_async_allocator, payload->entity_ids,
-        sizeof(VkrEntityId) * payload->entity_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
+    vkr_allocator_free_ts(payload->allocator, payload->entity_ids,
+                          sizeof(VkrEntityId) * payload->entity_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->mutex);
     payload->entity_ids = NULL;
   }
   if (payload->imports) {
-    vkr_allocator_free_ts(
-        &payload->assets->scene_async_allocator, payload->imports,
-        sizeof(SceneEntityImport) * payload->imports_capacity,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
+    vkr_allocator_free_ts(payload->allocator, payload->imports,
+                          sizeof(SceneEntityImport) * payload->imports_capacity,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->mutex);
     payload->imports = NULL;
     payload->imports_capacity = 0;
   }
   if (payload->path_storage) {
-    vkr_allocator_free_ts(&payload->assets->scene_async_allocator,
-                          payload->path_storage, payload->path_storage_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_STRING,
-                          payload->assets->scene_async_mutex);
+    vkr_allocator_free_ts(payload->allocator, payload->path_storage,
+                          payload->path_storage_size,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRING, payload->mutex);
     payload->path_storage = NULL;
     payload->path_storage_size = 0;
   }
   if (payload->json_storage) {
-    vkr_allocator_free_ts(&payload->assets->scene_async_allocator,
-                          payload->json_storage, payload->json_length + 1,
-                          VKR_ALLOCATOR_MEMORY_TAG_STRING,
-                          payload->assets->scene_async_mutex);
+    vkr_allocator_free_ts(payload->allocator, payload->json_storage,
+                          payload->json_length + 1,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRING, payload->mutex);
     payload->json_storage = NULL;
     payload->json_length = 0;
   }
@@ -5182,11 +4418,11 @@ scene_loader_destroy_async_payload(VkrSceneLoaderAsyncPayload *payload) {
     return;
   }
 
-  struct VkrRenderAssets *assets = payload->assets;
+  VkrAllocator *allocator = payload->allocator;
+  VkrMutex mutex = payload->mutex;
   scene_loader_destroy_async_payload_contents(payload);
-  vkr_allocator_free_ts(&assets->scene_async_allocator, payload,
-                        sizeof(*payload), VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
-                        assets->scene_async_mutex);
+  vkr_allocator_free_ts(allocator, payload, sizeof(*payload),
+                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT, mutex);
 }
 
 vkr_internal void
@@ -5199,6 +4435,165 @@ vkr_scene_loader_release_async_payload(VkrResourceLoader *self, void *payload) {
   VkrSceneLoaderAsyncPayload *async_payload =
       (VkrSceneLoaderAsyncPayload *)payload;
   scene_loader_destroy_async_payload(async_payload);
+}
+
+// =============================================================================
+// Synchronous Loads
+// =============================================================================
+
+/* Every finalize stage, stage cursor and per-mesh attach only moves forward,
+   so this sum changes whenever a step publishes anything. */
+vkr_internal uint64_t
+scene_loader_progress(const VkrSceneLoaderAsyncPayload *payload) {
+  uint64_t progress = ((uint64_t)payload->stage << 32u) + payload->stage_cursor;
+  for (uint32_t i = 0u; payload->mesh_states && i < payload->entity_count;
+       ++i) {
+    const SceneMeshAsyncState *mesh_state = &payload->mesh_states[i];
+    progress += mesh_state->source_cursor + mesh_state->attached +
+                mesh_state->completed;
+  }
+  return progress;
+}
+
+/* The synchronous public loads report scene errors. */
+vkr_internal VkrSceneError
+scene_error_from_renderer_error(VkrRendererError error) {
+  switch (error) {
+  case VKR_RENDERER_ERROR_NONE:
+    return VKR_SCENE_ERROR_NONE;
+  case VKR_RENDERER_ERROR_OUT_OF_MEMORY:
+    return VKR_SCENE_ERROR_ALLOC_FAILED;
+  case VKR_RENDERER_ERROR_FILE_NOT_FOUND:
+    return VKR_SCENE_ERROR_FILE_NOT_FOUND;
+  case VKR_RENDERER_ERROR_INVALID_PARAMETER:
+    return VKR_SCENE_ERROR_PARSE_FAILED;
+  case VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED:
+    return VKR_SCENE_ERROR_MESH_LOAD_FAILED;
+  default:
+    return VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
+  }
+}
+
+/* Publishes a scene document into the caller's `scene` through the same
+   prepare and finalize stages as a resource load, with the payload in
+   `temp_alloc`. Dependencies must load synchronously, as they do inside a
+   synchronous resource load and without a job system; one that is still
+   loading fails the load. A failed load detaches the animations it attached;
+   the entities it created stay with the caller's scene. */
+vkr_internal bool8_t scene_load_json_now(VkrScene *scene,
+                                         struct VkrRenderAssets *assets,
+                                         String8 json, String8 owner,
+                                         VkrAllocator *temp_alloc,
+                                         VkrSceneLoadResult *out_result,
+                                         VkrSceneError *out_error) {
+  if (out_result) {
+    *out_result = (VkrSceneLoadResult){0};
+  }
+  if (!scene || !scene->world || !assets || !temp_alloc || !json.str) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
+    return false_v;
+  }
+
+  VkrSceneLoaderAsyncPayload *payload = NULL;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
+  if (!scene_loader_prepare_payload(assets, temp_alloc, NULL, json, owner,
+                                    temp_alloc, &payload, &error,
+                                    &scene_error)) {
+    if (out_error)
+      *out_error = scene_error != VKR_SCENE_ERROR_NONE
+                       ? scene_error
+                       : scene_error_from_renderer_error(error);
+    return false_v;
+  }
+  payload->scene = scene;
+  scene->assets = assets;
+
+  bool8_t loaded = false_v;
+  for (;;) {
+    const uint64_t progress = scene_loader_progress(payload);
+    if (scene_loader_finalize_step(payload, &error)) {
+      loaded = true_v;
+      break;
+    }
+    if (error != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+      break;
+    }
+    if (scene_loader_progress(payload) == progress) {
+      log_error("Scene loader: a dependency is still loading during a "
+                "synchronous scene load");
+      break;
+    }
+  }
+
+  if (loaded && out_result) {
+    *out_result = payload->load_result;
+  }
+  if (!loaded) {
+    for (uint32_t i = 0u; i < payload->entity_count; ++i) {
+      if (payload->imports[i].has_animation &&
+          payload->entity_ids[i].u64 != VKR_ENTITY_ID_INVALID.u64) {
+        vkr_scene_animation_detach(scene, payload->entity_ids[i]);
+      }
+    }
+  }
+  scene_loader_destroy_async_payload(payload);
+  if (out_error)
+    *out_error =
+        loaded ? VKR_SCENE_ERROR_NONE : scene_error_from_renderer_error(error);
+  return loaded;
+}
+
+bool8_t vkr_scene_load_from_file(VkrScene *scene,
+                                 struct VkrRenderAssets *assets, String8 path,
+                                 VkrAllocator *temp_alloc,
+                                 VkrSceneLoadResult *out_result,
+                                 VkrSceneError *out_error) {
+  if (out_result) {
+    *out_result = (VkrSceneLoadResult){0};
+  }
+  if (!scene || !assets || !temp_alloc || !path.str) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
+    return false_v;
+  }
+
+  FilePath file_path = vkr_asset_path_file(temp_alloc, path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle handle = {0};
+  FileError fe = file_open(&file_path, mode, &handle);
+  if (fe != FILE_ERROR_NONE) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_FILE_NOT_FOUND;
+    log_error("Scene loader: failed to open '%.*s': %s", (int)path.length,
+              path.str, file_get_error_string(fe).str);
+    return false_v;
+  }
+
+  String8 json = {0};
+  fe = file_read_string(&handle, temp_alloc, &json);
+  file_close(&handle);
+  if (fe != FILE_ERROR_NONE) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_FILE_READ_FAILED;
+    log_error("Scene loader: failed to read '%.*s': %s", (int)path.length,
+              path.str, file_get_error_string(fe).str);
+    return false_v;
+  }
+
+  return scene_load_json_now(scene, assets, json, path, temp_alloc, out_result,
+                             out_error);
+}
+
+bool8_t vkr_scene_load_from_json(VkrScene *scene,
+                                 struct VkrRenderAssets *assets, String8 json,
+                                 VkrAllocator *temp_alloc,
+                                 VkrSceneLoadResult *out_result,
+                                 VkrSceneError *out_error) {
+  return scene_load_json_now(scene, assets, json, (String8){0}, temp_alloc,
+                             out_result, out_error);
 }
 
 // =============================================================================

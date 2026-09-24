@@ -568,6 +568,29 @@ vkr_internal void test_scene_loader_async_light_source_contract(void) {
   printf("  test_scene_loader_async_light_source_contract PASSED\n");
 }
 
+/* Synchronous loads run the resource load's preparation, so they reject
+   source glTF light authoring before creating any entity. The earlier
+   synchronous publisher accepted it, created the entity and then failed on
+   the missing mesh. */
+vkr_internal void test_scene_loader_sync_light_source_contract(void) {
+  printf("  Running test_scene_loader_sync_light_source_contract...\n");
+
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(!vkr_scene_load_from_file(
+      &ctx.scene, &ctx.assets,
+      string8_lit("tests/fixtures/rendering/"
+                  "gltf_light_range_override_valid.scene.json"),
+      &ctx.allocator, NULL, &error));
+  assert(error == VKR_SCENE_ERROR_PARSE_FAILED);
+  vkr_scene_update(&ctx.scene, 0.0);
+  assert(ctx.scene.topo_count == 0u);
+
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_sync_light_source_contract PASSED\n");
+}
+
 static void test_scene_source_nodes_preserve_hierarchy_and_exact_matrix(void) {
   SceneLoaderTestContext ctx;
   assert(scene_loader_test_context_init(&ctx));
@@ -757,6 +780,7 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_reflection_probe_missing_cubemap_disables_probe();
   test_scene_loader_instantiates_cooked_punctual_lights();
   test_scene_loader_async_light_source_contract();
+  test_scene_loader_sync_light_source_contract();
 
   printf("--- Scene Loader Tests Completed ---\n");
   return true;
