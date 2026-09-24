@@ -211,38 +211,15 @@
       uint64_t: VkrCountLeadingZeros64(x),                                     \
       default: VkrCountLeadingZeros32(x))
 
-// Inlining
+// Inlining. INLINE leaves the decision to the optimizer; force a call site
+// inline only when a matched Release profile shows it regressing without.
+#define INLINE inline
 #if defined(__clang__) || defined(__GNUC__)
-// If NDEBUG is NOT defined (i.e., debug build), use plain 'inline'
-// Otherwise (NDEBUG is defined, release/optimized build), use aggressive
-// 'always_inline'
-#ifndef NDEBUG
-#define INLINE inline
 #define NOINLINE __attribute__((noinline))
-#else
-#define INLINE __attribute__((always_inline)) inline
-#define NOINLINE __attribute__((noinline))
-#endif
 #elif defined(_MSC_VER)
-// If NDEBUG is NOT defined (i.e., debug build), use plain 'inline'
-// Otherwise (NDEBUG is defined, release/optimized build), use aggressive
-// '__forceinline'
-#ifndef NDEBUG
-#define INLINE inline
 #define NOINLINE __declspec(noinline)
 #else
-#define INLINE __forceinline
-#define NOINLINE __declspec(noinline)
-#endif
-#else
-// Fallback for other compilers
-#ifndef NDEBUG
-#define INLINE inline
 #define NOINLINE
-#else
-#define INLINE inline
-#define NOINLINE
-#endif
 #endif
 
 // Check if any SIMD is available
