@@ -1784,6 +1784,12 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
                                     sub_descs[i].geometry);
       }
     }
+    /* The first merged descriptor adopts the acquisition's reference. When
+       publication or that descriptor failed first, no descriptor holds it. */
+    if (build.built_count == 0 && build.merged_geometry.id != 0) {
+      vkr_geometry_system_release(manager->geometry_system,
+                                  build.merged_geometry);
+    }
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return false_v;
   }
@@ -2778,6 +2784,11 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
         vkr_mesh_manager_release_asset_submesh(manager, submesh);
       }
     }
+    /* The first merged submesh adopts the acquisition's reference. When
+       publication failed first, no submesh holds it. */
+    if (built_count == 0 && merged_geometry.id != 0) {
+      vkr_geometry_system_release(manager->geometry_system, merged_geometry);
+    }
     array_destroy_VkrMeshAssetSubmesh(&asset->submeshes);
     asset->bounds_valid = false_v;
     asset->bounds_local_center = vec3_zero();
@@ -3035,6 +3046,11 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
       if (submesh) {
         vkr_mesh_manager_release_asset_submesh(manager, submesh);
       }
+    }
+    /* The first merged submesh adopts the acquisition's reference. When
+       publication failed first, no submesh holds it. */
+    if (built_count == 0 && merged_geometry.id != 0) {
+      vkr_geometry_system_release(manager->geometry_system, merged_geometry);
     }
     array_destroy_VkrMeshAssetSubmesh(&asset->submeshes);
     vkr_mesh_manager_free_asset_strings(manager, asset);
