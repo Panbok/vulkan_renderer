@@ -187,7 +187,7 @@ VkrSheenLayer vkr_metal_packet_prepare_sheen(
       .sample(sheen_sampler, vkr_sheen_ltc_lut_uv(no_v, roughness),
               level(0.0f))
       .gb;
-  return vkr_sheen_prepare_layer(color, roughness, directional_albedo,
+  return vkr_sheen_prepare_layer(color, roughness, no_v, directional_albedo,
                                  allocation_reserve);
 }
 

@@ -386,7 +386,7 @@ VkrSheenLayer packet_prepare_sheen(VkrVulkanPacketFrameRoot *frame,
     float directional_albedo = g_textures[tables.directional_albedo_texture]
         .SampleLevel(g_samplers[tables.sampler],
                      vkr_sheen_energy_lut_uv(no_v, roughness), 0.0f).r;
-    return vkr_sheen_prepare_layer(color, roughness, directional_albedo,
+    return vkr_sheen_prepare_layer(color, roughness, no_v, directional_albedo,
                                    allocation_reserve);
 }
 

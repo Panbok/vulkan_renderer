@@ -27,6 +27,9 @@ struct VkrSheenLayer
     float roughness;
     float base_transmission;
     float directional_albedo;
+    // Smith Lambda of the surface's view cosine. Every light's visibility
+    // shares it, so it is evaluated once per surface rather than per light.
+    float view_lambda;
 };
 
 struct VkrSheenLtcSample
@@ -155,36 +158,39 @@ float vkr_sheen_distribution(float no_h, float roughness)
            pow(sine_squared, 0.5f * inverse_alpha) * VKR_SHEEN_INV_TWO_PI;
 }
 
-float vkr_sheen_visibility(float no_v, float no_l, float roughness)
+// `no_v` is the surface's view cosine; `sheen.view_lambda` holds its Lambda.
+float vkr_sheen_visibility(float no_v, float no_l, VkrSheenLayer sheen)
 {
     if (no_l <= 0.0f)
         return 0.0f;
     no_v = vkr_sheen_no_v(no_v);
     no_l = max(saturate(no_l), VKR_SHEEN_MIN_NOV);
-    float alpha = vkr_sheen_roughness(roughness);
-    alpha *= alpha;
+    float alpha = sheen.roughness * sheen.roughness;
     float denominator =
-        (1.0f + vkr_sheen_lambda(no_v, alpha) +
-         vkr_sheen_lambda(no_l, alpha)) *
+        (1.0f + sheen.view_lambda + vkr_sheen_lambda(no_l, alpha)) *
         (4.0f * no_v * no_l);
     return denominator > 1e-12f ? 1.0f / denominator : 0.0f;
 }
 
 float vkr_sheen_direct_brdf(float no_v, float no_l, float no_h,
-                             float roughness, float energy_normalization)
+                             VkrSheenLayer sheen, float energy_normalization)
 {
     return max(energy_normalization, 0.0f) *
-           vkr_sheen_distribution(max(no_h, 0.0f), roughness) *
-           vkr_sheen_visibility(no_v, no_l, roughness);
+           vkr_sheen_distribution(max(no_h, 0.0f), sheen.roughness) *
+           vkr_sheen_visibility(no_v, no_l, sheen);
 }
 
-VkrSheenLayer vkr_sheen_prepare_layer(float3 color, float roughness,
+// `no_v` is max(dot(normal, view), 0) for the normal and view that the layer's
+// direct lighting later receives.
+VkrSheenLayer vkr_sheen_prepare_layer(float3 color, float roughness, float no_v,
                                       float directional_albedo,
                                       float2 allocation_reserve)
 {
     VkrSheenLayer result;
     result.color = max(color, 0.0f);
     result.roughness = vkr_sheen_roughness(roughness);
+    result.view_lambda = vkr_sheen_lambda(vkr_sheen_no_v(no_v),
+                                          result.roughness * result.roughness);
     result.directional_albedo = saturate(directional_albedo);
     float relative_reserve = max(allocation_reserve.x, 0.0f);
     float absolute_reserve = max(allocation_reserve.y, 0.0f);
@@ -211,7 +217,7 @@ float3 vkr_sheen_direct(float3 view, float3 light, float3 normal,
     half_vector *= rsqrt(half_length_squared);
     float brdf = vkr_sheen_direct_brdf(no_v, no_l,
                                        max(dot(normal, half_vector), 0.0f),
-                                       sheen.roughness, energy_normalization);
+                                       sheen, energy_normalization);
     return sheen.color * radiance * (no_l * brdf);
 }
 
