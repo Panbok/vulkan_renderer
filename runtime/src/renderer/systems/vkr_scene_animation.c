@@ -964,6 +964,8 @@ bool8_t vkr_scene_animation_build_preview(
       };
     }
   }
+  /* Framing is checked in double so the float camera it produces stays finite
+   * for any finite bounds. */
   Vec3 center = vec3_new((float32_t)(((float64_t)min.x + max.x) * 0.5),
                          (float32_t)(((float64_t)min.y + max.y) * 0.5),
                          (float32_t)(((float64_t)min.z + max.z) * 0.5));

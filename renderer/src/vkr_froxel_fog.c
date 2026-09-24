@@ -87,6 +87,8 @@ static void select_local_lights(const VkrFrameInput *input,
       maximum.z = Max(maximum.z, points[j].z);
     }
   }
+  /* Ranked in double so squared distances and intensity products stay
+   * finite where the float equivalents would overflow. */
   float64_t scores[2] = {-1.0, -1.0};
   uint32_t identities[2] = {UINT32_MAX, UINT32_MAX};
   for (uint32_t i = 0; i < input->lighting->point_light_count; ++i) {

@@ -3,6 +3,8 @@
 #include <float.h>
 #include <math.h>
 
+/* The lens terms are evaluated in double so the FLT_MAX bound below holds for
+ * every finite control instead of overflowing before the comparison. */
 bool8_t vkr_dof_controls_valid(float32_t focus_distance, float32_t f_stop,
                                Mat4 projection) {
   const float64_t focal =
