@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-24
 authority: adr
 ---
 
@@ -65,7 +65,12 @@ History rejection metrics distinguish disabled, invalid, incomplete, world,
 extent, camera and raster-grid failures. Candidate
 capacity is checked before recording. Completion-gated GPU diagnostics expose
 visible/bucket/overflow/resolve-invalid counts; overflow is not permission to
-silently claim a complete frame.
+silently claim a complete frame. Resolve-invalid counts degenerate triangles and
+non-finite normal frames. Both native G-buffer and transmission resolves read
+visible rows, primitives and vertices without bounds checks: encode assigns
+rows below the visible count, raster emits only the draw's primitives,
+publication resolves geometry/material/instance rows and mesh loading checks
+indices. A malformed row is therefore undefined behavior, not a rejected pixel.
 
 Metal batches ICB resets before a device-visible blit-to-dispatch intra-pass
 barrier. Command-generation-to-indirect-execution dependencies remain separate.

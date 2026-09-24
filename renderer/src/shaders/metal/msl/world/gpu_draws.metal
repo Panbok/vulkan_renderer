@@ -764,36 +764,17 @@ static void vkr_metal_packet_gbuffer_resolve(
     }
     return;
   }
+  /* The visibility buffer, the compacted visible rows and the geometry table
+     are produced by this renderer's own culling, encode and raster passes, so
+     their bounds are the producer's contract, as in vkr_vk_resolve_surface.
+     Encode assigns each draw a visible row below the view's visible count, the
+     rasterizer emits only that draw's primitive IDs, publication resolves each
+     candidate's geometry, material and instance rows, and mesh loading checks
+     every index against its mesh's vertex count. Degenerate-triangle
+     rejection stays below, where the input can be degenerate. */
   uint visible_index = visibility.x - 1u;
-  uint visible_count = root.compaction_state->visible_count;
-  if (visible_index >= root.visible_capacity ||
-      visible_index >= visible_count) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
-                                                                  -1.0);
-    return;
-  }
-
   const device VkrGpuVisibleDrawRow &visible = root.visible_rows[visible_index];
-  if (visible.geometry_index >= root.geometry_count ||
-      visible.material_index >= root.material_count ||
-      visible.instance_index >= root.instance_count) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
-                                                                  -1.0);
-    return;
-  }
   uint primitive_id = visibility.y;
-  if (visible.index_count < 3u ||
-      primitive_id > (visible.index_count - 3u) / 3u) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
-                                                                  -1.0);
-    return;
-  }
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[visible.geometry_index];
   device const uint *indices = reinterpret_cast<device const uint *>(
@@ -812,13 +793,6 @@ static void vkr_metal_packet_gbuffer_resolve(
   for (uint corner = 0u; corner < 3u; ++corner) {
     int vertex_index =
         int(indices[primitive_id * 3u + corner]) + visible.vertex_offset;
-    if (vertex_index < 0) {
-      atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count,
-                                1u, memory_order_relaxed);
-      vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(
-          root, pixel, -1.0);
-      return;
-    }
     vertices[corner] = vkr_decode_packed_vertex(
         vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
     vertices[corner] = vkr_apply_deformation(
@@ -1932,24 +1906,10 @@ static bool vkr_metal_packet_resolve_transmission_surface(
   uint2 visibility = root.vbuffer.read(pixel).xy;
   if (visibility.x == 0u)
     return false;
+  // Producer-owned row, primitive and vertex bounds; see
+  // vkr_metal_packet_gbuffer_resolve.
   uint visible_index = visibility.x - 1u;
-  uint visible_count = root.compaction_state->visible_count;
-  if (visible_index >= root.visible_capacity ||
-      visible_index >= visible_count) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    return false;
-  }
   const device VkrGpuVisibleDrawRow &visible = root.visible_rows[visible_index];
-  if (visible.geometry_index >= root.geometry_count ||
-      visible.material_index >= root.material_count ||
-      visible.instance_index >= root.instance_count ||
-      visible.index_count < 3u ||
-      visibility.y > (visible.index_count - 3u) / 3u) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    return false;
-  }
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[visible.geometry_index];
   device const uint *indices = reinterpret_cast<device const uint *>(
@@ -1968,11 +1928,6 @@ static bool vkr_metal_packet_resolve_transmission_surface(
   for (uint corner = 0u; corner < 3u; ++corner) {
     int vertex_index =
         int(indices[visibility.y * 3u + corner]) + visible.vertex_offset;
-    if (vertex_index < 0) {
-      atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count,
-                                1u, memory_order_relaxed);
-      return false;
-    }
     vertices[corner] = vkr_decode_packed_vertex(
         vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
     vertices[corner] = vkr_apply_deformation(

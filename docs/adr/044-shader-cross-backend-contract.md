@@ -777,6 +777,18 @@ Metal coat-shadow correction. Vulkan compiles and all 95 SPIR-V modules
 validate, so these domains remain **UNALIGNED** pending native Vulkan execution
 and same-revision comparison.
 
+Metal G-buffer and transmission resolves also drop their visible-row, primitive
+and vertex bounds checks, matching Vulkan and ADR-028. Before the change, both
+resolve-invalid counters were zero on the Bistro glassware camera, the sheen
+fixture and the analytic transmission fixture. Afterward, fixture visibility
+IDs, primitives, depth, normals and specular stay byte-identical. The Metal
+compiler's default fast-math code generation changes albedo rounding by one
+8-bit code in 0.1-1.9% of fixture pixels; final color moves by at most 8 codes
+in 1.6% of sheen-fixture pixels and at most 3 codes in 0.035% of glassware
+pixels, which also vary run to run. The tracked Bistro Metal text baseline
+still passes with no failing pixels. Metal shader validation stops at the
+driver's 32-residency-set assertion, so it cannot check the removed bounds.
+
 Two near-degenerate reconstruction policies still differ: Metal rejects
 barycentric normalization sums at `1e-8`, Vulkan at `1e-12`; interpolated tangent
 handedness exactly zero maps to zero on Metal and positive handedness on Vulkan.
