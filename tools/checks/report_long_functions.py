@@ -21,7 +21,10 @@ ROOT = Path(__file__).resolve().parents[2]
 ROOTS = ('lib/src', 'renderer/src', 'runtime/src', 'editor/src', 'app/src',
          'tools', 'tests/src', 'examples')
 EXTENSIONS = ('.c', '.h', '.m', '.cpp', '.inc')
-SIGNATURE = re.compile(r'^[A-Za-z_][\w\s\*\(\),\[\]&:<>]*\)\s*(const\s*)?\{\s*$')
+# An attribute macro such as API_AVAILABLE(macos(26.0)) may follow the
+# parameter list.
+SIGNATURE = re.compile(r'^[A-Za-z_][\w\s\*\(\),\[\]&:<>]*\)\s*(const\s*)?'
+                       r'([A-Z_][A-Z0-9_]*\([^;{}]*\)\s*)?\{\s*$')
 SKIPPED_PREFIXES = ('stb_', 'cgltf')
 
 
