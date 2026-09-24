@@ -7,6 +7,9 @@
 #include <string.h>
 
 enum { VKR_VULKAN_MAX_EXTENSIONS = 256 };
+/* Queue families queried per candidate device. A device reporting more keeps
+   only the first ones. */
+enum { VKR_VULKAN_MAX_QUEUE_FAMILIES = 32 };
 
 typedef struct VkrVulkanFeatureSet {
   bool8_t shader_int64;
@@ -295,14 +298,16 @@ vkr_vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
   return VK_FALSE;
 }
 
-/* Installs the debug messenger when validation is enabled. */
+/* Installs the debug messenger when validation is enabled. `debug_info` is
+   NULL when VK_EXT_debug_utils is not enabled, so no messenger exists. */
 vkr_internal bool8_t vkr_vk_create_debug_messenger(
     VkrVulkanDevice *device,
     const VkDebugUtilsMessengerCreateInfoEXT *debug_info) {
   if (device->config.enable_validation) {
     PFN_vkCreateDebugUtilsMessengerEXT create_debug =
-        (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-            device->instance, "vkCreateDebugUtilsMessengerEXT");
+        debug_info ? (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+                         device->instance, "vkCreateDebugUtilsMessengerEXT")
+                   : NULL;
     if (create_debug && create_debug(device->instance, debug_info, NULL,
                                      &device->debug_messenger) != VK_SUCCESS) {
       return false_v;
@@ -431,6 +436,10 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
       .pfnUserCallback = vkr_vk_debug_callback,
       .pUserData = device,
   };
+  /* The messenger info may extend instance creation only when
+     VK_EXT_debug_utils is enabled. */
+  const VkDebugUtilsMessengerCreateInfoEXT *messenger_info =
+      debug_utils_available ? &debug_info : NULL;
   VkValidationFeatureEnableEXT validation_enables[2];
   uint32_t validation_enable_count = 0u;
   if (device->config.enable_synchronization_validation) {
@@ -451,7 +460,7 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
           : 0u;
   VkValidationFeaturesEXT validation_features = {
       .sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-      .pNext = &debug_info,
+      .pNext = messenger_info,
       .enabledValidationFeatureCount = validation_enable_count,
       .pEnabledValidationFeatures = validation_enables,
       .disabledValidationFeatureCount = validation_disable_count,
@@ -470,7 +479,7 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
     return false_v;
   }
 
-  if (!vkr_vk_create_debug_messenger(device, &debug_info)) {
+  if (!vkr_vk_create_debug_messenger(device, messenger_info)) {
     return false_v;
   }
 
@@ -688,7 +697,7 @@ vkr_vk_select_candidate_queue(const VkrVulkanDevice *device,
   uint32_t queue_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(candidate->physical, &queue_count,
                                            NULL);
-  VkQueueFamilyProperties queues[VK_MAX_MEMORY_TYPES];
+  VkQueueFamilyProperties queues[VKR_VULKAN_MAX_QUEUE_FAMILIES];
   if (queue_count > ArrayCount(queues)) {
     queue_count = ArrayCount(queues);
   }
