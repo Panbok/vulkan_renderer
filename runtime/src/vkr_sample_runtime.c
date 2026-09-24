@@ -132,7 +132,7 @@ typedef struct State {
 
   uint32_t filter_mode_index;
   bool8_t anisotropy_supported;
-  VkrDeviceInformation device_information;
+  float64_t max_sampler_anisotropy;
 
   EventManager *event_manager; // For dispatching events
 
@@ -1648,8 +1648,7 @@ vkr_internal void vkr_standard_scene_runtime_apply_filter_mode(
   log_info("Texture filtering set to %s%s", entry.label,
            failures ? " (some updates failed)" : "");
   if (state->filter_mode_index == 5) {
-    log_info("Anisotropic sampling count: %f",
-             state->device_information.max_sampler_anisotropy);
+    log_info("Anisotropic sampling count: %f", state->max_sampler_anisotropy);
   }
 }
 
@@ -4239,14 +4238,18 @@ vkr_sample_runtime_update(void *state_ptr, VkrStandardSceneRuntime *application,
 }
 
 /* Allocates and fills the sample State from the parsed options. Returns
-   false_v when the UI client fails to initialize, after releasing the stats
-   arena it created. */
+   false_v when the State allocation or the UI client fails; a UI failure
+   first releases the stats arena it created. */
 vkr_internal bool8_t vkr_sample_runtime_initialize_state(
     VkrStandardSceneRuntime *application,
     const VkrSampleRuntimeConfig *runtime_config,
     const VkrSampleRuntimeOptions *options) {
   state = arena_alloc(application->app_arena, sizeof(State),
                       ARENA_MEMORY_TAG_STRUCT);
+  if (!state) {
+    log_error("Failed to allocate the sample runtime state");
+    return false_v;
+  }
   state->graphics = options->graphics;
   state->graphics_started = options->graphics.settings;
   state->graphics_dirty = false_v;
@@ -4259,8 +4262,6 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
              "Saved settings were invalid. Defaults are in use.");
   sample_graphics_apply_live(application, &state->graphics.settings);
   state->stats_arena = arena_create(KB(1), KB(1));
-  VkrAllocator app_alloc = {.ctx = application->app_arena};
-  vkr_allocator_arena(&app_alloc);
   state->input_state = &application->host.window.input_state;
   state->view_state = (VkrSampleViewState){
       .camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE,
@@ -4365,27 +4366,28 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
 
 /* Logs the device description, fills the HUD hardware text and anisotropy
    support from it, and logs the startup filter and IBL controls. The device
-   strings live in a scratch released before return. */
+   strings live in a scratch released before return; State keeps only the
+   copied text and scalars. */
 vkr_internal void vkr_sample_runtime_log_device_information(
     VkrStandardSceneRuntime *application) {
   Scratch scratch = scratch_create(application->app_arena);
-  vkr_renderer_get_device_information(
-      &application->renderer, &state->device_information, scratch.arena);
-  log_info("Device Name: %s", state->device_information.device_name.str);
-  log_info("Device Vendor: %s", state->device_information.vendor_name.str);
-  log_info("Device Driver Version: %s",
-           state->device_information.driver_version.str);
+  VkrDeviceInformation device_information = {0};
+  vkr_renderer_get_device_information(&application->renderer,
+                                      &device_information, scratch.arena);
+  log_info("Device Name: %s", device_information.device_name.str);
+  log_info("Device Vendor: %s", device_information.vendor_name.str);
+  log_info("Device Driver Version: %s", device_information.driver_version.str);
   log_info("Device Graphics API Version: %s",
-           state->device_information.api_version.str);
+           device_information.api_version.str);
   log_info("Device VRAM Size: %.2f GB",
-           (float64_t)state->device_information.vram_size / GB(1));
+           (float64_t)device_information.vram_size / GB(1));
   log_info("Device VRAM Local Size: %.2f GB",
-           (float64_t)state->device_information.vram_local_size / GB(1));
+           (float64_t)device_information.vram_local_size / GB(1));
   log_info("Device VRAM Shared Size: %.2f GB",
-           (float64_t)state->device_information.vram_shared_size / GB(1));
+           (float64_t)device_information.vram_shared_size / GB(1));
   VkrPlatformSystemInfo system_info = {0};
   (void)vkr_platform_get_system_info(&system_info);
-  const String8 gpu_name = state->device_information.device_name;
+  const String8 gpu_name = device_information.device_name;
   snprintf(state->hardware_text, sizeof(state->hardware_text),
            "CPU: %s\nGPU: %.*s",
            system_info.cpu[0] ? system_info.cpu : "unavailable",
@@ -4393,9 +4395,9 @@ vkr_internal void vkr_sample_runtime_log_device_information(
   snprintf(state->system_text, sizeof(state->system_text),
            "%s\nRAM (resident): pending\nGPU memory (managed): pending",
            state->hardware_text);
-  state->anisotropy_supported =
-      bitset8_is_set(&state->device_information.sampler_filters,
-                     VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
+  state->anisotropy_supported = bitset8_is_set(
+      &device_information.sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
+  state->max_sampler_anisotropy = device_information.max_sampler_anisotropy;
   state->filter_mode_index = 3; // Bilinear default (index in FILTER_MODES)
 
   log_info("Texture filtering controls: F4=prev, F5=next (start: %s)",
