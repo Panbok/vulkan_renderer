@@ -784,22 +784,11 @@ vkr_internal bool8_t vkr_metal_packet_configure_window_output(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_create_pipelines(
-    VkrMetalPacketRenderer *renderer, const char *slang_msl_path,
-    const char *fragment_msl_path) API_AVAILABLE(macos(26.0)) {
-  if (!vkr_metal_packet_abi_validate_host()) {
-    log_error("Metal packet host ABI does not match its durable manifest");
-    return false_v;
-  }
-  id<MTLLibrary> slang = vkr_metal_packet_create_library(
-      renderer, slang_msl_path, @"VKR Metal packet Slang shaders");
-  id<MTLLibrary> fragment = vkr_metal_packet_create_library(
-      renderer, fragment_msl_path, @"VKR Metal packet resource shaders");
-  if (!slang || !fragment) {
-    [fragment release];
-    [slang release];
-    return false_v;
-  }
+/* Creates the shadow, visibility-buffer, animation preview and alpha-blend
+   raster pipelines. A failure leaves nil for the startup checks. */
+vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
+    id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
   renderer->animation_preview_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_animation_preview_vertex", fragment,
       "vkr_metal_packet_animation_preview_fragment", MTLPixelFormatRGBA8Unorm,
@@ -866,16 +855,12 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       true_v, VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v,
       @"VKR Metal packet alpha blend");
-  VkrMetalPacketPresentationPipelines presentation_pipelines;
-  if (!vkr_metal_packet_create_presentation_pipelines(
-          renderer, fragment, vkr_metal_packet_target_pixel_format(renderer),
-          &presentation_pipelines)) {
-    [fragment release];
-    [slang release];
-    return false_v;
-  }
-  vkr_metal_packet_install_presentation_pipelines(renderer,
-                                                  &presentation_pipelines);
+}
+
+/* Creates the picking and text raster pipelines. */
+vkr_internal void vkr_metal_packet_create_picking_text_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
+    id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
   renderer->picking_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", slang,
       "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint, false_v,
@@ -897,6 +882,13 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       "vkr_metal_packet_text_picking_fragment", MTLPixelFormatR32Uint, false_v,
       VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
       @"VKR Metal packet text picking");
+}
+
+/* Creates the IBL and atmosphere compute pipelines. */
+vkr_internal void
+vkr_metal_packet_create_environment_pipelines(VkrMetalPacketRenderer *renderer,
+                                              id<MTLLibrary> fragment)
+    API_AVAILABLE(macos(26.0)) {
   renderer->ibl_equirect_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_ibl_equirect",
       VKR_METAL_PACKET_ABI_EQUIRECT_ROOT, false_v,
@@ -930,6 +922,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_atmosphere_sun_compute",
       VKR_METAL_PACKET_ABI_ATMOSPHERE_ROOT, false_v,
       @"VKR Metal packet atmosphere sun");
+}
+
+/* Creates the zeroed SH coefficient pool buffer. */
+vkr_internal bool8_t vkr_metal_packet_create_sh_coefficients(
+    VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   /* Shared rather than private so the 4 KB pool can be zeroed here without a
      blit: slot 0 must be a valid black sentinel from the first frame, and any
      slot referenced before its projection lands must read black rather than
@@ -959,6 +956,14 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   if (renderer->sh_coefficients) {
     MemZero(renderer->sh_coefficients.contents, VKR_SH_BUFFER_BYTES);
   }
+  return true_v;
+}
+
+/* Creates the GPU draw, skinning, G-buffer resolve, GTAO, SSR, SSGI, fog
+   and deferred lighting compute pipelines. */
+vkr_internal void vkr_metal_packet_create_scene_compute_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment)
+    API_AVAILABLE(macos(26.0)) {
   renderer->gpu_draw_classify_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_gpu_draw_classify",
@@ -1083,6 +1088,13 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_deferred_lighting",
           VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
           @"VKR Metal packet deferred lighting");
+}
+
+/* Creates the temporal, transmission, picking, reduction and exposure
+   compute pipelines. */
+vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment)
+    API_AVAILABLE(macos(26.0)) {
   renderer->temporal_resolve_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_temporal_resolve",
@@ -1172,6 +1184,14 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_exposure_resolve",
           VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
           @"VKR Metal packet exposure resolve");
+}
+
+/* Creates the subsurface, motion blur, depth-of-field, bloom and
+   display-linear pipelines. Returns false at the first subsurface, motion blur
+   or depth-of-field pipeline that fails. */
+vkr_internal bool8_t vkr_metal_packet_create_post_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment)
+    API_AVAILABLE(macos(26.0)) {
   renderer->subsurface_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_subsurface_gather",
       VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT, false_v,
@@ -1237,11 +1257,13 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_bloom_combine",
       VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
       @"VKR Metal packet bloom combine");
-  id<MTLFunction> encode_function =
-      [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
-  renderer->gpu_draw_icb_argument_encoder =
-      [encode_function newArgumentEncoderWithBufferIndex:1u];
-  [encode_function release];
+  return true_v;
+}
+
+/* True when every deferred pipeline, the SH buffer and the indirect argument
+   encoder exist. */
+vkr_internal bool8_t vkr_metal_packet_deferred_pipelines_ready(
+    const VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   if (!renderer->gpu_draw_classify_pipeline ||
       !renderer->gpu_draw_prefix_pipeline ||
       !renderer->gpu_draw_encode_pipeline ||
@@ -1298,13 +1320,15 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->gpu_draw_icb_argument_encoder) {
     log_error("Metal deferred pipelines or indirect argument encoder are "
               "unavailable");
-    [fragment release];
-    [slang release];
     return false_v;
   }
-  renderer->fragment_library = [fragment retain];
-  [fragment release];
-  [slang release];
+  return true_v;
+}
+
+/* Creates the depth-stencil states and the shared argument table. */
+vkr_internal void
+vkr_metal_packet_create_render_states(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
   MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
   depth.depthCompareFunction = MTLCompareFunctionLess;
   depth.depthWriteEnabled = YES;
@@ -1324,6 +1348,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   [table release];
   if (!renderer->argument_table)
     vkr_metal_packet_print_error("argument_table", error);
+}
+
+/* Logs the first startup object that is missing. */
+vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
+    const VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   const struct {
     id object;
     const char *label;
@@ -1445,6 +1474,57 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     }
   }
   return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_create_pipelines(
+    VkrMetalPacketRenderer *renderer, const char *slang_msl_path,
+    const char *fragment_msl_path) API_AVAILABLE(macos(26.0)) {
+  if (!vkr_metal_packet_abi_validate_host()) {
+    log_error("Metal packet host ABI does not match its durable manifest");
+    return false_v;
+  }
+  id<MTLLibrary> slang = vkr_metal_packet_create_library(
+      renderer, slang_msl_path, @"VKR Metal packet Slang shaders");
+  id<MTLLibrary> fragment = vkr_metal_packet_create_library(
+      renderer, fragment_msl_path, @"VKR Metal packet resource shaders");
+  bool8_t created = false_v;
+  if (!slang || !fragment)
+    goto cleanup;
+  vkr_metal_packet_create_scene_raster_pipelines(renderer, slang, fragment);
+  VkrMetalPacketPresentationPipelines presentation_pipelines;
+  if (!vkr_metal_packet_create_presentation_pipelines(
+          renderer, fragment, vkr_metal_packet_target_pixel_format(renderer),
+          &presentation_pipelines))
+    goto cleanup;
+  vkr_metal_packet_install_presentation_pipelines(renderer,
+                                                  &presentation_pipelines);
+  vkr_metal_packet_create_picking_text_pipelines(renderer, slang, fragment);
+  vkr_metal_packet_create_environment_pipelines(renderer, fragment);
+  if (!vkr_metal_packet_create_sh_coefficients(renderer))
+    goto cleanup;
+  vkr_metal_packet_create_scene_compute_pipelines(renderer, fragment);
+  vkr_metal_packet_create_frame_compute_pipelines(renderer, fragment);
+  if (!vkr_metal_packet_create_post_pipelines(renderer, fragment))
+    goto cleanup;
+  id<MTLFunction> encode_function =
+      [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
+  renderer->gpu_draw_icb_argument_encoder =
+      [encode_function newArgumentEncoderWithBufferIndex:1u];
+  [encode_function release];
+  if (!vkr_metal_packet_deferred_pipelines_ready(renderer))
+    goto cleanup;
+  renderer->fragment_library = [fragment retain];
+  created = true_v;
+
+cleanup:
+  /* Every exit after library creation releases both libraries; the fragment
+     library stays alive through the retained reference above. */
+  [fragment release];
+  [slang release];
+  if (!created)
+    return false_v;
+  vkr_metal_packet_create_render_states(renderer);
+  return vkr_metal_packet_startup_objects_ready(renderer);
 }
 
 vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icb_residencies(
