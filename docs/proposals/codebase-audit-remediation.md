@@ -8,99 +8,58 @@ authority: proposal
 The 2026-09-23 audit plan was implemented on the local branch
 `audit-remediation` (baseline `abeedc19`). Each resolved item's commit
 records its change and verification, so `git log abeedc19..audit-remediation`
-is the implementation record. This document keeps only what is still open:
-- decisions the audit could not make;
-- work deferred with evidence;
-- checks that pass but no gate runs;
-- checks this macOS host cannot run.
+is the implementation record. On 2026-09-24 the owner accepted the
+recommended option for every open decision; the list below maps each one to
+its commit. This document keeps only what is still open, work deferred with
+evidence, and checks this macOS host cannot run.
 
 The [repository contract](../../AGENTS.md) applies to every item.
 
-## Decisions for the owner
+## Owner decisions applied
 
-### Scene loader publication paths
+| Decision | Outcome |
+| --- | --- |
+| Scene loader publication paths | `e66953c3`: synchronous loads run the staged prepare/finalize path; `scene_load_json_owned` is gone. The commit lists the synchronous API's behavior changes. |
+| Instance-buffer metrics | `c97f789b`: the three rows are retired, with their assertions in six cases and their entries in six profiles. |
+| Tracked Bistro text baselines | `7c34698f` lets a snapshot replace an unreadable baseline; `a4b51639` re-accepts the Metal baseline. The Vulkan baseline is open below. |
+| `vec2_equal` epsilon boundary | `588f6229`: the bound is inclusive, as in `vec3_equal` and `vec4_equal`. The Bistro re-cook is open below. |
+| Metal packet renderer translation unit (plan D11) | Kept as one unit. A whole rebuild takes 1.8-2.9 s, and Objective-C gets no ThinLTO, so a split would export about 128 helpers that could no longer be inlined. |
+| Ungated checks | `f6e7253c`: `build_test.sh` runs the 300-line function check and `tools/checks/check_metrics_disabled.py`. |
 
-`runtime/src/renderer/resources/loaders/scene_loader.c` publishes a scene
-through two paths:
-- the synchronous `scene_load_json_owned`, used by
-  `vkr_scene_load_from_file`/`_from_json`, by the resource loader's `load`,
-  and by every CPU scene-loader test;
-- the staged `vkr_scene_loader_prepare_async` /
-  `vkr_scene_loader_finalize_async` path the application uses.
+## Open
 
-Both consume the same parsed `Scene*Import` records, so splitting parsing
-from publication would not remove the duplication. The paths already
-disagree:
+### Bistro Vulkan text baseline
 
-- The async path rejects entities with `gltf_light_source` or light range
-  overrides. The synchronous path accepts them and ignores the fields.
-- The synchronous path passes a shape's `material_path` and may block on the
-  material. The async path clears it and waits for its own request.
-- A mesh without source nodes gets an identity instance transform
-  synchronously, but the entity's TRS asynchronously.
-- When `vkr_scene_track_instance` fails, the async non-node attach does not
-  destroy the instance. `scene_loader_attach_source_mesh` does.
+The tracked `smoke.bistro.vulkan.text.snapshot` baseline has the same
+unreadable summary as the old Metal one: accepted on 2026-08-07, it stores
+2,064-byte capture records. Since `7c34698f` its snapshot reports
+`missing_baseline` (exit 4, `baseline.unreadable`) instead of an incomplete
+run. On a Vulkan machine, run the snapshot, review the proposal from
+`baseline propose`, and accept it.
 
-Recommendation: route the synchronous load through prepare/finalize with an
-unlimited budget and a test pump for dependencies, so CPU tests exercise the
-production path, then delete `scene_load_json_owned`. This changes the
-synchronous path's behavior in the cases above, so it needs a decision.
+### Capture summary records are not versioned
 
-### Instance-buffer metrics
+`capture-summary.bin` versions its header (V2 through V15), but the capture
+and artifact records follow the header at today's
+`sizeof(VkrHarnessCaptureResult)` (2,072 bytes) and
+`sizeof(VkrHarnessArtifact)` (512 bytes). Growing either struct makes every
+tracked baseline written before the change unreadable; an 8-byte growth of
+the capture record is how the Bistro text baselines broke. Recommendation:
+record each stored version's record sizes in the summary layout table, bump
+the summary version whenever a record changes, and keep a reader for each
+stored record layout.
 
-`renderer/src/vkr_renderer_metrics.c` registers `instance_buffer.occupancy`
-and `instance_buffer.capacity` but never writes them, and it always publishes
-`instance_buffer.overflows` as 0. Six cases assert that the overflow count
-stays at 0. Three profiles, including
-`tools/profiles/performance-windowed-gpu.json`, list it in
-`required_metrics`, and `vkr_harness_metric_is_current_frame_work` counts it
-as frame-work evidence. Neither backend overflows the instance buffer: the
-Metal upload plan and `vkr_vk_upload_instances` fail the frame instead. The
-assertion therefore cannot fail.
+### Bistro re-cook after the `vec2_equal` change
 
-Recommendation: retire the three rows and their gates. If occupancy
-telemetry is wanted, publish the frame's instance count and the backend
-limit instead. Either change edits authoritative profiles.
-
-### Metal packet renderer translation unit (plan D11)
-
-Not done. A whole rebuild of `vkr_metal_packet_renderer.m` measured
-1.8-2.1 s in Debug and 2.3-2.9 s in Release. The single translation unit is
-documented intent in `vkr_metal_packet_renderer.m`. Objective-C sources do
-not get ThinLTO, so a split would export about 128 cross-part helpers that
-could no longer be inlined. Revisit if incremental build time becomes a
-measured problem.
-
-### Tracked Bistro text baselines
-
-Every Bistro text snapshot reports `baseline.load_failed`. The tracked
-baselines are version-2 capture summaries that are 112 bytes smaller than
-the frozen V2 layout: renderer fields and `provenance.world_renderer` were
-added without a version bump. Re-accepting the baselines needs baseline
-publication authority. Until then, snapshots are compared by hand against
-the local references `20260923T195327.504Z-00f563` and
-`20260923T200423.055Z-01114d`, whose noise floor is max 21 per channel and
-mean absolute error about 1e-4.
-
-### `vec2_equal` epsilon boundary
-
-`vec2_equal` treats a difference of exactly epsilon as unequal, while
-`vec3_equal` and `vec4_equal` treat it as equal. Mesh deduplication calls it
-with `VKR_FLOAT_EPSILON`, one float ULP at 1.0, so aligning the boundary
-could change cooked vertex counts. Decide this together with a re-cook check.
-
-## Checks that pass but no gate runs
-
-- `python3 tools/checks/report_long_functions.py --max-lines 300` exits 0:
-  6,753 functions measured, none in production over 300 lines, and 158 over
-  150. The largest remaining production functions are 293-300 lines.
-  `0e87af81` fixed the scanner, which had skipped every
-  `API_AVAILABLE(macos(26.0))` definition. Wiring the check into
-  `build_test.sh` would make 300 lines a hard limit; that is a policy choice.
-- A `VKR_METRICS_ENABLED=0` build of every target compiles with warnings as
-  errors, and its tester passes (`c5e95fb0`). No wrapper builds this
-  configuration, so it can break again silently. Configure it with
-  `VULKAN_SDK` set; see the header note below.
+Only mesh-cook deduplication calls `vec2_equal`, so existing cooked assets are
+unchanged until the next cook. A re-cook of `falcon.obj` in an isolated
+workspace was byte-identical under both comparators. Bistro was not
+re-cooked: a cook regenerates its 2.9 GB spec-gloss texture cache, the data
+disk had under 5 GB free, and the mesh cooker commits several GB of memory on
+large sources. The change can only merge vertex pairs whose texcoords differ
+by exactly 2^-23, which the cooked format's UV quantization already stores
+identically, so a re-cook can lower the vertex count but cannot change
+rendering.
 
 ## Deferred with evidence
 
@@ -166,8 +125,9 @@ checkout before quoting any of them as a change.
   after the D7 split, so the split was checked byte-identical against macOS
   output instead.
 - Failure paths without a fixture: the mesh-manager merged-geometry release
-  (`e96d585c`) and the Metal pipeline-creation library release (`44ff8c75`)
-  were checked by reading.
+  (`e96d585c`), the Metal pipeline-creation library release (`44ff8c75`) and
+  the scene loader's destruction of an untracked non-node mesh instance
+  (`e66953c3`) were checked by reading.
 
 ## Declined
 

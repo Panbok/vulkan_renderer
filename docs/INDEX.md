@@ -207,7 +207,7 @@ decisions before dependent implementation.
 
 | Proposal | Scope |
 |---|---|
-| [Codebase audit remediation](proposals/codebase-audit-remediation.md) | Open decisions, deferred items, ungated checks and host-unavailable checks left after the 2026-09-23 audit plan was implemented. |
+| [Codebase audit remediation](proposals/codebase-audit-remediation.md) | Applied owner decisions and what remains after the 2026-09-23 audit: the Vulkan text baseline, unversioned capture-summary records, the Bistro re-cook, deferred items and host-unavailable checks. |
 | [Renderer features and performance audit](proposals/renderer-features-perf/renderer-features-perf.md) | Normal/fog corrections, optional material storage, screen-space and post-processing costs, and remaining native acceptance. |
 | [Conditional D3D12 backend evaluation](proposals/d3d12-backend-evaluation.md) | Conditions for considering a third backend. |
 | [Dedicated transfer queue](proposals/dedicated-transfer-queue.md) | Independent upload submission and completion-safe publication. |
