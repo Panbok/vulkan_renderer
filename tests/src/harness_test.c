@@ -178,7 +178,6 @@ vkr_internal void test_harness_current_frame_work_metrics(void) {
   assert(vkr_harness_metric_is_current_frame_work("frame.render_width"));
   assert(vkr_harness_metric_is_current_frame_work(
       "frame.dynamic_resolution_transitions"));
-  assert(vkr_harness_metric_is_current_frame_work("instance_buffer.overflows"));
   assert(!vkr_harness_metric_is_current_frame_work(
       "visibility.gpu_visible.count"));
   assert(!vkr_harness_metric_is_current_frame_work(

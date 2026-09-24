@@ -38,8 +38,7 @@
     "far_plane": 500
   },
   "assertions": [
-    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 },
-    { "metric": "instance_buffer.overflows", "stat": "max", "max": 0 }
+    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 }
   ],
   "captures": [
     {

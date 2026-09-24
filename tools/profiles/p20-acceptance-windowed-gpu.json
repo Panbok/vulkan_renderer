@@ -31,7 +31,6 @@
     "draw.world.indirect_commands_issued",
     "draw.world.indirect_calls_issued",
     "visibility.objects_tested",
-    "upload.fence_waits",
-    "instance_buffer.overflows"
+    "upload.fence_waits"
   ]
 }

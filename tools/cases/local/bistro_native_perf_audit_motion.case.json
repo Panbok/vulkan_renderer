@@ -94,11 +94,6 @@
       "metric": "visibility.gbuffer.resolve_invalid",
       "stat": "max",
       "max": 0
-    },
-    {
-      "metric": "instance_buffer.overflows",
-      "stat": "max",
-      "max": 0
     }
   ],
   "target_image_count": 3,

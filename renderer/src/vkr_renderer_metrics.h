@@ -247,10 +247,6 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId job_worker_busy_ratio;
   VkrMetricId job_completed_total;
 
-  VkrMetricId instance_occupancy;
-  VkrMetricId instance_capacity;
-  VkrMetricId instance_overflows;
-
   VkrMetricId gpu_live_allocations;
   VkrMetricId gpu_peak_allocations;
   VkrMetricId gpu_allocations_created;

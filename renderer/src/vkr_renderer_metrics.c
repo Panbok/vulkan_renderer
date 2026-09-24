@@ -835,17 +835,6 @@ vkr_internal bool8_t vkr_renderer_metrics_register_jobs(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_renderer_metrics_register_instance_buffer(
-    VkrMetrics *metrics, VkrRendererMetricIds *ids) {
-  VKR_REGISTER_U64(instance_occupancy, "instance_buffer.occupancy",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(instance_capacity, "instance_buffer.capacity",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(instance_overflows, "instance_buffer.overflows",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  return true_v;
-}
-
 vkr_internal bool8_t vkr_renderer_metrics_register_gpu_memory(
     VkrMetrics *metrics, VkrRendererMetricIds *ids) {
   VKR_REGISTER_U64(gpu_live_allocations, "memory.gpu.allocations.live",
@@ -987,7 +976,6 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
       !vkr_renderer_metrics_register_packet_build(metrics, ids) ||
       !vkr_renderer_metrics_register_boot(metrics, ids) ||
       !vkr_renderer_metrics_register_jobs(metrics, ids) ||
-      !vkr_renderer_metrics_register_instance_buffer(metrics, ids) ||
       !vkr_renderer_metrics_register_gpu_memory(metrics, ids) ||
       !vkr_renderer_metrics_register_pipelines(metrics, ids) ||
       !vkr_renderer_metrics_register_cpu_memory(metrics, ids) ||
@@ -2004,7 +1992,6 @@ void vkr_renderer_metrics_collect(
                   : 0.0);
   VKR_SET_DELTA(job_completed_total, jobs_completed, jobs.jobs_completed_total);
 
-  VKR_SET_U64(instance_overflows, 0u);
   VKR_SET_U64(world_draws_collected, world->draws_collected);
   VKR_SET_U64(world_opaque_draws, world->opaque_draws);
   VKR_SET_U64(world_transmission_draws, world->transmission_draws);
