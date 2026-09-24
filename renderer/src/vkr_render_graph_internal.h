@@ -1,5 +1,6 @@
 #pragma once
 
+#include "containers/vkr_hashtable.h"
 #include "vkr_render_graph.h"
 #include "vkr_render_resources.h"
 
@@ -140,7 +141,11 @@ typedef struct VkrRenderGraph {
 
   Vector_VkrRgImage images;   /**< All image resources */
   Vector_VkrRgBuffer buffers; /**< All buffer resources */
-  Vector_VkrRgPass passes;    /**< All passes */
+  /** Name to vector index. Resources are never removed, so the keys borrow
+   * their graph-owned names until vkr_rg_destroy. */
+  VkrHashTable_uint32_t image_index_by_name;
+  VkrHashTable_uint32_t buffer_index_by_name;
+  Vector_VkrRgPass passes; /**< All passes */
 
   VkrRgImageHandle present_image; /**< Image used for present (swapchain) */
   Vector_VkrRgImageBarrier

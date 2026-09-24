@@ -437,6 +437,9 @@ void vkr_rg_set_packet(struct VkrRenderGraph *graph,
  */
 VkrRgImageHandle vkr_rg_find_image(const struct VkrRenderGraph *graph,
                                    String8 name);
+/** @brief Buffer counterpart to vkr_rg_find_image. */
+VkrRgBufferHandle vkr_rg_find_buffer(const struct VkrRenderGraph *graph,
+                                     String8 name);
 
 /**
  * @brief Named typed pass executor resolved once when a JSON graph is loaded.

@@ -2531,40 +2531,6 @@ vkr_internal void vkr_rg_release_name(VkrAllocator *allocator, String8 name,
   }
 }
 
-// TODO: use hash map instead of linear search
-vkr_internal VkrRgImageHandle vkr_rg_build_find_image(VkrRenderGraph *rg,
-                                                      String8 name) {
-  if (!rg) {
-    return VKR_RG_IMAGE_HANDLE_INVALID;
-  }
-
-  for (uint64_t i = 0; i < rg->images.length; ++i) {
-    VkrRgImage *image = vector_get_VkrRgImage(&rg->images, i);
-    if (string8_equals(&image->name, &name)) {
-      return (VkrRgImageHandle){(uint32_t)i + 1, image->generation};
-    }
-  }
-
-  return VKR_RG_IMAGE_HANDLE_INVALID;
-}
-
-// TODO: use hash map instead of linear search
-vkr_internal VkrRgBufferHandle vkr_rg_build_find_buffer(VkrRenderGraph *rg,
-                                                        String8 name) {
-  if (!rg) {
-    return VKR_RG_BUFFER_HANDLE_INVALID;
-  }
-
-  for (uint64_t i = 0; i < rg->buffers.length; ++i) {
-    VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&rg->buffers, i);
-    if (string8_equals(&buffer->name, &name)) {
-      return (VkrRgBufferHandle){(uint32_t)i + 1, buffer->generation};
-    }
-  }
-
-  return VKR_RG_BUFFER_HANDLE_INVALID;
-}
-
 vkr_internal uint32_t vkr_rg_resolve_index(const VkrRgJsonIndex *index,
                                            uint32_t fallback) {
   if (!index || !index->is_set) {
@@ -2942,7 +2908,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
                                 &owned_image)) {
           return false_v;
         }
-        VkrRgImageHandle handle = vkr_rg_build_find_image(rg, resolved_image);
+        VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_image);
         vkr_rg_release_name(frame_allocator, resolved_image, owned_image);
         if (!vkr_rg_image_handle_valid(handle)) {
           log_error("RenderGraph JSON: missing image '%.*s'",
@@ -2978,7 +2944,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
                                 &owned_image)) {
           return false_v;
         }
-        VkrRgImageHandle handle = vkr_rg_build_find_image(rg, resolved_image);
+        VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_image);
         vkr_rg_release_name(frame_allocator, resolved_image, owned_image);
         if (!vkr_rg_image_handle_valid(handle)) {
           log_error("RenderGraph JSON: missing image '%.*s'",
@@ -3027,8 +2993,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           }
 
           if (use->is_image) {
-            VkrRgImageHandle handle =
-                vkr_rg_build_find_image(rg, resolved_name);
+            VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_name);
             vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
             if (!vkr_rg_image_handle_valid(handle)) {
               log_error("RenderGraph JSON: missing image '%.*s'",
@@ -3059,8 +3024,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
               }
             }
           } else {
-            VkrRgBufferHandle handle =
-                vkr_rg_build_find_buffer(rg, resolved_name);
+            VkrRgBufferHandle handle = vkr_rg_find_buffer(rg, resolved_name);
             vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
             if (!vkr_rg_buffer_handle_valid(handle)) {
               log_error("RenderGraph JSON: missing buffer '%.*s'",
@@ -3100,8 +3064,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           }
 
           if (use->is_image) {
-            VkrRgImageHandle handle =
-                vkr_rg_build_find_image(rg, resolved_name);
+            VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_name);
             vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
             if (!vkr_rg_image_handle_valid(handle)) {
               log_error("RenderGraph JSON: missing image '%.*s'",
@@ -3132,8 +3095,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
               }
             }
           } else {
-            VkrRgBufferHandle handle =
-                vkr_rg_build_find_buffer(rg, resolved_name);
+            VkrRgBufferHandle handle = vkr_rg_find_buffer(rg, resolved_name);
             vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
             if (!vkr_rg_buffer_handle_valid(handle)) {
               log_error("RenderGraph JSON: missing buffer '%.*s'",
@@ -3157,7 +3119,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
 
   if (json_graph->outputs.present.length > 0) {
     VkrRgImageHandle handle =
-        vkr_rg_build_find_image(rg, json_graph->outputs.present);
+        vkr_rg_find_image(rg, json_graph->outputs.present);
     if (!vkr_rg_image_handle_valid(handle)) {
       log_error("RenderGraph JSON: missing present image '%.*s'",
                 (int)json_graph->outputs.present.length,
@@ -3171,7 +3133,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
 
   for (uint64_t i = 0; i < json_graph->outputs.export_images.length; ++i) {
     String8 name = json_graph->outputs.export_images.data[i];
-    VkrRgImageHandle handle = vkr_rg_build_find_image(rg, name);
+    VkrRgImageHandle handle = vkr_rg_find_image(rg, name);
     if (!vkr_rg_image_handle_valid(handle)) {
       log_error("RenderGraph JSON: missing export image '%.*s'",
                 (int)name.length, name.str);
@@ -3184,7 +3146,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
 
   for (uint64_t i = 0; i < json_graph->outputs.export_buffers.length; ++i) {
     String8 name = json_graph->outputs.export_buffers.data[i];
-    VkrRgBufferHandle handle = vkr_rg_build_find_buffer(rg, name);
+    VkrRgBufferHandle handle = vkr_rg_find_buffer(rg, name);
     if (!vkr_rg_buffer_handle_valid(handle)) {
       log_error("RenderGraph JSON: missing export buffer '%.*s'",
                 (int)name.length, name.str);
