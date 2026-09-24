@@ -330,6 +330,13 @@ vkr_internal void vkr_harness_snapshot_compare_baseline(
           summary_arena, baseline_root, &baseline, &baseline_error)) {
     if (string_equals(baseline_error.code, "baseline.missing")) {
       vkr_harness_report_add_authority_reason(report, "baseline.missing");
+    } else if (string_equals(baseline_error.code, "baseline.invalid")) {
+      /* An accepted summary this harness cannot read is incompatible, not
+         incomplete evidence: this run's captures are whole, and a reviewed
+         proposal from this run may replace it. */
+      vkr_harness_report_set_status(report, "missing_baseline",
+                                    VKR_HARNESS_EXIT_MISSING_BASELINE);
+      vkr_harness_report_add_incompatibility(report, "baseline.unreadable");
     } else {
       vkr_harness_report_mark_incomplete(report, "baseline.load_failed");
     }
