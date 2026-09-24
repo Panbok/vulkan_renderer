@@ -776,6 +776,9 @@ bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
                                 uint32_t field_count,
                                 char out_digest[VKR_HARNESS_DIGEST_MAX],
                                 VkrHarnessError *out_error);
+/** Whether the case's frames use the display-linear post target (ADR-043). */
+bool8_t
+vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest);
 bool8_t vkr_harness_case_fingerprints(
     const char *repo_root, VkrHarnessTool tool,
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,

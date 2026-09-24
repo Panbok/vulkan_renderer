@@ -126,8 +126,27 @@ vkr_internal bool8_t vkr_harness_camera_fields(
   return true_v;
 }
 
+bool8_t
+vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
+  /* Mirrors vkr_renderer_prepare_frame_data: the renderer filters
+     display-linear pixels when FXAA (omitted by MetalFX temporal frames) or
+     sharpening runs, unless the explicit "0" spelling selects the analytic
+     reference path. */
+  const VkrHarnessRendererConfig *renderer = &case_manifest->renderer;
+  const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
+  if ((post_cache && string_equals(post_cache, "0")) ||
+      !string_equals(renderer->render_mode, "default")) {
+    return false_v;
+  }
+  const bool8_t metalfx_frames =
+      string_equals(renderer->upscaler, "metalfx_temporal") &&
+      !vkr_harness_camera_is_orthographic(case_manifest->camera.mode);
+  return (renderer->fxaa_enabled && !metalfx_frames) ||
+         renderer->image_sharpness > 0.0f;
+}
+
 vkr_internal bool8_t vkr_harness_renderer_fields(
-    const VkrHarnessRendererConfig *renderer,
+    const VkrHarnessRendererConfig *renderer, bool8_t post_transform_cache,
     VkrHarnessFingerprintField fields[VKR_HARNESS_MAX_FINGERPRINT_FIELDS],
     uint32_t *count) {
   ADD("renderer.editor", "%u", renderer->editor);
@@ -167,10 +186,8 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
       renderer->bloom_threshold, renderer->bloom_knee,
       renderer->bloom_intensity);
   // Cache changes the placement of a nonlinear transform across filtering.
-  // Disabled spellings retain the analytic reference workload identity.
-  const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
-  if (post_cache && post_cache[0] != '\0' && !string_equals(post_cache, "0") &&
-      string_equals(renderer->render_mode, "default")) {
+  // The analytic reference path keeps the identity it had before the cache.
+  if (post_transform_cache) {
     ADD("renderer.post_transform_cache", "%u", 1u);
   }
   ADD("renderer.ssr", "%u", renderer->ssr_enabled);
@@ -259,7 +276,10 @@ vkr_internal bool8_t vkr_harness_workload_fields(
   ADD("case.scene", "%s", case_manifest->scene);
   ADD("case.scene_content", "%s", scene_content_digest);
   ADD("case.seed", "%llu", (unsigned long long)case_manifest->seed);
-  if (!vkr_harness_renderer_fields(&case_manifest->renderer, fields, count)) {
+  if (!vkr_harness_renderer_fields(
+          &case_manifest->renderer,
+          vkr_harness_post_transform_cache_enabled(case_manifest), fields,
+          count)) {
     return false_v;
   }
   ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),

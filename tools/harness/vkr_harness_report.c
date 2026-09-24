@@ -931,10 +931,8 @@ bool8_t vkr_harness_report_write(const char *path,
   if (!path || !report) {
     return false_v;
   }
-  const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
   const bool8_t post_transform_cache_enabled =
-      post_cache && post_cache[0] != '\0' && !string_equals(post_cache, "0") &&
-      string_equals(report->case_manifest.renderer.render_mode, "default");
+      vkr_harness_post_transform_cache_enabled(&report->case_manifest);
   const char *ssr_quality = getenv("VKR_SSR_QUALITY");
   if (!ssr_quality || ssr_quality[0] == '\0') {
     ssr_quality = "high";

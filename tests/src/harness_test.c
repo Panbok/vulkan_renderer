@@ -1024,8 +1024,9 @@ vkr_internal void test_harness_fingerprints(void) {
   }
 #undef SSR_FINGERPRINT
 #undef SET_SSR_QUALITY
-  // The opt-in nonlinear filtering path must not share an analytic workload
-  // fingerprint; equivalent boolean spellings must normalize identically.
+  // The default display-linear filtering path must not share the analytic
+  // reference workload fingerprint. Only the explicit "0" spelling selects the
+  // analytic path, and a case whose final pass does not filter has no cache.
   const char *previous_post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
   char saved_post_cache[4096] = {0};
   const bool8_t had_post_cache = previous_post_cache != NULL;
@@ -1049,17 +1050,37 @@ vkr_internal void test_harness_fingerprints(void) {
       environment, output, policy, &error))
   char analytic_workload[VKR_HARNESS_DIGEST_MAX];
   char cached_workload[VKR_HARNESS_DIGEST_MAX];
-  SET_POST_CACHE("");
-  POST_FINGERPRINT(analytic_workload);
+  assert(case_manifest.renderer.fxaa_enabled &&
+         case_manifest.renderer.image_sharpness == 0.0f);
   SET_POST_CACHE("0");
-  POST_FINGERPRINT(workload);
-  assert(strcmp(analytic_workload, workload) == 0);
-  SET_POST_CACHE("1");
+  POST_FINGERPRINT(analytic_workload);
+  SET_POST_CACHE("");
   POST_FINGERPRINT(cached_workload);
   assert(strcmp(analytic_workload, cached_workload) != 0);
-  SET_POST_CACHE("true");
+  SET_POST_CACHE("1");
   POST_FINGERPRINT(workload);
   assert(strcmp(cached_workload, workload) == 0);
+  // MetalFX temporal frames omit FXAA, so an unsharpened case keeps the
+  // analytic identity under the default spelling.
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "metalfx_temporal");
+  POST_FINGERPRINT(cached_workload);
+  SET_POST_CACHE("0");
+  POST_FINGERPRINT(workload);
+  assert(strcmp(cached_workload, workload) == 0);
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "spatial");
+  // Sharpening alone filters the final pass.
+  case_manifest.renderer.fxaa_enabled = false_v;
+  POST_FINGERPRINT(analytic_workload);
+  SET_POST_CACHE("");
+  POST_FINGERPRINT(workload);
+  assert(strcmp(analytic_workload, workload) == 0);
+  case_manifest.renderer.image_sharpness = 0.25f;
+  POST_FINGERPRINT(cached_workload);
+  SET_POST_CACHE("0");
+  POST_FINGERPRINT(workload);
+  assert(strcmp(cached_workload, workload) != 0);
+  case_manifest.renderer.image_sharpness = 0.0f;
+  case_manifest.renderer.fxaa_enabled = true_v;
   if (had_post_cache) {
     SET_POST_CACHE(saved_post_cache);
   } else {

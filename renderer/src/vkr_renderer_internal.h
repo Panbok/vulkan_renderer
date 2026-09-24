@@ -140,6 +140,9 @@ struct VkrRenderer {
   bool8_t gtao_forced_disabled;
   bool8_t ssr_forced_disabled;
   bool8_t ssgi_forced_disabled;
+  bool8_t fxaa_enabled;
+  /* False only for the analytic reference path; a frame uses the display-linear
+     target when its final pass filters (vkr_renderer_prepare_frame_data). */
   bool8_t post_transform_cache_enabled;
   bool8_t submitted_ssgi_enabled;
 

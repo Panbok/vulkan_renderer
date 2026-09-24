@@ -378,7 +378,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .srgb_output = true_v,
       .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
       .convert_vulkan_clip_y = true_v,
-      .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
+      .fxaa_enabled = renderer->fxaa_enabled,
       .transmission_compact_enabled =
           !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
@@ -461,7 +461,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .max_graph_buffers = 128u,
       .max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
-      .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
+      .fxaa_enabled = renderer->fxaa_enabled,
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
       .fsr31_enabled = renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31,
@@ -691,8 +691,12 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->ssr_forced_disabled = vkr_renderer_env_enabled("VKR_SSR_DISABLED");
   renderer->ssgi_forced_disabled =
       vkr_renderer_env_enabled("VKR_SSGI_DISABLED");
+  renderer->fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED");
+  /* Filtering display-linear pixels is the default (ADR-043); only the explicit
+     "0" spelling keeps the analytic per-tap transform as a reference. */
+  const char *post_transform_cache = getenv("VKR_POST_TRANSFORM_CACHE");
   renderer->post_transform_cache_enabled =
-      vkr_renderer_env_enabled("VKR_POST_TRANSFORM_CACHE");
+      !post_transform_cache || strcmp(post_transform_cache, "0") != 0;
   renderer->gtao_forced_disabled =
       vkr_renderer_env_enabled("VKR_GTAO_DISABLED");
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
@@ -798,8 +802,15 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.input = *packet;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
+  /* The display-linear target only pays off when the final pass filters:
+     FXAA, which MetalFX temporal frames omit, or sharpening. */
+  const bool8_t metalfx_frame =
+      rf->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL && !orthographic;
+  const bool8_t output_filtered = (rf->fxaa_enabled && !metalfx_frame) ||
+                                  packet->globals.image_sharpness > 0.0f;
   prepared->frame.post_transform_cache_enabled =
-      rf->post_transform_cache_enabled && prepared->frame.scene_rendering &&
+      rf->post_transform_cache_enabled && output_filtered &&
+      prepared->frame.scene_rendering &&
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.editor_image_available = false_v;
   prepared->frame.editor_image_width = 1u;

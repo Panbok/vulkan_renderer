@@ -789,6 +789,13 @@ pixels, which also vary run to run. The tracked Bistro Metal text baseline
 still passes with no failing pixels. Metal shader validation stops at the
 driver's 32-residency-set assertion, so it cannot check the removed bounds.
 
+The display-linear post target is now the default whenever FXAA or sharpening
+filters the final draw ([ADR-043](043-presentation-dpi-and-color-transfer.md)).
+Both native shader paths existed before; the Metal default was captured and
+timed, while the Vulkan path has compiled SPIR-V but no native execution.
+With `VKR_POST_TRANSFORM_CACHE=0` the tracked Bistro Metal text baseline passes
+all 14 captures with no failing pixels.
+
 Two near-degenerate reconstruction policies still differ: Metal rejects
 barycentric normalization sums at `1e-8`, Vulkan at `1e-12`; interpolated tangent
 handedness exactly zero maps to zero on Metal and positive handedness on Vulkan.

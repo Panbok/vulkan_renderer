@@ -224,6 +224,12 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   changes should leave deterministic fixtures byte-identical:
   [ADR-044](../adr/044-shader-cross-backend-contract.md),
   [ADR-055](../adr/055-screen-space-reflections.md).
+- [ ] Default display-linear post target: run `post_transform_cache_bistro`
+  unset and with `VKR_POST_TRANSFORM_CACHE=0`, confirm the
+  `Post.DisplayLinear.Fullscreen` pass only in the default run, and compare
+  both with the same-revision Metal captures. Check EDR scaling and accept a new
+  Vulkan Bistro text baseline generation, whose default workload fingerprint now
+  differs: [ADR-043](../adr/043-presentation-dpi-and-color-transfer.md).
 
 Use the existing feature cases under `tools/cases/local/` (for example
 `*_bistro_*`, `*_resize_*`, `*_editor_*`, `*_furnace_*`, and the feature-named

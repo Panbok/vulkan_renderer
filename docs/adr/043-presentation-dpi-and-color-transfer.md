@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-24
 authority: adr
 ---
 
@@ -47,8 +47,10 @@ controls share these validated ranges. A frame-owned 64-byte block holds the CAT
 white-balance matrix and grading controls; CPU preparation occurs once per frame.
 After exposure, apply white balance, luminance contrast about 0.18 and saturation,
 then the display transform. Metering, bloom and scene-linear temporal histories
-precede grading. Neutral grading bypasses the shader work. The default analytic
-path transforms each FXAA/sharpening sample. Editor composition and diagnostic modes bypass grading.
+precede grading. Neutral grading bypasses the shader work. When FXAA or
+sharpening filters the final draw, the display transform runs once per output
+pixel before filtering (see below). Editor composition and diagnostic modes
+bypass grading.
 Capture summary version 9 preserves the controls; versions 2–8 migrate to neutral
 grading and ACES fitted to reproduce their historical presentation.
 
@@ -78,24 +80,28 @@ Without FXAA, a nonzero strength adds four samples; zero adds no samples or
 filter arithmetic. Sampling offsets use output pixels and clamp at image edges.
 This is bounded detail recovery, not FSR RCAS or a new antialiasing algorithm.
 
-The default path adds no image, graph pass or temporal history. Editor.Resolve applies the
-filter once before overlays; Editor.Composite bypasses it. UI and diagnostic
-render modes are excluded. The SDK's FSR sharpener stays disabled, avoiding two
-sharpening stages. Native roots and the outstanding Metal validation gate are
-recorded in ADR-044. Increased edge contrast can expose existing temporal
-variation, so quality and cost require matched static and moving captures.
+Sharpening adds no temporal history; its source is the display-linear image
+described below. Editor.Resolve applies the filter once before overlays;
+Editor.Composite bypasses it. UI and diagnostic render modes are excluded. The
+SDK's FSR sharpener stays disabled, avoiding two sharpening stages. Native roots
+and the outstanding Metal validation gate are recorded in ADR-044. Increased
+edge contrast can expose existing temporal variation, so quality and cost
+require matched static and moving captures.
 
 
-## Optional display-linear preparation
+## Display-linear preparation
 
-`VKR_POST_TRANSFORM_CACHE=1` selects an output-resolution RGBA16F intermediate
-for default scene rendering. The unset, empty and `0` values retain the analytic
-path. A preparation draw applies exposure, grading, AgX or ACES, and the
-scene-relative extended-linear mapping once per output pixel. It omits FXAA,
-sharpening and the physical display scale. The final draw filters that image,
-then applies the physical output scale once. Editor.Resolve follows the same
-split; Editor.Composite continues sampling its already converted Scene image.
-Diagnostic render modes retain their existing path.
+Default scene rendering filters an output-resolution RGBA16F intermediate
+whenever the final draw filters: FXAA outside MetalFX temporal frames, or
+nonzero sharpening. `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic reference
+path, which transforms every filter sample; unset, empty and other values
+select the intermediate. A preparation draw applies exposure, grading, AgX or
+ACES, and the scene-relative extended-linear mapping once per output pixel. It
+omits FXAA, sharpening and the physical display scale. The final draw filters
+that image, then applies the physical output scale once. Editor.Resolve follows
+the same split; Editor.Composite continues sampling its already converted Scene
+image. Diagnostic render modes and frames without FXAA or sharpening keep the
+single analytic draw.
 
 The graph declares separate fullscreen and editor targets and activates only
 the current target. Each image uses `PER_IMAGE` storage with final-target
@@ -107,22 +113,37 @@ three 1920×1080 instances, before allocator alignment and resize overlap.
 No temporal history or shader-root fields are added.
 
 This moves a nonlinear transform before fractional FXAA sampling and introduces
-FP16 storage; edges and saturated highlights can differ. It trades one full-image
-write and subsequent sampled reads for repeated analytic arithmetic. The default
-remains analytic until matched native measurements and image inspection justify
-a change. The harness normalizes the enabled option into the workload fingerprint
-and reports `effective_config.post_transform_cache_enabled`; disabled spellings
-preserve the previous workload identity. Different transform paths are separate
-quality/cost observations, not equivalent-work speedup evidence.
+FP16 storage, so edges and saturated highlights differ from the analytic path.
+It trades one full-image write and subsequent sampled reads for repeated
+analytic arithmetic. The harness adds `renderer.post_transform_cache` to the
+workload fingerprint and reports `effective_config.post_transform_cache_enabled`
+whenever a case's frames use the intermediate; the analytic reference keeps its
+earlier identity. Different transform paths are separate quality/cost
+observations, not equivalent-work speedup evidence.
 
 [The Bistro comparison case](../../tools/cases/local/post_transform_cache_bistro.case.json)
 uses bright opaque, blended and transmitting surfaces with AgX, non-neutral
-grading, FXAA and sharpening. Its
+grading, FXAA and 0.4 sharpening at 640×360. On 2026-09-24, 13.91% of its
+final pixels differ from the analytic path, 0.8% by more than 32 codes and at
+most 201/255: the analytic path's bright rim around emissive edges becomes an
+antialiased edge. Two runs of either path differ in at most 32 pixels. Its
 [capture-free counterpart](../../tools/cases/local/post_transform_cache_bistro_cost.case.json)
-retains that workload at 1280×720. The [local M1 Pro evaluation](../../assets/verification/renderer-features/renderer-features-perf.txt)
-records highlight-edge differences and capture-free pass costs. It supports
-keeping this path opt-in; native bilateral parity, EDR scaling and authoritative
-performance acceptance remain open.
+retains that workload at 1280×720, where the
+[2026-09-12 M1 Pro evaluation](../../assets/verification/renderer-features/renderer-features-perf.txt)
+measured 1.381 ms analytic post against 0.128 ms preparation plus 0.326 ms
+finish.
+
+On 2026-09-24 the owner made the intermediate the default after a local M1 Pro
+comparison of `bistro_metal_production_040`: 2560×1440 output from 1024×576,
+TAA and FXAA, `local-windowed-gpu`, five children of 300 frames per path.
+Post.Tonemap took 3.630 ms (SD 0.570) analytically, against 0.372 ms
+preparation plus 1.260 ms finish; mean frame wall time fell from 22.850 ms to
+20.813 ms. These runs are non-authoritative: the tree was dirty and warmup did
+not stabilize. At that output the intermediate holds 84.4 MiB across three
+images. Tracked baselines accepted before the change match
+`VKR_POST_TRANSFORM_CACHE=0`; default runs report a fingerprint mismatch until
+new generations are accepted. Native Vulkan execution, EDR scaling and
+authoritative clean-tree timing remain open.
 
 
 ## Consequences

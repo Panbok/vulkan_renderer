@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-22
+updated: 2026-09-24
 authority: architecture
 ---
 
@@ -938,10 +938,12 @@ operates on tone-mapped linear Scene RGB in the existing presentation draw, afte
 FXAA when enabled. FXAA reuses its samples and attenuates sharpening where its
 subpixel blend is strongest. UI, editor recomposition, diagnostic views and
 temporal histories are excluded. FSR's SDK sharpener remains disabled.
-`VKR_POST_TRANSFORM_CACHE=1` optionally prepares an output-size RGBA16F
-display-linear image before FXAA/sharpening. It changes nonlinear filtering and
-adds image storage; analytic transformation remains the default. The final draw
-applies the physical output scale once.
+When FXAA or sharpening filters the final draw, an output-size RGBA16F
+display-linear image is prepared first, so the display transform runs once per
+pixel rather than per filter sample; MetalFX temporal frames omit FXAA.
+`VKR_POST_TRANSFORM_CACHE=0` keeps the analytic per-sample reference path. The
+final draw applies the physical output scale once; ADR-043 records the output
+difference, cost observations and open native gates.
 Internal Scene pixels, Scene presentation pixels and physical target/UI pixels
 remain distinct. Picking and composition share viewport mapping.
 See [ADR-043](adr/043-presentation-dpi-and-color-transfer.md).
