@@ -1,77 +1,14 @@
-// clang-format off
-
 /**
  * @file vkr_simd.h
- * @brief Cross-platform SIMD (Single Instruction, Multiple Data) operations abstraction layer.
+ * @brief Four-lane float and int32 vectors over ARM NEON, x86 SSE with FMA,
+ * or a scalar fallback, selected at compile time.
  *
- * This file provides a unified interface for vector operations across different
- * CPU architectures, specifically ARM NEON and x86 SSE. The implementation uses
- * compile-time detection to select the appropriate instruction set, with scalar
- * fallbacks for unsupported platforms.
- *
- * SIMD Architecture Support:
- * - ARM NEON (ARMv7, ARM64): Full implementation with native intrinsics
- * - x86 SSE/FMA (Intel/AMD): Native implementation selected for AVX builds
- * - Scalar Fallback: Pure C implementation for unsupported architectures
- *
- * Memory Layout and Alignment:
- * All SIMD types are 16-byte aligned for optimal performance. The union-based
- * approach allows seamless access to vector data in multiple ways:
- *
- * VKR_SIMD_F32X4 Memory Layout:
- * +------------------+ <-- 16-byte aligned address
- * | float32_t x/r/s  |  [0] First component (X/Red/S texture coordinate)
- * +------------------+
- * | float32_t y/g/t  |  [4] Second component (Y/Green/T texture coordinate)
- * +------------------+
- * | float32_t z/b/p  |  [8] Third component (Z/Blue/P texture coordinate)
- * +------------------+
- * | float32_t w/a/q  | [12] Fourth component (W/Alpha/Q texture coordinate)
- * +------------------+
- *
- * Element Access Patterns:
- * - Mathematical: x, y, z, w (position, direction vectors)
- * - Color: r, g, b, a (red, green, blue, alpha channels)
- * - Texture: s, t, p, q (texture coordinates)
- * - Array: elements[0-3] (direct array access)
- * - Native: .neon or .sse (platform-specific vector register)
- *
- * Performance Characteristics:
- * - ARM NEON: Optimized with hardware FMA, efficient horizontal operations
- * - Scalar Fallback: Structured to encourage compiler auto-vectorization
- * - 16-byte alignment ensures cache-friendly access patterns
- * - Minimal branching in hot paths for predictable performance
- *
- * Usage Patterns:
- * 1. Load data from memory: vkr_simd_load_f32x4()
- * 2. Perform vector operations: vkr_simd_add_f32x4(), vkr_simd_mul_f32x4(), etc.
- * 3. Use specialized operations: vkr_simd_dot_f32x4(), vkr_simd_fma_f32x4()
- * 4. Store results back to memory: vkr_simd_store_f32x4()
- *
- * Example Usage:
- * ```c
- * // Vector addition example
- * float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
- * float b[4] = {5.0f, 6.0f, 7.0f, 8.0f};
- * float result[4];
- * 
- * VKR_SIMD_F32X4 va = vkr_simd_load_f32x4(a);
- * VKR_SIMD_F32X4 vb = vkr_simd_load_f32x4(b);
- * VKR_SIMD_F32X4 vr = vkr_simd_add_f32x4(va, vb);
- * vkr_simd_store_f32x4(result, vr);
- * // result = {6.0f, 8.0f, 10.0f, 12.0f}
- * 
- * // Dot product example
- * float dot = vkr_simd_dot_f32x4(va, vb);
- * // dot = (1*5 + 2*6 + 3*7 + 4*8) = 70.0f
- * ```
- *
- * Thread Safety:
- * All SIMD operations are thread-safe as they operate on local data and
- * registers. No global state is modified during vector operations.
+ * VKR_SIMD_F32X4 and VKR_SIMD_I32X4 are 16-byte aligned unions whose lanes
+ * alias as x/y/z/w, r/g/b/a, s/t/p/q and elements[]; .neon or .sse exposes the
+ * native register. The declarations below are followed by one implementation
+ * block per target.
  */
 
-// clang-format on
 #pragma once
 
 #include "defines.h"
@@ -82,17 +19,6 @@
 // SIMD Type Definitions
 // =============================================================================
 
-/**
- * @brief 128-bit vector of four 32-bit floating-point values (ARM NEON, x86
- * SSE).
- * Provides multiple access patterns for different use cases:
- * - Mathematical: x, y, z, w components
- * - Color: r, g, b, a channels
- * - Texture: s, t, p, q coordinates
- * - Array: elements[0-3] for indexed access
- * - Native: .neon for direct ARM NEON intrinsic access
- * - Native: .sse for direct x86 SSE intrinsic access
- */
 typedef VKR_SIMD_ALIGN union {
 #if VKR_SIMD_ARM_NEON
   float32x4_t neon; /**< Native ARM NEON vector register */
@@ -119,10 +45,6 @@ typedef VKR_SIMD_ALIGN union {
   float32_t elements[4]; /**< Array access to all four elements */
 } VKR_SIMD_F32X4;
 
-/**
- * @brief 128-bit vector of four 32-bit signed integers (ARM NEON).
- * Used for integer vector operations, masks, and bit manipulation.
- */
 typedef VKR_SIMD_ALIGN union {
 #if VKR_SIMD_ARM_NEON
   int32x4_t neon; /**< Native ARM NEON integer vector register */
@@ -156,220 +78,77 @@ typedef VKR_SIMD_ALIGN union {
 // SIMD Operations for float32_t vectors
 // =============================================================================
 
-/**
- * @brief Loads four 32-bit floats from aligned memory into a SIMD vector.
- * @param ptr Pointer to memory containing four consecutive floats.
- *            Should be 16-byte aligned for optimal performance.
- * @return SIMD vector containing the loaded values.
- * @note Undefined behavior if ptr is null or points to invalid memory.
- */
+/* Loads four floats from any alignment. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_load_f32x4(const float32_t *ptr);
 
-/**
- * @brief Stores a SIMD vector to aligned memory as four 32-bit floats.
- * @param ptr Pointer to memory where four consecutive floats will be stored.
- *            Should be 16-byte aligned for optimal performance.
- * @param v SIMD vector to store.
- * @note Undefined behavior if ptr is null or points to invalid memory.
- */
+/* Stores four floats to any alignment. */
 vkr_internal INLINE void vkr_simd_store_f32x4(float32_t *ptr, VKR_SIMD_F32X4 v);
 
-/**
- * @brief Creates a SIMD vector from four individual float values.
- * @param x First component (X/Red/S coordinate).
- * @param y Second component (Y/Green/T coordinate).
- * @param z Third component (Z/Blue/P coordinate).
- * @param w Fourth component (W/Alpha/Q coordinate).
- * @return SIMD vector with the specified component values.
- */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_set_f32x4(float32_t x, float32_t y,
                                                       float32_t z, float32_t w);
 
-/**
- * @brief Creates a SIMD vector with all four components set to the same value.
- * @param value The value to broadcast to all four components.
- * @return SIMD vector with all components equal to value.
- */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_set1_f32x4(float32_t value);
 
-/**
- * @brief Performs element-wise addition of two SIMD vectors.
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}.
- */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_add_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b);
 
-/**
- * @brief Performs element-wise subtraction of two SIMD vectors.
- * @param a First vector operand (minuend).
- * @param b Second vector operand (subtrahend).
- * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}.
- */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_sub_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b);
 
-/**
- * @brief Performs element-wise multiplication of two SIMD vectors.
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}.
- */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_mul_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b);
 
-/**
- * @brief Performs element-wise division of two SIMD vectors.
- * @param a First vector operand (dividend).
- * @param b Second vector operand (divisor).
- * @return Vector containing {a.x/b.x, a.y/b.y, a.z/b.z, a.w/b.w}.
- * @note Division by zero behavior is platform-dependent.
- */
+/* Divisors are not checked; zero yields IEEE infinity or NaN. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_div_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b);
 
-/**
- * @brief Computes the square root of each element in the vector.
- * @param v Input vector.
- * @return Vector containing {sqrt(v.x), sqrt(v.y), sqrt(v.z), sqrt(v.w)}.
- * @note Square root of negative values is platform-dependent.
- */
+/* Negative lanes yield NaN. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_sqrt_f32x4(VKR_SIMD_F32X4 v);
 
-/**
- * @brief Computes the reciprocal square root (1/sqrt) of each element.
- * @param v Input vector.
- * @return Vector containing {1/sqrt(v.x), 1/sqrt(v.y), 1/sqrt(v.z),
- * 1/sqrt(v.w)}.
- * @note On ARM NEON, uses Newton-Raphson iteration for improved precision.
- * @note Reciprocal square root of zero or negative values is
- * platform-dependent.
- */
+/* Refined to float precision on every target. Zero and negative lanes give
+ * target-dependent results, so callers guard them. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_rsqrt_f32x4(VKR_SIMD_F32X4 v);
 
-/**
- * @brief Computes the element-wise minimum of two vectors.
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Vector containing {min(a.x,b.x), min(a.y,b.y), min(a.z,b.z),
- * min(a.w,b.w)}.
- */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_min_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b);
 
-/**
- * @brief Computes the element-wise maximum of two vectors.
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Vector containing {max(a.x,b.x), max(a.y,b.y), max(a.z,b.z),
- * max(a.w,b.w)}.
- */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_max_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b);
 
-/**
- * @brief Performs fused multiply-add operation: a + (b * c).
- * @param a Addend vector.
- * @param b First multiplicand vector.
- * @param c Second multiplicand vector.
- * @return Vector containing {a.x+(b.x*c.x), a.y+(b.y*c.y), a.z+(b.z*c.z),
- * a.w+(b.w*c.w)}.
- * @note Uses hardware FMA on ARM NEON for improved precision and performance.
- */
+/* a + b * c. Rounded once on NEON and x86. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_fma_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b,
                                                       VKR_SIMD_F32X4 c);
 
-/**
- * @brief Performs fused multiply-subtract operation: a - (b * c).
- * @param a Minuend vector.
- * @param b First multiplicand vector.
- * @param c Second multiplicand vector.
- * @return Vector containing {a.x-(b.x*c.x), a.y-(b.y*c.y), a.z-(b.z*c.z),
- * a.w-(b.w*c.w)}.
- * @note Uses hardware FMA on ARM NEON for improved precision and performance.
- */
+/* a - b * c. Rounded once on NEON and x86. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_fms_f32x4(VKR_SIMD_F32X4 a,
                                                       VKR_SIMD_F32X4 b,
                                                       VKR_SIMD_F32X4 c);
 
-/**
- * @brief Performs negated fused multiply-add operation: -(a + b * c).
- * @param a Addend vector.
- * @param b First multiplicand vector.
- * @param c Second multiplicand vector.
- * @return Vector containing {-(a.x+b.x*c.x), -(a.y+b.y*c.y), -(a.z+b.z*c.z),
- * -(a.w+b.w*c.w)}.
- * @note Uses hardware FMA on ARM NEON for improved precision and performance.
- */
+/* -(a + b * c). Rounded once on NEON and x86. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_fnma_f32x4(VKR_SIMD_F32X4 a,
                                                        VKR_SIMD_F32X4 b,
                                                        VKR_SIMD_F32X4 c);
 
-/**
- * @brief Performs negated fused multiply-subtract operation: -(a - b * c).
- * @param a Minuend vector.
- * @param b First multiplicand vector.
- * @param c Second multiplicand vector.
- * @return Vector containing {-(a.x-b.x*c.x), -(a.y-b.y*c.y), -(a.z-b.z*c.z),
- * -(a.w-b.w*c.w)}.
- * @note Uses hardware FMA on ARM NEON for improved precision and performance.
- */
+/* -(a - b * c). Rounded once on NEON and x86. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_fnms_f32x4(VKR_SIMD_F32X4 a,
                                                        VKR_SIMD_F32X4 b,
                                                        VKR_SIMD_F32X4 c);
 
-/**
- * @brief Computes the horizontal sum of all elements in the vector.
- * @param v Input vector.
- * @return Single float containing v.x + v.y + v.z + v.w.
- * @note Useful for reduction operations and computing vector magnitudes.
- */
 vkr_internal INLINE float32_t vkr_simd_hadd_f32x4(VKR_SIMD_F32X4 v);
 
-/**
- * @brief Computes the 4D dot product of two vectors.
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Single float containing a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w.
- * @note Optimized with hardware acceleration on supported platforms.
- */
 vkr_internal INLINE float32_t vkr_simd_dot_f32x4(VKR_SIMD_F32X4 a,
                                                  VKR_SIMD_F32X4 b);
 
-/**
- * @brief Computes the 3D dot product of two vectors (ignores W component).
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Single float containing a.x*b.x + a.y*b.y + a.z*b.z.
- * @note Optimized for 3D vector operations, commonly used in graphics.
- */
+/* Dot product of the XYZ lanes; W is ignored. */
 vkr_internal INLINE float32_t vkr_simd_dot3_f32x4(VKR_SIMD_F32X4 a,
                                                   VKR_SIMD_F32X4 b);
 
-/**
- * @brief Computes the 4D dot product of two vectors (alias for clarity).
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Single float containing a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w.
- * @note Identical to vkr_simd_dot_f32x4(), provided for API consistency.
- */
+/* Same as vkr_simd_dot_f32x4. */
 vkr_internal INLINE float32_t vkr_simd_dot4_f32x4(VKR_SIMD_F32X4 a,
                                                   VKR_SIMD_F32X4 b);
 
-/**
- * @brief Shuffles vector elements according to the specified indices.
- * @param v Input vector to shuffle.
- * @param x Index (0-3) for the first output element.
- * @param y Index (0-3) for the second output element.
- * @param z Index (0-3) for the third output element.
- * @param w Index (0-3) for the fourth output element.
- * @return Vector with elements rearranged: {v[x], v[y], v[z], v[w]}.
- * @note In debug builds, asserts that all indices are in range [0,3].
- * @note ARM NEON implementation uses element access due to limited shuffle
- * support.
- */
+/* Lane indices in [0, 3]; they may be run-time values. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
                                                           int32_t x, int32_t y,
                                                           int32_t z, int32_t w);
@@ -383,13 +162,11 @@ typedef enum VkrSimdCompareMode {
   VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON = 5,
 } VkrSimdCompareMode;
 
-/**
- * @brief Compares two 4D vectors with a given mode
- * @param a First vector operand
- * @param b Second vector operand
- * @param mode Comparison mode
- * @return True if the vectors are equal within the mode, false otherwise
- */
+/* ABSOLUTE_DIFFERENCE: the 4D length of a - b is at most |epsilon|.
+ * RELATIVE_DIFFERENCE: that length is at most |epsilon| times the longer input,
+ * or at most |epsilon| when both inputs are that short. EQUAL and NOT_EQUAL
+ * compare lanes exactly. EQUAL_EPSILON: every lane differs by at most
+ * |epsilon|; NOT_EQUAL_EPSILON: any lane differs by more. */
 vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
                                                    VKR_SIMD_F32X4 b,
                                                    VkrSimdCompareMode mode,
@@ -399,49 +176,17 @@ vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
 // SIMD Operations for int32_t vectors
 // =============================================================================
 
-/**
- * @brief Creates a SIMD integer vector from four individual int32_t values.
- * @param x First component (X/Red/S coordinate).
- * @param y Second component (Y/Green/T coordinate).
- * @param z Third component (Z/Blue/P coordinate).
- * @param w Fourth component (W/Alpha/Q coordinate).
- * @return SIMD integer vector with the specified component values.
- */
 vkr_internal INLINE VKR_SIMD_I32X4 vkr_simd_set_i32x4(int32_t x, int32_t y,
                                                       int32_t z, int32_t w);
 
-/**
- * @brief Creates a SIMD integer vector with all four components set to the
- * same value.
- * @param value The value to broadcast to all four components.
- * @return SIMD integer vector with all components equal to value.
- */
 vkr_internal INLINE VKR_SIMD_I32X4 vkr_simd_set1_i32x4(int32_t value);
 
-/**
- * @brief Performs element-wise addition of two SIMD integer vectors.
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}.
- */
 vkr_internal INLINE VKR_SIMD_I32X4 vkr_simd_add_i32x4(VKR_SIMD_I32X4 a,
                                                       VKR_SIMD_I32X4 b);
 
-/**
- * @brief Performs element-wise subtraction of two SIMD integer vectors.
- * @param a First vector operand (minuend).
- * @param b Second vector operand (subtrahend).
- * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}.
- */
 vkr_internal INLINE VKR_SIMD_I32X4 vkr_simd_sub_i32x4(VKR_SIMD_I32X4 a,
                                                       VKR_SIMD_I32X4 b);
 
-/**
- * @brief Performs element-wise multiplication of two SIMD integer vectors.
- * @param a First vector operand.
- * @param b Second vector operand.
- * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}.
- */
 vkr_internal INLINE VKR_SIMD_I32X4 vkr_simd_mul_i32x4(VKR_SIMD_I32X4 a,
                                                       VKR_SIMD_I32X4 b);
 
@@ -449,24 +194,12 @@ vkr_internal INLINE VKR_SIMD_I32X4 vkr_simd_mul_i32x4(VKR_SIMD_I32X4 a,
 // SIMD Operations Scatter-
 // =============================================================================
 
-/**
- * @brief Scatters the elements of a SIMD vector into specific positions based
- * on indices.
- * @param v Input vector to scatter.
- * @param indices Indices to scatter the elements into.
- * @return Vector with elements from v placed at positions specified by indices,
- * with out-of-bounds indices ignored and unwritten positions set to zero.
- */
+/* Writes lane i of v to lane indices[i]. Out-of-range indices are skipped,
+ * unwritten lanes are 0, and a repeated index keeps the last write. */
 vkr_internal INLINE VKR_SIMD_F32X4
 vkr_simd_scatter_f32x4(VKR_SIMD_F32X4 v, VKR_SIMD_I32X4 indices);
 
-/**
- * @brief Gathers elements from a SIMD vector at positions specified by indices.
- * @param v Input vector to gather from.
- * @param indices Indices to gather the elements from.
- * @return Vector with elements gathered from v at positions specified by
- * indices, with out-of-bounds indices producing zero elements.
- */
+/* Lane i reads v[indices[i]]; out-of-range indices read 0. */
 vkr_internal INLINE VKR_SIMD_F32X4
 vkr_simd_gather_f32x4(VKR_SIMD_F32X4 v, VKR_SIMD_I32X4 indices);
 

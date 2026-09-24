@@ -1,3 +1,13 @@
+/**
+ * @file vkr_quat.h
+ * @brief Quaternion rotations stored as Vec4 {x, y, z, w}, w the scalar part.
+ *
+ * Right-handed. Rotation functions expect unit quaternions, and a * b applies
+ * b first. Euler angles are radians: vkr_quat_from_euler rotates about X,
+ * then the rotated Y, then the rotated Z (equivalently fixed Z, Y, X), and
+ * vkr_quat_to_euler inverts it.
+ */
+
 #pragma once
 
 #include "defines.h"
@@ -8,82 +18,34 @@
 // Quaternion Constants
 // ================================================
 
-/**
- * @brief Threshold for switching from slerp to lerp
- * When quaternions are very close (dot product > 0.9995),
- * linear interpolation is more numerically stable
- */
+/* Above this dot product slerp falls back to normalized lerp, where sin(theta)
+ * is too small to divide by. */
 #define VKR_QUAT_SLERP_THRESHOLD 0.9995f
 
-/**
- * @brief Epsilon for quaternion operations
- * Used for checking near-zero conditions in normalization and axis extraction
- */
+/* Near-zero threshold for axis lengths and the inverse. */
 #define VKR_QUAT_EPSILON VKR_FLOAT_EPSILON
 
-/**
- * @brief Gimbal lock threshold for Euler angle extraction
- * When pitch is within this range of ±90°, we're in gimbal lock territory
- */
+/* |sin(pitch)| at or above which vkr_quat_to_euler treats pitch as +-90
+ * degrees. */
 #define VKR_QUAT_GIMBAL_LOCK_THRESHOLD 0.99999f
 
-/**
- * @file vkr_quat.h
- * @brief SIMD-optimized quaternion mathematics for 3D rotations
- *
- * Quaternions represent rotations using 4 components (x,y,z,w) where:
- * - (x,y,z) represents the vector part (imaginary components)
- * - w represents the scalar part (real component)
- *
- * Memory layout matches Vec4 for SIMD optimization.
- *
- * Coordinate System:
- * - RIGHT-HANDED coordinate system (industry standard)
- * - Positive rotations are counter-clockwise when looking along positive axis
- * - Compatible with Vulkan, USD, glTF standards
- *
- * Conventions:
- * - Euler angles use XYZ order (roll, pitch, yaw) - right-handed standard
- * - Quaternion multiplication: q1 * q2 applies q2 first, then q1
- * - Unit quaternions are assumed for rotation operations
- */
-
-/**
- * @brief Quaternion type
- * @note Memory layout matches Vec4 for SIMD optimization
- */
 typedef Vec4 VkrQuat;
 
 // ================================================
 // Quaternion Construction
 // ================================================
 
-/**
- * @brief Creates a quaternion from individual components
- * @param x Vector x component (i)
- * @param y Vector y component (j)
- * @param z Vector z component (k)
- * @param w Scalar component
- */
 vkr_internal INLINE VkrQuat vkr_quat_new(float32_t x, float32_t y, float32_t z,
                                          float32_t w) {
   return vec4_new(x, y, z, w);
 }
 
-/**
- * @brief Returns the identity quaternion (no rotation)
- * @return Quaternion representing no rotation (0,0,0,1)
- */
 vkr_internal INLINE VkrQuat vkr_quat_identity(void) {
   return vec4_new(0.0f, 0.0f, 0.0f, 1.0f);
 }
 
-/**
- * @brief Creates a quaternion from axis-angle representation
- * @param axis Normalized rotation axis
- * @param angle Rotation angle in radians
- * @return Quaternion representing the rotation
- */
+/* Angle in radians. A zero axis returns the identity; other axes are
+ * normalized unless their squared length is already within 0.1% of one. */
 vkr_internal INLINE VkrQuat vkr_quat_from_axis_angle(Vec3 axis,
                                                      float32_t angle) {
   // Validate axis is not zero
@@ -104,16 +66,7 @@ vkr_internal INLINE VkrQuat vkr_quat_from_axis_angle(Vec3 axis,
   return vec4_new(norm_axis.x * s, norm_axis.y * s, norm_axis.z * s, c);
 }
 
-/**
- * @brief Creates a quaternion from Euler angles (XYZ order - right-handed
- * convention)
- * @param roll Rotation around X axis (radians)
- * @param pitch Rotation around Y axis (radians)
- * @param yaw Rotation around Z axis (radians)
- * @return Quaternion representing the combined rotation
- * @note Rotation order: first X (roll), then Y (pitch), then Z (yaw)
- * @note Right-handed coordinate system standard
- */
+/* Radians. Builds qx(roll) * qy(pitch) * qz(yaw). */
 vkr_internal INLINE VkrQuat vkr_quat_from_euler(float32_t roll, float32_t pitch,
                                                 float32_t yaw) {
   float32_t cr = vkr_cos_f32(roll * 0.5f);
@@ -135,48 +88,26 @@ vkr_internal INLINE VkrQuat vkr_quat_from_euler(float32_t roll, float32_t pitch,
 // Quaternion Operations
 // ================================================
 
-/**
- * @brief Normalizes a quaternion to unit length
- * @param q Quaternion to normalize
- * @return Unit quaternion
- */
+/* Returns the zero quaternion when the length is at most VKR_FLOAT_EPSILON. */
 vkr_internal INLINE VkrQuat vkr_quat_normalize(VkrQuat q) {
   return vec4_normalize(q);
 }
 
-/**
- * @brief Returns the magnitude (length) of a quaternion
- * @param q Input quaternion
- * @return Magnitude of the quaternion
- */
 vkr_internal INLINE float32_t vkr_quat_length(VkrQuat q) {
   return vec4_length(q);
 }
 
-/**
- * @brief Returns the squared magnitude of a quaternion
- * @param q Input quaternion
- * @return Squared magnitude (avoids sqrt)
- */
 vkr_internal INLINE float32_t vkr_quat_length_squared(VkrQuat q) {
   return vec4_length_squared(q);
 }
 
-/**
- * @brief Computes the conjugate of a quaternion
- * @param q Input quaternion
- * @return Conjugate quaternion (-x,-y,-z,w)
- */
 vkr_internal INLINE VkrQuat vkr_quat_conjugate(VkrQuat q) {
   Vec4 mask = vec4_new(-1.0f, -1.0f, -1.0f, 1.0f);
   return vec4_mul(q, mask);
 }
 
-/**
- * @brief Computes the inverse of a quaternion
- * @param q Input quaternion
- * @return Inverse quaternion
- */
+/* Conjugate over the squared length; a near-zero quaternion returns the
+ * identity. */
 vkr_internal INLINE VkrQuat vkr_quat_inverse(VkrQuat q) {
   float32_t len_sq = vkr_quat_length_squared(q);
   if (len_sq > VKR_QUAT_EPSILON) {
@@ -186,19 +117,7 @@ vkr_internal INLINE VkrQuat vkr_quat_inverse(VkrQuat q) {
   return vkr_quat_identity();
 }
 
-/**
- * @brief Multiplies two quaternions (SIMD-optimized)
- * @param a First quaternion (applied second)
- * @param b Second quaternion (applied first)
- * @return Combined rotation a*b
- *
- * Formula: (a*b).w = a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
- *          (a*b).x = a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y
- *          (a*b).y = a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x
- *          (a*b).z = a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
- *
- * Uses straightforward SIMD approach for better readability and correctness
- */
+/* a * b applies b first, then a. */
 vkr_internal INLINE VkrQuat vkr_quat_mul(VkrQuat a, VkrQuat b) {
   // Calculate w: a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
   Vec4 a_for_w = vkr_simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
@@ -235,53 +154,23 @@ vkr_internal INLINE VkrQuat vkr_quat_mul(VkrQuat a, VkrQuat b) {
   return vec4_new(x, y, z, w);
 }
 
-/**
- * @brief Adds two quaternions (rarely used in practice)
- * @param a First quaternion
- * @param b Second quaternion
- * @return Sum of quaternions
- */
 vkr_internal INLINE VkrQuat vkr_quat_add(VkrQuat a, VkrQuat b) {
   return vec4_add(a, b);
 }
 
-/**
- * @brief Subtracts two quaternions (rarely used in practice)
- * @param a First quaternion
- * @param b Second quaternion
- * @return Difference of quaternions
- */
 vkr_internal INLINE VkrQuat vkr_quat_sub(VkrQuat a, VkrQuat b) {
   return vec4_sub(a, b);
 }
 
-/**
- * @brief Scales a quaternion by a scalar
- * @param q Quaternion to scale
- * @param s Scalar value
- * @return Scaled quaternion
- */
 vkr_internal INLINE VkrQuat vkr_quat_scale(VkrQuat q, float32_t s) {
   return vec4_scale(q, s);
 }
 
-/**
- * @brief Computes dot product of two quaternions
- * @param a First quaternion
- * @param b Second quaternion
- * @return Dot product (scalar)
- */
 vkr_internal INLINE float32_t vkr_quat_dot(VkrQuat a, VkrQuat b) {
   return vec4_dot(a, b);
 }
 
-/**
- * @brief Linear interpolation between quaternions
- * @param a Start quaternion
- * @param b End quaternion
- * @param t Interpolation factor [0,1]
- * @return Interpolated quaternion (normalized)
- */
+/* Takes the shorter arc and normalizes the result. */
 vkr_internal INLINE VkrQuat vkr_quat_lerp(VkrQuat a, VkrQuat b, float32_t t) {
   // Check if we need to negate for shortest path
   float32_t dot = vkr_quat_dot(a, b);
@@ -289,13 +178,8 @@ vkr_internal INLINE VkrQuat vkr_quat_lerp(VkrQuat a, VkrQuat b, float32_t t) {
   return vkr_quat_normalize(vec4_lerp(a, b_adjusted, t));
 }
 
-/**
- * @brief Spherical linear interpolation between quaternions
- * @param a Start quaternion
- * @param b End quaternion
- * @param t Interpolation factor [0,1]
- * @return Smoothly interpolated quaternion
- */
+/* Normalizes both inputs and takes the shorter arc; nearly parallel inputs use
+ * vkr_quat_lerp. */
 vkr_internal INLINE VkrQuat vkr_quat_slerp(VkrQuat a, VkrQuat b, float32_t t) {
   // Normalize input quaternions
   VkrQuat q1 = vkr_quat_normalize(a);
@@ -339,15 +223,8 @@ vkr_internal INLINE VkrQuat vkr_quat_slerp(VkrQuat a, VkrQuat b, float32_t t) {
 // Rotation Operations
 // ================================================
 
-/**
- * @brief Rotates a 3D vector by a quaternion (SIMD-optimized)
- * @param q Rotation quaternion (should be normalized)
- * @param v Vector to rotate
- * @return Rotated vector
- *
- * Uses the optimized Rodrigues' formula: v' = v + 2 * q.xyz × (q.xyz × v + q.w
- * * v) This is mathematically equivalent to: v' = q * v * q^-1
- */
+/* Expects a unit quaternion. Computes v + 2 q.xyz x (q.xyz x v + q.w v), which
+ * equals q v q^-1. */
 vkr_internal INLINE Vec3 vkr_quat_rotate_vec3(VkrQuat q, Vec3 v) {
   // First cross product: q × v
   Vec4 c1 = vec4_cross3(q, v);
@@ -362,13 +239,8 @@ vkr_internal INLINE Vec3 vkr_quat_rotate_vec3(VkrQuat q, Vec3 v) {
   return vec3_add(v, vec3_scale(c2, 2.0f));
 }
 
-/**
- * @brief Creates a look-at quaternion (right-handed system)
- * @param forward Forward direction (normalized)
- * @param up Up direction (normalized)
- * @return Quaternion representing the rotation
- * @note In right-handed system: Right = Forward × Up, Up = Right × Forward
- */
+/* The result maps -Z to forward and +Y toward up. Inputs need not be unit
+ * length but must not be parallel. */
 vkr_internal INLINE VkrQuat vkr_quat_look_at(Vec3 forward, Vec3 up) {
   // Ensure inputs are normalized
   Vec3 f = vec3_normalize(forward);
@@ -421,16 +293,8 @@ vkr_internal INLINE VkrQuat vkr_quat_look_at(Vec3 forward, Vec3 up) {
   }
 }
 
-/**
- * @brief Extracts Euler angles from quaternion (XYZ order - right-handed
- * convention)
- * @param q Input quaternion
- * @param[out] roll Rotation around X axis (radians)
- * @param[out] pitch Rotation around Y axis (radians)
- * @param[out] yaw Rotation around Z axis (radians)
- * @note Rotation order: first X (roll), then Y (pitch), then Z (yaw)
- * @note Right-handed coordinate system standard
- */
+/* Inverts vkr_quat_from_euler. At the gimbal-lock threshold yaw is 0 and roll
+ * carries the combined angle. */
 vkr_internal INLINE void vkr_quat_to_euler(VkrQuat q, float32_t *roll,
                                            float32_t *pitch, float32_t *yaw) {
   // Convert quaternion to rotation matrix elements we need
@@ -464,22 +328,12 @@ vkr_internal INLINE void vkr_quat_to_euler(VkrQuat q, float32_t *roll,
   }
 }
 
-/**
- * @brief Gets the angle of rotation from a quaternion
- * @param q Input quaternion
- * @return Angle in radians [0, 2π]
- */
+/* Radians in [0, 2 pi]. */
 vkr_internal INLINE float32_t vkr_quat_angle(VkrQuat q) {
   return 2.0f * vkr_acos_f32(vkr_clamp_f32(q.w, -1.0f, 1.0f));
 }
 
-/**
- * @brief Gets the rotation axis from a quaternion with improved numerical
- * stability
- * @param q Input quaternion
- * @return Normalized rotation axis (or forward vector if no rotation)
- * @note Improved precision for small angles using alternative computation
- */
+/* Unit rotation axis; +Z when the rotation is too small to define one. */
 vkr_internal INLINE Vec3 vkr_quat_axis(VkrQuat q) {
   // For small angles, use alternative stable computation
   // When angle is small, sin(angle/2) ≈ angle/2, so we can use the vector part
