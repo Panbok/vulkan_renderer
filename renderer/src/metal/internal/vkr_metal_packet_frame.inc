@@ -1743,251 +1743,255 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
+/* Records the SSR depth-pyramid base dispatch. */
+vkr_internal bool8_t vkr_metal_packet_prepare_ssr_depth_base(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  id<MTLTexture> pyramid = vkr_metal_packet_pass_texture(renderer, pass, 2u);
+  if (!depth || !vbuffer || !pyramid || !renderer->ssr_depth_base_pipeline ||
+      pyramid.width == 0u || pyramid.height == 0u)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSsrDepthBaseRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSsrDepthBaseRoot){
+      .params = renderer->ssr_params,
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
+      .pyramid_texture_id = pyramid.gpuResourceID._impl,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->ssr_depth_base_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(pyramid.width, pyramid.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Records one SSR depth-pyramid mip dispatch. */
+vkr_internal bool8_t vkr_metal_packet_prepare_ssr_depth_mip(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  const VkrRgImageUse *source_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  if (!source_use || !destination_use || !source_use->has_slice ||
+      !destination_use->has_slice || !renderer->ssr_depth_mip_pipeline)
+    return false_v;
+  id<MTLTexture> source = vkr_metal_packet_mip_texture(
+      renderer, source_use->image, source_use->slice.mip_level);
+  id<MTLTexture> destination = vkr_metal_packet_mip_texture(
+      renderer, destination_use->image, destination_use->slice.mip_level);
+  if (!source || !destination || source.width == 0u || source.height == 0u ||
+      destination.width == 0u || destination.height == 0u ||
+      source.width > UINT32_MAX || source.height > UINT32_MAX ||
+      destination.width > UINT32_MAX || destination.height > UINT32_MAX)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSsrDepthMipRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSsrDepthMipRoot){
+      .params = renderer->ssr_params,
+      .source_texture_id = source.gpuResourceID._impl,
+      .destination_texture_id = destination.gpuResourceID._impl,
+      .source_extent = {(uint32_t)source.width, (uint32_t)source.height},
+      .destination_extent = {(uint32_t)destination.width,
+                             (uint32_t)destination.height},
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->ssr_depth_mip_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(destination.width, destination.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Records the SSR ray-trace dispatch. */
+vkr_internal bool8_t vkr_metal_packet_prepare_ssr_trace(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  id<MTLTexture> normal = vkr_metal_packet_pass_texture(renderer, pass, 2u);
+  id<MTLTexture> specular = vkr_metal_packet_pass_texture(renderer, pass, 3u);
+  id<MTLTexture> pyramid = vkr_metal_packet_pass_texture(renderer, pass, 4u);
+  id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 6u);
+  id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 7u);
+  id<MTLTexture> clearcoat = vkr_metal_packet_pass_texture(renderer, pass, 8u);
+  id<MTLTexture> hit = vkr_metal_packet_pass_texture(renderer, pass, 9u);
+  if (!depth || !vbuffer || !normal || !specular || !pyramid || !hdr || !raw ||
+      (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u)) || !hit ||
+      !renderer->ssr_trace_pipeline || raw.width == 0u || raw.height == 0u) {
+    return false_v;
+  }
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSsrTraceRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSsrTraceRoot){
+      .params = renderer->ssr_params,
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
+      .normal_texture_id = normal.gpuResourceID._impl,
+      .specular_texture_id = specular.gpuResourceID._impl,
+      .pyramid_texture_id = pyramid.gpuResourceID._impl,
+      .hdr_texture_id = hdr.gpuResourceID._impl,
+      .raw_texture_id = raw.gpuResourceID._impl,
+      .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
+      .hit_texture_id = hit.gpuResourceID._impl,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->ssr_trace_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(raw.width, raw.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Records the SSR temporal dispatch and its reprojection record. */
+vkr_internal bool8_t vkr_metal_packet_prepare_ssr_temporal(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
-    API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !packet || !prepared || !upload ||
-      !renderer->prepared_frame.ssr_enabled)
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 2u);
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 3u);
+  id<MTLTexture> normal = vkr_metal_packet_pass_texture(renderer, pass, 4u);
+  id<MTLTexture> output_color =
+      vkr_metal_packet_pass_texture(renderer, pass, 10u);
+  id<MTLTexture> output_depth =
+      vkr_metal_packet_pass_texture(renderer, pass, 11u);
+  id<MTLTexture> output_identity =
+      vkr_metal_packet_pass_texture(renderer, pass, 12u);
+  VkrMetalPacketGraphBufferInstance *visible =
+      vkr_metal_packet_pass_buffer(renderer, pass, 13u);
+  VkrMetalPacketGraphBufferInstance *instances =
+      vkr_metal_packet_pass_buffer(renderer, pass, 14u);
+  id<MTLTexture> specular = vkr_metal_packet_pass_texture(renderer, pass, 15u);
+  id<MTLTexture> clearcoat = vkr_metal_packet_pass_texture(renderer, pass, 16u);
+  id<MTLTexture> hit = vkr_metal_packet_pass_texture(renderer, pass, 17u);
+  const VkrRgBufferUse *transform_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 18u, 0u);
+  if (!raw || !vbuffer || !depth || !normal || !output_color || !output_depth ||
+      !output_identity || !visible || !instances || !specular ||
+      (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u)) ||
+      !hit || !transform_use ||
+      transform_use->buffer.id !=
+          renderer->temporal_transform_history_handle.id ||
+      transform_use->buffer.generation !=
+          renderer->temporal_transform_history_handle.generation ||
+      !renderer->ssr_temporal_pipeline) {
     return false_v;
-
-  if (kind == VKR_RG_EXECUTOR_SSR_DEPTH_BASE) {
-    id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
-    id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 1u);
-    id<MTLTexture> pyramid = vkr_metal_packet_pass_texture(renderer, pass, 2u);
-    if (!depth || !vbuffer || !pyramid || !renderer->ssr_depth_base_pipeline ||
-        pyramid.width == 0u || pyramid.height == 0u)
-      return false_v;
-    uint64_t root_gpu = 0u;
-    VkrMetalPacketSsrDepthBaseRoot *root =
-        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-    if (!root)
-      return false_v;
-    *root = (VkrMetalPacketSsrDepthBaseRoot){
-        .params = renderer->ssr_params,
-        .depth_texture_id = depth.gpuResourceID._impl,
-        .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
-        .pyramid_texture_id = pyramid.gpuResourceID._impl,
-    };
-    prepared->dispatch = (VkrMetalPacketDispatch){
-        .pipeline = renderer->ssr_depth_base_pipeline,
-        .root = root_gpu,
-        .threads = MTLSizeMake(pyramid.width, pyramid.height, 1u),
-        .group_size = MTLSizeMake(8u, 8u, 1u),
-    };
-    prepared->active = true_v;
-    return true_v;
   }
-
-  if (kind == VKR_RG_EXECUTOR_SSR_DEPTH_MIP) {
-    const VkrRgImageUse *source_use =
-        vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
-    const VkrRgImageUse *destination_use =
-        vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
-    if (!source_use || !destination_use || !source_use->has_slice ||
-        !destination_use->has_slice || !renderer->ssr_depth_mip_pipeline)
-      return false_v;
-    id<MTLTexture> source = vkr_metal_packet_mip_texture(
-        renderer, source_use->image, source_use->slice.mip_level);
-    id<MTLTexture> destination = vkr_metal_packet_mip_texture(
-        renderer, destination_use->image, destination_use->slice.mip_level);
-    if (!source || !destination || source.width == 0u || source.height == 0u ||
-        destination.width == 0u || destination.height == 0u ||
-        source.width > UINT32_MAX || source.height > UINT32_MAX ||
-        destination.width > UINT32_MAX || destination.height > UINT32_MAX)
-      return false_v;
-    uint64_t root_gpu = 0u;
-    VkrMetalPacketSsrDepthMipRoot *root =
-        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-    if (!root)
-      return false_v;
-    *root = (VkrMetalPacketSsrDepthMipRoot){
-        .params = renderer->ssr_params,
-        .source_texture_id = source.gpuResourceID._impl,
-        .destination_texture_id = destination.gpuResourceID._impl,
-        .source_extent = {(uint32_t)source.width, (uint32_t)source.height},
-        .destination_extent = {(uint32_t)destination.width,
-                               (uint32_t)destination.height},
-    };
-    prepared->dispatch = (VkrMetalPacketDispatch){
-        .pipeline = renderer->ssr_depth_mip_pipeline,
-        .root = root_gpu,
-        .threads = MTLSizeMake(destination.width, destination.height, 1u),
-        .group_size = MTLSizeMake(8u, 8u, 1u),
-    };
-    prepared->active = true_v;
-    return true_v;
-  }
-
-  if (kind == VKR_RG_EXECUTOR_SSR_TRACE) {
-    id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
-    id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 1u);
-    id<MTLTexture> normal = vkr_metal_packet_pass_texture(renderer, pass, 2u);
-    id<MTLTexture> specular = vkr_metal_packet_pass_texture(renderer, pass, 3u);
-    id<MTLTexture> pyramid = vkr_metal_packet_pass_texture(renderer, pass, 4u);
-    id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 6u);
-    id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 7u);
-    id<MTLTexture> clearcoat =
-        vkr_metal_packet_pass_texture(renderer, pass, 8u);
-    id<MTLTexture> hit = vkr_metal_packet_pass_texture(renderer, pass, 9u);
-    if (!depth || !vbuffer || !normal || !specular || !pyramid || !hdr ||
-        !raw ||
-        (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 8u, 0u)) ||
-        !hit || !renderer->ssr_trace_pipeline || raw.width == 0u ||
-        raw.height == 0u) {
-      return false_v;
-    }
-    uint64_t root_gpu = 0u;
-    VkrMetalPacketSsrTraceRoot *root =
-        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-    if (!root)
-      return false_v;
-    *root = (VkrMetalPacketSsrTraceRoot){
-        .params = renderer->ssr_params,
-        .depth_texture_id = depth.gpuResourceID._impl,
-        .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
-        .normal_texture_id = normal.gpuResourceID._impl,
-        .specular_texture_id = specular.gpuResourceID._impl,
-        .pyramid_texture_id = pyramid.gpuResourceID._impl,
-        .hdr_texture_id = hdr.gpuResourceID._impl,
-        .raw_texture_id = raw.gpuResourceID._impl,
-        .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
-        .hit_texture_id = hit.gpuResourceID._impl,
-    };
-    prepared->dispatch = (VkrMetalPacketDispatch){
-        .pipeline = renderer->ssr_trace_pipeline,
-        .root = root_gpu,
-        .threads = MTLSizeMake(raw.width, raw.height, 1u),
-        .group_size = MTLSizeMake(8u, 8u, 1u),
-    };
-    prepared->active = true_v;
-    return true_v;
-  }
-
-  if (kind == VKR_RG_EXECUTOR_SSR_TEMPORAL) {
-    id<MTLTexture> raw = vkr_metal_packet_pass_texture(renderer, pass, 0u);
-    id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 2u);
-    id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 3u);
-    id<MTLTexture> normal = vkr_metal_packet_pass_texture(renderer, pass, 4u);
-    id<MTLTexture> output_color =
-        vkr_metal_packet_pass_texture(renderer, pass, 10u);
-    id<MTLTexture> output_depth =
-        vkr_metal_packet_pass_texture(renderer, pass, 11u);
-    id<MTLTexture> output_identity =
-        vkr_metal_packet_pass_texture(renderer, pass, 12u);
-    VkrMetalPacketGraphBufferInstance *visible =
-        vkr_metal_packet_pass_buffer(renderer, pass, 13u);
-    VkrMetalPacketGraphBufferInstance *instances =
-        vkr_metal_packet_pass_buffer(renderer, pass, 14u);
-    id<MTLTexture> specular =
-        vkr_metal_packet_pass_texture(renderer, pass, 15u);
-    id<MTLTexture> clearcoat =
-        vkr_metal_packet_pass_texture(renderer, pass, 16u);
-    id<MTLTexture> hit = vkr_metal_packet_pass_texture(renderer, pass, 17u);
-    const VkrRgBufferUse *transform_use =
-        vkr_rg_pass_find_buffer_use(&pass->desc, 18u, 0u);
-    if (!raw || !vbuffer || !depth || !normal || !output_color ||
-        !output_depth || !output_identity || !visible || !instances ||
-        !specular ||
-        (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u)) ||
-        !hit || !transform_use ||
-        transform_use->buffer.id !=
-            renderer->temporal_transform_history_handle.id ||
-        transform_use->buffer.generation !=
-            renderer->temporal_transform_history_handle.generation ||
-        !renderer->ssr_temporal_pipeline) {
-      return false_v;
-    }
-    const uint32_t selected = renderer->selected_ssr_history_instance;
-    VkrMetalPacketImage *color_slot =
-        vkr_metal_packet_named_image_slot(renderer, "ssr_history_color");
-    VkrMetalPacketImage *depth_slot =
-        vkr_metal_packet_named_image_slot(renderer, "ssr_history_depth");
-    VkrMetalPacketImage *identity_slot =
-        vkr_metal_packet_named_image_slot(renderer, "ssr_history_identity");
-    const bool8_t history_valid = selected != UINT32_MAX && color_slot &&
-                                  depth_slot && identity_slot &&
-                                  selected < color_slot->instance_count &&
-                                  selected < depth_slot->instance_count &&
-                                  selected < identity_slot->instance_count;
-    VkrMetalPacketGraphBufferInstance *previous_transform =
-        history_valid ? vkr_metal_packet_graph_buffer_instance(
-                            renderer, transform_use->buffer, selected)
-                      : NULL;
-    if (selected != UINT32_MAX &&
-        (!history_valid || !previous_transform ||
-         !previous_transform->history_valid ||
-         previous_transform->history_producer_submit_value !=
-             color_slot->instances[selected].history_producer_submit_value ||
-         previous_transform->history_frame_index !=
-             color_slot->instances[selected].history_frame_index ||
-         previous_transform->history_scene_generation !=
-             color_slot->instances[selected].history_scene_generation))
-      return false_v;
-    id<MTLTexture> history_color =
-        history_valid ? (id<MTLTexture>)color_slot->instances[selected]
-                            .resource.metal_texture
-                      : output_color;
-    id<MTLTexture> history_depth =
-        history_valid ? (id<MTLTexture>)depth_slot->instances[selected]
-                            .resource.metal_texture
-                      : output_depth;
-    id<MTLTexture> history_identity =
-        history_valid ? (id<MTLTexture>)identity_slot->instances[selected]
-                            .resource.metal_texture
-                      : output_identity;
-    uint64_t reprojection_gpu = 0u;
-    VkrSsrReprojectionGpuParams *reprojection = vkr_metal_packet_next_root(
-        upload, sizeof(*reprojection), &reprojection_gpu);
-    if (!reprojection)
-      return false_v;
-    *reprojection = (VkrSsrReprojectionGpuParams){
-        .inverse_view = mat4_inverse(packet->input.globals.view),
-        .previous_view = history_valid ? previous_transform->history_view
-                                       : packet->input.globals.view,
-    };
-    uint64_t root_gpu = 0u;
-    VkrMetalPacketSsrTemporalRoot *root =
-        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-    if (!root)
-      return false_v;
-    *root = (VkrMetalPacketSsrTemporalRoot){
-        .params = renderer->ssr_params,
-        .raw_texture_id = raw.gpuResourceID._impl,
-        .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
-        .depth_texture_id = depth.gpuResourceID._impl,
-        .normal_texture_id = normal.gpuResourceID._impl,
-        .history_color_texture_id = history_color.gpuResourceID._impl,
-        .history_depth_texture_id = history_depth.gpuResourceID._impl,
-        .history_identity_texture_id = history_identity.gpuResourceID._impl,
-        .output_color_texture_id = output_color.gpuResourceID._impl,
-        .output_depth_texture_id = output_depth.gpuResourceID._impl,
-        .output_identity_texture_id = output_identity.gpuResourceID._impl,
-        .visible_rows = visible->resource.gpu_address,
-        .instances = instances->resource.gpu_address,
-        .specular_texture_id = specular.gpuResourceID._impl,
-        .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
-        .hit_texture_id = hit.gpuResourceID._impl,
-        .previous_transforms =
-            history_valid ? previous_transform->resource.gpu_address : 0u,
-        .reprojection = reprojection_gpu,
-        .previous_frame_index =
-            history_valid ? (uint32_t)previous_transform->history_frame_index
-                          : 0u,
-    };
-    prepared->dispatch = (VkrMetalPacketDispatch){
-        .pipeline = renderer->ssr_temporal_pipeline,
-        .root = root_gpu,
-        .threads = MTLSizeMake(output_color.width, output_color.height, 1u),
-        .group_size = MTLSizeMake(8u, 8u, 1u),
-    };
-    prepared->active = true_v;
-    return true_v;
-  }
-
-  if (kind != VKR_RG_EXECUTOR_SSR_COMPOSITE)
+  const uint32_t selected = renderer->selected_ssr_history_instance;
+  VkrMetalPacketImage *color_slot =
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_color");
+  VkrMetalPacketImage *depth_slot =
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_depth");
+  VkrMetalPacketImage *identity_slot =
+      vkr_metal_packet_named_image_slot(renderer, "ssr_history_identity");
+  const bool8_t history_valid = selected != UINT32_MAX && color_slot &&
+                                depth_slot && identity_slot &&
+                                selected < color_slot->instance_count &&
+                                selected < depth_slot->instance_count &&
+                                selected < identity_slot->instance_count;
+  VkrMetalPacketGraphBufferInstance *previous_transform =
+      history_valid ? vkr_metal_packet_graph_buffer_instance(
+                          renderer, transform_use->buffer, selected)
+                    : NULL;
+  if (selected != UINT32_MAX &&
+      (!history_valid || !previous_transform ||
+       !previous_transform->history_valid ||
+       previous_transform->history_producer_submit_value !=
+           color_slot->instances[selected].history_producer_submit_value ||
+       previous_transform->history_frame_index !=
+           color_slot->instances[selected].history_frame_index ||
+       previous_transform->history_scene_generation !=
+           color_slot->instances[selected].history_scene_generation))
     return false_v;
+  id<MTLTexture> history_color =
+      history_valid ? (id<MTLTexture>)color_slot->instances[selected]
+                          .resource.metal_texture
+                    : output_color;
+  id<MTLTexture> history_depth =
+      history_valid ? (id<MTLTexture>)depth_slot->instances[selected]
+                          .resource.metal_texture
+                    : output_depth;
+  id<MTLTexture> history_identity =
+      history_valid ? (id<MTLTexture>)identity_slot->instances[selected]
+                          .resource.metal_texture
+                    : output_identity;
+  uint64_t reprojection_gpu = 0u;
+  VkrSsrReprojectionGpuParams *reprojection = vkr_metal_packet_next_root(
+      upload, sizeof(*reprojection), &reprojection_gpu);
+  if (!reprojection)
+    return false_v;
+  *reprojection = (VkrSsrReprojectionGpuParams){
+      .inverse_view = mat4_inverse(packet->input.globals.view),
+      .previous_view = history_valid ? previous_transform->history_view
+                                     : packet->input.globals.view,
+  };
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSsrTemporalRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSsrTemporalRoot){
+      .params = renderer->ssr_params,
+      .raw_texture_id = raw.gpuResourceID._impl,
+      .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .normal_texture_id = normal.gpuResourceID._impl,
+      .history_color_texture_id = history_color.gpuResourceID._impl,
+      .history_depth_texture_id = history_depth.gpuResourceID._impl,
+      .history_identity_texture_id = history_identity.gpuResourceID._impl,
+      .output_color_texture_id = output_color.gpuResourceID._impl,
+      .output_depth_texture_id = output_depth.gpuResourceID._impl,
+      .output_identity_texture_id = output_identity.gpuResourceID._impl,
+      .visible_rows = visible->resource.gpu_address,
+      .instances = instances->resource.gpu_address,
+      .specular_texture_id = specular.gpuResourceID._impl,
+      .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
+      .hit_texture_id = hit.gpuResourceID._impl,
+      .previous_transforms =
+          history_valid ? previous_transform->resource.gpu_address : 0u,
+      .reprojection = reprojection_gpu,
+      .previous_frame_index =
+          history_valid ? (uint32_t)previous_transform->history_frame_index
+                        : 0u,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->ssr_temporal_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(output_color.width, output_color.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Records the SSR composite dispatch and its frame root. */
+vkr_internal bool8_t vkr_metal_packet_prepare_ssr_composite(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> history = vkr_metal_packet_pass_texture(renderer, pass, 1u);
   id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 2u);
@@ -2058,6 +2062,35 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
   if (!renderer->prepared_frame.gtao_enabled)
     renderer->gtao_white_last_use_submit_value = renderer->submit_value + 1u;
   return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_prepare_ssr(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload, VkrRgExecutorKind kind)
+    API_AVAILABLE(macos(26.0)) {
+  if (!renderer || !pass || !packet || !prepared || !upload ||
+      !renderer->prepared_frame.ssr_enabled)
+    return false_v;
+
+  switch (kind) {
+  case VKR_RG_EXECUTOR_SSR_DEPTH_BASE:
+    return vkr_metal_packet_prepare_ssr_depth_base(renderer, pass, prepared,
+                                                   upload);
+  case VKR_RG_EXECUTOR_SSR_DEPTH_MIP:
+    return vkr_metal_packet_prepare_ssr_depth_mip(renderer, pass, prepared,
+                                                  upload);
+  case VKR_RG_EXECUTOR_SSR_TRACE:
+    return vkr_metal_packet_prepare_ssr_trace(renderer, pass, prepared, upload);
+  case VKR_RG_EXECUTOR_SSR_TEMPORAL:
+    return vkr_metal_packet_prepare_ssr_temporal(renderer, pass, packet,
+                                                 prepared, upload);
+  case VKR_RG_EXECUTOR_SSR_COMPOSITE:
+    return vkr_metal_packet_prepare_ssr_composite(renderer, pass, packet,
+                                                  prepared, upload);
+  default:
+    return false_v;
+  }
 }
 
 vkr_internal bool8_t vkr_metal_packet_prepare_fog(
