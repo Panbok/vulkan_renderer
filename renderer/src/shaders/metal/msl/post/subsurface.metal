@@ -131,15 +131,21 @@ vkr_metal_packet_subsurface_gather(constant VkrMetalPacketSubsurfaceRoot &root
           guide = 0.0f;
           continue;
         }
-        VkrGpuVisibleDrawRow tap_row = root.visible_rows[tap_visible - 1u];
-        float4 tap_material =
-            root.frame->materials[tap_row.material_index].material_subsurface;
-        if (tap_row.instance_index != center_row.instance_index ||
-            uint(tap_material.y) != profile) {
-          guide = 0.0f;
-          continue;
+        // A tap on the center's draw row shares its instance, profile and
+        // coupling; only other rows need the dependent row and material loads.
+        float tap_coupling = material.x;
+        if (tap_visible != visible) {
+          VkrGpuVisibleDrawRow tap_row = root.visible_rows[tap_visible - 1u];
+          float4 tap_material =
+              root.frame->materials[tap_row.material_index].material_subsurface;
+          if (tap_row.instance_index != center_row.instance_index ||
+              uint(tap_material.y) != profile) {
+            guide = 0.0f;
+            continue;
+          }
+          tap_coupling = tap_material.x;
         }
-        coupling = min(coupling, tap_material.x);
+        coupling = min(coupling, tap_coupling);
         float3 tap_normal =
             vkr_metal_packet_octahedral_decode(root.normal.read(q).xy);
         float3 tap_world =

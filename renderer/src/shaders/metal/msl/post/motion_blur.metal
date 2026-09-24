@@ -14,10 +14,11 @@ constexpr sampler vkr_motion_blur_nearest(coord::normalized,
                                           address::clamp_to_edge,
                                           filter::nearest);
 
+// `validity_extent` is the raw validity image size, queried once per pixel.
 bool vkr_metal_motion_blur_eligible(constant VkrMetalPacketMotionBlurRoot &root,
-                                    float2 output_uv) {
+                                    uint2 validity_extent, float2 output_uv) {
   float2 raw_uv = output_uv * root.params.depth_uv.xy + root.params.depth_uv.zw;
-  uint2 extent = uint2(root.source3.get_width(), root.source3.get_height());
+  uint2 extent = validity_extent;
   int2 base = int2(floor(raw_uv * float2(extent) - 0.5f));
   // Conservative bilinear footprint: reconstructed glass color must not be
   // gathered with the opaque depth behind its separately written velocity.
@@ -92,8 +93,13 @@ kernel void vkr_metal_packet_motion_blur_reconstruct(
   float2 uv = (float2(pixel) + 0.5f) / float2(root.params.dimensions.xy);
   float4 original = root.source0.sample(vkr_motion_blur_linear, uv);
   float2 neighbor_velocity = root.source4.read(pixel / 16u).xy;
-  if (dot(neighbor_velocity, neighbor_velocity) <= 0.25f ||
-      !vkr_metal_motion_blur_eligible(root, uv)) {
+  if (dot(neighbor_velocity, neighbor_velocity) <= 0.25f) {
+    root.destination0.write(original, pixel);
+    return;
+  }
+  uint2 validity_extent =
+      uint2(root.source3.get_width(), root.source3.get_height());
+  if (!vkr_metal_motion_blur_eligible(root, validity_extent, uv)) {
     root.destination0.write(original, pixel);
     return;
   }
@@ -110,7 +116,7 @@ kernel void vkr_metal_packet_motion_blur_reconstruct(
     float2 offset = velocity * t;
     float2 tap_uv = uv + offset / float2(root.params.dimensions.xy);
     if (any(tap_uv < float2(0.0f)) || any(tap_uv > float2(1.0f)) ||
-        !vkr_metal_motion_blur_eligible(root, tap_uv))
+        !vkr_metal_motion_blur_eligible(root, validity_extent, tap_uv))
       continue;
     float3 metadata = vkr_metal_motion_blur_metadata(root, tap_uv);
     float weight = vkr_motion_blur_sample_weight(offset, center.xy, metadata.xy,

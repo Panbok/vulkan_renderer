@@ -20,16 +20,34 @@ uint2 vkr_vk_motion_blur_extent(uint index) {
   g_textures[NonUniformResourceIndex(index)].GetDimensions(width, height);
   return uint2(width, height);
 }
-float4 vkr_vk_motion_blur_nearest(uint index, float2 uv) {
-  uint2 extent = vkr_vk_motion_blur_extent(index);
+float4 vkr_vk_motion_blur_nearest(uint index, uint2 extent, float2 uv) {
   uint2 pixel =
       uint2(clamp(uv * float2(extent), float2(0.0f), float2(extent) - 1.0f));
   return g_textures[NonUniformResourceIndex(index)].Load(int3(pixel, 0));
 }
 
-bool vkr_vk_motion_blur_eligible(VkrVkMotionBlurRoot *root, float2 output_uv) {
+// Raw velocity, depth and validity image extents. Reconstruction queries them
+// once per pixel rather than once per tap.
+struct VkrVkMotionBlurRawExtents {
+  uint2 velocity;
+  uint2 depth;
+  uint2 validity;
+};
+
+VkrVkMotionBlurRawExtents
+vkr_vk_motion_blur_raw_extents(VkrVkMotionBlurRoot *root) {
+  VkrVkMotionBlurRawExtents extents;
+  extents.velocity = vkr_vk_motion_blur_extent(root.source1);
+  extents.depth = vkr_vk_motion_blur_extent(root.source2);
+  extents.validity = vkr_vk_motion_blur_extent(root.source3);
+  return extents;
+}
+
+bool vkr_vk_motion_blur_eligible(VkrVkMotionBlurRoot *root,
+                                 VkrVkMotionBlurRawExtents extents,
+                                 float2 output_uv) {
   float2 raw_uv = output_uv * root.params.depth_uv.xy + root.params.depth_uv.zw;
-  uint2 extent = vkr_vk_motion_blur_extent(root.source3);
+  uint2 extent = extents.validity;
   int2 base = int2(floor(raw_uv * float2(extent) - 0.5f));
   // Conservative bilinear footprint: reconstructed glass color must not be
   // gathered with the opaque depth behind its separately written velocity.
@@ -44,12 +62,15 @@ bool vkr_vk_motion_blur_eligible(VkrVkMotionBlurRoot *root, float2 output_uv) {
   return true;
 }
 float3 vkr_vk_motion_blur_metadata(VkrVkMotionBlurRoot *root,
+                                   VkrVkMotionBlurRawExtents extents,
                                    float2 output_uv) {
   float2 raw_uv = output_uv * root.params.depth_uv.xy + root.params.depth_uv.zw;
   float2 velocity = vkr_motion_blur_velocity(
-      root.params, vkr_vk_motion_blur_nearest(root.source1, raw_uv).xy);
+      root.params,
+      vkr_vk_motion_blur_nearest(root.source1, extents.velocity, raw_uv).xy);
   float depth = vkr_motion_blur_depth(
-      root.params, vkr_vk_motion_blur_nearest(root.source2, raw_uv).x);
+      root.params,
+      vkr_vk_motion_blur_nearest(root.source2, extents.depth, raw_uv).x);
   return float3(velocity, depth);
 }
 [shader("compute")][numthreads(16, 16, 1)] void
@@ -64,9 +85,14 @@ vk_motion_blur_tile_max(uint3 local_id : SV_GroupThreadID,
   if (all(pixel < root.params.dimensions.xy)) {
     float2 uv = (float2(pixel) + 0.5f) / float2(root.params.dimensions.xy);
     float2 raw_uv = uv * root.params.depth_uv.xy + root.params.depth_uv.zw;
-    if (vkr_vk_motion_blur_nearest(root.source2, raw_uv).x == 1.0f)
+    if (vkr_vk_motion_blur_nearest(root.source2,
+                                   vkr_vk_motion_blur_extent(root.source2),
+                                   raw_uv).x == 1.0f)
       velocity = vkr_motion_blur_velocity(
-          root.params, vkr_vk_motion_blur_nearest(root.source0, raw_uv).xy);
+          root.params,
+          vkr_vk_motion_blur_nearest(root.source0,
+                                     vkr_vk_motion_blur_extent(root.source0),
+                                     raw_uv).xy);
   }
   vkr_motion_blur_tile_velocities[lane] = velocity;
   GroupMemoryBarrierWithGroupSync();
@@ -115,12 +141,16 @@ vk_motion_blur_reconstruct(uint3 thread_id : SV_DispatchThreadID) {
   float2 neighbor_velocity = g_textures[NonUniformResourceIndex(root.source4)]
                                  .Load(int3(pixel / 16u, 0))
                                  .xy;
-  if (dot(neighbor_velocity, neighbor_velocity) <= 0.25f ||
-      !vkr_vk_motion_blur_eligible(root, uv)) {
+  if (dot(neighbor_velocity, neighbor_velocity) <= 0.25f) {
     g_storage_2d[NonUniformResourceIndex(root.destination0)][pixel] = original;
     return;
   }
-  float3 center = vkr_vk_motion_blur_metadata(root, uv);
+  VkrVkMotionBlurRawExtents extents = vkr_vk_motion_blur_raw_extents(root);
+  if (!vkr_vk_motion_blur_eligible(root, extents, uv)) {
+    g_storage_2d[NonUniformResourceIndex(root.destination0)][pixel] = original;
+    return;
+  }
+  float3 center = vkr_vk_motion_blur_metadata(root, extents, uv);
   float2 center_line =
       dot(center.xy, center.xy) > 0.25f ? center.xy : neighbor_velocity;
   float3 sum = original.rgb;
@@ -133,9 +163,9 @@ vk_motion_blur_reconstruct(uint3 thread_id : SV_DispatchThreadID) {
     float2 offset = velocity * t;
     float2 tap_uv = uv + offset / float2(root.params.dimensions.xy);
     if (any(tap_uv < float2(0.0f)) || any(tap_uv > float2(1.0f)) ||
-        !vkr_vk_motion_blur_eligible(root, tap_uv))
+        !vkr_vk_motion_blur_eligible(root, extents, tap_uv))
       continue;
-    float3 metadata = vkr_vk_motion_blur_metadata(root, tap_uv);
+    float3 metadata = vkr_vk_motion_blur_metadata(root, extents, tap_uv);
     float weight = vkr_motion_blur_sample_weight(offset, center.xy, metadata.xy,
                                                  center.z, metadata.z);
     if (weight <= 0.0f)
