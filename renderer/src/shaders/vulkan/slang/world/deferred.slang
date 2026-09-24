@@ -1295,9 +1295,10 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
     }
     g_storage_float2_2d[root.motion_texture][thread_id.xy] = motion;
     g_storage_float2_2d[root.validity_texture][thread_id.xy] = validity;
+    // One material row serves F0 and every optional layer below.
+    VkrVulkanMaterial material = root.materials[surface.material_index];
     float3 f0 = lerp(neutral_lighting ? float3(0.04f)
-                     : saturate(root.materials[surface.material_index]
-                                    .material_dielectric_specular.rgb),
+                     : saturate(material.material_dielectric_specular.rgb),
                      surface.base.rgb, surface.metallic);
     g_storage_2d[root.albedo_texture][thread_id.xy] =
         float4(surface.base.rgb * (1.0f - surface.metallic), surface.occlusion);
@@ -1305,15 +1306,13 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         float4(f0, surface.roughness);
     g_storage_float2_2d[root.normal_texture][thread_id.xy] =
         vkr_vk_octahedral_encode(surface.normal);
-    float clearcoat_factor = neutral_lighting ? 0.0f : saturate(
-        root.materials[surface.material_index].material_clearcoat.x);
-    VkrVulkanMaterial clearcoat_material =
-        root.materials[surface.material_index];
-    if (clearcoat_factor > 0.0f && (clearcoat_material.flags & 32u) != 0u)
+    float clearcoat_factor =
+        neutral_lighting ? 0.0f : saturate(material.material_clearcoat.x);
+    if (clearcoat_factor > 0.0f && (material.flags & 32u) != 0u)
         clearcoat_factor *= g_textures[NonUniformResourceIndex(
-                                clearcoat_material.clearcoat_texture)]
+                                material.clearcoat_texture)]
                                 .SampleGrad(g_samplers[NonUniformResourceIndex(
-                                    clearcoat_material.clearcoat_sampler)],
+                                    material.clearcoat_sampler)],
                                             surface.uv, surface.uv_dx,
                                             surface.uv_dy)
                                 .r;
@@ -1321,26 +1320,26 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
     float3 clearcoat_normal = surface.geometric_normal;
     if (clearcoat_factor > 0.0f)
     {
-        clearcoat_roughness = clearcoat_material.material_clearcoat.y;
-        if ((clearcoat_material.flags & 64u) != 0u)
+        clearcoat_roughness = material.material_clearcoat.y;
+        if ((material.flags & 64u) != 0u)
             clearcoat_roughness *= g_textures[NonUniformResourceIndex(
-                                        clearcoat_material.clearcoat_roughness_texture)]
+                                        material.clearcoat_roughness_texture)]
                                         .SampleGrad(g_samplers[NonUniformResourceIndex(
-                                            clearcoat_material.clearcoat_roughness_sampler)],
+                                            material.clearcoat_roughness_sampler)],
                                                     surface.uv, surface.uv_dx,
                                                     surface.uv_dy)
                                         .g;
         clearcoat_roughness = clamp(clearcoat_roughness, 0.04f, 1.0f);
-        if ((clearcoat_material.flags & 128u) != 0u)
+        if ((material.flags & 128u) != 0u)
         {
             float3 sampled = vkr_normal_map_decode(
                 g_textures[NonUniformResourceIndex(
-                    clearcoat_material.clearcoat_normal_texture)]
+                    material.clearcoat_normal_texture)]
                     .SampleGrad(g_samplers[NonUniformResourceIndex(
-                        clearcoat_material.clearcoat_normal_sampler)],
+                        material.clearcoat_normal_sampler)],
                                 surface.uv, surface.uv_dx, surface.uv_dy)
                     .xyz,
-                clearcoat_material.material_clearcoat.z);
+                material.material_clearcoat.z);
             float3 tangent = mul(instance.model,
                                  float4(surface.object_tangent.xyz, 0.0f)).xyz;
             tangent = normalize(tangent - dot(tangent, surface.geometric_normal) *
@@ -1360,26 +1359,26 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         vkr_vk_octahedral_encode(clearcoat_normal));
     }
     float3 sheen_color =
-        neutral_lighting ? float3(0.0f) : max(clearcoat_material.material_sheen.rgb, 0.0f);
+        neutral_lighting ? float3(0.0f) : max(material.material_sheen.rgb, 0.0f);
     float sheen_roughness = 0.0f;
     if (vkr_sheen_active(sheen_color))
     {
-        if ((clearcoat_material.flags & 256u) != 0u)
+        if ((material.flags & 256u) != 0u)
             sheen_color *= g_textures[NonUniformResourceIndex(
-                               clearcoat_material.sheen_color_texture)]
+                               material.sheen_color_texture)]
                                .SampleGrad(g_samplers[NonUniformResourceIndex(
-                                   clearcoat_material.sheen_color_sampler)],
+                                   material.sheen_color_sampler)],
                                            surface.uv, surface.uv_dx,
                                            surface.uv_dy)
                                .rgb;
         if (vkr_sheen_active(sheen_color))
         {
-            sheen_roughness = clearcoat_material.material_sheen.w;
-            if ((clearcoat_material.flags & 512u) != 0u)
+            sheen_roughness = material.material_sheen.w;
+            if ((material.flags & 512u) != 0u)
                 sheen_roughness *= g_textures[NonUniformResourceIndex(
-                                      clearcoat_material.sheen_roughness_texture)]
+                                      material.sheen_roughness_texture)]
                                       .SampleGrad(g_samplers[NonUniformResourceIndex(
-                                          clearcoat_material.sheen_roughness_sampler)],
+                                          material.sheen_roughness_sampler)],
                                                   surface.uv, surface.uv_dx,
                                                   surface.uv_dy)
                                       .a;
@@ -1395,15 +1394,15 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         float4(sheen_color, sheen_roughness);
     }
   float anisotropy_strength =
-      neutral_lighting ? 0.0f : clearcoat_material.material_anisotropy.x;
+      neutral_lighting ? 0.0f : material.material_anisotropy.x;
   float3 anisotropy_axis = float3(0.0f);
   if (anisotropy_strength > 0.0f) {
     float3 map = float3(1.0f, 0.5f, 1.0f);
-    if ((clearcoat_material.flags & 1024u) != 0u)
-      map = g_textures[NonUniformResourceIndex(clearcoat_material.anisotropy_texture)].SampleGrad(g_samplers[NonUniformResourceIndex(clearcoat_material.anisotropy_sampler)], surface.uv, surface.uv_dx, surface.uv_dy).rgb;
+    if ((material.flags & 1024u) != 0u)
+      map = g_textures[NonUniformResourceIndex(material.anisotropy_texture)].SampleGrad(g_samplers[NonUniformResourceIndex(material.anisotropy_sampler)], surface.uv, surface.uv_dx, surface.uv_dy).rgb;
     anisotropy_strength *= map.b;
     anisotropy_axis = vkr_anisotropy_axis(surface.geometric_normal, surface.normal,
-        float4(mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz, surface.object_tangent.w < 0.0f ? -1.0f : 1.0f), map.rg * 2.0f - 1.0f, clearcoat_material.material_anisotropy.yz);
+        float4(mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz, surface.object_tangent.w < 0.0f ? -1.0f : 1.0f), map.rg * 2.0f - 1.0f, material.material_anisotropy.yz);
   }
   if (root.anisotropy_texture != 0u)
   {
