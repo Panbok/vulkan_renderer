@@ -181,14 +181,14 @@ static INLINE Vec2 vec2_div(Vec2 a, Vec2 b) {
 
 static INLINE Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
 
-/* True when every component differs by less than epsilon; vec3 and vec4
- * comparisons include the bound. */
+/* True when no component differs by more than epsilon; the bound itself is
+ * equal, as in vec3_equal and vec4_equal. */
 static INLINE bool8_t vec2_equal(Vec2 a, Vec2 b, float32_t epsilon) {
-  return vkr_abs_f32(a.x - b.x) < epsilon && vkr_abs_f32(a.y - b.y) < epsilon;
+  return vkr_abs_f32(a.x - b.x) <= epsilon && vkr_abs_f32(a.y - b.y) <= epsilon;
 }
 
-/* True when a component differs by more than epsilon, so a difference of
- * exactly epsilon is neither equal nor not equal. */
+/* True when a component differs by more than epsilon; the complement of
+ * vec2_equal. */
 static INLINE bool8_t vec2_not_equal(Vec2 a, Vec2 b, float32_t epsilon) {
   return vkr_abs_f32(a.x - b.x) > epsilon || vkr_abs_f32(a.y - b.y) > epsilon;
 }

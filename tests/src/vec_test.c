@@ -368,6 +368,32 @@ static void test_vec3_comparisons(void) {
   printf("  test_vec3_comparisons PASSED\n");
 }
 
+/* A difference of exactly epsilon is equal for every vector width, and
+   not_equal is the complement. 1 + VKR_FLOAT_EPSILON is the next float after
+   1, so the subtraction is exact. */
+static void test_vector_equal_epsilon_boundary(void) {
+  printf("  Running test_vector_equal_epsilon_boundary...\n");
+
+  const float32_t one = 1.0f;
+  const float32_t next = 1.0f + VKR_FLOAT_EPSILON;
+  assert(next - one == VKR_FLOAT_EPSILON);
+
+  assert(
+      vec2_equal(vec2_new(one, 0.5f), vec2_new(next, 0.5f), VKR_FLOAT_EPSILON));
+  assert(!vec2_not_equal(vec2_new(one, 0.5f), vec2_new(next, 0.5f),
+                         VKR_FLOAT_EPSILON));
+  assert(vec3_equal(vec3_new(one, 0.5f, 0.25f), vec3_new(next, 0.5f, 0.25f),
+                    VKR_FLOAT_EPSILON));
+  assert(!vec3_not_equal(vec3_new(one, 0.5f, 0.25f),
+                         vec3_new(next, 0.5f, 0.25f), VKR_FLOAT_EPSILON));
+  assert(vec4_equal(vec4_new(one, 0.5f, 0.25f, 0.0f),
+                    vec4_new(next, 0.5f, 0.25f, 0.0f), VKR_FLOAT_EPSILON));
+  assert(!vec4_not_equal(vec4_new(one, 0.5f, 0.25f, 0.0f),
+                         vec4_new(next, 0.5f, 0.25f, 0.0f), VKR_FLOAT_EPSILON));
+
+  printf("  test_vector_equal_epsilon_boundary PASSED\n");
+}
+
 // =============================================================================
 // Vec4 Tests
 // =============================================================================
@@ -951,6 +977,7 @@ bool32_t run_vec_tests(void) {
   test_vec3_arithmetic();
   test_vec3_geometric();
   test_vec3_comparisons();
+  test_vector_equal_epsilon_boundary();
 
   // Vec4 tests
   test_vec4_constructors();
