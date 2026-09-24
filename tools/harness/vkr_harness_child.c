@@ -2277,8 +2277,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     goto cleanup;
   }
   MemZero(application, sizeof(*application));
-  /* Retained by the application for the lifetime of the run, so it must not be
-     const-qualified nor go out of scope before shutdown. */
+  /* Planned before the runtime exists. The application configuration copies
+     the batch size, and the capture report copies the items. */
   uint64_t capture_max_batch_bytes = 0u;
   VkrCaptureItemRequest capture_items[VKR_HARNESS_MAX_CAPTURE_CHANNELS] = {0};
   if (capture_index >= 0 &&

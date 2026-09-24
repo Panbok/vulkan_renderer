@@ -1920,7 +1920,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_texture_lines(
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
     const VkrMeshLoaderGltfParseInfo *info, String8 material_id,
     const cgltf_material *material, String8 material_path, uint64_t source_hash,
-    uint32_t material_index, bool8_t non_unit_vertex_alpha) {
+    bool8_t non_unit_vertex_alpha) {
   if (!info || !material_id.str || material_id.length == 0 ||
       !material_path.str || material_path.length == 0) {
     return false_v;
@@ -2230,7 +2230,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
         info->load_allocator, "%.*s/%.*s.mt", (int32_t)material_dir.length,
         material_dir.str, (int32_t)material_id.length, material_id.str);
     if (!vkr_mesh_loader_gltf_write_material_file(
-            info, material_id, material, material_paths[i], source_hash, i,
+            info, material_id, material, material_paths[i], source_hash,
             non_unit_vertex_alpha)) {
       return false_v;
     }
