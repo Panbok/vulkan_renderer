@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-12
+updated: 2026-09-24
 authority: proposal
 ---
 
@@ -215,6 +215,15 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   [ADR-067](../adr/067-post-reconstruction-motion-blur.md).
 - [ ] Profiled RGB surface diffusion and offline BSSRDF transport:
   [ADR-068](../adr/068-profiled-surface-diffusion.md).
+- [ ] 2026-09-24 shader audit changes: SSR/SSGI cell restart, single-pass
+  layered forward/transmission lighting with the coat's own punctual shadow,
+  GTAO denoise texel loads, resolve material-row reuse, motion-blur extent
+  queries and the surface-diffusion same-row path. Vulkan captures of
+  `local/ssr_bar_turn_stop` before and after the restart should gain SSR hits
+  along rounded pixel columns and lose almost none, as on Metal. The other
+  changes should leave deterministic fixtures byte-identical:
+  [ADR-044](../adr/044-shader-cross-backend-contract.md),
+  [ADR-055](../adr/055-screen-space-reflections.md).
 
 Use the existing feature cases under `tools/cases/local/` (for example
 `*_bistro_*`, `*_resize_*`, `*_editor_*`, `*_furnace_*`, and the feature-named

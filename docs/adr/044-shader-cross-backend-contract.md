@@ -762,6 +762,21 @@ ordering, optional resolve outputs and numerical edges. These domains remain
 bilateral capture gates pass. The available host is Windows/Vulkan; analytical
 oracles do not substitute for Metal execution.
 
+The 2026-09-24 shader audit changes the SSR/SSGI cell restart, layered light
+traversal, sheen view-visibility preparation, GTAO denoise and Metal temporal
+history reads, Vulkan resolve material-row reuse, motion-blur extent queries
+and the surface-diffusion same-row path. The restart recovers one SSR hit in
+each of the Metal clearcoat, sheen and sheen-rectangle fixtures; ADR-055 records
+its Bistro effect. Each other change leaves the deterministic Metal Release
+fixtures captured before and after it byte-identical: clearcoat, sheen
+rectangle, DoF/TAA, motion-blur/TAA, odd-size motion blur, surface-diffusion/TAA
+and mixed surface diffusion. The sheen view-visibility change moves 41 HDR
+pixels of the sheen fixture by one FP16 step. Bistro captures differ run to run
+on Metal; the other changes stay within that variation. ADR-062 records the
+Metal coat-shadow correction. Vulkan compiles and all 95 SPIR-V modules
+validate, so these domains remain **UNALIGNED** pending native Vulkan execution
+and same-revision comparison.
+
 Two near-degenerate reconstruction policies still differ: Metal rejects
 barycentric normalization sums at `1e-8`, Vulkan at `1e-12`; interpolated tangent
 handedness exactly zero maps to zero on Metal and positive handedness on Vulkan.
