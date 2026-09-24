@@ -1606,16 +1606,6 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
   }
   out_case->warmup_frames = (uint32_t)warmup;
   out_case->measure_frames = (uint32_t)measure;
-  if (out_case->renderer.physics_fixture &&
-      (!string_equals(out_case->scene, "assets/scenes/bistro.scene.json") ||
-       out_case->warmup_frames < 300u ||
-       fabs(out_case->fixed_delta_seconds - 1.0 / 60.0) > 1e-12)) {
-    vkr_harness_error_set(out_error, "case.physics_fixture",
-                          "$.renderer.physics_fixture",
-                          "The physics fixture requires Bistro, 300 warmup "
-                          "frames and 60 Hz fixed delta");
-    return false_v;
-  }
   if (!vkr_harness_case_parse_resize_round_trip(&doc, width, height, out_case,
                                                 out_error)) {
     return false_v;
@@ -1639,6 +1629,17 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       !vkr_harness_manifest_field(&doc, 0, "assertions", false_v, &assertions,
                                   out_error) ||
       !vkr_harness_parse_assertions(&doc, assertions, out_case, out_error)) {
+    return false_v;
+  }
+  // Needs the parsed renderer block, where physics_fixture is read.
+  if (out_case->renderer.physics_fixture &&
+      (!string_equals(out_case->scene, "assets/scenes/bistro.scene.json") ||
+       out_case->warmup_frames < 300u ||
+       fabs(out_case->fixed_delta_seconds - 1.0 / 60.0) > 1e-12)) {
+    vkr_harness_error_set(out_error, "case.physics_fixture",
+                          "$.renderer.physics_fixture",
+                          "The physics fixture requires Bistro, 300 warmup "
+                          "frames and 60 Hz fixed delta");
     return false_v;
   }
   if (!vkr_harness_case_validate_frame_indices(out_case, out_error)) {

@@ -235,6 +235,48 @@ vkr_internal void test_harness_case_assertion_limits(void) {
   printf("  test_harness_case_assertion_limits PASSED\n");
 }
 
+vkr_internal void test_harness_case_physics_fixture_requirements(void) {
+  printf("  Running test_harness_case_physics_fixture_requirements...\n");
+  const char *format =
+      "{\"schema_version\":1,\"id\":\"local.physics\",\"suite\":\"local\","
+      "\"scene\":\"%s\",\"seed\":1,\"resolution\":[64,64],\"boot\":\"full\","
+      "\"target\":\"offscreen\",\"present\":\"none\","
+      "\"cache\":\"isolated_cold\",\"fixed_delta\":%s,"
+      "\"frames\":{\"warmup\":%u,\"measure\":3},"
+      "\"renderer\":{\"editor\":false,\"skybox\":true,"
+      "\"shadow_preset\":\"default\",\"shadow_cascades\":4,"
+      "\"physics_fixture\":true},"
+      "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
+      "\"pitch\":-5}}";
+  char json[2048];
+  VkrHarnessCase parsed = {0};
+  VkrHarnessError error = {0};
+
+  snprintf(json, sizeof(json), format, "assets/scenes/bistro.scene.json",
+           "0.016666666666666666", 300u);
+  assert(vkr_harness_case_parse(json, strlen(json), "memory", &parsed, &error));
+  assert(parsed.renderer.physics_fixture);
+
+  // The fixture's constraints are checked after the renderer block is read,
+  // so each violation must be rejected.
+  snprintf(json, sizeof(json), format, "assets/scenes/default.scene.json",
+           "0.016666666666666666", 300u);
+  assert(
+      !vkr_harness_case_parse(json, strlen(json), "memory", &parsed, &error));
+  assert(strcmp(error.code, "case.physics_fixture") == 0);
+  snprintf(json, sizeof(json), format, "assets/scenes/bistro.scene.json",
+           "0.016666666666666666", 10u);
+  assert(
+      !vkr_harness_case_parse(json, strlen(json), "memory", &parsed, &error));
+  assert(strcmp(error.code, "case.physics_fixture") == 0);
+  snprintf(json, sizeof(json), format, "assets/scenes/bistro.scene.json",
+           "0.02", 300u);
+  assert(
+      !vkr_harness_case_parse(json, strlen(json), "memory", &parsed, &error));
+  assert(strcmp(error.code, "case.physics_fixture") == 0);
+  printf("  test_harness_case_physics_fixture_requirements PASSED\n");
+}
+
 vkr_internal void test_harness_case_parser(void) {
   printf("  Running test_harness_case_parser...\n");
   const char *static_camera =
@@ -2882,6 +2924,7 @@ bool32_t run_harness_tests(void) {
   test_harness_current_frame_work_metrics();
   test_harness_case_parser();
   test_harness_case_assertion_limits();
+  test_harness_case_physics_fixture_requirements();
   test_harness_editor_diagnostic_manifests();
   test_harness_camera_float_range_boundary();
   test_harness_orthographic_camera();
