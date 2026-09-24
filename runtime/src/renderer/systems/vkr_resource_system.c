@@ -92,6 +92,8 @@ vkr_global const VkrResourceAsyncBudget vkr_resource_async_budget_default = {
 vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
                                                             void *payload);
 
+#if VKR_METRICS_ENABLED
+/* Only the instrumented branch of vkr_resource_system_record_load reads it. */
 vkr_internal VkrMetricEventProducer vkr_resource_system_metrics_producer(
     const VkrResourceSystem *system, VkrResourceType type) {
   uint32_t source = VKR_RENDERER_ASSET_METRIC_COUNT;
@@ -121,6 +123,7 @@ vkr_internal VkrMetricEventProducer vkr_resource_system_metrics_producer(
              ? system->asset_load_metrics[source]
              : (VkrMetricEventProducer){0};
 }
+#endif
 
 /**
  * @brief Publishes one asset-load event.

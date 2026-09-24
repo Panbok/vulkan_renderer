@@ -31,6 +31,9 @@ _Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH ==
                    0u,
                "Replay phase alignment must cover both temporal sequences");
 
+/* Everything below drives an instrumented repetition. Without
+   instrumentation, vkr_harness_child_run reports the harness unavailable. */
+#if VKR_METRICS_ENABLED
 vkr_internal uint32_t
 vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
   _Static_assert(VKR_SSGI_SEQUENCE_LENGTH % VKR_GTAO_NOISE_SEQUENCE_LENGTH ==
@@ -1300,8 +1303,6 @@ vkr_internal void vkr_harness_child_update(void *state,
   vkr_camera_set_pose(camera, pose.pose.position, pose.pose.yaw_degrees,
                       pose.pose.pitch_degrees);
 }
-
-#if VKR_METRICS_ENABLED
 
 vkr_internal bool8_t vkr_harness_catalog_has(const VkrMetrics *metrics,
                                              const char *name) {

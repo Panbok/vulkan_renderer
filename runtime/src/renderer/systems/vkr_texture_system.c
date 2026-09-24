@@ -3038,15 +3038,19 @@ vkr_internal bool8_t vkr_texture_decode_from_source_image(
   }
 
   if (stbi_is_hdr_from_memory(file_data, (int)file_size)) {
+#if VKR_METRICS_ENABLED
     const float64_t start_seconds = vkr_platform_get_absolute_time();
+#endif
     const bool8_t decoded = vkr_texture_decode_hdr_image(
         file_data, file_size, source_cstr, out_result);
+#if VKR_METRICS_ENABLED
     (void)vkr_metrics_event_record(
         system ? system->hdr_decode_metrics : (VkrMetricEventProducer){0},
         source_path, (uint64_t)(start_seconds * 1000000000.0),
         vkr_metrics_elapsed_ns(start_seconds), file_size,
         decoded ? VKR_METRIC_EVENT_STATUS_SUCCESS
                 : VKR_METRIC_EVENT_STATUS_FAILED);
+#endif
     return decoded;
   }
 

@@ -435,8 +435,15 @@ vkr_internal INLINE uint64_t vkr_metrics_elapsed_ns(float64_t start_seconds) {
   vkr_metrics_duration_add_ns((metrics), (id),                                 \
                               vkr_metrics_elapsed_ns((start_seconds)))
 #else
-#define VKR_METRICS_SCOPE_NS(metrics, id)
-#define VKR_METRICS_ADD_ELAPSED_NS(metrics, id, start_seconds) ((void)0)
+/* Compiled out, nothing is timed or written. The arguments are still
+   evaluated once and discarded, so a caller's locals stay referenced in both
+   modes; pass plain values. The scope keeps its `for` form and runs the body
+   once. */
+#define VKR_METRICS_SCOPE_NS(metrics, id)                                      \
+  for (bool8_t vkr_metrics_scope_ = ((void)(metrics), (void)(id), true_v);     \
+       vkr_metrics_scope_; vkr_metrics_scope_ = false_v)
+#define VKR_METRICS_ADD_ELAPSED_NS(metrics, id, start_seconds)                 \
+  ((void)(metrics), (void)(id), (void)(start_seconds))
 #endif
 
 bool8_t vkr_metrics_snapshot_acquire(VkrMetrics *metrics,

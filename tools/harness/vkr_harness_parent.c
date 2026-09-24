@@ -11,6 +11,25 @@
  */
 #include "vkr_harness_runtime.h"
 
+/** stdout carries exactly one machine-readable line, on every exit path. */
+vkr_internal void vkr_harness_emit_result(const char *status,
+                                          VkrHarnessExitCode exit_code,
+                                          const char *report_relative_path,
+                                          const char *report_digest) {
+  if (report_relative_path) {
+    vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
+                       "\"sha256\":\"%s\"}\n",
+                       status, exit_code, report_relative_path,
+                       report_digest ? report_digest : "");
+  } else {
+    vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":null}\n",
+                       status, exit_code);
+  }
+}
+
+/* Profile orchestration below runs only with instrumentation compiled in;
+   without it vkr_harness_profile_run reports the harness unavailable. */
+#if VKR_METRICS_ENABLED
 /**
  * Serializes authoritative runs against each other on one machine. Removing a
  * window does not remove GPU contention, so this is a policy the profile owns
@@ -32,22 +51,6 @@ vkr_internal bool8_t vkr_harness_gpu_lane_acquire(VkrHarnessGpuLane *lane,
 
 vkr_internal void vkr_harness_gpu_lane_release(VkrHarnessGpuLane *lane) {
   vkr_platform_process_lock_release(&lane->lock);
-}
-
-/** stdout carries exactly one machine-readable line, on every exit path. */
-vkr_internal void vkr_harness_emit_result(const char *status,
-                                          VkrHarnessExitCode exit_code,
-                                          const char *report_relative_path,
-                                          const char *report_digest) {
-  if (report_relative_path) {
-    vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
-                       "\"sha256\":\"%s\"}\n",
-                       status, exit_code, report_relative_path,
-                       report_digest ? report_digest : "");
-  } else {
-    vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":null}\n",
-                       status, exit_code);
-  }
 }
 
 vkr_internal int vkr_harness_spawn_child(
@@ -651,6 +654,7 @@ vkr_internal void vkr_harness_apply_verdict(VkrHarnessReport *report,
                                         "environment.profile_constraint");
   }
 }
+#endif
 
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path,

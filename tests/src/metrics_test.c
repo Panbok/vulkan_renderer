@@ -35,6 +35,9 @@ typedef struct MetricsFixture {
   VkrMetrics *metrics;
 } MetricsFixture;
 
+/* These tests exercise the metric writers, which VKR_METRICS_ENABLED=0
+   compiles out. */
+#if VKR_METRICS_ENABLED
 static MetricsFixture metrics_fixture_create(void) {
   MetricsFixture fixture = {0};
   fixture.arena = arena_create(MB(4), MB(1));
@@ -653,8 +656,11 @@ static void test_renderer_pass_sample_publication(void) {
   printf("  test_renderer_pass_sample_publication PASSED\n");
 }
 
+#endif
+
 bool32_t run_metrics_tests(void) {
   printf("--- Running Metrics tests... ---\n");
+#if VKR_METRICS_ENABLED
   test_metrics_registration_and_samples();
   test_metrics_availability_marking();
   test_metrics_concurrent_counter();
@@ -666,6 +672,9 @@ bool32_t run_metrics_tests(void) {
   test_metrics_registry_generation();
   test_renderer_cumulative_delta();
   test_renderer_pass_sample_publication();
+#else
+  printf("  Skipped: VKR_METRICS_ENABLED=0 compiles the metric writers out.\n");
+#endif
   printf("--- Metrics tests completed. ---\n");
   return true_v;
 }

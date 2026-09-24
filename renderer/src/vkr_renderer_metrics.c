@@ -146,6 +146,7 @@ vkr_global const VkrGpuOwnerMetricRowDescription
              VKR_METRIC_UNIT_COUNT, false_v},
 };
 
+#if VKR_METRICS_ENABLED
 /**
  * @brief Projects one owner's totals onto the published row order.
  *
@@ -171,6 +172,7 @@ vkr_internal void vkr_gpu_owner_metric_row_values(
           totals->total_allocation_count,
           &baselines->gpu_owner[owner].allocations_created);
 }
+#endif
 
 typedef struct VkrRendererImplMemoryMetricDescription {
   const char *name;
@@ -1147,6 +1149,10 @@ vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
   return true_v;
 }
 
+/* The frame collectors below exist only to write metrics. Compiling
+   instrumentation out removes them together with their only caller,
+   vkr_renderer_metrics_collect. */
+#if VKR_METRICS_ENABLED
 vkr_internal void
 vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
                                     VkrRenderer *renderer,
@@ -1360,7 +1366,6 @@ vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
   renderer_metrics->previous.impl_memory_interval_contiguous = true_v;
 }
 
-#if VKR_METRICS_ENABLED
 #define VKR_SET_U64(FIELD, VALUE)                                              \
   vkr_metrics_gauge_set_u64(metrics, ids->FIELD, (uint64_t)(VALUE))
 #define VKR_SET_F64(FIELD, VALUE)                                              \
