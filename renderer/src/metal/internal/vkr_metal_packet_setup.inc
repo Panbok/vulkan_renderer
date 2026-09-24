@@ -2462,73 +2462,407 @@ vkr_internal bool8_t vkr_metal_packet_create_metalfx_temporal_scaler(
   return true_v;
 }
 
+/* Validates create arguments before anything is allocated. */
+vkr_internal bool8_t vkr_metal_packet_create_arguments_valid(
+    const VkrMetalPacketRendererConfig *config,
+    VkrMetalPacketRenderer **out_renderer) {
+  if (!config || !out_renderer || !config->allocator || !config->graph_path ||
+      !config->slang_msl_path || !config->fragment_msl_path ||
+      config->managed_budget_size == 0 || config->heap_chunk_size == 0 ||
+      config->upload_ring_size == 0 ||
+      config->upload_ring_size > config->upload_ring_max_size ||
+      config->frame_slot_count < 2u || config->capture_ring_capacity == 0 ||
+      config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
+      config->capture_max_batch_bytes == 0 ||
+      config->frame_slot_count > UINT32_MAX - 2u ||
+      config->frame_slot_count + 2u > VKR_METAL_PACKET_GRAPH_INSTANCE_MAX ||
+      config->upload_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
+          0 ||
+      config->max_images == 0 || config->max_passes == 0 ||
+      config->max_passes > VKR_METAL_PACKET_MAX_PASS_TIMINGS ||
+      config->max_material_rows == 0 || config->max_meshes == 0 ||
+      config->max_textures == 0 || config->max_draws == 0 ||
+      config->max_instances == 0 ||
+      (config->upload_ring_size / config->frame_slot_count) %
+              VKR_METAL_PACKET_ROOT_ALIGNMENT !=
+          0 ||
+      config->target_kind > VKR_METAL_PACKET_TARGET_WINDOW ||
+      config->upscale_mode >= VKR_UPSCALE_MODE_COUNT ||
+      (config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+       (config->target_width == 0u || config->target_height == 0u ||
+        !isfinite(config->render_scale) || config->render_scale <= 0.0f ||
+        config->render_scale > 1.0f)) ||
+      (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
+       !config->metal_layer))
+    return false_v;
+  return true_v;
+}
+
+/* Ring and allocation-record capacities derived from a valid create config. */
+typedef struct VkrMetalPacketCreateCapacities {
+  uint64_t readback_ring_size;
+  uint64_t readback_ring_max_size;
+  uint64_t memory_record_capacity;
+} VkrMetalPacketCreateCapacities;
+
+vkr_internal bool8_t vkr_metal_packet_create_capacities(
+    const VkrMetalPacketRendererConfig *config,
+    VkrMetalPacketCreateCapacities *out_capacities) {
+  const VkrMetalPacketReadbackLayout maximum_readback =
+      vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v, true_v,
+                                       VKR_SHADOW_CASCADE_COUNT_MAX);
+  const uint64_t readback_prefix_size = vkr_metal_packet_align_up(
+      maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);
+  if (config->capture_max_batch_bytes > UINT64_MAX - 3u)
+    return false_v;
+  const uint64_t aligned_capture_size =
+      vkr_metal_packet_align_up(config->capture_max_batch_bytes, 4u);
+  if (aligned_capture_size > UINT64_MAX - readback_prefix_size)
+    return false_v;
+  uint64_t readback_ring_max_size = 0u;
+  if (!vkr_metal_submit_ring_total_size(
+          readback_prefix_size + aligned_capture_size, MB(48),
+          config->frame_slot_count, &readback_ring_max_size))
+    return false_v;
+  const uint64_t readback_ring_size = KB(64) * config->frame_slot_count;
+  /* A replacement is created before the current generation retires. Capacity
+     therefore covers both generations of the larger command- or
+     history-instance domain. */
+  const uint64_t command_instances_per_resource =
+      2u * config->frame_slot_count +
+      (config->frame_slot_count > 2u ? config->frame_slot_count - 2u : 0u);
+  const uint64_t history_instances_per_resource =
+      2u * (config->frame_slot_count + 2u);
+  const uint64_t graph_instances_per_resource =
+      MAX(command_instances_per_resource, history_instances_per_resource);
+  const uint64_t graph_allocation_capacity =
+      (uint64_t)config->max_images * graph_instances_per_resource * 2u;
+  const uint64_t memory_record_capacity =
+      graph_allocation_capacity + (uint64_t)config->max_meshes * 2u +
+      (uint64_t)config->max_material_rows * 4u + config->max_textures + 4u;
+  if (memory_record_capacity >= UINT32_MAX)
+    return false_v;
+  *out_capacities = (VkrMetalPacketCreateCapacities){
+      .readback_ring_size = readback_ring_size,
+      .readback_ring_max_size = readback_ring_max_size,
+      .memory_record_capacity = memory_record_capacity,
+  };
+  return true_v;
+}
+
+/* Copies create settings into the zeroed renderer, opens optional
+ * diagnostics, creates the graph frame arena and resolves the initial display
+ * output. */
+vkr_internal void
+vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
+                                    const VkrMetalPacketRendererConfig *config)
+    API_AVAILABLE(macos(26.0)) {
+  renderer->allocator = config->allocator;
+  const char *diagnostics_directory = getenv("VKR_METAL_DIAGNOSTICS_DIR");
+  if (diagnostics_directory && diagnostics_directory[0]) {
+    (void)vkr_metal_diagnostics_open(&renderer->diagnostics,
+                                     diagnostics_directory);
+    VKR_METAL_DIAGNOSTIC(
+        renderer, "renderer_create",
+        "target=%u extent=%ux%u slots=%u upscale=%u managed_budget=%llu",
+        config->target_kind, config->target_width, config->target_height,
+        config->frame_slot_count, config->upscale_mode,
+        (unsigned long long)config->managed_budget_size);
+    VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+  }
+  renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
+  renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
+  renderer->gtao_config = vkr_gtao_config_normalize(&config->gtao);
+  renderer->ssr_config = vkr_ssr_config_normalize(&config->ssr);
+  renderer->ssgi_config = vkr_ssgi_config_normalize(&config->ssgi);
+  renderer->candidate_publication_generation = 1u;
+  renderer->graph_frame_arena = arena_create(MB(8), KB(256));
+  renderer->graph_frame_allocator =
+      (VkrAllocator){.ctx = renderer->graph_frame_arena};
+  renderer->max_images = config->max_images;
+  renderer->max_passes = config->max_passes;
+  renderer->max_meshes = config->max_meshes;
+  renderer->max_materials = config->max_material_rows;
+  renderer->max_textures = config->max_textures;
+  renderer->transmission_compact_enabled = config->transmission_compact_enabled;
+  renderer->hzb_enabled = config->hzb_enabled;
+  renderer->frustum_enabled = config->frustum_enabled;
+  renderer->max_samplers = VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY;
+  renderer->max_draws = config->max_draws;
+  renderer->max_instances = config->max_instances;
+  renderer->command_slot_count = config->frame_slot_count;
+  /* At most N-1 command slots remain in flight. Their distinct outputs plus
+     one shared temporal input and one shared HZB input can occupy N+1
+     instances, so one additional output must remain completion-safe. */
+  renderer->history_instance_count = config->frame_slot_count + 2u;
+  renderer->upload_slot_size =
+      config->upload_ring_max_size / config->frame_slot_count;
+  renderer->target_kind = config->target_kind;
+  renderer->display_output_mode = config->display_output_mode;
+  renderer->display_output_context = config->display_output_context;
+  renderer->display_output_snapshot = config->display_output_snapshot;
+  const bool8_t query_display_output =
+      renderer->display_output_mode ==
+          VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR &&
+      renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
+      renderer->display_output_snapshot;
+  const VkrDisplayOutputSnapshot initial_display_snapshot =
+      query_display_output
+          ? renderer->display_output_snapshot(renderer->display_output_context)
+          : (VkrDisplayOutputSnapshot){0};
+  renderer->display_output = vkr_metal_packet_window_output_capability(
+      renderer, vkr_display_output_resolve(
+                    renderer->display_output_mode, initial_display_snapshot,
+                    renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW));
+  renderer->srgb_output = config->srgb_output;
+  renderer->tonemap_enabled = config->tonemap_enabled;
+  renderer->metalfx_enabled =
+      config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+  renderer->metalfx_dynamic_resolution_enabled =
+      renderer->metalfx_enabled && config->dynamic_resolution.enabled;
+  renderer->metalfx_min_render_scale =
+      config->dynamic_resolution.enabled ? config->dynamic_resolution.min_scale
+                                         : config->render_scale;
+  renderer->metalfx_max_render_scale =
+      config->dynamic_resolution.enabled ? config->dynamic_resolution.max_scale
+                                         : config->render_scale;
+  renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
+  renderer->fxaa_enabled = config->fxaa_enabled;
+  renderer->synchronous_validation_readback =
+      config->synchronous_validation_readback;
+}
+
+/* Reserves capture-ring storage. A zero requirement reserves nothing. */
+vkr_internal bool8_t vkr_metal_packet_create_capture_storage(
+    VkrMetalPacketRenderer *renderer, uint64_t capture_storage_size) {
+  if (capture_storage_size) {
+    /* Own reservation; see capture_storage_memory in the renderer struct.
+     */
+    if (capture_storage_size > UINT64_MAX - KB(64)) {
+      return false_v;
+    }
+    const uint64_t capture_allocator_size = capture_storage_size + KB(64);
+    if (!vkr_dmemory_create(capture_allocator_size, capture_allocator_size,
+                            &renderer->capture_storage_memory)) {
+      return false_v;
+    }
+    renderer->capture_storage_allocator =
+        (VkrAllocator){.ctx = &renderer->capture_storage_memory};
+    vkr_dmemory_allocator_create(&renderer->capture_storage_allocator);
+    renderer->capture_storage = vkr_allocator_alloc(
+        &renderer->capture_storage_allocator, capture_storage_size,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!renderer->capture_storage) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Carves every fixed-capacity record array from one tagged reservation. */
+vkr_internal bool8_t
+vkr_metal_packet_create_record_arrays(VkrMetalPacketRenderer *renderer) {
+  /* One reservation for every record array. Each vkr_dmemory_alloc rounds
+     up internally, so the total carries slack per array plus a fixed
+     margin. */
+  const uint64_t record_bytes[] = {
+      vkr_metal_packet_images_bytes(renderer),
+      vkr_metal_packet_graph_buffers_bytes(renderer),
+      vkr_metal_packet_graph_buffer_instances_bytes(renderer),
+      vkr_metal_packet_meshes_bytes(renderer),
+      vkr_metal_packet_materials_bytes(renderer),
+      vkr_metal_packet_textures_bytes(renderer),
+      vkr_metal_packet_samplers_bytes(renderer),
+      vkr_metal_packet_text_uploads_bytes(renderer),
+      vkr_metal_packet_render_passes_bytes(renderer),
+      vkr_metal_packet_command_slots_bytes(renderer),
+      vkr_metal_packet_timing_results_bytes(renderer),
+      vkr_metal_packet_commit_feedback_bytes(renderer),
+      vkr_metal_packet_retired_image_views_bytes(renderer),
+      vkr_metal_packet_pass_labels_bytes(renderer),
+  };
+  uint64_t record_total = KB(64);
+  bool8_t record_size_valid = true_v;
+  for (uint32_t i = 0; record_size_valid && i < ArrayCount(record_bytes); ++i)
+    record_size_valid =
+        vkr_metal_packet_record_size_add(&record_total, record_bytes[i]);
+  if (!record_size_valid || !vkr_dmemory_create(record_total, record_total,
+                                                &renderer->record_memory)) {
+    return false_v;
+  }
+  renderer->record_allocator = (VkrAllocator){.ctx = &renderer->record_memory};
+  vkr_dmemory_allocator_create(&renderer->record_allocator);
+  VkrAllocator *records = &renderer->record_allocator;
+  renderer->images =
+      vkr_metal_packet_record_alloc(records, record_bytes[0], true_v);
+  renderer->graph_buffers =
+      vkr_metal_packet_record_alloc(records, record_bytes[1], true_v);
+  renderer->graph_buffer_instances =
+      vkr_metal_packet_record_alloc(records, record_bytes[2], true_v);
+  renderer->meshes =
+      vkr_metal_packet_record_alloc(records, record_bytes[3], true_v);
+  renderer->packet_materials =
+      vkr_metal_packet_record_alloc(records, record_bytes[4], true_v);
+  renderer->textures =
+      vkr_metal_packet_record_alloc(records, record_bytes[5], true_v);
+  renderer->samplers =
+      vkr_metal_packet_record_alloc(records, record_bytes[6], false_v);
+  renderer->text_uploads =
+      vkr_metal_packet_record_alloc(records, record_bytes[7], false_v);
+  renderer->render_passes =
+      vkr_metal_packet_record_alloc(records, record_bytes[8], true_v);
+  renderer->command_slots =
+      vkr_metal_packet_record_alloc(records, record_bytes[9], true_v);
+  renderer->completed_timing_results =
+      vkr_metal_packet_record_alloc(records, record_bytes[10], true_v);
+  renderer->commit_feedback_records =
+      vkr_metal_packet_record_alloc(records, record_bytes[11], true_v);
+  renderer->retired_image_views =
+      vkr_metal_packet_record_alloc(records, record_bytes[12], true_v);
+  renderer->pass_labels =
+      vkr_metal_packet_record_alloc(records, record_bytes[13], true_v);
+  if (!renderer->images || !renderer->graph_buffers ||
+      !renderer->graph_buffer_instances || !renderer->meshes ||
+      !renderer->packet_materials || !renderer->textures ||
+      !renderer->samplers || !renderer->text_uploads ||
+      !renderer->render_passes || !renderer->command_slots ||
+      !renderer->completed_timing_results ||
+      !renderer->commit_feedback_records || !renderer->retired_image_views ||
+      !renderer->pass_labels) {
+    return false_v;
+  }
+  return true_v;
+}
+
+/* Creates each command slot's allocator, command buffer and pass timestamp
+ * heap until one is missing, then samples the device timestamp frequency. */
+vkr_internal bool8_t vkr_metal_packet_create_command_slots(
+    VkrMetalPacketRenderer *renderer,
+    const VkrMetalPacketRendererConfig *config) API_AVAILABLE(macos(26.0)) {
+  MTL4CounterHeapDescriptor *timestamp_descriptor =
+      [MTL4CounterHeapDescriptor new];
+  timestamp_descriptor.type = MTL4CounterHeapTypeTimestamp;
+  timestamp_descriptor.count = (NSUInteger)config->max_passes * 2u;
+  bool8_t command_slots_created = renderer->command_slots != NULL;
+  for (uint32_t i = 0;
+       command_slots_created && i < renderer->command_slot_count; ++i) {
+    VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+    slot->allocator = [renderer->device newCommandAllocator];
+    slot->buffer = [renderer->device newCommandBuffer];
+    slot->timestamp_heap =
+        [renderer->device newCounterHeapWithDescriptor:timestamp_descriptor
+                                                 error:nil];
+    command_slots_created =
+        slot->allocator && slot->buffer && slot->timestamp_heap;
+  }
+  renderer->timestamp_frequency = [renderer->device queryTimestampFrequency];
+  [timestamp_descriptor release];
+  return command_slots_created;
+}
+
+/* Creates each reusable commit option and feedback handler pair until one is
+ * missing. */
+vkr_internal bool8_t vkr_metal_packet_create_commit_feedback_records(
+    VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
+  bool8_t commit_feedback_created = renderer->commit_feedback_records != NULL;
+  for (uint32_t i = 0u;
+       commit_feedback_created && i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+       ++i) {
+    VkrMetalPacketCommitFeedbackRecord *record =
+        &renderer->commit_feedback_records[i];
+    record->options = [MTL4CommitOptions new];
+    if (!record->options) {
+      commit_feedback_created = false_v;
+      break;
+    }
+    record->ready_handler = Block_copy(^{
+      vkr_atomic_bool_store(&record->feedback_ready, true_v,
+                            VKR_MEMORY_ORDER_RELEASE);
+    });
+    record->handler = Block_copy(^(id<MTL4CommitFeedback> feedback) {
+      @autoreleasepool {
+        record->gpu_start_time = feedback.GPUStartTime;
+        record->gpu_end_time = feedback.GPUEndTime;
+        record->has_error = feedback.error != nil ? true_v : false_v;
+        dispatch_async(vkr_metal_packet_feedback_queue(),
+                       record->ready_handler);
+      }
+    });
+    if (!record->handler || !record->ready_handler)
+      commit_feedback_created = false_v;
+  }
+  return commit_feedback_created;
+}
+
+/* Creates the memory device, material table, IBL targets, lookup textures,
+ * pipelines, executor registry and render graph, then finalizes the pipeline
+ * archive. */
+vkr_internal bool8_t vkr_metal_packet_create_device_resources(
+    VkrMetalPacketRenderer *renderer,
+    const VkrMetalPacketRendererConfig *config,
+    const VkrMetalPacketCreateCapacities *capacities)
+    API_AVAILABLE(macos(26.0)) {
+  return vkr_metal_memory_device_create(
+             &(VkrMetalMemoryDeviceConfig){
+                 .metal_device = renderer->device,
+                 .allocator = renderer->allocator,
+                 .diagnostics = &renderer->diagnostics,
+                 .managed_budget_size = config->managed_budget_size,
+                 .heap_chunk_size = config->heap_chunk_size,
+                 .upload_ring_size = config->upload_ring_size,
+                 .upload_ring_max_size = config->upload_ring_max_size,
+                 .readback_ring_size = capacities->readback_ring_size,
+                 .readback_ring_max_size = capacities->readback_ring_max_size,
+                 .ring_slot_count = config->frame_slot_count,
+                 .max_allocations =
+                     (uint32_t)capacities->memory_record_capacity,
+                 .max_retirements =
+                     (uint32_t)capacities->memory_record_capacity,
+                 .max_free_ranges =
+                     (uint32_t)capacities->memory_record_capacity + 1u,
+             },
+             &renderer->memory) == VKR_METAL_MEMORY_STATUS_OK &&
+         vkr_metal_material_table_device_create(
+             &(VkrMetalMaterialTableConfig){
+                 .max_rows = config->max_material_rows,
+                 .max_retirements = config->max_material_rows,
+             },
+             renderer->device, renderer->memory, renderer->allocator,
+             &renderer->materials) == VKR_METAL_MATERIAL_STATUS_OK &&
+         vkr_metal_packet_create_ibl_targets(renderer) &&
+         vkr_metal_packet_create_atmosphere_luts(renderer) &&
+         vkr_metal_packet_create_dfg_lut(renderer) &&
+         vkr_metal_packet_create_ltc_luts(renderer) &&
+         vkr_metal_packet_create_sheen_luts(renderer) &&
+         vkr_metal_packet_create_anisotropy_luts(renderer) &&
+         vkr_metal_packet_create_gtao_white_visibility(renderer) &&
+         vkr_metal_packet_create_pipelines(renderer, config->slang_msl_path,
+                                           config->fragment_msl_path) &&
+         vkr_rg_executor_registry_init(&renderer->executors,
+                                       renderer->allocator) &&
+         vkr_render_graph_register_executors(&renderer->executors) &&
+         vkr_rg_json_load_file(renderer->allocator, config->graph_path,
+                               &renderer->json_graph) &&
+         vkr_rg_json_bind_executors(&renderer->json_graph,
+                                    &renderer->executors) &&
+         (renderer->graph = vkr_rg_create(renderer->allocator)) != NULL &&
+         vkr_rg_set_frame_allocator(renderer->graph,
+                                    &renderer->graph_frame_allocator) &&
+         vkr_metal_packet_finalize_archive(renderer,
+                                           config->pipeline_archive_path);
+}
+
 bool8_t
 vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                                  VkrMetalPacketRenderer **out_renderer) {
   @autoreleasepool {
-    if (!config || !out_renderer || !config->allocator || !config->graph_path ||
-        !config->slang_msl_path || !config->fragment_msl_path ||
-        config->managed_budget_size == 0 || config->heap_chunk_size == 0 ||
-        config->upload_ring_size == 0 ||
-        config->upload_ring_size > config->upload_ring_max_size ||
-        config->frame_slot_count < 2u || config->capture_ring_capacity == 0 ||
-        config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
-        config->capture_max_batch_bytes == 0 ||
-        config->frame_slot_count > UINT32_MAX - 2u ||
-        config->frame_slot_count + 2u > VKR_METAL_PACKET_GRAPH_INSTANCE_MAX ||
-        config->upload_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
-            0 ||
-        config->max_images == 0 || config->max_passes == 0 ||
-        config->max_passes > VKR_METAL_PACKET_MAX_PASS_TIMINGS ||
-        config->max_material_rows == 0 || config->max_meshes == 0 ||
-        config->max_textures == 0 || config->max_draws == 0 ||
-        config->max_instances == 0 ||
-        (config->upload_ring_size / config->frame_slot_count) %
-                VKR_METAL_PACKET_ROOT_ALIGNMENT !=
-            0 ||
-        config->target_kind > VKR_METAL_PACKET_TARGET_WINDOW ||
-        config->upscale_mode >= VKR_UPSCALE_MODE_COUNT ||
-        (config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
-         (config->target_width == 0u || config->target_height == 0u ||
-          !isfinite(config->render_scale) || config->render_scale <= 0.0f ||
-          config->render_scale > 1.0f)) ||
-        (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
-         !config->metal_layer))
+    if (!vkr_metal_packet_create_arguments_valid(config, out_renderer)) {
       return false_v;
-    const VkrMetalPacketReadbackLayout maximum_readback =
-        vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v, true_v,
-                                         VKR_SHADOW_CASCADE_COUNT_MAX);
-    const uint64_t readback_prefix_size = vkr_metal_packet_align_up(
-        maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);
-    if (config->capture_max_batch_bytes > UINT64_MAX - 3u)
+    }
+    VkrMetalPacketCreateCapacities capacities = {0};
+    if (!vkr_metal_packet_create_capacities(config, &capacities)) {
       return false_v;
-    const uint64_t aligned_capture_size =
-        vkr_metal_packet_align_up(config->capture_max_batch_bytes, 4u);
-    if (aligned_capture_size > UINT64_MAX - readback_prefix_size)
-      return false_v;
-    uint64_t readback_ring_max_size = 0u;
-    if (!vkr_metal_submit_ring_total_size(
-            readback_prefix_size + aligned_capture_size, MB(48),
-            config->frame_slot_count, &readback_ring_max_size))
-      return false_v;
-    const uint64_t readback_ring_size = KB(64) * config->frame_slot_count;
-    /* A replacement is created before the current generation retires. Capacity
-       therefore covers both generations of the larger command- or
-       history-instance domain. */
-    const uint64_t command_instances_per_resource =
-        2u * config->frame_slot_count +
-        (config->frame_slot_count > 2u ? config->frame_slot_count - 2u : 0u);
-    const uint64_t history_instances_per_resource =
-        2u * (config->frame_slot_count + 2u);
-    const uint64_t graph_instances_per_resource =
-        MAX(command_instances_per_resource, history_instances_per_resource);
-    const uint64_t graph_allocation_capacity =
-        (uint64_t)config->max_images * graph_instances_per_resource * 2u;
-    const uint64_t memory_record_capacity =
-        graph_allocation_capacity + (uint64_t)config->max_meshes * 2u +
-        (uint64_t)config->max_material_rows * 4u + config->max_textures + 4u;
-    if (memory_record_capacity >= UINT32_MAX)
-      return false_v;
+    }
     *out_renderer = NULL;
 
     if (@available(macOS 26.0, *)) {
@@ -2536,181 +2870,16 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
           vkr_metal_packet_alloc_zeroed(config->allocator, sizeof(*renderer));
       if (!renderer)
         return false_v;
-      renderer->allocator = config->allocator;
-      const char *diagnostics_directory = getenv("VKR_METAL_DIAGNOSTICS_DIR");
-      if (diagnostics_directory && diagnostics_directory[0]) {
-        (void)vkr_metal_diagnostics_open(&renderer->diagnostics,
-                                         diagnostics_directory);
-        VKR_METAL_DIAGNOSTIC(
-            renderer, "renderer_create",
-            "target=%u extent=%ux%u slots=%u upscale=%u managed_budget=%llu",
-            config->target_kind, config->target_width, config->target_height,
-            config->frame_slot_count, config->upscale_mode,
-            (unsigned long long)config->managed_budget_size);
-        VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
-      }
-      renderer->exposure_metering =
-          vkr_exposure_metering_config_normalize(NULL);
-      renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
-      renderer->gtao_config = vkr_gtao_config_normalize(&config->gtao);
-      renderer->ssr_config = vkr_ssr_config_normalize(&config->ssr);
-      renderer->ssgi_config = vkr_ssgi_config_normalize(&config->ssgi);
-      renderer->candidate_publication_generation = 1u;
-      renderer->graph_frame_arena = arena_create(MB(8), KB(256));
-      renderer->graph_frame_allocator =
-          (VkrAllocator){.ctx = renderer->graph_frame_arena};
-      renderer->max_images = config->max_images;
-      renderer->max_passes = config->max_passes;
-      renderer->max_meshes = config->max_meshes;
-      renderer->max_materials = config->max_material_rows;
-      renderer->max_textures = config->max_textures;
-      renderer->transmission_compact_enabled =
-          config->transmission_compact_enabled;
-      renderer->hzb_enabled = config->hzb_enabled;
-      renderer->frustum_enabled = config->frustum_enabled;
-      renderer->max_samplers = VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY;
-      renderer->max_draws = config->max_draws;
-      renderer->max_instances = config->max_instances;
-      renderer->command_slot_count = config->frame_slot_count;
-      /* At most N-1 command slots remain in flight. Their distinct outputs plus
-         one shared temporal input and one shared HZB input can occupy N+1
-         instances, so one additional output must remain completion-safe. */
-      renderer->history_instance_count = config->frame_slot_count + 2u;
-      renderer->upload_slot_size =
-          config->upload_ring_max_size / config->frame_slot_count;
-      renderer->target_kind = config->target_kind;
-      renderer->display_output_mode = config->display_output_mode;
-      renderer->display_output_context = config->display_output_context;
-      renderer->display_output_snapshot = config->display_output_snapshot;
-      const bool8_t query_display_output =
-          renderer->display_output_mode ==
-              VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR &&
-          renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
-          renderer->display_output_snapshot;
-      const VkrDisplayOutputSnapshot initial_display_snapshot =
-          query_display_output ? renderer->display_output_snapshot(
-                                     renderer->display_output_context)
-                               : (VkrDisplayOutputSnapshot){0};
-      renderer->display_output = vkr_metal_packet_window_output_capability(
-          renderer,
-          vkr_display_output_resolve(
-              renderer->display_output_mode, initial_display_snapshot,
-              renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW));
-      renderer->srgb_output = config->srgb_output;
-      renderer->tonemap_enabled = config->tonemap_enabled;
-      renderer->metalfx_enabled =
-          config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
-      renderer->metalfx_dynamic_resolution_enabled =
-          renderer->metalfx_enabled && config->dynamic_resolution.enabled;
-      renderer->metalfx_min_render_scale =
-          config->dynamic_resolution.enabled
-              ? config->dynamic_resolution.min_scale
-              : config->render_scale;
-      renderer->metalfx_max_render_scale =
-          config->dynamic_resolution.enabled
-              ? config->dynamic_resolution.max_scale
-              : config->render_scale;
-      renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
-      renderer->fxaa_enabled = config->fxaa_enabled;
-      renderer->synchronous_validation_readback =
-          config->synchronous_validation_readback;
+      vkr_metal_packet_configure_renderer(renderer, config);
       const uint64_t capture_storage_size =
           vkr_capture_ring_storage_requirement(config->capture_ring_capacity,
                                                config->capture_max_batch_bytes);
-      if (capture_storage_size) {
-        /* Own reservation; see capture_storage_memory in the renderer struct.
-         */
-        if (capture_storage_size > UINT64_MAX - KB(64)) {
-          vkr_metal_packet_renderer_destroy(renderer);
-          return false_v;
-        }
-        const uint64_t capture_allocator_size = capture_storage_size + KB(64);
-        if (!vkr_dmemory_create(capture_allocator_size, capture_allocator_size,
-                                &renderer->capture_storage_memory)) {
-          vkr_metal_packet_renderer_destroy(renderer);
-          return false_v;
-        }
-        renderer->capture_storage_allocator =
-            (VkrAllocator){.ctx = &renderer->capture_storage_memory};
-        vkr_dmemory_allocator_create(&renderer->capture_storage_allocator);
-        renderer->capture_storage = vkr_allocator_alloc(
-            &renderer->capture_storage_allocator, capture_storage_size,
-            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-        if (!renderer->capture_storage) {
-          vkr_metal_packet_renderer_destroy(renderer);
-          return false_v;
-        }
-      }
-      /* One reservation for every record array. Each vkr_dmemory_alloc rounds
-         up internally, so the total carries slack per array plus a fixed
-         margin. */
-      const uint64_t record_bytes[] = {
-          vkr_metal_packet_images_bytes(renderer),
-          vkr_metal_packet_graph_buffers_bytes(renderer),
-          vkr_metal_packet_graph_buffer_instances_bytes(renderer),
-          vkr_metal_packet_meshes_bytes(renderer),
-          vkr_metal_packet_materials_bytes(renderer),
-          vkr_metal_packet_textures_bytes(renderer),
-          vkr_metal_packet_samplers_bytes(renderer),
-          vkr_metal_packet_text_uploads_bytes(renderer),
-          vkr_metal_packet_render_passes_bytes(renderer),
-          vkr_metal_packet_command_slots_bytes(renderer),
-          vkr_metal_packet_timing_results_bytes(renderer),
-          vkr_metal_packet_commit_feedback_bytes(renderer),
-          vkr_metal_packet_retired_image_views_bytes(renderer),
-          vkr_metal_packet_pass_labels_bytes(renderer),
-      };
-      uint64_t record_total = KB(64);
-      bool8_t record_size_valid = true_v;
-      for (uint32_t i = 0; record_size_valid && i < ArrayCount(record_bytes);
-           ++i)
-        record_size_valid =
-            vkr_metal_packet_record_size_add(&record_total, record_bytes[i]);
-      if (!record_size_valid || !vkr_dmemory_create(record_total, record_total,
-                                                    &renderer->record_memory)) {
+      if (!vkr_metal_packet_create_capture_storage(renderer,
+                                                   capture_storage_size)) {
         vkr_metal_packet_renderer_destroy(renderer);
         return false_v;
       }
-      renderer->record_allocator =
-          (VkrAllocator){.ctx = &renderer->record_memory};
-      vkr_dmemory_allocator_create(&renderer->record_allocator);
-      VkrAllocator *records = &renderer->record_allocator;
-      renderer->images =
-          vkr_metal_packet_record_alloc(records, record_bytes[0], true_v);
-      renderer->graph_buffers =
-          vkr_metal_packet_record_alloc(records, record_bytes[1], true_v);
-      renderer->graph_buffer_instances =
-          vkr_metal_packet_record_alloc(records, record_bytes[2], true_v);
-      renderer->meshes =
-          vkr_metal_packet_record_alloc(records, record_bytes[3], true_v);
-      renderer->packet_materials =
-          vkr_metal_packet_record_alloc(records, record_bytes[4], true_v);
-      renderer->textures =
-          vkr_metal_packet_record_alloc(records, record_bytes[5], true_v);
-      renderer->samplers =
-          vkr_metal_packet_record_alloc(records, record_bytes[6], false_v);
-      renderer->text_uploads =
-          vkr_metal_packet_record_alloc(records, record_bytes[7], false_v);
-      renderer->render_passes =
-          vkr_metal_packet_record_alloc(records, record_bytes[8], true_v);
-      renderer->command_slots =
-          vkr_metal_packet_record_alloc(records, record_bytes[9], true_v);
-      renderer->completed_timing_results =
-          vkr_metal_packet_record_alloc(records, record_bytes[10], true_v);
-      renderer->commit_feedback_records =
-          vkr_metal_packet_record_alloc(records, record_bytes[11], true_v);
-      renderer->retired_image_views =
-          vkr_metal_packet_record_alloc(records, record_bytes[12], true_v);
-      renderer->pass_labels =
-          vkr_metal_packet_record_alloc(records, record_bytes[13], true_v);
-      if (!renderer->images || !renderer->graph_buffers ||
-          !renderer->graph_buffer_instances || !renderer->meshes ||
-          !renderer->packet_materials || !renderer->textures ||
-          !renderer->samplers || !renderer->text_uploads ||
-          !renderer->render_passes || !renderer->command_slots ||
-          !renderer->completed_timing_results ||
-          !renderer->commit_feedback_records ||
-          !renderer->retired_image_views || !renderer->pass_labels) {
+      if (!vkr_metal_packet_create_record_arrays(renderer)) {
         vkr_metal_packet_renderer_destroy(renderer);
         return false_v;
       }
@@ -2734,53 +2903,10 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                                                         error:nil];
       [queue_descriptor release];
       renderer->completion = [renderer->device newSharedEvent];
-      MTL4CounterHeapDescriptor *timestamp_descriptor =
-          [MTL4CounterHeapDescriptor new];
-      timestamp_descriptor.type = MTL4CounterHeapTypeTimestamp;
-      timestamp_descriptor.count = (NSUInteger)config->max_passes * 2u;
-      bool8_t command_slots_created = renderer->command_slots != NULL;
-      for (uint32_t i = 0;
-           command_slots_created && i < renderer->command_slot_count; ++i) {
-        VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
-        slot->allocator = [renderer->device newCommandAllocator];
-        slot->buffer = [renderer->device newCommandBuffer];
-        slot->timestamp_heap =
-            [renderer->device newCounterHeapWithDescriptor:timestamp_descriptor
-                                                     error:nil];
-        command_slots_created =
-            slot->allocator && slot->buffer && slot->timestamp_heap;
-      }
-      renderer->timestamp_frequency =
-          [renderer->device queryTimestampFrequency];
-      [timestamp_descriptor release];
-      bool8_t commit_feedback_created =
-          renderer->commit_feedback_records != NULL;
-      for (uint32_t i = 0u; commit_feedback_created &&
-                            i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
-           ++i) {
-        VkrMetalPacketCommitFeedbackRecord *record =
-            &renderer->commit_feedback_records[i];
-        record->options = [MTL4CommitOptions new];
-        if (!record->options) {
-          commit_feedback_created = false_v;
-          break;
-        }
-        record->ready_handler = Block_copy(^{
-          vkr_atomic_bool_store(&record->feedback_ready, true_v,
-                                VKR_MEMORY_ORDER_RELEASE);
-        });
-        record->handler = Block_copy(^(id<MTL4CommitFeedback> feedback) {
-          @autoreleasepool {
-            record->gpu_start_time = feedback.GPUStartTime;
-            record->gpu_end_time = feedback.GPUEndTime;
-            record->has_error = feedback.error != nil ? true_v : false_v;
-            dispatch_async(vkr_metal_packet_feedback_queue(),
-                           record->ready_handler);
-          }
-        });
-        if (!record->handler || !record->ready_handler)
-          commit_feedback_created = false_v;
-      }
+      const bool8_t command_slots_created =
+          vkr_metal_packet_create_command_slots(renderer, config);
+      const bool8_t commit_feedback_created =
+          vkr_metal_packet_create_commit_feedback_records(renderer);
       if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW)
         renderer->layer = [(CAMetalLayer *)config->metal_layer retain];
       bool8_t passed =
@@ -2833,53 +2959,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         renderer->render_passes[i] = [MTL4RenderPassDescriptor new];
         passed = renderer->render_passes[i] != nil;
       }
-      passed =
-          passed &&
-          vkr_metal_memory_device_create(
-              &(VkrMetalMemoryDeviceConfig){
-                  .metal_device = renderer->device,
-                  .allocator = renderer->allocator,
-                  .diagnostics = &renderer->diagnostics,
-                  .managed_budget_size = config->managed_budget_size,
-                  .heap_chunk_size = config->heap_chunk_size,
-                  .upload_ring_size = config->upload_ring_size,
-                  .upload_ring_max_size = config->upload_ring_max_size,
-                  .readback_ring_size = readback_ring_size,
-                  .readback_ring_max_size = readback_ring_max_size,
-                  .ring_slot_count = config->frame_slot_count,
-                  .max_allocations = (uint32_t)memory_record_capacity,
-                  .max_retirements = (uint32_t)memory_record_capacity,
-                  .max_free_ranges = (uint32_t)memory_record_capacity + 1u,
-              },
-              &renderer->memory) == VKR_METAL_MEMORY_STATUS_OK &&
-          vkr_metal_material_table_device_create(
-              &(VkrMetalMaterialTableConfig){
-                  .max_rows = config->max_material_rows,
-                  .max_retirements = config->max_material_rows,
-              },
-              renderer->device, renderer->memory, renderer->allocator,
-              &renderer->materials) == VKR_METAL_MATERIAL_STATUS_OK &&
-          vkr_metal_packet_create_ibl_targets(renderer) &&
-          vkr_metal_packet_create_atmosphere_luts(renderer) &&
-          vkr_metal_packet_create_dfg_lut(renderer) &&
-          vkr_metal_packet_create_ltc_luts(renderer) &&
-          vkr_metal_packet_create_sheen_luts(renderer) &&
-          vkr_metal_packet_create_anisotropy_luts(renderer) &&
-          vkr_metal_packet_create_gtao_white_visibility(renderer) &&
-          vkr_metal_packet_create_pipelines(renderer, config->slang_msl_path,
-                                            config->fragment_msl_path) &&
-          vkr_rg_executor_registry_init(&renderer->executors,
-                                        renderer->allocator) &&
-          vkr_render_graph_register_executors(&renderer->executors) &&
-          vkr_rg_json_load_file(renderer->allocator, config->graph_path,
-                                &renderer->json_graph) &&
-          vkr_rg_json_bind_executors(&renderer->json_graph,
-                                     &renderer->executors) &&
-          (renderer->graph = vkr_rg_create(renderer->allocator)) != NULL &&
-          vkr_rg_set_frame_allocator(renderer->graph,
-                                     &renderer->graph_frame_allocator) &&
-          vkr_metal_packet_finalize_archive(renderer,
-                                            config->pipeline_archive_path);
+      passed = passed && vkr_metal_packet_create_device_resources(
+                             renderer, config, &capacities);
       if (passed)
         passed = vkr_metal_packet_create_gpu_draw_icb_residencies(renderer);
       if (!passed) {
