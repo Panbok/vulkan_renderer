@@ -236,7 +236,6 @@ void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
                                              VkrDeviceMemoryStats *out_stats);
 void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
                                       VkrVulkanHeapMetrics *out_metrics);
-uint32_t vkr_vulkan_renderer_frame_slot(const VkrVulkanRenderer *renderer);
 bool8_t vkr_vulkan_renderer_hdr_ibl_limits(const VkrVulkanRenderer *renderer,
                                            uint32_t *out_max_cube_extent,
                                            uint32_t *out_max_mip_levels);

@@ -445,21 +445,6 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_upload_wait_count(
 bool8_t vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
     VkrMetalPacketRenderer *renderer, uint64_t *out_wait_count);
 
-/**
- * @brief Index of the command slot this frame is recording into.
- *
- * Callers index per-frame-in-flight storage with this, so it must come from the
- * slot the renderer actually acquired rather than from a frame counter reduced
- * by an assumed slot count. When no frame is active it reports the slot the
- * next acquire will take.
- */
-uint32_t
-vkr_metal_packet_renderer_frame_slot(const VkrMetalPacketRenderer *renderer);
-
-/** Number of command slots this renderer built; the true frames-in-flight. */
-uint32_t vkr_metal_packet_renderer_frame_slot_count(
-    const VkrMetalPacketRenderer *renderer);
-
 /** Releases request-owned capture storage, including a pending request. */
 bool8_t
 vkr_metal_packet_renderer_capture_release(VkrMetalPacketRenderer *renderer,

@@ -775,39 +775,6 @@ SceneDirectionalLight *vkr_scene_get_directional_light(VkrScene *scene,
 // ============================================================================
 
 /**
- * @brief Spawn a mesh via mesh manager and track ownership.
- * Scene will destroy owned meshes on shutdown.
- * @param scene Scene to own the mesh
- * @param assets Published asset owner
- * @param desc Mesh load descriptor
- * @param out_mesh_index Output mesh index
- * @param out_error Optional error output
- * @return true on success
- */
-bool8_t vkr_scene_spawn_mesh(VkrScene *scene, struct VkrRenderAssets *assets,
-                             const struct VkrMeshLoadDesc *desc,
-                             uint32_t *out_mesh_index,
-                             VkrSceneError *out_error);
-
-/**
- * @brief Track an externally-created mesh as scene-owned.
- * @param scene Scene to own the mesh.
- * @param mesh_index Mesh index to claim.
- * @param out_error Optional error output.
- * @return true on success.
- */
-bool8_t vkr_scene_track_mesh(VkrScene *scene, uint32_t mesh_index,
-                             VkrSceneError *out_error);
-
-/**
- * @brief Release a mesh from scene ownership.
- * Scene will no longer destroy this mesh on shutdown.
- * @param scene Scene owning the mesh
- * @param mesh_index Mesh index to release
- */
-void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index);
-
-/**
  * @brief Track a mesh instance as scene-owned.
  * Scene will destroy this instance on shutdown.
  * @param scene Scene to own the instance.
@@ -818,15 +785,6 @@ void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index);
 bool8_t vkr_scene_track_instance(VkrScene *scene,
                                  VkrMeshInstanceHandle instance,
                                  VkrSceneError *out_error);
-
-/**
- * @brief Release a mesh instance from scene ownership.
- * Scene will no longer destroy this instance on shutdown.
- * @param scene Scene owning the instance
- * @param instance Instance handle to release
- */
-void vkr_scene_release_instance(VkrScene *scene,
-                                VkrMeshInstanceHandle instance);
 
 // ============================================================================
 // Text3D Component
@@ -930,15 +888,6 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
                             VkrEntityId entity,
                             const VkrSceneShapeConfig *config,
                             VkrSceneError *out_error);
-
-/**
- * @brief Get the SceneShape component for an entity.
- * @param scene Scene containing the entity.
- * @param entity Entity to query.
- * @return Pointer to component, or NULL if entity lacks shape.
- */
-const SceneShape *vkr_scene_get_shape(const VkrScene *scene,
-                                      VkrEntityId entity);
 
 // ============================================================================
 // Entity Lookup

@@ -25,6 +25,13 @@ vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
 vkr_internal void
 vkr_mesh_manager_note_topology_change(VkrMeshManager *manager);
 
+/* vkr_mesh_manager_load delegates to the batch loader defined below it. */
+vkr_internal uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
+                                                  const VkrMeshLoadDesc *descs,
+                                                  uint32_t count,
+                                                  uint32_t *out_indices,
+                                                  VkrRendererError *out_errors);
+
 /**
  * @brief FNV-1a hash helper for stable geometry keys.
  *
@@ -1266,37 +1273,6 @@ void vkr_mesh_manager_get_metrics(const VkrMeshManager *manager,
   }
 }
 
-bool8_t vkr_mesh_manager_create(VkrMeshManager *manager,
-                                const VkrMeshDesc *desc,
-                                VkrRendererError *out_error,
-                                VkrMesh **out_mesh) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(desc != NULL, "Mesh desc is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  uint32_t index = 0;
-  if (!vkr_mesh_manager_add(manager, desc, &index, out_error)) {
-    return false_v;
-  }
-
-  vkr_mesh_manager_update_model(manager, index);
-
-  VkrMesh *mesh = vkr_mesh_manager_get(manager, index);
-  if (!mesh) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  if (out_mesh) {
-    *out_mesh = mesh;
-  }
-
-  mesh->loading_state = VKR_MESH_LOADING_STATE_LOADED;
-  vkr_mesh_manager_note_topology_change(manager);
-
-  return true_v;
-}
-
 bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
                              uint32_t *out_index, VkrRendererError *out_error) {
   assert_log(manager != NULL, "Manager is NULL");
@@ -1982,54 +1958,6 @@ uint32_t vkr_mesh_manager_capacity(const VkrMeshManager *manager) {
   return manager->meshes.length;
 }
 
-bool8_t vkr_mesh_manager_set_submesh_material(VkrMeshManager *manager,
-                                              uint32_t mesh_index,
-                                              uint32_t submesh_index,
-                                              VkrMaterialHandle material,
-                                              VkrRendererError *out_error) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(mesh_index < manager->meshes.length, "Index is out of bounds");
-  assert_log(material.id != 0, "Material is invalid");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  if (mesh_index >= manager->meshes.length) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, mesh_index);
-  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  if (submesh_index >= mesh->submeshes.length) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
-  const bool8_t material_changed =
-      submesh->material.id != material.id ||
-      submesh->material.generation != material.generation;
-
-  vkr_material_system_add_ref(manager->material_system, material);
-
-  if (submesh->material.id != 0 && submesh->owns_material) {
-    vkr_material_system_release(manager->material_system, submesh->material);
-  }
-
-  submesh->material = material;
-  submesh->owns_material = true_v;
-  submesh->last_render_frame = 0;
-  if (material_changed && mesh->visible)
-    vkr_mesh_manager_note_content_change(manager, mesh->shadow_mobility,
-                                         false_v);
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return true_v;
-}
-
 void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index) {
   assert_log(manager != NULL, "Manager is NULL");
 
@@ -2156,10 +2084,12 @@ VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
   return &manager->meshes.data[mesh_index].submeshes.data[submesh_index];
 }
 
-uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
-                                     const VkrMeshLoadDesc *descs,
-                                     uint32_t count, uint32_t *out_indices,
-                                     VkrRendererError *out_errors) {
+/* Reads every mesh in parallel, batch-loads their materials and textures,
+ * then creates the mesh entries. Returns the number loaded; the optional
+ * output arrays hold `count` entries. */
+vkr_internal uint32_t vkr_mesh_manager_load_batch(
+    VkrMeshManager *manager, const VkrMeshLoadDesc *descs, uint32_t count,
+    uint32_t *out_indices, VkrRendererError *out_errors) {
   assert_log(manager != NULL, "Manager is NULL");
   assert_log(descs != NULL, "Descs is NULL");
 
@@ -2302,127 +2232,9 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
 // Mesh Asset API
 // ============================================================================
 
-VkrMeshAssetHandle vkr_mesh_manager_acquire_asset(VkrMeshManager *manager,
-                                                  String8 mesh_path,
-                                                  VkrPipelineDomain domain,
-                                                  String8 shader_override,
-                                                  VkrRendererError *out_error) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-
-  VkrPipelineDomain normalized_domain =
-      vkr_mesh_manager_resolve_domain(domain, 0);
-
-  char key_buf[512];
-  const char *shader_str =
-      shader_override.str ? (const char *)shader_override.str : "";
-  string_format(key_buf, sizeof(key_buf), "%.*s|%u|%.*s", (int)mesh_path.length,
-                mesh_path.str, (uint32_t)normalized_domain,
-                (int)shader_override.length, shader_str);
-
-  VkrMeshAssetEntry *existing =
-      vkr_hash_table_get_VkrMeshAssetEntry(&manager->asset_by_key, key_buf);
-  if (existing) {
-    VkrMeshAsset *asset =
-        array_get_VkrMeshAsset(&manager->mesh_assets, existing->asset_index);
-    if (asset && asset->id != 0) {
-      (void)vkr_mesh_manager_sync_pending_asset(manager, existing->asset_index,
-                                                asset);
-      asset->ref_count++;
-      return (VkrMeshAssetHandle){.id = asset->id,
-                                  .generation = asset->generation};
-    }
-  }
-
-  VkrAllocator *scratch_allocator = &manager->scratch_allocator;
-  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(scratch_allocator);
-  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return VKR_MESH_ASSET_HANDLE_INVALID;
-  }
-
-  VkrMeshLoadDesc desc = {
-      .mesh_path = mesh_path,
-      .pipeline_domain = normalized_domain,
-      .shader_override = shader_override,
-  };
-
-  VkrResourceHandleInfo request_info = {0};
-  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, mesh_path,
-                                scratch_allocator, &request_info, out_error)) {
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return VKR_MESH_ASSET_HANDLE_INVALID;
-  }
-
-  VkrMeshAssetHandle asset_handle = vkr_mesh_manager_create_pending_asset_slot(
-      manager, &desc, key_buf, request_info.request_id, out_error);
-  if (asset_handle.id == 0) {
-    if (request_info.request_id != 0 ||
-        (request_info.type == VKR_RESOURCE_TYPE_MESH && request_info.as.mesh)) {
-      vkr_resource_system_unload(&request_info, mesh_path);
-    }
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return VKR_MESH_ASSET_HANDLE_INVALID;
-  }
-
-  uint32_t slot = asset_handle.id - 1;
-  VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
-  if (!asset || asset->id != asset_handle.id ||
-      asset->generation != asset_handle.generation) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    if (request_info.request_id != 0 || request_info.as.mesh) {
-      vkr_resource_system_unload(&request_info, mesh_path);
-    }
-    vkr_mesh_manager_destroy_asset_slot(manager, slot, true_v);
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return VKR_MESH_ASSET_HANDLE_INVALID;
-  }
-
-  if (request_info.request_id == 0) {
-    if (request_info.type != VKR_RESOURCE_TYPE_MESH || !request_info.as.mesh) {
-      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      vkr_mesh_manager_destroy_asset_slot(manager, slot, true_v);
-      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return VKR_MESH_ASSET_HANDLE_INVALID;
-    }
-
-    VkrRendererError build_error = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_mesh_manager_build_asset_from_mesh_result(
-            manager, asset, request_info.as.mesh, &desc, &build_error)) {
-      *out_error = build_error != VKR_RENDERER_ERROR_NONE
-                       ? build_error
-                       : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      vkr_resource_system_unload(&request_info, mesh_path);
-      vkr_mesh_manager_destroy_asset_slot(manager, slot, true_v);
-      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return VKR_MESH_ASSET_HANDLE_INVALID;
-    }
-
-    asset->loading_state = VKR_MESH_LOADING_STATE_LOADED;
-    asset->last_error = VKR_RENDERER_ERROR_NONE;
-    asset->pending_request_id = 0;
-    vkr_resource_system_unload(&request_info, mesh_path);
-  } else {
-    asset->loading_state = VKR_MESH_LOADING_STATE_PENDING;
-    asset->last_error = VKR_RENDERER_ERROR_NONE;
-    asset->pending_request_id = request_info.request_id;
-    (void)vkr_mesh_manager_sync_pending_asset(manager, slot, asset);
-  }
-
-  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  asset = vkr_mesh_manager_get_asset(manager, asset_handle);
-  if (asset) {
-    asset->ref_count++;
-  }
-
-  return asset_handle;
-}
-
-void vkr_mesh_manager_release_asset(VkrMeshManager *manager,
-                                    VkrMeshAssetHandle asset) {
+/* Drops one asset reference; the last reference destroys the asset. */
+vkr_internal void vkr_mesh_manager_release_asset(VkrMeshManager *manager,
+                                                 VkrMeshAssetHandle asset) {
   assert_log(manager != NULL, "Manager is NULL");
 
   if (asset.id == 0) {
@@ -2460,8 +2272,9 @@ void vkr_mesh_manager_pump_async(VkrMeshManager *manager) {
   }
 }
 
-VkrMeshAsset *vkr_mesh_manager_get_asset(VkrMeshManager *manager,
-                                         VkrMeshAssetHandle handle) {
+/* Returns NULL for an invalid or stale handle. */
+vkr_internal VkrMeshAsset *
+vkr_mesh_manager_get_asset(VkrMeshManager *manager, VkrMeshAssetHandle handle) {
   assert_log(manager != NULL, "Manager is NULL");
 
   if (handle.id == 0) {
@@ -2491,16 +2304,13 @@ VkrMeshAsset *vkr_mesh_manager_get_live_asset(VkrMeshManager *manager,
   return &manager->mesh_assets.data[handle.id - 1u];
 }
 
-uint32_t vkr_mesh_manager_asset_count(const VkrMeshManager *manager) {
-  assert_log(manager != NULL, "Manager is NULL");
-  return manager->asset_count;
-}
-
 // ============================================================================
 // Mesh Instance API
 // ============================================================================
 
-VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
+/* Creates an instance of a shared asset with per-submesh state sized to the
+ * asset and takes one asset reference. `render_id` zero disables picking. */
+vkr_internal VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
     VkrMeshManager *manager, VkrMeshAssetHandle asset_handle, Mat4 model,
     uint32_t render_id, bool8_t visible, VkrRendererError *out_error) {
   assert_log(manager != NULL, "Manager is NULL");
@@ -3449,164 +3259,6 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
   return (VkrMeshAssetHandle){.id = id, .generation = generation};
 }
 
-uint32_t vkr_mesh_manager_create_instances_batch(
-    VkrMeshManager *manager, const VkrMeshLoadDesc *descs, uint32_t count,
-    VkrMeshInstanceHandle *out_instances, VkrRendererError *out_errors) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(descs != NULL, "Descs is NULL");
-
-  if (count == 0) {
-    return 0;
-  }
-
-  if (out_instances) {
-    for (uint32_t i = 0; i < count; i++) {
-      out_instances[i] = VKR_MESH_INSTANCE_HANDLE_INVALID;
-    }
-  }
-
-  if (out_errors) {
-    for (uint32_t i = 0; i < count; i++) {
-      out_errors[i] = VKR_RENDERER_ERROR_NONE;
-    }
-  }
-
-  for (uint32_t i = 0; i < count; ++i) {
-    if (descs[i].source_mesh_index_plus_one) {
-      if (out_errors)
-        for (uint32_t j = 0; j < count; ++j)
-          out_errors[j] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-      return 0u; // Source nodes use the resolved-resource instantiation path.
-    }
-  }
-
-  uint32_t wave_size = vkr_mesh_manager_batch_wave_size(manager, count);
-
-  VkrAllocator *scratch_allocator = &manager->scratch_allocator;
-  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(scratch_allocator);
-  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
-    if (out_errors) {
-      for (uint32_t i = 0; i < count; i++) {
-        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      }
-    }
-    return 0;
-  }
-
-  VkrMeshAssetKey *unique_keys = vkr_allocator_alloc(
-      scratch_allocator, sizeof(VkrMeshAssetKey) * wave_size,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *desc_to_unique =
-      vkr_allocator_alloc(scratch_allocator, sizeof(uint32_t) * wave_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrMeshAssetHandle *unique_assets = vkr_allocator_alloc(
-      scratch_allocator, sizeof(VkrMeshAssetHandle) * wave_size,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  bool8_t *unique_temp_refs =
-      vkr_allocator_alloc(scratch_allocator, sizeof(bool8_t) * wave_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrRendererError *unique_errors = vkr_allocator_alloc(
-      scratch_allocator, sizeof(VkrRendererError) * wave_size,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  if (!unique_keys || !desc_to_unique || !unique_assets || !unique_temp_refs ||
-      !unique_errors) {
-    if (out_errors) {
-      for (uint32_t i = 0; i < count; i++) {
-        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      }
-    }
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return 0;
-  }
-
-  uint32_t instances_created = 0;
-  uint32_t assets_requested = 0;
-
-  for (uint32_t base = 0; base < count; base += wave_size) {
-    uint32_t wave_end = vkr_min_u32(base + wave_size, count);
-    uint32_t wave_count = wave_end - base;
-
-    uint32_t unique_count = 0;
-    for (uint32_t j = 0; j < wave_count; j++) {
-      VkrMeshAssetKey key = vkr_mesh_asset_key_from_desc(&descs[base + j]);
-      int32_t existing_idx =
-          vkr_mesh_asset_key_find(unique_keys, unique_count, &key);
-
-      if (existing_idx >= 0) {
-        desc_to_unique[j] = (uint32_t)existing_idx;
-      } else {
-        desc_to_unique[j] = unique_count;
-        unique_keys[unique_count] = key;
-        unique_assets[unique_count] = VKR_MESH_ASSET_HANDLE_INVALID;
-        unique_temp_refs[unique_count] = false_v;
-        unique_errors[unique_count] = VKR_RENDERER_ERROR_NONE;
-        unique_count++;
-      }
-    }
-
-    for (uint32_t j = 0; j < unique_count; ++j) {
-      VkrRendererError asset_err = VKR_RENDERER_ERROR_NONE;
-      VkrMeshAssetHandle asset = vkr_mesh_manager_acquire_asset(
-          manager, unique_keys[j].mesh_path, unique_keys[j].pipeline_domain,
-          unique_keys[j].shader_override, &asset_err);
-      unique_assets[j] = asset;
-      unique_temp_refs[j] = asset.id != 0;
-      unique_errors[j] = asset_err;
-      if (asset.id != 0) {
-        assets_requested++;
-      }
-    }
-
-    for (uint32_t j = 0; j < wave_count; j++) {
-      uint32_t global_i = base + j;
-      uint32_t unique_idx = desc_to_unique[j];
-      VkrMeshAssetHandle asset_handle = unique_assets[unique_idx];
-
-      if (asset_handle.id == 0) {
-        if (out_errors) {
-          VkrRendererError asset_err = unique_errors[unique_idx];
-          out_errors[global_i] =
-              asset_err != VKR_RENDERER_ERROR_NONE
-                  ? asset_err
-                  : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        }
-        continue;
-      }
-
-      VkrTransform transform = descs[global_i].transform;
-      Mat4 model = vkr_transform_get_world(&transform);
-
-      VkrRendererError inst_err = VKR_RENDERER_ERROR_NONE;
-      VkrMeshInstanceHandle instance = vkr_mesh_manager_create_instance(
-          manager, asset_handle, model, 0, true_v, &inst_err);
-
-      if (instance.id != 0) {
-        if (out_instances) {
-          out_instances[global_i] = instance;
-        }
-        instances_created++;
-      }
-
-      if (out_errors) {
-        out_errors[global_i] = inst_err;
-      }
-    }
-
-    for (uint32_t j = 0; j < unique_count; ++j) {
-      if (unique_temp_refs[j] && unique_assets[j].id != 0) {
-        vkr_mesh_manager_release_asset(manager, unique_assets[j]);
-      }
-    }
-  }
-
-  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  log_debug("Instance batch: %u instances created, %u assets requested",
-            instances_created, assets_requested);
-  return instances_created;
-}
-
 bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
                                           VkrMeshInstanceHandle instance) {
   assert_log(manager != NULL, "Manager is NULL");
@@ -3690,23 +3342,6 @@ VkrMeshInstance *vkr_mesh_manager_get_instance(VkrMeshManager *manager,
   VkrMeshInstance *inst =
       array_get_VkrMeshInstance(&manager->mesh_instances, slot);
   if (inst->asset.id == 0 || inst->generation != handle.generation) {
-    return NULL; // Invalid/destroyed instance
-  }
-
-  return inst;
-}
-
-VkrMeshInstance *vkr_mesh_manager_get_instance_by_index(VkrMeshManager *manager,
-                                                        uint32_t index) {
-  assert_log(manager != NULL, "Manager is NULL");
-
-  if (index >= manager->mesh_instances.length) {
-    return NULL;
-  }
-
-  VkrMeshInstance *inst =
-      array_get_VkrMeshInstance(&manager->mesh_instances, index);
-  if (inst->asset.id == 0) {
     return NULL; // Invalid/destroyed instance
   }
 

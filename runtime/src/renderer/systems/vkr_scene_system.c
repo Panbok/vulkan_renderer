@@ -1991,38 +1991,9 @@ SceneDirectionalLight *vkr_scene_get_directional_light(VkrScene *scene,
 // Mesh Ownership
 // ============================================================================
 
-bool8_t vkr_scene_spawn_mesh(VkrScene *scene, struct VkrRenderAssets *assets,
-                             const VkrMeshLoadDesc *desc,
-                             uint32_t *out_mesh_index,
-                             VkrSceneError *out_error) {
-  if (!scene || !assets || !desc || !out_mesh_index) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
-    return false;
-  }
-
-  uint32_t mesh_index;
-  VkrRendererError load_error;
-
-  if (!vkr_mesh_manager_load(&assets->mesh_manager, desc, &mesh_index, NULL,
-                             &load_error)) {
-    if (out_error)
-      *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
-    return false;
-  }
-
-  if (!vkr_scene_track_mesh(scene, mesh_index, out_error)) {
-    return false;
-  }
-
-  *out_mesh_index = mesh_index;
-  if (out_error)
-    *out_error = VKR_SCENE_ERROR_NONE;
-  return true;
-}
-
-bool8_t vkr_scene_track_mesh(VkrScene *scene, uint32_t mesh_index,
-                             VkrSceneError *out_error) {
+/* Claims an externally created mesh; scene shutdown destroys it. */
+vkr_internal bool8_t vkr_scene_track_mesh(VkrScene *scene, uint32_t mesh_index,
+                                          VkrSceneError *out_error) {
   if (!scene) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
@@ -2041,7 +2012,8 @@ bool8_t vkr_scene_track_mesh(VkrScene *scene, uint32_t mesh_index,
   return true;
 }
 
-void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index) {
+/* Drops scene ownership; shutdown no longer destroys the mesh. */
+vkr_internal void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index) {
   if (!scene)
     return;
 
@@ -2087,24 +2059,6 @@ bool8_t vkr_scene_track_instance(VkrScene *scene,
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
   return true_v;
-}
-
-void vkr_scene_release_instance(VkrScene *scene,
-                                VkrMeshInstanceHandle instance) {
-  if (!scene)
-    return;
-
-  // Find and remove from owned list
-  for (uint32_t i = 0; i < scene->owned_instance_count; i++) {
-    if (scene->owned_instances[i].id == instance.id &&
-        scene->owned_instances[i].generation == instance.generation) {
-      // Swap with last and shrink
-      scene->owned_instances[i] =
-          scene->owned_instances[scene->owned_instance_count - 1];
-      scene->owned_instance_count--;
-      return;
-    }
-  }
 }
 
 // ============================================================================
@@ -2968,14 +2922,6 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
   return true_v;
-}
-
-const SceneShape *vkr_scene_get_shape(const VkrScene *scene,
-                                      VkrEntityId entity) {
-  if (!scene || !scene->world)
-    return NULL;
-  return (const SceneShape *)vkr_entity_get_component(scene->world, entity,
-                                                      scene->comp_shape);
 }
 
 // ============================================================================

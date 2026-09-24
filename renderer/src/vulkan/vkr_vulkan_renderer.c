@@ -1653,10 +1653,6 @@ void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
                                  &out_metrics->materials);
 }
 
-uint32_t vkr_vulkan_renderer_frame_slot(const VkrVulkanRenderer *renderer) {
-  return renderer ? renderer->active_frame_slot : 0u;
-}
-
 const VkrVulkanCapabilityProfile *
 vkr_vulkan_renderer_profile(const VkrVulkanRenderer *renderer) {
   return renderer ? vkr_vulkan_device_profile(renderer->device) : NULL;

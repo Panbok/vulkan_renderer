@@ -16,9 +16,7 @@ typedef enum VkrRendererImplKind {
  * refreshed only at the recreate boundary and otherwise read as plain data.
  */
 typedef struct VkrRendererImplCapabilities {
-  uint32_t frame_in_flight_count;
   uint32_t present_target_image_count;
-  VkrPresentTargetKind present_target_kind;
   VkrTextureFormat present_color_format;
   VkrTextureFormat present_depth_format;
   VkrTextureFormat shadow_depth_format;

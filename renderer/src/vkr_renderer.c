@@ -286,8 +286,6 @@ vkr_internal void vkr_renderer_backend_resize(VkrRenderer *renderer,
 vkr_internal VkrRendererError vkr_renderer_backend_present_target_recreate(
     VkrRenderer *renderer, uint32_t width, uint32_t height,
     uint32_t image_count);
-vkr_internal uint32_t
-vkr_renderer_backend_frame_in_flight_index(VkrRenderer *renderer);
 vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
     VkrRenderer *renderer, uint64_t after_submit_value,
     VkrRendererImplSubmitResult *out_result);
@@ -402,13 +400,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       vkr_metal_packet_renderer_present_color_format(renderer->metal_renderer);
   vkr_metal_packet_renderer_get_asset_publisher(renderer->metal_renderer,
                                                 &renderer->asset_publisher);
-  /* Caps are seeded with a backend-neutral default before any renderer exists.
-     Correct the frames-in-flight count to the number of command slots this
-     renderer actually built, so callers sizing per-slot storage are not handed
-     a larger count than there are slots. Present image count is unrelated and
-     stays as configured. */
-  renderer->impl.caps.frame_in_flight_count =
-      vkr_metal_packet_renderer_frame_slot_count(renderer->metal_renderer);
   *out_error = VKR_RENDERER_ERROR_NONE;
   log_info("Selected Metal 4 packet renderer");
   return true_v;
@@ -494,10 +485,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   }
   vkr_vulkan_renderer_get_asset_publisher(renderer->vulkan_renderer,
                                           &renderer->asset_publisher);
-  /* Stated explicitly rather than inherited from the default caps, so this
-     backend's slot count and the caps it publishes cannot drift apart the way
-     Metal's did. */
-  renderer->impl.caps.frame_in_flight_count = VKR_VULKAN_FRAME_SLOT_COUNT;
   *out_error = VKR_RENDERER_ERROR_NONE;
   log_info("Selected Vulkan 1.4 packet renderer");
   return true_v;
@@ -1423,18 +1410,6 @@ vkr_internal VkrRendererError vkr_renderer_backend_present_target_recreate(
 #endif
 }
 
-vkr_internal uint32_t
-vkr_renderer_backend_frame_in_flight_index(VkrRenderer *renderer) {
-#if defined(PLATFORM_APPLE)
-  /* Ask the backend which slot it acquired, the way the Vulkan path does.
-     Deriving the index from the frame counter assumed the slot count in caps
-     matched the one the Metal renderer actually built, and it did not. */
-  return vkr_metal_packet_renderer_frame_slot(renderer->metal_renderer);
-#else
-  return vkr_vulkan_renderer_frame_slot(renderer->vulkan_renderer);
-#endif
-}
-
 VkrCaptureStatus
 vkr_renderer_backend_capture_poll(VkrRenderer *renderer,
                                   VkrCaptureRequestId request_id,
@@ -1596,10 +1571,6 @@ String8 vkr_renderer_get_error_string(VkrRendererError error) {
   return string8_lit("Unknown error");
 }
 
-VkrRendererBackendType vkr_renderer_get_backend_type(VkrRenderer *renderer) {
-  return renderer->backend_type;
-}
-
 void vkr_renderer_get_device_information(
     VkrRenderer *renderer, VkrDeviceInformation *device_information,
     Arena *temp_arena) {
@@ -1669,14 +1640,6 @@ bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,
   return vkr_renderer_backend_device_memory_stats(renderer, out_stats);
 }
 
-uint32_t vkr_renderer_present_target_image_count(VkrRenderer *renderer) {
-  return renderer->impl.caps.present_target_image_count;
-}
-
-VkrPresentTargetKind vkr_renderer_present_target_kind(VkrRenderer *renderer) {
-  return renderer->impl.caps.present_target_kind;
-}
-
 void vkr_renderer_present_target_extent(VkrRenderer *renderer,
                                         uint32_t *out_width,
                                         uint32_t *out_height) {
@@ -1737,14 +1700,6 @@ VkrRendererError vkr_renderer_present_target_recreate(VkrRenderer *renderer,
 
 VkrTextureFormat vkr_renderer_get_shadow_depth_format(VkrRenderer *renderer) {
   return renderer->impl.caps.shadow_depth_format;
-}
-
-uint32_t vkr_renderer_frame_in_flight_index(VkrRenderer *renderer) {
-  return vkr_renderer_backend_frame_in_flight_index(renderer);
-}
-
-uint32_t vkr_renderer_frame_in_flight_count(VkrRenderer *renderer) {
-  return renderer->impl.caps.frame_in_flight_count;
 }
 
 vkr_internal VkrRendererError vkr_renderer_validation_fail(

@@ -1138,7 +1138,6 @@ vkr_renderer_get_asset_publisher(VkrRenderer *renderer);
 
 // --- START Utility ---
 String8 vkr_renderer_get_error_string(VkrRendererError error);
-VkrRendererBackendType vkr_renderer_get_backend_type(VkrRenderer *renderer);
 bool32_t vkr_renderer_is_frame_active(VkrRenderer *renderer);
 VkrRendererError vkr_renderer_wait_idle(VkrRenderer *renderer);
 
@@ -1178,16 +1177,6 @@ bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,
 // --- END Utility ---
 
 /**
- * @brief Frame-in-flight slot currently being recorded.
- *
- * Use this, not the swapchain image index, to index per-frame CPU-written
- * buffers: the slot's fence is waited on in begin_frame, so its previous
- * contents are guaranteed to be free of GPU readers.
- */
-uint32_t vkr_renderer_frame_in_flight_index(VkrRenderer *renderer);
-/** @brief Number of distinct frame-in-flight slots (<= BUFFERING_FRAMES). */
-uint32_t vkr_renderer_frame_in_flight_count(VkrRenderer *renderer);
-/**
  * Target-neutral attachment and frame configuration queries.
  *
  * These are the only way to reach the images a frame renders into. The
@@ -1195,8 +1184,6 @@ uint32_t vkr_renderer_frame_in_flight_count(VkrRenderer *renderer);
  * offscreen renderer present the same contract to every caller above the
  * backend.
  */
-uint32_t vkr_renderer_present_target_image_count(VkrRenderer *renderer);
-VkrPresentTargetKind vkr_renderer_present_target_kind(VkrRenderer *renderer);
 void vkr_renderer_present_target_extent(VkrRenderer *renderer,
                                         uint32_t *out_width,
                                         uint32_t *out_height);

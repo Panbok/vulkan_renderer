@@ -306,6 +306,20 @@ vkr_internal Mat4 vkr_shadow_view_projection_from_fit(const Mat4 *light_view,
 }
 
 /**
+ * @brief Converts fitted view-space bounds into the shader's right/up grid.
+ *
+ * The light view's X axis is the negation of the right basis reconstructed by
+ * `shadow_light_space_xy`; Y has the same sign as the reconstructed up basis.
+ * Keeping that sign relation here makes the PCF rotation cell stable under
+ * light-view translation.
+ */
+vkr_internal Vec2 vkr_shadow_light_space_origin_from_view(
+    const Mat4 *light_view, float32_t left, float32_t bottom) {
+  const Mat4 view = light_view ? *light_view : mat4_identity();
+  return vec2_new(view.columns.col3.x - left, bottom - view.columns.col3.y);
+}
+
+/**
  * Publishes the receiver-facing description of one fit: the texel footprint,
  * the normalized-depth divisor, and the light-space grid origin.
  *
@@ -577,12 +591,6 @@ vkr_internal Mat4 vkr_shadow_compute_light_view(
   return mat4_look_at(light_pos, anchor, up);
 }
 
-Vec2 vkr_shadow_light_space_origin_from_view(const Mat4 *light_view,
-                                             float32_t left, float32_t bottom) {
-  const Mat4 view = light_view ? *light_view : mat4_identity();
-  return vec2_new(view.columns.col3.x - left, bottom - view.columns.col3.y);
-}
-
 vkr_internal void vkr_shadow_include_z(float32_t z, bool8_t *found,
                                        float32_t *min_z, float32_t *max_z) {
   *min_z = *found ? vkr_min_f32(*min_z, z) : z;
@@ -590,7 +598,11 @@ vkr_internal void vkr_shadow_include_z(float32_t z, bool8_t *found,
   *found = true_v;
 }
 
-bool8_t vkr_shadow_fit_relevant_caster_z(
+/**
+ * Fits the light-space Z interval of the scene AABB portion intersecting the
+ * supplied cascade XY rectangle. Returns false when the volumes do not overlap.
+ */
+vkr_internal bool8_t vkr_shadow_fit_relevant_caster_z(
     const Mat4 *light_view, const VkrShadowSceneBounds *scene_bounds,
     float32_t left, float32_t right, float32_t bottom, float32_t top,
     float32_t *out_min_z, float32_t *out_max_z) {

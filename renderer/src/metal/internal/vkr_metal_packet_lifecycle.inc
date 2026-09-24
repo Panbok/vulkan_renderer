@@ -285,22 +285,6 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
   return true_v;
 }
 
-uint32_t
-vkr_metal_packet_renderer_frame_slot(const VkrMetalPacketRenderer *renderer) {
-  if (!renderer || renderer->command_slot_count == 0u)
-    return 0u;
-  if (renderer->reserved_frame_slot)
-    return (uint32_t)(renderer->reserved_frame_slot - renderer->command_slots);
-  if (renderer->active_command_slot)
-    return (uint32_t)(renderer->active_command_slot - renderer->command_slots);
-  return renderer->next_command_slot;
-}
-
-uint32_t vkr_metal_packet_renderer_frame_slot_count(
-    const VkrMetalPacketRenderer *renderer) {
-  return renderer ? renderer->command_slot_count : 0u;
-}
-
 bool8_t
 vkr_metal_packet_renderer_capture_release(VkrMetalPacketRenderer *renderer,
                                           VkrCaptureRequestId request_id) {

@@ -213,19 +213,6 @@ void vkr_mesh_manager_get_metrics(const VkrMeshManager *manager,
                                   VkrMeshManagerMetrics *out_metrics);
 
 /**
- * @brief Creates a mesh based on a description.
- * @param manager The mesh manager to create the mesh in.
- * @param desc The description for the mesh.
- * @param out_error The error code for the operation.
- * @param out_mesh The mesh created.
- * @return true if the mesh was created successfully, false otherwise.
- */
-bool8_t vkr_mesh_manager_create(VkrMeshManager *manager,
-                                const VkrMeshDesc *desc,
-                                VkrRendererError *out_error,
-                                VkrMesh **out_mesh);
-
-/**
  * @brief Adds a mesh based on descriptor and returns its slot index.
  * @param manager The mesh manager to add the mesh to.
  * @param desc The description for the mesh.
@@ -241,25 +228,6 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
                               uint32_t *out_first_index,
                               uint32_t *out_mesh_count,
                               VkrRendererError *out_error);
-
-/**
- * @brief Batch load multiple meshes with parallel file I/O and material
- * loading.
- *
- * This function loads all meshes in parallel, batch loads all materials
- * and textures across all meshes, then creates the mesh entries.
- *
- * @param manager The mesh manager to load the meshes into.
- * @param descs Array of mesh load descriptors.
- * @param count Number of meshes to load.
- * @param out_indices Optional array to receive mesh indices (size = count).
- * @param out_errors Optional array to receive per-mesh errors (size = count).
- * @return Number of meshes successfully loaded.
- */
-uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
-                                     const VkrMeshLoadDesc *descs,
-                                     uint32_t count, uint32_t *out_indices,
-                                     VkrRendererError *out_errors);
 
 /**
  * @brief Removes a mesh by index.
@@ -304,20 +272,6 @@ uint32_t vkr_mesh_manager_count(const VkrMeshManager *manager);
  * @return The capacity of the mesh manager.
  */
 uint32_t vkr_mesh_manager_capacity(const VkrMeshManager *manager);
-
-/**
- * @brief Sets material handle on mesh and marks pipeline dirty.
- * @param manager The mesh manager to set the material on.
- * @param index The index of the mesh to set the material on.
- * @param material The material to set on the mesh.
- * @param out_error The error code for the operation.
- * @return true if the material was set successfully, false otherwise.
- */
-bool8_t vkr_mesh_manager_set_submesh_material(VkrMeshManager *manager,
-                                              uint32_t mesh_index,
-                                              uint32_t submesh_index,
-                                              VkrMaterialHandle material,
-                                              VkrRendererError *out_error);
 
 /**
  * @brief Marks mesh transform dirty and recomputes cached model matrix.
@@ -375,28 +329,6 @@ VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
 // ============================================================================
 
 /**
- * @brief Acquire a mesh asset by key, creating it if necessary.
- *
- * If an asset with the given key already exists, increments its ref_count and
- * returns the handle. Otherwise, schedules an async mesh resource request,
- * creates a pending asset slot immediately, and inserts it into the registry.
- * Callers can create instances against pending assets; they become renderable
- * after `vkr_mesh_manager_pump_async` finalizes the payload.
- *
- * @param manager The mesh manager.
- * @param mesh_path Path to the mesh file.
- * @param domain Pipeline domain for submeshes.
- * @param shader_override Optional shader override (can be empty).
- * @param out_error Error code if acquisition fails.
- * @return Handle to the asset, or VKR_MESH_ASSET_HANDLE_INVALID on failure.
- */
-VkrMeshAssetHandle vkr_mesh_manager_acquire_asset(VkrMeshManager *manager,
-                                                  String8 mesh_path,
-                                                  VkrPipelineDomain domain,
-                                                  String8 shader_override,
-                                                  VkrRendererError *out_error);
-
-/**
  * @brief Progress pending mesh asset requests on the render thread.
  *
  * Finalizes assets whose mesh resource requests reached READY state and updates
@@ -406,58 +338,13 @@ VkrMeshAssetHandle vkr_mesh_manager_acquire_asset(VkrMeshManager *manager,
  */
 void vkr_mesh_manager_pump_async(VkrMeshManager *manager);
 
-/**
- * @brief Release a mesh asset reference.
- *
- * Decrements the asset's ref_count and destroys the asset when it reaches 0.
- *
- * @param manager The mesh manager.
- * @param asset Handle to the asset.
- */
-void vkr_mesh_manager_release_asset(VkrMeshManager *manager,
-                                    VkrMeshAssetHandle asset);
-
-/**
- * @brief Get pointer to mesh asset by handle.
- *
- * @param manager The mesh manager.
- * @param handle Asset handle.
- * @return Pointer to asset, or NULL if handle is invalid.
- */
-VkrMeshAsset *vkr_mesh_manager_get_asset(VkrMeshManager *manager,
-                                         VkrMeshAssetHandle handle);
-
 /** Resolve an asset handle owned by a live mesh instance. */
 VkrMeshAsset *vkr_mesh_manager_get_live_asset(VkrMeshManager *manager,
                                               VkrMeshAssetHandle handle);
 
-/**
- * @brief Get count of loaded mesh assets.
- */
-uint32_t vkr_mesh_manager_asset_count(const VkrMeshManager *manager);
-
 // ============================================================================
 // Mesh Instance API
 // ============================================================================
-
-/**
- * @brief Create a mesh instance referencing a shared asset.
- *
- * Allocates per-submesh instance state sized to match asset's submesh count.
- * Increments the asset's ref_count.
- *
- * @param manager The mesh manager.
- * @param asset Handle to the asset this instance references.
- * @param model Initial model matrix.
- * @param render_id Render ID for picking (0 disables picking).
- * @param visible Initial visibility state.
- * @param out_error Error code if creation fails.
- * @return Handle to the instance, or VKR_MESH_INSTANCE_HANDLE_INVALID on
- * failure.
- */
-VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
-    VkrMeshManager *manager, VkrMeshAssetHandle asset, Mat4 model,
-    uint32_t render_id, bool8_t visible, VkrRendererError *out_error);
 
 /**
  * @brief Create a mesh instance from an already-resolved mesh resource handle.
@@ -501,25 +388,6 @@ vkr_mesh_manager_instance_set_shadow_mobility(VkrMeshManager *manager,
                                               VkrShadowCasterMobility mobility);
 
 /**
- * @brief Batch create mesh instances from load descriptors.
- *
- * Acquires assets for unique keys (loading if necessary), then creates
- * instances. This is the recommended entry point for scene loading.
- *
- * @param manager The mesh manager.
- * @param descs Array of mesh load descriptors.
- * @param count Number of instances to create.
- * @param out_instances Optional array to receive instance handles (size =
- * count).
- * @param out_errors Optional array to receive per-instance errors (size =
- * count).
- * @return Number of instances successfully created.
- */
-uint32_t vkr_mesh_manager_create_instances_batch(
-    VkrMeshManager *manager, const VkrMeshLoadDesc *descs, uint32_t count,
-    VkrMeshInstanceHandle *out_instances, VkrRendererError *out_errors);
-
-/**
  * @brief Destroy a mesh instance.
  *
  * Releases pipeline state, decrements asset ref_count, and frees the slot.
@@ -540,18 +408,6 @@ bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
  */
 VkrMeshInstance *vkr_mesh_manager_get_instance(VkrMeshManager *manager,
                                                VkrMeshInstanceHandle handle);
-
-/**
- * @brief Get pointer to mesh instance by slot index.
- *
- * For direct access; returns instance at given slot if valid.
- *
- * @param manager The mesh manager.
- * @param index Slot index (0 to instance_capacity - 1).
- * @return Pointer to instance, or NULL if invalid/destroyed.
- */
-VkrMeshInstance *vkr_mesh_manager_get_instance_by_index(VkrMeshManager *manager,
-                                                        uint32_t index);
 
 /**
  * @brief Get pointer to mesh instance by live index.
