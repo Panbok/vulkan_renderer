@@ -2379,6 +2379,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE) {
     if (!vkr_harness_resolve_existing_path(repo_root, case_manifest.scene,
                                            managed_scene, &error)) {
+      vkr_harness_stderr("%s: %s\n", error.code, error.message);
       goto cleanup;
     }
     scene_path = managed_scene;
