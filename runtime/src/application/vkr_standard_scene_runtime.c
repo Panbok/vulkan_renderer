@@ -601,19 +601,61 @@ vkr_standard_scene_runtime_cancel_frame(VkrStandardSceneRuntime *application,
     vkr_application_host_close(&application->host);
 }
 
-void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
-                                           float64_t delta) {
-  assert(application != NULL && "VkrStandardSceneRuntime is NULL");
-  assert(bitset8_is_set(&application->host.flags,
-                        VKR_APPLICATION_HOST_FLAG_RUNNING) &&
-         "VkrStandardSceneRuntime is not running");
+/* Frame-scoped payload storage for one scene frame. The packet and its
+   payloads borrow these members until vkr_renderer_render_frame returns, so
+   vkr_standard_scene_runtime_draw_frame owns this struct on its stack and
+   each stage fills its part through a pointer. */
+typedef struct VkrStandardSceneRuntimeDrawContext {
+  const VkrFrame *setup;
+  VkrAllocator *scratch;
+  bool8_t target_changed;
+  bool8_t scene_stopped;
+  VkrShadowFrameData shadow_frame;
+  uint32_t shadow_cascade_count;
+  VkrWorldPassPayload world_payload;
+  VkrLocalShadowPassPayload local_shadow_payload;
+  VkrShadowPassPayload shadow_payload;
+  /* Raster depth bias, distinct from receiver bias. Lowered from the shadow
+     config so both selected implementations apply the same configured values
+     instead of one backend hardcoding defaults and the other applying none.
+     Lives in the frame scope because the payload borrows it until submit
+     returns. */
+  VkrShadowConfigOverride raster_bias_override;
+  bool8_t has_shadow;
+  VkrPickingPassPayload picking_payload;
+  bool8_t has_picking;
+  bool8_t editor_enabled;
+  bool8_t has_editor;
+  uint32_t viewport_width;
+  uint32_t viewport_height;
+  VkrViewportMapping editor_mapping;
+  VkrEditorPassPayload editor_payload;
+  VkrUiPassPayload ui_payload;
+  const VkrScene *active_scene;
+  VkrSkyboxPassPayload skybox_payload;
+  VkrTextureHandle frame_ibl_source;
+  bool8_t frame_ibl_enabled;
+  float32_t frame_ibl_intensity;
+  float32_t frame_ibl_diffuse_intensity;
+  float32_t frame_ibl_specular_intensity;
+  VkrGpuDebugPayload debug_payload;
+  const VkrGpuDebugPayload *debug_ptr;
+  VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX];
+  VkrFrameLighting frame_lighting;
+  VkrAnimationPreviewInput animation_preview;
+  bool8_t has_animation_preview;
+} VkrStandardSceneRuntimeDrawContext;
 
+/* Applies a pending resize, configures the Scene output and acquires the
+   frame. Returns false_v when nothing was acquired; failures other than a
+   skipped frame are reported and handled here. */
+vkr_internal bool8_t vkr_standard_scene_runtime_begin_scene_frame(
+    VkrStandardSceneRuntime *application, VkrFrame *setup) {
   const uint64_t resize = vkr_atomic_uint64_exchange(
       &application->pending_resize_mailbox, 0u, VKR_MEMORY_ORDER_ACQ_REL);
   if (resize)
     vkr_renderer_resize(&application->renderer, (uint32_t)(resize >> 32u),
                         (uint32_t)resize);
-  VkrFrame setup = {0};
   const VkrFrameConfig frame_config = {
       .shadow_map_size = application->shadow_system.initialized
                              ? vkr_shadow_config_get_max_map_size(
@@ -643,7 +685,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         vkr_standard_scene_runtime_configure_scene_output(application);
     if (prepare_err == VKR_RENDERER_ERROR_NONE)
       prepare_err = vkr_renderer_begin_frame(&application->renderer,
-                                             &frame_config, &setup);
+                                             &frame_config, setup);
   }
   application->last_renderer_error = prepare_err;
   if (prepare_err != VKR_RENDERER_ERROR_NONE) {
@@ -676,18 +718,15 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         vkr_application_host_close(&application->host);
       }
     }
-    return;
+    return false_v;
   }
+  return true_v;
+}
 
-  const bool8_t target_changed =
-      application->last_target_generation != setup.target_generation;
-  if (target_changed) {
-    application->last_target_generation = setup.target_generation;
-    if (application->ui_system.initialized)
-      vkr_ui_system_resize(&application->ui_system, setup.window_width,
-                           setup.window_height);
-    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
-  }
+/* Publishes completed asset work and advances texture streaming. Returns
+   false_v when publication fails. */
+vkr_internal bool8_t vkr_standard_scene_runtime_pump_frame_assets(
+    VkrStandardSceneRuntime *application, const VkrFrame *setup) {
   const VkrResourceSubmissionState submission = {
       .submit_serial = vkr_renderer_get_submit_serial(&application->renderer),
       .completed_submit_serial =
@@ -695,38 +734,36 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .frame_active = true_v,
   };
   if (!vkr_render_assets_pump_publications(&application->assets, submission)) {
-    vkr_standard_scene_runtime_cancel_frame(
-        application, &setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-    return;
+    return false_v;
   }
   VkrMaterialSystem *materials = &application->assets.material_system;
   if (!materials->texture_stream_budget_user_configured &&
       (materials->texture_stream_active_count ||
-       setup.number - 1u >= application->texture_memory_sample_frame + 60u)) {
+       setup->number - 1u >= application->texture_memory_sample_frame + 60u)) {
     VkrDeviceMemoryStats device_memory = {0};
     if (vkr_renderer_get_device_memory_stats(&application->renderer,
                                              &device_memory)) {
       vkr_render_assets_refresh_texture_residency_budget(&application->assets,
                                                          &device_memory);
-      application->texture_memory_sample_frame = setup.number - 1u;
+      application->texture_memory_sample_frame = setup->number - 1u;
     }
   }
   vkr_material_system_pump_texture_streams(materials, 32u);
-  VkrAllocator *scratch = &application->frame_allocator;
+  return true_v;
+}
 
-  const bool8_t scene_stopped =
-      vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
-      application->editor_viewport.scene_backdrop_blur;
-  VkrShadowFrameData shadow_frame = {0};
-  uint32_t shadow_cascade_count = 0;
-
-  VkrWorldPassPayload world_payload = {0};
+/* Builds the world payload unless the Scene is stopped. Returns the build
+   error that cancels the frame; texture demand and visibility stats are
+   refreshed only when there is none. */
+vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
   VkrVisibilityStats visibility_stats = {0};
   const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
   VkrRendererError world_error = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.world_payload_build) {
-    if (!scene_stopped)
+    if (!draw->scene_stopped)
       world_error = vkr_scene_build_world_draws(
           &application->assets.mesh_manager,
           &application->assets.material_system,
@@ -735,50 +772,52 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
           publisher->publication_generation
               ? publisher->publication_generation(publisher->state)
               : 1u,
-          application->globals.view, application->globals.projection, scratch,
-          &world_payload, &visibility_stats);
+          application->globals.view, application->globals.projection,
+          draw->scratch, &draw->world_payload, &visibility_stats);
   }
   if (world_error != VKR_RENDERER_ERROR_NONE) {
-    vkr_standard_scene_runtime_cancel_frame(application, &setup, world_error);
-    return;
+    return world_error;
   }
   vkr_material_system_refresh_texture_stream_demand(
       &application->assets.material_system);
   application->visibility_stats = visibility_stats;
+  return VKR_RENDERER_ERROR_NONE;
+}
 
+/* Resolves directional cascades and local shadow views, then lowers the
+   cascades and the shadow config into the shadow pass payload. */
+vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrFrame *setup = draw->setup;
   if (!application->disable_directional_shadows &&
-      world_payload.gpu_shadow_candidate_count > 0u &&
+      draw->world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
     vkr_shadow_system_resolve_frame(
-        &application->shadow_system, setup.image_index, setup.retained_shadow,
-        &world_payload,
+        &application->shadow_system, setup->image_index, setup->retained_shadow,
+        &draw->world_payload,
         vkr_renderer_get_shadow_depth_format(&application->renderer),
-        &shadow_frame);
-    shadow_cascade_count =
-        shadow_frame.enabled ? shadow_frame.cascade_count : 0u;
+        &draw->shadow_frame);
+    draw->shadow_cascade_count =
+        draw->shadow_frame.enabled ? draw->shadow_frame.cascade_count : 0u;
   } else {
     vkr_shadow_system_discard_frame(&application->shadow_system);
   }
 
-  VkrLocalShadowPassPayload local_shadow_payload = {0};
-  if (!scene_stopped && !application->disable_local_shadows &&
-      world_payload.gpu_shadow_candidate_count > 0u &&
+  if (!draw->scene_stopped && !application->disable_local_shadows &&
+      draw->world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
     vkr_shadow_system_resolve_local_shadows(
-        &application->shadow_system, setup.image_index,
-        setup.retained_local_shadow, &world_payload,
+        &application->shadow_system, setup->image_index,
+        setup->retained_local_shadow, &draw->world_payload,
         application->lighting_system.point_lights,
         application->lighting_system.point_light_count,
-        application->globals.view_position, &local_shadow_payload);
+        application->globals.view_position, &draw->local_shadow_payload);
   }
-  VkrShadowPassPayload shadow_payload = {0};
-  /* Raster depth bias, distinct from receiver bias. Lowered from the shadow
-     config so both selected implementations apply the same configured values
-     instead of one backend hardcoding defaults and the other applying none.
-     Lives in the frame scope because the payload borrows it until submit
-     returns. */
-  VkrShadowConfigOverride raster_bias_override = {0};
-  bool8_t has_shadow = false_v;
+
+  const VkrShadowFrameData *shadow_frame = &draw->shadow_frame;
+  const uint32_t shadow_cascade_count = draw->shadow_cascade_count;
+  VkrShadowPassPayload *shadow_payload = &draw->shadow_payload;
   if (shadow_cascade_count > 0) {
     const VkrShadowConfig *shadow_config = &application->shadow_system.config;
     const float32_t inverse_map_size =
@@ -789,18 +828,18 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
                   : application->lighting_system.directional
                         .sun_angular_diameter_degrees) *
              0.008726646259971648f);
-    shadow_payload.cascade_count = shadow_cascade_count;
-    shadow_payload.sdsm_enabled = shadow_config->sdsm_enabled;
-    shadow_payload.cascade_render_mask = shadow_frame.cascade_render_mask;
+    shadow_payload->cascade_count = shadow_cascade_count;
+    shadow_payload->sdsm_enabled = shadow_config->sdsm_enabled;
+    shadow_payload->cascade_render_mask = shadow_frame->cascade_render_mask;
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
-      shadow_payload.cascades[i] = (VkrShadowCascadePacketData){
-          .light_view_projection = shadow_frame.view_projection[i],
+      shadow_payload->cascades[i] = (VkrShadowCascadePacketData){
+          .light_view_projection = shadow_frame->view_projection[i],
           .split_near_far_texel_depth =
-              {shadow_frame.split_near[i], shadow_frame.split_far[i],
-               shadow_frame.world_units_per_texel[i],
-               shadow_frame.light_space_depth_span[i]},
-          .origin_inv_size_sun = {shadow_frame.light_space_origin[i].x,
-                                  shadow_frame.light_space_origin[i].y,
+              {shadow_frame->split_near[i], shadow_frame->split_far[i],
+               shadow_frame->world_units_per_texel[i],
+               shadow_frame->light_space_depth_span[i]},
+          .origin_inv_size_sun = {shadow_frame->light_space_origin[i].x,
+                                  shadow_frame->light_space_origin[i].y,
                                   inverse_map_size, sun_tan_half_angle},
       };
     }
@@ -810,10 +849,10 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
        distance would otherwise leave the band unfinished and restore the hard
        terminating edge the fade exists to remove. */
     const float32_t last_split =
-        shadow_frame.split_far[shadow_cascade_count - 1u];
+        shadow_frame->split_far[shadow_cascade_count - 1u];
     const float32_t fade_start = vkr_max_f32(
         last_split - shadow_config->shadow_distance_fade_range, 0.0f);
-    shadow_payload.receiver = (VkrShadowReceiverPacketData){
+    shadow_payload->receiver = (VkrShadowReceiverPacketData){
         .receiver_bias_texels = shadow_config->receiver_bias_texels,
         .slope_bias_texels = shadow_config->receiver_slope_bias_texels,
         .normal_offset_texels = shadow_config->normal_offset_texels,
@@ -824,103 +863,127 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         .fade_start = fade_start,
         .fade_end = vkr_max_f32(last_split, fade_start),
     };
-    raster_bias_override = (VkrShadowConfigOverride){
+    draw->raster_bias_override = (VkrShadowConfigOverride){
         .depth_bias_constant = shadow_config->depth_bias_constant_factor,
         .depth_bias_slope = shadow_config->depth_bias_slope_factor,
         .depth_bias_clamp = shadow_config->depth_bias_clamp,
     };
-    shadow_payload.config_override = &raster_bias_override;
-    has_shadow = world_payload.gpu_shadow_candidate_count > 0u;
+    shadow_payload->config_override = &draw->raster_bias_override;
+    draw->has_shadow = draw->world_payload.gpu_shadow_candidate_count > 0u;
   }
+}
 
-  VkrPickingPassPayload picking_payload = {0};
-  bool8_t has_picking = !scene_stopped && application->picking.state ==
-                                              VKR_PICKING_STATE_RENDER_PENDING;
+vkr_internal void vkr_standard_scene_runtime_prepare_picking_payload(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  draw->has_picking =
+      !draw->scene_stopped &&
+      application->picking.state == VKR_PICKING_STATE_RENDER_PENDING;
   /* An identifier capture has no producer unless the picking pass runs this
      frame, so the request itself schedules it. The catalog names the dependency
      as a subsystem; matching on the channel name instead would silently stop
      working the moment a channel is renamed. */
-  if (!scene_stopped && !has_picking && application->capture_request) {
+  if (!draw->scene_stopped && !draw->has_picking &&
+      application->capture_request) {
     for (uint32_t i = 0; i < application->capture_request->item_count; ++i) {
       const VkrCaptureChannelDescription *channel =
           vkr_renderer_capture_channel_get(
               application->capture_request->items[i].channel);
       if (channel && channel->required_feature == VKR_CAPTURE_FEATURE_PICKING) {
-        has_picking = true_v;
+        draw->has_picking = true_v;
         break;
       }
     }
   }
-  if (has_picking) {
-    picking_payload.pending = true_v;
-    picking_payload.x = application->picking.requested_x;
-    picking_payload.y = application->picking.requested_y;
-    picking_payload.request_id =
+  if (draw->has_picking) {
+    draw->picking_payload.pending = true_v;
+    draw->picking_payload.x = application->picking.requested_x;
+    draw->picking_payload.y = application->picking.requested_y;
+    draw->picking_payload.request_id =
         application->picking.state == VKR_PICKING_STATE_RENDER_PENDING
             ? application->picking.request_id
             : 0u;
   }
+}
 
-  bool8_t editor_enabled =
+/* Maps the editor Scene panel into the editor payload and keeps camera
+   extents in step with the presented target. */
+vkr_internal void vkr_standard_scene_runtime_prepare_editor_viewport(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrFrame *setup = draw->setup;
+  draw->editor_enabled =
       application->editor_viewport.enabled &&
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
-  bool8_t has_editor = false_v;
-  uint32_t viewport_width = 0;
-  uint32_t viewport_height = 0;
-  VkrViewportMapping editor_mapping = {0};
-  VkrEditorPassPayload editor_payload = {0};
-
-  if (editor_enabled) {
+  if (draw->editor_enabled) {
     if (vkr_standard_scene_runtime_editor_viewport_mapping(
-            application, setup.window_width, setup.window_height,
-            &editor_mapping) &&
-        vkr_editor_viewport_build_payload(&editor_mapping, &editor_payload)) {
-      editor_payload.scene_rendering_stopped = scene_stopped;
-      editor_payload.scene_backdrop_blur =
+            application, setup->window_width, setup->window_height,
+            &draw->editor_mapping) &&
+        vkr_editor_viewport_build_payload(&draw->editor_mapping,
+                                          &draw->editor_payload)) {
+      draw->editor_payload.scene_rendering_stopped = draw->scene_stopped;
+      draw->editor_payload.scene_backdrop_blur =
           application->editor_viewport.scene_backdrop_blur;
-      viewport_width = editor_mapping.target_width;
-      viewport_height = editor_mapping.target_height;
-      has_editor = true_v;
+      draw->viewport_width = draw->editor_mapping.target_width;
+      draw->viewport_height = draw->editor_mapping.target_height;
+      draw->has_editor = true_v;
     } else {
-      editor_enabled = false_v;
+      draw->editor_enabled = false_v;
     }
   }
 
-  if (editor_enabled) {
-    if (!scene_stopped &&
-        (viewport_width != application->editor_viewport.last_target_width ||
-         viewport_height != application->editor_viewport.last_target_height)) {
+  if (draw->editor_enabled) {
+    if (!draw->scene_stopped &&
+        (draw->viewport_width !=
+             application->editor_viewport.last_target_width ||
+         draw->viewport_height !=
+             application->editor_viewport.last_target_height)) {
       vkr_camera_registry_resize_all(&application->camera_system,
-                                     viewport_width, viewport_height);
-      application->editor_viewport.last_target_width = viewport_width;
-      application->editor_viewport.last_target_height = viewport_height;
+                                     draw->viewport_width,
+                                     draw->viewport_height);
+      application->editor_viewport.last_target_width = draw->viewport_width;
+      application->editor_viewport.last_target_height = draw->viewport_height;
     }
-  } else if (target_changed ||
+  } else if (draw->target_changed ||
              application->editor_viewport.last_target_width != 0 ||
              application->editor_viewport.last_target_height != 0) {
     vkr_camera_registry_resize_all(&application->camera_system,
-                                   setup.window_width, setup.window_height);
+                                   setup->window_width, setup->window_height);
     application->editor_viewport.last_target_width = 0;
     application->editor_viewport.last_target_height = 0;
   }
+}
 
-  if (has_picking && (application->renderer.scene_output_extent_overridden ||
-                      application->renderer.render_scale != 1.0f ||
-                      application->renderer.upscale_mode ==
-                          VKR_UPSCALE_MODE_METALFX_TEMPORAL)) {
+/* Maps the requested picking pixel into a scaled Scene render extent. */
+vkr_internal void vkr_standard_scene_runtime_scale_picking_payload(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrFrame *setup = draw->setup;
+  if (draw->has_picking &&
+      (application->renderer.scene_output_extent_overridden ||
+       application->renderer.render_scale != 1.0f ||
+       application->renderer.upscale_mode ==
+           VKR_UPSCALE_MODE_METALFX_TEMPORAL)) {
     const uint32_t source_width =
-        editor_enabled ? application->picking.width : setup.window_width;
-    const uint32_t source_height =
-        editor_enabled ? application->picking.height : setup.window_height;
-    picking_payload.x = vkr_standard_scene_runtime_picking_pixel(
-        picking_payload.x, source_width, setup.render_width);
-    picking_payload.y = vkr_standard_scene_runtime_picking_pixel(
-        picking_payload.y, source_height, setup.render_height);
+        draw->editor_enabled ? application->picking.width : setup->window_width;
+    const uint32_t source_height = draw->editor_enabled
+                                       ? application->picking.height
+                                       : setup->window_height;
+    draw->picking_payload.x = vkr_standard_scene_runtime_picking_pixel(
+        draw->picking_payload.x, source_width, setup->render_width);
+    draw->picking_payload.y = vkr_standard_scene_runtime_picking_pixel(
+        draw->picking_payload.y, source_height, setup->render_height);
   }
-  VkrUiPassPayload ui_payload = {0};
-  const VkrScene *active_scene = application->active_scene;
-  VkrSkyboxPassPayload skybox_payload = {
+}
+
+/* Selects the frame IBL source and the skybox from a ready scene
+   environment or the default IBL. */
+vkr_internal void vkr_standard_scene_runtime_prepare_environment(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrScene *active_scene = draw->active_scene;
+  draw->skybox_payload = (VkrSkyboxPassPayload){
       .cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .material = VKR_MATERIAL_HANDLE_INVALID,
       .solar_disk_radiance = vec3_new(0.0f, 0.0f, 0.0f),
@@ -930,38 +993,42 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       active_scene->environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_READY;
   const VkrSceneEnvironment *scene_environment =
       scene_environment_ready ? &active_scene->environment : NULL;
-  VkrTextureHandle frame_ibl_source = VKR_TEXTURE_HANDLE_INVALID;
+  draw->frame_ibl_source = VKR_TEXTURE_HANDLE_INVALID;
   if (scene_environment) {
-    frame_ibl_source = scene_environment->source_cubemap;
+    draw->frame_ibl_source = scene_environment->source_cubemap;
   } else if (application->assets.world_resources.ibl_default_ready) {
-    frame_ibl_source =
+    draw->frame_ibl_source =
         application->assets.world_resources.ibl_fallback_source_cubemap;
   }
-  skybox_payload.cubemap = application->skybox_system.initialized
-                               ? frame_ibl_source
-                               : VKR_TEXTURE_HANDLE_INVALID;
-  bool8_t frame_ibl_enabled = frame_ibl_source.id != 0;
-  float32_t frame_ibl_intensity = 1.0f;
-  float32_t frame_ibl_diffuse_intensity = 1.0f;
-  float32_t frame_ibl_specular_intensity = 1.0f;
+  draw->skybox_payload.cubemap = application->skybox_system.initialized
+                                     ? draw->frame_ibl_source
+                                     : VKR_TEXTURE_HANDLE_INVALID;
+  draw->frame_ibl_enabled = draw->frame_ibl_source.id != 0;
+  draw->frame_ibl_intensity = 1.0f;
+  draw->frame_ibl_diffuse_intensity = 1.0f;
+  draw->frame_ibl_specular_intensity = 1.0f;
   if (scene_environment) {
-    frame_ibl_enabled = true_v;
-    frame_ibl_intensity = scene_environment->intensity;
-    frame_ibl_diffuse_intensity = scene_environment->diffuse_intensity;
-    frame_ibl_specular_intensity = scene_environment->specular_intensity;
+    draw->frame_ibl_enabled = true_v;
+    draw->frame_ibl_intensity = scene_environment->intensity;
+    draw->frame_ibl_diffuse_intensity = scene_environment->diffuse_intensity;
+    draw->frame_ibl_specular_intensity = scene_environment->specular_intensity;
     if (active_scene->atmosphere.active_revision &&
         active_scene->atmosphere.active_settings.enabled) {
-      skybox_payload.solar_disk_radiance =
+      draw->skybox_payload.solar_disk_radiance =
           active_scene->atmosphere.active_result.solar_disk_radiance;
     }
   }
+}
 
+/* Applies queued world text edits and prepares visible text draws. Returns
+   the error that cancels the frame, or VKR_RENDERER_ERROR_NONE. */
+vkr_internal VkrRendererError vkr_standard_scene_runtime_prepare_world_text(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
   VkrWorldResources *world_resources = &application->assets.world_resources;
   if (application->world_text_update_count >
       VKR_STANDARD_SCENE_RUNTIME_MAX_PENDING_TEXT_UPDATES) {
-    vkr_standard_scene_runtime_cancel_frame(
-        application, &setup, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
-    return;
+    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
   }
   for (uint32_t i = 0u; i < application->world_text_update_count; ++i) {
     const VkrStandardSceneRuntimeTextUpdate *pending =
@@ -972,37 +1039,45 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         (pending->has_transform &&
          !vkr_world_resources_text_set_transform(
              world_resources, pending->text_id, &pending->transform))) {
-      vkr_standard_scene_runtime_cancel_frame(
-          application, &setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-      return;
+      return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
     }
   }
   application->world_text_update_count = 0u;
-  if (!scene_stopped && world_resources->initialized) {
+  if (!draw->scene_stopped && world_resources->initialized) {
     VkrPreparedTextDraw *text_draws = NULL;
     uint32_t text_draw_count = 0u;
     if (!vkr_world_resources_prepare_text_draws(
-            world_resources, scratch, &text_draws, &text_draw_count)) {
-      vkr_standard_scene_runtime_cancel_frame(
-          application, &setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-      return;
+            world_resources, draw->scratch, &text_draws, &text_draw_count)) {
+      return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
     }
-    world_payload.text_draws = text_draws;
-    world_payload.text_draw_count = text_draw_count;
+    draw->world_payload.text_draws = text_draws;
+    draw->world_payload.text_draw_count = text_draw_count;
   }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+/* Projects UI anchors for the editor viewport and prepares the UI draw
+   list. Returns false_v when the draw list cannot be prepared. */
+vkr_internal bool8_t vkr_standard_scene_runtime_prepare_ui_payload(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrFrame *setup = draw->setup;
   VkrUiSystem *ui = &application->ui_system;
-  if (application->project_ui && has_editor)
-    application->project_ui(application, &editor_mapping);
+  if (application->project_ui && draw->has_editor)
+    application->project_ui(application, &draw->editor_mapping);
   /* An unauthored UI frame contributes an empty stream. */
   if (ui->initialized && ui->frame_index > 0u &&
-      !vkr_ui_system_prepare_draw_list(ui, scratch, setup.window_width,
-                                       setup.window_height,
-                                       &ui_payload.draw_list)) {
-    vkr_standard_scene_runtime_cancel_frame(
-        application, &setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-    return;
+      !vkr_ui_system_prepare_draw_list(ui, draw->scratch, setup->window_width,
+                                       setup->window_height,
+                                       &draw->ui_payload.draw_list)) {
+    return false_v;
   }
+  return true_v;
+}
 
+vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
   // The metrics config is the single authority for whether timestamps are
   // recorded. A second copy could drift and make a report claim timestamps
   // were on for a run that never took one, which would silently mislabel the
@@ -1011,22 +1086,31 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   const bool8_t submission_gpu_timing =
       application->metrics->config.submission_gpu_timings;
   const bool8_t gpu_timing = pass_gpu_timing || submission_gpu_timing;
-  VkrGpuDebugPayload debug_payload = {
+  draw->debug_payload = (VkrGpuDebugPayload){
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = pass_gpu_timing,
       .capture_submission_timing = submission_gpu_timing,
       .transmission_depth_diagnostic_enabled =
-          !scene_stopped && application->transmission_depth_diagnostic_enabled,
-      .shadow_debug_mode = scene_stopped ? 0u : application->shadow_debug_mode,
+          !draw->scene_stopped &&
+          application->transmission_depth_diagnostic_enabled,
+      .shadow_debug_mode =
+          draw->scene_stopped ? 0u : application->shadow_debug_mode,
       .capture = application->capture_request,
   };
-  const VkrGpuDebugPayload *debug_ptr =
-      (gpu_timing || application->capture_request ||
-       application->transmission_depth_diagnostic_enabled ||
-       application->shadow_debug_mode != 0u)
-          ? &debug_payload
-          : NULL;
-  VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX] = {0};
+  draw->debug_ptr = (gpu_timing || application->capture_request ||
+                     application->transmission_depth_diagnostic_enabled ||
+                     application->shadow_debug_mode != 0u)
+                        ? &draw->debug_payload
+                        : NULL;
+}
+
+/* Packs ready reflection probes and lowers the lighting system into the
+   frame lighting. */
+vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrScene *active_scene = draw->active_scene;
+  VkrFrameIblProbe *frame_ibl_probes = draw->frame_ibl_probes;
   uint32_t frame_ibl_probe_count = 0;
   /* Cold ADR-038 control: the fixture asserts the packed count, so an
      unavailable probe texture cannot silently reduce the measured work. */
@@ -1059,19 +1143,20 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       };
     }
   }
-  frame_ibl_enabled = frame_ibl_enabled || frame_ibl_probe_count > 0u;
-  const VkrFrameLighting frame_lighting = {
+  draw->frame_ibl_enabled =
+      draw->frame_ibl_enabled || frame_ibl_probe_count > 0u;
+  draw->frame_lighting = (VkrFrameLighting){
       .directional_enabled = application->lighting_system.directional.enabled,
       .directional_direction =
           application->lighting_system.directional.direction,
       .directional_color = application->lighting_system.directional.color,
       .directional_intensity =
           application->lighting_system.directional.intensity,
-      .ibl_enabled = frame_ibl_enabled,
-      .ibl_source = frame_ibl_source,
-      .ibl_intensity = frame_ibl_intensity,
-      .ibl_diffuse_intensity = frame_ibl_diffuse_intensity,
-      .ibl_specular_intensity = frame_ibl_specular_intensity,
+      .ibl_enabled = draw->frame_ibl_enabled,
+      .ibl_source = draw->frame_ibl_source,
+      .ibl_intensity = draw->frame_ibl_intensity,
+      .ibl_diffuse_intensity = draw->frame_ibl_diffuse_intensity,
+      .ibl_specular_intensity = draw->frame_ibl_specular_intensity,
       .rectangle_lights = application->lighting_system.rectangle_lights,
       .rectangle_light_count =
           application->lighting_system.rectangle_light_count,
@@ -1088,39 +1173,28 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .diffuse_volume = active_scene ? active_scene->diffuse_volume
                                      : (VkrDiffuseVolumeBinding){0},
   };
+}
 
-  VkrEditorOverlayDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
-  if (has_editor && !scene_stopped) {
-    editor_payload.overlay_draw_count = vkr_gizmo_system_build_draws(
-        &application->gizmo_system, application->globals.view,
-        application->globals.projection, &editor_mapping, overlay_draws);
-    editor_payload.overlay_draws = overlay_draws;
-  }
-
-  VkrAnimationPreviewInput animation_preview = {0};
-  bool8_t has_animation_preview = false_v;
-  if (application->animation_preview.player && active_scene &&
-      application->animation_preview.scene_generation ==
-          application->scene_generation) {
-    const VkrAnimationPreviewRequest *request = &application->animation_preview;
-    has_animation_preview = vkr_scene_animation_build_preview(
-        active_scene, request->wrapper, request->player, request->yaw,
-        request->pitch, request->distance, scratch, &world_payload,
-        &animation_preview);
-  }
-
+/* Assembles the frame input. Its payload pointers borrow `draw`, which the
+   caller keeps alive until submit returns. */
+vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw, float64_t delta) {
+  const VkrFrame *setup = draw->setup;
+  const VkrScene *active_scene = draw->active_scene;
   VkrFrameInput packet = {
-      .animation_preview = has_animation_preview ? &animation_preview : NULL,
+      .animation_preview =
+          draw->has_animation_preview ? &draw->animation_preview : NULL,
       .version = VKR_FRAME_INPUT_VERSION,
       .frame =
           {
               .frame_index = (uint32_t)application->renderer.frame_number,
               .delta_time = delta,
-              .window_width = setup.window_width,
-              .window_height = setup.window_height,
-              .viewport_width = viewport_width,
-              .viewport_height = viewport_height,
-              .editor_enabled = editor_enabled,
+              .window_width = setup->window_width,
+              .window_height = setup->window_height,
+              .viewport_width = draw->viewport_width,
+              .viewport_height = draw->viewport_height,
+              .editor_enabled = draw->editor_enabled,
               .scene_generation = application->scene_generation,
           },
       .globals =
@@ -1165,20 +1239,22 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
               .froxel_fog = active_scene ? active_scene->froxel_fog
                                          : vkr_froxel_fog_settings_defaults(),
           },
-      .lighting = scene_stopped ? NULL : &frame_lighting,
-      .world = scene_stopped ? NULL : &world_payload,
-      .shadow = has_shadow ? &shadow_payload : NULL,
-      .local_shadow =
-          local_shadow_payload.view_count ? &local_shadow_payload : NULL,
-      .skybox = !scene_stopped && !application->config->disable_skybox &&
-                        skybox_payload.cubemap.id != 0 &&
-                        skybox_payload.cubemap.generation != VKR_INVALID_ID
-                    ? &skybox_payload
-                    : NULL,
-      .ui = &ui_payload,
-      .editor = has_editor ? &editor_payload : NULL,
-      .picking = has_picking ? &picking_payload : NULL,
-      .debug = debug_ptr,
+      .lighting = draw->scene_stopped ? NULL : &draw->frame_lighting,
+      .world = draw->scene_stopped ? NULL : &draw->world_payload,
+      .shadow = draw->has_shadow ? &draw->shadow_payload : NULL,
+      .local_shadow = draw->local_shadow_payload.view_count
+                          ? &draw->local_shadow_payload
+                          : NULL,
+      .skybox =
+          !draw->scene_stopped && !application->config->disable_skybox &&
+                  draw->skybox_payload.cubemap.id != 0 &&
+                  draw->skybox_payload.cubemap.generation != VKR_INVALID_ID
+              ? &draw->skybox_payload
+              : NULL,
+      .ui = &draw->ui_payload,
+      .editor = draw->has_editor ? &draw->editor_payload : NULL,
+      .picking = draw->has_picking ? &draw->picking_payload : NULL,
+      .debug = draw->debug_ptr,
   };
 
   if (application->disable_fog)
@@ -1186,6 +1262,229 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   if (application->disable_volumetric_fog ||
       application->globals.projection.m33 != 0.0f)
     packet.globals.froxel_fog.enabled = false_v;
+  return packet;
+}
+
+/* Applies the submit result to retained shadow and texture relief, editor
+   output, picking and capture state, and the last renderer error. Also fills
+   the frame telemetry the renderer does not produce. */
+vkr_internal void vkr_standard_scene_runtime_finish_submit(
+    VkrStandardSceneRuntime *application,
+    const VkrStandardSceneRuntimeDrawContext *draw, VkrRendererError submit_err,
+    VkrRendererFrameMetrics *metrics) {
+  const VkrShadowFrameData *shadow_frame = &draw->shadow_frame;
+  if (submit_err == VKR_RENDERER_ERROR_NONE) {
+    if (!draw->scene_stopped) {
+      if (application->scene_memory_relief_generation >
+          application->assets.material_system
+              .texture_stream_relief_generation) {
+        VkrDeviceMemoryStats relieved_memory = {0};
+        if (vkr_renderer_get_device_memory_stats(&application->renderer,
+                                                 &relieved_memory)) {
+          vkr_render_assets_refresh_texture_residency_budget(
+              &application->assets, &relieved_memory);
+          application->texture_memory_sample_frame = draw->setup->number - 1u;
+        }
+      }
+      vkr_material_system_commit_scene_memory_relief(
+          &application->assets.material_system,
+          application->scene_memory_relief_generation);
+    }
+    if (draw->has_editor && !draw->scene_stopped) {
+      application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
+      application->editor_viewport.rendered_width = draw->viewport_width;
+      application->editor_viewport.rendered_height = draw->viewport_height;
+      const bool8_t scaled_scene =
+          application->renderer.scene_output_extent_overridden ||
+          application->renderer.render_scale != 1.0f ||
+          application->renderer.upscale_mode ==
+              VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
+          application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31;
+      application->editor_viewport.output_width =
+          scaled_scene ? application->renderer.scene_output_width
+                       : draw->viewport_width;
+      application->editor_viewport.output_height =
+          scaled_scene ? application->renderer.scene_output_height
+                       : draw->viewport_height;
+    }
+    vkr_shadow_system_commit_frame(
+        &application->shadow_system,
+        vkr_renderer_get_submit_serial(&application->renderer));
+  } else {
+    vkr_shadow_system_discard_frame(&application->shadow_system);
+  }
+  for (uint32_t cascade = 0u; cascade < shadow_frame->cascade_count;
+       ++cascade) {
+    metrics->shadow.rendered[cascade] = shadow_frame->rendered[cascade];
+    metrics->shadow.reused[cascade] = shadow_frame->reused[cascade];
+    metrics->shadow.correctness_forced[cascade] =
+        shadow_frame->correctness_forced[cascade];
+    metrics->shadow.proactive_refreshed[cascade] =
+        shadow_frame->proactive_refreshed[cascade];
+    metrics->shadow.dynamic_candidates_tested[cascade] =
+        shadow_frame->dynamic_candidates_tested[cascade];
+    metrics->shadow.dynamic_forced[cascade] =
+        shadow_frame->dynamic_forced[cascade];
+  }
+  metrics->shadow.sdsm_status = (uint32_t)shadow_frame->sdsm_status;
+  metrics->shadow.sdsm_source_lag = shadow_frame->sdsm_source_lag;
+  metrics->shadow.sdsm_occupied_count = shadow_frame->sdsm_occupied_count;
+  metrics->shadow.sdsm_linear_near = shadow_frame->sdsm_linear_near;
+  metrics->shadow.sdsm_linear_far = shadow_frame->sdsm_linear_far;
+  application->last_renderer_error = submit_err;
+  vkr_mesh_manager_get_metrics(&application->assets.mesh_manager,
+                               &metrics->world.mesh_assets);
+  if (submit_err == VKR_RENDERER_ERROR_NONE && draw->has_picking &&
+      application->picking.state == VKR_PICKING_STATE_RENDER_PENDING)
+    application->picking.state = VKR_PICKING_STATE_READBACK_PENDING;
+  if (submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY) {
+    application->capture_request = NULL;
+  }
+}
+
+/* Reports a failed submit or unrelieved texture pressure, then retries at a
+   lower Scene resolution, stops the editor Scene, or closes the host. */
+vkr_internal void vkr_standard_scene_runtime_handle_scene_error(
+    VkrStandardSceneRuntime *application,
+    const VkrStandardSceneRuntimeDrawContext *draw, VkrRendererError submit_err,
+    const VkrValidationError *validation) {
+  VkrRendererError scene_error = submit_err;
+  const VkrMaterialTextureStreamStats texture_streams =
+      vkr_material_system_get_texture_stream_stats(
+          &application->assets.material_system);
+  /* Finish outstanding publication/retry work before judging remaining
+     texture pressure. Native frame OOM still requests immediate relief. */
+  if (scene_error == VKR_RENDERER_ERROR_NONE && !draw->scene_stopped &&
+      application->assets.material_system
+          .texture_stream_memory_recovery_enabled &&
+      texture_streams.in_flight_count == 0u &&
+      (application->assets.material_system.texture_stream_memory_wait_count ||
+       texture_streams.demanded_evicted_count))
+    scene_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  if (scene_error != VKR_RENDERER_ERROR_NONE) {
+    if (submit_err == VKR_RENDERER_ERROR_NONE) {
+      log_warn("Scene textures require memory relief");
+    } else if (validation->field_path && validation->message) {
+      log_error("Packet validation failed: %s (%s)", validation->field_path,
+                validation->message);
+    } else {
+      String8 err = vkr_renderer_get_error_string(submit_err);
+      log_error("Packet submit failed: %s", string8_cstr(&err));
+    }
+    const bool8_t reduced = !draw->scene_stopped &&
+                            vkr_standard_scene_runtime_reduce_scene_resolution(
+                                application, scene_error);
+    if (draw->has_editor && !draw->scene_stopped && !reduced &&
+        submit_err != VKR_RENDERER_ERROR_DEVICE_ERROR &&
+        submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY &&
+        submit_err != VKR_RENDERER_ERROR_RESOURCE_BUSY &&
+        submit_err != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+      /* A failed Scene must not starve presentation of the editor controls.
+         Resume is an explicit retry after unloading or changing the scene. */
+      application->editor_viewport.scene_error = scene_error;
+      application->editor_viewport.scene_rendering_stopped = true_v;
+      vkr_picking_cancel(&application->picking);
+      vkr_window_set_mouse_capture(&application->host.window, false_v);
+      log_warn("Scene rendering stopped after a frame failure; editor controls "
+               "remain available. Unload the scene or retry rendering.");
+    }
+    if (!draw->has_editor && !reduced &&
+        scene_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
+      log_error("Scene memory recovery exhausted; stopping application");
+      vkr_application_host_close(&application->host);
+    }
+    if (submit_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
+      log_fatal("Renderer device is unusable; stopping");
+      vkr_application_host_close(&application->host);
+    }
+  }
+}
+
+void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
+                                           float64_t delta) {
+  assert(application != NULL && "VkrStandardSceneRuntime is NULL");
+  assert(bitset8_is_set(&application->host.flags,
+                        VKR_APPLICATION_HOST_FLAG_RUNNING) &&
+         "VkrStandardSceneRuntime is not running");
+
+  VkrFrame setup = {0};
+  if (!vkr_standard_scene_runtime_begin_scene_frame(application, &setup)) {
+    return;
+  }
+
+  const bool8_t target_changed =
+      application->last_target_generation != setup.target_generation;
+  if (target_changed) {
+    application->last_target_generation = setup.target_generation;
+    if (application->ui_system.initialized)
+      vkr_ui_system_resize(&application->ui_system, setup.window_width,
+                           setup.window_height);
+    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+  }
+  if (!vkr_standard_scene_runtime_pump_frame_assets(application, &setup)) {
+    vkr_standard_scene_runtime_cancel_frame(
+        application, &setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+    return;
+  }
+
+  VkrStandardSceneRuntimeDrawContext draw = {
+      .setup = &setup,
+      .scratch = &application->frame_allocator,
+      .target_changed = target_changed,
+      .scene_stopped =
+          vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+              application) ||
+          application->editor_viewport.scene_backdrop_blur,
+  };
+  const VkrRendererError world_error =
+      vkr_standard_scene_runtime_build_world_payload(application, &draw);
+  if (world_error != VKR_RENDERER_ERROR_NONE) {
+    vkr_standard_scene_runtime_cancel_frame(application, &setup, world_error);
+    return;
+  }
+
+  vkr_standard_scene_runtime_prepare_shadow_payloads(application, &draw);
+  vkr_standard_scene_runtime_prepare_picking_payload(application, &draw);
+  vkr_standard_scene_runtime_prepare_editor_viewport(application, &draw);
+  vkr_standard_scene_runtime_scale_picking_payload(application, &draw);
+  draw.active_scene = application->active_scene;
+  vkr_standard_scene_runtime_prepare_environment(application, &draw);
+
+  const VkrRendererError text_error =
+      vkr_standard_scene_runtime_prepare_world_text(application, &draw);
+  if (text_error != VKR_RENDERER_ERROR_NONE) {
+    vkr_standard_scene_runtime_cancel_frame(application, &setup, text_error);
+    return;
+  }
+  if (!vkr_standard_scene_runtime_prepare_ui_payload(application, &draw)) {
+    vkr_standard_scene_runtime_cancel_frame(
+        application, &setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+    return;
+  }
+
+  vkr_standard_scene_runtime_prepare_debug_payload(application, &draw);
+  vkr_standard_scene_runtime_prepare_frame_lighting(application, &draw);
+
+  VkrEditorOverlayDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
+  if (draw.has_editor && !draw.scene_stopped) {
+    draw.editor_payload.overlay_draw_count = vkr_gizmo_system_build_draws(
+        &application->gizmo_system, application->globals.view,
+        application->globals.projection, &draw.editor_mapping, overlay_draws);
+    draw.editor_payload.overlay_draws = overlay_draws;
+  }
+
+  if (application->animation_preview.player && draw.active_scene &&
+      application->animation_preview.scene_generation ==
+          application->scene_generation) {
+    const VkrAnimationPreviewRequest *request = &application->animation_preview;
+    draw.has_animation_preview = vkr_scene_animation_build_preview(
+        draw.active_scene, request->wrapper, request->player, request->yaw,
+        request->pitch, request->distance, draw.scratch, &draw.world_payload,
+        &draw.animation_preview);
+  }
+
+  const VkrFrameInput packet =
+      vkr_standard_scene_runtime_build_frame_input(application, &draw, delta);
 
   VkrRendererFrameMetrics metrics = {0};
   VkrValidationError validation = {0};
@@ -1195,72 +1494,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     submit_err =
         vkr_renderer_render_frame(&setup, &packet, &metrics, &validation);
   }
-  if (submit_err == VKR_RENDERER_ERROR_NONE) {
-    if (!scene_stopped) {
-      if (application->scene_memory_relief_generation >
-          application->assets.material_system
-              .texture_stream_relief_generation) {
-        VkrDeviceMemoryStats relieved_memory = {0};
-        if (vkr_renderer_get_device_memory_stats(&application->renderer,
-                                                 &relieved_memory)) {
-          vkr_render_assets_refresh_texture_residency_budget(
-              &application->assets, &relieved_memory);
-          application->texture_memory_sample_frame = setup.number - 1u;
-        }
-      }
-      vkr_material_system_commit_scene_memory_relief(
-          &application->assets.material_system,
-          application->scene_memory_relief_generation);
-    }
-    if (has_editor && !scene_stopped) {
-      application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
-      application->editor_viewport.rendered_width = viewport_width;
-      application->editor_viewport.rendered_height = viewport_height;
-      const bool8_t scaled_scene =
-          application->renderer.scene_output_extent_overridden ||
-          application->renderer.render_scale != 1.0f ||
-          application->renderer.upscale_mode ==
-              VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
-          application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31;
-      application->editor_viewport.output_width =
-          scaled_scene ? application->renderer.scene_output_width
-                       : viewport_width;
-      application->editor_viewport.output_height =
-          scaled_scene ? application->renderer.scene_output_height
-                       : viewport_height;
-    }
-    vkr_shadow_system_commit_frame(
-        &application->shadow_system,
-        vkr_renderer_get_submit_serial(&application->renderer));
-  } else {
-    vkr_shadow_system_discard_frame(&application->shadow_system);
-  }
-  for (uint32_t cascade = 0u; cascade < shadow_frame.cascade_count; ++cascade) {
-    metrics.shadow.rendered[cascade] = shadow_frame.rendered[cascade];
-    metrics.shadow.reused[cascade] = shadow_frame.reused[cascade];
-    metrics.shadow.correctness_forced[cascade] =
-        shadow_frame.correctness_forced[cascade];
-    metrics.shadow.proactive_refreshed[cascade] =
-        shadow_frame.proactive_refreshed[cascade];
-    metrics.shadow.dynamic_candidates_tested[cascade] =
-        shadow_frame.dynamic_candidates_tested[cascade];
-    metrics.shadow.dynamic_forced[cascade] =
-        shadow_frame.dynamic_forced[cascade];
-  }
-  metrics.shadow.sdsm_status = (uint32_t)shadow_frame.sdsm_status;
-  metrics.shadow.sdsm_source_lag = shadow_frame.sdsm_source_lag;
-  metrics.shadow.sdsm_occupied_count = shadow_frame.sdsm_occupied_count;
-  metrics.shadow.sdsm_linear_near = shadow_frame.sdsm_linear_near;
-  metrics.shadow.sdsm_linear_far = shadow_frame.sdsm_linear_far;
-  application->last_renderer_error = submit_err;
-  vkr_mesh_manager_get_metrics(&application->assets.mesh_manager,
-                               &metrics.world.mesh_assets);
-  if (submit_err == VKR_RENDERER_ERROR_NONE && has_picking &&
-      application->picking.state == VKR_PICKING_STATE_RENDER_PENDING)
-    application->picking.state = VKR_PICKING_STATE_READBACK_PENDING;
-  if (submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY) {
-    application->capture_request = NULL;
-  }
+  vkr_standard_scene_runtime_finish_submit(application, &draw, submit_err,
+                                           &metrics);
 #if VKR_METRICS_ENABLED
   VkrRendererMetricsCollectContext metrics_context = {
       .application = vkr_application_metrics_snapshot(
@@ -1276,56 +1511,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   vkr_renderer_metrics_collect(&application->renderer_metrics,
                                &metrics_context);
 #endif
-  VkrRendererError scene_error = submit_err;
-  const VkrMaterialTextureStreamStats texture_streams =
-      vkr_material_system_get_texture_stream_stats(
-          &application->assets.material_system);
-  /* Finish outstanding publication/retry work before judging remaining
-     texture pressure. Native frame OOM still requests immediate relief. */
-  if (scene_error == VKR_RENDERER_ERROR_NONE && !scene_stopped &&
-      application->assets.material_system
-          .texture_stream_memory_recovery_enabled &&
-      texture_streams.in_flight_count == 0u &&
-      (application->assets.material_system.texture_stream_memory_wait_count ||
-       texture_streams.demanded_evicted_count))
-    scene_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  if (scene_error != VKR_RENDERER_ERROR_NONE) {
-    if (submit_err == VKR_RENDERER_ERROR_NONE) {
-      log_warn("Scene textures require memory relief");
-    } else if (validation.field_path && validation.message) {
-      log_error("Packet validation failed: %s (%s)", validation.field_path,
-                validation.message);
-    } else {
-      String8 err = vkr_renderer_get_error_string(submit_err);
-      log_error("Packet submit failed: %s", string8_cstr(&err));
-    }
-    const bool8_t reduced =
-        !scene_stopped && vkr_standard_scene_runtime_reduce_scene_resolution(
-                              application, scene_error);
-    if (has_editor && !scene_stopped && !reduced &&
-        submit_err != VKR_RENDERER_ERROR_DEVICE_ERROR &&
-        submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY &&
-        submit_err != VKR_RENDERER_ERROR_RESOURCE_BUSY &&
-        submit_err != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
-      /* A failed Scene must not starve presentation of the editor controls.
-         Resume is an explicit retry after unloading or changing the scene. */
-      application->editor_viewport.scene_error = scene_error;
-      application->editor_viewport.scene_rendering_stopped = true_v;
-      vkr_picking_cancel(&application->picking);
-      vkr_window_set_mouse_capture(&application->host.window, false_v);
-      log_warn("Scene rendering stopped after a frame failure; editor controls "
-               "remain available. Unload the scene or retry rendering.");
-    }
-    if (!has_editor && !reduced &&
-        scene_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
-      log_error("Scene memory recovery exhausted; stopping application");
-      vkr_application_host_close(&application->host);
-    }
-    if (submit_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
-      log_fatal("Renderer device is unusable; stopping");
-      vkr_application_host_close(&application->host);
-    }
-  }
+  vkr_standard_scene_runtime_handle_scene_error(application, &draw, submit_err,
+                                                &validation);
 }
 
 vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(

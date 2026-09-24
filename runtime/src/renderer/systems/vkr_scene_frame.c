@@ -208,60 +208,22 @@ void vkr_scene_measure_caster_bounds(VkrMeshManager *meshes,
   };
 }
 
-/**
- * @brief Builds the sole GPU-driven world source and retained blend list.
- *
- * Opaque, cutout, transmission, and shadow visibility remain unculled packet
- * candidates; the selected backend owns their multi-view classification.
- * Ordinary alpha blend is the only camera-culled and depth-sorted CPU list.
- */
-VkrRendererError vkr_scene_build_world_draws(
-    VkrMeshManager *meshes, VkrMaterialSystem *materials,
-    bool8_t publication_pending, uint64_t publication_generation, Mat4 view,
-    Mat4 projection, VkrAllocator *scratch, VkrWorldPassPayload *out_payload,
-    VkrVisibilityStats *out_stats) {
-  *out_payload = (VkrWorldPassPayload){0};
-  if (out_stats)
-    *out_stats = (VkrVisibilityStats){0};
-  vkr_material_system_begin_texture_residency_frame(materials);
-  const VkrFrustum camera_frustum =
-      vkr_frustum_from_view_projection(view, projection);
-  const uint32_t mesh_count = vkr_mesh_manager_count(meshes);
-  const uint32_t live_instance_count = vkr_mesh_manager_instance_count(meshes);
-  const uint32_t temporal_instance_offset = vkr_mesh_manager_capacity(meshes);
-  uint32_t skinning_count = 0;
-  for (uint32_t i = 0; i < live_instance_count; ++i) {
-    uint32_t slot = 0;
-    const VkrMeshInstance *instance =
-        vkr_mesh_manager_get_instance_by_live_index(meshes, i, &slot);
-    if (instance->visible &&
-        instance->loading_state == VKR_MESH_LOADING_STATE_LOADED &&
-        instance->skinning) {
-      skinning_count++;
-    }
-  }
-  if (skinning_count > VKR_SKINNING_BINDING_CAPACITY) {
-    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-  }
-  VkrSkinningInput *skinning =
-      skinning_count
-          ? vkr_allocator_alloc(
-                scratch, (uint64_t)skinning_count * sizeof(VkrSkinningInput),
-                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
-          : NULL;
-  if (skinning_count && !skinning) {
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-  uint32_t skinning_cursor = 0;
+/* Totals from the visibility pass. The transmission and transparent counts
+   size their emission spans. */
+typedef struct VkrSceneWorldClassification {
+  VkrVisibilityStats stats;
+  uint32_t opaque_material_features;
+  uint32_t gpu_camera_opaque_candidate_count;
+  uint32_t transmission_gpu_candidate_count;
+  uint32_t transparent_draw_count;
+} VkrSceneWorldClassification;
 
-  const uint64_t temporal_slot_capacity =
-      (uint64_t)temporal_instance_offset +
-      vkr_mesh_manager_instance_capacity(meshes);
-  if (temporal_slot_capacity > VKR_TEMPORAL_TRANSFORM_CAPACITY) {
-    *out_payload = (VkrWorldPassPayload){0};
-    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-  }
-  VkrVisibilityStats stats = {0};
+/* Counting pass: sizes the GPU candidate span and its static-caster prefix,
+   and flags visible sources that are not loaded yet. */
+vkr_internal void vkr_scene_count_world_sources(
+    VkrMeshManager *meshes, uint32_t mesh_count, uint32_t live_instance_count,
+    uint64_t *out_candidate_count, uint64_t *out_static_candidate_count,
+    bool8_t *publication_pending) {
   uint64_t candidate_count_64 = 0u;
   uint64_t static_candidate_count_64 = 0u;
   /* Missing visible casters disable retained shadow reuse until published. */
@@ -275,7 +237,7 @@ VkrRendererError vkr_scene_build_world_draws(
       if (mesh->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC)
         static_candidate_count_64 += submesh_count;
     } else if (mesh->visible) {
-      publication_pending = true_v;
+      *publication_pending = true_v;
     }
   }
   for (uint32_t i = 0; i < live_instance_count; ++i) {
@@ -284,7 +246,7 @@ VkrRendererError vkr_scene_build_world_draws(
         vkr_mesh_manager_get_instance_by_live_index(meshes, i, &instance_slot);
     if (!instance->visible ||
         instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
-      publication_pending = publication_pending || instance->visible;
+      *publication_pending = *publication_pending || instance->visible;
       continue;
     }
     VkrMeshAsset *asset =
@@ -293,23 +255,18 @@ VkrRendererError vkr_scene_build_world_draws(
     if (instance->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC)
       static_candidate_count_64 += asset->submeshes.length;
   }
+  *out_candidate_count = candidate_count_64;
+  *out_static_candidate_count = static_candidate_count_64;
+}
 
-  if (candidate_count_64 > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
-    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-
-  const uint32_t gpu_candidate_count = (uint32_t)candidate_count_64;
-  const uint32_t static_candidate_count = (uint32_t)static_candidate_count_64;
-  uint8_t *transparent_visible = NULL;
-  if (gpu_candidate_count > 0u) {
-    transparent_visible = vkr_allocator_alloc(scratch, gpu_candidate_count,
-                                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!transparent_visible) {
-      *out_payload = (VkrWorldPassPayload){0};
-      return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    }
-    MemZero(transparent_visible, gpu_candidate_count);
-  }
-
+/* Visibility pass: classifies each counted source and camera-tests the
+   alpha-blended ones into `transparent_visible`. */
+vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
+    VkrMeshManager *meshes, VkrMaterialSystem *materials,
+    const VkrFrustum *camera_frustum, uint32_t mesh_count,
+    uint32_t live_instance_count, uint32_t gpu_candidate_count,
+    uint8_t *transparent_visible) {
+  VkrVisibilityStats stats = {0};
   uint32_t opaque_material_features = 0u;
   uint32_t gpu_camera_opaque_candidate_count = 0u;
   uint32_t transmission_gpu_candidate_count = 0u;
@@ -347,7 +304,7 @@ VkrRendererError vkr_scene_build_world_draws(
           vkr_visibility_submesh_sphere(mesh->model, submesh->center,
                                         submesh->min_extents,
                                         submesh->max_extents, &center, &radius);
-          visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
+          visible = vkr_frustum_test_sphere(camera_frustum, center, radius);
         }
         assert_log(source_index < gpu_candidate_count,
                    "Visibility pass exceeded the counted sources");
@@ -393,7 +350,7 @@ VkrRendererError vkr_scene_build_world_draws(
           vkr_visibility_submesh_sphere(instance->model, submesh->center,
                                         submesh->min_extents,
                                         submesh->max_extents, &center, &radius);
-          visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
+          visible = vkr_frustum_test_sphere(camera_frustum, center, radius);
         }
         assert_log(source_index < gpu_candidate_count,
                    "Visibility pass exceeded the counted sources");
@@ -405,55 +362,24 @@ VkrRendererError vkr_scene_build_world_draws(
     }
   }
 
-  VkrWorldDrawCandidate *gpu_candidates = NULL;
-  VkrWorldDrawCandidate *transmission_gpu_candidates = NULL;
-  VkrTransparentDrawCandidate *transparent_candidates = NULL;
-  VkrDrawItem *transparent_draws = NULL;
-  VkrInstanceDataGPU *transparent_instances = NULL;
-  if (gpu_candidate_count > 0u)
-    gpu_candidates = vkr_allocator_alloc(
-        scratch, sizeof(*gpu_candidates) * (uint64_t)gpu_candidate_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (transmission_gpu_candidate_count > 0u)
-    transmission_gpu_candidates =
-        vkr_allocator_alloc(scratch,
-                            sizeof(*transmission_gpu_candidates) *
-                                (uint64_t)transmission_gpu_candidate_count,
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (transparent_draw_count > 0u) {
-    transparent_candidates = vkr_allocator_alloc(
-        scratch,
-        sizeof(*transparent_candidates) * (uint64_t)transparent_draw_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    transparent_draws = vkr_allocator_alloc(
-        scratch, sizeof(*transparent_draws) * (uint64_t)transparent_draw_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    transparent_instances = vkr_allocator_alloc(
-        scratch,
-        sizeof(*transparent_instances) * (uint64_t)transparent_draw_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if ((gpu_candidate_count > 0u && !gpu_candidates) ||
-      (transmission_gpu_candidate_count > 0u && !transmission_gpu_candidates) ||
-      (transparent_draw_count > 0u &&
-       (!transparent_candidates || !transparent_draws ||
-        !transparent_instances))) {
-    *out_payload = (VkrWorldPassPayload){0};
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-
-  VkrSceneWorldEmitContext emit = {
-      .view = view,
-      .transparent_visible = transparent_visible,
-      .gpu_candidates = gpu_candidates,
-      .dynamic_gpu_index = static_candidate_count,
-      .transmission_gpu_candidates = transmission_gpu_candidates,
-      .transparent_candidates = transparent_candidates,
-      .static_gpu_count = static_candidate_count,
-      .gpu_count = gpu_candidate_count,
-      .transmission_count = transmission_gpu_candidate_count,
-      .transparent_count = transparent_draw_count,
+  return (VkrSceneWorldClassification){
+      .stats = stats,
+      .opaque_material_features = opaque_material_features,
+      .gpu_camera_opaque_candidate_count = gpu_camera_opaque_candidate_count,
+      .transmission_gpu_candidate_count = transmission_gpu_candidate_count,
+      .transparent_draw_count = transparent_draw_count,
   };
+}
+
+/* Emission pass: advances a local copy of `initial`, so its cursors can stay
+   in registers across the calls in this traversal. */
+vkr_internal void vkr_scene_emit_world_sources(
+    VkrMeshManager *meshes, VkrMaterialSystem *materials, uint32_t mesh_count,
+    uint32_t live_instance_count, uint32_t temporal_instance_offset,
+    VkrSkinningInput *skinning, uint32_t skinning_count,
+    const VkrSceneWorldEmitContext *initial) {
+  VkrSceneWorldEmitContext emit = *initial;
+  uint32_t skinning_cursor = 0;
 
   /* Counted spans keep static casters first while each partition and both
      side streams retain source encounter order in this single traversal. */
@@ -567,6 +493,142 @@ VkrRendererError vkr_scene_build_world_draws(
       vkr_scene_emit_world_source(&emit, &source);
     }
   }
+}
+
+/**
+ * @brief Builds the sole GPU-driven world source and retained blend list.
+ *
+ * Opaque, cutout, transmission, and shadow visibility remain unculled packet
+ * candidates; the selected backend owns their multi-view classification.
+ * Ordinary alpha blend is the only camera-culled and depth-sorted CPU list.
+ */
+VkrRendererError vkr_scene_build_world_draws(
+    VkrMeshManager *meshes, VkrMaterialSystem *materials,
+    bool8_t publication_pending, uint64_t publication_generation, Mat4 view,
+    Mat4 projection, VkrAllocator *scratch, VkrWorldPassPayload *out_payload,
+    VkrVisibilityStats *out_stats) {
+  *out_payload = (VkrWorldPassPayload){0};
+  if (out_stats)
+    *out_stats = (VkrVisibilityStats){0};
+  vkr_material_system_begin_texture_residency_frame(materials);
+  const VkrFrustum camera_frustum =
+      vkr_frustum_from_view_projection(view, projection);
+  const uint32_t mesh_count = vkr_mesh_manager_count(meshes);
+  const uint32_t live_instance_count = vkr_mesh_manager_instance_count(meshes);
+  const uint32_t temporal_instance_offset = vkr_mesh_manager_capacity(meshes);
+  uint32_t skinning_count = 0;
+  for (uint32_t i = 0; i < live_instance_count; ++i) {
+    uint32_t slot = 0;
+    const VkrMeshInstance *instance =
+        vkr_mesh_manager_get_instance_by_live_index(meshes, i, &slot);
+    if (instance->visible &&
+        instance->loading_state == VKR_MESH_LOADING_STATE_LOADED &&
+        instance->skinning) {
+      skinning_count++;
+    }
+  }
+  if (skinning_count > VKR_SKINNING_BINDING_CAPACITY) {
+    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+  }
+  VkrSkinningInput *skinning =
+      skinning_count
+          ? vkr_allocator_alloc(
+                scratch, (uint64_t)skinning_count * sizeof(VkrSkinningInput),
+                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
+  if (skinning_count && !skinning) {
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+
+  const uint64_t temporal_slot_capacity =
+      (uint64_t)temporal_instance_offset +
+      vkr_mesh_manager_instance_capacity(meshes);
+  if (temporal_slot_capacity > VKR_TEMPORAL_TRANSFORM_CAPACITY) {
+    *out_payload = (VkrWorldPassPayload){0};
+    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+  }
+  uint64_t candidate_count_64 = 0u;
+  uint64_t static_candidate_count_64 = 0u;
+  vkr_scene_count_world_sources(meshes, mesh_count, live_instance_count,
+                                &candidate_count_64, &static_candidate_count_64,
+                                &publication_pending);
+
+  if (candidate_count_64 > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
+    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+
+  const uint32_t gpu_candidate_count = (uint32_t)candidate_count_64;
+  const uint32_t static_candidate_count = (uint32_t)static_candidate_count_64;
+  uint8_t *transparent_visible = NULL;
+  if (gpu_candidate_count > 0u) {
+    transparent_visible = vkr_allocator_alloc(scratch, gpu_candidate_count,
+                                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!transparent_visible) {
+      *out_payload = (VkrWorldPassPayload){0};
+      return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    MemZero(transparent_visible, gpu_candidate_count);
+  }
+
+  const VkrSceneWorldClassification totals = vkr_scene_classify_world_sources(
+      meshes, materials, &camera_frustum, mesh_count, live_instance_count,
+      gpu_candidate_count, transparent_visible);
+  const uint32_t transmission_gpu_candidate_count =
+      totals.transmission_gpu_candidate_count;
+  const uint32_t transparent_draw_count = totals.transparent_draw_count;
+
+  VkrWorldDrawCandidate *gpu_candidates = NULL;
+  VkrWorldDrawCandidate *transmission_gpu_candidates = NULL;
+  VkrTransparentDrawCandidate *transparent_candidates = NULL;
+  VkrDrawItem *transparent_draws = NULL;
+  VkrInstanceDataGPU *transparent_instances = NULL;
+  if (gpu_candidate_count > 0u)
+    gpu_candidates = vkr_allocator_alloc(
+        scratch, sizeof(*gpu_candidates) * (uint64_t)gpu_candidate_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (transmission_gpu_candidate_count > 0u)
+    transmission_gpu_candidates =
+        vkr_allocator_alloc(scratch,
+                            sizeof(*transmission_gpu_candidates) *
+                                (uint64_t)transmission_gpu_candidate_count,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (transparent_draw_count > 0u) {
+    transparent_candidates = vkr_allocator_alloc(
+        scratch,
+        sizeof(*transparent_candidates) * (uint64_t)transparent_draw_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    transparent_draws = vkr_allocator_alloc(
+        scratch, sizeof(*transparent_draws) * (uint64_t)transparent_draw_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    transparent_instances = vkr_allocator_alloc(
+        scratch,
+        sizeof(*transparent_instances) * (uint64_t)transparent_draw_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if ((gpu_candidate_count > 0u && !gpu_candidates) ||
+      (transmission_gpu_candidate_count > 0u && !transmission_gpu_candidates) ||
+      (transparent_draw_count > 0u &&
+       (!transparent_candidates || !transparent_draws ||
+        !transparent_instances))) {
+    *out_payload = (VkrWorldPassPayload){0};
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+
+  const VkrSceneWorldEmitContext emit = {
+      .view = view,
+      .transparent_visible = transparent_visible,
+      .gpu_candidates = gpu_candidates,
+      .dynamic_gpu_index = static_candidate_count,
+      .transmission_gpu_candidates = transmission_gpu_candidates,
+      .transparent_candidates = transparent_candidates,
+      .static_gpu_count = static_candidate_count,
+      .gpu_count = gpu_candidate_count,
+      .transmission_count = transmission_gpu_candidate_count,
+      .transparent_count = transparent_draw_count,
+  };
+
+  vkr_scene_emit_world_sources(meshes, materials, mesh_count,
+                               live_instance_count, temporal_instance_offset,
+                               skinning, skinning_count, &emit);
 
   if (transparent_draw_count > 1u)
     qsort(transparent_candidates, transparent_draw_count,
@@ -577,11 +639,12 @@ VkrRendererError vkr_scene_build_world_draws(
   *out_payload = (VkrWorldPassPayload){
       .skinning = skinning,
       .skinning_count = skinning_count,
-      .opaque_material_features = opaque_material_features,
+      .opaque_material_features = totals.opaque_material_features,
       .opaque_material_features_valid = true_v,
       .gpu_candidates = gpu_candidates,
       .gpu_candidate_count = gpu_candidate_count,
-      .gpu_camera_opaque_candidate_count = gpu_camera_opaque_candidate_count,
+      .gpu_camera_opaque_candidate_count =
+          totals.gpu_camera_opaque_candidate_count,
       .gpu_shadow_candidate_count = gpu_candidate_count,
       .static_candidate_count = static_candidate_count,
       .static_generation = meshes->generations.static_content,
@@ -597,6 +660,6 @@ VkrRendererError vkr_scene_build_world_draws(
       .instance_count = transparent_draw_count,
   };
   if (out_stats)
-    *out_stats = stats;
+    *out_stats = totals.stats;
   return VKR_RENDERER_ERROR_NONE;
 }
