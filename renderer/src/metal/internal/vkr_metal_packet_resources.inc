@@ -1603,23 +1603,25 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
 vkr_internal bool8_t vkr_metal_packet_create_atmosphere_readback(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketTexture *source)
     API_AVAILABLE(macos(26.0)) {
-  const uint64_t reservation = [renderer->device
-      heapBufferSizeAndAlignWithLength:sizeof(float32_t) * 4u
-                               options:MTLResourceStorageModeShared]
-                                   .size;
+  const uint64_t reservation =
+      [renderer->device
+          heapBufferSizeAndAlignWithLength:sizeof(float32_t) * 4u
+                                   options:MTLResourceStorageModeShared]
+          .size;
   if (!vkr_metal_memory_device_reserve_external(renderer->memory, reservation))
     return false_v;
-  id<MTLBuffer> buffer = [renderer->device
-      newBufferWithLength:sizeof(float32_t) * 4u
-                  options:MTLResourceStorageModeShared];
+  id<MTLBuffer> buffer =
+      [renderer->device newBufferWithLength:sizeof(float32_t) * 4u
+                                    options:MTLResourceStorageModeShared];
   if (!buffer || !vkr_metal_memory_device_reconcile_external(
                      renderer->memory, reservation, buffer.allocatedSize)) {
     [buffer release];
     vkr_metal_memory_device_release_external(renderer->memory, reservation);
     return false_v;
   }
-  id<MTLResidencySet> residency = (id<MTLResidencySet>)
-      vkr_metal_memory_device_residency_set(renderer->memory);
+  id<MTLResidencySet> residency =
+      (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
+          renderer->memory);
   [residency addAllocation:buffer];
   [residency commit];
   buffer.label = @"VKR atmosphere observer irradiance";
@@ -1628,13 +1630,15 @@ vkr_internal bool8_t vkr_metal_packet_create_atmosphere_readback(
   return true_v;
 }
 
-vkr_internal void vkr_metal_packet_release_atmosphere_readback(
-    VkrMetalPacketRenderer *renderer, VkrMetalPacketTexture *source) {
+vkr_internal void
+vkr_metal_packet_release_atmosphere_readback(VkrMetalPacketRenderer *renderer,
+                                             VkrMetalPacketTexture *source) {
   id<MTLBuffer> readback = source->atmosphere_sun_readback;
   if (!readback)
     return;
-  id<MTLResidencySet> residency = (id<MTLResidencySet>)
-      vkr_metal_memory_device_residency_set(renderer->memory);
+  id<MTLResidencySet> residency =
+      (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
+          renderer->memory);
   [residency removeAllocation:readback];
   [residency commit];
   vkr_metal_packet_release_budgeted_resource(renderer, readback);
@@ -1651,7 +1655,8 @@ bool8_t vkr_metal_packet_renderer_bake_atmosphere(
         !renderer->atmosphere_luts_live ||
         !renderer->atmosphere_transmittance_pipeline ||
         !renderer->atmosphere_multiple_scattering_pipeline ||
-        !renderer->atmosphere_source_pipeline || !renderer->atmosphere_sun_pipeline)
+        !renderer->atmosphere_source_pipeline ||
+        !renderer->atmosphere_sun_pipeline)
       return false_v;
     if (!@available(macOS 26.0, *))
       return false_v;
@@ -1685,10 +1690,14 @@ bool8_t vkr_metal_packet_renderer_bake_atmosphere(
 
     VkrMetalPacketAtmosphereRoot root = {
         .params = *params,
-        .transmittance_sample_texture_id = renderer->atmosphere_luts[0].resource_id,
-        .transmittance_storage_texture_id = renderer->atmosphere_luts[0].resource_id,
-        .multiple_scattering_sample_texture_id = renderer->atmosphere_luts[1].resource_id,
-        .multiple_scattering_storage_texture_id = renderer->atmosphere_luts[1].resource_id,
+        .transmittance_sample_texture_id =
+            renderer->atmosphere_luts[0].resource_id,
+        .transmittance_storage_texture_id =
+            renderer->atmosphere_luts[0].resource_id,
+        .multiple_scattering_sample_texture_id =
+            renderer->atmosphere_luts[1].resource_id,
+        .multiple_scattering_storage_texture_id =
+            renderer->atmosphere_luts[1].resource_id,
         .source_storage_texture_id = source->resource.resource_id,
         .sun_output = source->atmosphere_sun_readback.gpuAddress,
         .extent = {VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
@@ -1698,7 +1707,8 @@ bool8_t vkr_metal_packet_renderer_bake_atmosphere(
     uint8_t *root_bytes_cpu = upload.cpu_address;
     MemCopy(root_bytes_cpu, &root, sizeof(root));
     [renderer->argument_table setAddress:upload.gpu_address atIndex:0u];
-    [encoder setComputePipelineState:renderer->atmosphere_transmittance_pipeline];
+    [encoder
+        setComputePipelineState:renderer->atmosphere_transmittance_pipeline];
     [encoder setArgumentTable:renderer->argument_table];
     [encoder dispatchThreads:MTLSizeMake(root.extent[0], root.extent[1], 1u)
         threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
@@ -1708,14 +1718,18 @@ bool8_t vkr_metal_packet_renderer_bake_atmosphere(
 
     root.extent[0] = VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE;
     root.extent[1] = VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE;
-    MemCopy(root_bytes_cpu + VKR_METAL_PACKET_ROOT_ALIGNMENT, &root, sizeof(root));
+    MemCopy(root_bytes_cpu + VKR_METAL_PACKET_ROOT_ALIGNMENT, &root,
+            sizeof(root));
     [renderer->argument_table
-        setAddress:upload.gpu_address + VKR_METAL_PACKET_ROOT_ALIGNMENT atIndex:0u];
-    [encoder setComputePipelineState:renderer->atmosphere_multiple_scattering_pipeline];
+        setAddress:upload.gpu_address + VKR_METAL_PACKET_ROOT_ALIGNMENT
+           atIndex:0u];
+    [encoder setComputePipelineState:renderer->
+                                     atmosphere_multiple_scattering_pipeline];
     [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreadgroups:MTLSizeMake(root.extent[0], root.extent[1], 1u)
-            threadsPerThreadgroup:MTLSizeMake(1u, 1u,
-                                               VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS)];
+    [encoder
+         dispatchThreadgroups:MTLSizeMake(root.extent[0], root.extent[1], 1u)
+        threadsPerThreadgroup:
+            MTLSizeMake(1u, 1u, VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS)];
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
@@ -1724,10 +1738,11 @@ bool8_t vkr_metal_packet_renderer_bake_atmosphere(
             sizeof(root));
     [renderer->argument_table
         setAddress:upload.gpu_address + 2u * VKR_METAL_PACKET_ROOT_ALIGNMENT
-               atIndex:0u];
+           atIndex:0u];
     [encoder setComputePipelineState:renderer->atmosphere_source_pipeline];
     [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(source_texture.width, source_texture.height, 6u)
+    [encoder dispatchThreads:MTLSizeMake(source_texture.width,
+                                         source_texture.height, 6u)
         threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageBlit
@@ -1742,7 +1757,7 @@ bool8_t vkr_metal_packet_renderer_bake_atmosphere(
             sizeof(root));
     [renderer->argument_table
         setAddress:upload.gpu_address + 3u * VKR_METAL_PACKET_ROOT_ALIGNMENT
-               atIndex:0u];
+           atIndex:0u];
     [encoder setComputePipelineState:renderer->atmosphere_sun_pipeline];
     [encoder setArgumentTable:renderer->argument_table];
     [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
@@ -1781,23 +1796,24 @@ bool8_t vkr_metal_packet_renderer_bake_atmosphere(
 VkrAtmosphereBakeStatus vkr_metal_packet_renderer_atmosphere_bake_status(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source_handle,
     VkrAtmosphereBakeResult *out_result) {
-  VkrMetalPacketTexture *source = renderer
-                                      ? vkr_metal_packet_resolve_texture(
-                                            renderer, source_handle)
-                                      : NULL;
+  VkrMetalPacketTexture *source =
+      renderer ? vkr_metal_packet_resolve_texture(renderer, source_handle)
+               : NULL;
   if (!source || !source->atmosphere_bake_active)
     return VKR_ATMOSPHERE_BAKE_FAILED;
   if (source->atmosphere_status == VKR_ATMOSPHERE_BAKE_PENDING &&
       renderer->completion.signaledValue >=
           source->atmosphere_completion_submit_value) {
-    const float32_t *irradiance = source->atmosphere_sun_readback
-                                      ? (const float32_t *)source->atmosphere_sun_readback.contents
-                                      : NULL;
+    const float32_t *irradiance =
+        source->atmosphere_sun_readback
+            ? (const float32_t *)source->atmosphere_sun_readback.contents
+            : NULL;
     if (!source->atmosphere_ibl_failed &&
         source->ibl_sh_slot != VKR_SH_SLOT_BLACK && irradiance &&
-        source->atmosphere_projected_solid_angle > 0.0f && isfinite(irradiance[0]) &&
-        isfinite(irradiance[1]) && isfinite(irradiance[2]) &&
-        irradiance[0] >= 0.0f && irradiance[1] >= 0.0f && irradiance[2] >= 0.0f) {
+        source->atmosphere_projected_solid_angle > 0.0f &&
+        isfinite(irradiance[0]) && isfinite(irradiance[1]) &&
+        isfinite(irradiance[2]) && irradiance[0] >= 0.0f &&
+        irradiance[1] >= 0.0f && irradiance[2] >= 0.0f) {
       source->atmosphere_result.solar_irradiance =
           (Vec3){irradiance[0], irradiance[1], irradiance[2]};
       source->atmosphere_result.solar_disk_radiance =
@@ -2331,9 +2347,10 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
         &mesh->submeshes[source->submesh_index];
     instances[packed_count] =
         vkr_metal_packet_prepare_instance(renderer, &source->instance);
-    const uint32_t state_bucket = source->state_bucket |
-        (instances[packed_count].normal_column0.w < 0.0f
-             ? VKR_GPU_DRAW_STATE_MIRRORED_BIT : 0u);
+    const uint32_t state_bucket =
+        source->state_bucket | (instances[packed_count].normal_column0.w < 0.0f
+                                    ? VKR_GPU_DRAW_STATE_MIRRORED_BIT
+                                    : 0u);
     instances[packed_count].temporal_flags =
         ((source->submesh_index + 1u) << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
         (source->instance.temporal_index != last_temporal_index
@@ -2349,8 +2366,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
         .index_count = submesh->index_count,
         .vertex_offset = submesh->vertex_offset,
         .decode_index = submesh->decode_index,
-        .state_flags =
-            vkr_gpu_draw_state_flags(state_bucket, source->flags),
+        .state_flags = vkr_gpu_draw_state_flags(state_bucket, source->flags),
         .local_bounding_sphere = source->local_bounding_sphere,
     };
     packed_count++;
@@ -2668,8 +2684,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
 
   /* The base budget includes one cell per frame root. Each creator also needs
    * the rest of its frame-root span and a separate anisotropy record. */
-  uint64_t frame_root_count =
-      direct_draw_count > 0u ? direct_pass_count : 0u;
+  uint64_t frame_root_count = direct_draw_count > 0u ? direct_pass_count : 0u;
   for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
        ++order) {
     const VkrRgPass *pass =
@@ -2712,8 +2727,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   }
   const uint64_t frame_root_extra_cells =
       (uint64_t)VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT - 1u + 1u;
-  if (frame_root_count >
-      (UINT64_MAX - root_count) / frame_root_extra_cells)
+  if (frame_root_count > (UINT64_MAX - root_count) / frame_root_extra_cells)
     return false_v;
   root_count += frame_root_count * frame_root_extra_cells;
   if (root_count > renderer->max_draws)
@@ -2784,18 +2798,23 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       AlignOf(VkrMetalPacketIblProbe));
   const uint64_t ibl_probes_bytes =
       (uint64_t)ibl_probe_count * sizeof(VkrMetalPacketIblProbe);
-  const VkrDiffuseVolumeBinding *diffuse_volume = packet->input.lighting ?
-      &packet->input.lighting->diffuse_volume : NULL;
-  const bool8_t diffuse_volume_enabled = diffuse_volume && diffuse_volume->texture.id != 0u &&
+  const VkrDiffuseVolumeBinding *diffuse_volume =
+      packet->input.lighting ? &packet->input.lighting->diffuse_volume : NULL;
+  const bool8_t diffuse_volume_enabled =
+      diffuse_volume && diffuse_volume->texture.id != 0u &&
       diffuse_volume->texture.generation != VKR_INVALID_ID;
-  const uint64_t diffuse_volume_offset = vkr_metal_packet_align_up(
-      ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrMetalPacketDiffuseVolume));
-  const uint64_t diffuse_volume_bytes = diffuse_volume_enabled ? sizeof(VkrMetalPacketDiffuseVolume) : 0u;
-  const uint32_t rectangle_light_count = packet->input.lighting
-      ? packet->input.lighting->rectangle_light_count : 0u;
+  const uint64_t diffuse_volume_offset =
+      vkr_metal_packet_align_up(ibl_probes_offset + ibl_probes_bytes,
+                                AlignOf(VkrMetalPacketDiffuseVolume));
+  const uint64_t diffuse_volume_bytes =
+      diffuse_volume_enabled ? sizeof(VkrMetalPacketDiffuseVolume) : 0u;
+  const uint32_t rectangle_light_count =
+      packet->input.lighting ? packet->input.lighting->rectangle_light_count
+                             : 0u;
   const uint64_t ltc_offset = vkr_metal_packet_align_up(
       diffuse_volume_offset + diffuse_volume_bytes, AlignOf(VkrMetalPacketLtc));
-  const uint64_t rectangle_lights_offset = ltc_offset + sizeof(VkrMetalPacketLtc);
+  const uint64_t rectangle_lights_offset =
+      ltc_offset + sizeof(VkrMetalPacketLtc);
   const uint64_t rectangle_lights_bytes =
       (uint64_t)rectangle_light_count * sizeof(VkrGpuRectangleLightRow);
   const uint64_t sheen_offset = vkr_metal_packet_align_up(
@@ -3258,7 +3277,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   VkrGpuRectangleLightRow *rectangle_rows =
       (VkrGpuRectangleLightRow *)(cpu + rectangle_lights_offset);
   for (uint32_t i = 0u; i < rectangle_light_count; ++i)
-    vkr_rectangle_light_pack(&packet->input.lighting->rectangle_lights[i], &rectangle_rows[i]);
+    vkr_rectangle_light_pack(&packet->input.lighting->rectangle_lights[i],
+                             &rectangle_rows[i]);
   upload->ltc_gpu = gpu + ltc_offset;
   VkrMetalPacketSheen *sheen = (VkrMetalPacketSheen *)(cpu + sheen_offset);
   *sheen = (VkrMetalPacketSheen){
@@ -3312,7 +3332,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     const VkrSubsurfaceBinding *binding = &packet->input.lighting->subsurface;
     VkrMetalPacketTexture *texture =
         vkr_metal_packet_resolve_texture(renderer, binding->texture);
-    id<MTLTexture> native = texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
+    id<MTLTexture> native =
+        texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
     if (!native || binding->profile_count == 0u ||
         binding->profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
         native.pixelFormat != MTLPixelFormatRGBA32Float ||
@@ -3325,21 +3346,32 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     texture->last_use_submit_value = renderer->submit_value + 1u;
   }
   if (packet->input.lighting) {
-    const VkrDiffuseVolumeBinding *volume = &packet->input.lighting->diffuse_volume;
-    if (volume->texture.id != 0u && volume->texture.generation != VKR_INVALID_ID) {
-      VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_texture(renderer, volume->texture);
-      const uint32_t probe_count = volume->dimensions[0] * volume->dimensions[1] * volume->dimensions[2];
-      id<MTLTexture> native_texture = texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
-      if (!native_texture || native_texture.pixelFormat != MTLPixelFormatRGBA32Float ||
+    const VkrDiffuseVolumeBinding *volume =
+        &packet->input.lighting->diffuse_volume;
+    if (volume->texture.id != 0u &&
+        volume->texture.generation != VKR_INVALID_ID) {
+      VkrMetalPacketTexture *texture =
+          vkr_metal_packet_resolve_texture(renderer, volume->texture);
+      const uint32_t probe_count =
+          volume->dimensions[0] * volume->dimensions[1] * volume->dimensions[2];
+      id<MTLTexture> native_texture =
+          texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
+      if (!native_texture ||
+          native_texture.pixelFormat != MTLPixelFormatRGBA32Float ||
           native_texture.textureType != MTLTextureType2D ||
           native_texture.width != 8u || native_texture.height != probe_count)
         return false_v;
       upload->diffuse_volume_texture_id = texture->resource.resource_id;
-      VkrMetalPacketDiffuseVolume *params = (VkrMetalPacketDiffuseVolume *)(cpu + diffuse_volume_offset);
+      VkrMetalPacketDiffuseVolume *params =
+          (VkrMetalPacketDiffuseVolume *)(cpu + diffuse_volume_offset);
       *params = (VkrMetalPacketDiffuseVolume){
-        .origin = {volume->origin.x, volume->origin.y, volume->origin.z, 0.0f},
-        .inverse_spacing = {volume->inverse_spacing.x, volume->inverse_spacing.y, volume->inverse_spacing.z, 0.0f},
-        .dimensions = {volume->dimensions[0], volume->dimensions[1], volume->dimensions[2], 0u},
+          .origin = {volume->origin.x, volume->origin.y, volume->origin.z,
+                     0.0f},
+          .inverse_spacing = {volume->inverse_spacing.x,
+                              volume->inverse_spacing.y,
+                              volume->inverse_spacing.z, 0.0f},
+          .dimensions = {volume->dimensions[0], volume->dimensions[1],
+                         volume->dimensions[2], 0u},
       };
       upload->diffuse_volume_params_gpu = gpu + diffuse_volume_offset;
       texture->last_use_submit_value = renderer->submit_value + 1u;
@@ -3466,8 +3498,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       packet->input.world->transmission_gpu_candidate_count > 0) {
     id<MTLTexture> transmission_texture = vkr_metal_packet_named_texture(
         renderer, packet->subsurface_enabled ? "subsurface_color"
-            : packet->input.frame.editor_enabled ? "scene_pre_transmission"
-                                                 : "hdr_pre_transmission");
+                  : packet->input.frame.editor_enabled
+                      ? "scene_pre_transmission"
+                      : "hdr_pre_transmission");
     if (!transmission_texture)
       return false_v;
     upload->transmission_texture_id = transmission_texture.gpuResourceID._impl;
@@ -3475,10 +3508,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->direct_draws =
       (VkrMetalPacketPreparedDraw *)(cpu + direct_draw_offset);
   upload->direct_draw_count = direct_draw_count;
-  if (direct_draw_count > 0u && !vkr_metal_packet_prepare_direct_draws(
-                                    renderer, world->transparent_draws,
-                                    world->transparent_draw_count,
-                                    world->instances, upload->direct_draws))
+  if (direct_draw_count > 0u &&
+      !vkr_metal_packet_prepare_direct_draws(
+          renderer, world->transparent_draws, world->transparent_draw_count,
+          world->instances, upload->direct_draws))
     return false_v;
   upload->root_cpu = cpu + root_offset;
   upload->root_gpu = gpu + root_offset;

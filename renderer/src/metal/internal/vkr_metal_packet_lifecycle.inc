@@ -129,7 +129,7 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
 }
 
 VkrTextureFormat vkr_metal_packet_renderer_present_color_format(
-  const VkrMetalPacketRenderer *renderer) {
+    const VkrMetalPacketRenderer *renderer) {
   if (!renderer)
     return VKR_TEXTURE_FORMAT_COUNT;
   if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
@@ -144,9 +144,9 @@ VkrTextureFormat vkr_metal_packet_renderer_present_color_format(
 
 VkrDisplayOutputParams vkr_metal_packet_renderer_display_output(
     const VkrMetalPacketRenderer *renderer) {
-  return renderer ? renderer->display_output
-                  : (VkrDisplayOutputParams){.headroom = 1.0f,
-                                              .output_scale = 1.0f};
+  return renderer
+             ? renderer->display_output
+             : (VkrDisplayOutputParams){.headroom = 1.0f, .output_scale = 1.0f};
 }
 
 bool8_t vkr_metal_packet_renderer_refresh_display_output(
@@ -321,9 +321,10 @@ bool8_t vkr_metal_packet_renderer_drain(
     }
 
     for (uint32_t i = 0u; i < renderer->ltc_lut_live_count; ++i) {
-      if (vkr_metal_memory_device_retire(
-              renderer->memory, renderer->ltc_luts[i].handle,
-              renderer->ltc_last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
+      if (vkr_metal_memory_device_retire(renderer->memory,
+                                         renderer->ltc_luts[i].handle,
+                                         renderer->ltc_last_use_submit_value) !=
+          VKR_METAL_MEMORY_STATUS_OK)
         return false_v;
       renderer->ltc_luts[i] = (VkrMetalTextureResource){0};
     }
@@ -560,15 +561,15 @@ vkr_internal bool8_t vkr_metal_packet_bake_hdr_environment_adapter(
 vkr_internal bool8_t vkr_metal_packet_bake_atmosphere_adapter(
     void *state, const VkrAtmosphereGpuParams *params, VkrTextureHandle source,
     VkrTextureHandle prefilter, float32_t sh_deringing) {
-  return vkr_metal_packet_renderer_bake_atmosphere(
-      state, params, source, prefilter, sh_deringing);
+  return vkr_metal_packet_renderer_bake_atmosphere(state, params, source,
+                                                   prefilter, sh_deringing);
 }
 
 vkr_internal VkrAtmosphereBakeStatus
 vkr_metal_packet_atmosphere_bake_status_adapter(
     void *state, VkrTextureHandle source, VkrAtmosphereBakeResult *out_result) {
   return vkr_metal_packet_renderer_atmosphere_bake_status(state, source,
-                                                           out_result);
+                                                          out_result);
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_texture_adapter(
@@ -778,7 +779,8 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       [renderer->hzb_build_pipeline release];
       [renderer->sdsm_reduce_pipeline release];
       [renderer->subsurface_pipeline release];
-      for (uint32_t i = 0u; i < ArrayCount(renderer->motion_blur_pipelines); ++i)
+      for (uint32_t i = 0u; i < ArrayCount(renderer->motion_blur_pipelines);
+           ++i)
         [renderer->motion_blur_pipelines[i] release];
       for (uint32_t i = 0u; i < ArrayCount(renderer->dof_pipelines); ++i)
         [renderer->dof_pipelines[i] release];
