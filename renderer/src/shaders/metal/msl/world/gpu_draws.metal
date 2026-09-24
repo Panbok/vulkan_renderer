@@ -1607,7 +1607,9 @@ VkrMetalPacketTemporalHistorySample vkr_metal_packet_temporal_history_sample(
     uint surface_token, float expected_depth, bool check_depth,
     uint2 current_pixel, float2 reference_motion, bool allow_coverage)
 {
-    constexpr sampler nearest(coord::normalized, address::clamp_to_edge, filter::nearest);
+    // Metadata and bilinear color taps are texel loads. History images share
+    // the viewport extent, and every tap position is clamped to it. Only the
+    // cubic path filters, through the hardware bilinear footprint.
     constexpr sampler linear(coord::normalized, address::clamp_to_edge, filter::linear);
     float2 texel = history_uv * float2(root.extent) - 0.5f;
     int2 base = int2(floor(texel));
@@ -1631,9 +1633,9 @@ VkrMetalPacketTemporalHistorySample vkr_metal_packet_temporal_history_sample(
         for (int x = 0; x < metadata_span.x; ++x)
         {
             uint2 p = uint2(clamp(metadata_base + int2(x, y), int2(0), int2(root.extent) - 1));
-            uint2 previous_identity = root.history_identity.sample(nearest, (float2(p) + 0.5f) / float2(root.extent)).xy;
-            uint previous_surface = root.history_surface.sample(nearest, (float2(p) + 0.5f) / float2(root.extent)).x;
-            float previous_depth = root.history_depth.sample(nearest, (float2(p) + 0.5f) / float2(root.extent)).x;
+            uint2 previous_identity = root.history_identity.read(p).xy;
+            uint previous_surface = root.history_surface.read(p).x;
+            float previous_depth = root.history_depth.read(p).x;
             bool strict = all(previous_identity == identity) && previous_surface == surface_token &&
                           (!check_depth || abs(previous_depth - expected_depth) <= 0.005f);
             cubic_compatible = cubic_compatible && strict;
@@ -1652,8 +1654,9 @@ VkrMetalPacketTemporalHistorySample vkr_metal_packet_temporal_history_sample(
                 if (x >= 0 && x < metadata_span.x && y >= 0 && y < metadata_span.y)
                     continue;
                 uint2 p = uint2(clamp(metadata_base + int2(x, y), int2(0), int2(root.extent) - 1));
-                if (any(root.history_identity.sample(nearest, (float2(p) + 0.5f) / float2(root.extent)).xy != identity) || root.history_surface.sample(nearest, (float2(p) + 0.5f) / float2(root.extent)).x != surface_token ||
-                    abs(root.history_depth.sample(nearest, (float2(p) + 0.5f) / float2(root.extent)).x - expected_depth) > 0.005f)
+                if (any(root.history_identity.read(p).xy != identity) ||
+                    root.history_surface.read(p).x != surface_token ||
+                    abs(root.history_depth.read(p).x - expected_depth) > 0.005f)
                     cubic_compatible = false;
             }
     VkrMetalPacketTemporalHistorySample result;
@@ -1700,7 +1703,7 @@ VkrMetalPacketTemporalHistorySample vkr_metal_packet_temporal_history_sample(
             weight *= confidence;
             if (weight <= 1e-5f)
                 continue;
-            result.color += root.history_color.sample(nearest, (float2(p) + 0.5f) / float2(root.extent)) * weight;
+            result.color += root.history_color.read(p) * weight;
             weight_sum += weight;
         }
     result.accepted = weight_sum > 1e-5f;
@@ -1781,13 +1784,11 @@ kernel void vkr_metal_packet_temporal_resolve(
         (identity.x == 0u || surface_token != 0u);
     if (checked_static)
     {
-        constexpr sampler nearest(coord::normalized, address::clamp_to_edge, filter::nearest);
-        float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
-        float previous_age = root.history_depth.sample(nearest, uv).y;
+        float previous_age = root.history_depth.read(pixel).y;
         float age = min(previous_age + 1.0f, VKR_TEMPORAL_STATIC_SAMPLE_COUNT);
         float authored_reactive = validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
         float history_weight = ((age - 1.0f) / age) * (1.0f - authored_reactive);
-        float4 history = root.history_color.sample(nearest, uv);
+        float4 history = root.history_color.read(pixel);
         // A capped EMA still oscillates with thin-coverage jitter forever.
         // Copy the completed static integral exactly; any scene change resets
         // its age through the ordinary resolve before this path can resume.

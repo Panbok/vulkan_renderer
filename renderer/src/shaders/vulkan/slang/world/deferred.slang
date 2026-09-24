@@ -2016,8 +2016,6 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         (identity.x == 0u || surface_token != 0u);
     if (checked_static)
     {
-
-        float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
         float previous_age = g_storage_float2_2d[root.history_depth_texture][pixel].y;
         float age = min(previous_age + 1.0f, VKR_TEMPORAL_STATIC_SAMPLE_COUNT);
         float authored_reactive = validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;

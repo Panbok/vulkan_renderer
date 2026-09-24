@@ -41,14 +41,6 @@ void vkr_vk_gtao_store(VkrVkGtaoRoot *root, uint texture_index, uint2 pixel,
         float4(value, 0.0f, 0.0f, 1.0f);
 }
 
-float4 vkr_vk_gtao_sample_tuple(VkrVkGtaoRoot *root, uint texture_index,
-                                float2 pixel)
-{
-    return g_textures[NonUniformResourceIndex(texture_index)]
-        .SampleLevel(g_samplers[NonUniformResourceIndex(root.point_sampler)],
-                     vkr_vk_gtao_uv(pixel, root.destination_extent), 0.0f);
-}
-
 void vkr_vk_gtao_store_tuple(VkrVkGtaoRoot *root, uint texture_index,
                              uint2 pixel, float4 value)
 {
@@ -238,12 +230,14 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
                                       world_normal));
 }
 
-float vkr_vk_gtao_denoise_sample(VkrVkGtaoRoot *root, uint texture_index,
-                                 float2 pixel)
+// Denoise inputs share the viewport extent. A clamped texel load equals the
+// former clamp-to-edge point sample at the texel center. Root descriptor
+// indices are dynamically uniform, so they carry no NonUniform decoration.
+float4 vkr_vk_gtao_denoise_load(VkrVkGtaoRoot *root, uint texture_index,
+                                int2 pixel)
 {
-    return vkr_vk_gtao_sample(
-        root, texture_index,
-        vkr_vk_gtao_uv(pixel, root.destination_extent), 0.0f);
+    int2 clamped = clamp(pixel, int2(0), int2(root.destination_extent) - 1);
+    return g_textures[texture_index].Load(int3(clamped, 0));
 }
 
 float vkr_vk_gtao_edge_weight(float edge0, float edge1, float beta)
@@ -260,34 +254,34 @@ void vk_gtao_denoise(uint3 thread_id : SV_DispatchThreadID)
     if (any(pixel >= root.destination_extent))
         return;
 
-    float2 p = float2(pixel);
+    int2 p = int2(pixel);
     float beta = root.params.denoise_blur_beta;
     float4 center_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture, p));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture, p).x);
     float4 left_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(-1.0f, 0.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(-1, 0)).x);
     float4 right_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(1.0f, 0.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(1, 0)).x);
     float4 top_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(0.0f, -1.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(0, -1)).x);
     float4 bottom_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(0.0f, 1.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(0, 1)).x);
     float4 top_left_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(-1.0f, -1.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(-1, -1)).x);
     float4 top_right_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(1.0f, -1.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(1, -1)).x);
     float4 bottom_left_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(-1.0f, 1.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(-1, 1)).x);
     float4 bottom_right_edges = vkr_gtao_unpack_edges(
-        vkr_vk_gtao_denoise_sample(root, root.edges_texture,
-                                   p + float2(1.0f, 1.0f)));
+        vkr_vk_gtao_denoise_load(root, root.edges_texture,
+                                 p + int2(1, 1)).x);
 
     float weights[9];
     weights[0] = pow(saturate(vkr_gtao_diagonal_edge_weight(
@@ -321,8 +315,8 @@ void vk_gtao_denoise(uint3 thread_id : SV_DispatchThreadID)
     {
         for (int x = -1; x <= 1; ++x)
         {
-            float4 raw = vkr_vk_gtao_sample_tuple(
-                root, root.source_texture, p + float2(float(x), float(y)));
+            float4 raw = vkr_vk_gtao_denoise_load(
+                root, root.source_texture, p + int2(x, y));
             visibility += weights[index] * vkr_gtao_decode_visibility(raw);
             bent_direction += weights[index] * vkr_gtao_decode_bent_direction(
                                                     raw, float3(0.0f, 0.0f, 1.0f));
