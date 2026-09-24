@@ -295,6 +295,61 @@ vkr_vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
   return VK_FALSE;
 }
 
+/* Installs the debug messenger when validation is enabled. */
+vkr_internal bool8_t vkr_vk_create_debug_messenger(
+    VkrVulkanDevice *device,
+    const VkDebugUtilsMessengerCreateInfoEXT *debug_info) {
+  if (device->config.enable_validation) {
+    PFN_vkCreateDebugUtilsMessengerEXT create_debug =
+        (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+            device->instance, "vkCreateDebugUtilsMessengerEXT");
+    if (create_debug && create_debug(device->instance, debug_info, NULL,
+                                     &device->debug_messenger) != VK_SUCCESS) {
+      return false_v;
+    }
+    log_info("Vulkan validation enabled: VK_LAYER_KHRONOS_validation "
+             "(synchronization=%u, GPU-assisted=%u)",
+             (uint32_t)device->config.enable_synchronization_validation,
+             (uint32_t)device->config.enable_gpu_assisted);
+  }
+  return true_v;
+}
+
+vkr_internal void vkr_vk_load_debug_label_functions(VkrVulkanDevice *device) {
+  device->cmd_begin_debug_label =
+      (PFN_vkCmdBeginDebugUtilsLabelEXT)vkGetInstanceProcAddr(
+          device->instance, "vkCmdBeginDebugUtilsLabelEXT");
+  device->cmd_end_debug_label =
+      (PFN_vkCmdEndDebugUtilsLabelEXT)vkGetInstanceProcAddr(
+          device->instance, "vkCmdEndDebugUtilsLabelEXT");
+  // Both or neither: the recorder brackets every pass and must not emit an
+  // unmatched begin.
+  if (!device->cmd_begin_debug_label || !device->cmd_end_debug_label) {
+    device->cmd_begin_debug_label = NULL;
+    device->cmd_end_debug_label = NULL;
+  }
+}
+
+vkr_internal bool8_t vkr_vk_create_window_surface(VkrVulkanDevice *device) {
+  if (device->config.windowed) {
+#if defined(PLATFORM_WINDOWS)
+    VkWin32SurfaceCreateInfoKHR surface_info = {
+        .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+        .hinstance = device->config.surface.win32_instance,
+        .hwnd = device->config.surface.win32_window,
+    };
+    if (!surface_info.hinstance || !surface_info.hwnd ||
+        vkCreateWin32SurfaceKHR(device->instance, &surface_info, NULL,
+                                &device->surface) != VK_SUCCESS) {
+      return false_v;
+    }
+#else
+    return false_v;
+#endif
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
   uint32_t loader_version = VK_API_VERSION_1_0;
   if (vkEnumerateInstanceVersion(&loader_version) != VK_SUCCESS ||
@@ -415,52 +470,15 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
     return false_v;
   }
 
-  if (device->config.enable_validation) {
-    PFN_vkCreateDebugUtilsMessengerEXT create_debug =
-        (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-            device->instance, "vkCreateDebugUtilsMessengerEXT");
-    if (create_debug && create_debug(device->instance, &debug_info, NULL,
-                                     &device->debug_messenger) != VK_SUCCESS) {
-      return false_v;
-    }
-    log_info("Vulkan validation enabled: VK_LAYER_KHRONOS_validation "
-             "(synchronization=%u, GPU-assisted=%u)",
-             (uint32_t)device->config.enable_synchronization_validation,
-             (uint32_t)device->config.enable_gpu_assisted);
+  if (!vkr_vk_create_debug_messenger(device, &debug_info)) {
+    return false_v;
   }
 
   if (debug_utils_available) {
-    device->cmd_begin_debug_label =
-        (PFN_vkCmdBeginDebugUtilsLabelEXT)vkGetInstanceProcAddr(
-            device->instance, "vkCmdBeginDebugUtilsLabelEXT");
-    device->cmd_end_debug_label =
-        (PFN_vkCmdEndDebugUtilsLabelEXT)vkGetInstanceProcAddr(
-            device->instance, "vkCmdEndDebugUtilsLabelEXT");
-    // Both or neither: the recorder brackets every pass and must not emit an
-    // unmatched begin.
-    if (!device->cmd_begin_debug_label || !device->cmd_end_debug_label) {
-      device->cmd_begin_debug_label = NULL;
-      device->cmd_end_debug_label = NULL;
-    }
+    vkr_vk_load_debug_label_functions(device);
   }
 
-  if (device->config.windowed) {
-#if defined(PLATFORM_WINDOWS)
-    VkWin32SurfaceCreateInfoKHR surface_info = {
-        .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-        .hinstance = device->config.surface.win32_instance,
-        .hwnd = device->config.surface.win32_window,
-    };
-    if (!surface_info.hinstance || !surface_info.hwnd ||
-        vkCreateWin32SurfaceKHR(device->instance, &surface_info, NULL,
-                                &device->surface) != VK_SUCCESS) {
-      return false_v;
-    }
-#else
-    return false_v;
-#endif
-  }
-  return true_v;
+  return vkr_vk_create_window_surface(device);
 }
 
 vkr_internal void vkr_vk_add_feature(VkrVulkanCandidateReport *report,
@@ -470,12 +488,8 @@ vkr_internal void vkr_vk_add_feature(VkrVulkanCandidateReport *report,
 }
 
 vkr_internal void
-vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
-                       const VkExtensionProperties *instance_extensions,
-                       uint32_t instance_extension_count) {
-  VkrVulkanCandidate *candidate = &device->candidates[candidate_index];
-  VkrVulkanCandidateReport *report =
-      &device->profile.candidates[candidate_index];
+vkr_vk_query_candidate_properties(VkrVulkanCandidate *candidate,
+                                  VkrVulkanCandidateReport *report) {
   candidate->driver = (VkPhysicalDeviceDriverProperties){
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
   };
@@ -502,7 +516,10 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
   report->api_version = candidate->properties.properties.apiVersion;
   report->driver_id = candidate->driver.driverID;
   report->conformance_version = candidate->driver.conformanceVersion;
+}
 
+vkr_internal void
+vkr_vk_query_candidate_features(VkrVulkanCandidate *candidate) {
   VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
   };
@@ -567,7 +584,11 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
           descriptor.descriptorBufferPushDescriptors,
       .swapchain_maintenance1 = swapchain_maintenance.swapchainMaintenance1,
   };
+}
 
+vkr_internal void
+vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
+                                  VkrVulkanCandidate *candidate) {
   uint32_t extension_count = 0;
   VkExtensionProperties *extensions = device->device_extensions;
   if (vkEnumerateDeviceExtensionProperties(
@@ -584,7 +605,14 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
         vkr_vk_extension_present(extensions, extension_count,
                                  VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
   }
+}
 
+/* Reports the API version, the descriptor-buffer extension, and the feature
+   floor. */
+vkr_internal void
+vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
+                                 const VkrVulkanCandidate *candidate,
+                                 VkrVulkanCandidateReport *report) {
   const bool8_t api_present =
       candidate->properties.properties.apiVersion >= VK_API_VERSION_1_4;
   char api_detail[64];
@@ -651,7 +679,12 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
       false_v, candidate->features.descriptor_buffer_capture_replay,
       candidate->features.descriptor_buffer_capture_replay ? "recorded"
                                                            : "unavailable");
+}
 
+vkr_internal void
+vkr_vk_select_candidate_queue(const VkrVulkanDevice *device,
+                              VkrVulkanCandidate *candidate,
+                              VkrVulkanCandidateReport *report) {
   uint32_t queue_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(candidate->physical, &queue_count,
                                            NULL);
@@ -682,7 +715,12 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_QUEUE,
                     "graphics+compute+transfer", true_v,
                     candidate->queue_family_index != UINT32_MAX, queue_detail);
+}
 
+vkr_internal void
+vkr_vk_report_candidate_limits(const VkrVulkanDevice *device,
+                               const VkrVulkanCandidate *candidate,
+                               VkrVulkanCandidateReport *report) {
   const VkPhysicalDeviceLimits *limits =
       &candidate->properties.properties.limits;
   const VkrVulkanDeviceConfig *config = &device->config;
@@ -742,7 +780,11 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
                              limits->optimalBufferCopyOffsetAlignment);
   vkr_vk_report_record_limit(report, "optimalBufferCopyRowPitchAlignment",
                              limits->optimalBufferCopyRowPitchAlignment);
+}
 
+vkr_internal void
+vkr_vk_report_candidate_formats(const VkrVulkanCandidate *candidate,
+                                VkrVulkanCandidateReport *report) {
   VkFormatProperties3 unorm_format3 = {
       .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
   };
@@ -778,33 +820,12 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
                     (srgb_format3.optimalTilingFeatures & target_floor) ==
                         target_floor,
                     "optimal tiling");
+}
 
-  const char *window_instance_extensions[] = {
-      VK_KHR_SURFACE_EXTENSION_NAME,
-#if defined(PLATFORM_WINDOWS)
-      VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-#endif
-  };
-  for (uint32_t i = 0; i < ArrayCount(window_instance_extensions); ++i) {
-    const bool8_t present =
-        vkr_vk_extension_present(instance_extensions, instance_extension_count,
-                                 window_instance_extensions[i]);
-    vkr_vk_report_add(
-        report, VKR_VULKAN_REPORT_INSTANCE_EXTENSION,
-        window_instance_extensions[i], device->config.windowed, present,
-        device->config.windowed ? "window floor" : "offscreen omitted");
-  }
-  vkr_vk_report_add(
-      report, VKR_VULKAN_REPORT_INSTANCE_EXTENSION,
-      VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, false_v,
-      vkr_vk_extension_present(instance_extensions, instance_extension_count,
-                               VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME),
-      "optional extended-linear presentation");
-  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
-                    VK_KHR_SWAPCHAIN_EXTENSION_NAME, device->config.windowed,
-                    candidate->has_swapchain_extension,
-                    device->config.windowed ? "window floor"
-                                            : "offscreen omitted");
+/* Whether the surface offers a usable BGRA8/RGBA8 sRGB format. Always false
+   offscreen or without a queue family. */
+vkr_internal bool8_t vkr_vk_query_encoded_present_support(
+    const VkrVulkanDevice *device, const VkrVulkanCandidate *candidate) {
   bool8_t encoded_present_supported = false_v;
   if (device->config.windowed && candidate->queue_family_index != UINT32_MAX) {
     uint32_t surface_format_count = 0u;
@@ -840,6 +861,44 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
       encoded_present_supported = selected.format != VK_FORMAT_UNDEFINED;
     }
   }
+  return encoded_present_supported;
+}
+
+/* Reports the window-profile extensions and presentation formats. Returns
+   whether the surface offers a usable BGRA8/RGBA8 sRGB format. */
+vkr_internal bool8_t vkr_vk_report_candidate_presentation(
+    const VkrVulkanDevice *device, const VkrVulkanCandidate *candidate,
+    VkrVulkanCandidateReport *report,
+    const VkExtensionProperties *instance_extensions,
+    uint32_t instance_extension_count) {
+  const char *window_instance_extensions[] = {
+      VK_KHR_SURFACE_EXTENSION_NAME,
+#if defined(PLATFORM_WINDOWS)
+      VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+#endif
+  };
+  for (uint32_t i = 0; i < ArrayCount(window_instance_extensions); ++i) {
+    const bool8_t present =
+        vkr_vk_extension_present(instance_extensions, instance_extension_count,
+                                 window_instance_extensions[i]);
+    vkr_vk_report_add(
+        report, VKR_VULKAN_REPORT_INSTANCE_EXTENSION,
+        window_instance_extensions[i], device->config.windowed, present,
+        device->config.windowed ? "window floor" : "offscreen omitted");
+  }
+  vkr_vk_report_add(
+      report, VKR_VULKAN_REPORT_INSTANCE_EXTENSION,
+      VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, false_v,
+      vkr_vk_extension_present(instance_extensions, instance_extension_count,
+                               VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME),
+      "optional extended-linear presentation");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
+                    VK_KHR_SWAPCHAIN_EXTENSION_NAME, device->config.windowed,
+                    candidate->has_swapchain_extension,
+                    device->config.windowed ? "window floor"
+                                            : "offscreen omitted");
+  const bool8_t encoded_present_supported =
+      vkr_vk_query_encoded_present_support(device, candidate);
   vkr_vk_report_add(
       report, VKR_VULKAN_REPORT_FORMAT, "BGRA8/RGBA8 sRGB presentation target",
       device->config.windowed, encoded_present_supported,
@@ -854,6 +913,27 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
                             candidate->features.swapchain_maintenance1
                         ? "optional present-fence path enabled"
                         : "reacquisition completion path");
+  return encoded_present_supported;
+}
+
+vkr_internal void
+vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
+                       const VkExtensionProperties *instance_extensions,
+                       uint32_t instance_extension_count) {
+  VkrVulkanCandidate *candidate = &device->candidates[candidate_index];
+  VkrVulkanCandidateReport *report =
+      &device->profile.candidates[candidate_index];
+  vkr_vk_query_candidate_properties(candidate, report);
+  vkr_vk_query_candidate_features(candidate);
+  vkr_vk_query_candidate_extensions(device, candidate);
+  vkr_vk_report_candidate_features(device, candidate, report);
+  vkr_vk_select_candidate_queue(device, candidate, report);
+  vkr_vk_report_candidate_limits(device, candidate, report);
+  vkr_vk_report_candidate_formats(candidate, report);
+  const bool8_t encoded_present_supported =
+      vkr_vk_report_candidate_presentation(device, candidate, report,
+                                           instance_extensions,
+                                           instance_extension_count);
 
   candidate->common_viable = vkr_vk_report_passes(report);
   candidate->window_viable = candidate->common_viable &&

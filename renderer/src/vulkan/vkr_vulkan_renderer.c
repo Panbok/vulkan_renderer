@@ -891,22 +891,9 @@ vkr_internal bool8_t vkr_vk_fail_after_submit(VkrVulkanRenderer *renderer,
   return false_v;
 }
 
-bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
-                                          const VkrPreparedFrame *packet,
-                                          VkrVulkanResult *out_result) {
-  renderer->submit_error = VKR_RENDERER_ERROR_NONE;
-  vkr_render_graph_prepare_frame(
-      packet, &renderer->bloom_config, &renderer->gtao_config,
-      &renderer->prepared_frame, &renderer->gtao_params);
-  // A queued subsurface profile bank becomes graph-visible only after its
-  // initialization submission completes. Earlier frames still advance
-  // publication without scheduling the feature.
-  renderer->prepared_frame.subsurface_enabled &=
-      vkr_vk_packet_subsurface_ready(renderer, packet);
-  renderer->prepared_frame.hzb_build_enabled &= renderer->config.hzb_enabled;
-  renderer->prepared_frame.transmission_compact_enabled =
-      renderer->config.transmission_compact_enabled &&
-      renderer->prepared_frame.transmission_pending;
+vkr_internal void
+vkr_vk_reserve_picking_request(VkrVulkanRenderer *renderer,
+                               const VkrPreparedFrame *packet) {
   VkrVulkanFrameSlot *picking_slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   if (packet->input.picking && packet->input.picking->pending) {
@@ -919,35 +906,13 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     picking_slot->picking_y = packet->input.picking->y;
     picking_slot->picking_readback_pending = true_v;
   }
-  if (!vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame)) {
-    vkr_vulkan_renderer_cancel_frame(renderer);
-    return false_v;
-  }
-  vkr_rg_set_packet(renderer->graph, packet);
-  /* Installed before compilation, because seeding a retained subresource reads
-     through this provider. */
-  vkr_vk_install_retained_provider(renderer);
-#if VKR_METRICS_ENABLED
-  const float64_t graph_build_start = vkr_platform_get_absolute_time();
-#endif
-  if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
-                              &renderer->prepared_frame)) {
-    log_error("Vulkan failed to build the authored render graph");
-    vkr_vulkan_renderer_cancel_frame(renderer);
-    return false_v;
-  }
-#if VKR_METRICS_ENABLED
-  const uint64_t graph_build_ns = vkr_metrics_elapsed_ns(graph_build_start);
-  const float64_t graph_compile_start = vkr_platform_get_absolute_time();
-#endif
-  if (!vkr_rg_compile_schedule(renderer->graph)) {
-    log_error("Vulkan failed to compile the authored render graph");
-    vkr_vulkan_renderer_cancel_frame(renderer);
-    return false_v;
-  }
-#if VKR_METRICS_ENABLED
-  const uint64_t graph_compile_ns = vkr_metrics_elapsed_ns(graph_compile_start);
-#endif
+}
+
+/* Checks the compiled graph against the configured capacity, validates it,
+   and realizes its resources and history output. The caller cancels the
+   frame on failure. */
+vkr_internal bool8_t vkr_vk_realize_compiled_graph(
+    VkrVulkanRenderer *renderer, const VkrPreparedFrame *packet) {
   if (renderer->graph->images.length > renderer->config.max_graph_images ||
       renderer->graph->buffers.length > renderer->config.max_graph_buffers ||
       renderer->graph->passes.length > renderer->config.max_graph_passes) {
@@ -959,42 +924,34 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
               renderer->config.max_graph_buffers,
               (unsigned long long)renderer->graph->passes.length,
               renderer->config.max_graph_passes);
-    vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
   if (!vkr_vk_validate_graph(renderer)) {
     log_error("Vulkan failed to validate the authored graph");
-    vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
   if (!vkr_vk_prepare_fsr31_context(renderer)) {
-    vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
   if (!vkr_vk_realize_graph_images(renderer)) {
     log_error("Vulkan failed to realize authored graph images");
-    vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
   if (!vkr_vk_realize_graph_buffers(renderer)) {
     log_error("Vulkan failed to realize authored graph buffers");
-    vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
   if ((packet->scene_rendering ||
        (packet->input.world && packet->input.world->skinning_count)) &&
       !vkr_vk_select_history_output(renderer)) {
     log_error("Vulkan failed to select a completion-safe history output");
-    vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
-  VkrVulkanFrameSlot *slot =
-      &renderer->frame_slots[renderer->active_frame_slot];
-  if (!vkr_vk_plan_capture(renderer, packet, slot)) {
-    log_error("Vulkan failed to plan the requested capture batch");
-    vkr_vulkan_renderer_cancel_frame(renderer);
-    return false_v;
-  }
+  return true_v;
+}
+
+vkr_internal void vkr_vk_reset_slot_requests(VkrVulkanRenderer *renderer,
+                                             VkrVulkanFrameSlot *slot) {
   slot->timing_requested = renderer->prepared_frame.timing_enabled;
   slot->timing_collected = !slot->timing_requested;
   slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;
@@ -1010,30 +967,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   slot->transmission_coverage_extent[1] =
       renderer->prepared_frame.viewport_height;
   slot->timestamp_query_count = 0u;
-  if (!vkr_vk_build_command_buffer(renderer, slot)) {
-    log_error("Vulkan command recording failed");
-    if (slot->capture_request_id)
-      (void)vkr_capture_ring_fail(&renderer->capture_ring,
-                                  slot->capture_request_id,
-                                  VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
-    vkr_vulkan_renderer_cancel_frame(renderer);
-    return false_v;
-  }
-#if VKR_METRICS_ENABLED
-  slot->packet_build.graph_build_ns = graph_build_ns;
-  slot->packet_build.graph_compile_ns = graph_compile_ns;
-  slot->packet_build.graph_timing_valid = true_v;
-#endif
-  if (!vkr_vk_flush_publication_ranges(renderer)) {
-    log_error("Vulkan publication range flush failed");
-    if (slot->capture_request_id)
-      (void)vkr_capture_ring_fail(&renderer->capture_ring,
-                                  slot->capture_request_id,
-                                  VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-    vkr_vulkan_renderer_cancel_frame(renderer);
-    return false_v;
-  }
-  const uint64_t signal_value = renderer->submit_value + 1u;
+}
+
+vkr_internal void vkr_vk_set_shadow_depth_source(VkrVulkanFrameSlot *slot,
+                                                 const VkrPreparedFrame *packet,
+                                                 uint64_t signal_value) {
   if (slot->sdsm_requested) {
     const float32_t a = packet->input.globals.projection.elements[10];
     const float32_t b = packet->input.globals.projection.elements[14];
@@ -1049,6 +987,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
         .submit_value = signal_value,
     };
   }
+}
+
+vkr_internal VkResult vkr_vk_queue_submit_frame(VkrVulkanRenderer *renderer,
+                                                const VkrVulkanFrameSlot *slot,
+                                                uint64_t signal_value) {
   VkCommandBufferSubmitInfo command_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
       .commandBuffer = slot->command_buffer,
@@ -1087,27 +1030,36 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       .signalSemaphoreInfoCount = signal_count,
       .pSignalSemaphoreInfos = signals,
   };
-  const VkResult submit_result =
-      vkQueueSubmit2(vkr_vulkan_device_queue(renderer->device), 1u,
-                     &submit_info, VK_NULL_HANDLE);
-  if (submit_result != VK_SUCCESS) {
-    log_error("Vulkan queue submission failed (result=%d)", (int)submit_result);
-    vkr_vk_cancel_fsr31(renderer);
-    vkr_vk_fail_picking_readback(renderer, slot);
-    vkr_vk_abandon_ibl_bake_recordings(renderer);
-    vkr_vk_discard_unsubmitted_asset_uses(renderer);
-    slot->sh_coefficients_clear_recorded = false_v;
-    if (slot->capture_request_id)
-      (void)vkr_capture_ring_fail(&renderer->capture_ring,
-                                  slot->capture_request_id,
-                                  VKR_RENDERER_ERROR_SUBMISSION_FAILED);
-    vkr_gpu_submit_ring_cancel(&renderer->command_ring,
-                               renderer->active_command_slice);
-    renderer->frame_active = false_v;
-    renderer->terminal_failure = true_v;
-    vkr_rg_end_frame(renderer->graph);
-    return false_v;
-  }
+  return vkQueueSubmit2(vkr_vulkan_device_queue(renderer->device), 1u,
+                        &submit_info, VK_NULL_HANDLE);
+}
+
+/* Resolves the recorded uses of a frame whose queue submission failed and
+   leaves the renderer terminally failed. */
+vkr_internal void vkr_vk_unwind_rejected_submission(VkrVulkanRenderer *renderer,
+                                                    VkrVulkanFrameSlot *slot) {
+  vkr_vk_cancel_fsr31(renderer);
+  vkr_vk_fail_picking_readback(renderer, slot);
+  vkr_vk_abandon_ibl_bake_recordings(renderer);
+  vkr_vk_discard_unsubmitted_asset_uses(renderer);
+  slot->sh_coefficients_clear_recorded = false_v;
+  if (slot->capture_request_id)
+    (void)vkr_capture_ring_fail(&renderer->capture_ring,
+                                slot->capture_request_id,
+                                VKR_RENDERER_ERROR_SUBMISSION_FAILED);
+  vkr_gpu_submit_ring_cancel(&renderer->command_ring,
+                             renderer->active_command_slice);
+  renderer->frame_active = false_v;
+  renderer->terminal_failure = true_v;
+  vkr_rg_end_frame(renderer->graph);
+}
+
+/* Commits the state the accepted submission proves. A false return has
+   already ended the frame through vkr_vk_fail_after_submit. */
+vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
+                                              const VkrPreparedFrame *packet,
+                                              VkrVulkanFrameSlot *slot,
+                                              uint64_t signal_value) {
   renderer->submit_value = signal_value;
   if (slot->picking_readback_pending)
     slot->picking_submit_value = signal_value;
@@ -1163,6 +1115,14 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     vkr_ibl_sh_pool_reference(&renderer->sh_pool, slot->sh_referenced_slots[i],
                               signal_value);
   }
+  return true_v;
+}
+
+/* Publishes the IBL bakes this submission recorded and compacts the pending
+   list. A false return has already ended the frame through
+   vkr_vk_fail_after_submit. */
+vkr_internal bool8_t vkr_vk_commit_ibl_bake_recordings(
+    VkrVulkanRenderer *renderer, uint64_t signal_value) {
   uint32_t pending_ibl_write = 0u;
   const uint32_t pending_ibl_count = renderer->pending_ibl_bake_count;
   for (uint32_t i = 0u; i < pending_ibl_count; ++i) {
@@ -1249,6 +1209,148 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     MemZero(&renderer->pending_ibl_bakes[i],
             sizeof(renderer->pending_ibl_bakes[i]));
   renderer->pending_ibl_bake_count = pending_ibl_write;
+  return true_v;
+}
+
+/* Presents the submitted window image. A false return has already ended the
+   frame through vkr_vk_fail_after_submit. */
+vkr_internal bool8_t vkr_vk_present_submitted_image(VkrVulkanRenderer *renderer,
+                                                    VkrVulkanFrameSlot *slot,
+                                                    uint64_t signal_value) {
+  VkrVulkanWindowTarget *window = &renderer->window_target;
+  const uint32_t image_index = slot->image_index;
+  window->image_last_submit_value[image_index] = signal_value;
+  const VkSwapchainPresentFenceInfoKHR present_fence_info = {
+      .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR,
+      .swapchainCount = 1u,
+      .pFences = &window->present_complete[image_index],
+  };
+  VkPresentInfoKHR present_info = {
+      .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+      .pNext =
+          window->present_complete[image_index] ? &present_fence_info : NULL,
+      .waitSemaphoreCount = 1u,
+      .pWaitSemaphores = &window->render_complete[image_index],
+      .swapchainCount = 1u,
+      .pSwapchains = &window->swapchain,
+      .pImageIndices = &image_index,
+  };
+  const VkResult present_result = vkQueuePresentKHR(
+      vkr_vulkan_device_queue(renderer->device), &present_info);
+  const VkrVulkanPresentResult disposition =
+      vkr_vulkan_present_result_classify(present_result);
+  if (disposition.present_completion_tracking_required) {
+    window->image_presented[image_index] = true_v;
+    window->present_fence_pending[image_index] =
+        window->present_complete[image_index] != VK_NULL_HANDLE;
+  }
+  if (disposition.target_recreate_required)
+    renderer->target_dirty = true_v;
+  if (disposition.acquired_image_recovery_required ||
+      !disposition.enqueue_state_known || disposition.device_lost) {
+    return vkr_vk_fail_after_submit(
+        renderer, "presentation completion became unprovable");
+  }
+  slot->acquired_window_image = false_v;
+  return true_v;
+}
+
+bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
+                                          const VkrPreparedFrame *packet,
+                                          VkrVulkanResult *out_result) {
+  renderer->submit_error = VKR_RENDERER_ERROR_NONE;
+  vkr_render_graph_prepare_frame(
+      packet, &renderer->bloom_config, &renderer->gtao_config,
+      &renderer->prepared_frame, &renderer->gtao_params);
+  // A queued subsurface profile bank becomes graph-visible only after its
+  // initialization submission completes. Earlier frames still advance
+  // publication without scheduling the feature.
+  renderer->prepared_frame.subsurface_enabled &=
+      vkr_vk_packet_subsurface_ready(renderer, packet);
+  renderer->prepared_frame.hzb_build_enabled &= renderer->config.hzb_enabled;
+  renderer->prepared_frame.transmission_compact_enabled =
+      renderer->config.transmission_compact_enabled &&
+      renderer->prepared_frame.transmission_pending;
+  vkr_vk_reserve_picking_request(renderer, packet);
+  if (!vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame)) {
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+  vkr_rg_set_packet(renderer->graph, packet);
+  /* Installed before compilation, because seeding a retained subresource reads
+     through this provider. */
+  vkr_vk_install_retained_provider(renderer);
+#if VKR_METRICS_ENABLED
+  const float64_t graph_build_start = vkr_platform_get_absolute_time();
+#endif
+  if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
+                              &renderer->prepared_frame)) {
+    log_error("Vulkan failed to build the authored render graph");
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+#if VKR_METRICS_ENABLED
+  const uint64_t graph_build_ns = vkr_metrics_elapsed_ns(graph_build_start);
+  const float64_t graph_compile_start = vkr_platform_get_absolute_time();
+#endif
+  if (!vkr_rg_compile_schedule(renderer->graph)) {
+    log_error("Vulkan failed to compile the authored render graph");
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+#if VKR_METRICS_ENABLED
+  const uint64_t graph_compile_ns = vkr_metrics_elapsed_ns(graph_compile_start);
+#endif
+  if (!vkr_vk_realize_compiled_graph(renderer, packet)) {
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!vkr_vk_plan_capture(renderer, packet, slot)) {
+    log_error("Vulkan failed to plan the requested capture batch");
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+  vkr_vk_reset_slot_requests(renderer, slot);
+  if (!vkr_vk_build_command_buffer(renderer, slot)) {
+    log_error("Vulkan command recording failed");
+    if (slot->capture_request_id)
+      (void)vkr_capture_ring_fail(&renderer->capture_ring,
+                                  slot->capture_request_id,
+                                  VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+#if VKR_METRICS_ENABLED
+  slot->packet_build.graph_build_ns = graph_build_ns;
+  slot->packet_build.graph_compile_ns = graph_compile_ns;
+  slot->packet_build.graph_timing_valid = true_v;
+#endif
+  if (!vkr_vk_flush_publication_ranges(renderer)) {
+    log_error("Vulkan publication range flush failed");
+    if (slot->capture_request_id)
+      (void)vkr_capture_ring_fail(&renderer->capture_ring,
+                                  slot->capture_request_id,
+                                  VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+  const uint64_t signal_value = renderer->submit_value + 1u;
+  vkr_vk_set_shadow_depth_source(slot, packet, signal_value);
+  const VkResult submit_result =
+      vkr_vk_queue_submit_frame(renderer, slot, signal_value);
+  if (submit_result != VK_SUCCESS) {
+    log_error("Vulkan queue submission failed (result=%d)", (int)submit_result);
+    vkr_vk_unwind_rejected_submission(renderer, slot);
+    return false_v;
+  }
+  if (!vkr_vk_commit_submission(renderer, packet, slot, signal_value)) {
+    return false_v;
+  }
+  if (!vkr_vk_commit_ibl_bake_recordings(renderer, signal_value)) {
+    return false_v;
+  }
   if (slot->capture_request_id &&
       !vkr_capture_ring_submit(&renderer->capture_ring,
                                slot->capture_request_id, signal_value,
@@ -1263,42 +1365,9 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   renderer->targets.images[slot->image_index].layout =
       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   renderer->sentinel_image.layout = VK_IMAGE_LAYOUT_GENERAL;
-  if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
-    VkrVulkanWindowTarget *window = &renderer->window_target;
-    const uint32_t image_index = slot->image_index;
-    window->image_last_submit_value[image_index] = signal_value;
-    const VkSwapchainPresentFenceInfoKHR present_fence_info = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR,
-        .swapchainCount = 1u,
-        .pFences = &window->present_complete[image_index],
-    };
-    VkPresentInfoKHR present_info = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .pNext =
-            window->present_complete[image_index] ? &present_fence_info : NULL,
-        .waitSemaphoreCount = 1u,
-        .pWaitSemaphores = &window->render_complete[image_index],
-        .swapchainCount = 1u,
-        .pSwapchains = &window->swapchain,
-        .pImageIndices = &image_index,
-    };
-    const VkResult present_result = vkQueuePresentKHR(
-        vkr_vulkan_device_queue(renderer->device), &present_info);
-    const VkrVulkanPresentResult disposition =
-        vkr_vulkan_present_result_classify(present_result);
-    if (disposition.present_completion_tracking_required) {
-      window->image_presented[image_index] = true_v;
-      window->present_fence_pending[image_index] =
-          window->present_complete[image_index] != VK_NULL_HANDLE;
-    }
-    if (disposition.target_recreate_required)
-      renderer->target_dirty = true_v;
-    if (disposition.acquired_image_recovery_required ||
-        !disposition.enqueue_state_known || disposition.device_lost) {
-      return vkr_vk_fail_after_submit(
-          renderer, "presentation completion became unprovable");
-    }
-    slot->acquired_window_image = false_v;
+  if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN &&
+      !vkr_vk_present_submitted_image(renderer, slot, signal_value)) {
+    return false_v;
   }
   renderer->sentinel_uploaded = true_v;
   renderer->frame_active = false_v;
@@ -1861,158 +1930,131 @@ vkr_internal void vkr_vk_drain_asset_publications(VkrVulkanRenderer *renderer) {
   vkr_vk_collect_asset_publications(renderer, completed);
 }
 
-void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
-  if (!renderer) {
-    return;
+vkr_internal void
+vkr_vk_destroy_window_presentation(VkrVulkanRenderer *renderer,
+                                   VkDevice device) {
+  for (uint32_t i = 0; i < ArrayCount(renderer->retired_window_targets); ++i) {
+    if (renderer->retired_window_targets[i].occupied) {
+      (void)vkr_vk_window_presents_complete(
+          renderer, &renderer->retired_window_targets[i].target, true_v);
+      vkr_vk_destroy_window_target(renderer,
+                                   &renderer->retired_window_targets[i].target);
+    }
   }
-  VkrAllocator *allocator = renderer->allocator;
-  VkDevice device = renderer->device
-                        ? vkr_vulkan_device_handle(renderer->device)
-                        : VK_NULL_HANDLE;
-  if (device) {
-    vkr_vulkan_renderer_wait_idle(renderer);
-#if VKR_HAS_FSR3_UPSCALER
-    vkr_vulkan_fsr_sdk_destroy(renderer->fsr31);
-#endif
-    renderer->fsr31 = NULL;
-    if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
-      (void)vkDeviceWaitIdle(device);
-    vkr_vk_discard_ibl_bakes(renderer);
-    vkr_vk_discard_buffer_initializations(renderer);
-    vkr_vk_discard_texture_initializations(renderer);
-    vkr_vk_drain_asset_publications(renderer);
-    for (uint32_t i = 0; i < ArrayCount(renderer->retired_window_targets);
-         ++i) {
-      if (renderer->retired_window_targets[i].occupied) {
-        (void)vkr_vk_window_presents_complete(
-            renderer, &renderer->retired_window_targets[i].target, true_v);
-        vkr_vk_destroy_window_target(
-            renderer, &renderer->retired_window_targets[i].target);
-      }
-    }
-    (void)vkr_vk_window_presents_complete(renderer, &renderer->window_target,
-                                          true_v);
-    vkr_vk_destroy_window_target(renderer, &renderer->window_target);
-    for (uint32_t i = 0; i < ArrayCount(renderer->acquire_semaphores); ++i) {
-      if (renderer->acquire_semaphores[i])
-        vkDestroySemaphore(device, renderer->acquire_semaphores[i], NULL);
-    }
-    for (uint32_t i = 0; i < ArrayCount(renderer->retired_targets); ++i) {
-      if (renderer->retired_targets[i].occupied) {
-        vkr_vk_destroy_target_set(renderer,
-                                  &renderer->retired_targets[i].targets);
-      }
-    }
-    for (uint32_t i = 0; i < renderer->config.max_graph_images; ++i) {
-      if (renderer->graph_images && renderer->graph_images[i].live)
-        vkr_vk_destroy_graph_image(renderer, &renderer->graph_images[i]);
-    }
-    for (uint32_t i = 0; i < renderer->config.max_graph_buffers; ++i) {
-      if (renderer->graph_buffers && renderer->graph_buffers[i].live)
-        vkr_vk_destroy_graph_buffer(renderer, &renderer->graph_buffers[i]);
-    }
-    vkr_vk_destroy_target_set(renderer, &renderer->targets);
-    vkr_vk_destroy_frame_slots(renderer);
-    for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_PIPELINE_COUNT; ++i) {
-      if (renderer->packet_pipelines[i])
-        vkDestroyPipeline(device, renderer->packet_pipelines[i], NULL);
-    }
-    for (uint32_t i = 0u; i < VKR_VULKAN_DEFERRED_PIPELINE_COUNT; ++i) {
-      if (renderer->deferred_pipelines[i])
-        vkDestroyPipeline(device, renderer->deferred_pipelines[i], NULL);
-      if (renderer->deferred_shaders[i])
-        vkDestroyShaderModule(device, renderer->deferred_shaders[i], NULL);
-    }
-    for (uint32_t i = 0u; i < VKR_VULKAN_IBL_PIPELINE_COUNT; ++i) {
-      if (renderer->ibl_pipelines[i])
-        vkDestroyPipeline(device, renderer->ibl_pipelines[i], NULL);
-    }
-    for (uint32_t i = 0u; i < VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT; ++i) {
-      if (renderer->atmosphere_pipelines[i])
-        vkDestroyPipeline(device, renderer->atmosphere_pipelines[i], NULL);
-    }
-    if (renderer->pipeline_layout) {
-      vkDestroyPipelineLayout(device, renderer->pipeline_layout, NULL);
-    }
-    for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_SHADER_COUNT; ++i) {
-      if (renderer->packet_shaders[i])
-        vkDestroyShaderModule(device, renderer->packet_shaders[i], NULL);
-    }
-    for (uint32_t i = 0u; i < VKR_VULKAN_IBL_PIPELINE_COUNT; ++i) {
-      if (renderer->ibl_shaders[i])
-        vkDestroyShaderModule(device, renderer->ibl_shaders[i], NULL);
-    }
-    for (uint32_t i = 0u; i < VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT; ++i) {
-      if (renderer->atmosphere_shaders[i])
-        vkDestroyShaderModule(device, renderer->atmosphere_shaders[i], NULL);
-    }
-    if (renderer->sentinel_sampler) {
-      vkDestroySampler(device, renderer->sentinel_sampler, NULL);
-    }
-    if (renderer->transmission_sampler) {
-      vkDestroySampler(device, renderer->transmission_sampler, NULL);
-    }
-    if (renderer->shadow_comparison_sampler) {
-      vkDestroySampler(device, renderer->shadow_comparison_sampler, NULL);
-    }
-    vkr_vk_retire_dfg_descriptor_slots(renderer);
-    vkr_vk_retire_ltc_descriptor_slots(renderer);
-    vkr_vk_retire_sheen_descriptor_slots(renderer);
-    vkr_vk_retire_anisotropy_descriptor_slots(renderer);
-    vkr_vk_retire_atmosphere_descriptor_slots(renderer);
-    if (renderer->dfg_sampler)
-      vkDestroySampler(device, renderer->dfg_sampler, NULL);
-    for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
-      if (renderer->published_samplers &&
-          renderer->published_samplers[i].sampler)
-        vkDestroySampler(device, renderer->published_samplers[i].sampler, NULL);
-    }
-    for (uint32_t i = 0; i < renderer->retired_staging_buffer_capacity; ++i) {
-      if (renderer->retired_staging_buffers &&
-          renderer->retired_staging_buffers[i].occupied)
-        vkr_vk_destroy_buffer(renderer,
-                              &renderer->retired_staging_buffers[i].buffer);
-    }
-    VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
-    for (uint32_t i = 0u; i < ArrayCount(mega->retired); ++i) {
-      if (!mega->retired[i].occupied)
-        continue;
-      vkr_vk_destroy_buffer(renderer, &mega->retired[i].indices);
-      vkr_vk_destroy_buffer(renderer, &mega->retired[i].vertices);
-    }
-    vkr_vk_destroy_buffer(renderer, &mega->copy_source_indices);
-    vkr_vk_destroy_buffer(renderer, &mega->copy_source_vertices);
-    vkr_vk_destroy_buffer(renderer, &mega->indices);
-    vkr_vk_destroy_buffer(renderer, &mega->vertices);
-    *mega = (VkrVulkanGeometryMegabuffer){0};
-    vkr_vk_destroy_buffer(renderer, &renderer->dfg_upload);
-    vkr_vk_destroy_image(renderer, &renderer->dfg_image);
-    vkr_vk_destroy_buffer(renderer, &renderer->ltc_upload);
-    for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table)
-      vkr_vk_destroy_image(renderer, &renderer->ltc_images[table]);
-    vkr_vk_destroy_buffer(renderer, &renderer->sheen_upload);
-    vkr_vk_destroy_image(renderer, &renderer->sheen_directional_albedo_image);
-    for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
-      vkr_vk_destroy_image(renderer, &renderer->sheen_ltc_images[table]);
-    vkr_vk_destroy_buffer(renderer, &renderer->anisotropy_upload);
-    for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
-      vkr_vk_destroy_image(renderer, &renderer->anisotropy_images[table]);
-    vkr_vk_destroy_atmosphere_resources(renderer);
-    vkr_vk_destroy_image(renderer, &renderer->sentinel_image);
-    vkr_vk_destroy_buffer(renderer, &renderer->materials);
-    /* The pool has renderer lifetime and is released only here, after the
-       renderer's normal device teardown has drained outstanding readers. */
-    vkr_vk_destroy_buffer(renderer, &renderer->sh_coefficients);
-    vkr_vk_destroy_buffer(renderer, &renderer->upload);
-    vkr_vk_destroy_buffer(renderer, &renderer->sampler_descriptors);
-    vkr_vk_destroy_buffer(renderer, &renderer->resource_descriptors);
-    vkr_vulkan_memory_pool_destroy(renderer->memory_pool);
-    renderer->memory_pool = NULL;
-    if (renderer->timeline) {
-      vkDestroySemaphore(device, renderer->timeline, NULL);
-    }
-    vkr_vk_pipeline_cache_shutdown(renderer);
+  (void)vkr_vk_window_presents_complete(renderer, &renderer->window_target,
+                                        true_v);
+  vkr_vk_destroy_window_target(renderer, &renderer->window_target);
+  for (uint32_t i = 0; i < ArrayCount(renderer->acquire_semaphores); ++i) {
+    if (renderer->acquire_semaphores[i])
+      vkDestroySemaphore(device, renderer->acquire_semaphores[i], NULL);
   }
+}
+
+/* Destroys retired target sets, live graph images and buffers, then the
+   current target set. */
+vkr_internal void vkr_vk_destroy_render_targets(VkrVulkanRenderer *renderer) {
+  for (uint32_t i = 0; i < ArrayCount(renderer->retired_targets); ++i) {
+    if (renderer->retired_targets[i].occupied) {
+      vkr_vk_destroy_target_set(renderer,
+                                &renderer->retired_targets[i].targets);
+    }
+  }
+  for (uint32_t i = 0; i < renderer->config.max_graph_images; ++i) {
+    if (renderer->graph_images && renderer->graph_images[i].live)
+      vkr_vk_destroy_graph_image(renderer, &renderer->graph_images[i]);
+  }
+  for (uint32_t i = 0; i < renderer->config.max_graph_buffers; ++i) {
+    if (renderer->graph_buffers && renderer->graph_buffers[i].live)
+      vkr_vk_destroy_graph_buffer(renderer, &renderer->graph_buffers[i]);
+  }
+  vkr_vk_destroy_target_set(renderer, &renderer->targets);
+}
+
+vkr_internal void vkr_vk_destroy_pipelines(VkrVulkanRenderer *renderer,
+                                           VkDevice device) {
+  for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_PIPELINE_COUNT; ++i) {
+    if (renderer->packet_pipelines[i])
+      vkDestroyPipeline(device, renderer->packet_pipelines[i], NULL);
+  }
+  for (uint32_t i = 0u; i < VKR_VULKAN_DEFERRED_PIPELINE_COUNT; ++i) {
+    if (renderer->deferred_pipelines[i])
+      vkDestroyPipeline(device, renderer->deferred_pipelines[i], NULL);
+    if (renderer->deferred_shaders[i])
+      vkDestroyShaderModule(device, renderer->deferred_shaders[i], NULL);
+  }
+  for (uint32_t i = 0u; i < VKR_VULKAN_IBL_PIPELINE_COUNT; ++i) {
+    if (renderer->ibl_pipelines[i])
+      vkDestroyPipeline(device, renderer->ibl_pipelines[i], NULL);
+  }
+  for (uint32_t i = 0u; i < VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT; ++i) {
+    if (renderer->atmosphere_pipelines[i])
+      vkDestroyPipeline(device, renderer->atmosphere_pipelines[i], NULL);
+  }
+  if (renderer->pipeline_layout) {
+    vkDestroyPipelineLayout(device, renderer->pipeline_layout, NULL);
+  }
+  for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_SHADER_COUNT; ++i) {
+    if (renderer->packet_shaders[i])
+      vkDestroyShaderModule(device, renderer->packet_shaders[i], NULL);
+  }
+  for (uint32_t i = 0u; i < VKR_VULKAN_IBL_PIPELINE_COUNT; ++i) {
+    if (renderer->ibl_shaders[i])
+      vkDestroyShaderModule(device, renderer->ibl_shaders[i], NULL);
+  }
+  for (uint32_t i = 0u; i < VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT; ++i) {
+    if (renderer->atmosphere_shaders[i])
+      vkDestroyShaderModule(device, renderer->atmosphere_shaders[i], NULL);
+  }
+}
+
+vkr_internal void vkr_vk_destroy_fixed_samplers(VkrVulkanRenderer *renderer,
+                                                VkDevice device) {
+  if (renderer->sentinel_sampler) {
+    vkDestroySampler(device, renderer->sentinel_sampler, NULL);
+  }
+  if (renderer->transmission_sampler) {
+    vkDestroySampler(device, renderer->transmission_sampler, NULL);
+  }
+  if (renderer->shadow_comparison_sampler) {
+    vkDestroySampler(device, renderer->shadow_comparison_sampler, NULL);
+  }
+}
+
+vkr_internal void
+vkr_vk_destroy_geometry_megabuffer(VkrVulkanRenderer *renderer) {
+  VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  for (uint32_t i = 0u; i < ArrayCount(mega->retired); ++i) {
+    if (!mega->retired[i].occupied)
+      continue;
+    vkr_vk_destroy_buffer(renderer, &mega->retired[i].indices);
+    vkr_vk_destroy_buffer(renderer, &mega->retired[i].vertices);
+  }
+  vkr_vk_destroy_buffer(renderer, &mega->copy_source_indices);
+  vkr_vk_destroy_buffer(renderer, &mega->copy_source_vertices);
+  vkr_vk_destroy_buffer(renderer, &mega->indices);
+  vkr_vk_destroy_buffer(renderer, &mega->vertices);
+  *mega = (VkrVulkanGeometryMegabuffer){0};
+}
+
+vkr_internal void vkr_vk_destroy_lookup_resources(VkrVulkanRenderer *renderer) {
+  vkr_vk_destroy_buffer(renderer, &renderer->dfg_upload);
+  vkr_vk_destroy_image(renderer, &renderer->dfg_image);
+  vkr_vk_destroy_buffer(renderer, &renderer->ltc_upload);
+  for (uint32_t table = 0u; table < VKR_LTC_LUT_TABLE_COUNT; ++table)
+    vkr_vk_destroy_image(renderer, &renderer->ltc_images[table]);
+  vkr_vk_destroy_buffer(renderer, &renderer->sheen_upload);
+  vkr_vk_destroy_image(renderer, &renderer->sheen_directional_albedo_image);
+  for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table)
+    vkr_vk_destroy_image(renderer, &renderer->sheen_ltc_images[table]);
+  vkr_vk_destroy_buffer(renderer, &renderer->anisotropy_upload);
+  for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
+    vkr_vk_destroy_image(renderer, &renderer->anisotropy_images[table]);
+}
+
+/* Releases what vkr_vk_create_descriptor_slot_tables allocated. */
+vkr_internal void
+vkr_vk_free_descriptor_slot_tables(VkrVulkanRenderer *renderer,
+                                   VkrAllocator *allocator) {
   vkr_geometry_ranges_destroy(&renderer->geometry_ranges);
   if (renderer->descriptor_scratch) {
     vkr_allocator_free(allocator, renderer->descriptor_scratch,
@@ -2094,9 +2136,10 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
                        renderer->sampled_image_slot_storage_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
-  if (renderer->capture_storage_memory.base_memory) {
-    vkr_dmemory_destroy(&renderer->capture_storage_memory);
-  }
+}
+
+vkr_internal void vkr_vk_destroy_graph_source(VkrVulkanRenderer *renderer,
+                                              VkrAllocator *allocator) {
   if (renderer->graph_images) {
     vkr_allocator_free(allocator, renderer->graph_images,
                        renderer->graph_images_size,
@@ -2111,6 +2154,74 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
   arena_destroy(renderer->graph_frame_arena);
   vkr_rg_json_destroy(&renderer->json_graph);
   vkr_rg_executor_registry_destroy(&renderer->executors);
+}
+
+void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
+  if (!renderer) {
+    return;
+  }
+  VkrAllocator *allocator = renderer->allocator;
+  VkDevice device = renderer->device
+                        ? vkr_vulkan_device_handle(renderer->device)
+                        : VK_NULL_HANDLE;
+  if (device) {
+    vkr_vulkan_renderer_wait_idle(renderer);
+#if VKR_HAS_FSR3_UPSCALER
+    vkr_vulkan_fsr_sdk_destroy(renderer->fsr31);
+#endif
+    renderer->fsr31 = NULL;
+    if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
+      (void)vkDeviceWaitIdle(device);
+    vkr_vk_discard_ibl_bakes(renderer);
+    vkr_vk_discard_buffer_initializations(renderer);
+    vkr_vk_discard_texture_initializations(renderer);
+    vkr_vk_drain_asset_publications(renderer);
+    vkr_vk_destroy_window_presentation(renderer, device);
+    vkr_vk_destroy_render_targets(renderer);
+    vkr_vk_destroy_frame_slots(renderer);
+    vkr_vk_destroy_pipelines(renderer, device);
+    vkr_vk_destroy_fixed_samplers(renderer, device);
+    vkr_vk_retire_dfg_descriptor_slots(renderer);
+    vkr_vk_retire_ltc_descriptor_slots(renderer);
+    vkr_vk_retire_sheen_descriptor_slots(renderer);
+    vkr_vk_retire_anisotropy_descriptor_slots(renderer);
+    vkr_vk_retire_atmosphere_descriptor_slots(renderer);
+    if (renderer->dfg_sampler)
+      vkDestroySampler(device, renderer->dfg_sampler, NULL);
+    for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
+      if (renderer->published_samplers &&
+          renderer->published_samplers[i].sampler)
+        vkDestroySampler(device, renderer->published_samplers[i].sampler, NULL);
+    }
+    for (uint32_t i = 0; i < renderer->retired_staging_buffer_capacity; ++i) {
+      if (renderer->retired_staging_buffers &&
+          renderer->retired_staging_buffers[i].occupied)
+        vkr_vk_destroy_buffer(renderer,
+                              &renderer->retired_staging_buffers[i].buffer);
+    }
+    vkr_vk_destroy_geometry_megabuffer(renderer);
+    vkr_vk_destroy_lookup_resources(renderer);
+    vkr_vk_destroy_atmosphere_resources(renderer);
+    vkr_vk_destroy_image(renderer, &renderer->sentinel_image);
+    vkr_vk_destroy_buffer(renderer, &renderer->materials);
+    /* The pool has renderer lifetime and is released only here, after the
+       renderer's normal device teardown has drained outstanding readers. */
+    vkr_vk_destroy_buffer(renderer, &renderer->sh_coefficients);
+    vkr_vk_destroy_buffer(renderer, &renderer->upload);
+    vkr_vk_destroy_buffer(renderer, &renderer->sampler_descriptors);
+    vkr_vk_destroy_buffer(renderer, &renderer->resource_descriptors);
+    vkr_vulkan_memory_pool_destroy(renderer->memory_pool);
+    renderer->memory_pool = NULL;
+    if (renderer->timeline) {
+      vkDestroySemaphore(device, renderer->timeline, NULL);
+    }
+    vkr_vk_pipeline_cache_shutdown(renderer);
+  }
+  vkr_vk_free_descriptor_slot_tables(renderer, allocator);
+  if (renderer->capture_storage_memory.base_memory) {
+    vkr_dmemory_destroy(&renderer->capture_storage_memory);
+  }
+  vkr_vk_destroy_graph_source(renderer, allocator);
   vkr_vulkan_device_destroy(renderer->device);
   if (renderer->publication_staging_memory.base_memory)
     vkr_dmemory_destroy(&renderer->publication_staging_memory);

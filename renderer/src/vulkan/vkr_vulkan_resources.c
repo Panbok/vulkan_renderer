@@ -1700,54 +1700,11 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
   return true_v;
 }
 
-bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
-  if (!vkr_geometry_ranges_create(&renderer->geometry_ranges,
-                                  renderer->allocator,
-                                  renderer->config.geometry_capacity))
-    return false_v;
-  const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
-      vkr_vulkan_device_descriptor_properties(renderer->device);
-  const VkrVulkanDescriptorLayout *resource_layout =
-      vkr_vulkan_device_resource_layout(renderer->device);
-  const VkrVulkanDescriptorLayout *sampler_layout =
-      vkr_vulkan_device_sampler_layout(renderer->device);
-  if (!properties->sampledImageDescriptorSize ||
-      !properties->storageImageDescriptorSize ||
-      !properties->samplerDescriptorSize ||
-      properties->sampledImageDescriptorSize > UINT32_MAX ||
-      properties->storageImageDescriptorSize > UINT32_MAX ||
-      properties->samplerDescriptorSize > UINT32_MAX) {
-    log_error("Vulkan descriptor row size is not representable");
-    return false_v;
-  }
-  const VkrGpuSlotTableConfig sampled_config = {
-      .max_slots = renderer->config.sampled_image_capacity,
-      .max_retirements = renderer->config.sampled_image_capacity,
-      .row_size = (uint32_t)properties->sampledImageDescriptorSize,
-  };
-  const VkrGpuSlotTableConfig sampler_config = {
-      .max_slots = renderer->config.sampler_capacity,
-      .max_retirements = renderer->config.sampler_capacity,
-      .row_size = (uint32_t)properties->samplerDescriptorSize,
-  };
-  const VkrGpuSlotTableConfig storage_config = {
-      .max_slots = renderer->config.storage_image_capacity,
-      .max_retirements = renderer->config.storage_image_capacity,
-      .row_size = (uint32_t)properties->storageImageDescriptorSize,
-  };
-  const VkrGpuSlotTableConfig material_config = {
-      .max_slots = renderer->config.material_slot_capacity,
-      .max_retirements = renderer->config.material_slot_capacity,
-      .row_size = sizeof(VkrVulkanMaterialGpuRow),
-  };
-  renderer->sampled_image_slot_storage_size =
-      vkr_gpu_slot_table_storage_requirement(&sampled_config);
-  renderer->sampler_slot_storage_size =
-      vkr_gpu_slot_table_storage_requirement(&sampler_config);
-  renderer->storage_image_slot_storage_size =
-      vkr_gpu_slot_table_storage_requirement(&storage_config);
-  renderer->material_slot_storage_size =
-      vkr_gpu_slot_table_storage_requirement(&material_config);
+/* Sizes the CPU publication records, initialization queues, and descriptor
+   scratch that vkr_vk_allocate_publication_storage allocates. */
+vkr_internal void vkr_vk_size_publication_records(
+    VkrVulkanRenderer *renderer,
+    const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties) {
   renderer->published_geometries_size =
       (uint64_t)renderer->config.geometry_capacity *
       sizeof(*renderer->published_geometries);
@@ -1789,6 +1746,12 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
       (uint32_t)Max(Max(properties->sampledImageDescriptorSize,
                         properties->storageImageDescriptorSize),
                     properties->samplerDescriptorSize);
+}
+
+/* Attempts every allocation before checking any, so a failure leaves the
+   successful ones for renderer teardown to release. */
+vkr_internal bool8_t
+vkr_vk_allocate_publication_storage(VkrVulkanRenderer *renderer) {
   renderer->sampled_image_slot_storage = vkr_allocator_alloc(
       renderer->allocator, renderer->sampled_image_slot_storage_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -1864,6 +1827,61 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
           renderer->pending_buffer_initializations_size);
   MemZero(renderer->retired_staging_buffers,
           renderer->retired_staging_buffers_size);
+  return true_v;
+}
+
+bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
+  if (!vkr_geometry_ranges_create(&renderer->geometry_ranges,
+                                  renderer->allocator,
+                                  renderer->config.geometry_capacity))
+    return false_v;
+  const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
+      vkr_vulkan_device_descriptor_properties(renderer->device);
+  const VkrVulkanDescriptorLayout *resource_layout =
+      vkr_vulkan_device_resource_layout(renderer->device);
+  const VkrVulkanDescriptorLayout *sampler_layout =
+      vkr_vulkan_device_sampler_layout(renderer->device);
+  if (!properties->sampledImageDescriptorSize ||
+      !properties->storageImageDescriptorSize ||
+      !properties->samplerDescriptorSize ||
+      properties->sampledImageDescriptorSize > UINT32_MAX ||
+      properties->storageImageDescriptorSize > UINT32_MAX ||
+      properties->samplerDescriptorSize > UINT32_MAX) {
+    log_error("Vulkan descriptor row size is not representable");
+    return false_v;
+  }
+  const VkrGpuSlotTableConfig sampled_config = {
+      .max_slots = renderer->config.sampled_image_capacity,
+      .max_retirements = renderer->config.sampled_image_capacity,
+      .row_size = (uint32_t)properties->sampledImageDescriptorSize,
+  };
+  const VkrGpuSlotTableConfig sampler_config = {
+      .max_slots = renderer->config.sampler_capacity,
+      .max_retirements = renderer->config.sampler_capacity,
+      .row_size = (uint32_t)properties->samplerDescriptorSize,
+  };
+  const VkrGpuSlotTableConfig storage_config = {
+      .max_slots = renderer->config.storage_image_capacity,
+      .max_retirements = renderer->config.storage_image_capacity,
+      .row_size = (uint32_t)properties->storageImageDescriptorSize,
+  };
+  const VkrGpuSlotTableConfig material_config = {
+      .max_slots = renderer->config.material_slot_capacity,
+      .max_retirements = renderer->config.material_slot_capacity,
+      .row_size = sizeof(VkrVulkanMaterialGpuRow),
+  };
+  renderer->sampled_image_slot_storage_size =
+      vkr_gpu_slot_table_storage_requirement(&sampled_config);
+  renderer->sampler_slot_storage_size =
+      vkr_gpu_slot_table_storage_requirement(&sampler_config);
+  renderer->storage_image_slot_storage_size =
+      vkr_gpu_slot_table_storage_requirement(&storage_config);
+  renderer->material_slot_storage_size =
+      vkr_gpu_slot_table_storage_requirement(&material_config);
+  vkr_vk_size_publication_records(renderer, properties);
+  if (!vkr_vk_allocate_publication_storage(renderer)) {
+    return false_v;
+  }
   return vkr_gpu_slot_table_create(
              &sampled_config, renderer->sampled_image_slot_storage,
              renderer->sampled_image_slot_storage_size,
