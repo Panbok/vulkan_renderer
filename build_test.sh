@@ -5,6 +5,8 @@ set -e # Exit early if any commands fail
 python3 "$(dirname "$0")/tools/checks/check_format.py"
 python3 "$(dirname "$0")/tools/checks/check_path_boundaries.py"
 python3 "$(dirname "$0")/tools/checks/check_path_contract.py"
+python3 "$(dirname "$0")/tools/checks/report_long_functions.py" --quiet \
+  --max-lines 300
 
 # Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
 VKR_BUILD_TARGET=vulkan_renderer_tester VKR_BUILD_LABEL="VKR CPU tests" \
@@ -20,6 +22,11 @@ case "${BUILD_DIR}" in
   /*|[A-Za-z]:/*) ;;
   *) BUILD_DIR="${SCRIPT_DIR}/${BUILD_DIR}" ;;
 esac
+# ADR-015 lets a build compile the metric writers out; keep that
+# configuration compiling without a second full build.
+python3 "${SCRIPT_DIR}/tools/checks/check_metrics_disabled.py" \
+  "${BUILD_DIR}/compile_commands.json"
+
 TEST_BIN="${BUILD_DIR}/tests/vulkan_renderer_tester"
 if [ ! -x "${TEST_BIN}" ]; then
   TEST_BIN="${BUILD_DIR}/tests/Debug/vulkan_renderer_tester"

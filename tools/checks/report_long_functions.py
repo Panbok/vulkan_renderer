@@ -9,7 +9,7 @@ a check for production sources (everything outside `tests/`).
 
 Examples:
   python3 tools/checks/report_long_functions.py --threshold 150
-  python3 tools/checks/report_long_functions.py --max-lines 300
+  python3 tools/checks/report_long_functions.py --quiet --max-lines 300
 """
 
 import argparse
@@ -100,6 +100,8 @@ def main():
                         help='list functions longer than this many lines')
     parser.add_argument('--max-lines', type=int,
                         help='fail if a production function is longer')
+    parser.add_argument('--quiet', action='store_true',
+                        help='print only the summary and any violations')
     args = parser.parse_args()
 
     rows = []
@@ -108,18 +110,23 @@ def main():
             rows.append((length, relative.as_posix(), line, signature))
     rows.sort(reverse=True)
     listed = [row for row in rows if row[0] > args.threshold]
-    print(f'{len(rows)} functions; {len(listed)} longer than '
-          f'{args.threshold} lines')
-    for length, path, line, signature in listed:
-        print(f'{length:5d}  {path}:{line}  {signature}')
+    if not args.quiet:
+        print(f'{len(rows)} functions; {len(listed)} longer than '
+              f'{args.threshold} lines')
+        for length, path, line, signature in listed:
+            print(f'{length:5d}  {path}:{line}  {signature}')
     if args.max_lines is None:
         return 0
     violations = [row for row in rows
                   if row[0] > args.max_lines and not row[1].startswith('tests/')]
     if violations:
         print(f'{len(violations)} production functions exceed '
-              f'{args.max_lines} lines')
+              f'{args.max_lines} lines:')
+        for length, path, line, signature in violations:
+            print(f'{length:5d}  {path}:{line}  {signature}')
         return 1
+    print(f'report_long_functions: {len(rows)} functions; no production '
+          f'function exceeds {args.max_lines} lines')
     return 0
 
 
