@@ -348,18 +348,8 @@ typedef enum VkrInputModifier {
   VKR_INPUT_MOD_SUPER = 1u << 3,
 } VkrInputModifier;
 
-// TODO(v2): Multi-device input design
-// Currently, all raw input devices contributing to a window (mouse, keyboard,
-// any connected gamepads) are merged into a single `InputState` owned by the
-// window. This means multiple devices share the same state. In the future,
-// consider one of the following approaches:
-//  - Option A: Maintain a distinct `InputState` per physical input device
-//    (e.g., `InputStateKeyboard`, `InputStateMouse`, `InputStateGamepad[N]`),
-//    and expose a higher-level aggregator for per-window queries.
-//  - Option B: Extend `InputState` to track multiple devices internally
-//    (e.g., arrays/maps of device states keyed by device id/type), and add an
-//    API to query by device and to aggregate across devices when needed.
-// Not implementing now; this is a tracked future enhancement.
+// A window owns one `InputState`. Every keyboard and mouse feed its key and
+// pointer state, and all connected gamepads share its gamepad buttons and axes.
 
 /* Optional synchronous gameplay observer. Runs on the input producer's owning
  * thread before asynchronous EventManager delivery. Do not reenter input or
