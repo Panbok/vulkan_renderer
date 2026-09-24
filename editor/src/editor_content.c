@@ -1304,41 +1304,57 @@ static void content_sources(VkrEditorContent *content, VkrUiSystem *ui,
                     &content->source_scrollbar);
 }
 
-void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
-                              VkrUiRect rect, VkrFontHandle heading) {
-  if (!content || !ui || rect.width <= 0 || rect.height <= 0) {
-    return;
+static void content_build_navigation(VkrEditorContent *content,
+                                     VkrUiSystem *ui) {
+  const VkrUiTrack navigation_columns[] = {{28, VKR_UI_TRACK_PX},
+                                           {28, VKR_UI_TRACK_PX},
+                                           {28, VKR_UI_TRACK_PX},
+                                           {1, VKR_UI_TRACK_FR}};
+  VkrUiPanelConfig navigation = vkr_ui_panel_config_default();
+  navigation.placement.column = 2;
+  navigation.placement.row = 0;
+  navigation.columns = navigation_columns;
+  navigation.column_count = ArrayCount(navigation_columns);
+  if (vkr_ui_panel_begin(ui, string8_lit("navigation"), &navigation)) {
+    VkrUiWidgetConfig back = content_widget(0, 0);
+    back.disabled = !content->history_count || !content->history_index;
+    back.tooltip = string8_lit("Back to previous source folder");
+    if (vkr_ui_button(ui, string8_lit("back"), string8_lit("<"), &back)) {
+      content_history_step(content, -1);
+    }
+    VkrUiWidgetConfig forward = content_widget(1, 0);
+    forward.disabled = !content->history_count ||
+                       content->history_index + 1 == content->history_count;
+    forward.tooltip = string8_lit("Forward to next source folder");
+    if (vkr_ui_button(ui, string8_lit("forward"), string8_lit(">"), &forward)) {
+      content_history_step(content, 1);
+    }
+    VkrUiWidgetConfig up = content_widget(2, 0);
+    up.disabled = !content->scope_filter && !content->type_filter;
+    up.tooltip = string8_lit("Up to containing source folder");
+    if (vkr_ui_button(ui, string8_lit("up"), string8_lit("^"), &up)) {
+      content_navigate(content,
+                       content->type_filter ? content->scope_filter : 0, 0);
+    }
+    VkrUiWidgetConfig breadcrumb = content_widget(3, 0);
+    breadcrumb.icon = VKR_UI_ICON_FOLDER;
+    breadcrumb.tooltip = string8_lit("Go up to the containing source folder");
+    String8 path = string8_create_formatted(
+        ui->frame_allocator, "Content  /  %s%s%s",
+        content->scope_filter ? content_scopes[content->scope_filter - 1]
+                              : "All assets",
+        content->type_filter ? "  /  " : "",
+        content->type_filter ? content_kinds[content->type_filter - 1] : "");
+    if (vkr_ui_button(ui, string8_lit("breadcrumb"), path, &breadcrumb)) {
+      content_navigate(content,
+                       content->type_filter ? content->scope_filter : 0, 0);
+    }
+    (void)vkr_ui_panel_end(ui);
   }
-  const float32_t width = rect.width / ui->content_scale;
-  const float32_t height = rect.height / ui->content_scale;
-  const float32_t card_width = content->size == 256 ? 164.0f : 112.0f;
-  const float32_t card_height = card_width + 43.0f;
-  const bool8_t show_sources = width >= 620;
-  const bool8_t show_details =
-      width >= 1040 && height >= 240 && !content->details_hidden;
-  const float32_t source_width = show_sources ? 170.0f : 0.0f;
-  const float32_t detail_width = show_details ? 260.0f : 0.0f;
-  const float32_t asset_width = Max(1.0f, width - source_width - detail_width);
-  const float32_t inspector_height = show_details ? height - 86.0f : 0.0f;
-  const float32_t tools_height = 64;
-  const float32_t grid_height = Max(1.0f, height - tools_height - 22);
-  const uint32_t columns =
-      Max(1u, Min(16u, (uint32_t)(Max(0.0f, asset_width - 16) / card_width)));
-  const uint32_t visible_rows = Max(
-      1u, Min(8u, (uint32_t)(Max(0.0f, grid_height - 8) / (card_height + 6))));
-  const uint32_t rows = Min(8u, visible_rows + 1);
-  const VkrUiTrack root_rows[] = {{tools_height, VKR_UI_TRACK_PX},
-                                  {1, VKR_UI_TRACK_FR},
-                                  {22, VKR_UI_TRACK_PX}};
-  VkrUiPanelConfig root = vkr_ui_panel_config_default();
-  root.placement.column = 0;
-  root.placement.row = 0;
-  root.rows = root_rows;
-  root.row_count = ArrayCount(root_rows);
-  root.clip_children = true_v;
-  if (!vkr_ui_panel_begin(ui, string8_lit("content.browser"), &root)) {
-    return;
-  }
+}
+
+static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
+                                  float32_t width, float32_t height) {
   const VkrUiTrack toolbar_rows[] = {{28, VKR_UI_TRACK_PX},
                                      {28, VKR_UI_TRACK_PX}};
   const VkrUiTrack toolbar_columns[] = {{82, VKR_UI_TRACK_PX},
@@ -1371,52 +1387,7 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
     if (vkr_ui_button(ui, string8_lit("refresh"), (String8){0}, &refresh)) {
       vkr_editor_content_refresh(content);
     }
-    const VkrUiTrack navigation_columns[] = {{28, VKR_UI_TRACK_PX},
-                                             {28, VKR_UI_TRACK_PX},
-                                             {28, VKR_UI_TRACK_PX},
-                                             {1, VKR_UI_TRACK_FR}};
-    VkrUiPanelConfig navigation = vkr_ui_panel_config_default();
-    navigation.placement.column = 2;
-    navigation.placement.row = 0;
-    navigation.columns = navigation_columns;
-    navigation.column_count = ArrayCount(navigation_columns);
-    if (vkr_ui_panel_begin(ui, string8_lit("navigation"), &navigation)) {
-      VkrUiWidgetConfig back = content_widget(0, 0);
-      back.disabled = !content->history_count || !content->history_index;
-      back.tooltip = string8_lit("Back to previous source folder");
-      if (vkr_ui_button(ui, string8_lit("back"), string8_lit("<"), &back)) {
-        content_history_step(content, -1);
-      }
-      VkrUiWidgetConfig forward = content_widget(1, 0);
-      forward.disabled = !content->history_count ||
-                         content->history_index + 1 == content->history_count;
-      forward.tooltip = string8_lit("Forward to next source folder");
-      if (vkr_ui_button(ui, string8_lit("forward"), string8_lit(">"),
-                        &forward)) {
-        content_history_step(content, 1);
-      }
-      VkrUiWidgetConfig up = content_widget(2, 0);
-      up.disabled = !content->scope_filter && !content->type_filter;
-      up.tooltip = string8_lit("Up to containing source folder");
-      if (vkr_ui_button(ui, string8_lit("up"), string8_lit("^"), &up)) {
-        content_navigate(content,
-                         content->type_filter ? content->scope_filter : 0, 0);
-      }
-      VkrUiWidgetConfig breadcrumb = content_widget(3, 0);
-      breadcrumb.icon = VKR_UI_ICON_FOLDER;
-      breadcrumb.tooltip = string8_lit("Go up to the containing source folder");
-      String8 path = string8_create_formatted(
-          ui->frame_allocator, "Content  /  %s%s%s",
-          content->scope_filter ? content_scopes[content->scope_filter - 1]
-                                : "All assets",
-          content->type_filter ? "  /  " : "",
-          content->type_filter ? content_kinds[content->type_filter - 1] : "");
-      if (vkr_ui_button(ui, string8_lit("breadcrumb"), path, &breadcrumb)) {
-        content_navigate(content,
-                         content->type_filter ? content->scope_filter : 0, 0);
-      }
-      (void)vkr_ui_panel_end(ui);
-    }
+    content_build_navigation(content, ui);
     VkrUiWidgetConfig details = content_widget(3, 0);
     details.icon = VKR_UI_ICON_INSPECTOR;
     details.disabled = width < 1040 || height < 240;
@@ -1470,50 +1441,88 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
     }
     (void)vkr_ui_panel_end(ui);
   }
-  const VkrUiTrack body_columns[] = {{source_width, VKR_UI_TRACK_PX},
-                                     {1, VKR_UI_TRACK_FR},
-                                     {detail_width, VKR_UI_TRACK_PX}};
-  VkrUiPanelConfig body = vkr_ui_panel_config_default();
-  body.placement.column = 0;
-  body.placement.row = 1;
-  body.columns = body_columns;
-  body.column_count = ArrayCount(body_columns);
-  body.clip_children = true_v;
-  if (!vkr_ui_panel_begin(ui, string8_lit("body"), &body)) {
+}
+
+static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
+                               uint32_t asset, uint32_t column, uint32_t row,
+                               float32_t card_width, VkrUiId grid_id) {
+  ContentAsset *entry = &content->entries[asset];
+  VkrUiPanelConfig card = vkr_ui_panel_config_default();
+  card.placement.column = column;
+  card.placement.row = row;
+  const VkrUiTrack card_rows[] = {{3, VKR_UI_TRACK_PX},
+                                  {1, VKR_UI_TRACK_FR},
+                                  {22, VKR_UI_TRACK_PX},
+                                  {18, VKR_UI_TRACK_PX}};
+  card.rows = card_rows;
+  card.row_count = ArrayCount(card_rows);
+  card.clip_children = true_v;
+  card.style.background_color = asset == content->selected
+                                    ? (Vec4){0.13f, 0.24f, 0.29f, 1}
+                                    : (Vec4){0.085f, 0.105f, 0.13f, 1};
+  card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  card.style.border_color = asset == content->selected
+                                ? (Vec4){0.38f, 0.68f, 0.75f, 1}
+                                : (Vec4){0.15f, 0.19f, 0.23f, 1};
+  if (vkr_ui_panel_begin(ui, string8_lit("card"), &card)) {
+    ContentPreview *preview = content_preview(content, ui, asset);
+    VkrUiWidgetConfig strip = content_widget(0, 0);
+    strip.style.background_color = content_type_colors[entry->kind];
+    strip.style.padding_pt = (VkrUiEdges){0};
+    strip.style.corner_radius_pt = (Vec4){0};
+    vkr_ui_label(ui, string8_lit("type-color"), (String8){0}, &strip);
+    VkrUiWidgetConfig picture = content_widget(0, 1);
+    picture.icon = content_icons[entry->kind];
+    picture.icon_size_pt = 36;
+    picture.tooltip = content_string(entry->name);
+    if (preview && preview->texture.id) {
+      picture.icon = VKR_UI_ICON_NONE;
+    }
+    if (vkr_ui_button(ui, string8_lit("select"), (String8){0}, &picture)) {
+      content->selected = asset;
+      ui->focused_id = grid_id;
+      ui->focused_is_text = false_v;
+    }
+    if (preview && preview->texture.id) {
+      VkrUiWidgetConfig image = content_widget(0, 1);
+      image.style.max_size_pt = (Vec2){card_width - 12, card_width - 12};
+      vkr_ui_image(
+          ui, string8_lit("preview"),
+          (VkrUiTextureRef){preview->texture.id, preview->texture.generation},
+          (Vec2){(float32_t)preview->width, (float32_t)preview->height},
+          &image);
+    }
+    VkrUiWidgetConfig name = content_widget(0, 2);
+    name.text.font = ui->fonts->default_system_font_handle;
+    name.tooltip = content_string(entry->name);
+    if (vkr_ui_button(ui, string8_lit("name"), content_string(entry->name),
+                      &name)) {
+      content->selected = asset;
+      ui->focused_id = grid_id;
+      ui->focused_is_text = false_v;
+    }
+    const char *status = entry->missing               ? "Missing"
+                         : entry->stale               ? "Stale"
+                         : preview && preview->failed ? "Preview error"
+                         : preview && preview->queued ? "Building preview"
+                                                      : "Current";
+    VkrUiWidgetConfig info = content_widget(0, 3);
+    info.style.font_size_pt = 10;
+    info.style.text_color =
+        entry->missing || entry->stale || (preview && preview->failed)
+            ? (Vec4){0.94f, 0.62f, 0.37f, 1}
+            : (Vec4){0.55f, 0.68f, 0.72f, 1};
+    String8 line = string8_create_formatted(ui->frame_allocator, "%s · %s",
+                                            content_kinds[entry->kind], status);
+    vkr_ui_label(ui, string8_lit("status"), line, &info);
     (void)vkr_ui_panel_end(ui);
-    return;
   }
-  if (show_sources) {
-    content_sources(content, ui,
-                    (VkrUiRect){rect.x,
-                                rect.y + tools_height * ui->content_scale,
-                                source_width * ui->content_scale,
-                                grid_height * ui->content_scale});
-  }
-  content_filter(content);
-  uint32_t total_rows = (content->filtered_count + columns - 1) / columns;
-  uint32_t max_first =
-      total_rows > visible_rows ? total_rows - visible_rows : 0;
-  bool8_t over =
-      !ui->mouse_captured && ui->input_layer == ui->mouse_input_layer &&
-      ui->mouse_x >= rect.x + source_width * ui->content_scale &&
-      ui->mouse_x < rect.x + (width - detail_width) * ui->content_scale &&
-      ui->mouse_y >= rect.y + tools_height * ui->content_scale &&
-      ui->mouse_y < rect.y + (tools_height + grid_height) * ui->content_scale;
-  if (over && ui->mouse_wheel) {
-    int64_t next = (int64_t)content->first_row - ui->mouse_wheel;
-    content->first_row =
-        (uint32_t)Max((int64_t)0, Min((int64_t)max_first, next));
-    ui->capture.mouse = true_v;
-  }
-  content->first_row = Min(content->first_row, max_first);
-  VkrUiWidgetConfig grid_focus = content_widget(1, 0);
-  grid_focus.style.background_color = (Vec4){0};
-  const VkrUiId grid_id = vkr_ui_id_stack_widget_label(
-      &ui->id_stack, string8_lit("asset-grid-focus"));
-  (void)vkr_ui_button(ui, string8_lit("asset-grid-focus"), (String8){0},
-                      &grid_focus);
-  content_grid_keys(content, ui, grid_id, columns, visible_rows);
+}
+
+static void content_build_grid(VkrEditorContent *content, VkrUiSystem *ui,
+                               uint32_t columns, uint32_t rows,
+                               float32_t card_width, float32_t card_height,
+                               VkrUiId grid_id) {
   VkrUiTrack column_tracks[16], row_tracks[8];
   for (uint32_t i = 0; i < columns; ++i) {
     column_tracks[i] = (VkrUiTrack){1, VKR_UI_TRACK_FR};
@@ -1549,88 +1558,117 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
       if (!vkr_ui_push_id_label(ui, content_string(entry->id))) {
         continue;
       }
-      VkrUiPanelConfig card = vkr_ui_panel_config_default();
-      card.placement.column = (index - start) % columns;
-      card.placement.row = (index - start) / columns;
-      const VkrUiTrack card_rows[] = {{3, VKR_UI_TRACK_PX},
-                                      {1, VKR_UI_TRACK_FR},
-                                      {22, VKR_UI_TRACK_PX},
-                                      {18, VKR_UI_TRACK_PX}};
-      card.rows = card_rows;
-      card.row_count = ArrayCount(card_rows);
-      card.clip_children = true_v;
-      card.style.background_color = asset == content->selected
-                                        ? (Vec4){0.13f, 0.24f, 0.29f, 1}
-                                        : (Vec4){0.085f, 0.105f, 0.13f, 1};
-      card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-      card.style.border_color = asset == content->selected
-                                    ? (Vec4){0.38f, 0.68f, 0.75f, 1}
-                                    : (Vec4){0.15f, 0.19f, 0.23f, 1};
-      if (vkr_ui_panel_begin(ui, string8_lit("card"), &card)) {
-        ContentPreview *preview = content_preview(content, ui, asset);
-        VkrUiWidgetConfig strip = content_widget(0, 0);
-        strip.style.background_color = content_type_colors[entry->kind];
-        strip.style.padding_pt = (VkrUiEdges){0};
-        strip.style.corner_radius_pt = (Vec4){0};
-        vkr_ui_label(ui, string8_lit("type-color"), (String8){0}, &strip);
-        VkrUiWidgetConfig picture = content_widget(0, 1);
-        picture.icon = content_icons[entry->kind];
-        picture.icon_size_pt = 36;
-        picture.tooltip = content_string(entry->name);
-        if (preview && preview->texture.id) {
-          picture.icon = VKR_UI_ICON_NONE;
-        }
-        if (vkr_ui_button(ui, string8_lit("select"), (String8){0}, &picture)) {
-          content->selected = asset;
-          ui->focused_id = grid_id;
-          ui->focused_is_text = false_v;
-        }
-        if (preview && preview->texture.id) {
-          VkrUiWidgetConfig image = content_widget(0, 1);
-          image.style.max_size_pt = (Vec2){card_width - 12, card_width - 12};
-          vkr_ui_image(
-              ui, string8_lit("preview"),
-              (VkrUiTextureRef){preview->texture.id,
-                                preview->texture.generation},
-              (Vec2){(float32_t)preview->width, (float32_t)preview->height},
-              &image);
-        }
-        VkrUiWidgetConfig name = content_widget(0, 2);
-        name.text.font = ui->fonts->default_system_font_handle;
-        name.tooltip = content_string(entry->name);
-        if (vkr_ui_button(ui, string8_lit("name"), content_string(entry->name),
-                          &name)) {
-          content->selected = asset;
-          ui->focused_id = grid_id;
-          ui->focused_is_text = false_v;
-        }
-        const char *status = entry->missing               ? "Missing"
-                             : entry->stale               ? "Stale"
-                             : preview && preview->failed ? "Preview error"
-                             : preview && preview->queued ? "Building preview"
-                                                          : "Current";
-        VkrUiWidgetConfig info = content_widget(0, 3);
-        info.style.font_size_pt = 10;
-        info.style.text_color =
-            entry->missing || entry->stale || (preview && preview->failed)
-                ? (Vec4){0.94f, 0.62f, 0.37f, 1}
-                : (Vec4){0.55f, 0.68f, 0.72f, 1};
-        String8 line = string8_create_formatted(
-            ui->frame_allocator, "%s · %s", content_kinds[entry->kind], status);
-        vkr_ui_label(ui, string8_lit("status"), line, &info);
-        (void)vkr_ui_panel_end(ui);
-      }
+      content_build_card(content, ui, asset, (index - start) % columns,
+                         (index - start) / columns, card_width, grid_id);
       (void)vkr_ui_pop_id(ui);
     }
     (void)vkr_ui_panel_end(ui);
   }
-  content_scrollbar(ui, string8_lit("grid-scroll"), 1,
-                    (VkrUiRect){rect.x + source_width * ui->content_scale,
-                                rect.y + tools_height * ui->content_scale,
-                                asset_width * ui->content_scale,
-                                grid_height * ui->content_scale},
-                    total_rows, visible_rows, &content->first_row,
-                    &content->grid_scrollbar);
+}
+
+static void content_build_rename(VkrEditorContent *content, VkrUiSystem *ui,
+                                 const ContentAsset *entry) {
+  const VkrUiTrack rename_columns[] = {{1, VKR_UI_TRACK_FR},
+                                       {80, VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig rename_panel = vkr_ui_panel_config_default();
+  rename_panel.placement.column = 0;
+  rename_panel.placement.row = 3;
+  rename_panel.columns = rename_columns;
+  rename_panel.column_count = ArrayCount(rename_columns);
+  if (vkr_ui_panel_begin(ui, string8_lit("rename-panel"), &rename_panel)) {
+    VkrUiWidgetConfig name_field = content_widget(0, 0);
+    name_field.text.font = ui->fonts->default_system_font_handle;
+    name_field.tooltip = string8_lit(
+        "Asset display name; stable ID and references remain unchanged");
+    VkrUiTextEditBuffer name_buffer = {.data = content->rename,
+                                       .length = content->rename_length,
+                                       .capacity = sizeof(content->rename)};
+    if (vkr_ui_text_field(ui, string8_lit("asset-name"), &name_buffer,
+                          &name_field)) {
+      content->rename_length = name_buffer.length;
+    }
+    VkrUiWidgetConfig rename_button = content_widget(1, 0);
+    rename_button.disabled =
+        content->read_only || !content->rename_length || entry->scope != 0;
+    if (vkr_ui_button(ui, string8_lit("rename-asset"), string8_lit("Rename"),
+                      &rename_button)) {
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_RENAME);
+      content_copy(content->action.name, sizeof(content->action.name),
+                   (const char *)content->rename);
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+}
+
+static void content_build_asset_actions(VkrEditorContent *content,
+                                        VkrUiSystem *ui,
+                                        const ContentAsset *entry) {
+  const VkrUiTrack action_columns[] = {{1, VKR_UI_TRACK_FR},
+                                       {1, VKR_UI_TRACK_FR}};
+  const VkrUiTrack action_rows[] = {{26, VKR_UI_TRACK_PX},
+                                    {26, VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig actions = vkr_ui_panel_config_default();
+  actions.placement.column = 0;
+  actions.placement.row = 2;
+  actions.rows = action_rows;
+  actions.row_count = ArrayCount(action_rows);
+  actions.columns = action_columns;
+  actions.column_count = ArrayCount(action_columns);
+  if (vkr_ui_panel_begin(ui, string8_lit("actions"), &actions)) {
+    VkrUiWidgetConfig retry = content_widget(0, 0);
+    retry.icon = VKR_UI_ICON_REFRESH;
+    retry.disabled = content->read_only;
+    if (vkr_ui_button(ui, string8_lit("retry"), string8_lit("Retry preview"),
+                      &retry)) {
+      for (uint32_t i = 0; i < CONTENT_CACHE_COUNT; ++i) {
+        ContentPreview *preview = &content->cache[i];
+        if (preview->key && preview->asset == content->selected &&
+            i != content->running) {
+          FilePath path = {.path = content_string(preview->path),
+                           .type = FILE_PATH_TYPE_ABSOLUTE};
+          (void)file_remove(&path);
+          content_release_preview(preview);
+        }
+      }
+    }
+    VkrUiWidgetConfig reveal = content_widget(1, 0);
+    reveal.icon = VKR_UI_ICON_FOLDER;
+    reveal.disabled = content->worker || !entry->path[0];
+    if (vkr_ui_button(ui, string8_lit("reveal"), string8_lit("Reveal"),
+                      &reveal)) {
+      content_copy(content->worker_input, sizeof(content->worker_input),
+                   entry->path);
+      content->worker_reveal = true_v;
+      content->worker_material = false_v;
+      content->worker_generation = content->generation;
+      content->running = CONTENT_NONE;
+      content->worker_log[0] = 0;
+      vkr_atomic_bool_store(&content->cancel, false_v,
+                            VKR_MEMORY_ORDER_RELAXED);
+      vkr_atomic_bool_store(&content->complete, false_v,
+                            VKR_MEMORY_ORDER_RELAXED);
+      (void)vkr_thread_create(content->allocator, &content->worker,
+                              content_worker, content);
+    }
+    VkrUiWidgetConfig reimport = content_widget(0, 1);
+    reimport.disabled = content->read_only || !entry->source[0];
+    if (vkr_ui_button(ui, string8_lit("reimport"), string8_lit("Reimport"),
+                      &reimport)) {
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_REIMPORT);
+    }
+    VkrUiWidgetConfig rebuild = content_widget(1, 1);
+    rebuild.disabled = content->read_only;
+    if (vkr_ui_button(ui, string8_lit("rebuild"), string8_lit("Rebuild"),
+                      &rebuild)) {
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_REBUILD);
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+}
+
+static void content_build_inspector(VkrEditorContent *content, VkrUiSystem *ui,
+                                    float32_t inspector_height,
+                                    bool8_t show_details) {
   VkrUiPanelConfig inspector = vkr_ui_panel_config_default();
   inspector.placement.column = 2;
   inspector.placement.row = 0;
@@ -1676,99 +1714,8 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
                        entry->name);
           content->rename_length = (uint32_t)strlen((char *)content->rename);
         }
-        const VkrUiTrack rename_columns[] = {{1, VKR_UI_TRACK_FR},
-                                             {80, VKR_UI_TRACK_PX}};
-        VkrUiPanelConfig rename_panel = vkr_ui_panel_config_default();
-        rename_panel.placement.column = 0;
-        rename_panel.placement.row = 3;
-        rename_panel.columns = rename_columns;
-        rename_panel.column_count = ArrayCount(rename_columns);
-        if (vkr_ui_panel_begin(ui, string8_lit("rename-panel"),
-                               &rename_panel)) {
-          VkrUiWidgetConfig name_field = content_widget(0, 0);
-          name_field.text.font = ui->fonts->default_system_font_handle;
-          name_field.tooltip = string8_lit(
-              "Asset display name; stable ID and references remain unchanged");
-          VkrUiTextEditBuffer name_buffer = {.data = content->rename,
-                                             .length = content->rename_length,
-                                             .capacity =
-                                                 sizeof(content->rename)};
-          if (vkr_ui_text_field(ui, string8_lit("asset-name"), &name_buffer,
-                                &name_field)) {
-            content->rename_length = name_buffer.length;
-          }
-          VkrUiWidgetConfig rename_button = content_widget(1, 0);
-          rename_button.disabled = content->read_only ||
-                                   !content->rename_length || entry->scope != 0;
-          if (vkr_ui_button(ui, string8_lit("rename-asset"),
-                            string8_lit("Rename"), &rename_button)) {
-            content_action(content, VKR_EDITOR_CONTENT_ACTION_RENAME);
-            content_copy(content->action.name, sizeof(content->action.name),
-                         (const char *)content->rename);
-          }
-          (void)vkr_ui_panel_end(ui);
-        }
-        const VkrUiTrack action_columns[] = {{1, VKR_UI_TRACK_FR},
-                                             {1, VKR_UI_TRACK_FR}};
-        const VkrUiTrack action_rows[] = {{26, VKR_UI_TRACK_PX},
-                                          {26, VKR_UI_TRACK_PX}};
-        VkrUiPanelConfig actions = vkr_ui_panel_config_default();
-        actions.placement.column = 0;
-        actions.placement.row = 2;
-        actions.rows = action_rows;
-        actions.row_count = ArrayCount(action_rows);
-        actions.columns = action_columns;
-        actions.column_count = ArrayCount(action_columns);
-        if (vkr_ui_panel_begin(ui, string8_lit("actions"), &actions)) {
-          VkrUiWidgetConfig retry = content_widget(0, 0);
-          retry.icon = VKR_UI_ICON_REFRESH;
-          retry.disabled = content->read_only;
-          if (vkr_ui_button(ui, string8_lit("retry"),
-                            string8_lit("Retry preview"), &retry)) {
-            for (uint32_t i = 0; i < CONTENT_CACHE_COUNT; ++i) {
-              ContentPreview *preview = &content->cache[i];
-              if (preview->key && preview->asset == content->selected &&
-                  i != content->running) {
-                FilePath path = {.path = content_string(preview->path),
-                                 .type = FILE_PATH_TYPE_ABSOLUTE};
-                (void)file_remove(&path);
-                content_release_preview(preview);
-              }
-            }
-          }
-          VkrUiWidgetConfig reveal = content_widget(1, 0);
-          reveal.icon = VKR_UI_ICON_FOLDER;
-          reveal.disabled = content->worker || !entry->path[0];
-          if (vkr_ui_button(ui, string8_lit("reveal"), string8_lit("Reveal"),
-                            &reveal)) {
-            content_copy(content->worker_input, sizeof(content->worker_input),
-                         entry->path);
-            content->worker_reveal = true_v;
-            content->worker_material = false_v;
-            content->worker_generation = content->generation;
-            content->running = CONTENT_NONE;
-            content->worker_log[0] = 0;
-            vkr_atomic_bool_store(&content->cancel, false_v,
-                                  VKR_MEMORY_ORDER_RELAXED);
-            vkr_atomic_bool_store(&content->complete, false_v,
-                                  VKR_MEMORY_ORDER_RELAXED);
-            (void)vkr_thread_create(content->allocator, &content->worker,
-                                    content_worker, content);
-          }
-          VkrUiWidgetConfig reimport = content_widget(0, 1);
-          reimport.disabled = content->read_only || !entry->source[0];
-          if (vkr_ui_button(ui, string8_lit("reimport"),
-                            string8_lit("Reimport"), &reimport)) {
-            content_action(content, VKR_EDITOR_CONTENT_ACTION_REIMPORT);
-          }
-          VkrUiWidgetConfig rebuild = content_widget(1, 1);
-          rebuild.disabled = content->read_only;
-          if (vkr_ui_button(ui, string8_lit("rebuild"), string8_lit("Rebuild"),
-                            &rebuild)) {
-            content_action(content, VKR_EDITOR_CONTENT_ACTION_REBUILD);
-          }
-          (void)vkr_ui_panel_end(ui);
-        }
+        content_build_rename(content, ui, entry);
+        content_build_asset_actions(content, ui, entry);
       }
     } else {
       vkr_ui_label(
@@ -1781,6 +1728,98 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
     }
     (void)vkr_ui_panel_end(ui);
   }
+}
+
+void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
+                              VkrUiRect rect, VkrFontHandle heading) {
+  if (!content || !ui || rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+  const float32_t width = rect.width / ui->content_scale;
+  const float32_t height = rect.height / ui->content_scale;
+  const float32_t card_width = content->size == 256 ? 164.0f : 112.0f;
+  const float32_t card_height = card_width + 43.0f;
+  const bool8_t show_sources = width >= 620;
+  const bool8_t show_details =
+      width >= 1040 && height >= 240 && !content->details_hidden;
+  const float32_t source_width = show_sources ? 170.0f : 0.0f;
+  const float32_t detail_width = show_details ? 260.0f : 0.0f;
+  const float32_t asset_width = Max(1.0f, width - source_width - detail_width);
+  const float32_t inspector_height = show_details ? height - 86.0f : 0.0f;
+  const float32_t tools_height = 64;
+  const float32_t grid_height = Max(1.0f, height - tools_height - 22);
+  const uint32_t columns =
+      Max(1u, Min(16u, (uint32_t)(Max(0.0f, asset_width - 16) / card_width)));
+  const uint32_t visible_rows = Max(
+      1u, Min(8u, (uint32_t)(Max(0.0f, grid_height - 8) / (card_height + 6))));
+  const uint32_t rows = Min(8u, visible_rows + 1);
+  const VkrUiTrack root_rows[] = {{tools_height, VKR_UI_TRACK_PX},
+                                  {1, VKR_UI_TRACK_FR},
+                                  {22, VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig root = vkr_ui_panel_config_default();
+  root.placement.column = 0;
+  root.placement.row = 0;
+  root.rows = root_rows;
+  root.row_count = ArrayCount(root_rows);
+  root.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("content.browser"), &root)) {
+    return;
+  }
+  content_build_toolbar(content, ui, width, height);
+  const VkrUiTrack body_columns[] = {{source_width, VKR_UI_TRACK_PX},
+                                     {1, VKR_UI_TRACK_FR},
+                                     {detail_width, VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig body = vkr_ui_panel_config_default();
+  body.placement.column = 0;
+  body.placement.row = 1;
+  body.columns = body_columns;
+  body.column_count = ArrayCount(body_columns);
+  body.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("body"), &body)) {
+    (void)vkr_ui_panel_end(ui);
+    return;
+  }
+  if (show_sources) {
+    content_sources(content, ui,
+                    (VkrUiRect){rect.x,
+                                rect.y + tools_height * ui->content_scale,
+                                source_width * ui->content_scale,
+                                grid_height * ui->content_scale});
+  }
+  content_filter(content);
+  uint32_t total_rows = (content->filtered_count + columns - 1) / columns;
+  uint32_t max_first =
+      total_rows > visible_rows ? total_rows - visible_rows : 0;
+  bool8_t over =
+      !ui->mouse_captured && ui->input_layer == ui->mouse_input_layer &&
+      ui->mouse_x >= rect.x + source_width * ui->content_scale &&
+      ui->mouse_x < rect.x + (width - detail_width) * ui->content_scale &&
+      ui->mouse_y >= rect.y + tools_height * ui->content_scale &&
+      ui->mouse_y < rect.y + (tools_height + grid_height) * ui->content_scale;
+  if (over && ui->mouse_wheel) {
+    int64_t next = (int64_t)content->first_row - ui->mouse_wheel;
+    content->first_row =
+        (uint32_t)Max((int64_t)0, Min((int64_t)max_first, next));
+    ui->capture.mouse = true_v;
+  }
+  content->first_row = Min(content->first_row, max_first);
+  VkrUiWidgetConfig grid_focus = content_widget(1, 0);
+  grid_focus.style.background_color = (Vec4){0};
+  const VkrUiId grid_id = vkr_ui_id_stack_widget_label(
+      &ui->id_stack, string8_lit("asset-grid-focus"));
+  (void)vkr_ui_button(ui, string8_lit("asset-grid-focus"), (String8){0},
+                      &grid_focus);
+  content_grid_keys(content, ui, grid_id, columns, visible_rows);
+  content_build_grid(content, ui, columns, rows, card_width, card_height,
+                     grid_id);
+  content_scrollbar(ui, string8_lit("grid-scroll"), 1,
+                    (VkrUiRect){rect.x + source_width * ui->content_scale,
+                                rect.y + tools_height * ui->content_scale,
+                                asset_width * ui->content_scale,
+                                grid_height * ui->content_scale},
+                    total_rows, visible_rows, &content->first_row,
+                    &content->grid_scrollbar);
+  content_build_inspector(content, ui, inspector_height, show_details);
   (void)vkr_ui_panel_end(ui);
   VkrUiWidgetConfig footer = content_widget(0, 2);
   footer.style.background_color = (Vec4){0.09f, 0.095f, 0.11f, 1};

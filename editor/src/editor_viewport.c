@@ -579,120 +579,82 @@ static bool8_t grid_label_rect(const VkrEditorUi *editor,
   return true_v;
 }
 
-void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
-  editor->grid_line_count = 0;
-  editor->grid_spacing = 0;
-  editor->grid_frame = frame->ui->frame_index;
-  editor->grid_camera_view = frame->view_state.camera_view;
-  if (!frame->mapping_valid || !frame->view_state.grid_enabled ||
-      !frame->scene || frame->scene_rendering_stopped ||
-      (frame->scene_backdrop_blur && *frame->scene_backdrop_blur)) {
-    return;
-  }
-  VkrUiSystem *ui = frame->ui;
-  const bool8_t side =
-      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_LEFT ||
-      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_RIGHT;
-  const bool8_t perspective =
-      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
-  const float32_t base_spacing = frame->view_state.grid_spacing;
-  float32_t spacing = base_spacing;
-  if (!isfinite(spacing) || spacing <= 0) {
-    return;
-  }
-  Vec2 minimum = {INFINITY, INFINITY};
-  Vec2 maximum = {-INFINITY, -INFINITY};
+/* Returns false when no grid center projects in front of the camera. */
+static bool8_t grid_fit_perspective(const VkrSampleUiFrame *frame, bool8_t side,
+                                    Vec3 *center, float32_t *spacing,
+                                    Vec2 *minimum, Vec2 *maximum) {
   Vec2 center_plane;
-  if (!grid_plane_point(frame, (Vec2){0, 0}, side, &center_plane)) {
-    if (!perspective ||
-        !grid_plane_point(frame, (Vec2){0, 0.75f}, side, &center_plane)) {
-      return;
+  Vec2 projected;
+  if (!grid_screen(frame, *center, &projected)) {
+    if (!grid_plane_point(frame, (Vec2){0, 0.75f}, side, &center_plane)) {
+      return false_v;
+    }
+    *center = grid_world(center_plane, side);
+    if (!grid_screen(frame, *center, &projected)) {
+      return false_v;
     }
   }
-  Vec3 center = grid_world(center_plane, side);
-  if (perspective) {
-    Vec2 projected;
-    if (!grid_screen(frame, center, &projected)) {
-      if (!grid_plane_point(frame, (Vec2){0, 0.75f}, side, &center_plane)) {
-        return;
-      }
-      center = grid_world(center_plane, side);
-      if (!grid_screen(frame, center, &projected)) {
-        return;
-      }
-    }
-    Vec2 a;
-    Vec2 b;
-    if (grid_screen(frame, center, &a) &&
-        grid_screen(frame, vec3_add(center, (Vec3){spacing, 0, spacing}), &b)) {
-      const float32_t pixels = hypotf(b.x - a.x, b.y - a.y);
-      if (pixels > 0.0001f && pixels < 20) {
-        spacing *= powf(2, ceilf(log2f(20 / pixels)));
-      }
-    }
-    const float32_t radius = spacing * 22;
-    minimum = (Vec2){center.x - radius, center.z - radius};
-    maximum = (Vec2){center.x + radius, center.z + radius};
-  } else {
-    for (uint32_t i = 0; i < 4; ++i) {
-      Vec2 point;
-      if (!grid_plane_point(frame, (Vec2){i & 1 ? 1 : -1, i & 2 ? 1 : -1}, side,
-                            &point)) {
-        return;
-      }
-      minimum.x = Min(minimum.x, point.x);
-      minimum.y = Min(minimum.y, point.y);
-      maximum.x = Max(maximum.x, point.x);
-      maximum.y = Max(maximum.y, point.y);
-    }
-    /* Coarsen by powers of two until every visible cell can carry its own
-     * label. Axis views keep the first grid axis horizontal on screen. */
-    const Vec4 image = frame->mapping.image_rect_px;
-    const Vec2 extent = {maximum.x - minimum.x, maximum.y - minimum.y};
-    if (!(extent.x > 0 && extent.y > 0)) {
-      return;
-    }
-    const Vec2 pt_per_unit = {image.z / ui->content_scale / extent.x,
-                              image.w / ui->content_scale / extent.y};
-    for (uint32_t step = 0; step < 64; ++step) {
-      const float32_t columns = ceilf(extent.x / spacing) + 1;
-      const float32_t rows = ceilf(extent.y / spacing) + 1;
-      const Vec2 number =
-          grid_label_size(editor, ui, (uint32_t)Min(columns, 1.0e9f), true_v);
-      if (columns <= 44 && rows <= 44 &&
-          spacing * pt_per_unit.x >= number.x + 6 &&
-          spacing * pt_per_unit.y >= number.y + 4) {
-        break;
-      }
-      spacing *= 2;
+  Vec2 a;
+  Vec2 b;
+  if (grid_screen(frame, *center, &a) &&
+      grid_screen(frame, vec3_add(*center, (Vec3){*spacing, 0, *spacing}),
+                  &b)) {
+    const float32_t pixels = hypotf(b.x - a.x, b.y - a.y);
+    if (pixels > 0.0001f && pixels < 20) {
+      *spacing *= powf(2, ceilf(log2f(20 / pixels)));
     }
   }
-  if (!isfinite(spacing) || spacing <= 0 ||
-      fabsf(minimum.x / spacing) > 1000000000 ||
-      fabsf(minimum.y / spacing) > 1000000000 ||
-      fabsf(maximum.x / spacing) > 1000000000 ||
-      fabsf(maximum.y / spacing) > 1000000000) {
-    return;
+  const float32_t radius = *spacing * 22;
+  *minimum = (Vec2){center->x - radius, center->z - radius};
+  *maximum = (Vec2){center->x + radius, center->z + radius};
+  return true_v;
+}
+
+/* Returns false when an image corner misses the grid plane or the visible
+ * extent is empty. */
+static bool8_t grid_fit_orthographic(const VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     bool8_t side, float32_t *spacing,
+                                     Vec2 *minimum, Vec2 *maximum) {
+  const VkrUiSystem *ui = frame->ui;
+  for (uint32_t i = 0; i < 4; ++i) {
+    Vec2 point;
+    if (!grid_plane_point(frame, (Vec2){i & 1 ? 1 : -1, i & 2 ? 1 : -1}, side,
+                          &point)) {
+      return false_v;
+    }
+    minimum->x = Min(minimum->x, point.x);
+    minimum->y = Min(minimum->y, point.y);
+    maximum->x = Max(maximum->x, point.x);
+    maximum->y = Max(maximum->y, point.y);
   }
+  /* Coarsen by powers of two until every visible cell can carry its own
+   * label. Axis views keep the first grid axis horizontal on screen. */
   const Vec4 image = frame->mapping.image_rect_px;
-  VkrUiPanelConfig panel = view_panel(
-      (Vec4){image.x / ui->content_scale, image.y / ui->content_scale,
-             image.z / ui->content_scale, image.w / ui->content_scale});
-  panel.style.padding_pt = (VkrUiEdges){0};
-  panel.style.border_pt = (VkrUiEdges){0};
-  panel.style.background_color = (Vec4){0};
-  editor->grid_panel = vkr_ui_id_stack_widget_label(
-      &ui->id_stack, string8_lit("editor.world.grid"));
-  if (!vkr_ui_panel_begin(ui, string8_lit("editor.world.grid"), &panel)) {
-    return;
+  const Vec2 extent = {maximum->x - minimum->x, maximum->y - minimum->y};
+  if (!(extent.x > 0 && extent.y > 0)) {
+    return false_v;
   }
-  /* Leave bounded room for physics, light labels and all interactive controls.
-   */
-  const uint32_t available =
-      ui->frame_node_count + 320 < ui->frame_node_capacity
-          ? (ui->frame_node_capacity - ui->frame_node_count - 320) / 2
-          : 0;
-  const uint32_t capacity = Min(VKR_EDITOR_GRID_LINE_CAPACITY, available);
+  const Vec2 pt_per_unit = {image.z / ui->content_scale / extent.x,
+                            image.w / ui->content_scale / extent.y};
+  for (uint32_t step = 0; step < 64; ++step) {
+    const float32_t columns = ceilf(extent.x / *spacing) + 1;
+    const float32_t rows = ceilf(extent.y / *spacing) + 1;
+    const Vec2 number =
+        grid_label_size(editor, ui, (uint32_t)Min(columns, 1.0e9f), true_v);
+    if (columns <= 44 && rows <= 44 &&
+        *spacing * pt_per_unit.x >= number.x + 6 &&
+        *spacing * pt_per_unit.y >= number.y + 4) {
+      break;
+    }
+    *spacing *= 2;
+  }
+  return true_v;
+}
+
+static bool8_t grid_first_axis_top(const VkrSampleUiFrame *frame,
+                                   bool8_t perspective, Vec3 center,
+                                   float32_t spacing) {
   bool8_t first_axis_top = true_v;
   if (perspective) {
     Vec2 origin;
@@ -707,48 +669,14 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
           fabsf(v.y) * hypotf(u.x, u.y) >= fabsf(u.y) * hypotf(v.x, v.y);
     }
   }
-  editor->grid_spacing = spacing;
-  uint32_t axis_lines[2] = {0, 0};
-  for (uint32_t axis = 0; axis < 2; ++axis) {
-    const float32_t low = axis ? minimum.y : minimum.x;
-    const float32_t high = axis ? maximum.y : maximum.x;
-    const int64_t first = (int64_t)floorf(low / spacing);
-    const int64_t last = (int64_t)ceilf(high / spacing);
-    for (int64_t cell = first;
-         cell <= last && editor->grid_line_count < capacity; ++cell) {
-      const float32_t coordinate = (float32_t)cell * spacing;
-      const Vec2 from =
-          axis ? (Vec2){minimum.x, coordinate} : (Vec2){coordinate, minimum.y};
-      const Vec2 to =
-          axis ? (Vec2){maximum.x, coordinate} : (Vec2){coordinate, maximum.y};
-      editor->grid_lines[editor->grid_line_count++] = (VkrEditorGridLine){
-          .from = grid_world(from, side),
-          .to = grid_world(to, side),
-          .label_offset = grid_world(axis ? (Vec2){0, spacing * 0.5f}
-                                          : (Vec2){spacing * 0.5f, 0},
-                                     side),
-          .top_label = axis == 0 ? first_axis_top : !first_axis_top,
-          .world_axis = cell == 0,
-      };
-      ++axis_lines[axis];
-    }
-  }
+  return first_axis_top;
+}
 
-  /* Labels are uniform per edge, sized for the largest possible ordinal. */
-  const uint32_t top_axis = first_axis_top ? 0 : 1;
-  const Vec2 top_size =
-      grid_label_size(editor, ui, axis_lines[top_axis], true_v);
-  const Vec2 right_size =
-      grid_label_size(editor, ui, axis_lines[1 - top_axis], false_v);
-  editor->grid_reserved_pt = (Vec2){right_size.x, top_size.y};
-  for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
-    VkrEditorGridLine *line = &editor->grid_lines[i];
-    line->label_size_pt = line->top_label ? top_size : right_size;
-  }
-
-  /* Number the placed labels in screen order so visible cells read 1..N
-   * across the top and A.. down the right, whatever the view orientation.
-   * Perspective fans can crowd labels; those cells stay unlabeled. */
+/* Number the placed labels in screen order so visible cells read 1..N
+ * across the top and A.. down the right, whatever the view orientation.
+ * Perspective fans can crowd labels; those cells stay unlabeled. */
+static void grid_number_labels(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame) {
   VkrUiRect placed[VKR_EDITOR_GRID_LINE_CAPACITY];
   uint32_t placed_count = 0;
   for (uint32_t edge = 0; edge < 2; ++edge) {
@@ -792,7 +720,9 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       }
     }
   }
+}
 
+static void grid_build_line_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
   for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
     VkrEditorGridLine *line = &editor->grid_lines[i];
     (void)vkr_ui_push_id_u64(ui, i);
@@ -828,6 +758,118 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     }
     (void)vkr_ui_pop_id(ui);
   }
+}
+
+void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
+  editor->grid_line_count = 0;
+  editor->grid_spacing = 0;
+  editor->grid_frame = frame->ui->frame_index;
+  editor->grid_camera_view = frame->view_state.camera_view;
+  if (!frame->mapping_valid || !frame->view_state.grid_enabled ||
+      !frame->scene || frame->scene_rendering_stopped ||
+      (frame->scene_backdrop_blur && *frame->scene_backdrop_blur)) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const bool8_t side =
+      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_LEFT ||
+      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_RIGHT;
+  const bool8_t perspective =
+      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
+  const float32_t base_spacing = frame->view_state.grid_spacing;
+  float32_t spacing = base_spacing;
+  if (!isfinite(spacing) || spacing <= 0) {
+    return;
+  }
+  Vec2 minimum = {INFINITY, INFINITY};
+  Vec2 maximum = {-INFINITY, -INFINITY};
+  Vec2 center_plane;
+  if (!grid_plane_point(frame, (Vec2){0, 0}, side, &center_plane)) {
+    if (!perspective ||
+        !grid_plane_point(frame, (Vec2){0, 0.75f}, side, &center_plane)) {
+      return;
+    }
+  }
+  Vec3 center = grid_world(center_plane, side);
+  if (perspective) {
+    if (!grid_fit_perspective(frame, side, &center, &spacing, &minimum,
+                              &maximum)) {
+      return;
+    }
+  } else if (!grid_fit_orthographic(editor, frame, side, &spacing, &minimum,
+                                    &maximum)) {
+    return;
+  }
+  if (!isfinite(spacing) || spacing <= 0 ||
+      fabsf(minimum.x / spacing) > 1000000000 ||
+      fabsf(minimum.y / spacing) > 1000000000 ||
+      fabsf(maximum.x / spacing) > 1000000000 ||
+      fabsf(maximum.y / spacing) > 1000000000) {
+    return;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  VkrUiPanelConfig panel = view_panel(
+      (Vec4){image.x / ui->content_scale, image.y / ui->content_scale,
+             image.z / ui->content_scale, image.w / ui->content_scale});
+  panel.style.padding_pt = (VkrUiEdges){0};
+  panel.style.border_pt = (VkrUiEdges){0};
+  panel.style.background_color = (Vec4){0};
+  editor->grid_panel = vkr_ui_id_stack_widget_label(
+      &ui->id_stack, string8_lit("editor.world.grid"));
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.world.grid"), &panel)) {
+    return;
+  }
+  /* Leave bounded room for physics, light labels and all interactive controls.
+   */
+  const uint32_t available =
+      ui->frame_node_count + 320 < ui->frame_node_capacity
+          ? (ui->frame_node_capacity - ui->frame_node_count - 320) / 2
+          : 0;
+  const uint32_t capacity = Min(VKR_EDITOR_GRID_LINE_CAPACITY, available);
+  const bool8_t first_axis_top =
+      grid_first_axis_top(frame, perspective, center, spacing);
+  editor->grid_spacing = spacing;
+  uint32_t axis_lines[2] = {0, 0};
+  for (uint32_t axis = 0; axis < 2; ++axis) {
+    const float32_t low = axis ? minimum.y : minimum.x;
+    const float32_t high = axis ? maximum.y : maximum.x;
+    const int64_t first = (int64_t)floorf(low / spacing);
+    const int64_t last = (int64_t)ceilf(high / spacing);
+    for (int64_t cell = first;
+         cell <= last && editor->grid_line_count < capacity; ++cell) {
+      const float32_t coordinate = (float32_t)cell * spacing;
+      const Vec2 from =
+          axis ? (Vec2){minimum.x, coordinate} : (Vec2){coordinate, minimum.y};
+      const Vec2 to =
+          axis ? (Vec2){maximum.x, coordinate} : (Vec2){coordinate, maximum.y};
+      editor->grid_lines[editor->grid_line_count++] = (VkrEditorGridLine){
+          .from = grid_world(from, side),
+          .to = grid_world(to, side),
+          .label_offset = grid_world(axis ? (Vec2){0, spacing * 0.5f}
+                                          : (Vec2){spacing * 0.5f, 0},
+                                     side),
+          .top_label = axis == 0 ? first_axis_top : !first_axis_top,
+          .world_axis = cell == 0,
+      };
+      ++axis_lines[axis];
+    }
+  }
+
+  /* Labels are uniform per edge, sized for the largest possible ordinal. */
+  const uint32_t top_axis = first_axis_top ? 0 : 1;
+  const Vec2 top_size =
+      grid_label_size(editor, ui, axis_lines[top_axis], true_v);
+  const Vec2 right_size =
+      grid_label_size(editor, ui, axis_lines[1 - top_axis], false_v);
+  editor->grid_reserved_pt = (Vec2){right_size.x, top_size.y};
+  for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
+    VkrEditorGridLine *line = &editor->grid_lines[i];
+    line->label_size_pt = line->top_label ? top_size : right_size;
+  }
+
+  grid_number_labels(editor, frame);
+
+  grid_build_line_widgets(editor, ui);
   (void)vkr_ui_panel_end(ui);
 }
 

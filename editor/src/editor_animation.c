@@ -673,6 +673,365 @@ static void animation_add_node(VkrEditorAnimation *animation,
   animation->clip_preview = false_v;
 }
 
+static void animation_node_page(VkrEditorAnimation *animation, VkrUiSystem *ui,
+                                VkrAnimationGraphNode *node) {
+  VkrAnimationGraph *graph = &animation->document.graph;
+  char text[160];
+  const char *kinds[] = {"Clip", "Weighted Blend 2", "Blend Space 1D",
+                         "Blend Space 2D"};
+  animation_label(ui, "node.kind", kinds[node->kind], 0, 1);
+  if (animation_button(ui, "node.clip", "Use browser clip", 1, 1,
+                       node->kind != VKR_ANIMATION_GRAPH_CLIP)) {
+    animation_remember(animation);
+    node->clip = animation->selected_clip;
+  }
+  animation_index(animation, ui, "parameter.x", "X parameter",
+                  &node->parameter_x, graph->parameter_count, 2, 1);
+  animation_index(animation, ui, "parameter.y", "Y parameter",
+                  &node->parameter_y, graph->parameter_count, 3, 1);
+  if (node->kind == VKR_ANIMATION_GRAPH_BLEND2) {
+    animation_index(animation, ui, "input.a", "Input A node", &node->inputs[0],
+                    graph->node_count, 0, 2);
+    animation_index(animation, ui, "input.b", "Input B node", &node->inputs[1],
+                    graph->node_count, 1, 2);
+    animation_label(ui, "blend.rule", "X: 0 = A, 1 = B", 2, 2);
+  } else {
+    animation_label(ui, "space.help", "Samples: page 3; triangles: page 4", 0,
+                    2);
+  }
+  snprintf(text, sizeof(text), "Cycle %.2fs", graph->cycle_seconds);
+  animation_label(ui, "cycle.label", text, 0, 3);
+  animation_property_double(animation, ui, "cycle", &graph->cycle_seconds,
+                            0.05f, 10, 1, 3);
+  snprintf(text, sizeof(text), "Clip / series fade %.2fs",
+           animation->document.crossfade_seconds);
+  animation_label(ui, "fade.label", text, 2, 3);
+  animation_property_float(animation, ui, "fade",
+                           &animation->document.crossfade_seconds, 0, 5, 3, 3);
+  if (animation_button(ui, "node.remove", "Remove last node", 0, 4,
+                       graph->node_count <= 1)) {
+    animation_remember(animation);
+    --graph->node_count;
+    if (graph->root >= graph->node_count) {
+      graph->root = 0;
+    }
+    for (uint32_t i = 0; i < graph->node_count; ++i) {
+      for (uint32_t input = 0; input < 2; ++input) {
+        if (graph->nodes[i].inputs[input] >= graph->node_count) {
+          graph->nodes[i].inputs[input] = 0;
+        }
+      }
+    }
+    for (uint32_t i = 0; i < graph->state_count; ++i) {
+      if (graph->states[i].root >= graph->node_count) {
+        graph->states[i].root = 0;
+      }
+    }
+    animation->selected_node =
+        Min(animation->selected_node, graph->node_count - 1u);
+  }
+  animation_label(ui, "cycle.help", "Cycles share normalized phase", 1, 4);
+  animation_label(ui, "valid.help", "Cycles in pose wires are rejected", 0, 5);
+}
+
+static void animation_sample_page(VkrEditorAnimation *animation,
+                                  VkrUiSystem *ui,
+                                  VkrAnimationGraphNode *node) {
+  char text[160];
+  const bool8_t space = node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE1D ||
+                        node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE2D;
+  if (!space) {
+    animation_label(ui, "sample.help", "Select a 1D or 2D node", 0, 1);
+  } else {
+    animation->selected_sample =
+        Min(animation->selected_sample, node->sample_count - 1u);
+    if (animation_button(ui, "sample.previous", "Previous sample", 0, 1,
+                         !animation->selected_sample)) {
+      --animation->selected_sample;
+    }
+    if (animation_button(ui, "sample.next", "Next sample", 1, 1,
+                         animation->selected_sample + 1u >=
+                             node->sample_count)) {
+      ++animation->selected_sample;
+    }
+    if (animation_button(ui, "sample.add", "Add browser clip", 2, 1,
+                         node->sample_count == VKR_ANIMATION_GRAPH_SAMPLES)) {
+      animation_remember(animation);
+      animation->selected_sample = node->sample_count;
+      node->samples[node->sample_count] = (VkrAnimationGraphSample){
+          .clip = animation->selected_clip, .x = (float32_t)node->sample_count};
+      ++node->sample_count;
+    }
+    if (animation_button(
+            ui, "sample.remove", "Remove last sample", 3, 1,
+            node->sample_count <=
+                (node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE1D ? 2u : 3u))) {
+      animation_remember(animation);
+      --node->sample_count;
+      for (uint32_t i = 0; i < node->triangle_count;) {
+        const VkrAnimationGraphTriangle triangle = node->triangles[i];
+        if (triangle.samples[0] >= node->sample_count ||
+            triangle.samples[1] >= node->sample_count ||
+            triangle.samples[2] >= node->sample_count) {
+          node->triangles[i] = node->triangles[--node->triangle_count];
+        } else {
+          ++i;
+        }
+      }
+      animation->selected_sample =
+          Min(animation->selected_sample, node->sample_count - 1u);
+    }
+    VkrAnimationGraphSample *sample =
+        &node->samples[animation->selected_sample];
+    snprintf(text, sizeof(text), "Sample %u clip %u",
+             animation->selected_sample, sample->clip);
+    animation_label(ui, "sample.label", text, 0, 2);
+    if (animation_button(ui, "sample.clip", "Use browser clip", 1, 2,
+                         false_v)) {
+      animation_remember(animation);
+      sample->clip = animation->selected_clip;
+    }
+    snprintf(text, sizeof(text), "X %.2f", sample->x);
+    animation_label(ui, "sample.x.label", text, 0, 3);
+    animation_property_float(animation, ui, "sample.x", &sample->x, -5, 5, 1,
+                             3);
+    snprintf(text, sizeof(text), "Y %.2f", sample->y);
+    animation_label(ui, "sample.y.label", text, 2, 3);
+    if (node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE2D) {
+      animation_property_float(animation, ui, "sample.y", &sample->y, -5, 5, 3,
+                               3);
+    }
+    animation_label(ui, "sample.rule", "1D: unique X; 2D: author triangles", 0,
+                    4);
+  }
+}
+
+static void animation_triangle_page(VkrEditorAnimation *animation,
+                                    VkrUiSystem *ui,
+                                    VkrAnimationGraphNode *node) {
+  char text[160];
+  if (node->kind != VKR_ANIMATION_GRAPH_BLENDSPACE2D) {
+    animation_label(ui, "triangle.help", "Select a 2D node", 0, 1);
+  } else {
+    if (animation_button(ui, "triangle.add", "Add triangle", 0, 1,
+                         node->triangle_count ==
+                             VKR_ANIMATION_GRAPH_TRIANGLES)) {
+      animation_remember(animation);
+      animation->selected_triangle = node->triangle_count;
+      node->triangles[node->triangle_count++] =
+          (VkrAnimationGraphTriangle){.samples = {0, 1, 2}};
+    }
+    if (animation_button(ui, "triangle.remove", "Remove last triangle", 1, 1,
+                         !node->triangle_count)) {
+      animation_remember(animation);
+      --node->triangle_count;
+    }
+    if (node->triangle_count) {
+      animation->selected_triangle =
+          Min(animation->selected_triangle, node->triangle_count - 1u);
+      if (animation_button(ui, "triangle.next", "Next triangle", 2, 1,
+                           node->triangle_count < 2)) {
+        animation->selected_triangle =
+            (animation->selected_triangle + 1u) % node->triangle_count;
+      }
+      snprintf(text, sizeof(text), "Triangle %u", animation->selected_triangle);
+      animation_label(ui, "triangle.index", text, 3, 1);
+      VkrAnimationGraphTriangle *triangle =
+          &node->triangles[animation->selected_triangle];
+      animation_index(animation, ui, "triangle.a", "Sample A",
+                      &triangle->samples[0], node->sample_count, 0, 2);
+      animation_index(animation, ui, "triangle.b", "Sample B",
+                      &triangle->samples[1], node->sample_count, 1, 2);
+      animation_index(animation, ui, "triangle.c", "Sample C",
+                      &triangle->samples[2], node->sample_count, 2, 2);
+    }
+    animation_label(ui, "triangle.rule", "Nondegenerate triangles; edges clamp",
+                    0, 4);
+  }
+}
+
+static void animation_state_page(VkrEditorAnimation *animation,
+                                 VkrUiSystem *ui) {
+  VkrAnimationGraph *graph = &animation->document.graph;
+  char text[160];
+  if (animation_button(ui, "state.add", "Add selected node state", 0, 0,
+                       graph->state_count == VKR_ANIMATION_GRAPH_STATES)) {
+    animation_remember(animation);
+    animation->selected_state = graph->state_count;
+    graph->states[graph->state_count++] =
+        (VkrAnimationGraphState){.root = animation->selected_node,
+                                 .cycle_seconds = graph->cycle_seconds};
+  }
+  if (animation_button(ui, "state.remove", "Remove last state", 1, 0,
+                       !graph->state_count)) {
+    animation_remember(animation);
+    --graph->state_count;
+    graph->initial_state = 0;
+    for (uint32_t i = 0; i < graph->transition_count;) {
+      if (graph->transitions[i].from >= graph->state_count ||
+          graph->transitions[i].to >= graph->state_count) {
+        graph->transitions[i] = graph->transitions[--graph->transition_count];
+      } else {
+        ++i;
+      }
+    }
+  }
+  if (graph->state_count) {
+    animation->selected_state =
+        Min(animation->selected_state, graph->state_count - 1u);
+    if (animation_button(ui, "state.next", "Next state", 2, 0,
+                         graph->state_count < 2)) {
+      animation->selected_state =
+          (animation->selected_state + 1u) % graph->state_count;
+    }
+    snprintf(text, sizeof(text), "State %u", animation->selected_state);
+    animation_label(ui, "state.index", text, 3, 0);
+    VkrAnimationGraphState *state = &graph->states[animation->selected_state];
+    animation_index(animation, ui, "state.root", "Root node", &state->root,
+                    graph->node_count, 0, 1);
+    if (animation_button(ui, "state.initial", "Set initial state", 1, 1,
+                         false_v)) {
+      animation_remember(animation);
+      graph->initial_state = animation->selected_state;
+    }
+    snprintf(text, sizeof(text), "Cycle %.2fs", state->cycle_seconds);
+    animation_label(ui, "state.cycle.label", text, 2, 1);
+    animation_property_double(animation, ui, "state.cycle",
+                              &state->cycle_seconds, 0.05f, 10, 3, 1);
+  }
+  snprintf(text, sizeof(text), "Active state %u; initial %u",
+           animation->graph_instance.state, graph->initial_state);
+  animation_label(ui, "state.active", text, 0, 3);
+  if (animation->graph_instance.transitioning) {
+    snprintf(text, sizeof(text), "Transition %u: %.2fs",
+             animation->graph_instance.transition,
+             animation->graph_instance.transition_time);
+    animation_label(ui, "state.transition", text, 1, 3);
+  }
+  animation_label(ui, "state.help", "Transitions page: ordered conditions", 0,
+                  4);
+}
+
+static void animation_transition_page(VkrEditorAnimation *animation,
+                                      VkrUiSystem *ui) {
+  VkrAnimationGraph *graph = &animation->document.graph;
+  char text[160];
+  if (animation_button(ui, "transition.add", "Add transition", 0, 0,
+                       graph->state_count < 2 ||
+                           graph->transition_count ==
+                               VKR_ANIMATION_GRAPH_TRANSITIONS)) {
+    animation_remember(animation);
+    animation->selected_transition = graph->transition_count;
+    graph->transitions[graph->transition_count++] =
+        (VkrAnimationGraphTransition){.from = 0,
+                                      .to = 1,
+                                      .threshold = 0.5f,
+                                      .duration =
+                                          animation->document.crossfade_seconds,
+                                      .exit_time = -1};
+  }
+  if (animation_button(ui, "transition.remove", "Remove last transition", 1, 0,
+                       !graph->transition_count)) {
+    animation_remember(animation);
+    --graph->transition_count;
+  }
+  if (graph->transition_count) {
+    animation->selected_transition =
+        Min(animation->selected_transition, graph->transition_count - 1u);
+    if (animation_button(ui, "transition.next", "Next transition", 2, 0,
+                         graph->transition_count < 2)) {
+      animation->selected_transition =
+          (animation->selected_transition + 1u) % graph->transition_count;
+    }
+    snprintf(text, sizeof(text), "Transition %u",
+             animation->selected_transition);
+    animation_label(ui, "transition.index", text, 3, 0);
+    VkrAnimationGraphTransition *transition =
+        &graph->transitions[animation->selected_transition];
+    animation_index(animation, ui, "transition.from", "From state",
+                    &transition->from, graph->state_count, 0, 1);
+    animation_index(animation, ui, "transition.to", "To state", &transition->to,
+                    graph->state_count, 1, 1);
+    animation_index(animation, ui, "transition.parameter", "Parameter",
+                    &transition->parameter, graph->parameter_count, 2, 1);
+    if (animation_button(ui, "transition.comparison",
+                         transition->comparison ==
+                                 VKR_ANIMATION_GRAPH_GREATER_EQUAL
+                             ? ">= threshold"
+                             : "<= threshold",
+                         3, 1, false_v)) {
+      animation_remember(animation);
+      transition->comparison =
+          transition->comparison == VKR_ANIMATION_GRAPH_GREATER_EQUAL
+              ? VKR_ANIMATION_GRAPH_LESS_EQUAL
+              : VKR_ANIMATION_GRAPH_GREATER_EQUAL;
+    }
+    snprintf(text, sizeof(text), "Threshold %.2f", transition->threshold);
+    animation_label(ui, "threshold.label", text, 0, 2);
+    animation_property_float(animation, ui, "threshold", &transition->threshold,
+                             -5, 5, 1, 2);
+    snprintf(text, sizeof(text), "Fade %.2fs", transition->duration);
+    animation_label(ui, "transition.fade.label", text, 2, 2);
+    animation_property_double(animation, ui, "transition.fade",
+                              &transition->duration, 0, 5, 3, 2);
+    if (animation_button(ui, "transition.exit.enabled",
+                         transition->exit_time < 0 ? "Enable exit gate"
+                                                   : "Disable exit gate",
+                         0, 3, false_v)) {
+      animation_remember(animation);
+      transition->exit_time = transition->exit_time < 0 ? 0.8 : -1;
+    }
+    if (transition->exit_time >= 0) {
+      snprintf(text, sizeof(text), "Exit phase %.2f", transition->exit_time);
+      animation_label(ui, "exit.label", text, 1, 3);
+      animation_property_double(animation, ui, "exit", &transition->exit_time,
+                                0, 1, 2, 3);
+    }
+    animation_label(ui, "transition.rule", "First matching transition wins", 0,
+                    4);
+  }
+}
+
+static void animation_parameter_page(VkrEditorAnimation *animation,
+                                     const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  VkrAnimationGraph *graph = &animation->document.graph;
+  char text[160];
+  for (uint32_t i = 0; i < graph->parameter_count; ++i) {
+    char id[32];
+    snprintf(id, sizeof(id), "parameter.%u.label", i);
+    snprintf(text, sizeof(text), "P%u: %.3f", i, graph->parameters[i]);
+    animation_label(ui, id, text, (i % 2u) * 2u, i / 2u);
+    snprintf(id, sizeof(id), "parameter.%u", i);
+    const bool8_t applied = animation->graph_applied;
+    const bool8_t dirty = animation->graph_dirty;
+    const bool8_t seek = animation->pose_seek;
+    if (animation_property_float(animation, ui, id, &graph->parameters[i], -5,
+                                 5, (i % 2u) * 2u + 1u, i / 2u)) {
+      animation->graph_applied = applied;
+      animation->graph_dirty = dirty;
+      animation->pose_seek = seek;
+      animation->graph_parameter_dirty = true_v;
+      (void)vkr_animation_graph_set_parameter(&animation->graph_instance, i,
+                                              graph->parameters[i]);
+      if (applied) {
+        (void)vkr_scene_animation_set_parameter(
+            frame->scene, animation->wrapper, i, graph->parameters[i]);
+      }
+    }
+  }
+  if (animation_button(ui, "parameter.add", "Add parameter", 0, 4,
+                       graph->parameter_count ==
+                           VKR_ANIMATION_GRAPH_PARAMETERS)) {
+    animation_remember(animation);
+    graph->parameters[graph->parameter_count++] = 0;
+  }
+  animation_label(ui, "parameter.help",
+                  "Live values drive graph and conditions", 1, 4);
+  animation_label(ui, "seek.help", "Scrub replays with current parameters", 0,
+                  5);
+}
+
 static void animation_properties(VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
   VkrEditorAnimation *animation = &editor->animation;
@@ -729,395 +1088,27 @@ static void animation_properties(VkrEditorUi *editor,
     }
   }
   if (animation->authoring_page == 1) {
-    const char *kinds[] = {"Clip", "Weighted Blend 2", "Blend Space 1D",
-                           "Blend Space 2D"};
-    animation_label(ui, "node.kind", kinds[node->kind], 0, 1);
-    if (animation_button(ui, "node.clip", "Use browser clip", 1, 1,
-                         node->kind != VKR_ANIMATION_GRAPH_CLIP)) {
-      animation_remember(animation);
-      node->clip = animation->selected_clip;
-    }
-    animation_index(animation, ui, "parameter.x", "X parameter",
-                    &node->parameter_x, graph->parameter_count, 2, 1);
-    animation_index(animation, ui, "parameter.y", "Y parameter",
-                    &node->parameter_y, graph->parameter_count, 3, 1);
-    if (node->kind == VKR_ANIMATION_GRAPH_BLEND2) {
-      animation_index(animation, ui, "input.a", "Input A node",
-                      &node->inputs[0], graph->node_count, 0, 2);
-      animation_index(animation, ui, "input.b", "Input B node",
-                      &node->inputs[1], graph->node_count, 1, 2);
-      animation_label(ui, "blend.rule", "X: 0 = A, 1 = B", 2, 2);
-    } else {
-      animation_label(ui, "space.help", "Samples: page 3; triangles: page 4", 0,
-                      2);
-    }
-    snprintf(text, sizeof(text), "Cycle %.2fs", graph->cycle_seconds);
-    animation_label(ui, "cycle.label", text, 0, 3);
-    animation_property_double(animation, ui, "cycle", &graph->cycle_seconds,
-                              0.05f, 10, 1, 3);
-    snprintf(text, sizeof(text), "Clip / series fade %.2fs",
-             animation->document.crossfade_seconds);
-    animation_label(ui, "fade.label", text, 2, 3);
-    animation_property_float(animation, ui, "fade",
-                             &animation->document.crossfade_seconds, 0, 5, 3,
-                             3);
-    if (animation_button(ui, "node.remove", "Remove last node", 0, 4,
-                         graph->node_count <= 1)) {
-      animation_remember(animation);
-      --graph->node_count;
-      if (graph->root >= graph->node_count) {
-        graph->root = 0;
-      }
-      for (uint32_t i = 0; i < graph->node_count; ++i) {
-        for (uint32_t input = 0; input < 2; ++input) {
-          if (graph->nodes[i].inputs[input] >= graph->node_count) {
-            graph->nodes[i].inputs[input] = 0;
-          }
-        }
-      }
-      for (uint32_t i = 0; i < graph->state_count; ++i) {
-        if (graph->states[i].root >= graph->node_count) {
-          graph->states[i].root = 0;
-        }
-      }
-      animation->selected_node =
-          Min(animation->selected_node, graph->node_count - 1u);
-    }
-    animation_label(ui, "cycle.help", "Cycles share normalized phase", 1, 4);
-    animation_label(ui, "valid.help", "Cycles in pose wires are rejected", 0,
-                    5);
+    animation_node_page(animation, ui, node);
   } else if (animation->authoring_page == 2) {
-    const bool8_t space = node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE1D ||
-                          node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE2D;
-    if (!space) {
-      animation_label(ui, "sample.help", "Select a 1D or 2D node", 0, 1);
-    } else {
-      animation->selected_sample =
-          Min(animation->selected_sample, node->sample_count - 1u);
-      if (animation_button(ui, "sample.previous", "Previous sample", 0, 1,
-                           !animation->selected_sample)) {
-        --animation->selected_sample;
-      }
-      if (animation_button(ui, "sample.next", "Next sample", 1, 1,
-                           animation->selected_sample + 1u >=
-                               node->sample_count)) {
-        ++animation->selected_sample;
-      }
-      if (animation_button(ui, "sample.add", "Add browser clip", 2, 1,
-                           node->sample_count == VKR_ANIMATION_GRAPH_SAMPLES)) {
-        animation_remember(animation);
-        animation->selected_sample = node->sample_count;
-        node->samples[node->sample_count] =
-            (VkrAnimationGraphSample){.clip = animation->selected_clip,
-                                      .x = (float32_t)node->sample_count};
-        ++node->sample_count;
-      }
-      if (animation_button(
-              ui, "sample.remove", "Remove last sample", 3, 1,
-              node->sample_count <=
-                  (node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE1D ? 2u : 3u))) {
-        animation_remember(animation);
-        --node->sample_count;
-        for (uint32_t i = 0; i < node->triangle_count;) {
-          const VkrAnimationGraphTriangle triangle = node->triangles[i];
-          if (triangle.samples[0] >= node->sample_count ||
-              triangle.samples[1] >= node->sample_count ||
-              triangle.samples[2] >= node->sample_count) {
-            node->triangles[i] = node->triangles[--node->triangle_count];
-          } else {
-            ++i;
-          }
-        }
-        animation->selected_sample =
-            Min(animation->selected_sample, node->sample_count - 1u);
-      }
-      VkrAnimationGraphSample *sample =
-          &node->samples[animation->selected_sample];
-      snprintf(text, sizeof(text), "Sample %u clip %u",
-               animation->selected_sample, sample->clip);
-      animation_label(ui, "sample.label", text, 0, 2);
-      if (animation_button(ui, "sample.clip", "Use browser clip", 1, 2,
-                           false_v)) {
-        animation_remember(animation);
-        sample->clip = animation->selected_clip;
-      }
-      snprintf(text, sizeof(text), "X %.2f", sample->x);
-      animation_label(ui, "sample.x.label", text, 0, 3);
-      animation_property_float(animation, ui, "sample.x", &sample->x, -5, 5, 1,
-                               3);
-      snprintf(text, sizeof(text), "Y %.2f", sample->y);
-      animation_label(ui, "sample.y.label", text, 2, 3);
-      if (node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE2D) {
-        animation_property_float(animation, ui, "sample.y", &sample->y, -5, 5,
-                                 3, 3);
-      }
-      animation_label(ui, "sample.rule", "1D: unique X; 2D: author triangles",
-                      0, 4);
-    }
+    animation_sample_page(animation, ui, node);
   } else if (animation->authoring_page == 3) {
-    if (node->kind != VKR_ANIMATION_GRAPH_BLENDSPACE2D) {
-      animation_label(ui, "triangle.help", "Select a 2D node", 0, 1);
-    } else {
-      if (animation_button(ui, "triangle.add", "Add triangle", 0, 1,
-                           node->triangle_count ==
-                               VKR_ANIMATION_GRAPH_TRIANGLES)) {
-        animation_remember(animation);
-        animation->selected_triangle = node->triangle_count;
-        node->triangles[node->triangle_count++] =
-            (VkrAnimationGraphTriangle){.samples = {0, 1, 2}};
-      }
-      if (animation_button(ui, "triangle.remove", "Remove last triangle", 1, 1,
-                           !node->triangle_count)) {
-        animation_remember(animation);
-        --node->triangle_count;
-      }
-      if (node->triangle_count) {
-        animation->selected_triangle =
-            Min(animation->selected_triangle, node->triangle_count - 1u);
-        if (animation_button(ui, "triangle.next", "Next triangle", 2, 1,
-                             node->triangle_count < 2)) {
-          animation->selected_triangle =
-              (animation->selected_triangle + 1u) % node->triangle_count;
-        }
-        snprintf(text, sizeof(text), "Triangle %u",
-                 animation->selected_triangle);
-        animation_label(ui, "triangle.index", text, 3, 1);
-        VkrAnimationGraphTriangle *triangle =
-            &node->triangles[animation->selected_triangle];
-        animation_index(animation, ui, "triangle.a", "Sample A",
-                        &triangle->samples[0], node->sample_count, 0, 2);
-        animation_index(animation, ui, "triangle.b", "Sample B",
-                        &triangle->samples[1], node->sample_count, 1, 2);
-        animation_index(animation, ui, "triangle.c", "Sample C",
-                        &triangle->samples[2], node->sample_count, 2, 2);
-      }
-      animation_label(ui, "triangle.rule",
-                      "Nondegenerate triangles; edges clamp", 0, 4);
-    }
+    animation_triangle_page(animation, ui, node);
   } else if (animation->authoring_page == 4) {
-    if (animation_button(ui, "state.add", "Add selected node state", 0, 0,
-                         graph->state_count == VKR_ANIMATION_GRAPH_STATES)) {
-      animation_remember(animation);
-      animation->selected_state = graph->state_count;
-      graph->states[graph->state_count++] =
-          (VkrAnimationGraphState){.root = animation->selected_node,
-                                   .cycle_seconds = graph->cycle_seconds};
-    }
-    if (animation_button(ui, "state.remove", "Remove last state", 1, 0,
-                         !graph->state_count)) {
-      animation_remember(animation);
-      --graph->state_count;
-      graph->initial_state = 0;
-      for (uint32_t i = 0; i < graph->transition_count;) {
-        if (graph->transitions[i].from >= graph->state_count ||
-            graph->transitions[i].to >= graph->state_count) {
-          graph->transitions[i] = graph->transitions[--graph->transition_count];
-        } else {
-          ++i;
-        }
-      }
-    }
-    if (graph->state_count) {
-      animation->selected_state =
-          Min(animation->selected_state, graph->state_count - 1u);
-      if (animation_button(ui, "state.next", "Next state", 2, 0,
-                           graph->state_count < 2)) {
-        animation->selected_state =
-            (animation->selected_state + 1u) % graph->state_count;
-      }
-      snprintf(text, sizeof(text), "State %u", animation->selected_state);
-      animation_label(ui, "state.index", text, 3, 0);
-      VkrAnimationGraphState *state = &graph->states[animation->selected_state];
-      animation_index(animation, ui, "state.root", "Root node", &state->root,
-                      graph->node_count, 0, 1);
-      if (animation_button(ui, "state.initial", "Set initial state", 1, 1,
-                           false_v)) {
-        animation_remember(animation);
-        graph->initial_state = animation->selected_state;
-      }
-      snprintf(text, sizeof(text), "Cycle %.2fs", state->cycle_seconds);
-      animation_label(ui, "state.cycle.label", text, 2, 1);
-      animation_property_double(animation, ui, "state.cycle",
-                                &state->cycle_seconds, 0.05f, 10, 3, 1);
-    }
-    snprintf(text, sizeof(text), "Active state %u; initial %u",
-             animation->graph_instance.state, graph->initial_state);
-    animation_label(ui, "state.active", text, 0, 3);
-    if (animation->graph_instance.transitioning) {
-      snprintf(text, sizeof(text), "Transition %u: %.2fs",
-               animation->graph_instance.transition,
-               animation->graph_instance.transition_time);
-      animation_label(ui, "state.transition", text, 1, 3);
-    }
-    animation_label(ui, "state.help", "Transitions page: ordered conditions", 0,
-                    4);
+    animation_state_page(animation, ui);
   } else if (animation->authoring_page == 5) {
-    if (animation_button(ui, "transition.add", "Add transition", 0, 0,
-                         graph->state_count < 2 ||
-                             graph->transition_count ==
-                                 VKR_ANIMATION_GRAPH_TRANSITIONS)) {
-      animation_remember(animation);
-      animation->selected_transition = graph->transition_count;
-      graph->transitions[graph->transition_count++] =
-          (VkrAnimationGraphTransition){
-              .from = 0,
-              .to = 1,
-              .threshold = 0.5f,
-              .duration = animation->document.crossfade_seconds,
-              .exit_time = -1};
-    }
-    if (animation_button(ui, "transition.remove", "Remove last transition", 1,
-                         0, !graph->transition_count)) {
-      animation_remember(animation);
-      --graph->transition_count;
-    }
-    if (graph->transition_count) {
-      animation->selected_transition =
-          Min(animation->selected_transition, graph->transition_count - 1u);
-      if (animation_button(ui, "transition.next", "Next transition", 2, 0,
-                           graph->transition_count < 2)) {
-        animation->selected_transition =
-            (animation->selected_transition + 1u) % graph->transition_count;
-      }
-      snprintf(text, sizeof(text), "Transition %u",
-               animation->selected_transition);
-      animation_label(ui, "transition.index", text, 3, 0);
-      VkrAnimationGraphTransition *transition =
-          &graph->transitions[animation->selected_transition];
-      animation_index(animation, ui, "transition.from", "From state",
-                      &transition->from, graph->state_count, 0, 1);
-      animation_index(animation, ui, "transition.to", "To state",
-                      &transition->to, graph->state_count, 1, 1);
-      animation_index(animation, ui, "transition.parameter", "Parameter",
-                      &transition->parameter, graph->parameter_count, 2, 1);
-      if (animation_button(ui, "transition.comparison",
-                           transition->comparison ==
-                                   VKR_ANIMATION_GRAPH_GREATER_EQUAL
-                               ? ">= threshold"
-                               : "<= threshold",
-                           3, 1, false_v)) {
-        animation_remember(animation);
-        transition->comparison =
-            transition->comparison == VKR_ANIMATION_GRAPH_GREATER_EQUAL
-                ? VKR_ANIMATION_GRAPH_LESS_EQUAL
-                : VKR_ANIMATION_GRAPH_GREATER_EQUAL;
-      }
-      snprintf(text, sizeof(text), "Threshold %.2f", transition->threshold);
-      animation_label(ui, "threshold.label", text, 0, 2);
-      animation_property_float(animation, ui, "threshold",
-                               &transition->threshold, -5, 5, 1, 2);
-      snprintf(text, sizeof(text), "Fade %.2fs", transition->duration);
-      animation_label(ui, "transition.fade.label", text, 2, 2);
-      animation_property_double(animation, ui, "transition.fade",
-                                &transition->duration, 0, 5, 3, 2);
-      if (animation_button(ui, "transition.exit.enabled",
-                           transition->exit_time < 0 ? "Enable exit gate"
-                                                     : "Disable exit gate",
-                           0, 3, false_v)) {
-        animation_remember(animation);
-        transition->exit_time = transition->exit_time < 0 ? 0.8 : -1;
-      }
-      if (transition->exit_time >= 0) {
-        snprintf(text, sizeof(text), "Exit phase %.2f", transition->exit_time);
-        animation_label(ui, "exit.label", text, 1, 3);
-        animation_property_double(animation, ui, "exit", &transition->exit_time,
-                                  0, 1, 2, 3);
-      }
-      animation_label(ui, "transition.rule", "First matching transition wins",
-                      0, 4);
-    }
+    animation_transition_page(animation, ui);
   } else if (animation->authoring_page == 6) {
-    for (uint32_t i = 0; i < graph->parameter_count; ++i) {
-      char id[32];
-      snprintf(id, sizeof(id), "parameter.%u.label", i);
-      snprintf(text, sizeof(text), "P%u: %.3f", i, graph->parameters[i]);
-      animation_label(ui, id, text, (i % 2u) * 2u, i / 2u);
-      snprintf(id, sizeof(id), "parameter.%u", i);
-      const bool8_t applied = animation->graph_applied;
-      const bool8_t dirty = animation->graph_dirty;
-      const bool8_t seek = animation->pose_seek;
-      if (animation_property_float(animation, ui, id, &graph->parameters[i], -5,
-                                   5, (i % 2u) * 2u + 1u, i / 2u)) {
-        animation->graph_applied = applied;
-        animation->graph_dirty = dirty;
-        animation->pose_seek = seek;
-        animation->graph_parameter_dirty = true_v;
-        (void)vkr_animation_graph_set_parameter(&animation->graph_instance, i,
-                                                graph->parameters[i]);
-        if (applied) {
-          (void)vkr_scene_animation_set_parameter(
-              frame->scene, animation->wrapper, i, graph->parameters[i]);
-        }
-      }
-    }
-    if (animation_button(ui, "parameter.add", "Add parameter", 0, 4,
-                         graph->parameter_count ==
-                             VKR_ANIMATION_GRAPH_PARAMETERS)) {
-      animation_remember(animation);
-      graph->parameters[graph->parameter_count++] = 0;
-    }
-    animation_label(ui, "parameter.help",
-                    "Live values drive graph and conditions", 1, 4);
-    animation_label(ui, "seek.help", "Scrub replays with current parameters", 0,
-                    5);
+    animation_parameter_page(animation, frame);
   }
   (void)vkr_ui_panel_end(ui);
 }
 
-void vkr_editor_animation_build(VkrEditorUi *editor,
-                                const VkrSampleUiFrame *frame) {
+static void animation_build_preview(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    const VkrUiTrack *columns,
+                                    uint32_t column_count) {
   VkrUiSystem *ui = frame->ui;
   VkrEditorAnimation *animation = &editor->animation;
-  VkrUiPanelConfig body = vkr_ui_panel_config_default();
-  body.placement.row = 1;
-  body.style.padding_pt = (VkrUiEdges){8, 8, 8, 8};
-  body.style.gap_pt = 5;
-  body.clip_children = true_v;
-  const VkrUiTrack columns[] = {{.value = 1, .unit = VKR_UI_TRACK_FR},
-                                {.value = 1, .unit = VKR_UI_TRACK_FR},
-                                {.value = 1, .unit = VKR_UI_TRACK_FR},
-                                {.value = 1, .unit = VKR_UI_TRACK_FR}};
-  VkrUiTrack rows[9];
-  for (uint32_t i = 0; i < ArrayCount(rows); ++i) {
-    rows[i] = (VkrUiTrack){.value = 27, .unit = VKR_UI_TRACK_PX};
-  }
-  rows[0].value = 190;
-  rows[6].value = 180;
-  body.columns = columns;
-  body.column_count = ArrayCount(columns);
-  body.rows = rows;
-  body.row_count = ArrayCount(rows);
-  if (!vkr_ui_panel_begin(ui, string8_lit("animation.body"), &body)) {
-    return;
-  }
-  const bool8_t keyboard_scope =
-      !ui->focused_is_text &&
-      ui->keyboard_input_layer ==
-          editor->windows[VKR_EDITOR_WINDOW_ANIMATION].z_order + 2u;
-  if (keyboard_scope && frame->scene_shortcuts_blocked) {
-    *frame->scene_shortcuts_blocked = true_v;
-  }
-  if (!animation->player) {
-    VkrUiWidgetConfig empty = animation_widget(0, 0);
-    empty.placement.column_span = 4;
-    const char *message =
-        animation->error
-            ? animation->error
-            : "Select a character with an animation bank in the Hierarchy.";
-    vkr_ui_label(ui, string8_lit("empty"),
-                 string8_create((uint8_t *)message, strlen(message)), &empty);
-    (void)vkr_ui_panel_end(ui);
-    return;
-  }
-  const bool8_t undo_key = keyboard_scope &&
-                           input_key_shortcut_modifier(frame->input, KEY_Z) &&
-                           input_key_just_pressed(frame->input, KEY_Z);
-  const bool8_t redo_key =
-      undo_key &&
-      (input_key_press_modifiers(frame->input, KEY_Z) & VKR_INPUT_MOD_SHIFT);
-  const VkrAnimationAsset *asset =
-      vkr_animation_player_asset(animation->player);
-  const float64_t duration = animation_duration(animation, asset);
   VkrUiPanelConfig preview = vkr_ui_panel_config_default();
   preview.placement.column_span = 2;
   preview.style.background_color = (Vec4){0.025f, 0.035f, 0.045f, 1};
@@ -1128,7 +1119,7 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
   preview.rows = preview_rows;
   preview.row_count = ArrayCount(preview_rows);
   preview.columns = columns;
-  preview.column_count = ArrayCount(columns);
+  preview.column_count = column_count;
   if (vkr_ui_panel_begin(ui, string8_lit("preview"), &preview)) {
     VkrUiWidgetConfig image = animation_widget(0, 0);
     image.placement.column_span = 4;
@@ -1190,6 +1181,10 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
         animation->preview_distance - ui->mouse_wheel * 0.2f, 1.2f, 8);
     ui->capture.mouse = true_v;
   }
+}
+
+static void animation_build_transport(VkrEditorAnimation *animation,
+                                      VkrUiSystem *ui, float64_t duration) {
   if (animation_button(ui, "play", animation->playing ? "Pause" : "Play", 0, 1,
                        animation->sequence &&
                            !animation->document.block_count)) {
@@ -1267,6 +1262,11 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
                           &rate);
   snprintf(status, sizeof(status), "Speed %.2fx", animation->rate);
   animation_label(ui, "rate", status, 3, 3);
+}
+
+static void animation_build_mode_row(VkrEditorAnimation *animation,
+                                     VkrUiSystem *ui, bool8_t undo_key,
+                                     bool8_t redo_key) {
   if (animation_button(ui, "graph",
                        animation->sequence || animation->clip_preview
                            ? "Graph"
@@ -1307,6 +1307,13 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
     animation->time = 0;
     animation->graph_dirty = animation->pose_seek = true_v;
   }
+}
+
+static void animation_build_clip_browser(VkrEditorAnimation *animation,
+                                         VkrUiSystem *ui,
+                                         const VkrAnimationAsset *asset,
+                                         const VkrUiTrack *columns) {
+  char status[160];
   VkrUiPanelConfig browser = vkr_ui_panel_config_default();
   browser.placement.column = 2;
   browser.placement.column_span = 2;
@@ -1366,161 +1373,238 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
     }
     (void)vkr_ui_panel_end(ui);
   }
+}
+
+static void animation_build_authoring(VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  VkrEditorAnimation *animation = &editor->animation;
+  static const char *pages[] = {
+      "1 Canvas", "2 Node properties", "3 Space samples", "4 Space triangles",
+      "5 States", "6 Transitions",     "7 Parameters"};
+  if (animation_button(ui, "page.previous", "Previous page", 0, 5,
+                       !animation->authoring_page)) {
+    --animation->authoring_page;
+  }
+  animation_label(ui, "page.name", pages[animation->authoring_page], 1, 5);
+  if (animation_button(ui, "page.next", "Next page", 2, 5,
+                       animation->authoring_page + 1u == ArrayCount(pages))) {
+    ++animation->authoring_page;
+  }
+  if (animation_button(ui, "apply.scene", "Apply to scene", 3, 5,
+                       !frame->scene)) {
+    if (!vkr_scene_animation_apply_graph(frame->scene, animation->wrapper,
+                                         &animation->document.graph,
+                                         &animation->error)) {
+      animation->playing = false_v;
+    } else {
+      animation->graph_applied = true_v;
+    }
+  }
+  if (!animation->authoring_page) {
+    animation_graph(editor, frame);
+  } else {
+    animation_properties(editor, frame);
+  }
+  const char *add_ids[] = {"add.clip", "add.blend", "add.space1", "add.space2"};
+  const char *add_labels[] = {"Add Clip", "Add Blend 2", "Add 1D Space",
+                              "Add 2D Space"};
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (animation_button(ui, add_ids[i], add_labels[i], i, 7,
+                         animation->document.graph.node_count ==
+                             VKR_EDITOR_ANIMATION_NODES)) {
+      animation_add_node(animation, (VkrAnimationGraphNodeKind)i);
+    }
+  }
+}
+
+static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
+                                     const VkrAnimationAsset *asset) {
+  VkrEditorAnimation *animation = &editor->animation;
+  char status[160];
+  VkrUiPanelConfig timeline = vkr_ui_panel_config_default();
+  timeline.placement.row = 6;
+  timeline.placement.column_span = 4;
+  timeline.placement.row_span = 1;
+  timeline.style.gap_pt = 2;
+  timeline.style.padding_pt = (VkrUiEdges){8, 2, 8, 2};
+  timeline.style.background_color = (Vec4){0.035f, 0.055f, 0.075f, 1};
+  timeline.clip_children = true_v;
+  const VkrUiTrack timeline_track = {.value = 1, .unit = VKR_UI_TRACK_FR};
+  timeline.columns = &timeline_track;
+  timeline.column_count = 1;
+  const float64_t timeline_duration = animation_duration(animation, asset);
+  const float32_t timeline_width =
+      Max(1.0f, editor->windows[VKR_EDITOR_WINDOW_ANIMATION].size_pt.x - 20);
+  if (vkr_ui_panel_begin(ui, string8_lit("timeline"), &timeline)) {
+    float64_t start = 0;
+    for (uint32_t i = 0; i < animation->document.block_count; ++i) {
+      const uint32_t clip = animation->document.blocks[i];
+      const float64_t end = start + asset->clips[clip].duration;
+      (void)vkr_ui_push_id_u64(ui, i);
+      const float64_t fade = animation_overlap(&animation->document, asset, i);
+      snprintf(status, sizeof(status), "%u\n%.2f - %.2fs\nFade %.2fs", clip,
+               start, end, fade);
+      VkrUiWidgetConfig block = animation_widget(0, 0);
+      block.placement.justify = VKR_UI_ALIGN_START;
+      block.placement.align = VKR_UI_ALIGN_START;
+      block.placement.margin_pt.left =
+          timeline_duration > 0
+              ? (float32_t)(start / timeline_duration) * timeline_width
+              : 0;
+      block.placement.margin_pt.top = (i % 2u) * 18.0f;
+      block.style.min_size_pt = block.style.max_size_pt = (Vec2){
+          Max(2.0f, timeline_duration > 0
+                        ? (float32_t)((end - start) / timeline_duration) *
+                              timeline_width
+                        : timeline_width),
+          130};
+      block.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+      block.style.border_color = (Vec4){0.42f, 0.90f, 0.72f, 1};
+      block.style.background_color = i == animation->selected_block
+                                         ? (Vec4){0.20f, 0.42f, 0.50f, 1}
+                                         : (Vec4){0.14f, 0.24f, 0.34f, 1};
+      block.tooltip = asset->clips[clip].name;
+      if (vkr_ui_button(ui, string8_lit("block"),
+                        string8_create((uint8_t *)status, strlen(status)),
+                        &block)) {
+        animation->selected_block = i;
+        animation->time = start;
+        animation->pose_seek = true_v;
+        animation->playing = false_v;
+      }
+      (void)vkr_ui_pop_id(ui);
+      start = end - animation_overlap(&animation->document, asset, i);
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+}
+
+static void animation_build_sequence(VkrEditorUi *editor, VkrUiSystem *ui,
+                                     const VkrAnimationAsset *asset) {
+  VkrEditorAnimation *animation = &editor->animation;
+  char status[160];
+  snprintf(status, sizeof(status), "Overlap fade %.2fs",
+           animation->document.crossfade_seconds);
+  animation_label(ui, "sequence.fade.label", status, 2, 5);
+  animation_property_float(animation, ui, "sequence.fade",
+                           &animation->document.crossfade_seconds, 0, 5, 3, 5);
+  if (animation_button(ui, "append", "Append selected clip", 0, 5,
+                       animation->document.block_count ==
+                           VKR_EDITOR_ANIMATION_BLOCKS)) {
+    animation_remember(animation);
+    animation->document.blocks[animation->document.block_count++] =
+        animation->selected_clip;
+  }
+  if (animation_button(ui, "remove", "Remove block", 1, 5,
+                       !animation->document.block_count)) {
+    animation_remember(animation);
+    for (uint32_t i = animation->selected_block + 1u;
+         i < animation->document.block_count; ++i) {
+      animation->document.blocks[i - 1u] = animation->document.blocks[i];
+    }
+    --animation->document.block_count;
+    animation->selected_block = 0;
+    animation->time = 0;
+  }
+  for (uint32_t direction = 0; direction < 2; ++direction) {
+    const bool8_t disabled = !animation->document.block_count ||
+                             (direction ? animation->selected_block + 1u >=
+                                              animation->document.block_count
+                                        : animation->selected_block == 0);
+    if (animation_button(ui, direction ? "later" : "earlier",
+                         direction ? "Move later" : "Move earlier",
+                         2u + direction, 7, disabled)) {
+      animation_remember(animation);
+      const uint32_t other = direction ? animation->selected_block + 1u
+                                       : animation->selected_block - 1u;
+      uint32_t clip = animation->document.blocks[other];
+      animation->document.blocks[other] =
+          animation->document.blocks[animation->selected_block];
+      animation->document.blocks[animation->selected_block] = clip;
+      animation->selected_block = other;
+      animation->time = 0;
+    }
+  }
+  animation_build_timeline(editor, ui, asset);
+  if (animation->document.block_count) {
+    uint32_t selected =
+        Min(animation->selected_block, animation->document.block_count - 1u);
+    const VkrAnimationClip *clip =
+        &asset->clips[animation->document.blocks[selected]];
+    snprintf(status, sizeof(status), "Block %u: %.*s (%.3fs)", selected + 1u,
+             (int)Min(clip->name.length, 90u), clip->name.str, clip->duration);
+    VkrUiWidgetConfig detail = animation_widget(0, 7);
+    detail.placement.column_span = 2;
+    vkr_ui_label(ui, string8_lit("selected.block"),
+                 string8_create((uint8_t *)status, strlen(status)), &detail);
+  }
+}
+
+void vkr_editor_animation_build(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  VkrEditorAnimation *animation = &editor->animation;
+  VkrUiPanelConfig body = vkr_ui_panel_config_default();
+  body.placement.row = 1;
+  body.style.padding_pt = (VkrUiEdges){8, 8, 8, 8};
+  body.style.gap_pt = 5;
+  body.clip_children = true_v;
+  const VkrUiTrack columns[] = {{.value = 1, .unit = VKR_UI_TRACK_FR},
+                                {.value = 1, .unit = VKR_UI_TRACK_FR},
+                                {.value = 1, .unit = VKR_UI_TRACK_FR},
+                                {.value = 1, .unit = VKR_UI_TRACK_FR}};
+  VkrUiTrack rows[9];
+  for (uint32_t i = 0; i < ArrayCount(rows); ++i) {
+    rows[i] = (VkrUiTrack){.value = 27, .unit = VKR_UI_TRACK_PX};
+  }
+  rows[0].value = 190;
+  rows[6].value = 180;
+  body.columns = columns;
+  body.column_count = ArrayCount(columns);
+  body.rows = rows;
+  body.row_count = ArrayCount(rows);
+  if (!vkr_ui_panel_begin(ui, string8_lit("animation.body"), &body)) {
+    return;
+  }
+  const bool8_t keyboard_scope =
+      !ui->focused_is_text &&
+      ui->keyboard_input_layer ==
+          editor->windows[VKR_EDITOR_WINDOW_ANIMATION].z_order + 2u;
+  if (keyboard_scope && frame->scene_shortcuts_blocked) {
+    *frame->scene_shortcuts_blocked = true_v;
+  }
+  if (!animation->player) {
+    VkrUiWidgetConfig empty = animation_widget(0, 0);
+    empty.placement.column_span = 4;
+    const char *message =
+        animation->error
+            ? animation->error
+            : "Select a character with an animation bank in the Hierarchy.";
+    vkr_ui_label(ui, string8_lit("empty"),
+                 string8_create((uint8_t *)message, strlen(message)), &empty);
+    (void)vkr_ui_panel_end(ui);
+    return;
+  }
+  const bool8_t undo_key = keyboard_scope &&
+                           input_key_shortcut_modifier(frame->input, KEY_Z) &&
+                           input_key_just_pressed(frame->input, KEY_Z);
+  const bool8_t redo_key =
+      undo_key &&
+      (input_key_press_modifiers(frame->input, KEY_Z) & VKR_INPUT_MOD_SHIFT);
+  const VkrAnimationAsset *asset =
+      vkr_animation_player_asset(animation->player);
+  const float64_t duration = animation_duration(animation, asset);
+  animation_build_preview(editor, frame, columns, ArrayCount(columns));
+  animation_build_transport(animation, ui, duration);
+  animation_build_mode_row(animation, ui, undo_key, redo_key);
+  animation_build_clip_browser(animation, ui, asset, columns);
   animation->selected_node =
       Min(animation->selected_node, animation->document.graph.node_count - 1u);
   if (!animation->sequence) {
-    static const char *pages[] = {
-        "1 Canvas", "2 Node properties", "3 Space samples", "4 Space triangles",
-        "5 States", "6 Transitions",     "7 Parameters"};
-    if (animation_button(ui, "page.previous", "Previous page", 0, 5,
-                         !animation->authoring_page)) {
-      --animation->authoring_page;
-    }
-    animation_label(ui, "page.name", pages[animation->authoring_page], 1, 5);
-    if (animation_button(ui, "page.next", "Next page", 2, 5,
-                         animation->authoring_page + 1u == ArrayCount(pages))) {
-      ++animation->authoring_page;
-    }
-    if (animation_button(ui, "apply.scene", "Apply to scene", 3, 5,
-                         !frame->scene)) {
-      if (!vkr_scene_animation_apply_graph(frame->scene, animation->wrapper,
-                                           &animation->document.graph,
-                                           &animation->error)) {
-        animation->playing = false_v;
-      } else {
-        animation->graph_applied = true_v;
-      }
-    }
-    if (!animation->authoring_page) {
-      animation_graph(editor, frame);
-    } else {
-      animation_properties(editor, frame);
-    }
-    const char *add_ids[] = {"add.clip", "add.blend", "add.space1",
-                             "add.space2"};
-    const char *add_labels[] = {"Add Clip", "Add Blend 2", "Add 1D Space",
-                                "Add 2D Space"};
-    for (uint32_t i = 0; i < 4; ++i) {
-      if (animation_button(ui, add_ids[i], add_labels[i], i, 7,
-                           animation->document.graph.node_count ==
-                               VKR_EDITOR_ANIMATION_NODES)) {
-        animation_add_node(animation, (VkrAnimationGraphNodeKind)i);
-      }
-    }
+    animation_build_authoring(editor, frame);
   } else {
-    snprintf(status, sizeof(status), "Overlap fade %.2fs",
-             animation->document.crossfade_seconds);
-    animation_label(ui, "sequence.fade.label", status, 2, 5);
-    animation_property_float(animation, ui, "sequence.fade",
-                             &animation->document.crossfade_seconds, 0, 5, 3,
-                             5);
-    if (animation_button(ui, "append", "Append selected clip", 0, 5,
-                         animation->document.block_count ==
-                             VKR_EDITOR_ANIMATION_BLOCKS)) {
-      animation_remember(animation);
-      animation->document.blocks[animation->document.block_count++] =
-          animation->selected_clip;
-    }
-    if (animation_button(ui, "remove", "Remove block", 1, 5,
-                         !animation->document.block_count)) {
-      animation_remember(animation);
-      for (uint32_t i = animation->selected_block + 1u;
-           i < animation->document.block_count; ++i) {
-        animation->document.blocks[i - 1u] = animation->document.blocks[i];
-      }
-      --animation->document.block_count;
-      animation->selected_block = 0;
-      animation->time = 0;
-    }
-    for (uint32_t direction = 0; direction < 2; ++direction) {
-      const bool8_t disabled = !animation->document.block_count ||
-                               (direction ? animation->selected_block + 1u >=
-                                                animation->document.block_count
-                                          : animation->selected_block == 0);
-      if (animation_button(ui, direction ? "later" : "earlier",
-                           direction ? "Move later" : "Move earlier",
-                           2u + direction, 7, disabled)) {
-        animation_remember(animation);
-        const uint32_t other = direction ? animation->selected_block + 1u
-                                         : animation->selected_block - 1u;
-        uint32_t clip = animation->document.blocks[other];
-        animation->document.blocks[other] =
-            animation->document.blocks[animation->selected_block];
-        animation->document.blocks[animation->selected_block] = clip;
-        animation->selected_block = other;
-        animation->time = 0;
-      }
-    }
-    VkrUiPanelConfig timeline = vkr_ui_panel_config_default();
-    timeline.placement.row = 6;
-    timeline.placement.column_span = 4;
-    timeline.placement.row_span = 1;
-    timeline.style.gap_pt = 2;
-    timeline.style.padding_pt = (VkrUiEdges){8, 2, 8, 2};
-    timeline.style.background_color = (Vec4){0.035f, 0.055f, 0.075f, 1};
-    timeline.clip_children = true_v;
-    const VkrUiTrack timeline_track = {.value = 1, .unit = VKR_UI_TRACK_FR};
-    timeline.columns = &timeline_track;
-    timeline.column_count = 1;
-    const float64_t timeline_duration = animation_duration(animation, asset);
-    const float32_t timeline_width =
-        Max(1.0f, editor->windows[VKR_EDITOR_WINDOW_ANIMATION].size_pt.x - 20);
-    if (vkr_ui_panel_begin(ui, string8_lit("timeline"), &timeline)) {
-      float64_t start = 0;
-      for (uint32_t i = 0; i < animation->document.block_count; ++i) {
-        const uint32_t clip = animation->document.blocks[i];
-        const float64_t end = start + asset->clips[clip].duration;
-        (void)vkr_ui_push_id_u64(ui, i);
-        const float64_t fade =
-            animation_overlap(&animation->document, asset, i);
-        snprintf(status, sizeof(status), "%u\n%.2f - %.2fs\nFade %.2fs", clip,
-                 start, end, fade);
-        VkrUiWidgetConfig block = animation_widget(0, 0);
-        block.placement.justify = VKR_UI_ALIGN_START;
-        block.placement.align = VKR_UI_ALIGN_START;
-        block.placement.margin_pt.left =
-            timeline_duration > 0
-                ? (float32_t)(start / timeline_duration) * timeline_width
-                : 0;
-        block.placement.margin_pt.top = (i % 2u) * 18.0f;
-        block.style.min_size_pt = block.style.max_size_pt = (Vec2){
-            Max(2.0f, timeline_duration > 0
-                          ? (float32_t)((end - start) / timeline_duration) *
-                                timeline_width
-                          : timeline_width),
-            130};
-        block.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-        block.style.border_color = (Vec4){0.42f, 0.90f, 0.72f, 1};
-        block.style.background_color = i == animation->selected_block
-                                           ? (Vec4){0.20f, 0.42f, 0.50f, 1}
-                                           : (Vec4){0.14f, 0.24f, 0.34f, 1};
-        block.tooltip = asset->clips[clip].name;
-        if (vkr_ui_button(ui, string8_lit("block"),
-                          string8_create((uint8_t *)status, strlen(status)),
-                          &block)) {
-          animation->selected_block = i;
-          animation->time = start;
-          animation->pose_seek = true_v;
-          animation->playing = false_v;
-        }
-        (void)vkr_ui_pop_id(ui);
-        start = end - animation_overlap(&animation->document, asset, i);
-      }
-      (void)vkr_ui_panel_end(ui);
-    }
-    if (animation->document.block_count) {
-      uint32_t selected =
-          Min(animation->selected_block, animation->document.block_count - 1u);
-      const VkrAnimationClip *clip =
-          &asset->clips[animation->document.blocks[selected]];
-      snprintf(status, sizeof(status), "Block %u: %.*s (%.3fs)", selected + 1u,
-               (int)Min(clip->name.length, 90u), clip->name.str,
-               clip->duration);
-      VkrUiWidgetConfig detail = animation_widget(0, 7);
-      detail.placement.column_span = 2;
-      vkr_ui_label(ui, string8_lit("selected.block"),
-                   string8_create((uint8_t *)status, strlen(status)), &detail);
-    }
+    animation_build_sequence(editor, ui, asset);
   }
   if (ui->keyboard_input_layer ==
           editor->windows[VKR_EDITOR_WINDOW_ANIMATION].z_order + 2u &&

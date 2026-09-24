@@ -251,95 +251,37 @@ static void console_filters_popup(VkrEditorConsole *console, VkrUiSystem *ui,
   (void)vkr_ui_scroll_area_end(ui);
 }
 
-void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
-                              VkrUiRect content_rect_px,
-                              VkrFontHandle heading) {
-  if (!console || !console->initialized)
-    return;
-  console_poll(console);
-  console_filter(console);
-  const float32_t width = content_rect_px.width / ui->content_scale;
-  const float32_t height = content_rect_px.height / ui->content_scale;
-  if (width < 64.0f || height < 42.0f)
-    return;
-  const bool8_t narrow = width < 600.0f;
-  const bool8_t tiny = width < 180.0f;
-  const float32_t toolbar_height = narrow ? 48.0f : 24.0f;
-  const float32_t footer_height = 16.0f;
-  const float32_t tools_height = toolbar_height;
-  const float32_t filter_left = narrow ? 0.0f : Max(0.0f, width - 356.0f);
-  const float32_t filter_width =
-      narrow ? Max(0.0f, width - 8.0f) * 1.8f / 6.6f : 104.0f;
-  const float32_t filter_top = narrow ? 26.0f : 0.0f;
-  const float32_t popup_width = Min(176.0f, width);
-  const float32_t popup_height = Min(154.0f, Max(24.0f, height - tools_height));
-  const float32_t popup_left = Min(filter_left, Max(0.0f, width - popup_width));
-  const float32_t popup_top =
-      Min(tools_height, Max(0.0f, height - popup_height));
-  const VkrUiRect popup_rect = {
-      content_rect_px.x + popup_left * ui->content_scale,
-      content_rect_px.y + popup_top * ui->content_scale,
-      popup_width * ui->content_scale, popup_height * ui->content_scale};
-  const VkrUiRect filter_button_rect = {
-      content_rect_px.x + filter_left * ui->content_scale,
-      content_rect_px.y + filter_top * ui->content_scale,
-      filter_width * ui->content_scale,
-      (narrow ? 22.0f : 24.0f) * ui->content_scale};
+static void console_filters_input(VkrEditorConsole *console, VkrUiSystem *ui,
+                                  VkrUiRect popup_rect,
+                                  VkrUiRect filter_button_rect) {
   const bool8_t own_keyboard =
       !ui->mouse_captured && ui->input_layer == ui->keyboard_input_layer;
-  if (console->filters_open) {
-    const bool8_t dismiss_key =
-        own_keyboard && (input_key_just_pressed(ui->input, KEY_ESCAPE) ||
-                         input_key_just_pressed(ui->input, KEY_TAB));
-    if (dismiss_key || ui->keyboard_input_layer != ui->input_layer ||
-        (ui->mouse_pressed && !console_in_rect(ui, popup_rect) &&
-         !console_in_rect(ui, filter_button_rect))) {
-      console->filters_open = false_v;
-      console->filter_focus_pending = false_v;
-      if (dismiss_key)
-        ui->focused_id = console->filters_button_id;
-    } else if (own_keyboard && (input_key_just_pressed(ui->input, KEY_UP) ||
-                                input_key_just_pressed(ui->input, KEY_DOWN))) {
-      console->filter_focus_index =
-          (console->filter_focus_index +
-           (input_key_just_pressed(ui->input, KEY_UP) ? 5u : 1u)) %
-          6u;
-      console->filter_focus_pending = true_v;
-      ui->capture.keyboard = true_v;
-    }
+  const bool8_t dismiss_key =
+      own_keyboard && (input_key_just_pressed(ui->input, KEY_ESCAPE) ||
+                       input_key_just_pressed(ui->input, KEY_TAB));
+  if (dismiss_key || ui->keyboard_input_layer != ui->input_layer ||
+      (ui->mouse_pressed && !console_in_rect(ui, popup_rect) &&
+       !console_in_rect(ui, filter_button_rect))) {
+    console->filters_open = false_v;
+    console->filter_focus_pending = false_v;
+    if (dismiss_key)
+      ui->focused_id = console->filters_button_id;
+  } else if (own_keyboard && (input_key_just_pressed(ui->input, KEY_UP) ||
+                              input_key_just_pressed(ui->input, KEY_DOWN))) {
+    console->filter_focus_index =
+        (console->filter_focus_index +
+         (input_key_just_pressed(ui->input, KEY_UP) ? 5u : 1u)) %
+        6u;
+    console->filter_focus_pending = true_v;
+    ui->capture.keyboard = true_v;
   }
-  const bool8_t mouse_captured = ui->mouse_captured;
-  const bool8_t over_popup =
-      console->filters_open && console_in_rect(ui, popup_rect);
+}
+
+/* Returns true when this frame's Filters click opened the severity popup. */
+static bool8_t console_build_toolbar(VkrEditorConsole *console, VkrUiSystem *ui,
+                                     float32_t width, bool8_t narrow,
+                                     bool8_t tiny, VkrFontHandle heading) {
   bool8_t filters_just_opened = false_v;
-
-  const float32_t available = Max(0.0f, height - tools_height - footer_height);
-  const float32_t detail_height =
-      console->detail_sequence &&
-              available >= 6 * VKR_CONSOLE_ROW_HEIGHT + 56.0f
-          ? Min(112.0f, available - 6 * VKR_CONSOLE_ROW_HEIGHT)
-          : 0.0f;
-  const float32_t list_height = available - detail_height;
-  const uint32_t visible_rows =
-      Min(VKR_CONSOLE_VISIBLE_ROWS,
-          (uint32_t)(list_height / VKR_CONSOLE_ROW_HEIGHT));
-  const VkrUiTrack columns[] = {{.value = 1, .unit = VKR_UI_TRACK_FR}};
-  const VkrUiTrack rows[] = {{.value = toolbar_height, .unit = VKR_UI_TRACK_PX},
-                             {.value = list_height, .unit = VKR_UI_TRACK_PX},
-                             {.value = detail_height, .unit = VKR_UI_TRACK_PX},
-                             {.value = footer_height, .unit = VKR_UI_TRACK_PX}};
-  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
-  panel.columns = columns;
-  panel.column_count = 1u;
-  panel.rows = rows;
-  panel.row_count = ArrayCount(rows);
-  panel.clip_children = true_v;
-  if (!vkr_ui_panel_begin(ui, string8_lit("console"), &panel))
-    return;
-
-  /* The popup paints last. Its bounds must not activate covered log rows. */
-  ui->mouse_captured = mouse_captured || over_popup;
-
   const VkrUiTrack toolbar_columns[] = {
       {.value = 1, .unit = VKR_UI_TRACK_FR},
       {.value = 104, .unit = VKR_UI_TRACK_PX},
@@ -456,8 +398,14 @@ void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
       log_max_level_set(verbose ? LOG_LEVEL_TRACE : LOG_LEVEL_INFO);
     (void)vkr_ui_panel_end(ui);
   }
+  return filters_just_opened;
+}
 
-  console_filter(console);
+static void console_scroll_records(VkrEditorConsole *console, VkrUiSystem *ui,
+                                   VkrUiRect content_rect_px,
+                                   float32_t tools_height,
+                                   float32_t list_height,
+                                   uint32_t visible_rows) {
   const uint32_t max_first = console->filtered_count > visible_rows
                                  ? console->filtered_count - visible_rows
                                  : 0u;
@@ -482,7 +430,12 @@ void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
     console->first_row = max_first;
   else
     console->first_row = Min(console->first_row, max_first);
+}
 
+/* Returns true when a visible record row holds keyboard focus. */
+static bool8_t console_build_records(VkrEditorConsole *console, VkrUiSystem *ui,
+                                     uint32_t visible_rows,
+                                     float32_t available) {
   const VkrUiTrack list_row = {.value = VKR_CONSOLE_ROW_HEIGHT,
                                .unit = VKR_UI_TRACK_PX};
   VkrUiTrack list_rows[VKR_CONSOLE_VISIBLE_ROWS];
@@ -565,6 +518,86 @@ void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
     }
     (void)vkr_ui_panel_end(ui);
   }
+  return list_focused;
+}
+
+void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
+                              VkrUiRect content_rect_px,
+                              VkrFontHandle heading) {
+  if (!console || !console->initialized)
+    return;
+  console_poll(console);
+  console_filter(console);
+  const float32_t width = content_rect_px.width / ui->content_scale;
+  const float32_t height = content_rect_px.height / ui->content_scale;
+  if (width < 64.0f || height < 42.0f)
+    return;
+  const bool8_t narrow = width < 600.0f;
+  const bool8_t tiny = width < 180.0f;
+  const float32_t toolbar_height = narrow ? 48.0f : 24.0f;
+  const float32_t footer_height = 16.0f;
+  const float32_t tools_height = toolbar_height;
+  const float32_t filter_left = narrow ? 0.0f : Max(0.0f, width - 356.0f);
+  const float32_t filter_width =
+      narrow ? Max(0.0f, width - 8.0f) * 1.8f / 6.6f : 104.0f;
+  const float32_t filter_top = narrow ? 26.0f : 0.0f;
+  const float32_t popup_width = Min(176.0f, width);
+  const float32_t popup_height = Min(154.0f, Max(24.0f, height - tools_height));
+  const float32_t popup_left = Min(filter_left, Max(0.0f, width - popup_width));
+  const float32_t popup_top =
+      Min(tools_height, Max(0.0f, height - popup_height));
+  const VkrUiRect popup_rect = {
+      content_rect_px.x + popup_left * ui->content_scale,
+      content_rect_px.y + popup_top * ui->content_scale,
+      popup_width * ui->content_scale, popup_height * ui->content_scale};
+  const VkrUiRect filter_button_rect = {
+      content_rect_px.x + filter_left * ui->content_scale,
+      content_rect_px.y + filter_top * ui->content_scale,
+      filter_width * ui->content_scale,
+      (narrow ? 22.0f : 24.0f) * ui->content_scale};
+  if (console->filters_open) {
+    console_filters_input(console, ui, popup_rect, filter_button_rect);
+  }
+  const bool8_t mouse_captured = ui->mouse_captured;
+  const bool8_t over_popup =
+      console->filters_open && console_in_rect(ui, popup_rect);
+
+  const float32_t available = Max(0.0f, height - tools_height - footer_height);
+  const float32_t detail_height =
+      console->detail_sequence &&
+              available >= 6 * VKR_CONSOLE_ROW_HEIGHT + 56.0f
+          ? Min(112.0f, available - 6 * VKR_CONSOLE_ROW_HEIGHT)
+          : 0.0f;
+  const float32_t list_height = available - detail_height;
+  const uint32_t visible_rows =
+      Min(VKR_CONSOLE_VISIBLE_ROWS,
+          (uint32_t)(list_height / VKR_CONSOLE_ROW_HEIGHT));
+  const VkrUiTrack columns[] = {{.value = 1, .unit = VKR_UI_TRACK_FR}};
+  const VkrUiTrack rows[] = {{.value = toolbar_height, .unit = VKR_UI_TRACK_PX},
+                             {.value = list_height, .unit = VKR_UI_TRACK_PX},
+                             {.value = detail_height, .unit = VKR_UI_TRACK_PX},
+                             {.value = footer_height, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.columns = columns;
+  panel.column_count = 1u;
+  panel.rows = rows;
+  panel.row_count = ArrayCount(rows);
+  panel.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("console"), &panel))
+    return;
+
+  /* The popup paints last. Its bounds must not activate covered log rows. */
+  ui->mouse_captured = mouse_captured || over_popup;
+
+  const bool8_t filters_just_opened =
+      console_build_toolbar(console, ui, width, narrow, tiny, heading);
+
+  console_filter(console);
+  console_scroll_records(console, ui, content_rect_px, tools_height,
+                         list_height, visible_rows);
+
+  const bool8_t list_focused =
+      console_build_records(console, ui, visible_rows, available);
   if (list_focused && !ui->mouse_captured &&
       ui->input_layer == ui->keyboard_input_layer) {
     if (input_key_shortcut_modifier(ui->input, KEY_A) &&

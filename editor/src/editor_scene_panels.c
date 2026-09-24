@@ -1546,147 +1546,86 @@ static void physics_ragdoll_widgets(VkrEditorScenePanels *p,
   *y += 26;
 }
 
-static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
-                                       const VkrSampleUiFrame *f, float32_t w,
-                                       float32_t *y, VkrFontHandle heading) {
+static bool8_t physics_body_widgets(VkrEditorScenePanels *p,
+                                    const VkrSampleUiFrame *f, float32_t w,
+                                    float32_t *y, bool8_t disabled) {
   VkrUiSystem *ui = f->ui;
   VkrScenePhysicsSnapshot *body = &p->values.physics;
-  const bool8_t paused = vkr_scene_physics_is_paused(f->scene);
   bool8_t focused = false_v;
-  (void)vkr_ui_push_id_label(ui, string8_lit("physics"));
+  const bool8_t muted =
+      vkr_scene_physics_body_is_disabled(f->scene, f->selected_entity);
   VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
-  c.text.font = heading;
-  vkr_ui_label(ui, string8_lit("title"), string8_lit("Physics body (m, kg, s)"),
-               &c);
+  c.disabled = !f->physics_request;
+  c.tooltip = string8_lit("Temporary simulation/query mute. Not saved; "
+                          "authored Body enabled is unchanged.");
+  if (vkr_ui_button(ui, string8_lit("session.mute"),
+                    muted ? string8_lit("Resume body (session)")
+                          : string8_lit("Mute body (session)"),
+                    &c) &&
+      f->physics_request) {
+    *f->physics_request =
+        (VkrSamplePhysicsRequest){.entity = f->selected_entity,
+                                  .set_body_disabled = true_v,
+                                  .body_disabled = !muted};
+  }
   *y += 26;
-  const SceneTransform *transform = vkr_entity_get_component(
-      f->scene->world, f->selected_entity, f->scene->comp_transform);
-  const bool8_t eligible = transform && transform->trs_editable;
-  c = widget_at(5, *y, w - 10, 44);
-  const char *error = NULL;
-  (void)vkr_scene_physics_validate(f->scene, f->selected_entity, body, &error);
-  uint32_t enabled_colliders = 0;
-  for (uint32_t i = 0; i < body->collider_count; ++i) {
-    enabled_colliders += body->colliders[i].enabled;
-  }
-  const char *status =
-      !eligible            ? "Physics requires an editable TRS transform."
-      : !paused            ? "Pause simulation to edit physics."
-      : error              ? error
-      : !body->present     ? "No body. Add a shape to create one."
-      : !body->enabled     ? "Disabled: body excluded from simulation."
-      : !enabled_colliders ? "No enabled colliders: body suspended."
-                           : "Collider children form one compound body.";
-  vkr_ui_label(ui, string8_lit("status"),
-               string8_create((uint8_t *)status, strlen(status)), &c);
-  *y += 46;
-  const bool8_t disabled = !paused || !eligible;
-  if (body->present) {
-    const bool8_t muted =
-        vkr_scene_physics_body_is_disabled(f->scene, f->selected_entity);
-    c = widget_at(5, *y, w - 10, 24);
-    c.disabled = !f->physics_request;
-    c.tooltip = string8_lit("Temporary simulation/query mute. Not saved; "
-                            "authored Body enabled is unchanged.");
-    if (vkr_ui_button(ui, string8_lit("session.mute"),
-                      muted ? string8_lit("Resume body (session)")
-                            : string8_lit("Mute body (session)"),
-                      &c) &&
-        f->physics_request) {
-      *f->physics_request =
-          (VkrSamplePhysicsRequest){.entity = f->selected_entity,
-                                    .set_body_disabled = true_v,
-                                    .body_disabled = !muted};
-    }
-    *y += 26;
-    const char *motions[] = {"Static", "Kinematic", "Dynamic"};
-    for (uint32_t i = 0; i < ArrayCount(motions); ++i) {
-      c = widget_at(5 + i * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
-      c.disabled = disabled || body->motion == (VkrPhysicsMotion)i;
-      (void)vkr_ui_push_id_u64(ui, i);
-      if (vkr_ui_button(
-              ui, string8_lit("motion"),
-              string8_create((uint8_t *)motions[i], strlen(motions[i])), &c)) {
-        body->motion = (VkrPhysicsMotion)i;
-        p->changed = true_v;
-      }
-      (void)vkr_ui_pop_id(ui);
-    }
-    *y += 26;
-    bool8_t *flags[] = {&body->enabled, &body->sensor, &body->allow_sleep,
-                        &body->continuous};
-    const char *labels[] = {"Body enabled", "Sensor (Static / Kinematic)",
-                            "Allow sleep", "Continuous collision"};
-    for (uint32_t i = 0; i < ArrayCount(flags); ++i) {
-      c = widget_at(5, *y, w - 10, 24);
-      c.disabled = disabled;
-      (void)vkr_ui_push_id_u64(ui, i);
-      p->changed |= vkr_ui_checkbox(
-          ui, string8_lit("flag"),
-          string8_create((uint8_t *)labels[i], strlen(labels[i])), flags[i],
-          &c);
-      (void)vkr_ui_pop_id(ui);
-      *y += 26;
-    }
-    const char *labels_numeric[] = {"Mass (kg)",
-                                    "Friction",
-                                    "Restitution",
-                                    "Gravity factor",
-                                    "Linear damping",
-                                    "Angular damping",
-                                    "Layer bits (0..65535)",
-                                    "Mask bits (0..65535)"};
-    for (uint32_t i = 0; i < 6; ++i) {
-      focused |=
-          physics_number_widget(p, ui, w, y, labels_numeric[i], i, disabled);
-    }
-    physics_layer_widgets(p, f, w, y, disabled);
-    focused |= physics_attachment_widgets(p, f, w, y, disabled);
-    focused |= physics_joint_widgets(p, f, w, y, disabled);
-  }
-  physics_ragdoll_widgets(p, f, w, y);
-  const char *shapes[] = {"+ Box", "+ Sphere", "+ Capsule", "+ Convex",
-                          "+ Mesh"};
-  for (uint32_t i = 0; i < ArrayCount(shapes); ++i) {
-    if (i == 3) {
-      *y += 26;
-    }
-    c = widget_at(5 + (i % 3u) * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
-    c.disabled =
-        disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
+  const char *motions[] = {"Static", "Kinematic", "Dynamic"};
+  for (uint32_t i = 0; i < ArrayCount(motions); ++i) {
+    c = widget_at(5 + i * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
+    c.disabled = disabled || body->motion == (VkrPhysicsMotion)i;
     (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(ui, string8_lit("add"),
-                      string8_create((uint8_t *)shapes[i], strlen(shapes[i])),
-                      &c) &&
-        physics_numbers_parse(p, body)) {
-      if (!body->present) {
-        *body = vkr_scene_physics_default();
-        body->present = true_v;
-        body->motion = VKR_PHYSICS_STATIC;
-        body->collider_count = 0;
-        MemZero(body->colliders, sizeof(body->colliders));
-      }
-      const uint64_t id = physics_next_collider_id(body);
-      body->colliders[body->collider_count++] =
-          (VkrSceneColliderConfig){.authored_id = id,
-                                   .shape = (VkrPhysicsShape)i,
-                                   .rotation = vkr_quat_identity(),
-                                   .scale = {1, 1, 1},
-                                   .half_extent = {0.5f, 0.5f, 0.5f},
-                                   .radius = 0.5f,
-                                   .half_height = 0.5f,
-                                   .enabled = true_v};
-      p->open_collider = id;
-      physics_numbers_read(p);
+    if (vkr_ui_button(ui, string8_lit("motion"),
+                      string8_create((uint8_t *)motions[i], strlen(motions[i])),
+                      &c)) {
+      body->motion = (VkrPhysicsMotion)i;
       p->changed = true_v;
     }
     (void)vkr_ui_pop_id(ui);
   }
   *y += 26;
+  bool8_t *flags[] = {&body->enabled, &body->sensor, &body->allow_sleep,
+                      &body->continuous};
+  const char *labels[] = {"Body enabled", "Sensor (Static / Kinematic)",
+                          "Allow sleep", "Continuous collision"};
+  for (uint32_t i = 0; i < ArrayCount(flags); ++i) {
+    c = widget_at(5, *y, w - 10, 24);
+    c.disabled = disabled;
+    (void)vkr_ui_push_id_u64(ui, i);
+    p->changed |= vkr_ui_checkbox(
+        ui, string8_lit("flag"),
+        string8_create((uint8_t *)labels[i], strlen(labels[i])), flags[i], &c);
+    (void)vkr_ui_pop_id(ui);
+    *y += 26;
+  }
+  const char *labels_numeric[] = {"Mass (kg)",
+                                  "Friction",
+                                  "Restitution",
+                                  "Gravity factor",
+                                  "Linear damping",
+                                  "Angular damping",
+                                  "Layer bits (0..65535)",
+                                  "Mask bits (0..65535)"};
+  for (uint32_t i = 0; i < 6; ++i) {
+    focused |=
+        physics_number_widget(p, ui, w, y, labels_numeric[i], i, disabled);
+  }
+  physics_layer_widgets(p, f, w, y, disabled);
+  focused |= physics_attachment_widgets(p, f, w, y, disabled);
+  focused |= physics_joint_widgets(p, f, w, y, disabled);
+  return focused;
+}
+
+static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
+                                        const VkrSampleUiFrame *f, float32_t w,
+                                        float32_t *y, bool8_t disabled,
+                                        const char *const *shapes) {
+  VkrUiSystem *ui = f->ui;
+  VkrScenePhysicsSnapshot *body = &p->values.physics;
+  bool8_t focused = false_v;
   for (uint32_t i = 0; i < body->collider_count; ++i) {
     VkrSceneColliderConfig *shape = &body->colliders[i];
     (void)vkr_ui_push_id_u64(ui, shape->authored_id);
-    c = widget_at(5, *y, w - 10, 24);
+    VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
     p->changed |= vkr_ui_checkbox(
         ui, string8_lit("enabled"),
@@ -1799,6 +1738,147 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
       break;
     }
   }
+  return focused;
+}
+
+static void physics_impulse_widgets(VkrEditorScenePanels *p,
+                                    const VkrSampleUiFrame *f, float32_t w,
+                                    float32_t *y) {
+  VkrUiSystem *ui = f->ui;
+  VkrScenePhysicsSnapshot *body = &p->values.physics;
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  vkr_ui_label(ui, string8_lit("impulse.title"),
+               string8_lit("Test impulse (N s; unsaved)"), &c);
+  *y += 26;
+  c = widget_at(5, *y, w - 10, 24);
+  (void)vkr_ui_checkbox(ui, string8_lit("impulse.at.point"),
+                        string8_lit("Apply at world point"),
+                        &p->impulse_at_point, &c);
+  *y += 26;
+  const char *labels[] = {"Impulse X",     "Impulse Y",     "Impulse Z",
+                          "World point X", "World point Y", "World point Z"};
+  for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    c = widget_at(5, *y, w * 0.53f - 6, 24);
+    vkr_ui_label(ui, string8_lit("impulse.label"),
+                 string8_create((uint8_t *)labels[i], strlen(labels[i])), &c);
+    c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
+    vkr_editor_field_style(&c);
+    VkrUiTextEditBuffer buffer = {(uint8_t *)p->impulse_numbers[i],
+                                  (uint32_t)strlen(p->impulse_numbers[i]),
+                                  sizeof(p->impulse_numbers[i])};
+    (void)vkr_ui_text_field(ui, string8_lit("impulse.value"), &buffer, &c);
+    if (ui->focused_id == vkr_ui_id_stack_widget_label(
+                              &ui->id_stack, string8_lit("impulse.value"))) {
+      p->physics_focused_id = ui->focused_id;
+    }
+    (void)vkr_ui_pop_id(ui);
+    *y += 26;
+  }
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = p->changed || !body->enabled;
+  if (vkr_ui_button(ui, string8_lit("impulse.apply"),
+                    string8_lit("Apply test impulse"), &c)) {
+    float32_t values[6] = {0};
+    bool8_t valid = true_v;
+    for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
+      char *end;
+      values[i] = strtof(p->impulse_numbers[i], &end);
+      valid &= end != p->impulse_numbers[i] && !*end && isfinite(values[i]);
+    }
+    if (valid) {
+      *f->physics_request = (VkrSamplePhysicsRequest){
+          .entity = f->selected_entity,
+          .impulse = {values[0], values[1], values[2]},
+          .world_point = {values[3], values[4], values[5]},
+          .apply_impulse = true_v,
+          .at_point = p->impulse_at_point};
+    } else {
+      snprintf(p->error, sizeof(p->error),
+               "Impulse and world point must be finite.");
+    }
+  }
+  *y += 28;
+}
+
+static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
+                                       const VkrSampleUiFrame *f, float32_t w,
+                                       float32_t *y, VkrFontHandle heading) {
+  VkrUiSystem *ui = f->ui;
+  VkrScenePhysicsSnapshot *body = &p->values.physics;
+  const bool8_t paused = vkr_scene_physics_is_paused(f->scene);
+  bool8_t focused = false_v;
+  (void)vkr_ui_push_id_label(ui, string8_lit("physics"));
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  c.text.font = heading;
+  vkr_ui_label(ui, string8_lit("title"), string8_lit("Physics body (m, kg, s)"),
+               &c);
+  *y += 26;
+  const SceneTransform *transform = vkr_entity_get_component(
+      f->scene->world, f->selected_entity, f->scene->comp_transform);
+  const bool8_t eligible = transform && transform->trs_editable;
+  c = widget_at(5, *y, w - 10, 44);
+  const char *error = NULL;
+  (void)vkr_scene_physics_validate(f->scene, f->selected_entity, body, &error);
+  uint32_t enabled_colliders = 0;
+  for (uint32_t i = 0; i < body->collider_count; ++i) {
+    enabled_colliders += body->colliders[i].enabled;
+  }
+  const char *status =
+      !eligible            ? "Physics requires an editable TRS transform."
+      : !paused            ? "Pause simulation to edit physics."
+      : error              ? error
+      : !body->present     ? "No body. Add a shape to create one."
+      : !body->enabled     ? "Disabled: body excluded from simulation."
+      : !enabled_colliders ? "No enabled colliders: body suspended."
+                           : "Collider children form one compound body.";
+  vkr_ui_label(ui, string8_lit("status"),
+               string8_create((uint8_t *)status, strlen(status)), &c);
+  *y += 46;
+  const bool8_t disabled = !paused || !eligible;
+  if (body->present) {
+    focused |= physics_body_widgets(p, f, w, y, disabled);
+  }
+  physics_ragdoll_widgets(p, f, w, y);
+  const char *shapes[] = {"+ Box", "+ Sphere", "+ Capsule", "+ Convex",
+                          "+ Mesh"};
+  for (uint32_t i = 0; i < ArrayCount(shapes); ++i) {
+    if (i == 3) {
+      *y += 26;
+    }
+    c = widget_at(5 + (i % 3u) * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
+    c.disabled =
+        disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("add"),
+                      string8_create((uint8_t *)shapes[i], strlen(shapes[i])),
+                      &c) &&
+        physics_numbers_parse(p, body)) {
+      if (!body->present) {
+        *body = vkr_scene_physics_default();
+        body->present = true_v;
+        body->motion = VKR_PHYSICS_STATIC;
+        body->collider_count = 0;
+        MemZero(body->colliders, sizeof(body->colliders));
+      }
+      const uint64_t id = physics_next_collider_id(body);
+      body->colliders[body->collider_count++] =
+          (VkrSceneColliderConfig){.authored_id = id,
+                                   .shape = (VkrPhysicsShape)i,
+                                   .rotation = vkr_quat_identity(),
+                                   .scale = {1, 1, 1},
+                                   .half_extent = {0.5f, 0.5f, 0.5f},
+                                   .radius = 0.5f,
+                                   .half_height = 0.5f,
+                                   .enabled = true_v};
+      p->open_collider = id;
+      physics_numbers_read(p);
+      p->changed = true_v;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  *y += 26;
+  focused |= physics_collider_widgets(p, f, w, y, disabled, shapes);
   if (body->present) {
     c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
@@ -1814,62 +1894,350 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
   }
   if (body->present && body->motion == VKR_PHYSICS_DYNAMIC &&
       f->physics_request) {
-    c = widget_at(5, *y, w - 10, 24);
-    vkr_ui_label(ui, string8_lit("impulse.title"),
-                 string8_lit("Test impulse (N s; unsaved)"), &c);
-    *y += 26;
-    c = widget_at(5, *y, w - 10, 24);
-    (void)vkr_ui_checkbox(ui, string8_lit("impulse.at.point"),
-                          string8_lit("Apply at world point"),
-                          &p->impulse_at_point, &c);
-    *y += 26;
-    const char *labels[] = {"Impulse X",     "Impulse Y",     "Impulse Z",
-                            "World point X", "World point Y", "World point Z"};
-    for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
-      (void)vkr_ui_push_id_u64(ui, i);
-      c = widget_at(5, *y, w * 0.53f - 6, 24);
-      vkr_ui_label(ui, string8_lit("impulse.label"),
-                   string8_create((uint8_t *)labels[i], strlen(labels[i])), &c);
-      c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
-      vkr_editor_field_style(&c);
-      VkrUiTextEditBuffer buffer = {(uint8_t *)p->impulse_numbers[i],
-                                    (uint32_t)strlen(p->impulse_numbers[i]),
-                                    sizeof(p->impulse_numbers[i])};
-      (void)vkr_ui_text_field(ui, string8_lit("impulse.value"), &buffer, &c);
-      if (ui->focused_id == vkr_ui_id_stack_widget_label(
-                                &ui->id_stack, string8_lit("impulse.value"))) {
-        p->physics_focused_id = ui->focused_id;
-      }
-      (void)vkr_ui_pop_id(ui);
-      *y += 26;
-    }
-    c = widget_at(5, *y, w - 10, 24);
-    c.disabled = p->changed || !body->enabled;
-    if (vkr_ui_button(ui, string8_lit("impulse.apply"),
-                      string8_lit("Apply test impulse"), &c)) {
-      float32_t values[6] = {0};
-      bool8_t valid = true_v;
-      for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
-        char *end;
-        values[i] = strtof(p->impulse_numbers[i], &end);
-        valid &= end != p->impulse_numbers[i] && !*end && isfinite(values[i]);
-      }
-      if (valid) {
-        *f->physics_request = (VkrSamplePhysicsRequest){
-            .entity = f->selected_entity,
-            .impulse = {values[0], values[1], values[2]},
-            .world_point = {values[3], values[4], values[5]},
-            .apply_impulse = true_v,
-            .at_point = p->impulse_at_point};
-      } else {
-        snprintf(p->error, sizeof(p->error),
-                 "Impulse and world point must be finite.");
-      }
-    }
-    *y += 28;
+    physics_impulse_widgets(p, f, w, y);
   }
   (void)vkr_ui_pop_id(ui);
   return focused;
+}
+
+/* Light kinds on the inspected node. They choose the light rows the inspector
+ * shows and the scroll height reserved for them. */
+typedef struct InspectorLights {
+  bool8_t point;
+  bool8_t directional;
+  bool8_t rectangle;
+  bool8_t spot;
+  bool8_t light;
+  bool8_t aimed;
+} InspectorLights;
+
+static InspectorLights inspector_lights(const VkrSceneEditValues *values) {
+  InspectorLights lights = {0};
+  lights.point = (values->fields & VKR_SCENE_EDIT_POINT_LIGHT) != 0;
+  lights.directional = (values->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) != 0;
+  lights.rectangle = (values->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) != 0;
+  lights.spot = lights.point &&
+                values->point_light.kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
+  lights.light = lights.point || lights.directional || lights.rectangle;
+  lights.aimed = lights.directional || lights.spot;
+  return lights;
+}
+
+static float32_t inspector_content_height(const VkrEditorScenePanels *p,
+                                          const VkrSampleUiFrame *f,
+                                          const SceneTransform *tr,
+                                          const InspectorLights *lights) {
+  float32_t content_height =
+      5 + 27 + 29 + 27 + 30 + 26 + 9 * 26 + 29 + 30 + 44 + 88;
+  content_height += 140 + (p->values.physics.present ? 418 : 0);
+  if (p->values.physics.present) {
+    if (p->show_collision_layers) {
+      content_height += 18 * 26;
+    }
+    if (p->show_attachment) {
+      content_height += 12 * 26 + (p->bone_filter[0] ? 16 * 26 : 0);
+    }
+    if (p->show_joints) {
+      content_height += 26 + p->values.physics.joint_count * 78;
+      for (uint32_t i = 0; i < p->values.physics.joint_count; ++i) {
+        if (p->values.physics.joints[i].authored_id == p->open_joint) {
+          content_height += 650;
+        }
+      }
+    }
+  }
+  if (vkr_scene_animation_get_player(f->scene, f->selected_entity)) {
+    content_height += 78;
+  }
+  if (p->values.physics.present &&
+      p->values.physics.motion == VKR_PHYSICS_DYNAMIC) {
+    content_height += 80 + (p->impulse_at_point ? 6 : 3) * 26;
+  }
+  for (uint32_t i = 0; i < p->values.physics.collider_count; ++i) {
+    content_height += 52;
+    if (p->values.physics.colliders[i].authored_id == p->open_collider) {
+      content_height += 400;
+    }
+  }
+  if (lights->light)
+    content_height +=
+        26 + (lights->point + lights->directional) * 27 +
+        (4 + lights->point + (lights->aimed ? 4 : 0) + (lights->spot ? 4 : 0)) *
+            26;
+  if (lights->rectangle)
+    content_height += 3 * 26;
+  if (!(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
+    content_height -= 9 * 26;
+  if (tr && !tr->trs_editable)
+    content_height += 48 + 4 * 26;
+  return content_height;
+}
+
+static bool8_t inspector_node_fields(VkrEditorScenePanels *p,
+                                     const VkrSampleUiFrame *f, float32_t w,
+                                     float32_t h, float32_t *y,
+                                     VkrFontHandle heading) {
+  VkrUiSystem *ui = f->ui;
+  bool8_t field_focus = false_v;
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  c.text.font = heading;
+  vkr_ui_label(ui, string8_lit("entity"),
+               string8_create_formatted(ui->frame_allocator,
+                                        "Entity %u / generation %u",
+                                        f->selected_entity.parts.index,
+                                        f->selected_entity.parts.generation),
+               &c);
+  *y += 27;
+  c = widget_at(5, *y, w - 10, 25);
+  c.read_only = !(p->values.fields & VKR_SCENE_EDIT_NAME);
+  vkr_editor_field_style(&c);
+  c.tooltip = c.read_only
+                  ? string8_lit("Original name exceeds editable capacity; "
+                                "select and copy its full text")
+                  : string8_lit("Node name (up to 511 UTF-8 bytes)");
+  VkrUiTextEditBuffer name = {(uint8_t *)p->values.name,
+                              (uint32_t)strlen(p->values.name),
+                              sizeof(p->values.name)};
+  if (p->long_name)
+    name = (VkrUiTextEditBuffer){p->long_name, p->long_name_capacity - 1u,
+                                 p->long_name_capacity};
+  if (c.read_only && !p->long_name) {
+    vkr_ui_label(ui, string8_lit("name.unavailable"),
+                 string8_lit("Original name unavailable; editing disabled"),
+                 &c);
+  } else
+    p->changed |= vkr_ui_text_field(ui, string8_lit("name"), &name, &c);
+  field_focus |=
+      *y + 24 > p->inspector_scroll && *y < h + p->inspector_scroll &&
+      ui->focused_id ==
+          vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("name"));
+  *y += 29;
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = !(p->values.fields & VKR_SCENE_EDIT_VISIBILITY);
+  p->changed |=
+      vkr_ui_checkbox(ui, string8_lit("visibility"), string8_lit("Visible"),
+                      &p->values.visibility.visible, &c);
+  *y += 27;
+  c = widget_at(5, *y, w - 10, 24);
+  c.disabled = !(p->values.fields & VKR_SCENE_EDIT_VISIBILITY);
+  p->changed |= vkr_ui_checkbox(ui, string8_lit("inherit"),
+                                string8_lit("Inherit parent visibility"),
+                                &p->values.visibility.inherit_parent, &c);
+  *y += 30;
+  return field_focus;
+}
+
+static bool8_t inspector_transform_light_fields(VkrEditorScenePanels *p,
+                                                const VkrSampleUiFrame *f,
+                                                float32_t w, float32_t h,
+                                                float32_t *y,
+                                                VkrFontHandle heading,
+                                                const InspectorLights *lights) {
+  VkrUiSystem *ui = f->ui;
+  bool8_t field_focus = false_v;
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  c.text.font = heading;
+  vkr_ui_label(ui, string8_lit("transform.title"),
+               string8_lit("Local transform"), &c);
+  *y += 26;
+  const char *labels[21] = {"Position X",
+                            "Position Y",
+                            "Position Z",
+                            "Rotation X (deg)",
+                            "Rotation Y (deg)",
+                            "Rotation Z (deg)",
+                            "Scale X",
+                            "Scale Y",
+                            "Scale Z",
+                            "Linear red",
+                            "Linear green",
+                            "Linear blue",
+                            "Intensity",
+                            "Range (0 = unlimited)",
+                            "Local yaw (deg)",
+                            "Local elevation (deg)",
+                            "Inner cone (deg)",
+                            "Outer cone (deg)",
+                            "Sun angular diameter (deg)",
+                            "Rectangle width",
+                            "Rectangle height"};
+  uint32_t total = lights->rectangle ? 21u : lights->light ? 19u : 9u;
+  for (uint32_t i = 0; i < total; i++) {
+    if (i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
+      continue;
+    if (i == 9) {
+      c = widget_at(5, *y, w - 10, 24);
+      c.text.font = heading;
+      vkr_ui_label(ui, string8_lit("light.title"),
+                   lights->rectangle ? string8_lit("Rectangle light")
+                   : lights->spot    ? string8_lit("Spot light")
+                   : lights->point   ? string8_lit("Point light")
+                                     : string8_lit("Directional light"),
+                   &c);
+      *y += 26;
+      if (lights->point) {
+        c = widget_at(5, *y, w - 10, 24);
+        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.enabled"),
+                                      string8_lit("Light enabled"),
+                                      &p->values.point_light.enabled, &c);
+        *y += 27;
+        c = widget_at(5, *y, w - 10, 24);
+        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.shadow"),
+                                      string8_lit("Cast shadows"),
+                                      &p->values.point_light.casts_shadow, &c);
+        *y += 27;
+      }
+      if (lights->directional) {
+        c = widget_at(5, *y, w - 10, 24);
+        p->changed |=
+            vkr_ui_checkbox(ui, string8_lit("light.directional.enabled"),
+                            string8_lit("Directional light enabled"),
+                            &p->values.directional_light.enabled, &c);
+        *y += 27;
+      }
+      if (lights->rectangle) {
+        c = widget_at(5, *y, w - 10, 24);
+        p->changed |=
+            vkr_ui_checkbox(ui, string8_lit("light.rectangle.enabled"),
+                            string8_lit("Rectangle light enabled"),
+                            &p->values.rectangle_light.enabled, &c);
+        *y += 27;
+      }
+    }
+    if ((i == 13 && !lights->point) || (i >= 14 && i < 16 && !lights->aimed) ||
+        (i >= 16 && i < 18 && !lights->spot) ||
+        (i == 18 && !lights->directional) || (i >= 19 && !lights->rectangle))
+      continue;
+    (void)vkr_ui_push_id_u64(ui, i);
+    c = widget_at(5, *y, w * 0.53f - 6, 24);
+    const char *label = i == 12 && lights->rectangle ? "Radiance" : labels[i];
+    vkr_ui_label(ui, string8_lit("label"),
+                 string8_create((uint8_t *)label, strlen(label)), &c);
+    c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
+    c.read_only = i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM);
+    vkr_editor_field_style(&c);
+    VkrUiTextEditBuffer value = {(uint8_t *)p->numbers[i],
+                                 (uint32_t)strlen(p->numbers[i]),
+                                 sizeof(p->numbers[i])};
+    p->changed |= vkr_ui_text_field(ui, string8_lit("value"), &value, &c);
+    field_focus |=
+        *y + 24 > p->inspector_scroll && *y < h + p->inspector_scroll &&
+        ui->focused_id ==
+            vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
+    *y += 26;
+    if (i >= 14 && i < 19) {
+      const float32_t minimum = i == 14 ? -180.0f : i == 15 ? -90.0f : 0.0f;
+      const float32_t maximum = i == 14   ? 180.0f
+                                : i == 15 ? 90.0f
+                                : i == 18 ? 179.999f
+                                          : 90.0f;
+      char *end;
+      float32_t angle = strtof(p->numbers[i], &end);
+      const bool8_t valid = end != p->numbers[i] && !*end && isfinite(angle);
+      c = widget_at(5, *y, w - 11, 24);
+      c.disabled = !valid;
+      c.tooltip =
+          i < 16
+              ? string8_lit("Local light direction; node rotation also applies")
+          : i < 18
+              ? string8_lit("Cone half-angle; inner must be less than outer")
+              : string8_lit("Solar-disc diameter; zero keeps a hard PCF edge");
+      // The slider owns only this draft string. Apply creates the undo entry.
+      float32_t slider_angle =
+          valid ? vkr_clamp_f32(angle, minimum, maximum) : 0;
+      if (vkr_ui_slider_f32(ui, string8_lit("slider"), &slider_angle, minimum,
+                            maximum, &c)) {
+        snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", slider_angle);
+        p->changed = true_v;
+      }
+      field_focus |=
+          *y + 24 > p->inspector_scroll && *y < h + p->inspector_scroll &&
+          ui->focused_id == vkr_ui_id_stack_widget_label(&ui->id_stack,
+                                                         string8_lit("slider"));
+      *y += 26;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  return field_focus;
+}
+
+static void inspector_matrix_rows(const VkrSampleUiFrame *f,
+                                  const SceneTransform *tr, float32_t w,
+                                  float32_t *y) {
+  VkrUiSystem *ui = f->ui;
+  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 44);
+  vkr_ui_label(
+      ui, string8_lit("matrix.readonly"),
+      string8_lit(
+          "Authored local matrix (read-only).\nTRS editing is unavailable."),
+      &c);
+  *y += 48;
+  for (uint32_t row = 0; row < 4; ++row) {
+    const Vec4 values = mat4_row(tr->local, (int32_t)row);
+    String8 text =
+        string8_create_formatted(ui->frame_allocator, "%.7g  %.7g  %.7g  %.7g",
+                                 values.x, values.y, values.z, values.w);
+    // Formatted String8 storage has a terminator; the field retains its own
+    // copy.
+    c = widget_at(5, *y, w - 10, 24);
+    c.read_only = true_v;
+    vkr_editor_field_style(&c);
+    VkrUiTextEditBuffer matrix = {text.str, (uint32_t)text.length,
+                                  (uint32_t)text.length + 1u};
+    (void)vkr_ui_push_id_u64(ui, row);
+    (void)vkr_ui_text_field(ui, string8_lit("matrix.row"), &matrix, &c);
+    (void)vkr_ui_pop_id(ui);
+    *y += 26;
+  }
+}
+
+static void inspector_action_buttons(VkrEditorScenePanels *p,
+                                     const VkrSampleUiFrame *f, float32_t w,
+                                     float32_t *y, VkrFontHandle heading,
+                                     bool8_t field_focus) {
+  VkrUiSystem *ui = f->ui;
+  VkrUiWidgetConfig c = widget_at(5, *y, w / 3 - 7, 25);
+  vkr_editor_action_style(&c, heading);
+  c.disabled = !p->changed;
+  bool8_t apply =
+      vkr_ui_button(ui, string8_lit("apply"), string8_lit("Apply"), &c);
+  c = widget_at(w / 3, *y, w / 3 - 5, 25);
+  vkr_editor_action_style(&c, heading);
+  if (vkr_ui_button(ui, string8_lit("revert"), string8_lit("Revert"), &c) ||
+      (field_focus && pressed(f->input, KEY_ESCAPE)))
+    inspector_read(p, f);
+  c = widget_at(2 * w / 3, *y, w / 3 - 5, 25);
+  vkr_editor_action_style(&c, heading);
+  if (vkr_ui_button(ui, string8_lit("frame"), string8_lit("Frame"), &c))
+    *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_FRAME,
+                                           .entity = f->selected_entity};
+  if (apply || (field_focus && p->changed && pressed(f->input, KEY_ENTER))) {
+    VkrSceneEditValues values;
+    if (inspector_parse(p, &values)) {
+      if (values.fields)
+        *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_APPLY,
+                                               .entity = f->selected_entity,
+                                               .values = values};
+      else
+        inspector_read(p, f);
+    }
+  }
+  *y += 29;
+  c = widget_at(5, *y, w / 3 - 7, 25);
+  vkr_editor_action_style(&c, heading);
+  c.disabled = f->edits->undo_cursor == 0;
+  if (vkr_ui_button(ui, string8_lit("undo"), string8_lit("Undo"), &c))
+    f->scene_edit->action = VKR_SCENE_EDIT_UNDO;
+  c = widget_at(w / 3, *y, w / 3 - 5, 25);
+  vkr_editor_action_style(&c, heading);
+  c.disabled = f->edits->undo_cursor == f->edits->undo_count;
+  if (vkr_ui_button(ui, string8_lit("redo"), string8_lit("Redo"), &c))
+    f->scene_edit->action = VKR_SCENE_EDIT_REDO;
+  c = widget_at(2 * w / 3, *y, w / 3 - 5, 25);
+  vkr_editor_action_style(&c, heading);
+  if (vkr_ui_button(ui, string8_lit("save"), string8_lit("Save"), &c))
+    f->scene_edit->action = VKR_SCENE_EDIT_SAVE;
+  *y += 30;
 }
 
 void vkr_editor_inspector_build(VkrEditorScenePanels *p,
@@ -1934,56 +2302,8 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
        MemCompare(&p->values.rotation, &tr->rotation, sizeof(VkrQuat)) ||
        MemCompare(&p->values.scale, &tr->scale, sizeof(Vec3))))
     inspector_read(p, f);
-  float32_t content_height =
-      5 + 27 + 29 + 27 + 30 + 26 + 9 * 26 + 29 + 30 + 44 + 88;
-  content_height += 140 + (p->values.physics.present ? 418 : 0);
-  if (p->values.physics.present) {
-    if (p->show_collision_layers) {
-      content_height += 18 * 26;
-    }
-    if (p->show_attachment) {
-      content_height += 12 * 26 + (p->bone_filter[0] ? 16 * 26 : 0);
-    }
-    if (p->show_joints) {
-      content_height += 26 + p->values.physics.joint_count * 78;
-      for (uint32_t i = 0; i < p->values.physics.joint_count; ++i) {
-        if (p->values.physics.joints[i].authored_id == p->open_joint) {
-          content_height += 650;
-        }
-      }
-    }
-  }
-  if (vkr_scene_animation_get_player(f->scene, f->selected_entity)) {
-    content_height += 78;
-  }
-  if (p->values.physics.present &&
-      p->values.physics.motion == VKR_PHYSICS_DYNAMIC) {
-    content_height += 80 + (p->impulse_at_point ? 6 : 3) * 26;
-  }
-  for (uint32_t i = 0; i < p->values.physics.collider_count; ++i) {
-    content_height += 52;
-    if (p->values.physics.colliders[i].authored_id == p->open_collider) {
-      content_height += 400;
-    }
-  }
-  const bool8_t point = (p->values.fields & VKR_SCENE_EDIT_POINT_LIGHT) != 0;
-  const bool8_t directional =
-      (p->values.fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) != 0;
-  const bool8_t rectangle =
-      (p->values.fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) != 0;
-  const bool8_t spot =
-      point && p->values.point_light.kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
-  const bool8_t light = point || directional || rectangle;
-  const bool8_t aimed = directional || spot;
-  if (light)
-    content_height += 26 + (point + directional) * 27 +
-                      (4 + point + (aimed ? 4 : 0) + (spot ? 4 : 0)) * 26;
-  if (rectangle)
-    content_height += 3 * 26;
-  if (!(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
-    content_height -= 9 * 26;
-  if (tr && !tr->trs_editable)
-    content_height += 48 + 4 * 26;
+  const InspectorLights lights = inspector_lights(&p->values);
+  const float32_t content_height = inspector_content_height(p, f, tr, &lights);
   if (in_rect(ui, rect))
     p->inspector_scroll -= ui->mouse_wheel * 40.0f;
   p->inspector_scroll =
@@ -2000,244 +2320,16 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
   float32_t y = 5;
   bool8_t field_focus = false_v;
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.fields"));
-  c = widget_at(5, y, w - 10, 24);
-  c.text.font = heading;
-  vkr_ui_label(ui, string8_lit("entity"),
-               string8_create_formatted(ui->frame_allocator,
-                                        "Entity %u / generation %u",
-                                        f->selected_entity.parts.index,
-                                        f->selected_entity.parts.generation),
-               &c);
-  y += 27;
-  c = widget_at(5, y, w - 10, 25);
-  c.read_only = !(p->values.fields & VKR_SCENE_EDIT_NAME);
-  vkr_editor_field_style(&c);
-  c.tooltip = c.read_only
-                  ? string8_lit("Original name exceeds editable capacity; "
-                                "select and copy its full text")
-                  : string8_lit("Node name (up to 511 UTF-8 bytes)");
-  VkrUiTextEditBuffer name = {(uint8_t *)p->values.name,
-                              (uint32_t)strlen(p->values.name),
-                              sizeof(p->values.name)};
-  if (p->long_name)
-    name = (VkrUiTextEditBuffer){p->long_name, p->long_name_capacity - 1u,
-                                 p->long_name_capacity};
-  if (c.read_only && !p->long_name) {
-    vkr_ui_label(ui, string8_lit("name.unavailable"),
-                 string8_lit("Original name unavailable; editing disabled"),
-                 &c);
-  } else
-    p->changed |= vkr_ui_text_field(ui, string8_lit("name"), &name, &c);
-  field_focus |= y + 24 > p->inspector_scroll && y < h + p->inspector_scroll &&
-                 ui->focused_id == vkr_ui_id_stack_widget_label(
-                                       &ui->id_stack, string8_lit("name"));
-  y += 29;
-  c = widget_at(5, y, w - 10, 24);
-  c.disabled = !(p->values.fields & VKR_SCENE_EDIT_VISIBILITY);
-  p->changed |=
-      vkr_ui_checkbox(ui, string8_lit("visibility"), string8_lit("Visible"),
-                      &p->values.visibility.visible, &c);
-  y += 27;
-  c = widget_at(5, y, w - 10, 24);
-  c.disabled = !(p->values.fields & VKR_SCENE_EDIT_VISIBILITY);
-  p->changed |= vkr_ui_checkbox(ui, string8_lit("inherit"),
-                                string8_lit("Inherit parent visibility"),
-                                &p->values.visibility.inherit_parent, &c);
-  y += 30;
-  c = widget_at(5, y, w - 10, 24);
-  c.text.font = heading;
-  vkr_ui_label(ui, string8_lit("transform.title"),
-               string8_lit("Local transform"), &c);
-  y += 26;
-  const char *labels[21] = {"Position X",
-                            "Position Y",
-                            "Position Z",
-                            "Rotation X (deg)",
-                            "Rotation Y (deg)",
-                            "Rotation Z (deg)",
-                            "Scale X",
-                            "Scale Y",
-                            "Scale Z",
-                            "Linear red",
-                            "Linear green",
-                            "Linear blue",
-                            "Intensity",
-                            "Range (0 = unlimited)",
-                            "Local yaw (deg)",
-                            "Local elevation (deg)",
-                            "Inner cone (deg)",
-                            "Outer cone (deg)",
-                            "Sun angular diameter (deg)",
-                            "Rectangle width",
-                            "Rectangle height"};
-  uint32_t total = rectangle ? 21u : light ? 19u : 9u;
-  for (uint32_t i = 0; i < total; i++) {
-    if (i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
-      continue;
-    if (i == 9) {
-      c = widget_at(5, y, w - 10, 24);
-      c.text.font = heading;
-      vkr_ui_label(ui, string8_lit("light.title"),
-                   rectangle ? string8_lit("Rectangle light")
-                   : spot    ? string8_lit("Spot light")
-                   : point   ? string8_lit("Point light")
-                             : string8_lit("Directional light"),
-                   &c);
-      y += 26;
-      if (point) {
-        c = widget_at(5, y, w - 10, 24);
-        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.enabled"),
-                                      string8_lit("Light enabled"),
-                                      &p->values.point_light.enabled, &c);
-        y += 27;
-        c = widget_at(5, y, w - 10, 24);
-        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.shadow"),
-                                      string8_lit("Cast shadows"),
-                                      &p->values.point_light.casts_shadow, &c);
-        y += 27;
-      }
-      if (directional) {
-        c = widget_at(5, y, w - 10, 24);
-        p->changed |=
-            vkr_ui_checkbox(ui, string8_lit("light.directional.enabled"),
-                            string8_lit("Directional light enabled"),
-                            &p->values.directional_light.enabled, &c);
-        y += 27;
-      }
-      if (rectangle) {
-        c = widget_at(5, y, w - 10, 24);
-        p->changed |=
-            vkr_ui_checkbox(ui, string8_lit("light.rectangle.enabled"),
-                            string8_lit("Rectangle light enabled"),
-                            &p->values.rectangle_light.enabled, &c);
-        y += 27;
-      }
-    }
-    if ((i == 13 && !point) || (i >= 14 && i < 16 && !aimed) ||
-        (i >= 16 && i < 18 && !spot) || (i == 18 && !directional) ||
-        (i >= 19 && !rectangle))
-      continue;
-    (void)vkr_ui_push_id_u64(ui, i);
-    c = widget_at(5, y, w * 0.53f - 6, 24);
-    const char *label = i == 12 && rectangle ? "Radiance" : labels[i];
-    vkr_ui_label(ui, string8_lit("label"),
-                 string8_create((uint8_t *)label, strlen(label)), &c);
-    c = widget_at(w * 0.53f, y, w * 0.47f - 6, 24);
-    c.read_only = i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM);
-    vkr_editor_field_style(&c);
-    VkrUiTextEditBuffer value = {(uint8_t *)p->numbers[i],
-                                 (uint32_t)strlen(p->numbers[i]),
-                                 sizeof(p->numbers[i])};
-    p->changed |= vkr_ui_text_field(ui, string8_lit("value"), &value, &c);
-    field_focus |=
-        y + 24 > p->inspector_scroll && y < h + p->inspector_scroll &&
-        ui->focused_id ==
-            vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
-    y += 26;
-    if (i >= 14 && i < 19) {
-      const float32_t minimum = i == 14 ? -180.0f : i == 15 ? -90.0f : 0.0f;
-      const float32_t maximum = i == 14   ? 180.0f
-                                : i == 15 ? 90.0f
-                                : i == 18 ? 179.999f
-                                          : 90.0f;
-      char *end;
-      float32_t angle = strtof(p->numbers[i], &end);
-      const bool8_t valid = end != p->numbers[i] && !*end && isfinite(angle);
-      c = widget_at(5, y, w - 11, 24);
-      c.disabled = !valid;
-      c.tooltip =
-          i < 16
-              ? string8_lit("Local light direction; node rotation also applies")
-          : i < 18
-              ? string8_lit("Cone half-angle; inner must be less than outer")
-              : string8_lit("Solar-disc diameter; zero keeps a hard PCF edge");
-      // The slider owns only this draft string. Apply creates the undo entry.
-      float32_t slider_angle =
-          valid ? vkr_clamp_f32(angle, minimum, maximum) : 0;
-      if (vkr_ui_slider_f32(ui, string8_lit("slider"), &slider_angle, minimum,
-                            maximum, &c)) {
-        snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", slider_angle);
-        p->changed = true_v;
-      }
-      field_focus |=
-          y + 24 > p->inspector_scroll && y < h + p->inspector_scroll &&
-          ui->focused_id == vkr_ui_id_stack_widget_label(&ui->id_stack,
-                                                         string8_lit("slider"));
-      y += 26;
-    }
-    (void)vkr_ui_pop_id(ui);
-  }
+  field_focus |= inspector_node_fields(p, f, w, h, &y, heading);
+  field_focus |=
+      inspector_transform_light_fields(p, f, w, h, &y, heading, &lights);
   if (tr && !tr->trs_editable) {
-    c = widget_at(5, y, w - 10, 44);
-    vkr_ui_label(
-        ui, string8_lit("matrix.readonly"),
-        string8_lit(
-            "Authored local matrix (read-only).\nTRS editing is unavailable."),
-        &c);
-    y += 48;
-    for (uint32_t row = 0; row < 4; ++row) {
-      const Vec4 values = mat4_row(tr->local, (int32_t)row);
-      String8 text = string8_create_formatted(
-          ui->frame_allocator, "%.7g  %.7g  %.7g  %.7g", values.x, values.y,
-          values.z, values.w);
-      // Formatted String8 storage has a terminator; the field retains its own
-      // copy.
-      c = widget_at(5, y, w - 10, 24);
-      c.read_only = true_v;
-      vkr_editor_field_style(&c);
-      VkrUiTextEditBuffer matrix = {text.str, (uint32_t)text.length,
-                                    (uint32_t)text.length + 1u};
-      (void)vkr_ui_push_id_u64(ui, row);
-      (void)vkr_ui_text_field(ui, string8_lit("matrix.row"), &matrix, &c);
-      (void)vkr_ui_pop_id(ui);
-      y += 26;
-    }
+    inspector_matrix_rows(f, tr, w, &y);
   }
   field_focus |= physics_inspector_build(p, f, w, &y, heading);
   field_focus &=
       !ui->mouse_captured && ui->keyboard_input_layer == ui->input_layer;
-  c = widget_at(5, y, w / 3 - 7, 25);
-  vkr_editor_action_style(&c, heading);
-  c.disabled = !p->changed;
-  bool8_t apply =
-      vkr_ui_button(ui, string8_lit("apply"), string8_lit("Apply"), &c);
-  c = widget_at(w / 3, y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  if (vkr_ui_button(ui, string8_lit("revert"), string8_lit("Revert"), &c) ||
-      (field_focus && pressed(f->input, KEY_ESCAPE)))
-    inspector_read(p, f);
-  c = widget_at(2 * w / 3, y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  if (vkr_ui_button(ui, string8_lit("frame"), string8_lit("Frame"), &c))
-    *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_FRAME,
-                                           .entity = f->selected_entity};
-  if (apply || (field_focus && p->changed && pressed(f->input, KEY_ENTER))) {
-    VkrSceneEditValues values;
-    if (inspector_parse(p, &values)) {
-      if (values.fields)
-        *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_APPLY,
-                                               .entity = f->selected_entity,
-                                               .values = values};
-      else
-        inspector_read(p, f);
-    }
-  }
-  y += 29;
-  c = widget_at(5, y, w / 3 - 7, 25);
-  vkr_editor_action_style(&c, heading);
-  c.disabled = f->edits->undo_cursor == 0;
-  if (vkr_ui_button(ui, string8_lit("undo"), string8_lit("Undo"), &c))
-    f->scene_edit->action = VKR_SCENE_EDIT_UNDO;
-  c = widget_at(w / 3, y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  c.disabled = f->edits->undo_cursor == f->edits->undo_count;
-  if (vkr_ui_button(ui, string8_lit("redo"), string8_lit("Redo"), &c))
-    f->scene_edit->action = VKR_SCENE_EDIT_REDO;
-  c = widget_at(2 * w / 3, y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  if (vkr_ui_button(ui, string8_lit("save"), string8_lit("Save"), &c))
-    f->scene_edit->action = VKR_SCENE_EDIT_SAVE;
-  y += 30;
+  inspector_action_buttons(p, f, w, &y, heading, field_focus);
   c = widget_at(5, y, w - 10, 42);
   c.style.text_color = (Vec4){0.95f, 0.72f, 0.4f, 1};
   const char *status = p->error[0] ? p->error : f->edits->status;

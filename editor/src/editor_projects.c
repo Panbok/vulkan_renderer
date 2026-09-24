@@ -2593,6 +2593,305 @@ static void project_build_dropdown(VkrEditorProjects *projects,
   (void)vkr_ui_panel_end(ui);
 }
 
+static void project_build_create_form(VkrEditorProjects *projects,
+                                      const VkrSampleUiFrame *frame,
+                                      float32_t body_width) {
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTrack one = {.unit = VKR_UI_TRACK_FR, .value = 1};
+  const bool8_t creating = projects->view == PROJECT_VIEW_CREATE;
+  const float32_t left = creating && body_width >= 650 ? body_width * .35f : 0;
+  if (creating) {
+    project_label(ui, "project.name.label", "Project name", 12, 6,
+                  left ? left - 24 : body_width - 24);
+    project_field(ui, "project.name", projects->project_name,
+                  sizeof(projects->project_name), 12, 36,
+                  left ? left - 24 : body_width - 24);
+    project_check(ui, "project.scene", "Add an initial scene",
+                  &projects->include_scene, 12, 80,
+                  left ? left - 24 : body_width - 24);
+    const float32_t form_width = left ? left - 24 : body_width - 24;
+    project_label(ui, "project.font.label",
+                  "Default font / empty uses editor default", 12, 124,
+                  form_width);
+    project_field(ui, "project.font", projects->project_font_source,
+                  sizeof(projects->project_font_source), 12, 158, form_width);
+    if (project_button(ui, "project.font.browse", "Choose default font", 12,
+                       194, form_width, false_v)) {
+      static const char *const extensions[] = {"ttf", "otf"};
+      project_browse(projects, frame, "Choose project default font", extensions,
+                     2, false_v, projects->project_font_source,
+                     sizeof(projects->project_font_source));
+    }
+    project_label(ui, "project.bootstrap",
+                  "Editor resources: reuse validated bundle", 12, 240,
+                  form_width);
+    project_label(ui, "project.font.bake",
+                  "Project font: prepare once when changed", 12, 272,
+                  form_width);
+  }
+  if (projects->include_scene) {
+    if (creating && !left) {
+      VkrUiPanelConfig form = vkr_ui_panel_config_default();
+      form.placement.column = 0;
+      form.placement.row = 0;
+      form.placement.margin_pt.top = 320;
+      form.columns = &one;
+      form.column_count = 1;
+      form.rows = &one;
+      form.row_count = 1;
+      if (vkr_ui_panel_begin(ui, string8_lit("narrow.scene"), &form)) {
+        project_build_scene_form(projects, frame, 12, body_width - 24);
+        (void)vkr_ui_panel_end(ui);
+      }
+    } else {
+      project_build_scene_form(projects, frame, left + 12,
+                               body_width - left - 24);
+    }
+  }
+}
+
+static void project_build_rename_form(VkrEditorProjects *projects,
+                                      const VkrSampleUiFrame *frame,
+                                      float32_t body_width) {
+  VkrUiSystem *ui = frame->ui;
+  project_label(ui, "rename.label", "Name", 12, 12, body_width - 24);
+  project_field(ui, "rename.name", projects->rename_name,
+                sizeof(projects->rename_name), 12, 46, body_width - 24);
+  if (project_button(ui, "rename.save", "Save name", 12, 96, 150,
+                     projects->read_only)) {
+    VkrEditorProjectError error = {0};
+    if (!vkr_editor_project_name_valid(projects->rename_name, &error)) {
+      project_error(projects, &error);
+    } else if (project_finish_settings_save(projects)) {
+      char *target_name =
+          projects->rename_project
+              ? projects->project->name
+              : projects->project->scenes[projects->pending_scene].name;
+      char previous[VKR_EDITOR_PROJECT_NAME_CAPACITY];
+      snprintf(previous, sizeof(previous), "%s", target_name);
+      snprintf(target_name, VKR_EDITOR_PROJECT_NAME_CAPACITY, "%s",
+               projects->rename_name);
+      if (vkr_editor_project_save(projects->project, &error)) {
+        projects->view = PROJECT_VIEW_SCENES;
+        project_refresh(projects);
+      } else {
+        snprintf(target_name, VKR_EDITOR_PROJECT_NAME_CAPACITY, "%s", previous);
+        project_error(projects, &error);
+      }
+    }
+  }
+}
+
+static void project_build_delete_form(VkrEditorProjects *projects,
+                                      VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      float32_t body_width) {
+  VkrUiSystem *ui = frame->ui;
+  project_label(ui, "delete.name",
+                projects->project->scenes[projects->pending_scene].name, 12, 12,
+                body_width - 24);
+  project_label(ui, "delete.warning",
+                "Permanently erase this scene and its managed files.", 12, 56,
+                body_width - 24);
+  project_label(ui, "delete.edits",
+                projects->pending_scene == projects->active_scene
+                    ? "The scene will unload. Unsaved edits will be discarded."
+                    : "The current scene will remain open.",
+                12, 96, body_width - 24);
+  project_label(ui, "delete.shared",
+                "Project-shared assets are kept. This cannot be undone.", 12,
+                136, body_width - 24);
+  if (project_button(ui, "delete.confirm", "Delete permanently", 12, 184, 190,
+                     projects->read_only || frame->scene_loading ||
+                         projects->job_id || projects->waiting_activation ||
+                         projects->delete_waiting_unload ||
+                         vkr_editor_bakery_busy(editor->bakery))) {
+    project_delete_scene(projects, editor, frame);
+  }
+}
+
+static void project_build_scene_list(VkrEditorProjects *projects,
+                                     VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     float32_t body_width) {
+  VkrUiSystem *ui = frame->ui;
+  project_label(ui, "scene.project", projects->project->name, 12, 0,
+                body_width - 142);
+  if (project_button(ui, "project.rename", "Rename project", body_width - 142,
+                     0, 130, projects->read_only)) {
+    projects->rename_project = true_v;
+    snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
+             projects->project->name);
+    projects->view = PROJECT_VIEW_RENAME;
+  }
+  for (uint32_t i = 0; i < projects->project->scene_count; ++i) {
+    VkrEditorProjectScene *scene = &projects->project->scenes[i];
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (project_button(ui, "scene.open", scene->name, 12, 46 + i * 40.0f,
+                       body_width - 230, false_v)) {
+      projects->pending_scene = i;
+      projects->operation[0] = '\0';
+      if (frame->edits->revision != frame->edits->saved_revision) {
+        projects->resume_view = PROJECT_VIEW_SCENES;
+        projects->view = PROJECT_VIEW_CONFIRM;
+      } else {
+        project_start_job(projects, editor, frame, false_v);
+      }
+    }
+    if (project_button(ui, "scene.rename", "Rename", body_width - 208,
+                       46 + i * 40.0f, 96, projects->read_only)) {
+      projects->pending_scene = i;
+      projects->rename_project = false_v;
+      snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
+               scene->name);
+      projects->view = PROJECT_VIEW_RENAME;
+    }
+    if (project_button(ui, "scene.delete", "Delete", body_width - 108,
+                       46 + i * 40.0f, 96,
+                       projects->read_only || frame->scene_loading ||
+                           projects->job_id || projects->waiting_activation ||
+                           vkr_editor_bakery_busy(editor->bakery))) {
+      projects->pending_scene = i;
+      projects->message[0] = '\0';
+      projects->view = PROJECT_VIEW_DELETE;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  if (!projects->project->scene_count) {
+    project_label(ui, "scenes.empty",
+                  "This project has no scenes yet. Add one below.", 12, 46,
+                  body_width - 24);
+  }
+}
+
+static void project_build_confirm_form(VkrEditorProjects *projects,
+                                       VkrEditorUi *editor,
+                                       const VkrSampleUiFrame *frame,
+                                       float32_t body_width) {
+  VkrUiSystem *ui = frame->ui;
+  project_label(ui, "dirty.message",
+                projects->closing && projects->job_id
+                    ? "An asset job is active. Closing cancels it and "
+                      "waits for its worker."
+                    : "Save your scene edits, discard them, or return to "
+                      "the current scene.",
+                12, 12, body_width - 24);
+  if (project_button(ui, "dirty.save", "Save and continue", 12, 64, 170,
+                     false_v)) {
+    projects->awaiting_save = true_v;
+    frame->scene_edit->action = VKR_SCENE_EDIT_SAVE;
+  }
+  if (project_button(ui, "dirty.discard", "Discard edits", 194, 64, 145,
+                     false_v) ||
+      (projects->awaiting_save &&
+       frame->edits->revision == frame->edits->saved_revision)) {
+    projects->awaiting_save = false_v;
+    projects->discard_edits = true_v;
+    if (projects->closing) {
+      if (project_save_settings(projects, editor, frame->dock)) {
+        *frame->close_response = VKR_SAMPLE_CLOSE_CONFIRM;
+      }
+    } else {
+      projects->view = projects->resume_view;
+    }
+    if (!projects->closing && projects->view == PROJECT_VIEW_SCENES) {
+      project_start_job(projects, editor, frame, false_v);
+    }
+  }
+}
+
+static void project_build_footer(VkrEditorProjects *projects,
+                                 VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame, float32_t width,
+                                 float32_t height) {
+  VkrUiSystem *ui = frame->ui;
+  if (projects->view == PROJECT_VIEW_ADD_ENTITY) {
+    const float32_t button_width = Min(180.0f, (width - 60) * .5f);
+    if (project_button(ui, "entity.submit", "Add to scene",
+                       width - 36 - button_width, height - 65, button_width,
+                       projects->read_only ||
+                           !project_entity_draft_valid(projects) ||
+                           frame->scene_loading || projects->job_id ||
+                           vkr_editor_bakery_busy(editor->bakery))) {
+      snprintf(projects->operation, sizeof(projects->operation),
+               "add_entities");
+      if (frame->edits->revision != frame->edits->saved_revision) {
+        projects->resume_view = PROJECT_VIEW_SCENES;
+        projects->view = PROJECT_VIEW_CONFIRM;
+      } else {
+        project_start_job(projects, editor, frame, false_v);
+      }
+    }
+  }
+  project_label(ui, "projects.message",
+                projects->read_only && !projects->message[0]
+                    ? "Read-only workspace: another editor currently owns "
+                      "the write lease."
+                : projects->view == PROJECT_VIEW_ADD_ENTITY &&
+                        !projects->message[0]
+                    ? "Add saves the entity and reloads this scene."
+                    : projects->message,
+                12, height - 108, width - 48);
+  const bool8_t drafting = projects->view == PROJECT_VIEW_CREATE ||
+                           projects->view == PROJECT_VIEW_ADD_SCENE;
+  if (drafting &&
+      project_button(ui, "create.submit",
+                     projects->include_scene ? "Create and prepare"
+                                             : "Create empty project",
+                     width - 216, height - 65, 180, false_v)) {
+    project_create(projects, editor, frame);
+  }
+  if (projects->view == PROJECT_VIEW_SCENES &&
+      project_button(ui, "scene.add", "Add scene", width - 184, height - 65,
+                     148, false_v)) {
+    project_reset_scene_draft(projects);
+    projects->view = PROJECT_VIEW_ADD_SCENE;
+  }
+  if (project_button(
+          ui, "projects.back",
+          projects->view == PROJECT_VIEW_ADD_ENTITY ||
+                  projects->view == PROJECT_VIEW_CONFIRM ||
+                  projects->view == PROJECT_VIEW_DELETE
+              ? "Cancel"
+          : projects->project && !projects->unpublished_project
+              ? "Back to editor"
+              : "Back",
+          12, height - 65,
+          projects->view == PROJECT_VIEW_ADD_ENTITY
+              ? Min(148.0f, (width - 60) * .5f)
+              : 148.0f,
+          projects->delete_waiting_unload ||
+              (projects->view == PROJECT_VIEW_CHOOSER && !projects->project))) {
+    if ((projects->view == PROJECT_VIEW_ADD_ENTITY ||
+         (projects->view == PROJECT_VIEW_CONFIRM &&
+          !strcmp(projects->operation, "add_entities"))) &&
+        !projects->closing) {
+      projects->operation[0] = '\0';
+      projects->message[0] = '\0';
+      if (!frame->scene && !frame->scene_loading) {
+        project_start_job(projects, editor, frame, false_v);
+      } else {
+        projects->view = PROJECT_VIEW_EDITOR;
+      }
+    } else if (projects->view == PROJECT_VIEW_DELETE) {
+      projects->view = PROJECT_VIEW_SCENES;
+      projects->delete_waiting_unload = false_v;
+      projects->operation[0] = '\0';
+    } else if (projects->closing) {
+      *frame->close_response = VKR_SAMPLE_CLOSE_CANCEL;
+      projects->closing = false_v;
+      projects->view = projects->resume_view;
+    } else {
+      projects->view = projects->project && !projects->unpublished_project
+                           ? PROJECT_VIEW_EDITOR
+                           : PROJECT_VIEW_CHOOSER;
+    }
+    projects->initial_project[0] = '\0';
+    projects->discard_edits = false_v;
+    projects->awaiting_save = false_v;
+  }
+}
+
 static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
   if (projects && projects->view == PROJECT_VIEW_EDITOR && projects->dropdown) {
@@ -2700,279 +2999,21 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       project_build_entity_form(projects, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_CREATE ||
                projects->view == PROJECT_VIEW_ADD_SCENE) {
-      const bool8_t creating = projects->view == PROJECT_VIEW_CREATE;
-      const float32_t left =
-          creating && body_width >= 650 ? body_width * .35f : 0;
-      if (creating) {
-        project_label(ui, "project.name.label", "Project name", 12, 6,
-                      left ? left - 24 : body_width - 24);
-        project_field(ui, "project.name", projects->project_name,
-                      sizeof(projects->project_name), 12, 36,
-                      left ? left - 24 : body_width - 24);
-        project_check(ui, "project.scene", "Add an initial scene",
-                      &projects->include_scene, 12, 80,
-                      left ? left - 24 : body_width - 24);
-        const float32_t form_width = left ? left - 24 : body_width - 24;
-        project_label(ui, "project.font.label",
-                      "Default font / empty uses editor default", 12, 124,
-                      form_width);
-        project_field(ui, "project.font", projects->project_font_source,
-                      sizeof(projects->project_font_source), 12, 158,
-                      form_width);
-        if (project_button(ui, "project.font.browse", "Choose default font", 12,
-                           194, form_width, false_v)) {
-          static const char *const extensions[] = {"ttf", "otf"};
-          project_browse(projects, frame, "Choose project default font",
-                         extensions, 2, false_v, projects->project_font_source,
-                         sizeof(projects->project_font_source));
-        }
-        project_label(ui, "project.bootstrap",
-                      "Editor resources: reuse validated bundle", 12, 240,
-                      form_width);
-        project_label(ui, "project.font.bake",
-                      "Project font: prepare once when changed", 12, 272,
-                      form_width);
-      }
-      if (projects->include_scene) {
-        if (creating && !left) {
-          VkrUiPanelConfig form = vkr_ui_panel_config_default();
-          form.placement.column = 0;
-          form.placement.row = 0;
-          form.placement.margin_pt.top = 320;
-          form.columns = &one;
-          form.column_count = 1;
-          form.rows = &one;
-          form.row_count = 1;
-          if (vkr_ui_panel_begin(ui, string8_lit("narrow.scene"), &form)) {
-            project_build_scene_form(projects, frame, 12, body_width - 24);
-            (void)vkr_ui_panel_end(ui);
-          }
-        } else {
-          project_build_scene_form(projects, frame, left + 12,
-                                   body_width - left - 24);
-        }
-      }
+      project_build_create_form(projects, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_RENAME) {
-      project_label(ui, "rename.label", "Name", 12, 12, body_width - 24);
-      project_field(ui, "rename.name", projects->rename_name,
-                    sizeof(projects->rename_name), 12, 46, body_width - 24);
-      if (project_button(ui, "rename.save", "Save name", 12, 96, 150,
-                         projects->read_only)) {
-        VkrEditorProjectError error = {0};
-        if (!vkr_editor_project_name_valid(projects->rename_name, &error)) {
-          project_error(projects, &error);
-        } else if (project_finish_settings_save(projects)) {
-          char *target_name =
-              projects->rename_project
-                  ? projects->project->name
-                  : projects->project->scenes[projects->pending_scene].name;
-          char previous[VKR_EDITOR_PROJECT_NAME_CAPACITY];
-          snprintf(previous, sizeof(previous), "%s", target_name);
-          snprintf(target_name, VKR_EDITOR_PROJECT_NAME_CAPACITY, "%s",
-                   projects->rename_name);
-          if (vkr_editor_project_save(projects->project, &error)) {
-            projects->view = PROJECT_VIEW_SCENES;
-            project_refresh(projects);
-          } else {
-            snprintf(target_name, VKR_EDITOR_PROJECT_NAME_CAPACITY, "%s",
-                     previous);
-            project_error(projects, &error);
-          }
-        }
-      }
+      project_build_rename_form(projects, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_DELETE && projects->project &&
                projects->pending_scene < projects->project->scene_count) {
-      project_label(ui, "delete.name",
-                    projects->project->scenes[projects->pending_scene].name, 12,
-                    12, body_width - 24);
-      project_label(ui, "delete.warning",
-                    "Permanently erase this scene and its managed files.", 12,
-                    56, body_width - 24);
-      project_label(
-          ui, "delete.edits",
-          projects->pending_scene == projects->active_scene
-              ? "The scene will unload. Unsaved edits will be discarded."
-              : "The current scene will remain open.",
-          12, 96, body_width - 24);
-      project_label(ui, "delete.shared",
-                    "Project-shared assets are kept. This cannot be undone.",
-                    12, 136, body_width - 24);
-      if (project_button(ui, "delete.confirm", "Delete permanently", 12, 184,
-                         190,
-                         projects->read_only || frame->scene_loading ||
-                             projects->job_id || projects->waiting_activation ||
-                             projects->delete_waiting_unload ||
-                             vkr_editor_bakery_busy(editor->bakery))) {
-        project_delete_scene(projects, editor, frame);
-      }
+      project_build_delete_form(projects, editor, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_SCENES && projects->project) {
-      project_label(ui, "scene.project", projects->project->name, 12, 0,
-                    body_width - 142);
-      if (project_button(ui, "project.rename", "Rename project",
-                         body_width - 142, 0, 130, projects->read_only)) {
-        projects->rename_project = true_v;
-        snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
-                 projects->project->name);
-        projects->view = PROJECT_VIEW_RENAME;
-      }
-      for (uint32_t i = 0; i < projects->project->scene_count; ++i) {
-        VkrEditorProjectScene *scene = &projects->project->scenes[i];
-        (void)vkr_ui_push_id_u64(ui, i);
-        if (project_button(ui, "scene.open", scene->name, 12, 46 + i * 40.0f,
-                           body_width - 230, false_v)) {
-          projects->pending_scene = i;
-          projects->operation[0] = '\0';
-          if (frame->edits->revision != frame->edits->saved_revision) {
-            projects->resume_view = PROJECT_VIEW_SCENES;
-            projects->view = PROJECT_VIEW_CONFIRM;
-          } else {
-            project_start_job(projects, editor, frame, false_v);
-          }
-        }
-        if (project_button(ui, "scene.rename", "Rename", body_width - 208,
-                           46 + i * 40.0f, 96, projects->read_only)) {
-          projects->pending_scene = i;
-          projects->rename_project = false_v;
-          snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
-                   scene->name);
-          projects->view = PROJECT_VIEW_RENAME;
-        }
-        if (project_button(ui, "scene.delete", "Delete", body_width - 108,
-                           46 + i * 40.0f, 96,
-                           projects->read_only || frame->scene_loading ||
-                               projects->job_id ||
-                               projects->waiting_activation ||
-                               vkr_editor_bakery_busy(editor->bakery))) {
-          projects->pending_scene = i;
-          projects->message[0] = '\0';
-          projects->view = PROJECT_VIEW_DELETE;
-        }
-        (void)vkr_ui_pop_id(ui);
-      }
-      if (!projects->project->scene_count) {
-        project_label(ui, "scenes.empty",
-                      "This project has no scenes yet. Add one below.", 12, 46,
-                      body_width - 24);
-      }
+      project_build_scene_list(projects, editor, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_CONFIRM) {
-      project_label(ui, "dirty.message",
-                    projects->closing && projects->job_id
-                        ? "An asset job is active. Closing cancels it and "
-                          "waits for its worker."
-                        : "Save your scene edits, discard them, or return to "
-                          "the current scene.",
-                    12, 12, body_width - 24);
-      if (project_button(ui, "dirty.save", "Save and continue", 12, 64, 170,
-                         false_v)) {
-        projects->awaiting_save = true_v;
-        frame->scene_edit->action = VKR_SCENE_EDIT_SAVE;
-      }
-      if (project_button(ui, "dirty.discard", "Discard edits", 194, 64, 145,
-                         false_v) ||
-          (projects->awaiting_save &&
-           frame->edits->revision == frame->edits->saved_revision)) {
-        projects->awaiting_save = false_v;
-        projects->discard_edits = true_v;
-        if (projects->closing) {
-          if (project_save_settings(projects, editor, frame->dock)) {
-            *frame->close_response = VKR_SAMPLE_CLOSE_CONFIRM;
-          }
-        } else {
-          projects->view = projects->resume_view;
-        }
-        if (!projects->closing && projects->view == PROJECT_VIEW_SCENES) {
-          project_start_job(projects, editor, frame, false_v);
-        }
-      }
+      project_build_confirm_form(projects, editor, frame, body_width);
     }
     (void)vkr_ui_scroll_area_end(ui);
   }
   if (!projects->dialog_closed) {
-    if (projects->view == PROJECT_VIEW_ADD_ENTITY) {
-      const float32_t button_width = Min(180.0f, (width - 60) * .5f);
-      if (project_button(ui, "entity.submit", "Add to scene",
-                         width - 36 - button_width, height - 65, button_width,
-                         projects->read_only ||
-                             !project_entity_draft_valid(projects) ||
-                             frame->scene_loading || projects->job_id ||
-                             vkr_editor_bakery_busy(editor->bakery))) {
-        snprintf(projects->operation, sizeof(projects->operation),
-                 "add_entities");
-        if (frame->edits->revision != frame->edits->saved_revision) {
-          projects->resume_view = PROJECT_VIEW_SCENES;
-          projects->view = PROJECT_VIEW_CONFIRM;
-        } else {
-          project_start_job(projects, editor, frame, false_v);
-        }
-      }
-    }
-    project_label(ui, "projects.message",
-                  projects->read_only && !projects->message[0]
-                      ? "Read-only workspace: another editor currently owns "
-                        "the write lease."
-                  : projects->view == PROJECT_VIEW_ADD_ENTITY &&
-                          !projects->message[0]
-                      ? "Add saves the entity and reloads this scene."
-                      : projects->message,
-                  12, height - 108, width - 48);
-    const bool8_t drafting = projects->view == PROJECT_VIEW_CREATE ||
-                             projects->view == PROJECT_VIEW_ADD_SCENE;
-    if (drafting &&
-        project_button(ui, "create.submit",
-                       projects->include_scene ? "Create and prepare"
-                                               : "Create empty project",
-                       width - 216, height - 65, 180, false_v)) {
-      project_create(projects, editor, frame);
-    }
-    if (projects->view == PROJECT_VIEW_SCENES &&
-        project_button(ui, "scene.add", "Add scene", width - 184, height - 65,
-                       148, false_v)) {
-      project_reset_scene_draft(projects);
-      projects->view = PROJECT_VIEW_ADD_SCENE;
-    }
-    if (project_button(ui, "projects.back",
-                       projects->view == PROJECT_VIEW_ADD_ENTITY ||
-                               projects->view == PROJECT_VIEW_CONFIRM ||
-                               projects->view == PROJECT_VIEW_DELETE
-                           ? "Cancel"
-                       : projects->project && !projects->unpublished_project
-                           ? "Back to editor"
-                           : "Back",
-                       12, height - 65,
-                       projects->view == PROJECT_VIEW_ADD_ENTITY
-                           ? Min(148.0f, (width - 60) * .5f)
-                           : 148.0f,
-                       projects->delete_waiting_unload ||
-                           (projects->view == PROJECT_VIEW_CHOOSER &&
-                            !projects->project))) {
-      if ((projects->view == PROJECT_VIEW_ADD_ENTITY ||
-           (projects->view == PROJECT_VIEW_CONFIRM &&
-            !strcmp(projects->operation, "add_entities"))) &&
-          !projects->closing) {
-        projects->operation[0] = '\0';
-        projects->message[0] = '\0';
-        if (!frame->scene && !frame->scene_loading) {
-          project_start_job(projects, editor, frame, false_v);
-        } else {
-          projects->view = PROJECT_VIEW_EDITOR;
-        }
-      } else if (projects->view == PROJECT_VIEW_DELETE) {
-        projects->view = PROJECT_VIEW_SCENES;
-        projects->delete_waiting_unload = false_v;
-        projects->operation[0] = '\0';
-      } else if (projects->closing) {
-        *frame->close_response = VKR_SAMPLE_CLOSE_CANCEL;
-        projects->closing = false_v;
-        projects->view = projects->resume_view;
-      } else {
-        projects->view = projects->project && !projects->unpublished_project
-                             ? PROJECT_VIEW_EDITOR
-                             : PROJECT_VIEW_CHOOSER;
-      }
-      projects->initial_project[0] = '\0';
-      projects->discard_edits = false_v;
-      projects->awaiting_save = false_v;
-    }
+    project_build_footer(projects, editor, frame, width, height);
   }
   (void)vkr_ui_panel_end(ui);
 }
