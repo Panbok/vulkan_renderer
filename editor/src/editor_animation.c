@@ -1648,6 +1648,14 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
 
 bool8_t vkr_editor_animation_write_settings(const VkrEditorAnimation *animation,
                                             VkrJsonWriter *writer) {
+  /* Nothing to persist until an animated source populates the document.
+   * Project settings merge objects member by member, so an empty object
+   * keeps the last saved document instead of failing every settings save. */
+  if (!animation->fingerprint ||
+      !animation_document_valid(&animation->document, UINT32_MAX)) {
+    return vkr_json_writer_begin_object(writer) &&
+           vkr_json_writer_end_object(writer);
+  }
   char fingerprint[17];
   snprintf(fingerprint, sizeof(fingerprint), "%016llx",
            (unsigned long long)animation->fingerprint);

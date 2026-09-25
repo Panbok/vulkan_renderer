@@ -141,7 +141,10 @@ Managed harness children locate renderer bootstrap files independently of their
 workspace asset closure.
 
 Settings serialization overlays known object members and preserves unknown nested
-members; arrays remain serializer-owned values. The document parser enforces the
+members; arrays remain serializer-owned values. An owner without persistable
+state writes an empty object, which keeps its last saved members; the animation
+editor does this until an animated source populates its document. The document
+parser enforces the
 1 MiB byte limit and depth limit with temporary dynamically sized token storage,
 so a large valid scene inventory does not fail a smaller fixed token ceiling.
 Managed names retain UTF-8 even when a glyph is unavailable. The shipped managed
