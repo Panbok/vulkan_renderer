@@ -1201,10 +1201,13 @@ vkr_internal void vkr_harness_child_update(void *state,
              next_frame %
                      vkr_harness_temporal_alignment(&application->renderer) ==
                  0u) {
-    /* Bootstrap duration must not choose the animation clock, raster jitter,
-       GTAO or SSGI phase consumed by authored warmup, including zero-warmup
-       cases. Reset players after asset readiness and temporal alignment. */
+    /* Bootstrap duration must not choose the animation clock, cloud wind
+       offset, raster jitter, GTAO or SSGI phase consumed by authored warmup,
+       including zero-warmup cases. Reset players and the wind after asset
+       readiness and temporal alignment. */
     VkrScene *scene = application->active_scene;
+    application->cloud_wind_offset_m[0] = 0.0;
+    application->cloud_wind_offset_m[1] = 0.0;
     for (uint32_t i = 0u; i < scene->topo_count; ++i) {
       VkrAnimationPlayer *player =
           vkr_scene_animation_get_player(scene, scene->topo_order[i]);

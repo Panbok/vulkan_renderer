@@ -353,6 +353,53 @@ vkr_internal bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Every frame root addresses a sky record; a zeroed record keeps aerial
+   perspective off. The lookup textures belong to the published generation
+   and retire only after this submission's last read. The aerial pass patches
+   its volume slot into the mapped record later in recording. */
+vkr_internal bool8_t vkr_vk_upload_sky(VkrVulkanRenderer *renderer,
+                                       VkrVulkanFrameSlot *slot,
+                                       const VkrPreparedFrame *packet) {
+  uint64_t sky_address = 0u;
+  VkrVulkanSky *sky = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*sky), _Alignof(VkrVulkanSky), &sky_address, NULL);
+  if (!sky)
+    return false_v;
+  /* The cloud passes patch their sampled output slots in during graph
+     preparation; the noise rows are permanent. */
+  *sky = (VkrVulkanSky){
+      .params = packet->sky,
+      .aerial_perspective_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .transmittance_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .multiple_scattering_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .sampler = renderer->transmission_sampler_slot,
+      .cloud_radiance_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .cloud_shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .cloud_base_noise_texture = renderer->cloud_noise_texture_slots[0].index,
+      .cloud_detail_noise_texture =
+          renderer->cloud_noise_texture_slots[1].index,
+      .cloud_weather_texture = renderer->cloud_noise_texture_slots[2].index,
+      .cloud_noise_sampler = renderer->cloud_noise_sampler_slot.index,
+  };
+  if (packet->scene_rendering && packet->input.sky &&
+      packet->input.sky->atmosphere.enabled) {
+    VkrVulkanPublishedTexture *transmittance = vkr_vk_published_texture(
+        renderer, packet->input.sky->transmittance, NULL);
+    VkrVulkanPublishedTexture *multiple_scattering = vkr_vk_published_texture(
+        renderer, packet->input.sky->multiple_scattering, NULL);
+    if (!transmittance || transmittance->initialization_pending ||
+        !multiple_scattering || multiple_scattering->initialization_pending)
+      return false_v;
+    sky->transmittance_texture = transmittance->sampled_slot.index;
+    sky->multiple_scattering_texture = multiple_scattering->sampled_slot.index;
+    transmittance->last_use_submit_value = renderer->submit_value + 1u;
+    multiple_scattering->last_use_submit_value = renderer->submit_value + 1u;
+  }
+  slot->sky = sky_address;
+  slot->sky_record = sky;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_vk_upload_packet_tables(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrPreparedFrame *packet) {
@@ -380,6 +427,8 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->froxel_fog = 0u;
   slot->froxel_fog_params = NULL;
   slot->froxel_integrated_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->sky = 0u;
+  slot->sky_record = NULL;
   slot->sh_referenced_slot_count = 0u;
 
   uint64_t fog_address = 0u;
@@ -399,6 +448,9 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   *froxel_fog = packet->froxel_fog;
   slot->froxel_fog = froxel_fog_address;
   slot->froxel_fog_params = froxel_fog;
+
+  if (!vkr_vk_upload_sky(renderer, slot, packet))
+    return false_v;
 
   const VkrFrameLighting *lighting = packet->input.lighting;
   uint64_t ltc_address = 0u;
@@ -1140,6 +1192,7 @@ void vkr_vk_fill_packet_frame_root(
   root->fog = slot->fog;
   root->froxel_fog = slot->froxel_fog;
   root->froxel_integrated_texture = slot->froxel_integrated_texture;
+  root->sky = slot->sky;
   root->froxel_sampler = renderer->transmission_sampler_slot;
   root->diffuse_volume_texture = slot->diffuse_volume_texture;
   root->diffuse_volume_origin = slot->diffuse_volume_origin;

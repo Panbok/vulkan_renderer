@@ -179,6 +179,9 @@ typedef struct VkrStandardSceneRuntime {
   VkrSkyboxSystem skybox_system;
   VkrScene *active_scene;
   uint64_t scene_generation;
+  /** Cloud wind offset in world X and Z metres, wrapped at
+      VKR_CLOUD_WIND_PERIOD_M. Float64 keeps metre precision over a session. */
+  float64_t cloud_wind_offset_m[2];
   VkrCameraSystem camera_system;
   VkrCameraHandle active_camera;
   VkrCameraController camera_controller;

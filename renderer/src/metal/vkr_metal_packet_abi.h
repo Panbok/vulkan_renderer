@@ -104,6 +104,26 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketLocalShadowTransmissionDraw {
 _Static_assert(sizeof(VkrMetalPacketLocalShadowTransmissionDraw) == 32u,
                "Metal local shadow transmission draw ABI drift");
 
+/** Frame-slot sky record; mirrors VkrMetalPacketSky in common/draw.metalh. The
+    lookup textures belong to the published atmosphere generation. The cloud
+    radiance is this frame's history output and the noise textures are
+    renderer-owned (ADR-074). */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketSky {
+  VkrSkyGpuParams params;
+  uint64_t aerial_perspective_texture_id;
+  uint64_t transmittance_texture_id;
+  uint64_t multiple_scattering_texture_id;
+  uint64_t cloud_radiance_texture_id;
+  uint64_t cloud_shadow_texture_id;
+  uint64_t cloud_base_noise_texture_id;
+  uint64_t cloud_detail_noise_texture_id;
+  uint64_t cloud_weather_texture_id;
+} VkrMetalPacketSky;
+_Static_assert(sizeof(VkrMetalPacketSky) == 416u, "Metal sky record ABI drift");
+_Static_assert(offsetof(VkrMetalPacketSky, aerial_perspective_texture_id) ==
+                   352u,
+               "Metal sky aerial-perspective offset drift");
+
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t instances;
   uint32_t instance_address_padding[2];
@@ -165,6 +185,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t sheen;
   uint64_t anisotropy;
   uint64_t local_shadow_transmission;
+  uint64_t sky;
 } VkrMetalPacketFrameRoot;
 
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, dfg_texture_id) == 472u,
@@ -187,6 +208,8 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot,
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, local_shadow_transmission) ==
                    528u,
                "Metal local shadow transmission sampling offset drift");
+_Static_assert(offsetof(VkrMetalPacketFrameRoot, sky) == 536u,
+               "Metal sky record offset drift");
 _Static_assert(sizeof(VkrMetalPacketFrameRoot) == 544u,
                "Metal frame root ABI size drift");
 
@@ -352,10 +375,12 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFogRoot {
   uint64_t depth_texture_id;
   uint64_t target_texture_id;
   uint32_t extent[2];
-  uint32_t reserved[2];
+  uint64_t aerial_perspective_texture_id;
+  uint64_t sky;
+  uint64_t frame;
 } VkrMetalPacketFogRoot;
 
-_Static_assert(sizeof(VkrMetalPacketFogRoot) == 144u,
+_Static_assert(sizeof(VkrMetalPacketFogRoot) == 176u,
                "Metal fog root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelInjectRoot {
@@ -389,10 +414,51 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelApplyRoot {
   uint64_t integrated_texture_id;
   uint64_t target_texture_id;
   uint32_t extent[2];
+  uint64_t aerial_perspective_texture_id;
 } VkrMetalPacketFroxelApplyRoot;
 
-_Static_assert(sizeof(VkrMetalPacketFroxelApplyRoot) == 48u,
+_Static_assert(sizeof(VkrMetalPacketFroxelApplyRoot) == 64u,
                "Metal froxel apply root ABI drift");
+
+/** Per-frame sky-view lookup and aerial-perspective volume builders. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkyBuildRoot {
+  uint64_t sky;
+  uint64_t output_texture_id;
+} VkrMetalPacketSkyBuildRoot;
+
+_Static_assert(sizeof(VkrMetalPacketSkyBuildRoot) == 16u,
+               "Metal sky build root ABI drift");
+
+/** One-time cloud noise synthesis (ADR-074); one root drives the base,
+    detail and weather kernels. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudNoiseRoot {
+  uint64_t base_texture_id;
+  uint64_t detail_texture_id;
+  uint64_t weather_texture_id;
+  uint64_t reserved;
+} VkrMetalPacketCloudNoiseRoot;
+
+_Static_assert(sizeof(VkrMetalPacketCloudNoiseRoot) == 32u,
+               "Metal cloud noise root ABI drift");
+
+/** Half-resolution cloud trace. `previous_view_projection` is the canonical
+    unjittered matrix of the selected history producer; without a valid
+    history `history_texture_id` names the output and is never sampled. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudTraceRoot {
+  Mat4 previous_view_projection;
+  uint64_t sky;
+  uint64_t frame;
+  uint64_t depth_texture_id;
+  uint64_t history_texture_id;
+  uint64_t output_texture_id;
+  uint32_t extent[2];
+  uint32_t depth_extent[2];
+  uint32_t frame_index;
+  uint32_t history_valid;
+} VkrMetalPacketCloudTraceRoot;
+
+_Static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 128u,
+               "Metal cloud trace root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiDepthBaseRoot {
   VkrSsgiGpuParams params;
@@ -887,13 +953,15 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   uint64_t specular_texture_id;
   uint64_t normal_texture_id;
   uint64_t hdr_texture_id;
-  uint64_t sky_texture_id;
+  uint64_t sky_view_texture_id;
   uint64_t gtao_visibility_texture_id;
   Mat4 inverse_view_projection;
   uint32_t extent[2];
-  uint32_t sky_enabled;
+  /** VkrSkyMode: fallback colour, uniform radiance or the atmosphere. */
+  uint32_t sky_mode;
   uint32_t subsurface_profile_count;
-  Vec4 solar_disk_radiance;
+  /** Uniform background radiance for the constant sky mode. */
+  Vec4 sky_radiance;
   uint64_t direct_source_texture_id;
   uint32_t ssgi_enabled;
   uint32_t ssgi_reserved;
@@ -1087,13 +1155,6 @@ _Static_assert(offsetof(VkrMetalPacketTonemapRoot, display_output) == 40u,
 _Static_assert(sizeof(VkrMetalPacketTonemapRoot) == 48u,
                "Metal tonemap root ABI size drift");
 
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketEquirectRoot {
-  uint64_t source_texture_id;
-  uint64_t target_texture_id;
-  uint32_t target_size;
-  uint32_t reserved[3];
-} VkrMetalPacketEquirectRoot;
-
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketAtmosphereRoot {
   VkrAtmosphereGpuParams params;
   uint64_t transmittance_sample_texture_id;
@@ -1101,7 +1162,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketAtmosphereRoot {
   uint64_t multiple_scattering_sample_texture_id;
   uint64_t multiple_scattering_storage_texture_id;
   uint64_t source_storage_texture_id;
-  uint64_t sun_output;
   uint32_t extent[2];
   uint32_t face_size;
   uint32_t reserved;
@@ -1120,11 +1180,9 @@ _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
 _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
                         source_storage_texture_id) == 160u,
                "Metal atmosphere source offset drift");
-_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, sun_output) == 168u,
-               "Metal atmosphere sun output offset drift");
-_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, extent) == 176u,
+_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, extent) == 168u,
                "Metal atmosphere extent offset drift");
-_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, face_size) == 184u,
+_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, face_size) == 176u,
                "Metal atmosphere face-size offset drift");
 
 /** Mirrors VkrMetalPacketShProjectRoot in metal/msl/ibl/sh_projection.metal.
@@ -1205,7 +1263,6 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SHADOW_CASCADE,
   VKR_METAL_PACKET_ABI_DISPLAY_OUTPUT_PARAMS,
   VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
-  VKR_METAL_PACKET_ABI_EQUIRECT_ROOT,
   VKR_METAL_PACKET_ABI_ATMOSPHERE_ROOT,
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,
   VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT,
@@ -1260,6 +1317,14 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_DOF_ROOT,
   VKR_METAL_PACKET_ABI_BLOOM_ROOT,
   VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT,
+  VKR_METAL_PACKET_ABI_SKY,
+  VKR_METAL_PACKET_ABI_SKY_PARAMS,
+  VKR_METAL_PACKET_ABI_SKY_VIEW_ROOT,
+  VKR_METAL_PACKET_ABI_AERIAL_PERSPECTIVE_ROOT,
+  VKR_METAL_PACKET_ABI_CLOUD_PARAMS,
+  VKR_METAL_PACKET_ABI_CLOUD_NOISE_ROOT,
+  VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT,
+  VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

@@ -1556,6 +1556,85 @@
       ]
     },
     {
+      "name": "sky_view_lut",
+      "type": "image",
+      "condition": "scene_rendering && atmosphere_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 192,
+        "height": 108
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT"
+      ]
+    },
+    {
+      "name": "aerial_perspective",
+      "type": "image",
+      "condition": "scene_rendering && aerial_perspective_enabled",
+      "dimension": "3d",
+      "depth": 32,
+      "extent": {
+        "mode": "fixed",
+        "width": 32,
+        "height": 32
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT"
+      ]
+    },
+    {
+      "name": "cloud_shadow",
+      "type": "image",
+      "condition": "scene_rendering && clouds_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 512,
+        "height": 512
+      },
+      "format": "R16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
+      "name": "cloud_history",
+      "type": "image",
+      "condition": "scene_rendering && clouds_enabled",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "ssgi_direct_source",
       "type": "image",
       "condition": "scene_rendering && ssgi_enabled",
@@ -3645,6 +3724,70 @@
       "execute": "pass.gtao.denoise"
     },
     {
+      "name": "Sky.ViewLut",
+      "type": "compute",
+      "condition": "scene_rendering && atmosphere_enabled",
+      "writes": [
+        {
+          "image": "sky_view_lut",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.sky.view_lut"
+    },
+    {
+      "name": "Sky.AerialPerspective",
+      "type": "compute",
+      "condition": "scene_rendering && aerial_perspective_enabled",
+      "writes": [
+        {
+          "image": "aerial_perspective",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.sky.aerial_perspective"
+    },
+    {
+      "name": "Clouds.Shadow",
+      "type": "compute",
+      "condition": "scene_rendering && clouds_enabled",
+      "writes": [
+        {
+          "image": "cloud_shadow",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.clouds.shadow"
+    },
+    {
+      "name": "Clouds.Trace",
+      "type": "compute",
+      "condition": "scene_rendering && clouds_enabled",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 2
+        }
+      ],
+      "writes": [
+        {
+          "image": "cloud_history",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.clouds.trace"
+    },
+    {
       "name": "Lighting.Deferred.Fullscreen",
       "type": "compute",
       "condition": "scene_rendering && !editor_enabled",
@@ -3794,6 +3937,24 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "cloud_history",
+          "access": "SAMPLED",
+          "binding": 34,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -3967,6 +4128,24 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "cloud_history",
+          "access": "SAMPLED",
+          "binding": 34,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -5016,6 +5195,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -5079,6 +5264,12 @@
           "image": "froxel_integrated",
           "access": "SAMPLED",
           "binding": 2
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 3,
+          "when": "aerial_perspective_enabled"
         }
       ],
       "writes": [
@@ -5126,6 +5317,12 @@
           "image": "froxel_integrated",
           "access": "SAMPLED",
           "binding": 2
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 3,
+          "when": "aerial_perspective_enabled"
         }
       ],
       "writes": [
@@ -5147,7 +5344,7 @@
     {
       "name": "Fog.Apply.Fullscreen",
       "type": "compute",
-      "condition": "scene_rendering && fog_enabled && !editor_enabled",
+      "condition": "scene_rendering && fog_apply_enabled && !editor_enabled",
       "flags": [
         "NO_CULL"
       ],
@@ -5168,6 +5365,18 @@
           "image": "opaque_vbuffer_depth",
           "access": "SAMPLED",
           "binding": 1
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "aerial_perspective_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -5189,7 +5398,7 @@
     {
       "name": "Fog.Apply.Editor",
       "type": "compute",
-      "condition": "scene_rendering && fog_enabled && editor_enabled",
+      "condition": "scene_rendering && fog_apply_enabled && editor_enabled",
       "flags": [
         "NO_CULL"
       ],
@@ -5210,6 +5419,18 @@
           "image": "opaque_vbuffer_depth",
           "access": "SAMPLED",
           "binding": 1
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "aerial_perspective_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -5596,6 +5817,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -5665,6 +5892,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -5775,6 +6008,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -5844,6 +6083,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -6051,6 +6296,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -6120,6 +6371,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -6223,6 +6480,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -6292,6 +6555,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -6499,6 +6768,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -6568,6 +6843,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -6671,6 +6952,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -6740,6 +7027,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -6952,6 +7245,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -7021,6 +7320,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -7139,6 +7444,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -7208,6 +7519,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -7318,6 +7635,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -7387,6 +7710,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -7475,6 +7804,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -7544,6 +7879,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -7632,6 +7973,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -7701,6 +8048,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -7794,6 +8147,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -7863,6 +8222,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -7968,6 +8333,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -8037,6 +8408,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -8125,6 +8502,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -8194,6 +8577,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -8282,6 +8671,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -8351,6 +8746,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -8444,6 +8845,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -8513,6 +8920,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "writes": [
@@ -8933,6 +9346,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -9002,6 +9421,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "attachments": {
@@ -9072,6 +9497,12 @@
           "when": "froxel_fog_enabled"
         },
         {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 32,
+          "when": "aerial_perspective_enabled"
+        },
+        {
           "image": "local_shadow_transmission_depth0",
           "access": "SAMPLED",
           "binding": 40,
@@ -9141,6 +9572,12 @@
           "access": "STORAGE_READ",
           "binding": 31,
           "when": "skinning_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
         }
       ],
       "attachments": {

@@ -1,8 +1,5 @@
 {
   "version": 2,
-  "environment": {
-    "enabled": false
-  },
   "entities": [
     {
       "name": "Receivers",

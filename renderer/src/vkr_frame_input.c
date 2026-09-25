@@ -946,13 +946,36 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     return error;
   }
 
-  if (packet->skybox) {
-    const Vec3 solar = packet->skybox->solar_disk_radiance;
-    if (!isfinite(solar.x) || !isfinite(solar.y) || !isfinite(solar.z) ||
-        solar.x < 0.0f || solar.y < 0.0f || solar.z < 0.0f)
+  if (packet->sky) {
+    const VkrSkyPassPayload *sky = packet->sky;
+    const Vec3 constant = sky->constant_radiance;
+    if (!(constant.x >= 0.0f && constant.x <= VKR_SKY_CONSTANT_RADIANCE_MAX &&
+          constant.y >= 0.0f && constant.y <= VKR_SKY_CONSTANT_RADIANCE_MAX &&
+          constant.z >= 0.0f && constant.z <= VKR_SKY_CONSTANT_RADIANCE_MAX))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.skybox.solar_disk_radiance",
-                        "must be finite and non-negative");
+                        "packet.sky.constant_radiance",
+                        "must be finite and in [0, 65504]");
+    if (!vkr_atmosphere_settings_valid(&sky->atmosphere))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.sky.atmosphere",
+                        "must be disabled or satisfy the atmosphere domain");
+    if (sky->atmosphere.enabled &&
+        (sky->transmittance.id == 0u || sky->multiple_scattering.id == 0u))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.sky.transmittance",
+                        "an enabled atmosphere needs both lookup textures");
+    if (!vkr_cloud_settings_valid(&sky->clouds) ||
+        (sky->clouds.enabled && !sky->atmosphere.enabled))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.sky.clouds",
+                        "must be disabled or satisfy the cloud domain with an "
+                        "enabled atmosphere");
+    const Vec2 wind = sky->cloud_wind_offset_m;
+    if (!(wind.x >= 0.0f && wind.x < VKR_CLOUD_WIND_PERIOD_M &&
+          wind.y >= 0.0f && wind.y < VKR_CLOUD_WIND_PERIOD_M))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.sky.cloud_wind_offset_m",
+                        "must lie in [0, 32000) metres");
   }
 
   error = vkr_frame_input_validate_world(packet, out_validation_error);

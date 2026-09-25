@@ -861,7 +861,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     prepared->frame.input.shadow = NULL;
     prepared->frame.input.local_shadow = NULL;
     prepared->frame.input.lighting = NULL;
-    prepared->frame.input.skybox = NULL;
+    prepared->frame.input.sky = NULL;
     prepared->frame.input.picking = NULL;
   }
   const bool8_t scaled =
@@ -905,6 +905,23 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     prepared->frame.fog = (VkrFogGpuParams){0};
   if (packet->globals.render_mode != VKR_RENDER_MODE_DEFAULT || orthographic)
     prepared->frame.fog = (VkrFogGpuParams){0};
+  /* The camera-dependent sky exists whenever an atmosphere is visible.
+     Aerial perspective and clouds follow the analytic fog's render-mode rule.
+     Without a published atmosphere, fog keeps its constant in-scatter
+     colour. */
+  prepared->frame.sky = (VkrSkyGpuParams){0};
+  if (prepared->frame.input.sky &&
+      prepared->frame.input.sky->atmosphere.enabled) {
+    const VkrSkyPassPayload *sky = prepared->frame.input.sky;
+    prepared->frame.sky = vkr_atmosphere_prepare_sky(
+        &sky->atmosphere, &sky->clouds, sky->cloud_wind_offset_m,
+        packet->globals.view_position,
+        mat4_mul(packet->globals.projection, packet->globals.view),
+        packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT &&
+            !orthographic);
+  } else {
+    prepared->frame.fog.sky_lighting.x = 0.0f;
+  }
   const bool8_t fog_changed =
       MemCompare(&rf->submitted_fog, &prepared->frame.fog,
                  sizeof(prepared->frame.fog)) != 0 ||
@@ -914,6 +931,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       MemCompare(rf->submitted_froxel_fog.boxes,
                  prepared->frame.froxel_fog.boxes,
                  sizeof(prepared->frame.froxel_fog.boxes)) != 0 ||
+      MemCompare(&rf->submitted_froxel_fog.lighting,
+                 &prepared->frame.froxel_fog.lighting, sizeof(Vec4)) != 0 ||
       (rf->submitted_froxel_fog.grid_dimensions_cell_pixels[0] != 0u) !=
           (prepared->frame.froxel_fog.grid_dimensions_cell_pixels[0] != 0u);
   prepared->temporal_input = (VkrTemporalFrameInput){
@@ -1046,9 +1065,6 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .supports_texture_astc_4x4 = true_v,
       .supports_texture_bc7 = true_v,
       .supports_texture_bc5 = true_v,
-      .supports_hdr_ibl = true_v,
-      .hdr_ibl_max_cube_extent = VKR_IBL_PREFILTER_SIZE,
-      .hdr_ibl_max_mip_levels = VKR_IBL_PREFILTER_MIP_COUNT,
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = actual_present_mode,
       .actual_target_image_count =
@@ -1088,11 +1104,6 @@ vkr_internal void vkr_renderer_backend_get_device_information(
     bitset8_set(&device_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
   }
   bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_LINEAR_BIT);
-  uint32_t hdr_ibl_max_cube_extent = 0u;
-  uint32_t hdr_ibl_max_mip_levels = 0u;
-  const bool8_t supports_hdr_ibl = vkr_vulkan_renderer_hdr_ibl_limits(
-      renderer->vulkan_renderer, &hdr_ibl_max_cube_extent,
-      &hdr_ibl_max_mip_levels);
   VkrPresentMode present_mode = VKR_PRESENT_MODE_DEFAULT;
   VkrSurfaceColorFormat color_format = VKR_SURFACE_COLOR_FORMAT_UNKNOWN;
   VkrSurfaceDepthFormat depth_format = VKR_SURFACE_DEPTH_FORMAT_UNKNOWN;
@@ -1152,9 +1163,6 @@ vkr_internal void vkr_renderer_backend_get_device_information(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC5_UNORM),
       .supports_texture_eac_rg11 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM),
-      .supports_hdr_ibl = supports_hdr_ibl,
-      .hdr_ibl_max_cube_extent = hdr_ibl_max_cube_extent,
-      .hdr_ibl_max_mip_levels = hdr_ibl_max_mip_levels,
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = present_mode,
       .actual_target_image_count = renderer->present_target.image_count,

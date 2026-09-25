@@ -5,7 +5,7 @@
     "intensity": 1,
     "diffuse_intensity": 1,
     "specular_intensity": 1,
-    "equirect": "assets/textures/ssr_black_local.hdr"
+    "constant": [0, 0, 0]
   },
   "entities": [
     {

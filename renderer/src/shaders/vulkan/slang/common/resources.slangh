@@ -167,6 +167,26 @@ struct VkrVulkanPacketTemporalDrawState
 };
 
 
+// Frame-slot sky record. The bindless slots name the published generation's
+// lookup textures and this frame's aerial-perspective volume.
+struct VkrVulkanSky
+{
+    VkrSkyParams params;
+    uint aerial_perspective_texture;
+    uint transmittance_texture;
+    uint multiple_scattering_texture;
+    uint sampler;
+    // ADR-074: this frame's cloud history output and shadow map, then the
+    // renderer-owned noise and its repeating sampler.
+    uint cloud_radiance_texture;
+    uint cloud_shadow_texture;
+    uint cloud_base_noise_texture;
+    uint cloud_detail_noise_texture;
+    uint cloud_weather_texture;
+    uint cloud_noise_sampler;
+    uint2 reserved;
+};
+
 struct VkrVulkanPacketFrameRoot
 {
     VkrVulkanInstance* instances;
@@ -238,7 +258,7 @@ struct VkrVulkanPacketFrameRoot
     VkrVulkanSheen* sheen;
     VkrVulkanAnisotropy* anisotropy;
     VkrVulkanLocalShadowTransmission* local_shadow_transmission;
-    uint64_t local_shadow_transmission_reserved;
+    VkrVulkanSky* sky;
 };
 
 #include "../../../shared/gpu_draw.slangh"

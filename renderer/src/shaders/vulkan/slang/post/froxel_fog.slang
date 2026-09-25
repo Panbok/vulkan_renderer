@@ -30,7 +30,8 @@ struct VkrVkFroxelApplyRoot
     uint integrated_sampler;
     uint target_texture;
     uint2 extent;
-    uint2 reserved;
+    uint aerial_perspective_texture;
+    uint reserved;
 };
 
 struct VkrVkFroxelInjectPush
@@ -57,8 +58,10 @@ struct VkrVkFroxelApplyPush
 [[vk::push_constant]] ConstantBuffer<VkrVkFroxelApplyPush> g_froxel_apply_push;
 
 float3 vkr_vk_froxel_local_radiance(VkrVulkanPacketFrameRoot* frame,
+                                    VkrFroxelFogParams params,
                                     VkrGpuPointLightRow light,
-                                    float3 world_position)
+                                    float3 world_position,
+                                    float3 ray_direction)
 {
     VkrPunctualLightTerm term = vkr_punctual_light_term(
         light.p0, light.p1, light.p2, light.p3, world_position);
@@ -68,29 +71,41 @@ float3 vkr_vk_froxel_local_radiance(VkrVulkanPacketFrameRoot* frame,
     float3 visibility = packet_local_shadow_one_tap(frame, light, term.kind,
                                                     world_position);
     return max(light.p1.rgb * light.p2.x * attenuation * visibility,
-               float3(0.0f));
+               float3(0.0f)) *
+           vkr_froxel_phase(params, ray_direction, term.direction);
 }
 
-float3 vkr_vk_froxel_incident_radiance(VkrVulkanPacketFrameRoot* frame,
-                                       VkrFroxelFogParams params,
-                                       float3 world_position)
+// Phase-weighted sun and selected local lights, plus the sky light's average
+// radiance when the medium is sky-lit.
+float3 vkr_vk_froxel_scattered_radiance(VkrVulkanPacketFrameRoot* frame,
+                                        VkrFroxelFogParams params,
+                                        float3 world_position)
 {
-    float3 incident = float3(0.0f);
+    float3 ray_direction =
+        vkr_fog_direction(world_position - frame.view_position.xyz);
+    float3 scattered = float3(0.0f);
     if (frame.directional_direction_enabled.w > 0.5f)
     {
-        float visibility = packet_directional_shadow_one_tap(frame,
-                                                              world_position);
-        incident += frame.directional_color_intensity.rgb *
-                    frame.directional_color_intensity.w * visibility;
+        float visibility =
+            packet_directional_shadow_one_tap(frame, world_position) *
+            packet_cloud_shadow(frame, world_position);
+        scattered += frame.directional_color_intensity.rgb *
+                     frame.directional_color_intensity.w * visibility *
+                     vkr_froxel_phase(
+                         params, ray_direction,
+                         normalize(-frame.directional_direction_enabled.xyz));
     }
     uint count = params.selected_local_indices_count.z;
     for (uint slot = 0u; slot < count; ++slot)
     {
         uint source = params.selected_local_indices_count[slot];
-        incident += vkr_vk_froxel_local_radiance(
-            frame, frame.point_light_data[source], world_position);
+        scattered += vkr_vk_froxel_local_radiance(
+            frame, params, frame.point_light_data[source], world_position,
+            ray_direction);
     }
-    return incident;
+    if (params.lighting.x > 0.0f)
+        scattered += params.lighting.x * packet_sky_ambient(frame);
+    return scattered;
 }
 
 float3 vkr_vk_froxel_world_position(float4x4 inverse_view_projection,
@@ -136,7 +151,7 @@ void froxel_inject_compute(uint3 cell : SV_DispatchThreadID)
     float3 world = vkr_froxel_world_center(params, root.frame.view, cell);
     float extinction = vkr_froxel_height_density(params, world);
     float3 source = vkr_froxel_local_source(
-        extinction, vkr_vk_froxel_incident_radiance(root.frame, params, world),
+        extinction, vkr_vk_froxel_scattered_radiance(root.frame, params, world),
         params);
     float4 current = float4(source, extinction);
     VkrFroxelHistoryCoordinate history_coordinate =
@@ -203,6 +218,16 @@ void froxel_apply_compute(uint3 thread_id : SV_DispatchThreadID)
     {
         world = vkr_vk_froxel_world_position(params.inverse_raster_view_projection,
                                               pixel, root.extent, device_depth);
+        // Aerial perspective is the farther medium, so it applies before fog.
+        // Sky pixels already carry the whole atmosphere.
+        VkrVulkanSky *sky = root.frame.sky;
+        if (sky.params.aerial.w > 0.0f)
+        {
+            VkrVkAerialSample aerial = packet_aerial_sample(
+                sky, root.aerial_perspective_texture, world);
+            current.rgb = vkr_sky_apply_aerial(current.rgb, aerial.packed,
+                                               aerial.weight);
+        }
     }
     VkrFroxelSample sample = vkr_vk_froxel_sample_integrated(
         root.integrated_texture, root.integrated_sampler, params,

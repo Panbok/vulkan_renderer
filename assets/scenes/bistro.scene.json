@@ -2,10 +2,21 @@
   "version": 2,
   "environment": {
     "enabled": true,
-    "intensity": 0.4,
+    "intensity": 1.0,
     "diffuse_intensity": 1.0,
-    "specular_intensity": 0.35,
-    "equirect": "assets/textures/citrus_orchard_puresky_4k.hdr"
+    "specular_intensity": 1.0
+  },
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [0.57735, 0.57735, 0.57735]
+  },
+  "clouds": {
+    "enabled": true,
+    "base_altitude_m": 1500,
+    "top_altitude_m": 4000,
+    "coverage": 0.45,
+    "density": 0.02,
+    "wind_mps": [10, 0]
   },
   "reflection_probes": [
     {
@@ -36,15 +47,16 @@
           "name": "Sun",
           "parent": 0,
           "transform": {
-            "pos": [-0.57735, -0.57735, -0.57735],
+            "pos": [0.0, 0.0, 0.0],
             "rot": [0.0, 0.0, 0.0, 1.0],
             "scale": [1.0, 1.0, 1.0]
           },
           "directional_light": {
             "enabled": true,
-            "color": [1.0, 1.0, 1.0],
-            "intensity": 0.75,
-            "direction_local": [-0.37735, -0.37735, -0.37735]
+            "color": [0.77092856, 0.9677925, 1.0],
+            "intensity": 1.91198,
+            "direction_local": [-0.57735, -0.57735, -0.57735],
+            "atmosphere_sun": true
           }
         },
         {

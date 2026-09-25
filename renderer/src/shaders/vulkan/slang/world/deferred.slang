@@ -195,12 +195,13 @@ struct VkrVkLightingRoot
     uint normal_texture;
     uint scene_texture;
     uint2 extent;
-    uint sky_texture;
+    uint sky_view_texture;
     uint sky_sampler;
-    uint sky_enabled;
+    // VKR_SKY_MODE_*: fallback colour, uniform radiance or the atmosphere.
+    uint sky_mode;
     uint gtao_visibility_texture;
-    // RGB radiance of the alpha-covered disc; source RGB deliberately omits it.
-    float4 solar_disk_radiance;
+    // Uniform background radiance for the constant sky mode.
+    float4 sky_radiance;
     uint direct_source_texture;
     uint ssgi_enabled;
     uint clearcoat_texture;
@@ -1432,12 +1433,14 @@ float3 vkr_vk_deferred_homogeneous(float4 value)
     return value.xyz / max(abs(value.w), 1e-7f) * sign(value.w);
 }
 
-// The deferred lighting path owns the background colour when no cubemap is
-// available.
+// The deferred lighting path owns the background: a fallback colour, a
+// uniform radiance, or the camera-dependent atmosphere.
 float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
 {
-    if (root.sky_enabled == 0u)
+    if (root.sky_mode == VKR_SKY_MODE_NONE)
         return float3(0.02f, 0.02f, 0.03f);
+    if (root.sky_mode == VKR_SKY_MODE_CONSTANT)
+        return root.sky_radiance.rgb;
     // Framebuffer-derived NDC needs no Y flip here: the pipeline's viewport
     // already owns that flip, so inverting the view-projection alone lands in
     // world space. The resolve flips because it performs the viewport
@@ -1446,11 +1449,40 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
     float3 far_world = vkr_vk_deferred_homogeneous(
         mul(root.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
     float3 direction = -packet_view_direction(root.frame, far_world);
-    // Pass-root descriptor indices are dynamically uniform; see
+    // The sky-view lookup already integrates to the top of the atmosphere, so
+    // sky pixels take no aerial perspective. The disc and its glow are
+    // analytic. Pass-root
+    // descriptor indices are dynamically uniform; see
     // packet_directional_shadow.
-    float4 sky_sample = g_cube_textures[root.sky_texture]
-        .SampleLevel(g_samplers[root.sky_sampler], direction, 0.0f);
-    return sky_sample.rgb + sky_sample.a * root.solar_disk_radiance.rgb;
+    VkrVulkanSky *sky = root.frame.sky;
+    VkrAtmosphereParams params = sky.params.atmosphere;
+    float3 radiance = g_textures[root.sky_view_texture]
+        .SampleLevel(g_samplers[root.sky_sampler],
+                     vkr_sky_view_uv(params, direction), 0.0f)
+        .rgb;
+    if (!vkr_sky_view_hits_ground(params, direction.y))
+    {
+        float3 view_transmittance = g_textures[sky.transmittance_texture]
+            .SampleLevel(g_samplers[sky.sampler],
+                         vkr_atmosphere_transmittance_uv(
+                             params, params.planet.x + params.planet.z,
+                             direction.y),
+                         0.0f)
+            .rgb;
+        radiance +=
+            vkr_atmosphere_sun_disc(params, direction, view_transmittance) +
+            vkr_atmosphere_sun_glow(params, direction, view_transmittance);
+    }
+    // The cloud trace shares screen coordinates with this pass; clouds carry
+    // aerial perspective at their own depth.
+    if (sky.params.clouds.noise.w > 0.0f)
+    {
+        float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
+        radiance = vkr_cloud_composite(
+            radiance, g_textures[sky.cloud_radiance_texture].SampleLevel(
+                          g_samplers[sky.sampler], uv, 0.0f));
+    }
+    return radiance;
 }
 
 float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
@@ -1600,11 +1632,14 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
         float3 sun_direction = normalize(-frame.directional_direction_enabled.xyz);
         bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                         dot(normal, sun_direction) < 0.0f;
+        float cloud_shadow = packet_cloud_shadow(frame, world);
         float base_shadow = packet_directional_shadow(
-            frame, world, back_lit ? -normal : normal);
+                                frame, world, back_lit ? -normal : normal) *
+                            cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
-            directional_shadow = packet_directional_shadow(frame, world, normal);
+            directional_shadow =
+                packet_directional_shadow(frame, world, normal) * cloud_shadow;
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
@@ -3304,7 +3339,8 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         if (frame.directional_direction_enabled.w > 0.5f)
         {
             directional_shadow =
-                packet_directional_shadow(frame, world, surface.normal);
+                packet_directional_shadow(frame, world, surface.normal) *
+                packet_cloud_shadow(frame, world);
             float3 light =
                 normalize(-frame.directional_direction_enabled.xyz);
             float3 radiance = frame.directional_color_intensity.rgb *
@@ -3456,7 +3492,11 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                 diffuse, specular, surface.emissive * base_transmission
             };
             VkrFroxelFogParams froxel_params = frame.froxel_fog[0];
-            if (vkr_froxel_enabled(froxel_params))
+            VkrVulkanSky *sky = frame.sky;
+            bool aerial = sky.params.aerial.w > 0.0f;
+            bool froxel = vkr_froxel_enabled(froxel_params);
+            bool fog = frame.fog[0].color_density.w > 0.0f;
+            if (aerial || froxel || fog)
             {
                 float dielectric = 1.0f - saturate(surface.metallic);
                 float3 feedback_weight = transmission * dielectric *
@@ -3470,31 +3510,35 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                 float3 feedback = vkr_transmission_compose(
                     empty_lobes, transmitted, surface.base.rgb,
                     layered_reflectance, transmission, surface.metallic);
-                VkrFroxelSample froxel = packet_froxel_sample(frame, world);
-                color = vkr_froxel_apply_local_over_feedback(
-                            local, feedback_weight, froxel) +
-                        feedback;
-            }
-            else if (frame.fog[0].color_density.w > 0.0f)
-            {
-                float dielectric = 1.0f - saturate(surface.metallic);
-                float3 feedback_weight = transmission * dielectric *
-                    surface.base.rgb * (1.0f - saturate(layered_reflectance));
-                float3 local = vkr_transmission_compose(
-                    lobes, float3(0.0f), surface.base.rgb,
-                    layered_reflectance, transmission, surface.metallic);
-                VkrTransmissionLobes empty_lobes = {
-                    float3(0.0f), float3(0.0f), float3(0.0f)
-                };
-                float3 feedback = vkr_transmission_compose(
-                    empty_lobes, transmitted, surface.base.rgb,
-                    layered_reflectance, transmission, surface.metallic);
-                color = vkr_fog_apply_local_over_feedback(
-                            local, feedback_weight, frame.fog[0],
-                            vkr_fog_surface_sample(
-                                frame.fog[0], frame.view_position.xyz,
-                                world)) +
-                        feedback;
+                // Aerial perspective is the farther medium, so it applies
+                // before fog.
+                if (aerial)
+                {
+                    VkrVkAerialSample aerial_sample = packet_aerial_sample(
+                        sky, sky.aerial_perspective_texture, world);
+                    local = vkr_sky_apply_aerial_over_feedback(
+                        local, feedback_weight, aerial_sample.packed,
+                        aerial_sample.weight);
+                }
+                if (froxel)
+                {
+                    VkrFroxelSample froxel_sample =
+                        packet_froxel_sample(frame, world);
+                    local = vkr_froxel_apply_local_over_feedback(
+                        local, feedback_weight, froxel_sample);
+                }
+                else if (fog)
+                {
+                    float3 inscatter = vkr_fog_inscatter(
+                        frame.fog[0], packet_fog_lighting(frame),
+                        vkr_fog_direction(world - frame.view_position.xyz));
+                    local = vkr_fog_apply_local_over_feedback(
+                        local, feedback_weight, inscatter,
+                        vkr_fog_surface_sample(frame.fog[0],
+                                               frame.view_position.xyz,
+                                               world));
+                }
+                color = local + feedback;
             }
             else
             {

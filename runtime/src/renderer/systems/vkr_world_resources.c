@@ -1,6 +1,6 @@
 /**
  * @file vkr_world_resources.c
- * @brief Fallback IBL resources, scene bake preparation, and 3D text slots.
+ * @brief Scene environment and probe bake preparation, and 3D text slots.
  */
 
 #include "renderer/systems/vkr_world_resources.h"
@@ -81,29 +81,22 @@ vkr_world_resources_has_retained_ibl_publisher(const VkrRenderAssets *assets) {
   return assets && assets->asset_publisher &&
          assets->asset_publisher->publish_writable_texture &&
          assets->asset_publisher->bake_ibl_cubemap &&
-         assets->asset_publisher->bake_hdr_environment &&
          assets->asset_publisher->ibl_sh_slot;
 }
 
-vkr_internal uint32_t
-vkr_world_resources_ibl_mip_limit(const VkrWorldResources *resources) {
-  return resources ? Min(resources->hdr_ibl_max_mip_levels,
-                         (uint32_t)VKR_IBL_PREFILTER_MIP_COUNT)
-                   : 0u;
-}
-
-vkr_internal bool8_t vkr_world_resources_create_writable_cube_texture(
-    VkrRenderAssets *assets, String8 name, uint32_t size, bool8_t with_mips,
-    VkrTextureFormat format, VkrTextureHandle *out_handle) {
-  if (!assets || !name.str || !out_handle || size == 0) {
+vkr_internal bool8_t vkr_world_resources_create_writable_texture(
+    VkrRenderAssets *assets, String8 name, VkrTextureType type, uint32_t width,
+    uint32_t height, bool8_t with_mips, VkrTextureFormat format,
+    VkrTextureHandle *out_handle) {
+  if (!assets || !name.str || !out_handle || width == 0 || height == 0) {
     return false_v;
   }
 
   VkrTextureDescription desc = {
-      .width = size,
-      .height = size,
+      .width = width,
+      .height = height,
       .channels = 4,
-      .type = VKR_TEXTURE_TYPE_CUBE_MAP,
+      .type = type,
       .format = format,
       .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
       .sample_count = VKR_SAMPLE_COUNT_1,
@@ -121,7 +114,7 @@ vkr_internal bool8_t vkr_world_resources_create_writable_cube_texture(
   if (!vkr_texture_system_create_writable(&assets->texture_system, name, &desc,
                                           out_handle, &texture_err)) {
     String8 err = vkr_renderer_get_error_string(texture_err);
-    log_warn("World resources: failed to create writable cubemap '%.*s': %s",
+    log_warn("World resources: failed to create writable texture '%.*s': %s",
              (int)name.length, name.str, string8_cstr(&err));
     return false_v;
   }
@@ -135,10 +128,6 @@ bool8_t vkr_world_resources_init(VkrRenderAssets *assets,
     return false_v;
   }
   MemZero(resources, sizeof(*resources));
-  resources->ibl_fallback_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->ibl_fallback_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->hdr_ibl_max_cube_extent = VKR_IBL_PREFILTER_SIZE;
-  resources->hdr_ibl_max_mip_levels = VKR_IBL_PREFILTER_MIP_COUNT;
   resources->text_slots = array_create_VkrWorldTextSlot(
       &assets->allocator, VKR_WORLD_RESOURCES_MAX_TEXTS);
   if (!resources->text_slots.data) {
@@ -161,99 +150,116 @@ vkr_world_resources_fail_scene_environment(VkrRenderAssets *assets,
                                       &environment->prefilter_cubemap);
   vkr_world_resources_release_texture(&assets->texture_system,
                                       &environment->source_cubemap);
-  vkr_world_resources_release_texture(&assets->texture_system,
-                                      &environment->delivery_equirect);
   environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
 }
 
-vkr_internal void vkr_world_resources_retain_first_scene_environment_as_default(
-    VkrRenderAssets *assets, VkrWorldResources *resources,
-    const VkrSceneEnvironment *environment) {
-  if (resources->ibl_default_ready) {
-    return;
+/* One texel per face represents a uniform environment exactly: the visible
+   sky, GGX prefilter and SH projection all read the same radiance. The name
+   carries the half-float radiance, so a reused name has identical contents. */
+vkr_internal bool8_t vkr_world_resources_create_constant_source(
+    VkrRenderAssets *assets, const VkrScene *scene,
+    VkrTextureHandle *out_handle) {
+  const Vec3 radiance = scene->environment.constant_radiance;
+  /* Environment sources carry no sun disc; their alpha is unused. */
+  const uint16_t texel[4] = {
+      vkr_float32_to_float16(radiance.x),
+      vkr_float32_to_float16(radiance.y),
+      vkr_float32_to_float16(radiance.z),
+      0u,
+  };
+  uint16_t faces[6][4];
+  VkrTextureUploadRegion regions[6];
+  _Static_assert(sizeof(faces) == VKR_WORLD_RESOURCES_CONSTANT_CUBE_BYTES,
+                 "Constant environment upload size drift");
+  for (uint32_t face = 0; face < ArrayCount(regions); ++face) {
+    MemCopy(faces[face], texel, sizeof(texel));
+    regions[face] = (VkrTextureUploadRegion){
+        .mip_level = 0u,
+        .array_layer = face,
+        .width = 1u,
+        .height = 1u,
+        .depth = 1u,
+        .byte_offset = (uint64_t)face * sizeof(texel),
+        .byte_size = sizeof(texel),
+    };
   }
 
-  vkr_texture_system_add_ref_by_handle(&assets->texture_system,
-                                       environment->source_cubemap);
-  vkr_texture_system_add_ref_by_handle(&assets->texture_system,
-                                       environment->prefilter_cubemap);
-  resources->ibl_fallback_source_cubemap = environment->source_cubemap;
-  resources->ibl_fallback_prefilter_cubemap = environment->prefilter_cubemap;
-  resources->ibl_default_ready = true_v;
+  const VkrTexturePreparedLoad prepared = {
+      .description =
+          {
+              .width = 1u,
+              .height = 1u,
+              .channels = 4u,
+              .mip_levels = 1u,
+              .array_layers = 6u,
+              .type = VKR_TEXTURE_TYPE_CUBE_MAP,
+              .format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              .sample_count = VKR_SAMPLE_COUNT_1,
+              .properties = vkr_texture_property_flags_create(),
+              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .min_filter = VKR_FILTER_LINEAR,
+              .mag_filter = VKR_FILTER_LINEAR,
+              .mip_filter = VKR_MIP_FILTER_NONE,
+              .anisotropy_enable = false_v,
+              .generation = VKR_INVALID_ID,
+          },
+      .upload_data = (uint8_t *)faces,
+      .upload_data_size = sizeof(faces),
+      .upload_regions = regions,
+      .upload_region_count = ArrayCount(regions),
+      .upload_mip_levels = 1u,
+      .upload_array_layers = 6u,
+      .upload_is_compressed = false_v,
+  };
+
+  char name_storage[160];
+  snprintf(name_storage, sizeof(name_storage),
+           "__ibl.scene.%p.constant.%04x%04x%04x", (const void *)scene,
+           texel[0], texel[1], texel[2]);
+  const String8 name = string8_create_from_cstr((const uint8_t *)name_storage,
+                                                string_length(name_storage));
+  VkrRendererError texture_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_texture_system_finalize_prepared_load(
+          &assets->texture_system, name, &prepared, out_handle, &texture_err)) {
+    String8 err = vkr_renderer_get_error_string(texture_err);
+    log_warn("World resources: failed to upload constant environment: %s",
+             string8_cstr(&err));
+    return false_v;
+  }
+  vkr_texture_system_add_ref_by_handle(&assets->texture_system, *out_handle);
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
-    VkrRenderAssets *assets, VkrWorldResources *resources, VkrScene *scene) {
+    VkrRenderAssets *assets, VkrScene *scene) {
   VkrSceneEnvironment *environment = &scene->environment;
-  if (environment->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT) {
-    VkrTexture *delivery = vkr_texture_system_get_by_handle(
-        &assets->texture_system, environment->delivery_equirect);
-    if (!delivery || !delivery->handle ||
-        delivery->description.type != VKR_TEXTURE_TYPE_2D ||
-        delivery->description.format !=
-            VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT ||
-        !assets->asset_publisher->bake_hdr_environment ||
-        !vkr_ibl_derive_cubemap_size(
-            delivery->description.width, delivery->description.height,
-            resources->hdr_ibl_max_cube_extent,
-            vkr_world_resources_ibl_mip_limit(resources),
-            &environment->source_face_size, &environment->source_mip_count)) {
-      goto failed;
-    }
-  } else if (environment->source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP) {
-    VkrTexture *source = vkr_texture_system_get_by_handle(
-        &assets->texture_system, environment->source_cubemap);
-    if (!source || !source->handle ||
-        source->description.type != VKR_TEXTURE_TYPE_CUBE_MAP) {
-      goto failed;
-    }
-    environment->source_face_size = source->description.width;
-    environment->source_mip_count = 1u;
-  } else {
+  if (!vkr_world_resources_create_constant_source(
+          assets, scene, &environment->source_cubemap)) {
     goto failed;
   }
+  environment->source_face_size = 1u;
+  environment->source_mip_count = 1u;
 
-  char source_name_storage[128];
   char prefilter_name_storage[128];
-  snprintf(source_name_storage, sizeof(source_name_storage),
-           "__ibl.scene.%p.source", (void *)scene);
   snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
            "__ibl.scene.%p.prefilter", (void *)scene);
-  const String8 source_name = string8_create_from_cstr(
-      (const uint8_t *)source_name_storage, string_length(source_name_storage));
   const String8 prefilter_name =
       string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
                                string_length(prefilter_name_storage));
-
-  if ((environment->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT &&
-       !vkr_world_resources_create_writable_cube_texture(
-           assets, source_name, environment->source_face_size, true_v,
-           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
-           &environment->source_cubemap)) ||
-      !vkr_world_resources_create_writable_cube_texture(
-          assets, prefilter_name, VKR_IBL_PREFILTER_SIZE, true_v,
+  if (!vkr_world_resources_create_writable_texture(
+          assets, prefilter_name, VKR_TEXTURE_TYPE_CUBE_MAP,
+          VKR_IBL_PREFILTER_SIZE, VKR_IBL_PREFILTER_SIZE, true_v,
           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
-          &environment->prefilter_cubemap)) {
+          &environment->prefilter_cubemap) ||
+      !assets->asset_publisher->bake_ibl_cubemap(
+          assets->asset_publisher->state, environment->source_cubemap,
+          environment->prefilter_cubemap, environment->sh_deringing)) {
     goto failed;
   }
-
-  const bool8_t baked =
-      environment->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT
-          ? assets->asset_publisher->bake_hdr_environment(
-                assets->asset_publisher->state, environment->delivery_equirect,
-                environment->source_cubemap, environment->prefilter_cubemap,
-                environment->sh_deringing)
-          : assets->asset_publisher->bake_ibl_cubemap(
-                assets->asset_publisher->state, environment->source_cubemap,
-                environment->prefilter_cubemap, environment->sh_deringing);
-  if (!baked) {
-    goto failed;
-  }
-  (void)vkr_world_resources_release_texture(&assets->texture_system,
-                                            &environment->delivery_equirect);
   environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_READY;
-  vkr_world_resources_retain_first_scene_environment_as_default(
-      assets, resources, environment);
   return true_v;
 
 failed:
@@ -264,14 +270,14 @@ failed:
 bool8_t vkr_world_resources_prepare_scene_environment(
     VkrRenderAssets *assets, VkrWorldResources *resources, VkrScene *scene) {
   if (!assets || !resources || !scene || !scene->environment.enabled ||
+      scene->environment.source_kind != VKR_SCENE_ENV_SOURCE_CONSTANT ||
       !vkr_world_resources_has_retained_ibl_publisher(assets)) {
     if (assets && scene) {
       vkr_world_resources_fail_scene_environment(assets, scene);
     }
     return false_v;
   }
-  return vkr_world_resources_prepare_published_environment(assets, resources,
-                                                           scene);
+  return vkr_world_resources_prepare_published_environment(assets, scene);
 }
 
 vkr_internal bool8_t
@@ -285,46 +291,63 @@ vkr_internal bool8_t vkr_world_resources_clear_atmosphere_candidate(
     VkrRenderAssets *assets, VkrSceneAtmosphere *atmosphere) {
   if (!assets || !atmosphere)
     return false_v;
-  const bool8_t prefilter_released = vkr_world_resources_release_texture(
-      &assets->texture_system, &atmosphere->candidate_prefilter_cubemap);
-  const bool8_t source_released = vkr_world_resources_release_texture(
-      &assets->texture_system, &atmosphere->candidate_source_cubemap);
-  if (!prefilter_released || !source_released) {
+  VkrTextureHandle *handles[] = {
+      &atmosphere->candidate_prefilter_cubemap,
+      &atmosphere->candidate_source_cubemap,
+      &atmosphere->candidate_transmittance,
+      &atmosphere->candidate_multiple_scattering,
+  };
+  bool8_t released = true_v;
+  for (uint32_t i = 0; i < ArrayCount(handles); ++i) {
+    if (!vkr_world_resources_release_texture(&assets->texture_system,
+                                             handles[i]))
+      released = false_v;
+  }
+  if (!released) {
     log_warn("Atmosphere candidate release remains pending; preserving owned "
              "handles for retry");
     return false_v;
   }
-  atmosphere->candidate_sh_deringing = 0.0f;
   atmosphere->candidate_settings = vkr_atmosphere_settings_defaults();
   atmosphere->candidate_settings.enabled = false_v;
+  atmosphere->candidate_clouds = vkr_cloud_settings_defaults();
   return true_v;
+}
+
+/* Detaches the published tuple and keeps the authored sky-light controls. */
+vkr_internal void
+vkr_world_resources_detach_environment_tuple(VkrSceneEnvironment *environment) {
+  environment->source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  environment->prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  environment->atmosphere_transmittance = VKR_TEXTURE_HANDLE_INVALID;
+  environment->atmosphere_multiple_scattering = VKR_TEXTURE_HANDLE_INVALID;
+  environment->source_face_size = 0u;
+  environment->source_mip_count = 0u;
+  environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
 }
 
 vkr_internal bool8_t vkr_world_resources_release_environment_tuple(
     VkrRenderAssets *assets, VkrSceneEnvironment *environment) {
   if (!assets || !environment)
     return false_v;
-  const bool8_t prefilter_released = vkr_world_resources_release_texture(
-      &assets->texture_system, &environment->prefilter_cubemap);
-  const bool8_t source_released = vkr_world_resources_release_texture(
-      &assets->texture_system, &environment->source_cubemap);
-  const bool8_t delivery_released = vkr_world_resources_release_texture(
-      &assets->texture_system, &environment->delivery_equirect);
-  if (!prefilter_released || !source_released || !delivery_released) {
+  VkrTextureHandle *handles[] = {
+      &environment->prefilter_cubemap,
+      &environment->source_cubemap,
+      &environment->atmosphere_transmittance,
+      &environment->atmosphere_multiple_scattering,
+  };
+  bool8_t released = true_v;
+  for (uint32_t i = 0; i < ArrayCount(handles); ++i) {
+    if (!vkr_world_resources_release_texture(&assets->texture_system,
+                                             handles[i]))
+      released = false_v;
+  }
+  if (!released) {
     log_warn("Retired atmosphere environment release remains pending; "
              "preserving owned handles for retry");
     return false_v;
   }
-  *environment = (VkrSceneEnvironment){
-      .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-      .intensity = 1.0f,
-      .diffuse_intensity = 1.0f,
-      .specular_intensity = 1.0f,
-      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
-      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
-  };
+  vkr_world_resources_detach_environment_tuple(environment);
   return true_v;
 }
 
@@ -333,27 +356,12 @@ vkr_internal bool8_t vkr_world_resources_drain_retired_atmosphere_environment(
   if (!assets || !atmosphere)
     return false_v;
   const VkrSceneEnvironment *retired = &atmosphere->retired_environment;
-  if (retired->delivery_equirect.id == 0u && retired->source_cubemap.id == 0u &&
-      retired->prefilter_cubemap.id == 0u)
+  if (retired->source_cubemap.id == 0u && retired->prefilter_cubemap.id == 0u &&
+      retired->atmosphere_transmittance.id == 0u &&
+      retired->atmosphere_multiple_scattering.id == 0u)
     return true_v;
   return vkr_world_resources_release_environment_tuple(
       assets, &atmosphere->retired_environment);
-}
-
-vkr_internal bool8_t vkr_world_resources_atmosphere_result_valid(
-    const VkrAtmosphereBakeResult *result) {
-  return result && isfinite(result->solar_irradiance.x) &&
-         result->solar_irradiance.x >= 0.0f &&
-         isfinite(result->solar_irradiance.y) &&
-         result->solar_irradiance.y >= 0.0f &&
-         isfinite(result->solar_irradiance.z) &&
-         result->solar_irradiance.z >= 0.0f &&
-         isfinite(result->solar_disk_radiance.x) &&
-         result->solar_disk_radiance.x >= 0.0f &&
-         isfinite(result->solar_disk_radiance.y) &&
-         result->solar_disk_radiance.y >= 0.0f &&
-         isfinite(result->solar_disk_radiance.z) &&
-         result->solar_disk_radiance.z >= 0.0f;
 }
 
 vkr_internal bool8_t vkr_world_resources_disable_scene_atmosphere(
@@ -369,23 +377,24 @@ vkr_internal bool8_t vkr_world_resources_disable_scene_atmosphere(
     return true_v;
 
   atmosphere->retired_environment = scene->environment;
-  scene->environment = (VkrSceneEnvironment){
-      .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-      .intensity = 1.0f,
-      .diffuse_intensity = 1.0f,
-      .specular_intensity = 1.0f,
-      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
-      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
-  };
+  vkr_world_resources_detach_environment_tuple(&scene->environment);
   atmosphere->active_settings = vkr_atmosphere_settings_defaults();
   atmosphere->active_settings.enabled = false_v;
-  atmosphere->active_result = (VkrAtmosphereBakeResult){0};
+  atmosphere->active_clouds = vkr_cloud_settings_defaults();
   atmosphere->active_revision = 0u;
   return vkr_world_resources_drain_retired_atmosphere_environment(assets,
                                                                   atmosphere);
 }
+
+/* One writable texture of an atmosphere generation. */
+typedef struct VkrAtmosphereCandidateTexture {
+  const char *suffix;
+  VkrTextureType type;
+  uint32_t width;
+  uint32_t height;
+  bool8_t with_mips;
+  VkrTextureHandle *handle;
+} VkrAtmosphereCandidateTexture;
 
 bool8_t vkr_world_resources_prepare_scene_atmosphere(
     VkrRenderAssets *assets, VkrWorldResources *resources, VkrScene *scene) {
@@ -407,6 +416,14 @@ bool8_t vkr_world_resources_prepare_scene_atmosphere(
   }
   if (atmosphere->active_revision == atmosphere->requested_revision)
     return true_v;
+  /* A candidate in flight publishes before a newer request bakes. Cancelling
+     it would starve publication while a directional light keeps moving the
+     sun; the latest request starts once this one publishes. */
+  if (atmosphere->bake_state == VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING &&
+      atmosphere->candidate_revision &&
+      atmosphere->candidate_source_cubemap.id != 0u) {
+    return true_v;
+  }
   if (atmosphere->candidate_revision &&
       atmosphere->candidate_revision != atmosphere->requested_revision) {
     if (!vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere))
@@ -414,19 +431,18 @@ bool8_t vkr_world_resources_prepare_scene_atmosphere(
     atmosphere->candidate_revision = 0u;
     atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE;
   }
-  if (atmosphere->bake_state == VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING &&
-      atmosphere->candidate_revision == atmosphere->requested_revision &&
-      atmosphere->candidate_source_cubemap.id != 0u)
-    return true_v;
   if (atmosphere->bake_state == VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED &&
       atmosphere->candidate_revision == atmosphere->requested_revision) {
     if ((atmosphere->candidate_source_cubemap.id != 0u ||
-         atmosphere->candidate_prefilter_cubemap.id != 0u) &&
+         atmosphere->candidate_prefilter_cubemap.id != 0u ||
+         atmosphere->candidate_transmittance.id != 0u ||
+         atmosphere->candidate_multiple_scattering.id != 0u) &&
         !vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere))
       return false_v;
     return false_v;
   }
   if (!vkr_atmosphere_settings_valid(&atmosphere->requested_settings) ||
+      !vkr_cloud_settings_valid(&atmosphere->requested_clouds) ||
       !isfinite(atmosphere->requested_sh_deringing) ||
       atmosphere->requested_sh_deringing < 0.0f ||
       !vkr_world_resources_has_atmosphere_publisher(assets)) {
@@ -435,31 +451,40 @@ bool8_t vkr_world_resources_prepare_scene_atmosphere(
     return false_v;
   }
 
-  char source_name_storage[160];
-  char prefilter_name_storage[160];
-  snprintf(source_name_storage, sizeof(source_name_storage),
-           "__atmosphere.scene.%p.%llu.source", (void *)scene,
-           (unsigned long long)atmosphere->requested_revision);
-  snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
-           "__atmosphere.scene.%p.%llu.prefilter", (void *)scene,
-           (unsigned long long)atmosphere->requested_revision);
-  const String8 source_name = string8_create_from_cstr(
-      (const uint8_t *)source_name_storage, string_length(source_name_storage));
-  const String8 prefilter_name =
-      string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
-                               string_length(prefilter_name_storage));
-  if (!vkr_world_resources_create_writable_cube_texture(
-          assets, source_name, VKR_ATMOSPHERE_SOURCE_SIZE, true_v,
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
-          &atmosphere->candidate_source_cubemap) ||
-      !vkr_world_resources_create_writable_cube_texture(
-          assets, prefilter_name, VKR_IBL_PREFILTER_SIZE, true_v,
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
-          &atmosphere->candidate_prefilter_cubemap)) {
-    (void)vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere);
-    atmosphere->candidate_revision = atmosphere->requested_revision;
-    atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
-    return false_v;
+  /* Each generation owns its source, prefilter and lookup textures, so the
+     published sky keeps reading its own lookups while a candidate bakes. */
+  const VkrAtmosphereCandidateTexture textures[] = {
+      {"source", VKR_TEXTURE_TYPE_CUBE_MAP, VKR_ATMOSPHERE_SOURCE_SIZE,
+       VKR_ATMOSPHERE_SOURCE_SIZE, true_v,
+       &atmosphere->candidate_source_cubemap},
+      {"prefilter", VKR_TEXTURE_TYPE_CUBE_MAP, VKR_IBL_PREFILTER_SIZE,
+       VKR_IBL_PREFILTER_SIZE, true_v,
+       &atmosphere->candidate_prefilter_cubemap},
+      {"transmittance", VKR_TEXTURE_TYPE_2D, VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
+       VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT, false_v,
+       &atmosphere->candidate_transmittance},
+      {"multiple_scattering", VKR_TEXTURE_TYPE_2D,
+       VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
+       VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE, false_v,
+       &atmosphere->candidate_multiple_scattering},
+  };
+  for (uint32_t i = 0; i < ArrayCount(textures); ++i) {
+    char name_storage[160];
+    snprintf(name_storage, sizeof(name_storage),
+             "__atmosphere.scene.%p.%llu.%s", (void *)scene,
+             (unsigned long long)atmosphere->requested_revision,
+             textures[i].suffix);
+    const String8 name = string8_create_from_cstr((const uint8_t *)name_storage,
+                                                  string_length(name_storage));
+    if (!vkr_world_resources_create_writable_texture(
+            assets, name, textures[i].type, textures[i].width,
+            textures[i].height, textures[i].with_mips,
+            VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, textures[i].handle)) {
+      (void)vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere);
+      atmosphere->candidate_revision = atmosphere->requested_revision;
+      atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
+      return false_v;
+    }
   }
 
   const VkrAtmosphereGpuParams params =
@@ -468,6 +493,8 @@ bool8_t vkr_world_resources_prepare_scene_atmosphere(
           assets->asset_publisher->state, &params,
           atmosphere->candidate_source_cubemap,
           atmosphere->candidate_prefilter_cubemap,
+          atmosphere->candidate_transmittance,
+          atmosphere->candidate_multiple_scattering,
           atmosphere->requested_sh_deringing)) {
     (void)vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere);
     atmosphere->candidate_revision = atmosphere->requested_revision;
@@ -475,7 +502,7 @@ bool8_t vkr_world_resources_prepare_scene_atmosphere(
     return false_v;
   }
   atmosphere->candidate_settings = atmosphere->requested_settings;
-  atmosphere->candidate_sh_deringing = atmosphere->requested_sh_deringing;
+  atmosphere->candidate_clouds = atmosphere->requested_clouds;
   atmosphere->candidate_revision = atmosphere->requested_revision;
   atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING;
   return true_v;
@@ -491,15 +518,12 @@ void vkr_world_resources_poll_scene_atmosphere(VkrRenderAssets *assets,
       !assets->asset_publisher->atmosphere_bake_status)
     return;
 
-  VkrAtmosphereBakeResult result = {0};
   const VkrAtmosphereBakeStatus status =
       assets->asset_publisher->atmosphere_bake_status(
-          assets->asset_publisher->state, atmosphere->candidate_source_cubemap,
-          &result);
+          assets->asset_publisher->state, atmosphere->candidate_source_cubemap);
   if (status == VKR_ATMOSPHERE_BAKE_PENDING)
     return;
-  if (status != VKR_ATMOSPHERE_BAKE_READY ||
-      !vkr_world_resources_atmosphere_result_valid(&result)) {
+  if (status != VKR_ATMOSPHERE_BAKE_READY) {
     if (vkr_world_resources_clear_atmosphere_candidate(assets, atmosphere))
       atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
     return;
@@ -509,25 +533,25 @@ void vkr_world_resources_poll_scene_atmosphere(VkrRenderAssets *assets,
                                                                 atmosphere))
     return;
 
+  /* Only the tuple changes; authored sky-light controls apply to it. */
   VkrSceneEnvironment previous = scene->environment;
-  scene->environment = (VkrSceneEnvironment){
-      .enabled = true_v,
-      .source_kind = VKR_SCENE_ENV_SOURCE_CUBEMAP,
-      .intensity = 1.0f,
-      .diffuse_intensity = 1.0f,
-      .specular_intensity = 1.0f,
-      .sh_deringing = atmosphere->candidate_sh_deringing,
-      .source_face_size = VKR_ATMOSPHERE_SOURCE_SIZE,
-      .source_mip_count = VKR_IBL_PREFILTER_MIP_COUNT,
-      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
-      .source_cubemap = atmosphere->candidate_source_cubemap,
-      .prefilter_cubemap = atmosphere->candidate_prefilter_cubemap,
-      .bake_state = VKR_SCENE_ENV_BAKE_STATE_READY,
-  };
+  scene->environment.source_kind = VKR_SCENE_ENV_SOURCE_ATMOSPHERE;
+  scene->environment.source_cubemap = atmosphere->candidate_source_cubemap;
+  scene->environment.prefilter_cubemap =
+      atmosphere->candidate_prefilter_cubemap;
+  scene->environment.atmosphere_transmittance =
+      atmosphere->candidate_transmittance;
+  scene->environment.atmosphere_multiple_scattering =
+      atmosphere->candidate_multiple_scattering;
+  scene->environment.source_face_size = VKR_ATMOSPHERE_SOURCE_SIZE;
+  scene->environment.source_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
+  scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_READY;
   atmosphere->candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   atmosphere->candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  atmosphere->candidate_transmittance = VKR_TEXTURE_HANDLE_INVALID;
+  atmosphere->candidate_multiple_scattering = VKR_TEXTURE_HANDLE_INVALID;
   atmosphere->active_settings = atmosphere->candidate_settings;
-  atmosphere->active_result = result;
+  atmosphere->active_clouds = atmosphere->candidate_clouds;
   atmosphere->active_revision = atmosphere->candidate_revision;
   atmosphere->candidate_revision = 0u;
   atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_READY;
@@ -609,8 +633,9 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
     String8 prefilter_name =
         string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
                                  string_length(prefilter_name_storage));
-    if (!vkr_world_resources_create_writable_cube_texture(
-            assets, prefilter_name, VKR_IBL_PREFILTER_SIZE, true_v,
+    if (!vkr_world_resources_create_writable_texture(
+            assets, prefilter_name, VKR_TEXTURE_TYPE_CUBE_MAP,
+            VKR_IBL_PREFILTER_SIZE, VKR_IBL_PREFILTER_SIZE, true_v,
             VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
             &probe->prefilter_cubemap) ||
         !assets->asset_publisher->bake_ibl_cubemap(
@@ -642,11 +667,6 @@ void vkr_world_resources_shutdown(VkrRenderAssets *assets,
     }
   }
   array_destroy_VkrWorldTextSlot(&resources->text_slots);
-
-  vkr_world_resources_release_texture(
-      &assets->texture_system, &resources->ibl_fallback_prefilter_cubemap);
-  vkr_world_resources_release_texture(&assets->texture_system,
-                                      &resources->ibl_fallback_source_cubemap);
   MemZero(resources, sizeof(*resources));
 }
 

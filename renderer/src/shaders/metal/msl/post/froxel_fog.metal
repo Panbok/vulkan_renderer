@@ -28,11 +28,12 @@ struct alignas(16) VkrMetalPacketFroxelApplyRoot {
   texture3d<float, access::sample> integrated;
   texture2d<float, access::read_write> target;
   uint2 extent;
+  texture3d<float, access::sample> aerial_perspective;
 };
 
 static float3 vkr_metal_froxel_local_radiance(
-    constant VkrMetalPacketFrameRoot *frame, VkrGpuPointLightRow light,
-    float3 world_position) {
+    constant VkrMetalPacketFrameRoot *frame, constant VkrFroxelFogParams &params,
+    VkrGpuPointLightRow light, float3 world_position, float3 ray_direction) {
   VkrPunctualLightTerm term = vkr_punctual_light_term(
       light.p0, light.p1, light.p2, light.p3, world_position);
   if (!term.in_range)
@@ -41,26 +42,38 @@ static float3 vkr_metal_froxel_local_radiance(
   float3 visibility = vkr_metal_packet_local_shadow_one_tap(
       frame, uint(light.p3.w + 0.5f), term.kind, world_position);
   return max(light.p1.rgb * light.p2.x * attenuation * visibility,
-             float3(0.0f));
+             float3(0.0f)) *
+         vkr_froxel_phase(params, ray_direction, term.direction);
 }
 
-static float3 vkr_metal_froxel_incident_radiance(
+// Phase-weighted sun and selected local lights, plus the sky light's average
+// radiance when the medium is sky-lit.
+static float3 vkr_metal_froxel_scattered_radiance(
     constant VkrMetalPacketFrameRoot *frame, constant VkrFroxelFogParams &params,
     float3 world_position) {
-  float3 incident = float3(0.0f);
+  float3 ray_direction =
+      vkr_fog_direction(world_position - frame->view_position.xyz);
+  float3 scattered = float3(0.0f);
   if (frame->directional_direction_enabled.w > 0.5f) {
-    float visibility = vkr_metal_packet_directional_shadow_one_tap(
-        frame, world_position);
-    incident += frame->directional_color_intensity.rgb *
-                frame->directional_color_intensity.w * visibility;
+    float visibility =
+        vkr_metal_packet_directional_shadow_one_tap(frame, world_position) *
+        vkr_metal_packet_cloud_shadow(frame, world_position);
+    scattered += frame->directional_color_intensity.rgb *
+                 frame->directional_color_intensity.w * visibility *
+                 vkr_froxel_phase(
+                     params, ray_direction,
+                     normalize(-frame->directional_direction_enabled.xyz));
   }
   uint count = params.selected_local_indices_count.z;
   for (uint slot = 0u; slot < count; ++slot) {
     uint source = params.selected_local_indices_count[slot];
-    incident += vkr_metal_froxel_local_radiance(
-        frame, frame->point_light_data[source], world_position);
+    scattered += vkr_metal_froxel_local_radiance(
+        frame, params, frame->point_light_data[source], world_position,
+        ray_direction);
   }
-  return incident;
+  if (params.lighting.x > 0.0f)
+    scattered += params.lighting.x * vkr_metal_packet_sky_ambient(frame);
+  return scattered;
 }
 
 static VkrFroxelSample vkr_metal_froxel_sample_integrated(
@@ -102,7 +115,8 @@ kernel void vkr_metal_packet_froxel_inject(
   float3 world = vkr_froxel_world_center(*root.params, root.frame->view, cell);
   float extinction = vkr_froxel_height_density(*root.params, world);
   float3 source = vkr_froxel_local_source(
-      extinction, vkr_metal_froxel_incident_radiance(root.frame, *root.params, world),
+      extinction,
+      vkr_metal_froxel_scattered_radiance(root.frame, *root.params, world),
       *root.params);
   float4 current = float4(source, extinction);
   VkrFroxelHistoryCoordinate history_coordinate =
@@ -159,6 +173,14 @@ kernel void vkr_metal_packet_froxel_apply(
   } else {
     world = vkr_metal_froxel_world_position(root.params->inverse_raster_view_projection,
                                              pixel, root.extent, device_depth);
+    // Aerial perspective is the farther medium, so it applies before fog.
+    // Sky pixels already carry the whole atmosphere.
+    if (vkr_metal_packet_aerial_enabled(root.frame)) {
+      VkrMetalPacketAerialSample aerial = vkr_metal_packet_aerial_sample(
+          root.frame->sky, root.aerial_perspective, world);
+      current.rgb = vkr_sky_apply_aerial(current.rgb, aerial.packed,
+                                         aerial.weight);
+    }
   }
   VkrFroxelSample sample = vkr_metal_froxel_sample_integrated(
       root.integrated, *root.params, root.frame->view, world);

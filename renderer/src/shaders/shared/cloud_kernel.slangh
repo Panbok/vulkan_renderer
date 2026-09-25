@@ -1,0 +1,556 @@
+// Volumetric cloud layer: portable noise synthesis, density shaping, phase,
+// integration, segment and shadow-map geometry. See
+// docs/adr/074-volumetric-cloud-layer.md. Native files own every texture
+// access, the march loops, history selection and dispatch.
+
+#ifndef VKR_SHADER_CLOUD_KERNEL_SLANGH
+#define VKR_SHADER_CLOUD_KERNEL_SLANGH
+
+// The atmosphere owns VkrSkyParams and VkrCloudParams, and the fog kernel owns
+// the shared Henyey-Greenstein phase. Concatenated MSL defines both first, so
+// the includes apply only to include-resolving builds.
+#ifndef VKR_SHADER_FOG_KERNEL_SLANGH
+#include "fog_kernel.slangh"
+#endif
+#ifndef VKR_SHADER_ATMOSPHERE_KERNEL_SLANGH
+#include "atmosphere_kernel.slangh"
+#endif
+
+#define VKR_CLOUD_BASE_NOISE_SIZE 128u
+#define VKR_CLOUD_DETAIL_NOISE_SIZE 32u
+#define VKR_CLOUD_WEATHER_SIZE 256u
+#define VKR_CLOUD_SHADOW_SIZE 512u
+
+// March budgets. Primary steps span one ray's segment through the layer; the
+// light march climbs toward the sun with doubling steps.
+#define VKR_CLOUD_PRIMARY_STEPS 48u
+#define VKR_CLOUD_LIGHT_STEPS 5u
+#define VKR_CLOUD_LIGHT_FIRST_STEP_KM 0.08f
+#define VKR_CLOUD_SHADOW_STEPS 16u
+#define VKR_CLOUD_SCATTERING_OCTAVES 4u
+// Per-octave scale of light extinction, scattering and phase eccentricity.
+// Attenuation below the scattering scale keeps the approximation
+// energy-conserving (Hillaire, "Physically Based Sky, Atmosphere and Cloud
+// Rendering in Frostbite", 2016).
+#define VKR_CLOUD_OCTAVE_ATTENUATION 0.25f
+#define VKR_CLOUD_OCTAVE_SCATTERING 0.5f
+#define VKR_CLOUD_OCTAVE_ECCENTRICITY 0.5f
+// A primary ray ends once the layer passes less light than this.
+#define VKR_CLOUD_TRANSMITTANCE_CUTOFF 0.01f
+// Samples fade out over the last third of the march distance, so the layer
+// never ends on a hard line in the sky.
+#define VKR_CLOUD_DISTANCE_FADE_FRACTION 0.33333333f
+// Sun-projected shadows hold the sun at this elevation sine near the horizon.
+#define VKR_CLOUD_SHADOW_SUN_Y_MIN 0.1f
+// Weight of the current trace when a reprojected history is valid.
+#define VKR_CLOUD_HISTORY_CURRENT_WEIGHT 0.1f
+// History alpha above one marks a texel that was not traced.
+#define VKR_CLOUD_UNTRACED_ALPHA 2.0f
+// Forward and backward phase lobes and the forward share.
+#define VKR_CLOUD_PHASE_FORWARD_G 0.8f
+#define VKR_CLOUD_PHASE_BACKWARD_G -0.3f
+#define VKR_CLOUD_PHASE_BACKWARD_WEIGHT 0.3f
+// Erosion strength of the detail noise at the edge of the base shape.
+#define VKR_CLOUD_DETAIL_EROSION 0.35f
+
+#if defined(__METAL_VERSION__)
+#define VKR_CLOUD_LERP(a, b, t) mix((a), (b), (t))
+#define VKR_CLOUD_MUL(a, b) ((a) * (b))
+#else
+#define VKR_CLOUD_LERP(a, b, t) lerp((a), (b), (t))
+#define VKR_CLOUD_MUL(a, b) mul((a), (b))
+#endif
+
+// ---------------------------------------------------------------------------
+// Noise synthesis. Every function tiles over the unit cube: lattice cells wrap
+// at `period`, so the generated textures repeat without seams.
+
+// PCG3D (Jarzynski and Olano, JCGT 2020): three decorrelated 32-bit hashes.
+uint3 vkr_cloud_hash3(uint3 value)
+{
+    uint3 v = value * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    return v;
+}
+
+float3 vkr_cloud_random3(int3 cell, int period, uint seed)
+{
+    int3 wrapped = ((cell % int3(period)) + int3(period)) % int3(period);
+    uint3 hashed = vkr_cloud_hash3(uint3(wrapped) +
+                                   uint3(seed, seed * 7919u, seed * 104729u));
+    return float3(hashed) * (1.0f / 4294967296.0f);
+}
+
+float vkr_cloud_remap(float value, float old_min, float old_max, float new_min,
+                      float new_max)
+{
+    return new_min + (value - old_min) * (new_max - new_min) /
+                         max(old_max - old_min, 1e-6f);
+}
+
+// Inverted F1 cellular noise in [0,1]: one at a feature point.
+float vkr_cloud_worley(float3 uvw, int period, uint seed)
+{
+    float3 position = uvw * float(period);
+    float3 cell = floor(position);
+    float3 local = position - cell;
+    int3 base_cell = int3(cell);
+    float nearest = 3.0f;
+    for (int z = -1; z <= 1; ++z)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int x = -1; x <= 1; ++x)
+            {
+                int3 offset = int3(x, y, z);
+                float3 feature = float3(offset) +
+                                 vkr_cloud_random3(base_cell + offset, period,
+                                                   seed) -
+                                 local;
+                nearest = min(nearest, dot(feature, feature));
+            }
+        }
+    }
+    return 1.0f - saturate(sqrt(nearest));
+}
+
+float vkr_cloud_gradient(int3 cell, int period, uint seed, float3 offset)
+{
+    float3 gradient = vkr_cloud_random3(cell, period, seed) * 2.0f - 1.0f;
+    return dot(gradient, offset);
+}
+
+// Quintic-interpolated gradient noise remapped to [0,1].
+float vkr_cloud_perlin(float3 uvw, int period, uint seed)
+{
+    float3 position = uvw * float(period);
+    float3 cell = floor(position);
+    float3 f = position - cell;
+    int3 c = int3(cell);
+    float3 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
+    float n000 = vkr_cloud_gradient(c, period, seed, f);
+    float n100 = vkr_cloud_gradient(c + int3(1, 0, 0), period, seed,
+                                    f - float3(1.0f, 0.0f, 0.0f));
+    float n010 = vkr_cloud_gradient(c + int3(0, 1, 0), period, seed,
+                                    f - float3(0.0f, 1.0f, 0.0f));
+    float n110 = vkr_cloud_gradient(c + int3(1, 1, 0), period, seed,
+                                    f - float3(1.0f, 1.0f, 0.0f));
+    float n001 = vkr_cloud_gradient(c + int3(0, 0, 1), period, seed,
+                                    f - float3(0.0f, 0.0f, 1.0f));
+    float n101 = vkr_cloud_gradient(c + int3(1, 0, 1), period, seed,
+                                    f - float3(1.0f, 0.0f, 1.0f));
+    float n011 = vkr_cloud_gradient(c + int3(0, 1, 1), period, seed,
+                                    f - float3(0.0f, 1.0f, 1.0f));
+    float n111 = vkr_cloud_gradient(c + int3(1, 1, 1), period, seed,
+                                    f - float3(1.0f, 1.0f, 1.0f));
+    float x00 = VKR_CLOUD_LERP(n000, n100, u.x);
+    float x10 = VKR_CLOUD_LERP(n010, n110, u.x);
+    float x01 = VKR_CLOUD_LERP(n001, n101, u.x);
+    float x11 = VKR_CLOUD_LERP(n011, n111, u.x);
+    float y0 = VKR_CLOUD_LERP(x00, x10, u.y);
+    float y1 = VKR_CLOUD_LERP(x01, x11, u.y);
+    return saturate(VKR_CLOUD_LERP(y0, y1, u.z) * 0.5f + 0.5f);
+}
+
+float vkr_cloud_perlin_fbm(float3 uvw, int period, uint octaves, uint seed)
+{
+    float sum = 0.0f;
+    float total = 0.0f;
+    float amplitude = 1.0f;
+    int octave_period = period;
+    for (uint octave = 0u; octave < octaves; ++octave)
+    {
+        sum += amplitude * vkr_cloud_perlin(uvw, octave_period, seed + octave);
+        total += amplitude;
+        amplitude *= 0.5f;
+        octave_period *= 2;
+    }
+    return sum / total;
+}
+
+// Three Worley octaves weighted 0.625/0.25/0.125, the combination Schneider
+// uses for the Worley channels of both noise volumes ("The Real-time
+// Volumetric Cloudscapes of Horizon Zero Dawn", SIGGRAPH 2015).
+float vkr_cloud_worley_fbm(float3 uvw, int period, uint seed)
+{
+    return vkr_cloud_worley(uvw, period, seed) * 0.625f +
+           vkr_cloud_worley(uvw, period * 2, seed + 1u) * 0.25f +
+           vkr_cloud_worley(uvw, period * 4, seed + 2u) * 0.125f;
+}
+
+// Base-volume texel: Perlin noise dilated by low-frequency Worley noise, then
+// shaped by higher-frequency Worley noise. The combination spans roughly
+// [0.71, 0.93] between its 1st and 99th percentiles over the tile, so it is
+// stretched to [0,1] before storage and coverage can select any fraction.
+float vkr_cloud_base_noise(float3 uvw)
+{
+    float perlin = vkr_cloud_perlin_fbm(uvw, 4, 4u, 11u);
+    float low_worley = vkr_cloud_worley_fbm(uvw, 4, 23u);
+    float perlin_worley =
+        vkr_cloud_remap(perlin, 0.0f, 1.0f, low_worley, 1.0f);
+    float worley = vkr_cloud_worley_fbm(uvw, 8, 37u);
+    float shape =
+        vkr_cloud_remap(perlin_worley, worley - 1.0f, 1.0f, 0.0f, 1.0f);
+    return saturate(vkr_cloud_remap(shape, 0.71f, 0.93f, 0.0f, 1.0f));
+}
+
+// Detail-volume texel: Worley noise that erodes the edges of the base shape.
+float vkr_cloud_detail_noise(float3 uvw)
+{
+    return vkr_cloud_worley_fbm(uvw, 2, 53u);
+}
+
+// Weather texel: large-scale coverage over the weather period, taken from one
+// slice of a volume that tiles in all three axes. Its 5th to 95th
+// percentiles, roughly [0.35, 0.70], are stretched to [0,1].
+float vkr_cloud_weather_noise(float2 uv)
+{
+    float3 uvw = float3(uv.x, uv.y, 0.5f);
+    float perlin = vkr_cloud_perlin_fbm(uvw, 3, 4u, 71u);
+    float worley = vkr_cloud_worley_fbm(uvw, 3, 83u);
+    float weather =
+        saturate((perlin - 0.5f) * 3.0f + 0.5f) * 0.7f + worley * 0.3f;
+    return saturate(vkr_cloud_remap(weather, 0.35f, 0.70f, 0.0f, 1.0f));
+}
+
+// ---------------------------------------------------------------------------
+// Density. Samples combine the three textures; native code fetches them.
+
+float vkr_cloud_height_fraction(VkrCloudParams clouds, float radius_km)
+{
+    return saturate((radius_km - clouds.layer.x) /
+                    (clouds.layer.y - clouds.layer.x));
+}
+
+// Cumulus-like vertical profile: a rounded base and a tapering top.
+float vkr_cloud_height_profile(float height_fraction)
+{
+    return smoothstep(0.0f, 0.1f, height_fraction) *
+           (1.0f - smoothstep(0.5f, 1.0f, height_fraction));
+}
+
+// The weather map moves the authored coverage by up to 0.3 either way; zero
+// authored coverage stays clear.
+float vkr_cloud_local_coverage(float coverage, float weather)
+{
+    return saturate(coverage + (weather - 0.5f) * 0.6f) *
+           saturate(coverage * 4.0f);
+}
+
+// Coverage keeps the part of the shaped base above one minus the local
+// coverage.
+float vkr_cloud_shape_density(VkrCloudParams clouds, float base,
+                              float weather, float height_fraction)
+{
+    float coverage = vkr_cloud_local_coverage(clouds.layer.w, weather);
+    float shape = base * vkr_cloud_height_profile(height_fraction);
+    return saturate(vkr_cloud_remap(shape, 1.0f - coverage, 1.0f, 0.0f,
+                                    1.0f)) *
+           coverage;
+}
+
+// Detail erosion is wispy near the base and billowy toward the top.
+float vkr_cloud_eroded_density(float shape, float detail,
+                               float height_fraction)
+{
+    float modifier = VKR_CLOUD_LERP(detail, 1.0f - detail,
+                                    saturate(height_fraction * 10.0f));
+    return saturate(vkr_cloud_remap(shape, modifier * VKR_CLOUD_DETAIL_EROSION,
+                                    1.0f, 0.0f, 1.0f));
+}
+
+struct VkrCloudSample
+{
+    float3 base_uvw;
+    float3 detail_uvw;
+    float2 weather_uv;
+    float height_fraction;
+};
+
+// `offset_km` is a sample's horizontal displacement from the camera and
+// `radius_km` its distance from the planet centre. Texture coordinates follow
+// world X/Z plus the wind and the altitude, so the layer stays fixed in the
+// world while the camera moves.
+VkrCloudSample vkr_cloud_sample(VkrSkyParams sky, float2 offset_km,
+                                float radius_km)
+{
+    VkrCloudParams clouds = sky.clouds;
+    float2 world_km = float2(sky.camera_position.x, sky.camera_position.z) *
+                          sky.camera_position.w +
+                      offset_km + clouds.wind.xy;
+    float3 position = float3(world_km.x, radius_km - sky.atmosphere.planet.x,
+                             world_km.y);
+    VkrCloudSample sample;
+    sample.base_uvw = position * clouds.noise.x;
+    sample.detail_uvw = position * clouds.noise.y;
+    sample.weather_uv = world_km * clouds.noise.z;
+    sample.height_fraction = vkr_cloud_height_fraction(clouds, radius_km);
+    return sample;
+}
+
+float vkr_cloud_distance_fade(VkrCloudParams clouds, float distance_km)
+{
+    float span = clouds.wind.z * VKR_CLOUD_DISTANCE_FADE_FRACTION;
+    return saturate((clouds.wind.z - distance_km) / span);
+}
+
+// ---------------------------------------------------------------------------
+// Lighting and integration.
+
+// A forward and a backward Henyey-Greenstein lobe. `eccentricity` scales both
+// anisotropies for the multiple-scattering octaves.
+float vkr_cloud_phase(float cosine, float eccentricity)
+{
+    return VKR_CLOUD_LERP(
+        vkr_fog_phase_hg(VKR_CLOUD_PHASE_FORWARD_G * eccentricity, cosine),
+        vkr_fog_phase_hg(VKR_CLOUD_PHASE_BACKWARD_G * eccentricity, cosine),
+        VKR_CLOUD_PHASE_BACKWARD_WEIGHT);
+}
+
+// Sun radiance scattered toward the camera per unit scattering coefficient.
+// Each octave scales light extinction, scattering and eccentricity to
+// approximate multiple scattering (Wrenninge, "Oz: The Great and Volumetric",
+// SIGGRAPH 2013). `cosine` is dot(view ray, direction toward the sun).
+float3 vkr_cloud_sun_scattering(float3 sun_irradiance, float cosine,
+                                float light_optical_depth)
+{
+    float3 radiance = float3(0.0f, 0.0f, 0.0f);
+    float attenuation = 1.0f;
+    float scattering = 1.0f;
+    float eccentricity = 1.0f;
+    for (uint octave = 0u; octave < VKR_CLOUD_SCATTERING_OCTAVES; ++octave)
+    {
+        radiance += sun_irradiance *
+                    (scattering * vkr_cloud_phase(cosine, eccentricity) *
+                     exp(-attenuation * light_optical_depth));
+        attenuation *= VKR_CLOUD_OCTAVE_ATTENUATION;
+        scattering *= VKR_CLOUD_OCTAVE_SCATTERING;
+        eccentricity *= VKR_CLOUD_OCTAVE_ECCENTRICITY;
+    }
+    return radiance;
+}
+
+// Isotropic sky light inside the layer, dimmer toward its shaded base.
+float3 vkr_cloud_ambient(float3 sky_ambient, float height_fraction)
+{
+    return sky_ambient * VKR_CLOUD_LERP(0.4f, 1.0f, height_fraction);
+}
+
+struct VkrCloudIntegration
+{
+    float3 radiance;
+    float transmittance;
+    float depth_sum;
+    float depth_weight;
+};
+
+VkrCloudIntegration vkr_cloud_integration_begin()
+{
+    VkrCloudIntegration state;
+    state.radiance = float3(0.0f, 0.0f, 0.0f);
+    state.transmittance = 1.0f;
+    state.depth_sum = 0.0f;
+    state.depth_weight = 0.0f;
+    return state;
+}
+
+// Integrates one homogeneous step against its own extinction (Hillaire,
+// "Physically Based and Unified Volumetric Rendering in Frostbite", 2015).
+// Clouds scatter without absorption, so the source per unit extinction is the
+// radiance `source`. The depth sums weight each step by the light it removes.
+VkrCloudIntegration vkr_cloud_integrate_step(VkrCloudIntegration state,
+                                             float extinction_km,
+                                             float step_km, float3 source,
+                                             float distance_km)
+{
+    float step_transmittance = exp(-extinction_km * step_km);
+    float removed = state.transmittance * (1.0f - step_transmittance);
+    state.radiance += source * removed;
+    state.depth_sum += removed * distance_km;
+    state.depth_weight += removed;
+    state.transmittance *= step_transmittance;
+    return state;
+}
+
+// Distance of the layer's apparent surface: the depth of the removed light.
+float vkr_cloud_integration_depth(VkrCloudIntegration state,
+                                  float fallback_km)
+{
+    return state.depth_weight > 1e-6f ? state.depth_sum / state.depth_weight
+                                      : fallback_km;
+}
+
+// ---------------------------------------------------------------------------
+// Geometry. The planet frame puts the camera at (0, r, 0) above the centre.
+
+struct VkrCloudSegment
+{
+    float start_km;
+    float end_km;
+};
+
+// Distances to a centred sphere, x near and y far; negative when missed.
+float2 vkr_cloud_sphere_hits(float camera_radius_km, float direction_y,
+                             float sphere_radius_km)
+{
+    float b = camera_radius_km * direction_y;
+    float c = camera_radius_km * camera_radius_km -
+              sphere_radius_km * sphere_radius_km;
+    float discriminant = b * b - c;
+    if (discriminant < 0.0f)
+        return float2(-1.0f, -1.0f);
+    float root = sqrt(discriminant);
+    return float2(-b - root, -b + root);
+}
+
+// The part of a unit view ray inside the layer, clipped to the march
+// distance. `end_km <= start_km` means the ray sees no cloud.
+VkrCloudSegment vkr_cloud_segment(VkrSkyParams sky, float3 direction)
+{
+    VkrCloudParams clouds = sky.clouds;
+    float camera_radius = sky.atmosphere.planet.x + sky.atmosphere.planet.z;
+    float2 base = vkr_cloud_sphere_hits(camera_radius, direction.y,
+                                        clouds.layer.x);
+    float2 top = vkr_cloud_sphere_hits(camera_radius, direction.y,
+                                       clouds.layer.y);
+    float2 ground = vkr_cloud_sphere_hits(camera_radius, direction.y,
+                                          sky.atmosphere.planet.x);
+    VkrCloudSegment segment;
+    segment.start_km = 0.0f;
+    segment.end_km = 0.0f;
+    if (camera_radius < clouds.layer.x)
+    {
+        // Below the layer a ray that meets the ground never reaches it.
+        if (ground.x > 0.0f)
+            return segment;
+        segment.start_km = base.y;
+        segment.end_km = top.y;
+    }
+    else if (camera_radius <= clouds.layer.y)
+    {
+        segment.end_km = base.x > 0.0f ? base.x : top.y;
+    }
+    else
+    {
+        if (top.x <= 0.0f)
+            return segment;
+        segment.start_km = top.x;
+        segment.end_km = base.x > 0.0f ? base.x : top.y;
+    }
+    segment.end_km = min(segment.end_km, clouds.wind.z);
+    return segment;
+}
+
+// Canonical clip-space coordinates are screen coordinates on both backends.
+float2 vkr_cloud_view_uv(VkrSkyParams sky, float3 direction)
+{
+    float4 clip =
+        VKR_CLOUD_MUL(sky.view_projection, float4(direction, 0.0f));
+    return clip.xy / max(clip.w, 1e-6f) * 0.5f + 0.5f;
+}
+
+float3 vkr_cloud_view_direction(VkrSkyParams sky, float2 uv)
+{
+    float2 ndc = uv * 2.0f - 1.0f;
+    float4 near_world = VKR_CLOUD_MUL(sky.inverse_view_projection,
+                                      float4(ndc.x, ndc.y, 0.0f, 1.0f));
+    float4 far_world = VKR_CLOUD_MUL(sky.inverse_view_projection,
+                                     float4(ndc.x, ndc.y, 0.5f, 1.0f));
+    float3 ray = far_world.xyz / far_world.w - near_world.xyz / near_world.w;
+    return ray * rsqrt(max(dot(ray, ray), 1e-20f));
+}
+
+// Horizontal kilometres travelled per kilometre of climb toward the sun.
+float2 vkr_cloud_shadow_slope(VkrSkyParams sky)
+{
+    float3 sun = sky.atmosphere.sun.xyz;
+    return float2(sun.x, sun.z) / max(sun.y, VKR_CLOUD_SHADOW_SUN_Y_MIN);
+}
+
+// World X/Z kilometres where a shadow texel's sun ray enters the layer base.
+float2 vkr_cloud_shadow_entry_km(VkrCloudParams clouds, float2 uv)
+{
+    return clouds.shadow.xy + (uv - 0.5f) * clouds.shadow.w;
+}
+
+// Shadow-map coordinate of the point where a world position's sun ray enters
+// the layer base. Positions above the base use their own column.
+float2 vkr_cloud_shadow_uv(VkrSkyParams sky, float3 world_position)
+{
+    VkrCloudParams clouds = sky.clouds;
+    float km_per_unit = sky.camera_position.w;
+    float altitude_km =
+        sky.atmosphere.planet.z +
+        (world_position.y - sky.camera_position.y) * km_per_unit;
+    float base_km = clouds.layer.x - sky.atmosphere.planet.x;
+    float2 entry = float2(world_position.x, world_position.z) * km_per_unit +
+                   vkr_cloud_shadow_slope(sky) * max(base_km - altitude_km,
+                                                     0.0f);
+    return (entry - clouds.shadow.xy) * clouds.shadow.z + 0.5f;
+}
+
+// ---------------------------------------------------------------------------
+// Temporal accumulation.
+
+// Interleaved gradient noise (Jimenez, "Next Generation Post Processing in
+// Call of Duty: Advanced Warfare", 2014), rotated every frame.
+float vkr_cloud_march_offset(uint2 texel, uint frame_index)
+{
+    float noise = 52.9829189f *
+                  (0.06711056f * float(texel.x) + 0.00583715f * float(texel.y) -
+                   floor(0.06711056f * float(texel.x) +
+                         0.00583715f * float(texel.y)));
+    float rotated = noise + float(frame_index % 64u) * 0.61803399f;
+    return rotated - floor(rotated);
+}
+
+float vkr_cloud_halton(uint index, uint base)
+{
+    float fraction = 1.0f;
+    float result = 0.0f;
+    uint remaining = index;
+    while (remaining > 0u)
+    {
+        fraction /= float(base);
+        result += fraction * float(remaining % base);
+        remaining /= base;
+    }
+    return result;
+}
+
+// Sub-texel ray offset in [-0.5, 0.5) texels; eight frames cover the 2x2
+// full-resolution footprint of one half-resolution texel.
+float2 vkr_cloud_ray_jitter(uint frame_index)
+{
+    uint index = frame_index % 8u + 1u;
+    return float2(vkr_cloud_halton(index, 2u), vkr_cloud_halton(index, 3u)) -
+           0.5f;
+}
+
+// Blends the current trace into reprojected history. History alpha above one
+// marks an untraced texel, which cannot seed the accumulation.
+float4 vkr_cloud_history_blend(float4 current, float4 history,
+                               bool history_valid)
+{
+    if (!history_valid || history.a > 1.0f + 1e-3f)
+        return current;
+    return VKR_CLOUD_LERP(history, current, VKR_CLOUD_HISTORY_CURRENT_WEIGHT);
+}
+
+// Composites cloud radiance and transmittance over the sky behind them. The
+// in-scatter already carries aerial perspective at the cloud's depth.
+float3 vkr_cloud_composite(float3 sky_radiance, float4 cloud)
+{
+    return sky_radiance * saturate(cloud.a) + cloud.rgb;
+}
+
+#undef VKR_CLOUD_LERP
+#undef VKR_CLOUD_MUL
+
+#endif

@@ -1292,6 +1292,81 @@ float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
     return result.diffuse + result.specular;
 }
 
+struct VkrVkAerialSample
+{
+    float4 packed;
+    float weight;
+};
+
+// Aerial in-scatter and mean transmittance at a surface. Zero weight is the
+// identity when aerial perspective is off or the point is behind the camera.
+VkrVkAerialSample packet_aerial_sample(VkrVulkanSky *sky,
+                                       uint aerial_perspective_texture,
+                                       float3 world_position)
+{
+    VkrVkAerialSample result;
+    result.packed = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    result.weight = 0.0f;
+    VkrSkyAerialCoordinate coordinate =
+        vkr_sky_aerial_coordinate(sky.params, world_position);
+    if (coordinate.valid == 0u)
+        return result;
+    result.packed = g_3d_textures[aerial_perspective_texture].SampleLevel(
+        g_samplers[sky.sampler], coordinate.uvw, 0.0f);
+    result.weight = coordinate.weight;
+    return result;
+}
+
+// Sun transmittance through the cloud layer above a world position (ADR-074).
+// One outside the sun-projected map or when the layer does not render.
+float packet_cloud_shadow(VkrVulkanPacketFrameRoot *frame,
+                          float3 world_position)
+{
+    VkrVulkanSky *sky = frame.sky;
+    if (sky.params.clouds.noise.w <= 0.0f)
+        return 1.0f;
+    float2 uv = vkr_cloud_shadow_uv(sky.params, world_position);
+    if (any(uv < 0.0f) || any(uv > 1.0f))
+        return 1.0f;
+    return g_textures[sky.cloud_shadow_texture]
+        .SampleLevel(g_samplers[sky.sampler], uv, 0.0f)
+        .r;
+}
+
+// Average radiance of the published sky light, scaled like diffuse IBL. Zero
+// when the frame carries no global environment.
+float3 packet_sky_ambient(VkrVulkanPacketFrameRoot *frame)
+{
+    if ((frame.flags & 2u) == 0u)
+        return float3(0.0f);
+    return max(vkr_sh_l2_average(frame.sh_coefficients[frame.sh_global_slot]),
+               float3(0.0f)) *
+           frame.ibl_controls.x * frame.ibl_controls.y;
+}
+
+// Sun and sky light for sky-lit analytic fog; unused by the constant colour.
+VkrFogLighting packet_fog_lighting(VkrVulkanPacketFrameRoot *frame)
+{
+    VkrFogLighting lighting;
+    lighting.sun_direction = float3(0.0f, 1.0f, 0.0f);
+    lighting.sun_irradiance = float3(0.0f);
+    lighting.sky_ambient = float3(0.0f);
+    if (frame.fog[0].sky_lighting.x <= 0.0f)
+        return lighting;
+    // Clouds shade the analytic medium as they shade the camera.
+    if (frame.directional_direction_enabled.w > 0.5f)
+    {
+        lighting.sun_direction =
+            normalize(-frame.directional_direction_enabled.xyz);
+        lighting.sun_irradiance =
+            frame.directional_color_intensity.rgb *
+            frame.directional_color_intensity.w *
+            packet_cloud_shadow(frame, frame.view_position.xyz);
+    }
+    lighting.sky_ambient = packet_sky_ambient(frame);
+    return lighting;
+}
+
 VkrFroxelSample packet_froxel_sample(VkrVulkanPacketFrameRoot *frame,
                                       float3 world_position)
 {
@@ -1526,11 +1601,16 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
         float3 sun_direction = normalize(-frame.directional_direction_enabled.xyz);
         bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                         dot(normal, sun_direction) < 0.0f;
+        float cloud_shadow = packet_cloud_shadow(frame, input.world_position);
         float base_shadow = packet_directional_shadow(
-            frame, input.world_position, back_lit ? -normal : normal);
+                                frame, input.world_position,
+                                back_lit ? -normal : normal) *
+                            cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
-            directional_shadow = packet_directional_shadow(frame, input.world_position, normal);
+            directional_shadow = packet_directional_shadow(
+                                     frame, input.world_position, normal) *
+                                 cloud_shadow;
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
@@ -1651,6 +1731,15 @@ world_temporal_fragment(VkrVulkanTemporalVertexOutput input,
     if (output.color.a <= 1e-4f)
         discard;
     VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();
+    // Aerial perspective is the farther medium, so it applies before fog.
+    VkrVulkanSky *sky = draw.frame.sky;
+    if (sky.params.aerial.w > 0.0f)
+    {
+        VkrVkAerialSample aerial = packet_aerial_sample(
+            sky, sky.aerial_perspective_texture, input.world_position);
+        output.color.rgb = vkr_sky_apply_aerial(output.color.rgb,
+                                                aerial.packed, aerial.weight);
+    }
     VkrFroxelFogParams froxel_params = draw.frame.froxel_fog[0];
     if (vkr_froxel_enabled(froxel_params))
     {
@@ -1662,7 +1751,8 @@ world_temporal_fragment(VkrVulkanTemporalVertexOutput input,
     else if (draw.frame.fog[0].color_density.w > 0.0f)
     {
         output.color.rgb = vkr_fog_apply_surface(
-            output.color.rgb, draw.frame.fog[0], draw.frame.view_position.xyz,
+            output.color.rgb, draw.frame.fog[0],
+            packet_fog_lighting(draw.frame), draw.frame.view_position.xyz,
             input.world_position);
     }
 

@@ -19,8 +19,6 @@ build_font_cooker
 build_novcpkg
 # Runtime textures stay local except for explicitly committed source assets.
 assets/textures/*
-!assets/textures/citrus_orchard_puresky_4k.hdr
-!assets/textures/citrus_orchard_puresky_4k.hdr.license.md
 !assets/textures/bistro_indoor_probe_*.png
 !assets/textures/UbuntuMono21px_0.png
 !assets/textures/UbuntuMono21px_0.png.vkt
@@ -72,6 +70,8 @@ assets/*.spv
 
 # Per-project editor workspace layout.
 .vkr-editor-layout.json
+
+.vkreditor
 
 # Local player graphics preferences and Python bytecode.
 .vkr-graphics-settings.json

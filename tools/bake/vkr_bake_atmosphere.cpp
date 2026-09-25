@@ -11,18 +11,10 @@ constexpr uint32_t k_transmittance_width = VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH;
 constexpr uint32_t k_transmittance_height = VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT;
 constexpr uint32_t k_multiple_size = VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE;
 constexpr uint32_t k_source_size = VKR_ATMOSPHERE_SOURCE_SIZE;
-constexpr uint32_t k_transmittance_samples = 40u;
 constexpr uint32_t k_multiple_directions = 64u;
 constexpr uint32_t k_multiple_samples = 20u;
 constexpr uint32_t k_source_samples = 32u;
-constexpr float k_max_optical_depth = 80.0f;
-
-struct Medium {
-  Vec3 rayleigh_scattering;
-  Vec3 mie_scattering;
-  Vec3 scattering;
-  Vec3 extinction;
-};
+constexpr float k_max_optical_depth = VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH;
 
 Vec3 make3(float x, float y, float z) { return vec3_new(x, y, z); }
 Vec3 add(Vec3 a, Vec3 b) { return make3(a.x + b.x, a.y + b.y, a.z + b.z); }
@@ -47,72 +39,6 @@ Vec3 clamp_nonnegative(Vec3 a) {
 
 float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }
 Vec3 lerp3(Vec3 a, Vec3 b, float t) { return add(a, scale(sub(b, a), t)); }
-
-float ray_sphere_nearest(Vec3 origin, Vec3 direction, float radius) {
-  const float b = dot(origin, direction);
-  const float c = dot(origin, origin) - radius * radius;
-  const float d = b * b - c;
-  if (d < 0.0f)
-    return -1.0f;
-  const float root = sqrtf(d);
-  const float near_hit = -b - root;
-  const float far_hit = -b + root;
-  return near_hit >= 0.0f ? near_hit : (far_hit >= 0.0f ? far_hit : -1.0f);
-}
-
-float segment_limit(const VkrAtmosphereGpuParams &p, Vec3 origin,
-                    Vec3 direction, bool *hits_ground) {
-  *hits_ground = false;
-  if (dot(origin, direction) < 0.0f &&
-      dot(origin, origin) <= p.planet.x * p.planet.x) {
-    *hits_ground = true;
-    return 0.0f;
-  }
-  const float b = dot(origin, direction);
-  const float top = std::max(
-      -b + sqrtf(std::max(b * b - dot(origin, origin) + p.planet.y * p.planet.y,
-                          0.0f)),
-      0.0f);
-  const float bottom = ray_sphere_nearest(origin, direction, p.planet.x);
-  *hits_ground = dot(origin, direction) < 0.0f && bottom >= 0.0f &&
-                 (top < 0.0f || bottom < top);
-  return *hits_ground ? bottom : top;
-}
-
-float height(const VkrAtmosphereGpuParams &p, Vec3 position) {
-  return std::max(length(position) - p.planet.x, 0.0f);
-}
-float exponential_density(float h, float scale_height) {
-  return scale_height > 1.0e-6f ? expf(-std::max(h, 0.0f) / scale_height)
-                                : 0.0f;
-}
-float ozone_density(const VkrAtmosphereGpuParams &p, float h) {
-  return saturate(1.0f - fabsf(h - p.ozone.w) / std::max(p.ground.w, 1.0e-6f));
-}
-Medium medium(const VkrAtmosphereGpuParams &p, Vec3 position) {
-  const float h = height(p, position);
-  const float rayleigh = exponential_density(h, p.rayleigh.w);
-  const float mie = exponential_density(h, p.mie_scattering.w);
-  const float ozone = ozone_density(p, h);
-  Medium result = {};
-  result.rayleigh_scattering =
-      scale(make3(p.rayleigh.x, p.rayleigh.y, p.rayleigh.z), rayleigh);
-  result.mie_scattering = scale(
-      make3(p.mie_scattering.x, p.mie_scattering.y, p.mie_scattering.z), mie);
-  result.scattering = add(result.rayleigh_scattering, result.mie_scattering);
-  result.extinction =
-      add(add(result.rayleigh_scattering,
-              scale(make3(p.mie_extinction.x, p.mie_extinction.y,
-                          p.mie_extinction.z),
-                    mie)),
-          scale(make3(p.ozone.x, p.ozone.y, p.ozone.z), ozone));
-  return result;
-}
-
-bool sun_occluded(const VkrAtmosphereGpuParams &p, Vec3 position, Vec3 sun) {
-  return dot(position, sun) < 0.0f &&
-         ray_sphere_nearest(position, sun, p.planet.x) >= 0.0f;
-}
 
 void transmittance_params(const VkrAtmosphereGpuParams &p, float u, float v,
                           float *out_radius, float *out_mu) {
@@ -166,23 +92,6 @@ Vec3 sample_lut(const std::vector<Vec3> &lut, uint32_t width, uint32_t height,
                lerp3(lut[(uint32_t)y1 * width + (uint32_t)x0],
                      lut[(uint32_t)y1 * width + (uint32_t)x1], tx),
                ty);
-}
-
-Vec3 transmittance_integral(const VkrAtmosphereGpuParams &p, Vec3 position,
-                            Vec3 direction) {
-  bool ground = false;
-  const float distance = segment_limit(p, position, direction, &ground);
-  if (distance <= 0.0f || ground)
-    return zero();
-  const float step = distance / (float)k_transmittance_samples;
-  Vec3 optical = zero();
-  for (uint32_t i = 0; i < k_transmittance_samples; ++i)
-    optical = add(
-        optical, scale(medium(p, add(position,
-                                     scale(direction, ((float)i + .5f) * step)))
-                           .extinction,
-                       step));
-  return exp3(scale(min3(optical, k_max_optical_depth), -1.0f));
 }
 
 Vec3 segment_source_integral(Vec3 source, Vec3 extinction, float step) {
@@ -296,8 +205,8 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
       transmittance_params(p, ((float)x + .5f) / k_transmittance_width,
                            ((float)y + .5f) / k_transmittance_height, &radius,
                            &mu);
-      trans[y * k_transmittance_width + x] = transmittance_integral(
-          p, make3(0, radius, 0),
+      trans[y * k_transmittance_width + x] = vkr_atmosphere_transmittance(
+          &p, make3(0, radius, 0),
           make3(sqrtf(std::max(1.0f - mu * mu, 0.0f)), mu, 0));
     }
   auto trans_sample = [&](Vec3 position, Vec3 direction) {
@@ -322,19 +231,20 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
         const Vec3 direction =
             make3(cosf(phi) * sqrtf(std::max(1.0f - z * z, 0.0f)),
                   sinf(phi) * sqrtf(std::max(1.0f - z * z, 0.0f)), z);
-        bool ground = false;
-        const float distance = segment_limit(p, origin, direction, &ground);
+        bool8_t ground = false_v;
+        const float distance =
+            vkr_atmosphere_segment_limit(&p, origin, direction, &ground);
         const float step = distance / k_multiple_samples;
         Vec3 t = one(), a = zero(), l = zero();
         for (uint32_t i = 0; i < k_multiple_samples; ++i) {
           const Vec3 position =
               add(origin, scale(direction, ((float)i + .5f) * step));
-          const Medium m = medium(p, position);
+          const VkrAtmosphereMedium m = vkr_atmosphere_medium(&p, position);
           const Vec3 tr = exp3(scale(
               min3(scale(m.extinction, step), k_max_optical_depth), -1.0f));
           a = add(a, mul(t, segment_source_integral(m.scattering, m.extinction,
                                                     step)));
-          const Vec3 ts = sun_occluded(p, position, sun)
+          const Vec3 ts = vkr_atmosphere_sun_occluded(&p, position, sun)
                               ? zero()
                               : trans_sample(position, sun);
           l = add(l, mul(t, segment_source_integral(scale(mul(ts, m.scattering),
@@ -346,7 +256,7 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
           const Vec3 ground_point = add(origin, scale(direction, distance));
           const Vec3 up = normalized(ground_point, make3(0, 1, 0));
           const Vec3 surface = add(ground_point, scale(up, 1.0e-3f));
-          const Vec3 ts = sun_occluded(p, surface, sun)
+          const Vec3 ts = vkr_atmosphere_sun_occluded(&p, surface, sun)
                               ? zero()
                               : trans_sample(surface, sun);
           l = add(l, scale(mul(mul(t, ts),
@@ -369,10 +279,7 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
   };
   const Vec3 observer = make3(0, p.planet.x + p.planet.z, 0);
   const Vec3 sun = make3(p.sun.x, p.sun.y, p.sun.z);
-  out->observer_irradiance = sun_occluded(p, observer, sun)
-                                 ? zero()
-                                 : mul(make3(p.solar.x, p.solar.y, p.solar.z),
-                                       trans_sample(observer, sun));
+  out->observer_irradiance = vkr_atmosphere_observer_irradiance(&p);
   out->source_rgb.resize((size_t)6u * k_source_size * k_source_size);
   for (uint32_t face = 0; face < 6; ++face)
     for (uint32_t y = 0; y < k_source_size; ++y)
@@ -380,8 +287,9 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
         const Vec3 direction =
             cube_direction(face, ((float)x + .5f) / k_source_size,
                            ((float)y + .5f) / k_source_size);
-        bool ground = false;
-        const float distance = segment_limit(p, observer, direction, &ground);
+        bool8_t ground = false_v;
+        const float distance =
+            vkr_atmosphere_segment_limit(&p, observer, direction, &ground);
         const float step = distance / k_source_samples;
         const float cosine = dot(direction, sun);
         const float pr = rayleigh_phase(cosine),
@@ -390,8 +298,8 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
         for (uint32_t i = 0; i < k_source_samples; ++i) {
           const Vec3 position =
               add(observer, scale(direction, ((float)i + .5f) * step));
-          const Medium m = medium(p, position);
-          const Vec3 ts = sun_occluded(p, position, sun)
+          const VkrAtmosphereMedium m = vkr_atmosphere_medium(&p, position);
+          const Vec3 ts = vkr_atmosphere_sun_occluded(&p, position, sun)
                               ? zero()
                               : trans_sample(position, sun);
           const Vec3 ms = multi_sample(position, sun);
@@ -405,6 +313,20 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
           t = mul(t, exp3(scale(
                          min3(scale(m.extinction, step), k_max_optical_depth),
                          -1.0f)));
+        }
+        // Below-horizon rays see the sunlit Lambertian ground, matching the
+        // runtime source bake and the multiple-scattering term above.
+        if (ground) {
+          const Vec3 ground_point = add(observer, scale(direction, distance));
+          const Vec3 up = normalized(ground_point, make3(0, 1, 0));
+          const Vec3 surface = add(ground_point, scale(up, 1.0e-3f));
+          const Vec3 ts = vkr_atmosphere_sun_occluded(&p, surface, sun)
+                              ? zero()
+                              : trans_sample(surface, sun);
+          const Vec3 sunlit =
+              mul(mul(make3(p.solar.x, p.solar.y, p.solar.z), ts),
+                  make3(p.ground.x, p.ground.y, p.ground.z));
+          l = add(l, scale(mul(t, sunlit), std::max(dot(up, sun), 0.0f) / k_pi));
         }
         out->source_rgb[((size_t)face * k_source_size + y) * k_source_size +
                         x] = source_radiance(clamp_nonnegative(l));

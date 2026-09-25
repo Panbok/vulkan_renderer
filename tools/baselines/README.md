@@ -65,21 +65,30 @@ longer depends on `build/_artifacts` and the run tree may be removed.
 
 - `local.offscreen/smoke.sh_ibl.single_probe.snapshot`, Metal 4 on Apple M1 Pro:
   generation
-  `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726`,
+  `sha256:91df6c781f37abe8109c776e81808c68aad99f587c1ef1c9ed09a61ff6cf0f72`,
   source report
-  `sha256:6e8431ecff0626fedb99104236941f0f4546fa0fef7a6ab1cf07c47a0eaa6451`.
-  A Windows Vulkan checkout completed the pair with the backend-neutral SH
-  case and `--cross-backend`; all three comparisons pass in report
-  `sha256:549304f5a5d769943853ef46d70a281795c773ca358ff35d6bf69866790c7f32`.
+  `sha256:3021860c9dec0c0836d5b2341f38eccb0d5f8b087b8f71946c9c5140e29884f6`.
+  Its fixture now uses a constant global source instead of the removed image
+  sky (ADR-058). The Windows Vulkan `--cross-backend` pairing passed for the
+  prior generation `sha256:7492b640…` and must be repeated for this one.
 
 ## Current Bistro authorities
 
 The accepted tree intentionally retains exactly two Bistro roots, each with one
-generation and the same fourteen cameras plus deterministic system-font,
-bitmap, and MTSDF text:
+current generation and the same fourteen cameras plus deterministic
+system-font, bitmap, and MTSDF text:
 
 - `local.offscreen/smoke.bistro.vulkan.text.snapshot` — legacy Vulkan 1.2
-- `local.offscreen/smoke.bistro.metal.text.snapshot` — Metal 4
+- `local.offscreen/smoke.bistro.metal.text.snapshot` — Metal 4; generation
+  `sha256:5a10ac6d9881514da1cea7b107f35afa9461533ca1c46701b07a718542cfabbf`,
+  source report
+  `sha256:b566c28dc7623f21f2a3fe807d83a67fd4edc460ea531ae7ae863d7bfec3f1ec`,
+  records the atmosphere sky, sky-lit analytic fog and cloud layer of ADR-058
+  and ADR-074, with the per-frame sun of the scene's directional light and its
+  glow. Against the prior generation `sha256:d3a548c5…` only view 13, where
+  the glow brightens the sky around the sun, changes (mean absolute error
+  1.21e-3); a fresh run compares with failed-pixel ratio 0 and mean absolute
+  error at most 8.4e-7.
 
 The case manifests pin their backend and reject a conflicting environment
 request. They cannot be used with `--cross-backend`; each root is compared only

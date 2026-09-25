@@ -624,6 +624,68 @@ constexpr sampler vkr_metal_packet_froxel_sampler(coord::normalized,
                                                    filter::linear,
                                                    mip_filter::none);
 
+constexpr sampler vkr_metal_packet_sky_sampler(coord::normalized,
+                                               address::clamp_to_edge,
+                                               filter::linear,
+                                               mip_filter::none);
+
+struct VkrMetalPacketAerialSample {
+  float4 packed;
+  float weight;
+};
+
+// Aerial in-scatter and mean transmittance at a surface. Zero weight is the
+// identity when aerial perspective is off or the point is behind the camera.
+static VkrMetalPacketAerialSample vkr_metal_packet_aerial_sample(
+    constant VkrMetalPacketSky *sky,
+    texture3d<float, access::sample> aerial_perspective,
+    float3 world_position) {
+  VkrMetalPacketAerialSample result = {float4(0.0f, 0.0f, 0.0f, 1.0f), 0.0f};
+  VkrSkyAerialCoordinate coordinate =
+      vkr_sky_aerial_coordinate(sky->params, world_position);
+  if (coordinate.valid == 0u)
+    return result;
+  result.packed = aerial_perspective.sample(vkr_metal_packet_sky_sampler,
+                                            coordinate.uvw);
+  result.weight = coordinate.weight;
+  return result;
+}
+
+static bool vkr_metal_packet_aerial_enabled(
+    constant VkrMetalPacketFrameRoot *frame) {
+  return frame->sky->params.aerial.w > 0.0f;
+}
+
+// Average radiance of the published sky light, scaled like diffuse IBL. Zero
+// when the frame carries no global environment.
+static float3 vkr_metal_packet_sky_ambient(
+    constant VkrMetalPacketFrameRoot *frame) {
+  if ((frame->flags & 2u) == 0u)
+    return float3(0.0f);
+  return max(vkr_sh_l2_average(frame->sh_coefficients[frame->sh_global_slot]),
+             float3(0.0f)) *
+         frame->ibl_controls.x * frame->ibl_controls.y;
+}
+
+// Sun and sky light for sky-lit analytic fog; unused by the constant colour.
+static VkrFogLighting vkr_metal_packet_fog_lighting(
+    constant VkrMetalPacketFrameRoot *frame) {
+  VkrFogLighting lighting = {float3(0.0f, 1.0f, 0.0f), float3(0.0f),
+                             float3(0.0f)};
+  if (frame->fog->sky_lighting.x <= 0.0f)
+    return lighting;
+  // Clouds shade the analytic medium as they shade the camera.
+  if (frame->directional_direction_enabled.w > 0.5f) {
+    lighting.sun_direction = normalize(-frame->directional_direction_enabled.xyz);
+    lighting.sun_irradiance =
+        frame->directional_color_intensity.rgb *
+        frame->directional_color_intensity.w *
+        vkr_metal_packet_cloud_shadow(frame, frame->view_position.xyz);
+  }
+  lighting.sky_ambient = vkr_metal_packet_sky_ambient(frame);
+  return lighting;
+}
+
 VkrFroxelSample vkr_metal_packet_froxel_sample(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position) {
   VkrFroxelSample identity = {float3(0.0f), 1.0f};

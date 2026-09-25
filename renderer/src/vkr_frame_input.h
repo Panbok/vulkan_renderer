@@ -5,6 +5,7 @@
 #include "math/mat.h"
 #include "math/vec.h"
 #include "math/vkr_transform.h"
+#include "vkr_atmosphere.h"
 #include "vkr_bloom.h"
 #include "vkr_buffer.h"
 #include "vkr_dof.h"
@@ -24,7 +25,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 47u
+#define VKR_FRAME_INPUT_VERSION 50u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -158,7 +159,7 @@ typedef struct VkrFrameLighting {
   float32_t directional_intensity;
   bool8_t ibl_enabled;
   /** Logical cubemap used to derive global IBL; independent of the visible
-   * skybox so retained backends do not have to infer lighting from a pass. */
+   * sky so retained backends do not have to infer lighting from a pass. */
   VkrTextureHandle ibl_source;
   float32_t ibl_intensity;
   float32_t ibl_diffuse_intensity;
@@ -434,15 +435,30 @@ typedef struct VkrUiPassPayload {
   VkrPreparedUiDrawList draw_list;
 } VkrUiPassPayload;
 
+/** Upper bound of a uniform sky radiance, the largest finite RGBA16F value. */
+#define VKR_SKY_CONSTANT_RADIANCE_MAX 65504.0f
+
 /**
- * @brief Payload for the skybox pass.
+ * @brief Visible sky and camera-dependent atmosphere for the frame.
+ *
+ * An enabled `atmosphere` is the published generation's settings, and the two
+ * lookup textures are the ones that generation baked (ADR-058). The renderer
+ * derives the sky-view lookup, aerial perspective and the visible sun disc
+ * from them every frame. A disabled atmosphere shows `constant_radiance`, the
+ * uniform radiance of a constant environment source.
+ *
+ * `clouds` publishes with the atmosphere and requires it. The caller advances
+ * `cloud_wind_offset_m` by the wind every frame and wraps each component into
+ * [0, VKR_CLOUD_WIND_PERIOD_M) (ADR-074).
  */
-typedef struct VkrSkyboxPassPayload {
-  VkrTextureHandle cubemap;
-  VkrMaterialHandle material;
-  /** Source RGB excludes the sun; atmosphere source alpha is disc coverage. */
-  Vec3 solar_disk_radiance;
-} VkrSkyboxPassPayload;
+typedef struct VkrSkyPassPayload {
+  VkrAtmosphereSettings atmosphere;
+  VkrTextureHandle transmittance;
+  VkrTextureHandle multiple_scattering;
+  Vec3 constant_radiance;
+  VkrCloudSettings clouds;
+  Vec2 cloud_wind_offset_m;
+} VkrSkyPassPayload;
 
 /**
  * @brief Payload for the editor pass.
@@ -532,7 +548,7 @@ typedef struct VkrFrameInput {
   const VkrWorldPassPayload *world;
   const VkrShadowPassPayload *shadow;
   const VkrLocalShadowPassPayload *local_shadow;
-  const VkrSkyboxPassPayload *skybox;
+  const VkrSkyPassPayload *sky;
   const VkrUiPassPayload *ui;
   const VkrEditorPassPayload *editor;
   const VkrPickingPassPayload *picking;

@@ -56,6 +56,8 @@ enum {
   VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY = 16,
   /* Must match the shared atmosphere kernel's workgroup reduction width. */
   VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS = 64,
+  /* Cloud base volume, detail volume and weather map (ADR-074). */
+  VKR_METAL_PACKET_CLOUD_NOISE_COUNT = 3,
   /* Four address modes on three axes, two min/mag filters, one canonical
      non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
      on/off. Samplers remain alive with immutable material rows, so this cache
@@ -147,6 +149,19 @@ typedef struct VkrMetalPacketFroxelHistoryState {
   VkrRetainedLocalShadowToken local_shadow;
   bool8_t valid;
 } VkrMetalPacketFroxelHistoryState;
+
+/* Cloud radiance history (ADR-074). `view_projection` is the producer's
+   canonical unjittered matrix, which reprojects the next trace. */
+typedef struct VkrMetalPacketCloudHistoryState {
+  Mat4 view_projection;
+  uint64_t signature;
+  uint64_t producer_submit_value;
+  uint64_t frame_index;
+  uint32_t width;
+  uint32_t height;
+  uint32_t graph_generation;
+  bool8_t valid;
+} VkrMetalPacketCloudHistoryState;
 
 typedef struct VkrMetalPacketImageInstance {
   VkrMetalPacketTemporalSceneState history_scene;
@@ -276,10 +291,7 @@ typedef struct VkrMetalPacketTexture {
   /** Published L2 coefficient slot projected from this source cubemap, or
       VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
-  id<MTLBuffer> atmosphere_sun_readback;
   uint64_t atmosphere_completion_submit_value;
-  float32_t atmosphere_projected_solid_angle;
-  VkrAtmosphereBakeResult atmosphere_result;
   VkrAtmosphereBakeStatus atmosphere_status;
   bool8_t atmosphere_bake_active;
   bool8_t atmosphere_ibl_failed;
@@ -366,6 +378,7 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t fog_gpu;
   uint64_t froxel_fog_gpu;
   uint64_t froxel_integrated_texture_id;
+  uint64_t sky_gpu;
   uint64_t display_output_gpu;
   /** Submission-local SH publication. Nonzero only after projection recording
       succeeds; cancellation returns it to the pool and restores the prior
@@ -610,11 +623,14 @@ struct VkrMetalPacketRenderer {
   uint32_t history_instance_count;
   uint32_t history_output_index;
   uint32_t selected_froxel_history_instance;
+  uint32_t selected_cloud_history_instance;
   uint32_t selected_ssgi_history_instance;
   VkrMetalPacketSsgiHistoryState
       ssgi_history[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
   VkrMetalPacketFroxelHistoryState
       froxel_history[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
+  VkrMetalPacketCloudHistoryState
+      cloud_history[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
   uint32_t next_command_slot;
   uint32_t next_completed_timing;
   uint32_t next_commit_feedback;
@@ -641,13 +657,16 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> world_text_pipeline;
   id<MTLRenderPipelineState> ui_rect_pipeline;
   id<MTLRenderPipelineState> picking_text_pipeline;
-  id<MTLComputePipelineState> ibl_equirect_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;
   id<MTLComputePipelineState> ibl_sh_pipeline;
   id<MTLComputePipelineState> atmosphere_transmittance_pipeline;
   id<MTLComputePipelineState> atmosphere_multiple_scattering_pipeline;
   id<MTLComputePipelineState> atmosphere_source_pipeline;
-  id<MTLComputePipelineState> atmosphere_sun_pipeline;
+  id<MTLComputePipelineState> sky_view_pipeline;
+  id<MTLComputePipelineState> aerial_perspective_pipeline;
+  id<MTLComputePipelineState> cloud_noise_pipelines[VKR_METAL_PACKET_CLOUD_NOISE_COUNT];
+  id<MTLComputePipelineState> cloud_shadow_pipeline;
+  id<MTLComputePipelineState> cloud_trace_pipeline;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
@@ -774,10 +793,6 @@ struct VkrMetalPacketRenderer {
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;
   VkrMetalTextureResource ibl_prefilter;
-  VkrMetalTextureResource atmosphere_luts[2];
-  uint64_t atmosphere_luts_last_use_submit_value;
-  uint32_t atmosphere_lut_live_count;
-  bool8_t atmosphere_luts_live;
   /* Immutable black cubemap for frames with local probes but no global IBL.
      It prevents an earlier scene's retained prefilter from becoming the
      residual outside a local probe's influence. */
@@ -795,6 +810,11 @@ struct VkrMetalPacketRenderer {
   VkrMetalTextureResource dfg_lut;
   uint64_t dfg_lut_last_use_submit_value;
   bool8_t dfg_lut_live;
+  /* Cloud base, detail and weather noise (ADR-074): generated once at
+     startup, renderer lifetime, retired after the last frame reading them. */
+  VkrMetalTextureResource cloud_noise[VKR_METAL_PACKET_CLOUD_NOISE_COUNT];
+  uint64_t cloud_noise_last_use_submit_value;
+  uint32_t cloud_noise_live_count;
   VkrMetalTextureResource ltc_luts[2];
   uint64_t ltc_last_use_submit_value;
   uint32_t ltc_lut_live_count;

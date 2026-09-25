@@ -169,6 +169,7 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
   frame_root->froxel_fog = upload->froxel_fog_gpu;
   frame_root->froxel_integrated_texture_id =
       upload->froxel_integrated_texture_id;
+  frame_root->sky = upload->sky_gpu;
   uint64_t anisotropy_gpu = 0u;
   VkrMetalPacketAnisotropy *anisotropy =
       vkr_metal_packet_next_root(upload, sizeof(*anisotropy), &anisotropy_gpu);
@@ -715,7 +716,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
   }
 
   /* Asset-published scene sources already own coefficients. The packet path
-     projects only a skybox-only source that reaches submission without that
+     projects only a lighting source that reaches submission without that
      cold publication step. */
   if (source->ibl_sh_slot == VKR_SH_SLOT_BLACK) {
     uint32_t projection_mip = 0u;
@@ -2099,13 +2100,27 @@ vkr_internal bool8_t vkr_metal_packet_prepare_fog(
     VkrMetalPacketFrameUpload *upload) {
   id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  const bool8_t aerial_enabled =
+      renderer->prepared_frame.aerial_perspective_enabled;
+  id<MTLTexture> aerial =
+      aerial_enabled ? vkr_metal_packet_pass_texture(renderer, pass, 2u) : nil;
   if (!hdr || !depth || !renderer->fog_pipeline || !hdr.width || !hdr.height ||
-      hdr.width > UINT32_MAX || hdr.height > UINT32_MAX)
+      hdr.width > UINT32_MAX || hdr.height > UINT32_MAX ||
+      (aerial_enabled && !aerial) || upload->sky_gpu == 0u)
     return false_v;
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       mat4_mul(packet->temporal.jittered_projection,
                packet->input.globals.view));
+  /* Sky-lit fog reads the sun and the sky light's SH through a lit frame
+     root. */
+  uint64_t frame_gpu = 0u;
+  uint32_t frame_flags = 0u;
+  if (!vkr_metal_packet_create_frame_root(
+          renderer, packet, upload, upload->gpu_draw_instances_gpu,
+          (uint32_t)hdr.width, (uint32_t)hdr.height, view_projection, true_v,
+          false_v, &frame_gpu, &frame_flags))
+    return false_v;
   uint64_t root_gpu = 0u;
   VkrMetalPacketFogRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -2121,11 +2136,152 @@ vkr_internal bool8_t vkr_metal_packet_prepare_fog(
       .depth_texture_id = depth.gpuResourceID._impl,
       .target_texture_id = hdr.gpuResourceID._impl,
       .extent = {(uint32_t)hdr.width, (uint32_t)hdr.height},
+      .aerial_perspective_texture_id =
+          aerial ? aerial.gpuResourceID._impl : 0u,
+      .sky = upload->sky_gpu,
+      .frame = frame_gpu,
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->fog_pipeline,
       .root = root_gpu,
       .threads = MTLSizeMake(hdr.width, hdr.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Builds the frame's sky-view lookup or aerial-perspective volume from the
+   published generation's lookup textures in the frame-slot sky record. */
+vkr_internal bool8_t vkr_metal_packet_prepare_sky(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload,
+    VkrRgExecutorKind kind) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> output = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  const bool8_t sky_view = kind == VKR_RG_EXECUTOR_SKY_VIEW_LUT;
+  id<MTLComputePipelineState> pipeline =
+      sky_view ? renderer->sky_view_pipeline
+               : renderer->aerial_perspective_pipeline;
+  const MTLSize extent =
+      sky_view ? MTLSizeMake(VKR_ATMOSPHERE_SKY_VIEW_WIDTH,
+                             VKR_ATMOSPHERE_SKY_VIEW_HEIGHT, 1u)
+               : MTLSizeMake(VKR_ATMOSPHERE_AERIAL_SIZE,
+                             VKR_ATMOSPHERE_AERIAL_SIZE,
+                             VKR_ATMOSPHERE_AERIAL_SIZE);
+  if (!output || !pipeline || upload->sky_gpu == 0u ||
+      output.textureType !=
+          (sky_view ? MTLTextureType2D : MTLTextureType3D) ||
+      output.width != extent.width || output.height != extent.height ||
+      output.depth != extent.depth)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSkyBuildRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSkyBuildRoot){
+      .sky = upload->sky_gpu,
+      .output_texture_id = output.gpuResourceID._impl,
+  };
+  /* Aerial perspective marches one froxel column per thread. */
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(extent.width, extent.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Sun-projected cloud transmittance over the map around the camera. */
+vkr_internal bool8_t vkr_metal_packet_prepare_cloud_shadow(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> output = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  if (!output || !renderer->cloud_shadow_pipeline || upload->sky_gpu == 0u ||
+      output.pixelFormat != MTLPixelFormatR16Float ||
+      output.width != VKR_CLOUD_SHADOW_SIZE ||
+      output.height != VKR_CLOUD_SHADOW_SIZE)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSkyBuildRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSkyBuildRoot){
+      .sky = upload->sky_gpu,
+      .output_texture_id = output.gpuResourceID._impl,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->cloud_shadow_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(VKR_CLOUD_SHADOW_SIZE, VKR_CLOUD_SHADOW_SIZE, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Half-resolution cloud trace into this frame's history output. A selected
+   history carries the view-projection that reprojects it. */
+vkr_internal bool8_t vkr_metal_packet_prepare_cloud_trace(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> output = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  VkrMetalPacketImage *history_slot =
+      vkr_metal_packet_named_image_slot(renderer, "cloud_history");
+  const uint32_t selected = renderer->selected_cloud_history_instance;
+  const bool8_t history_valid = selected != UINT32_MAX && history_slot &&
+                                selected < history_slot->instance_count;
+  id<MTLTexture> history =
+      history_valid ? (id<MTLTexture>)history_slot->instances[selected]
+                          .resource.metal_texture
+                    : output;
+  if (!output || !depth || !history || !renderer->cloud_trace_pipeline ||
+      upload->sky_gpu == 0u ||
+      output.pixelFormat != MTLPixelFormatRGBA16Float)
+    return false_v;
+
+  const Mat4 view_projection = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y,
+      mat4_mul(packet->temporal.jittered_projection,
+               packet->input.globals.view));
+  uint64_t frame_gpu = 0u;
+  uint32_t frame_flags = 0u;
+  if (!vkr_metal_packet_create_frame_root(
+          renderer, packet, upload, upload->gpu_draw_instances_gpu,
+          renderer->prepared_frame.viewport_width,
+          renderer->prepared_frame.viewport_height, view_projection, true_v,
+          false_v, &frame_gpu, &frame_flags))
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketCloudTraceRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketCloudTraceRoot){
+      .previous_view_projection =
+          history_valid ? renderer->cloud_history[selected].view_projection
+                        : packet->sky.view_projection,
+      .sky = upload->sky_gpu,
+      .frame = frame_gpu,
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .history_texture_id = history.gpuResourceID._impl,
+      .output_texture_id = output.gpuResourceID._impl,
+      .extent = {(uint32_t)output.width, (uint32_t)output.height},
+      .depth_extent = {renderer->prepared_frame.viewport_width,
+                       renderer->prepared_frame.viewport_height},
+      .frame_index = (uint32_t)packet->input.frame.frame_index,
+      .history_valid = history_valid ? 1u : 0u,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->cloud_trace_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(output.width, output.height, 1u),
       .group_size = MTLSizeMake(8u, 8u, 1u),
   };
   prepared->active = true_v;
@@ -2241,7 +2397,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
   id<MTLTexture> target = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
   id<MTLTexture> integrated = vkr_metal_packet_pass_texture(renderer, pass, 2u);
-  if (!target || !depth || !integrated || !renderer->froxel_apply_pipeline ||
+  const bool8_t aerial_enabled =
+      renderer->prepared_frame.aerial_perspective_enabled;
+  id<MTLTexture> aerial =
+      aerial_enabled ? vkr_metal_packet_pass_texture(renderer, pass, 3u) : nil;
+  if ((aerial_enabled && !aerial) || !target || !depth || !integrated ||
+      !renderer->froxel_apply_pipeline ||
       !target.width || !target.height || target.width > UINT32_MAX ||
       target.height > UINT32_MAX ||
       integrated.textureType != MTLTextureType3D ||
@@ -2260,6 +2421,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
       .integrated_texture_id = integrated.gpuResourceID._impl,
       .target_texture_id = target.gpuResourceID._impl,
       .extent = {(uint32_t)target.width, (uint32_t)target.height},
+      .aerial_perspective_texture_id =
+          aerial ? aerial.gpuResourceID._impl : 0u,
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->froxel_apply_pipeline,
@@ -2312,11 +2475,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
     if (!subsurface_source)
       return false_v;
   }
-  VkrMetalPacketTexture *sky =
-      packet->input.skybox ? vkr_metal_packet_resolve_texture(
-                                 renderer, packet->input.skybox->cubemap)
-                           : NULL;
-  if (packet->input.skybox && !sky)
+  const VkrSkyPassPayload *sky = packet->input.sky;
+  const VkrSkyMode sky_mode = !sky ? VKR_SKY_MODE_NONE
+                              : sky->atmosphere.enabled
+                                  ? VKR_SKY_MODE_ATMOSPHERE
+                                  : VKR_SKY_MODE_CONSTANT;
+  id<MTLTexture> sky_view =
+      sky_mode == VKR_SKY_MODE_ATMOSPHERE
+          ? vkr_metal_packet_pass_texture(renderer, pass, 15u)
+          : nil;
+  if (sky_mode == VKR_SKY_MODE_ATMOSPHERE && !sky_view)
     return false_v;
 
   uint64_t frame_root_gpu = 0u;
@@ -2344,16 +2512,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
       .specular_texture_id = specular.gpuResourceID._impl,
       .normal_texture_id = normal.gpuResourceID._impl,
       .hdr_texture_id = hdr.gpuResourceID._impl,
-      .sky_texture_id = sky ? sky->resource.resource_id : 0u,
+      .sky_view_texture_id = sky_view ? sky_view.gpuResourceID._impl : 0u,
       .gtao_visibility_texture_id = gtao_visibility.gpuResourceID._impl,
       .inverse_view_projection = mat4_inverse(view_projection),
       .extent = {(uint32_t)vbuffer.width, (uint32_t)vbuffer.height},
-      .sky_enabled = sky ? 1u : 0u,
-      .solar_disk_radiance =
-          packet->input.skybox
-              ? (Vec4){packet->input.skybox->solar_disk_radiance.x,
-                       packet->input.skybox->solar_disk_radiance.y,
-                       packet->input.skybox->solar_disk_radiance.z, 0.0f}
+      .sky_mode = sky_mode,
+      .sky_radiance =
+          sky_mode == VKR_SKY_MODE_CONSTANT
+              ? (Vec4){sky->constant_radiance.x, sky->constant_radiance.y,
+                       sky->constant_radiance.z, 0.0f}
               : (Vec4){0},
       .direct_source_texture_id =
           ssgi_enabled ? direct_source.gpuResourceID._impl : 0u,
@@ -2376,8 +2543,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
   const uint64_t pending_submit = renderer->submit_value + 1u;
   if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
     renderer->ibl_last_use_submit_value = pending_submit;
-  if (sky)
-    sky->last_use_submit_value = pending_submit;
   if (!renderer->prepared_frame.gtao_enabled)
     renderer->gtao_white_last_use_submit_value = pending_submit;
   return true_v;
@@ -3752,6 +3917,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_FROXEL_APPLY:
     return vkr_metal_packet_prepare_froxel(renderer, pass, packet, prepared,
                                            upload, prepared->kind);
+  case VKR_RG_EXECUTOR_SKY_VIEW_LUT:
+  case VKR_RG_EXECUTOR_AERIAL_PERSPECTIVE:
+    return vkr_metal_packet_prepare_sky(renderer, pass, prepared, upload,
+                                        prepared->kind);
+  case VKR_RG_EXECUTOR_CLOUD_SHADOW:
+    return vkr_metal_packet_prepare_cloud_shadow(renderer, pass, prepared,
+                                                 upload);
+  case VKR_RG_EXECUTOR_CLOUD_TRACE:
+    return vkr_metal_packet_prepare_cloud_trace(renderer, pass, packet,
+                                                prepared, upload);
   case VKR_RG_EXECUTOR_SSGI_DEPTH_BASE:
   case VKR_RG_EXECUTOR_SSGI_DEPTH_MIP:
   case VKR_RG_EXECUTOR_SSGI_TRACE:
@@ -4055,6 +4230,7 @@ vkr_metal_packet_prepare_frame_state(VkrMetalPacketRenderer *renderer,
   renderer->selected_ssr_history_instance = UINT32_MAX;
   renderer->selected_ssgi_history_instance = UINT32_MAX;
   renderer->selected_froxel_history_instance = UINT32_MAX;
+  renderer->selected_cloud_history_instance = UINT32_MAX;
   renderer->selected_exposure_history_instance = UINT32_MAX;
   renderer->current_hzb_view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
@@ -4299,6 +4475,11 @@ vkr_internal bool8_t vkr_metal_packet_select_frame_histories(
   if (packet->scene_rendering &&
       !vkr_metal_packet_select_froxel_history(renderer)) {
     log_error("Metal packet stage failed: froxel history selection");
+    return false_v;
+  }
+  if (packet->scene_rendering &&
+      !vkr_metal_packet_select_cloud_history(renderer)) {
+    log_error("Metal packet stage failed: cloud history selection");
     return false_v;
   }
   vkr_metal_packet_prepare_ssr_ssgi_params(renderer, packet);
@@ -4938,6 +5119,7 @@ vkr_internal void vkr_metal_packet_mark_frame_submitted(
     vkr_metal_packet_mark_ssr_history_submitted(renderer, submit_value);
     vkr_metal_packet_mark_ssgi_history_submitted(renderer, submit_value);
     vkr_metal_packet_mark_froxel_history_submitted(renderer, submit_value);
+    vkr_metal_packet_mark_cloud_history_submitted(renderer, submit_value);
     vkr_metal_packet_mark_exposure_submitted(renderer, submit_value);
   }
   vkr_metal_packet_mark_skinning_submitted(renderer, submit_value);

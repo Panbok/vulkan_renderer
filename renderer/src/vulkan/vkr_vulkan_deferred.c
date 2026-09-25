@@ -1419,26 +1419,15 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   if (renderer->prepared_frame.ssgi_enabled &&
       !vkr_vk_deferred_storage_index(renderer, pass, 9u, &direct_source))
     return false_v;
-  /* A cubemap still publishing its initial upload is not sampled this frame;
-     the fallback colour matches the authored forward skybox clear. */
-  uint32_t sky_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  uint32_t sky_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  uint32_t sky_enabled = 0u;
-  VkrVulkanPublishedTexture *sky =
-      packet->input.skybox ? vkr_vk_published_texture(
-                                 renderer, packet->input.skybox->cubemap, NULL)
-                           : NULL;
-  if (packet->input.skybox && !sky)
+  const VkrSkyPassPayload *sky = packet->input.sky;
+  const VkrSkyMode sky_mode = !sky ? VKR_SKY_MODE_NONE
+                              : sky->atmosphere.enabled
+                                  ? VKR_SKY_MODE_ATMOSPHERE
+                                  : VKR_SKY_MODE_CONSTANT;
+  uint32_t sky_view = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (sky_mode == VKR_SKY_MODE_ATMOSPHERE &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 15u, &sky_view))
     return false_v;
-  if (sky && !sky->initialization_pending && sky->image.array_layers == 6u &&
-      sky->sampler_record_index < renderer->config.sampler_capacity &&
-      renderer->published_samplers[sky->sampler_record_index].live) {
-    sky_texture = sky->sampled_slot.index;
-    sky_sampler =
-        renderer->published_samplers[sky->sampler_record_index].slot.index;
-    sky_enabled = 1u;
-    sky->last_use_submit_value = renderer->submit_value + 1u;
-  }
   uint64_t frame_address = 0u;
   VkrVulkanPacketFrameRoot *frame_root =
       vkr_vk_packet_frame_root(slot, &frame_address);
@@ -1463,15 +1452,14 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .scene_texture = scene,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
-      .sky_texture = sky_texture,
-      .sky_sampler = sky_sampler,
-      .sky_enabled = sky_enabled,
+      .sky_view_texture = sky_view,
+      .sky_sampler = renderer->transmission_sampler_slot,
+      .sky_mode = sky_mode,
       .gtao_visibility_texture = gtao_visibility,
-      .solar_disk_radiance =
-          packet->input.skybox
-              ? (Vec4){packet->input.skybox->solar_disk_radiance.x,
-                       packet->input.skybox->solar_disk_radiance.y,
-                       packet->input.skybox->solar_disk_radiance.z, 0.0f}
+      .sky_radiance =
+          sky_mode == VKR_SKY_MODE_CONSTANT
+              ? (Vec4){sky->constant_radiance.x, sky->constant_radiance.y,
+                       sky->constant_radiance.z, 0.0f}
               : (Vec4){0},
       .direct_source_texture = direct_source,
       .ssgi_enabled = renderer->prepared_frame.ssgi_enabled,
@@ -2154,12 +2142,33 @@ bool8_t vkr_vk_prepare_fog_apply(VkrVulkanRenderer *renderer,
                                  VkrVulkanPreparedCompute *prepared,
                                  const VkrRgPass *pass) {
   uint32_t depth = 0u, target = 0u;
+  uint32_t aerial = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &target) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth))
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
+      (renderer->prepared_frame.aerial_perspective_enabled &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &aerial)))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!slot->sky)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
                                         packet->input.globals.view);
+  /* Sky-lit fog reads the sun and the sky light's SH through a lit frame
+     root; it samples no shadow maps. */
+  uint64_t frame_address = 0u;
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, &frame_address);
+  if (!frame_root)
+    return false_v;
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
+      packet->temporal.current_view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
   const VkrVulkanFogRoot root = {
       .params = packet->fog,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -2170,6 +2179,9 @@ bool8_t vkr_vk_prepare_fog_apply(VkrVulkanRenderer *renderer,
       .target_texture = target,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
+      .sky = slot->sky,
+      .aerial_perspective_texture = aerial,
+      .frame = frame_address,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanFogRoot),
@@ -2182,6 +2194,262 @@ bool8_t vkr_vk_prepare_fog_apply(VkrVulkanRenderer *renderer,
   prepared->groups[0][2] = 1u;
   prepared->dispatch_count = 1u;
   return true_v;
+}
+
+/* Builds the frame's sky-view lookup or aerial-perspective volume from the
+   published generation's lookup textures in the frame-slot sky record. The
+   aerial pass also patches its volume slot into that mapped record for the
+   forward consumers recorded after it. */
+bool8_t vkr_vk_prepare_sky(VkrVulkanRenderer *renderer,
+                           VkrVulkanPreparedCompute *prepared,
+                           const VkrRgPass *pass, bool8_t sky_view) {
+  uint32_t output = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &output))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!slot->sky || !slot->sky_record)
+    return false_v;
+  /* Consumers sample the volume through the sampled heap, whose slot differs
+     from the storage slot this pass writes. */
+  uint32_t sampled = 0u;
+  if (!sky_view) {
+    if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &sampled))
+      return false_v;
+    slot->sky_record->aerial_perspective_texture = sampled;
+  }
+  const VkrVulkanSkyBuildRoot root = {
+      .sky = slot->sky,
+      .output_texture = output,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSkyBuildRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines
+          [sky_view ? VKR_VULKAN_DEFERRED_PIPELINE_SKY_VIEW
+                    : VKR_VULKAN_DEFERRED_PIPELINE_AERIAL_PERSPECTIVE];
+  /* Aerial perspective marches one froxel column per thread. */
+  const uint32_t width =
+      sky_view ? VKR_ATMOSPHERE_SKY_VIEW_WIDTH : VKR_ATMOSPHERE_AERIAL_SIZE;
+  const uint32_t height =
+      sky_view ? VKR_ATMOSPHERE_SKY_VIEW_HEIGHT : VKR_ATMOSPHERE_AERIAL_SIZE;
+  prepared->groups[0][0] = (width + 7u) / 8u;
+  prepared->groups[0][1] = (height + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+/* Sun-projected cloud transmittance. Consumers sample the map through the sky
+   record's sampled slot (ADR-074). */
+bool8_t vkr_vk_prepare_cloud_shadow(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass) {
+  uint32_t output = 0u;
+  uint32_t sampled = 0u;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &output) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &sampled))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!slot->sky || !slot->sky_record)
+    return false_v;
+  slot->sky_record->cloud_shadow_texture = sampled;
+  const VkrVulkanSkyBuildRoot root = {
+      .sky = slot->sky,
+      .output_texture = output,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSkyBuildRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SHADOW];
+  prepared->groups[0][0] = (VKR_CLOUD_SHADOW_SIZE + 7u) / 8u;
+  prepared->groups[0][1] = (VKR_CLOUD_SHADOW_SIZE + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+/* Cloud radiance history holds camera-independent sky radiance; its stored
+   view-projection reprojects it. With temporal antialiasing only the exact
+   temporal-transform predecessor is eligible: its dependency and same-queue
+   barriers order its writes even in flight, so accumulation never depends on
+   GPU timing. Without it, the newest completed producer of the same traced
+   layer and grid seeds the trace. */
+vkr_internal VkrVulkanGraphImageInstance *
+vkr_vk_select_cloud_history(VkrVulkanRenderer *renderer,
+                            VkrVulkanGraphImage *history, uint32_t *out_index) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const uint32_t current = renderer->history_output_index;
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE)
+    return NULL;
+  const uint64_t signature = vkr_cloud_history_signature(
+      &packet->sky.clouds, packet->sky.camera_position.w);
+  const uint64_t frame_index = packet->input.frame.frame_index;
+  const VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  const VkrVulkanGraphBuffer *transforms =
+      vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)
+          ? &renderer->graph_buffers
+                 [renderer->temporal_transform_history_handle.id - 1u]
+          : NULL;
+  VkrVulkanGraphImageInstance *selected = NULL;
+  for (uint32_t i = 0u; i < history->instance_count; ++i) {
+    const VkrVulkanCloudHistory *candidate = &renderer->cloud_histories[i];
+    VkrVulkanGraphImageInstance *image = &history->instances[i];
+    const bool8_t source_age_in_ring =
+        candidate->frame_index < frame_index &&
+        frame_index - candidate->frame_index <= history->instance_count;
+    const bool8_t ordered =
+        packet->temporal.enabled
+            ? slot->temporal_history_valid && transforms &&
+                  i < transforms->instance_count &&
+                  slot->temporal_transform_input == &transforms->instances[i]
+            : candidate->producer_submit_value <= renderer->completed_value;
+    if (i == current || !candidate->valid || !image->history_valid ||
+        !image->has_sampled_slot || !source_age_in_ring || !ordered ||
+        candidate->producer_submit_value !=
+            image->history_producer_submit_value ||
+        candidate->signature != signature ||
+        candidate->graph_generation != history->graph_generation ||
+        candidate->dimensions[0] != image->image.width ||
+        candidate->dimensions[1] != image->image.height)
+      continue;
+    if (!selected ||
+        candidate->producer_submit_value >
+            renderer->cloud_histories[*out_index].producer_submit_value) {
+      selected = image;
+      *out_index = i;
+    }
+  }
+  return selected;
+}
+
+/* Half-resolution cloud trace into this frame's history output, which
+   deferred lighting samples through the sky record. */
+bool8_t vkr_vk_prepare_cloud_trace(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedCompute *prepared,
+                                   const VkrRgPass *pass) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanGraphImage *history =
+      vkr_vk_temporal_graph_image(renderer, "cloud_history");
+  const uint32_t current = renderer->history_output_index;
+  uint32_t output = 0u;
+  uint32_t output_sampled = 0u;
+  uint32_t depth = 0u;
+  if (!history || !history->live ||
+      history->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
+      current >= history->instance_count || !slot->sky || !slot->sky_record ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 0u, &output) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &output_sampled) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth))
+    return false_v;
+  slot->cloud_history_output = &history->instances[current];
+  slot->sky_record->cloud_radiance_texture = output_sampled;
+
+  uint32_t selected_index = UINT32_MAX;
+  VkrVulkanGraphImageInstance *selected =
+      vkr_vk_select_cloud_history(renderer, history, &selected_index);
+  slot->cloud_history_input = selected;
+  if (selected) {
+    prepared->image_barriers[0] = (VkImageMemoryBarrier2){
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = selected->image.handle,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .levelCount = 1u,
+                             .layerCount = 1u},
+    };
+    prepared->image_barrier_count = 1u;
+  }
+
+  /* The trace reads only the sky light's SH through a lit frame root. */
+  uint64_t frame = 0u;
+  VkrVulkanPacketFrameRoot *frame_root = vkr_vk_packet_frame_root(slot, &frame);
+  if (!frame_root)
+    return false_v;
+  const VkrPacketFrameConstants constants = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &constants, slot->gpu_candidate_instances,
+      packet->temporal.current_view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
+  const VkrVulkanCloudTraceRoot root = {
+      .previous_view_projection =
+          selected ? renderer->cloud_histories[selected_index].view_projection
+                   : packet->sky.view_projection,
+      .sky = slot->sky,
+      .frame = frame,
+      .depth_texture = depth,
+      .history_texture =
+          selected ? selected->sampled_slot.index : output_sampled,
+      .history_sampler = renderer->transmission_sampler_slot,
+      .output_texture = output,
+      .extent = {history->instances[current].image.width,
+                 history->instances[current].image.height},
+      .depth_extent = {renderer->prepared_frame.viewport_width,
+                       renderer->prepared_frame.viewport_height},
+      .frame_index = (uint32_t)packet->input.frame.frame_index,
+      .history_valid = selected ? 1u : 0u,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanCloudTraceRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_TRACE];
+  prepared->groups[0][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
+void vkr_vk_mark_cloud_submitted(VkrVulkanRenderer *renderer,
+                                 uint64_t submit_value) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (slot->cloud_history_input)
+    slot->cloud_history_input->last_use_submit_value = submit_value;
+  const uint32_t current = renderer->history_output_index;
+  if (!slot->cloud_history_output ||
+      current >= VKR_VULKAN_HISTORY_INSTANCE_COUNT)
+    return;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE) {
+    for (uint32_t i = 0u; i < VKR_VULKAN_HISTORY_INSTANCE_COUNT; ++i)
+      renderer->cloud_histories[i].valid = false_v;
+  }
+  VkrVulkanGraphImage *history =
+      vkr_vk_temporal_graph_image(renderer, "cloud_history");
+  renderer->cloud_histories[current] = (VkrVulkanCloudHistory){
+      .view_projection = packet->sky.view_projection,
+      .signature = vkr_cloud_history_signature(&packet->sky.clouds,
+                                               packet->sky.camera_position.w),
+      .producer_submit_value = submit_value,
+      .frame_index = packet->input.frame.frame_index,
+      .dimensions = {slot->cloud_history_output->image.width,
+                     slot->cloud_history_output->image.height},
+      .graph_generation = history ? history->graph_generation : 0u,
+      .valid = history != NULL,
+  };
+  slot->cloud_history_output->history_producer_submit_value = submit_value;
+  slot->cloud_history_output->history_valid = history != NULL;
 }
 
 vkr_internal bool8_t vkr_vk_prepare_froxel_frame_root(
@@ -2436,9 +2704,12 @@ bool8_t vkr_vk_prepare_froxel_apply(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass) {
   uint32_t target = 0u, depth = 0u, integrated = 0u;
+  uint32_t aerial = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &target) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
-      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &integrated))
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &integrated) ||
+      (renderer->prepared_frame.aerial_perspective_enabled &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 3u, &aerial)))
     return false_v;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
@@ -2456,6 +2727,7 @@ bool8_t vkr_vk_prepare_froxel_apply(VkrVulkanRenderer *renderer,
       .target_texture = target,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
+      .aerial_perspective_texture = aerial,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanFroxelApplyRoot),

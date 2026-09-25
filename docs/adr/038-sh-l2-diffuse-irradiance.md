@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-24
 authority: adr
 ---
 
@@ -36,7 +36,8 @@ identities. Native GPU roots add the backend-owned coefficient buffer address
 and resolved global slot; coefficient values stay out of the render packet.
 Metal loads source cube texels; Vulkan uses a lazily published 2D-array alias for
 exact texel access. Source, skybox and GGX specular prefilter remain cubemaps under
-ADR-016. The former diffuse cubemap and its A/B runtime path are removed.
+[ADR-058](058-revision-baked-sky-atmosphere.md). The former diffuse cubemap and its
+A/B runtime path are removed.
 
 ## Consequences
 

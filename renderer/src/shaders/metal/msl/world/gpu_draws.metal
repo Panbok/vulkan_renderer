@@ -1097,14 +1097,15 @@ struct VkrMetalPacketDeferredLightingRoot {
   texture2d<float, access::read> specular;
   texture2d<float, access::read> normal;
   texture2d<float, access::read_write> hdr;
-  texturecube<float, access::sample> sky;
+  texture2d<float, access::sample> sky_view;
   texture2d<float, access::sample> gtao_visibility;
   float4x4 inverse_view_projection;
   uint2 extent;
-  uint sky_enabled;
+  // VKR_SKY_MODE_*: fallback colour, uniform radiance or the atmosphere.
+  uint sky_mode;
   uint subsurface_profile_count;
-  // RGB radiance of the alpha-covered disc; source RGB deliberately omits it.
-  float4 solar_disk_radiance;
+  // Uniform background radiance for the constant sky mode.
+  float4 sky_radiance;
   texture2d<float, access::write> direct_source;
   uint ssgi_enabled;
   uint ssgi_reserved;
@@ -1157,16 +1158,42 @@ static float vkr_metal_packet_deferred_filter_roughness(
 static float3
 vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
                               uint2 pixel) {
-  if (root.sky_enabled == 0u)
+  if (root.sky_mode == VKR_SKY_MODE_NONE)
     return float3(0.02, 0.02, 0.03);
+  if (root.sky_mode == VKR_SKY_MODE_CONSTANT)
+    return root.sky_radiance.rgb;
   float2 ndc = vkr_metal_packet_resolve_ndc(float2(pixel) + 0.5, root.extent);
   float4 far_world = root.inverse_view_projection * float4(ndc, 1.0, 1.0);
   float3 direction = -vkr_metal_packet_view_direction(root.frame,
       far_world.xyz / max(abs(far_world.w), 1e-7) * sign(far_world.w));
-  constexpr sampler sky_sampler(coord::normalized, address::clamp_to_edge,
-                                filter::linear);
-  float4 sky_sample = root.sky.sample(sky_sampler, direction);
-  return sky_sample.rgb + sky_sample.a * root.solar_disk_radiance.rgb;
+  // The sky-view lookup already integrates to the top of the atmosphere, so
+  // sky pixels take no aerial perspective. The disc and its glow are
+  // analytic; clouds carry aerial perspective at their own depth.
+  constant VkrMetalPacketSky &sky = *root.frame->sky;
+  VkrAtmosphereParams params = sky.params.atmosphere;
+  float3 radiance =
+      root.sky_view
+          .sample(vkr_metal_packet_sky_sampler,
+                  vkr_sky_view_uv(params, direction))
+          .rgb;
+  if (!vkr_sky_view_hits_ground(params, direction.y)) {
+    float3 view_transmittance =
+        sky.transmittance
+            .sample(vkr_metal_packet_sky_sampler,
+                    vkr_atmosphere_transmittance_uv(
+                        params, params.planet.x + params.planet.z,
+                        direction.y))
+            .rgb;
+    radiance += vkr_atmosphere_sun_disc(params, direction, view_transmittance) +
+                vkr_atmosphere_sun_glow(params, direction, view_transmittance);
+  }
+  // The cloud trace shares screen coordinates with this pass.
+  if (sky.params.clouds.noise.w > 0.0f) {
+    float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
+    radiance = vkr_cloud_composite(
+        radiance, sky.cloud_radiance.sample(vkr_metal_packet_sky_sampler, uv));
+  }
+  return radiance;
 }
 
 kernel void vkr_metal_packet_deferred_lighting(
@@ -1276,12 +1303,17 @@ kernel void vkr_metal_packet_deferred_lighting(
     float3 sun_direction = normalize(-frame->directional_direction_enabled.xyz);
     bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                     dot(normal, sun_direction) < 0.0f;
+    float cloud_shadow = vkr_metal_packet_cloud_shadow(frame, world_position);
     float base_shadow = vkr_metal_packet_directional_shadow_sample(
-        frame, world_position, back_lit ? -normal : normal).factor;
+                            frame, world_position, back_lit ? -normal : normal)
+                            .factor *
+                        cloud_shadow;
     float layer_shadow = base_shadow;
     if (back_lit && clearcoat_active)
       layer_shadow = vkr_metal_packet_directional_shadow_sample(
-          frame, world_position, normal).factor;
+                         frame, world_position, normal)
+                         .factor *
+                     cloud_shadow;
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
@@ -2236,9 +2268,10 @@ static float3 vkr_metal_packet_transmission_lighting(
         vkr_metal_packet_directional_shadow_sample(frame, world_position,
                                                    surface.normal);
     float3 light = normalize(-frame->directional_direction_enabled.xyz);
-    float3 radiance = frame->directional_color_intensity.rgb *
-                      frame->directional_color_intensity.w *
-                      shadow_sample.factor;
+    float3 radiance =
+        frame->directional_color_intensity.rgb *
+        frame->directional_color_intensity.w * shadow_sample.factor *
+        vkr_metal_packet_cloud_shadow(frame, world_position);
     if (DiffuseEnabled) {
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
           surface.normal, view, light, radiance, surface.base.rgb,
@@ -2562,7 +2595,10 @@ static void vkr_metal_packet_transmission_shade_impl(
       (frame->render_mode == 0u && frame->shadow_debug_mode == 0u)) {
     VkrTransmissionLobes lobes = {
         diffuse, specular, surface.emissive * base_transmission};
-    if (vkr_froxel_enabled(*frame->froxel_fog)) {
+    const bool aerial = vkr_metal_packet_aerial_enabled(frame);
+    const bool froxel = vkr_froxel_enabled(*frame->froxel_fog);
+    const bool fog = frame->fog->color_density.w > 0.0f;
+    if (aerial || froxel || fog) {
       float transmission = saturate(surface.transmission);
       float dielectric = 1.0f - saturate(surface.metallic);
       float3 feedback_weight =
@@ -2576,31 +2612,30 @@ static void vkr_metal_packet_transmission_shade_impl(
       float3 feedback = vkr_transmission_compose(
           empty_lobes, transmitted, surface.base.rgb, layered_reflectance,
           surface.transmission, surface.metallic);
-      VkrFroxelSample froxel =
-          vkr_metal_packet_froxel_sample(frame, world_position);
-      color = vkr_froxel_apply_local_over_feedback(
-                  local, feedback_weight, froxel) +
-              feedback;
-    } else if (frame->fog->color_density.w > 0.0f) {
-      float transmission = saturate(surface.transmission);
-      float dielectric = 1.0f - saturate(surface.metallic);
-      float3 feedback_weight =
-          transmission * dielectric * surface.base.rgb *
-          (1.0f - saturate(layered_reflectance));
-      float3 local = vkr_transmission_compose(
-          lobes, float3(0.0f), surface.base.rgb, layered_reflectance,
-          surface.transmission, surface.metallic);
-      VkrTransmissionLobes empty_lobes = {
-          float3(0.0f), float3(0.0f), float3(0.0f)};
-      float3 feedback = vkr_transmission_compose(
-          empty_lobes, transmitted, surface.base.rgb, layered_reflectance,
-          surface.transmission, surface.metallic);
-      color = vkr_fog_apply_local_over_feedback(
-                  local, feedback_weight, *frame->fog,
-                  vkr_fog_surface_sample(*frame->fog,
-                                         frame->view_position.xyz,
-                                         world_position)) +
-              feedback;
+      // Aerial perspective is the farther medium, so it applies before fog.
+      if (aerial) {
+        VkrMetalPacketAerialSample aerial_sample =
+            vkr_metal_packet_aerial_sample(
+                frame->sky, frame->sky->aerial_perspective, world_position);
+        local = vkr_sky_apply_aerial_over_feedback(
+            local, feedback_weight, aerial_sample.packed,
+            aerial_sample.weight);
+      }
+      if (froxel) {
+        VkrFroxelSample froxel_sample =
+            vkr_metal_packet_froxel_sample(frame, world_position);
+        local = vkr_froxel_apply_local_over_feedback(local, feedback_weight,
+                                                     froxel_sample);
+      } else if (fog) {
+        float3 inscatter = vkr_fog_inscatter(
+            *frame->fog, vkr_metal_packet_fog_lighting(frame),
+            vkr_fog_direction(world_position - frame->view_position.xyz));
+        local = vkr_fog_apply_local_over_feedback(
+            local, feedback_weight, inscatter,
+            vkr_fog_surface_sample(*frame->fog, frame->view_position.xyz,
+                                   world_position));
+      }
+      color = local + feedback;
     } else {
       color = vkr_transmission_compose(lobes, transmitted, surface.base.rgb,
                                        layered_reflectance,

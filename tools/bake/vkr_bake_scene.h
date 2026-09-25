@@ -45,25 +45,20 @@ struct VkrBakeSceneLight {
 
 enum class VkrBakeSceneEnvironmentKind : uint8_t {
   None,
-  Equirect,
-  CubemapPath,
-  CubemapFaces,
+  Constant,
+  Atmosphere,
 };
 
-/* The path fields stay owned by this scene until the bake has completed. */
+/* Sky-light controls and source of the runtime `environment` block. They apply
+   to the atmosphere or to a constant radiance, as at runtime (ADR-058). */
 struct VkrBakeSceneEnvironment {
   VkrBakeSceneEnvironmentKind kind = VkrBakeSceneEnvironmentKind::None;
   bool8_t enabled = false_v;
-  std::string path;
-  std::string base_path;
-  std::string extension;
+  Vec3 constant_radiance = {};
   float32_t intensity = 1.0f;
   float32_t diffuse_intensity = 1.0f;
   float32_t specular_intensity = 1.0f;
   float32_t sh_deringing = 0.0f;
-  uint32_t texture_index = UINT32_MAX;
-  uint32_t face_texture_indices[6] = {UINT32_MAX, UINT32_MAX, UINT32_MAX,
-                                      UINT32_MAX, UINT32_MAX, UINT32_MAX};
 };
 
 enum class VkrBakeSceneError : uint8_t {
@@ -110,7 +105,7 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                          VkrBakeSceneError *out_error);
 
 /* `scene` is successfully loaded and `direction` is finite and unit length.
-   Returns linear radiance from the selected legacy environment or baked
-   atmosphere. Disabled or absent environments return black. */
+   Returns the sky light's linear radiance: the baked atmosphere or constant
+   source scaled by its intensity. A disabled or absent sky light is black. */
 Vec3 vkr_bake_scene_sample_environment(const VkrBakeScene *scene,
                                        Vec3 direction);

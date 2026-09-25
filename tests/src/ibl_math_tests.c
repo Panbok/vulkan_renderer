@@ -28,27 +28,6 @@ static bool32_t test_float32_to_float16_boundaries(void) {
   return true_v;
 }
 
-static bool32_t test_ibl_cubemap_size_derivation(void) {
-  printf("  Running test_ibl_cubemap_size_derivation...\n");
-  uint32_t face_size = 0u;
-  uint32_t mip_count = 0u;
-  assert(vkr_ibl_derive_cubemap_size(4096u, 2048u, 4096u, 16u, &face_size,
-                                     &mip_count));
-  assert(face_size == 1024u && mip_count == 11u);
-  assert(vkr_ibl_derive_cubemap_size(4096u, 2048u, 600u, 16u, &face_size,
-                                     &mip_count));
-  assert(face_size == 512u && mip_count == 10u);
-  assert(vkr_ibl_derive_cubemap_size(4096u, 2048u, 4096u, 5u, &face_size,
-                                     &mip_count));
-  assert(face_size == 1024u && mip_count == 5u);
-  assert(!vkr_ibl_derive_cubemap_size(1024u, 1024u, 1024u, 16u, &face_size,
-                                      &mip_count));
-  assert(!vkr_ibl_derive_cubemap_size(UINT32_MAX, UINT32_MAX / 2u + 1u, 1024u,
-                                      16u, &face_size, &mip_count));
-  printf("  test_ibl_cubemap_size_derivation PASSED\n");
-  return true_v;
-}
-
 static bool32_t test_ibl_sh_projection_mip_selection(void) {
   printf("  Running test_ibl_sh_projection_mip_selection...\n");
   uint32_t mip = 0u;
@@ -264,15 +243,14 @@ static bool32_t test_ibl_sh_pool_same_submission_bake_and_read(void) {
 }
 
 bool32_t run_ibl_math_tests(void) {
-  printf("--- Starting HDR IBL Math Tests ---\n");
+  printf("--- Starting IBL Math Tests ---\n");
   bool32_t passed = true_v;
   passed &= test_float32_to_float16_boundaries();
-  passed &= test_ibl_cubemap_size_derivation();
   passed &= test_ibl_sh_projection_mip_selection();
   passed &= test_ibl_sh_pool_publication_cycle();
   passed &= test_ibl_sh_pool_abandon_and_exhaustion();
   passed &= test_ibl_sh_pool_replacement_generation();
   passed &= test_ibl_sh_pool_same_submission_bake_and_read();
-  printf("--- HDR IBL Math Tests Completed ---\n");
+  printf("--- IBL Math Tests Completed ---\n");
   return passed;
 }

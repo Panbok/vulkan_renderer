@@ -176,28 +176,51 @@ void vkr_scene_reset_diffuse_volume(VkrScene *scene,
   };
 }
 
-bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
-                                     const VkrAtmosphereSettings *settings,
-                                     float32_t sh_deringing) {
-  if (!scene || !settings || !vkr_atmosphere_settings_valid(settings) ||
-      !isfinite(sh_deringing) || sh_deringing < 0.0f) {
-    return false_v;
-  }
+/* Requests carry the unit sun direction the bake uses, so later comparisons
+   see exactly what was queued. */
+vkr_internal VkrAtmosphereSettings
+scene_normalized_atmosphere(const VkrAtmosphereSettings *settings) {
   VkrAtmosphereSettings normalized = *settings;
   if (normalized.enabled) {
     const VkrAtmosphereGpuParams params = vkr_atmosphere_prepare(settings);
     normalized.sun_direction =
         vec3_new(params.sun.x, params.sun.y, params.sun.z);
   }
-  scene->atmosphere.requested_settings = normalized;
-  scene->atmosphere.requested_sh_deringing = sh_deringing;
+  return normalized;
+}
+
+vkr_internal void
+scene_queue_atmosphere_revision(VkrScene *scene,
+                                const VkrAtmosphereSettings *requested) {
+  scene->atmosphere.requested_settings = *requested;
   scene->atmosphere.requested_revision =
       scene->atmosphere.requested_revision == UINT64_MAX
           ? 1u
           : scene->atmosphere.requested_revision + 1u;
-  scene->atmosphere.bake_state = settings->enabled
+  scene->atmosphere.bake_state = requested->enabled
                                      ? VKR_SCENE_ATMOSPHERE_BAKE_STATE_PENDING
                                      : VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE;
+}
+
+bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
+                                     const VkrAtmosphereSettings *settings,
+                                     const VkrCloudSettings *clouds,
+                                     float32_t sh_deringing) {
+  if (!scene || !settings || !clouds ||
+      !vkr_atmosphere_settings_valid(settings) ||
+      !vkr_cloud_settings_valid(clouds) ||
+      (clouds->enabled && !settings->enabled) || !isfinite(sh_deringing) ||
+      sh_deringing < 0.0f) {
+    return false_v;
+  }
+  const VkrAtmosphereSettings normalized =
+      scene_normalized_atmosphere(settings);
+  scene->atmosphere.authored_settings = *settings;
+  scene->atmosphere.live_settings = normalized;
+  scene->atmosphere.requested_clouds = *clouds;
+  scene->atmosphere.requested_sh_deringing = sh_deringing;
+  scene->atmosphere.sun_refresh_elapsed = 0.0;
+  scene_queue_atmosphere_revision(scene, &normalized);
   return true_v;
 }
 
@@ -1092,24 +1115,37 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
-      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
       .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .atmosphere_transmittance = VKR_TEXTURE_HANDLE_INVALID,
+      .atmosphere_multiple_scattering = VKR_TEXTURE_HANDLE_INVALID,
       .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
   };
   scene->atmosphere = (VkrSceneAtmosphere){
+      .authored_settings = vkr_atmosphere_settings_defaults(),
+      .live_settings = vkr_atmosphere_settings_defaults(),
       .requested_settings = vkr_atmosphere_settings_defaults(),
       .candidate_settings = vkr_atmosphere_settings_defaults(),
       .active_settings = vkr_atmosphere_settings_defaults(),
+      .requested_clouds = vkr_cloud_settings_defaults(),
+      .candidate_clouds = vkr_cloud_settings_defaults(),
+      .active_clouds = vkr_cloud_settings_defaults(),
       .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-                              .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
                               .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
                               .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .atmosphere_transmittance =
+                                  VKR_TEXTURE_HANDLE_INVALID,
+                              .atmosphere_multiple_scattering =
+                                  VKR_TEXTURE_HANDLE_INVALID,
                               .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
       .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_transmittance = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_multiple_scattering = VKR_TEXTURE_HANDLE_INVALID,
       .bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_NONE,
   };
+  scene->atmosphere.authored_settings.enabled = false_v;
+  scene->atmosphere.live_settings.enabled = false_v;
   scene->atmosphere.requested_settings.enabled = false_v;
   scene->atmosphere.candidate_settings.enabled = false_v;
   scene->atmosphere.active_settings.enabled = false_v;
@@ -1226,26 +1262,24 @@ vkr_internal void scene_environment_shutdown(VkrScene *scene,
         .texture = VKR_TEXTURE_HANDLE_INVALID,
     };
   }
-  scene_release_owned_texture_handle(
-      (VkrRenderAssets *)assets,
-      &scene->atmosphere.candidate_prefilter_cubemap);
-  scene_release_owned_texture_handle(
-      (VkrRenderAssets *)assets, &scene->atmosphere.candidate_source_cubemap);
-  scene_release_owned_texture_handle(
-      (VkrRenderAssets *)assets,
-      &scene->atmosphere.retired_environment.prefilter_cubemap);
-  scene_release_owned_texture_handle(
-      (VkrRenderAssets *)assets,
-      &scene->atmosphere.retired_environment.source_cubemap);
-  scene_release_owned_texture_handle(
-      (VkrRenderAssets *)assets,
-      &scene->atmosphere.retired_environment.delivery_equirect);
-  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                     &scene->environment.prefilter_cubemap);
-  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                     &scene->environment.source_cubemap);
-  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                     &scene->environment.delivery_equirect);
+  VkrTextureHandle *environment_handles[] = {
+      &scene->atmosphere.candidate_prefilter_cubemap,
+      &scene->atmosphere.candidate_source_cubemap,
+      &scene->atmosphere.candidate_transmittance,
+      &scene->atmosphere.candidate_multiple_scattering,
+      &scene->atmosphere.retired_environment.prefilter_cubemap,
+      &scene->atmosphere.retired_environment.source_cubemap,
+      &scene->atmosphere.retired_environment.atmosphere_transmittance,
+      &scene->atmosphere.retired_environment.atmosphere_multiple_scattering,
+      &scene->environment.prefilter_cubemap,
+      &scene->environment.source_cubemap,
+      &scene->environment.atmosphere_transmittance,
+      &scene->environment.atmosphere_multiple_scattering,
+  };
+  for (uint32_t i = 0; i < ArrayCount(environment_handles); ++i) {
+    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
+                                       environment_handles[i]);
+  }
   for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
     VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
     scene_release_owned_texture_handle((VkrRenderAssets *)assets,
@@ -1258,17 +1292,29 @@ vkr_internal void scene_environment_shutdown(VkrScene *scene,
   scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
   scene->environment.enabled = false_v;
   scene->atmosphere = (VkrSceneAtmosphere){
+      .authored_settings = vkr_atmosphere_settings_defaults(),
+      .live_settings = vkr_atmosphere_settings_defaults(),
       .requested_settings = vkr_atmosphere_settings_defaults(),
       .candidate_settings = vkr_atmosphere_settings_defaults(),
       .active_settings = vkr_atmosphere_settings_defaults(),
+      .requested_clouds = vkr_cloud_settings_defaults(),
+      .candidate_clouds = vkr_cloud_settings_defaults(),
+      .active_clouds = vkr_cloud_settings_defaults(),
       .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-                              .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
                               .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
                               .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .atmosphere_transmittance =
+                                  VKR_TEXTURE_HANDLE_INVALID,
+                              .atmosphere_multiple_scattering =
+                                  VKR_TEXTURE_HANDLE_INVALID,
                               .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
       .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_transmittance = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_multiple_scattering = VKR_TEXTURE_HANDLE_INVALID,
   };
+  scene->atmosphere.authored_settings.enabled = false_v;
+  scene->atmosphere.live_settings.enabled = false_v;
   scene->atmosphere.requested_settings.enabled = false_v;
   scene->atmosphere.candidate_settings.enabled = false_v;
   scene->atmosphere.active_settings.enabled = false_v;
@@ -1371,6 +1417,172 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
     vkr_scene_physics_animation_delta(scene, 0.0);
     vkr_scene_physics_publish_bones(scene, true_v, NULL);
   }
+}
+
+typedef struct SceneSunLightSearch {
+  const VkrScene *scene;
+  SceneDirectionalLight light;
+  VkrEntityId entity;
+  uint32_t best_render_id;
+  bool8_t best_has_render_id;
+  bool8_t found;
+  bool8_t atmosphere_sun_only;
+} SceneSunLightSearch;
+
+vkr_internal void scene_find_sun_light_cb(const VkrArchetype *arch,
+                                          VkrChunk *chunk, void *user) {
+  (void)arch;
+  SceneSunLightSearch *search = user;
+  const VkrScene *scene = search->scene;
+  const uint32_t count = vkr_entity_chunk_count(chunk);
+  VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
+  const SceneDirectionalLight *lights =
+      (const SceneDirectionalLight *)vkr_entity_chunk_column(
+          chunk, scene->comp_directional_light);
+  if (!entities || !lights) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < count; i++) {
+    if (!lights[i].enabled ||
+        (search->atmosphere_sun_only && !lights[i].atmosphere_sun)) {
+      continue;
+    }
+
+    const uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
+    const bool8_t has_render_id = render_id != 0;
+    if (search->found &&
+        (search->best_has_render_id
+             ? !has_render_id || render_id >= search->best_render_id
+             : !has_render_id)) {
+      continue;
+    }
+
+    search->light = lights[i];
+    search->entity = entities[i];
+    search->best_render_id = render_id;
+    search->best_has_render_id = has_render_id;
+    search->found = true_v;
+  }
+}
+
+vkr_internal void scene_resolve_sun(VkrScene *scene) {
+  VkrSceneSun *sun = &scene->sun;
+  // Imported lights, such as a glTF file's own sun, must not take the sky.
+  SceneSunLightSearch search = {
+      .scene = scene,
+      .atmosphere_sun_only = scene->atmosphere.authored_settings.enabled,
+  };
+  vkr_entity_query_compiled_each_chunk(&scene->query_directional_light,
+                                       scene_find_sun_light_cb, &search);
+  sun->found = search.found;
+  if (!sun->found) {
+    return;
+  }
+
+  const SceneDirectionalLight *light = &search.light;
+  Vec3 color = light->color;
+  if (light->temperature_kelvin > 0.0f) {
+    if (sun->tint_kelvin != light->temperature_kelvin) {
+      sun->tint = vkr_atmosphere_blackbody_rgb(light->temperature_kelvin);
+      sun->tint_kelvin = light->temperature_kelvin;
+    }
+    color = vec3_mul(color, sun->tint);
+  }
+
+  // A directional light turns with its own rotation.
+  const SceneTransform *transform =
+      (const SceneTransform *)vkr_entity_get_component(
+          scene->world, search.entity, scene->comp_transform);
+  sun->light = (VkrSceneSunLight){
+      .direction = transform ? vkr_quat_rotate_vec3(transform->rotation,
+                                                    light->direction_local)
+                             : light->direction_local,
+      .color = color,
+      .intensity = light->intensity,
+      .sun_angular_diameter_degrees = light->sun_angular_diameter_degrees,
+  };
+}
+
+/* The bake depends on the sun's direction and irradiance; its diameter sets
+   the irradiance calibration. The glow only changes the drawn sky. */
+vkr_internal bool8_t scene_atmosphere_sun_matches(
+    const VkrAtmosphereSettings *a, const VkrAtmosphereSettings *b) {
+  return MemCompare(&a->sun_direction, &b->sun_direction,
+                    sizeof(float32_t) * 3u) == 0 &&
+         MemCompare(&a->solar_irradiance, &b->solar_irradiance,
+                    sizeof(float32_t) * 3u) == 0 &&
+         a->sun_angular_diameter_degrees == b->sun_angular_diameter_degrees;
+}
+
+void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
+  if (!scene || !scene->world) {
+    return;
+  }
+
+  scene->sun.found = false_v;
+  if (!scene_compile_queries(scene)) {
+    return;
+  }
+
+  scene_resolve_sun(scene);
+  VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
+  if (!atmosphere->authored_settings.enabled) {
+    return;
+  }
+
+  // An unusable light, such as one pointing nowhere, keeps the current sun.
+  VkrAtmosphereSettings effective = atmosphere->authored_settings;
+  const VkrSceneSunLight *light = &scene->sun.light;
+  if (scene->sun.found && !vkr_atmosphere_apply_sun_light(
+                              &effective, light->direction,
+                              vec3_scale(light->color, light->intensity),
+                              light->sun_angular_diameter_degrees)) {
+    return;
+  }
+
+  atmosphere->live_settings = scene_normalized_atmosphere(&effective);
+  if (isfinite(delta_seconds) && delta_seconds > 0.0) {
+    atmosphere->sun_refresh_elapsed += delta_seconds;
+  }
+  if (atmosphere->requested_settings.enabled &&
+      scene_atmosphere_sun_matches(&atmosphere->live_settings,
+                                   &atmosphere->requested_settings)) {
+    return;
+  }
+
+  /* The first bake takes the sun at once, and so does a request that has not
+     started baking: replacing it costs nothing. A started or published
+     request limits the sky light to one refresh per interval, and the last
+     sun always gets its own once the interval passes. */
+  const bool8_t unstarted =
+      atmosphere->requested_revision != atmosphere->active_revision &&
+      atmosphere->requested_revision != atmosphere->candidate_revision;
+  if (atmosphere->active_revision && !unstarted &&
+      atmosphere->sun_refresh_elapsed < VKR_SCENE_SUN_REFRESH_SECONDS) {
+    return;
+  }
+
+  atmosphere->sun_refresh_elapsed = 0.0;
+  scene_queue_atmosphere_revision(scene, &atmosphere->live_settings);
+}
+
+VkrAtmosphereSettings
+vkr_scene_atmosphere_frame_settings(const VkrScene *scene) {
+  return vkr_atmosphere_with_sun(&scene->atmosphere.active_settings,
+                                 &scene->atmosphere.live_settings);
+}
+
+Vec3 vkr_scene_atmosphere_frame_irradiance(VkrScene *scene) {
+  VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
+  const VkrAtmosphereSettings frame =
+      vkr_scene_atmosphere_frame_settings(scene);
+  const VkrAtmosphereGpuParams params = vkr_atmosphere_prepare(&frame);
+  if (MemCompare(&params, &atmosphere->frame_params, sizeof(params)) != 0) {
+    atmosphere->frame_params = params;
+    atmosphere->frame_irradiance = vkr_atmosphere_observer_irradiance(&params);
+  }
+  return atmosphere->frame_irradiance;
 }
 
 void vkr_scene_update_transforms(VkrScene *scene) {
@@ -1989,7 +2201,10 @@ bool8_t vkr_scene_set_directional_light(VkrScene *scene, VkrEntityId entity,
   if (!scene || !scene->world || !light ||
       !isfinite(light->sun_angular_diameter_degrees) ||
       light->sun_angular_diameter_degrees < 0.0f ||
-      light->sun_angular_diameter_degrees >= 180.0f)
+      light->sun_angular_diameter_degrees >= 180.0f ||
+      !(light->temperature_kelvin == 0.0f ||
+        (light->temperature_kelvin >= VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K &&
+         light->temperature_kelvin <= VKR_ATMOSPHERE_SUN_TEMPERATURE_MAX_K)))
     return false_v;
 
   SceneDirectionalLight *existing =

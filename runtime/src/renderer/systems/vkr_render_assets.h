@@ -46,8 +46,6 @@ typedef struct VkrRenderAssets {
   VkrArenaPool system_font_arena_pool;
   VkrMtsdfFontLoaderContext mtsdf_font_loader;
   VkrArenaPool mtsdf_font_arena_pool;
-  VkrMetricEventProducer hdr_decode_metrics;
-  VkrMetricEventProducer ibl_conversion_metrics;
   VkrMetricEventProducer ibl_convolution_metrics;
   bool8_t texture_pressure_active;
 } VkrRenderAssets;

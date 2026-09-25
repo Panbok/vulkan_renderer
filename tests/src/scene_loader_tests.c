@@ -152,103 +152,399 @@ vkr_internal void test_scene_loader_disabled_environment_parses_controls(void) {
   printf("  test_scene_loader_disabled_environment_parses_controls PASSED\n");
 }
 
-vkr_internal void test_scene_loader_env_cubemap_load_failure_falls_back(void) {
+/* Loads `json` and reports whether the scene was accepted. */
+vkr_internal bool8_t scene_loader_test_load(SceneLoaderTestContext *ctx,
+                                            String8 json) {
+  VkrSceneLoadResult result = {0};
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  return vkr_scene_load_from_json(&ctx->scene, &ctx->assets, json,
+                                  &ctx->allocator, &result, &error);
+}
+
+vkr_internal void test_scene_loader_removed_environment_images_rejected(void) {
   printf(
-      "  Running test_scene_loader_env_cubemap_load_failure_falls_back...\n");
+      "  Running test_scene_loader_removed_environment_images_rejected...\n");
+
+  const String8 scenes[] = {
+      string8_lit("{\"version\":2,\"environment\":{\"enabled\":true,"
+                  "\"equirect\":\"assets/textures/environment.hdr\"},"
+                  "\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"environment\":{\"enabled\":true,"
+                  "\"cubemap\":{\"base_path\":\"assets/textures/skybox\","
+                  "\"extension\":\"jpg\"}},\"entities\":[]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    SceneLoaderTestContext ctx;
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, scenes[i]) == true_v);
+    assert(ctx.scene.environment.enabled == false_v);
+    assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
+    assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
+    assert(ctx.scene.environment.source_cubemap.id == 0u);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+
+  printf("  test_scene_loader_removed_environment_images_rejected PASSED\n");
+}
+
+vkr_internal void test_scene_loader_constant_environment_parses_source(void) {
+  printf("  Running test_scene_loader_constant_environment_parses_source...\n");
 
   SceneLoaderTestContext ctx;
   assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"environment\":{\"enabled\":"
+                               "false,\"constant\":[0.5,1,65504],"
+                               "\"intensity\":0.5},\"entities\":[]}")) ==
+         true_v);
+  assert(ctx.scene.environment.enabled == false_v);
+  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_CONSTANT);
+  assert(ctx.scene.environment.constant_radiance.x == 0.5f);
+  assert(ctx.scene.environment.constant_radiance.y == 1.0f);
+  assert(ctx.scene.environment.constant_radiance.z == 65504.0f);
+  assert(fabsf(ctx.scene.environment.intensity - 0.5f) < 0.001f);
+  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
+  scene_loader_test_context_shutdown(&ctx);
 
-  String8 json = string8_lit(
-      "{\"version\":2,\"environment\":{\"enabled\":true,"
-      "\"cubemap\":{\"base_path\":\"assets/textures/does_not_exist\","
-      "\"extension\":\"jpg\"}},\"entities\":[]}");
-  VkrSceneLoadResult result = {0};
-  VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
-                                        &ctx.allocator, &result, &error);
-  assert(ok == true_v);
-  assert(error == VKR_SCENE_ERROR_NONE);
-  assert(result.entity_count == 0u);
+  printf("  test_scene_loader_constant_environment_parses_source PASSED\n");
+}
+
+vkr_internal void
+test_scene_loader_constant_environment_rejects_radiance(void) {
+  printf(
+      "  Running test_scene_loader_constant_environment_rejects_radiance...\n");
+
+  const String8 scenes[] = {
+      string8_lit("{\"version\":2,\"environment\":{\"constant\":[-1,0,0]},"
+                  "\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"environment\":{\"constant\":[0,70000,0]},"
+                  "\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"environment\":{\"constant\":[1,1]},"
+                  "\"entities\":[]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    SceneLoaderTestContext ctx;
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, scenes[i]) == true_v);
+    assert(ctx.scene.environment.enabled == false_v);
+    assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
+    assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+
+  printf("  test_scene_loader_constant_environment_rejects_radiance PASSED\n");
+}
+
+vkr_internal void
+test_scene_loader_constant_environment_failure_releases(void) {
+  printf(
+      "  Running test_scene_loader_constant_environment_failure_releases...\n");
+
+  /* The test assets have no publisher, so preparing the enabled source fails
+     after parsing and must leave no partial tuple behind. */
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"environment\":{\"constant\":"
+                               "[1,1,1]},\"entities\":[]}")) == true_v);
   assert(ctx.scene.environment.enabled == false_v);
   assert(ctx.scene.environment.source_cubemap.id == 0u);
   assert(ctx.scene.environment.prefilter_cubemap.id == 0u);
   assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_FAILED);
-
   scene_loader_test_context_shutdown(&ctx);
-  printf("  test_scene_loader_env_cubemap_load_failure_falls_back PASSED\n");
+
+  printf("  test_scene_loader_constant_environment_failure_releases PASSED\n");
 }
 
 vkr_internal void
-test_scene_loader_environment_sources_are_mutually_exclusive(void) {
-  printf("  Running "
-         "test_scene_loader_environment_sources_are_mutually_exclusive...\n");
+test_scene_loader_atmosphere_applies_sky_light_controls(void) {
+  printf(
+      "  Running test_scene_loader_atmosphere_applies_sky_light_controls...\n");
 
   SceneLoaderTestContext ctx;
   assert(scene_loader_test_context_init(&ctx) == true_v);
-  String8 json =
-      string8_lit("{\"version\":2,\"environment\":{\"enabled\":true,"
-                  "\"equirect\":\"assets/textures/environment.hdr\","
-                  "\"cubemap\":{\"base_path\":\"assets/textures/skybox\","
-                  "\"extension\":\"jpg\"}},\"entities\":[]}");
-  VkrSceneLoadResult result = {0};
-  VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json, &ctx.allocator,
-                                  &result, &error));
-  assert(error == VKR_SCENE_ERROR_NONE);
-  assert(ctx.scene.environment.enabled == false_v);
-  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit(
+                       "{\"version\":2,\"atmosphere\":{\"enabled\":true},"
+                       "\"environment\":{\"intensity\":0.4,"
+                       "\"diffuse_intensity\":0.9,\"specular_intensity\":"
+                       "0.35,\"sh_deringing\":2},\"entities\":[]}")) == true_v);
+  assert(ctx.scene.environment.enabled == true_v);
+  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_ATMOSPHERE);
+  assert(fabsf(ctx.scene.environment.intensity - 0.4f) < 0.001f);
+  assert(fabsf(ctx.scene.environment.diffuse_intensity - 0.9f) < 0.001f);
+  assert(fabsf(ctx.scene.environment.specular_intensity - 0.35f) < 0.001f);
+  assert(ctx.scene.environment.sh_deringing == 2.0f);
+  /* The atmosphere projects its SH with the environment's window. */
+  assert(ctx.scene.atmosphere.requested_settings.enabled == true_v);
+  assert(ctx.scene.atmosphere.requested_sh_deringing == 2.0f);
+  /* The tuple publishes only after the native atmosphere bake completes. */
   assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
-
   scene_loader_test_context_shutdown(&ctx);
-  printf("  test_scene_loader_environment_sources_are_mutually_exclusive "
-         "PASSED\n");
+
+  printf("  test_scene_loader_atmosphere_applies_sky_light_controls PASSED\n");
 }
 
-vkr_internal void test_scene_loader_equirect_load_failure_falls_back(void) {
-  printf("  Running test_scene_loader_equirect_load_failure_falls_back...\n");
+vkr_internal void test_scene_loader_atmosphere_sky_light_defaults(void) {
+  printf("  Running test_scene_loader_atmosphere_sky_light_defaults...\n");
 
   SceneLoaderTestContext ctx;
   assert(scene_loader_test_context_init(&ctx) == true_v);
-  String8 json =
-      string8_lit("{\"version\":2,\"environment\":{\"enabled\":true,"
-                  "\"equirect\":\"assets/textures/does_not_exist.hdr\"},"
-                  "\"entities\":[]}");
-  VkrSceneLoadResult result = {0};
-  VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json, &ctx.allocator,
-                                  &result, &error));
-  assert(error == VKR_SCENE_ERROR_NONE);
-  assert(ctx.scene.environment.enabled == false_v);
-  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
-  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_FAILED);
-
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true},\"entities\":[]}")) == true_v);
+  assert(ctx.scene.environment.enabled == true_v);
+  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_ATMOSPHERE);
+  assert(ctx.scene.environment.intensity == 1.0f);
+  assert(ctx.scene.environment.diffuse_intensity == 1.0f);
+  assert(ctx.scene.environment.specular_intensity == 1.0f);
   scene_loader_test_context_shutdown(&ctx);
-  printf("  test_scene_loader_equirect_load_failure_falls_back PASSED\n");
+
+  /* A disabled sky light keeps the atmosphere as the visible sky source. */
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true},\"environment\":{\"enabled\":false},"
+                               "\"entities\":[]}")) == true_v);
+  assert(ctx.scene.environment.enabled == false_v);
+  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_ATMOSPHERE);
+  assert(ctx.scene.atmosphere.requested_settings.enabled == true_v);
+  scene_loader_test_context_shutdown(&ctx);
+
+  printf("  test_scene_loader_atmosphere_sky_light_defaults PASSED\n");
 }
 
-vkr_internal void test_scene_loader_disabled_environment_ignores_sources(void) {
-  printf("  Running "
-         "test_scene_loader_disabled_environment_ignores_sources...\n");
+vkr_internal void test_scene_loader_atmosphere_rejects_conflicts(void) {
+  printf("  Running test_scene_loader_atmosphere_rejects_conflicts...\n");
 
+  /* A constant cannot also light an atmosphere scene; the sky still bakes. */
   SceneLoaderTestContext ctx;
   assert(scene_loader_test_context_init(&ctx) == true_v);
-  String8 json =
-      string8_lit("{\"version\":2,\"environment\":{\"enabled\":false,"
-                  "\"equirect\":\"assets/textures/environment.hdr\","
-                  "\"cubemap\":{\"base_path\":\"assets/textures/skybox\","
-                  "\"extension\":\"jpg\"}},\"entities\":[]}");
-  VkrSceneLoadResult result = {0};
-  VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json, &ctx.allocator,
-                                  &result, &error));
-  assert(error == VKR_SCENE_ERROR_NONE);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true},\"environment\":{\"constant\":[1,1,1]},"
+                               "\"entities\":[]}")) == true_v);
   assert(ctx.scene.environment.enabled == false_v);
   assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
-  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
-
+  assert(ctx.scene.atmosphere.requested_settings.enabled == true_v);
   scene_loader_test_context_shutdown(&ctx);
-  printf("  test_scene_loader_disabled_environment_ignores_sources PASSED\n");
+
+  /* The atmosphere's former SH window field fails the whole scene. */
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true,\"sh_deringing\":1},\"entities\":[]}")) ==
+         false_v);
+  scene_loader_test_context_shutdown(&ctx);
+
+  printf("  test_scene_loader_atmosphere_rejects_conflicts PASSED\n");
+}
+
+vkr_internal void test_scene_loader_atmosphere_sun_authoring(void) {
+  printf("  Running test_scene_loader_atmosphere_sun_authoring...\n");
+
+  /* Temperature and illuminance resolve into the top-of-atmosphere irradiance
+     before the atmosphere request. */
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true,\"sun_temperature_kelvin\":3000,"
+                               "\"sun_illuminance\":2},\"entities\":[]}")) ==
+         true_v);
+  const Vec3 expected = vec3_scale(vkr_atmosphere_blackbody_rgb(3000.0f), 2.0f);
+  const Vec3 solar = ctx.scene.atmosphere.requested_settings.solar_irradiance;
+  assert(fabsf(solar.x - expected.x) < 1e-5f);
+  assert(fabsf(solar.y - expected.y) < 1e-5f);
+  assert(fabsf(solar.z - expected.z) < 1e-5f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  /* Raw irradiance conflicts with authored sun colour or brightness, and the
+     temperature must lie in the authorable range. */
+  const String8 rejected[] = {
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true,"
+                  "\"solar_irradiance\":[1,1,1],\"sun_temperature_kelvin\":"
+                  "3000},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true,"
+                  "\"solar_irradiance\":[1,1,1],\"sun_illuminance\":2},"
+                  "\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true,"
+                  "\"sun_temperature_kelvin\":500},\"entities\":[]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+
+  printf("  test_scene_loader_atmosphere_sun_authoring PASSED\n");
+}
+
+vkr_internal void test_scene_loader_atmosphere_world_scale(void) {
+  printf("  Running test_scene_loader_atmosphere_world_scale...\n");
+
+  /* Scenes keep one metre per world unit unless they author a scale. */
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true},\"entities\":[]}")) == true_v);
+  assert(ctx.scene.atmosphere.requested_settings.metres_per_world_unit == 1.0f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true,\"metres_per_world_unit\":0.01},"
+                               "\"entities\":[]}")) == true_v);
+  assert(fabsf(ctx.scene.atmosphere.requested_settings.metres_per_world_unit -
+               0.01f) < 1e-7f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  const String8 rejected[] = {
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true,"
+                  "\"metres_per_world_unit\":0},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true,"
+                  "\"metres_per_world_unit\":-2},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true,"
+                  "\"metres_per_world_unit\":5000},\"entities\":[]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+
+  printf("  test_scene_loader_atmosphere_world_scale PASSED\n");
+}
+
+vkr_internal void test_scene_loader_clouds(void) {
+  printf("  Running test_scene_loader_clouds...\n");
+
+  /* A clouds object enables the layer and fills omitted fields with the
+     defaults; it joins the atmosphere revision. */
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true},\"clouds\":{\"base_altitude_m\":1000,"
+                               "\"top_altitude_m\":3000,\"coverage\":0.3,"
+                               "\"wind_mps\":[5,-2]},\"entities\":[]}")) ==
+         true_v);
+  const VkrCloudSettings *clouds = &ctx.scene.atmosphere.requested_clouds;
+  assert(clouds->enabled == true_v);
+  assert(clouds->base_altitude_m == 1000.0f);
+  assert(clouds->top_altitude_m == 3000.0f);
+  assert(fabsf(clouds->coverage - 0.3f) < 1e-7f);
+  assert(clouds->density == vkr_cloud_settings_defaults().density);
+  assert(clouds->wind_mps.x == 5.0f && clouds->wind_mps.y == -2.0f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  const String8 rejected[] = {
+      string8_lit("{\"version\":2,\"clouds\":{\"enabled\":true},"
+                  "\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":false},"
+                  "\"clouds\":{\"enabled\":true},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true},"
+                  "\"clouds\":{\"base_altitude_m\":2000,"
+                  "\"top_altitude_m\":2050},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true},"
+                  "\"clouds\":{\"enabled\":false,\"coverage\":2},"
+                  "\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":true},"
+                  "\"clouds\":{\"wind_mps\":[500,0]},\"entities\":[]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+
+  printf("  test_scene_loader_clouds PASSED\n");
+}
+
+vkr_internal void test_scene_loader_directional_light_temperature(void) {
+  printf("  Running test_scene_loader_directional_light_temperature...\n");
+
+  /* Zero keeps the light's colour; otherwise the temperature must lie in the
+     range the blackbody tint is defined for. */
+  const String8 accepted[] = {
+      string8_lit("{\"version\":2,\"entities\":[{\"directional_light\":{"
+                  "\"temperature_kelvin\":3000}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"directional_light\":{"
+                  "\"temperature_kelvin\":0,\"atmosphere_sun\":false}}]}"),
+  };
+  const String8 rejected[] = {
+      string8_lit("{\"version\":2,\"entities\":[{\"directional_light\":{"
+                  "\"temperature_kelvin\":500}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"directional_light\":{"
+                  "\"temperature_kelvin\":50000}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"directional_light\":{"
+                  "\"temperature_kelvin\":-3000}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"directional_light\":{"
+                  "\"atmosphere_sun\":1}}]}"),
+  };
+  SceneLoaderTestContext ctx;
+  for (uint32_t i = 0; i < ArrayCount(accepted); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, accepted[i]) == true_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+
+  printf("  test_scene_loader_directional_light_temperature PASSED\n");
+}
+
+vkr_internal void test_scene_loader_fog_sky_lighting(void) {
+  printf("  Running test_scene_loader_fog_sky_lighting...\n");
+
+  /* Both media keep the constant, isotropic model unless authored. */
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"fog\":{\"enabled\":true},"
+                               "\"volumetric_fog\":{\"enabled\":true},"
+                               "\"entities\":[]}")) == true_v);
+  assert(ctx.scene.fog.sky_lighting == 0.0f);
+  assert(ctx.scene.fog.anisotropy == 0.0f);
+  assert(ctx.scene.froxel_fog.sky_lighting == 0.0f);
+  assert(ctx.scene.froxel_fog.anisotropy == 0.0f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"fog\":{\"enabled\":true,"
+                               "\"sky_lighting\":0.5,\"anisotropy\":-0.3},"
+                               "\"volumetric_fog\":{\"enabled\":true,"
+                               "\"sky_lighting\":1,\"anisotropy\":0.8},"
+                               "\"entities\":[]}")) == true_v);
+  assert(ctx.scene.fog.sky_lighting == 0.5f);
+  assert(fabsf(ctx.scene.fog.anisotropy + 0.3f) < 1e-6f);
+  assert(ctx.scene.froxel_fog.sky_lighting == 1.0f);
+  assert(fabsf(ctx.scene.froxel_fog.anisotropy - 0.8f) < 1e-6f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  const String8 rejected[] = {
+      string8_lit("{\"version\":2,\"fog\":{\"enabled\":true,"
+                  "\"sky_lighting\":1.5},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"fog\":{\"enabled\":false,"
+                  "\"anisotropy\":0.99},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"volumetric_fog\":{\"enabled\":true,"
+                  "\"sky_lighting\":-0.1},\"entities\":[]}"),
+      string8_lit("{\"version\":2,\"volumetric_fog\":{\"enabled\":true,"
+                  "\"anisotropy\":-1},\"entities\":[]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+
+  printf("  test_scene_loader_fog_sky_lighting PASSED\n");
 }
 
 vkr_internal void test_scene_loader_missing_reflection_probes_succeeds(void) {
@@ -770,10 +1066,18 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_missing_environment_succeeds();
   test_scene_loader_invalid_environment_preserves_scene_load();
   test_scene_loader_disabled_environment_parses_controls();
-  test_scene_loader_env_cubemap_load_failure_falls_back();
-  test_scene_loader_environment_sources_are_mutually_exclusive();
-  test_scene_loader_equirect_load_failure_falls_back();
-  test_scene_loader_disabled_environment_ignores_sources();
+  test_scene_loader_removed_environment_images_rejected();
+  test_scene_loader_constant_environment_parses_source();
+  test_scene_loader_constant_environment_rejects_radiance();
+  test_scene_loader_constant_environment_failure_releases();
+  test_scene_loader_atmosphere_applies_sky_light_controls();
+  test_scene_loader_atmosphere_sky_light_defaults();
+  test_scene_loader_atmosphere_rejects_conflicts();
+  test_scene_loader_atmosphere_sun_authoring();
+  test_scene_loader_atmosphere_world_scale();
+  test_scene_loader_clouds();
+  test_scene_loader_directional_light_temperature();
+  test_scene_loader_fog_sky_lighting();
   test_scene_loader_missing_reflection_probes_succeeds();
   test_scene_loader_reflection_probes_parse_valid_block();
   test_scene_loader_reflection_probe_invalid_entries_skipped();

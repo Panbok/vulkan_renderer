@@ -307,12 +307,12 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 46 contains frame metadata, camera/lighting/settings and typed
-world, shadow, skybox, baked diffuse-volume, rectangle-light, analytic-fog and
+Frame-input version 48 contains frame metadata, camera/lighting/settings and typed
+world, shadow, sky, baked diffuse-volume, rectangle-light, analytic-fog and
 froxel-fog, UI, editor, picking and debug payloads. Supplied world-text and UI
 streams are authoritative. `vkr_frame_input_validate()` checks structural input.
 Private `VkrPreparedFrame` holds derived temporal, exposure, bloom, GTAO, SSR,
-analytic-fog and froxel-fog values alongside the borrowed input; those derived
+sky, analytic-fog and froxel-fog values alongside the borrowed input; those derived
 fields and text mutations are absent from the public frame input.
 
 Arrays remain caller-owned until rendering returns. Retained assets use generation
@@ -751,21 +751,46 @@ Per-target maps reuse submitted static contents only while revisions and complet
 light groups match; overlapping dynamic casters force their groups to redraw.
 [ADR-019](adr/019-bounded-forward-spatial-lighting.md) owns these policies.
 
-HDR source conversion, skybox and GGX prefilter use cubemaps. Diffuse lighting
-uses nine GPU-resident L2 coefficients for `E/pi`, with a black sentinel and
-completion-safe replacement slots. IBL bake work is not fully graph-declared.
-See [ADR-016](adr/016-hdr-environment-format.md) and
-[ADR-038](adr/038-sh-l2-diffuse-irradiance.md).
+The global environment source and GGX prefilter use cubemaps. Diffuse
+lighting uses nine GPU-resident L2 coefficients for `E/pi`, with a black sentinel
+and completion-safe replacement slots. IBL bake work is not fully graph-declared.
+See [ADR-038](adr/038-sh-l2-diffuse-irradiance.md).
 
-An enabled scene atmosphere replaces the global HDR source with a sky baked at
-an authored observer altitude. Two renderer-owned RGBA16F LUTs occupy 136 KiB;
-source, GGX prefilter, SH and attenuated sunlight publish together after GPU
-completion. A settings revision prepares a distinct candidate while the prior
-generation remains active. Camera motion does not rebake. Source RGB excludes
-the direct sun disc; sky evaluation adds its alpha coverage times the same
-published solar radiance that drives the direct-light and shadow policy.
+The scene atmosphere is the only sky. It bakes the global environment at an
+authored observer altitude. Each generation owns its 136 KiB of RGBA16F
+transmittance and multiple-scattering lookups; source, GGX prefilter, SH,
+lookups and attenuated sunlight publish together after GPU completion. A
+settings revision prepares a distinct candidate while the prior generation
+remains active; a newer request waits for it to publish. Camera motion does not
+rebake. A directional light flagged `atmosphere_sun`, the default in scene
+files but not for glTF imports, drives the sun's direction, colour temperature,
+irradiance and disc. The drawn sky, direct light and shadows follow it every
+frame, with the direct light's attenuated irradiance integrated on the CPU;
+the sky light re-bakes at most every 0.25 seconds while it moves. A
+view-attenuated 1/theta^2 glow, `atmosphere.sun_glow`, makes the physical
+disc read as a sun without changing lighting. Every frame builds a 192×108
+sky-view lookup and a 32³ aerial-perspective volume from the published lookups
+at the camera's altitude; the deferred background samples the lookup and adds
+an analytic limb-darkened sun disc, and aerial perspective attenuates
+surfaces before fog. Isolated fixtures and previews may instead author a
+uniform constant source, uploaded as a one-texel-per-face cube and shown as a
+uniform background. The scene `environment` block is the sky light: its enable
+flag, intensities and SH window apply to either source, and a disabled sky
+light keeps the atmosphere sky visible without IBL. Image skies and the
+cross-scene fallback environment are removed.
 [ADR-058](adr/058-revision-baked-sky-atmosphere.md) owns the model, numerical domain,
-publication and offline-baker integration status.
+sky-light contract, publication and offline-baker integration status.
+
+An atmosphere may carry one volumetric cloud layer, published with its
+revision and drifted by a runtime wind offset. The renderer generates 2.1 MiB of
+tiling R8 noise once. Each frame with clouds builds a 512² sun-projected
+transmittance map and marches a half-resolution completion-gated history of
+cloud radiance and transmittance, with aerial perspective at cloud depth.
+Deferred lighting composites it over the sky, and every sun evaluation,
+including froxel injection and sky-lit analytic fog, multiplies by the map. The
+revision bake remains a clear sky. The measured worst Bistro view spends about
+1.05 ms of the 1.5 ms Metal budget; native Vulkan execution is unavailable.
+[ADR-074](adr/074-volumetric-cloud-layer.md) owns the layer.
 
 A scene may load one immutable baked diffuse-volume texture. The 8-by-probe-count
 RGBA32F texture stores seven packed `E/pi` SH vectors and room/cell metadata; the
@@ -843,9 +868,12 @@ accumulation are unchanged here. Its HDR capture retains private sample age in
 alpha, while presentation restores opaque alpha. GPU shader validation previously
 crashed in MetalTools with SSR on or off and supplied no shader-validation result.
 
-Scenes may author analytic height fog. Frame preparation uploads one 32-byte
-record per frame slot; a zero record bypasses fog. The in-place opaque/sky pass
-runs after SSR and before the opaque transmission pyramid. Transmission fogs only
+Scenes may author analytic height fog. Frame preparation uploads one 48-byte
+record per frame slot; a zero record bypasses fog. Fog in-scatters its authored
+constant colour or, with sky lighting and a published atmosphere, the sun
+through a Henyey-Greenstein lobe plus the sky light's average radiance. The in-place opaque/sky pass
+runs after SSR and before the opaque transmission pyramid, and also applies
+atmospheric aerial perspective before fog. Transmission fogs only
 new local lobes over already-fogged ordered feedback, and blend retains alpha.
 Fog changes invalidate normal temporal and SSR content. [ADR-057](adr/057-analytic-height-fog.md)
 owns the constants, composition and Metal evidence; native Vulkan execution is
@@ -862,12 +890,14 @@ Froxel volumetric fog is implemented under
 [ADR-059](adr/059-froxel-volumetric-fog.md). The graph reserves frame-slot-count plus two
 completion-gated RGBA16F 3D local-scattering histories and one transient
 RGBA16F integrated volume per frame slot. The current two-slot renderer uses
-six images (10.547 MiB at 1280×720), within the approved three-slot 14.063 MiB budget. Each enabled frame uploads a 928-byte parameter
-record. Metal retains its 512-byte frame root by using froxel fields at bytes 136
-and 216; Vulkan's 592-byte root uses bytes 576, 584 and 588 for the parameter
-address, integrated descriptor and sampler. The contract retains fields through
-byte 799 and appends unjittered current view-projection and jittered inverse
-raster view-projection at bytes 800 and 864. Metal native reflection, API
+six images (10.547 MiB at 1280×720), within the approved three-slot 14.063 MiB budget. Each enabled frame uploads a 944-byte parameter
+record. Metal's frame root holds froxel fields at bytes 136 and 216; Vulkan's
+uses bytes 576, 584 and 588 for the parameter address, integrated descriptor and
+sampler. The contract retains fields through byte 799 and appends unjittered
+current view-projection and jittered inverse raster view-projection at bytes
+800 and 864, and sky lighting at byte 928. Every light scatters through the
+authored Henyey-Greenstein anisotropy; a sky-lit medium adds the sky light's
+average radiance. Metal native reflection, API
 validation, lifecycle and numeric captures pass, as do production Vulkan SPIR-V
 and host compilation checks. Native Vulkan execution and bilateral comparison
 remain unavailable, so froxel fog is **UNALIGNED**.

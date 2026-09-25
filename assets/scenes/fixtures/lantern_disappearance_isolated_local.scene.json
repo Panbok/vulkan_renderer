@@ -4,8 +4,7 @@
     "enabled": false,
     "intensity": 0.4,
     "diffuse_intensity": 1.0,
-    "specular_intensity": 0.35,
-    "equirect": "assets/textures/citrus_orchard_puresky_4k.hdr"
+    "specular_intensity": 0.35
   },
   "reflection_probes": [
     {

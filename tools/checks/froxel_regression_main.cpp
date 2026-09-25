@@ -4,7 +4,7 @@
 
 int main()
 {
-    float results[36];
+    float results[70];
     for (float &value : results) {
         value = std::numeric_limits<float>::quiet_NaN();
     }

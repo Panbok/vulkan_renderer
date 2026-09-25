@@ -105,9 +105,6 @@
 #ifndef VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV
 #define VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV "packet.ui_rect.frag.spv"
 #endif
-#ifndef VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV
-#define VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV "packet.ibl_equirect.comp.spv"
-#endif
 #ifndef VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV "packet.ibl_prefilter.comp.spv"
 #endif
@@ -125,10 +122,6 @@
 #ifndef VKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV
 #define VKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV                           \
   "packet.atmosphere_source.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV
-#define VKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV                              \
-  "packet.atmosphere_sun.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV
 #define VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV "packet.visibility.vert.spv"
@@ -249,6 +242,30 @@
 #endif
 #ifndef VKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV
 #define VKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV "packet.froxel_apply.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_SKY_VIEW_COMP_SPV
+#define VKR_VULKAN_PACKET_SKY_VIEW_COMP_SPV "packet.sky_view.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_AERIAL_PERSPECTIVE_COMP_SPV
+#define VKR_VULKAN_PACKET_AERIAL_PERSPECTIVE_COMP_SPV                          \
+  "packet.aerial_perspective.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_CLOUD_BASE_NOISE_COMP_SPV
+#define VKR_VULKAN_PACKET_CLOUD_BASE_NOISE_COMP_SPV                            \
+  "packet.cloud_base_noise.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_CLOUD_DETAIL_NOISE_COMP_SPV
+#define VKR_VULKAN_PACKET_CLOUD_DETAIL_NOISE_COMP_SPV                          \
+  "packet.cloud_detail_noise.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV
+#define VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV "packet.cloud_weather.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV
+#define VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV "packet.cloud_shadow.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV
+#define VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV "packet.cloud_trace.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV
 #define VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV                              \
@@ -488,8 +505,7 @@ typedef enum VkrVulkanPacketShader {
 } VkrVulkanPacketShader;
 
 typedef enum VkrVulkanIblPipeline {
-  VKR_VULKAN_IBL_PIPELINE_EQUIRECT = 0,
-  VKR_VULKAN_IBL_PIPELINE_PREFILTER,
+  VKR_VULKAN_IBL_PIPELINE_PREFILTER = 0,
   /** L2 coefficient projection (ADR-038). */
   VKR_VULKAN_IBL_PIPELINE_SH,
   VKR_VULKAN_IBL_PIPELINE_COUNT,
@@ -499,7 +515,6 @@ typedef enum VkrVulkanAtmospherePipeline {
   VKR_VULKAN_ATMOSPHERE_PIPELINE_TRANSMITTANCE = 0,
   VKR_VULKAN_ATMOSPHERE_PIPELINE_MULTIPLE_SCATTERING,
   VKR_VULKAN_ATMOSPHERE_PIPELINE_SOURCE,
-  VKR_VULKAN_ATMOSPHERE_PIPELINE_SUN,
   VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT,
 } VkrVulkanAtmospherePipeline;
 
@@ -532,6 +547,13 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_INJECT,
   VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_INTEGRATE,
   VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_APPLY,
+  VKR_VULKAN_DEFERRED_PIPELINE_SKY_VIEW,
+  VKR_VULKAN_DEFERRED_PIPELINE_AERIAL_PERSPECTIVE,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_BASE_NOISE,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_DETAIL_NOISE,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_WEATHER,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SHADOW,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_TRACE,
   VKR_VULKAN_DEFERRED_PIPELINE_SDSM,
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION,
@@ -826,12 +848,13 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t normal_texture;
   uint32_t scene_texture;
   uint32_t extent[2];
-  /* Deferred lighting owns the background and samples the packet cubemap. */
-  uint32_t sky_texture;
+  /* Deferred lighting owns the background: VkrSkyMode selects a fallback
+     colour, the uniform `sky_radiance`, or the sky-view lookup. */
+  uint32_t sky_view_texture;
   uint32_t sky_sampler;
-  uint32_t sky_enabled;
+  uint32_t sky_mode;
   uint32_t gtao_visibility_texture;
-  Vec4 solar_disk_radiance;
+  Vec4 sky_radiance;
   uint32_t direct_source_texture;
   uint32_t ssgi_enabled;
   uint32_t clearcoat_texture;
@@ -1015,7 +1038,73 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanFogRoot {
   uint32_t depth_texture;
   uint32_t target_texture;
   uint32_t extent[2];
+  uint64_t sky;
+  uint32_t aerial_perspective_texture;
+  uint32_t reserved;
+  uint64_t frame;
+  uint32_t frame_reserved[2];
 } VkrVulkanFogRoot;
+
+/** Frame-slot sky record; mirrors VkrVulkanSky in common/resources.slangh.
+    Bindless sampled slots name the published generation's lookup textures,
+    this frame's aerial-perspective volume, cloud history output and cloud
+    shadow map, and the renderer-owned cloud noise (ADR-074). */
+typedef struct VKR_SIMD_ALIGN VkrVulkanSky {
+  VkrSkyGpuParams params;
+  uint32_t aerial_perspective_texture;
+  uint32_t transmittance_texture;
+  uint32_t multiple_scattering_texture;
+  uint32_t sampler;
+  uint32_t cloud_radiance_texture;
+  uint32_t cloud_shadow_texture;
+  uint32_t cloud_base_noise_texture;
+  uint32_t cloud_detail_noise_texture;
+  uint32_t cloud_weather_texture;
+  uint32_t cloud_noise_sampler;
+  uint32_t reserved[2];
+} VkrVulkanSky;
+_Static_assert(sizeof(VkrVulkanSky) == 400u, "Vulkan sky record ABI drift");
+_Static_assert(offsetof(VkrVulkanSky, cloud_radiance_texture) == 368u,
+               "Vulkan sky cloud slot offset drift");
+
+/** Per-frame sky-view lookup and aerial-perspective volume builders. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanSkyBuildRoot {
+  uint64_t sky;
+  uint32_t output_texture;
+  uint32_t reserved;
+} VkrVulkanSkyBuildRoot;
+_Static_assert(sizeof(VkrVulkanSkyBuildRoot) == 16u,
+               "Vulkan sky build root ABI drift");
+
+/** One-time cloud noise synthesis; storage slots of the three textures. */
+typedef struct VkrVulkanCloudNoiseRoot {
+  uint32_t base_texture;
+  uint32_t detail_texture;
+  uint32_t weather_texture;
+  uint32_t reserved;
+} VkrVulkanCloudNoiseRoot;
+_Static_assert(sizeof(VkrVulkanCloudNoiseRoot) == 16u,
+               "Vulkan cloud noise root ABI drift");
+
+/** Half-resolution cloud trace. `previous_view_projection` is the canonical
+    unjittered matrix of the selected history producer; without a valid
+    history `history_texture` is never sampled. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanCloudTraceRoot {
+  Mat4 previous_view_projection;
+  uint64_t sky;
+  uint64_t frame;
+  uint32_t depth_texture;
+  uint32_t history_texture;
+  uint32_t history_sampler;
+  uint32_t output_texture;
+  uint32_t extent[2];
+  uint32_t depth_extent[2];
+  uint32_t frame_index;
+  uint32_t history_valid;
+  uint32_t reserved[2];
+} VkrVulkanCloudTraceRoot;
+_Static_assert(sizeof(VkrVulkanCloudTraceRoot) == 128u,
+               "Vulkan cloud trace root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanFroxelInjectRoot {
   uint64_t frame;
@@ -1046,7 +1135,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanFroxelApplyRoot {
   uint32_t integrated_sampler;
   uint32_t target_texture;
   uint32_t extent[2];
-  uint32_t reserved[2];
+  uint32_t aerial_perspective_texture;
+  uint32_t reserved;
 } VkrVulkanFroxelApplyRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSdsmRoot {
@@ -1291,7 +1381,6 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanAtmosphereRoot {
   uint32_t multiple_scattering_storage;
   uint32_t source_storage;
   uint32_t sampler;
-  uint64_t sun_output;
   uint32_t extent[2];
   uint32_t face_size;
   uint32_t reserved;
@@ -1457,7 +1546,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint64_t sheen;
   uint64_t anisotropy;
   uint64_t local_shadow_transmission;
-  uint64_t local_shadow_transmission_reserved;
+  uint64_t sky;
 } VkrVulkanPacketFrameRoot;
 
 /** The only record written per indexed packet draw. */
@@ -1687,8 +1776,8 @@ _Static_assert(sizeof(VkrVulkanLightingRoot) == 192u,
                "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
                "Deferred lighting-root matrix ABI drift");
-_Static_assert(offsetof(VkrVulkanLightingRoot, solar_disk_radiance) == 128u,
-               "Deferred lighting-root solar ABI drift");
+_Static_assert(offsetof(VkrVulkanLightingRoot, sky_radiance) == 128u,
+               "Deferred lighting-root sky ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, direct_source_texture) == 144u &&
                    offsetof(VkrVulkanLightingRoot, ssgi_enabled) == 148u &&
                    offsetof(VkrVulkanLightingRoot, clearcoat_texture) == 152u &&
@@ -1743,14 +1832,18 @@ _Static_assert(
         offsetof(VkrVulkanSsgiCompositeRoot, anisotropy_texture) == 412u &&
         offsetof(VkrVulkanSsgiCompositeRoot, visible_rows) == 416u,
     "SSGI composite root ABI size drift");
-_Static_assert(sizeof(VkrVulkanFogRoot) == 128u,
+_Static_assert(sizeof(VkrVulkanFogRoot) == 176u,
                "Vulkan fog root ABI size drift");
 _Static_assert(offsetof(VkrVulkanFogRoot, params) == 0u &&
-                   offsetof(VkrVulkanFogRoot, inverse_view_projection) == 32u &&
-                   offsetof(VkrVulkanFogRoot, camera_position) == 96u &&
-                   offsetof(VkrVulkanFogRoot, depth_texture) == 112u &&
-                   offsetof(VkrVulkanFogRoot, target_texture) == 116u &&
-                   offsetof(VkrVulkanFogRoot, extent) == 120u,
+                   offsetof(VkrVulkanFogRoot, inverse_view_projection) == 48u &&
+                   offsetof(VkrVulkanFogRoot, camera_position) == 112u &&
+                   offsetof(VkrVulkanFogRoot, depth_texture) == 128u &&
+                   offsetof(VkrVulkanFogRoot, target_texture) == 132u &&
+                   offsetof(VkrVulkanFogRoot, extent) == 136u &&
+                   offsetof(VkrVulkanFogRoot, sky) == 144u &&
+                   offsetof(VkrVulkanFogRoot, aerial_perspective_texture) ==
+                       152u &&
+                   offsetof(VkrVulkanFogRoot, frame) == 160u,
                "Vulkan fog root ABI offset drift");
 _Static_assert(sizeof(VkrVulkanFroxelInjectRoot) == 48u,
                "Froxel inject-root ABI drift");
@@ -1778,17 +1871,17 @@ _Static_assert(
     "Froxel integrate-root ABI offset drift");
 _Static_assert(sizeof(VkrVulkanFroxelApplyRoot) == 48u,
                "Froxel apply-root ABI drift");
-_Static_assert(offsetof(VkrVulkanFroxelApplyRoot, frame) == 0u &&
-                   offsetof(VkrVulkanFroxelApplyRoot, params) == 8u &&
-                   offsetof(VkrVulkanFroxelApplyRoot, depth_texture) == 16u &&
-                   offsetof(VkrVulkanFroxelApplyRoot, integrated_texture) ==
-                       20u &&
-                   offsetof(VkrVulkanFroxelApplyRoot, integrated_sampler) ==
-                       24u &&
-                   offsetof(VkrVulkanFroxelApplyRoot, target_texture) == 28u &&
-                   offsetof(VkrVulkanFroxelApplyRoot, extent) == 32u &&
-                   offsetof(VkrVulkanFroxelApplyRoot, reserved) == 40u,
-               "Froxel apply-root ABI offset drift");
+_Static_assert(
+    offsetof(VkrVulkanFroxelApplyRoot, frame) == 0u &&
+        offsetof(VkrVulkanFroxelApplyRoot, params) == 8u &&
+        offsetof(VkrVulkanFroxelApplyRoot, depth_texture) == 16u &&
+        offsetof(VkrVulkanFroxelApplyRoot, integrated_texture) == 20u &&
+        offsetof(VkrVulkanFroxelApplyRoot, integrated_sampler) == 24u &&
+        offsetof(VkrVulkanFroxelApplyRoot, target_texture) == 28u &&
+        offsetof(VkrVulkanFroxelApplyRoot, extent) == 32u &&
+        offsetof(VkrVulkanFroxelApplyRoot, aerial_perspective_texture) == 40u &&
+        offsetof(VkrVulkanFroxelApplyRoot, reserved) == 44u,
+    "Froxel apply-root ABI offset drift");
 _Static_assert(sizeof(VkrVulkanExposureRoot) == 112u,
                "Vulkan exposure root ABI size drift");
 _Static_assert(sizeof(VkrVulkanBloomRoot) == 64u,
@@ -1839,9 +1932,8 @@ _Static_assert(sizeof(VkrVulkanAtmosphereRoot) == 176u,
 _Static_assert(offsetof(VkrVulkanAtmosphereRoot, transmittance_sample) ==
                        128u &&
                    offsetof(VkrVulkanAtmosphereRoot, source_storage) == 144u &&
-                   offsetof(VkrVulkanAtmosphereRoot, sun_output) == 152u &&
-                   offsetof(VkrVulkanAtmosphereRoot, extent) == 160u &&
-                   offsetof(VkrVulkanAtmosphereRoot, face_size) == 168u,
+                   offsetof(VkrVulkanAtmosphereRoot, extent) == 152u &&
+                   offsetof(VkrVulkanAtmosphereRoot, face_size) == 160u,
                "Atmosphere-root field ABI drift");
 _Static_assert(sizeof(VkrVulkanIblShRoot) == 48u, "IBL SH-root ABI drift");
 _Static_assert(offsetof(VkrVulkanIblShRoot, destination) == 0u,
@@ -2315,6 +2407,10 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t froxel_fog;
   VkrFroxelFogGpuParams *froxel_fog_params;
   uint32_t froxel_integrated_texture;
+  /** Frame-upload sky record every frame root addresses. The aerial pass
+      patches its volume slot into the mapped record before submission. */
+  uint64_t sky;
+  VkrVulkanSky *sky_record;
   /** True only while this slot's command buffer contains the one-time SH
       sentinel clear. The renderer-wide state commits after queue submission. */
   bool8_t sh_coefficients_clear_recorded;
@@ -2371,6 +2467,10 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *froxel_history_input;
   VkrVulkanGraphImageInstance *froxel_history_output;
   bool8_t froxel_history_valid;
+  VkrVulkanGraphImageInstance *cloud_history_input;
+  VkrVulkanGraphImageInstance *cloud_history_output;
+  /* Set when this slot's IBL bake recorded the one-time cloud noise. */
+  bool8_t cloud_noise_recorded;
   /* Lowered once from the selected temporal consumer's predecessor. */
   Mat4 temporal_previous_view_projection;
   uint64_t temporal_previous_frame_index;
@@ -2430,7 +2530,6 @@ typedef struct VkrVulkanPublishedTexture {
   uint32_t material_reference_count;
   uint32_t ibl_reference_count;
   uint64_t last_use_submit_value;
-  VkrAtmosphereBakeResult atmosphere_bake_result;
   uint32_t storage_slot_count;
   bool8_t initialization_pending;
   bool8_t unpublish_requested;
@@ -2440,15 +2539,14 @@ typedef struct VkrVulkanPublishedTexture {
 } VkrVulkanPublishedTexture;
 
 typedef struct VkrVulkanPendingIblBake {
-  VkrTextureHandle equirect;
   VkrTextureHandle source;
   VkrTextureHandle prefilter;
+  /** Lookup textures an atmosphere generation writes; invalid otherwise. */
+  VkrTextureHandle transmittance;
+  VkrTextureHandle multiple_scattering;
   VkrAtmosphereGpuParams atmosphere_params;
-  VkrVulkanBuffer atmosphere_sun_readback;
   uint64_t atmosphere_submit_value;
-  bool8_t convert_equirect;
   bool8_t is_atmosphere;
-  bool8_t atmosphere_rebuild_luts;
   bool8_t recorded;
   bool8_t submitted;
   bool8_t atmosphere_failed;
@@ -2463,23 +2561,23 @@ typedef struct VkrVulkanPendingIblBake {
 typedef struct VkrVulkanPreparedIblBake {
   const VkrVulkanPublishedTexture *source;
   const VkrVulkanPublishedTexture *prefilter;
-  VkBuffer atmosphere_readback;
-  VkrVulkanPreparedCompute atmosphere[4];
-  VkrVulkanPreparedCompute conversion;
+  const VkrVulkanPublishedTexture *transmittance;
+  const VkrVulkanPublishedTexture *multiple_scattering;
+  VkrVulkanPreparedCompute atmosphere[3];
   VkrVulkanPreparedCompute projection;
   VkrVulkanPreparedCompute mips[VKR_VULKAN_TEXTURE_MIP_MAX];
   uint32_t mip_count;
-  uint32_t atmosphere_dispatch_count;
-  bool8_t convert;
   bool8_t project;
   bool8_t is_atmosphere;
-  bool8_t atmosphere_rebuild_luts;
 } VkrVulkanPreparedIblBake;
 typedef struct VkrVulkanPreparedIbl {
   VkrVulkanPreparedIblBake *bakes;
   uint32_t count;
   bool8_t clear_coefficients;
   bool8_t projected_any;
+  /** One-time cloud noise synthesis (ADR-074), recorded before any bake. */
+  VkrVulkanPreparedCompute cloud_noise[VKR_VULKAN_CLOUD_NOISE_COUNT];
+  bool8_t generate_cloud_noise;
 } VkrVulkanPreparedIbl;
 
 typedef struct VkrVulkanPublishedSampler {
@@ -2647,6 +2745,18 @@ typedef struct VkrVulkanFroxelHistory {
   bool8_t valid;
 } VkrVulkanFroxelHistory;
 
+/** Cloud radiance history (ADR-074). `view_projection` is the producer's
+    canonical unjittered matrix, which reprojects the next trace. */
+typedef struct VkrVulkanCloudHistory {
+  Mat4 view_projection;
+  uint64_t signature;
+  uint64_t producer_submit_value;
+  uint64_t frame_index;
+  uint32_t dimensions[2];
+  uint32_t graph_generation;
+  bool8_t valid;
+} VkrVulkanCloudHistory;
+
 /** Completion-owned compatibility proof for one SSGI history tuple. */
 typedef struct VkrVulkanSsgiHistory {
   uint64_t producer_submit_value;
@@ -2682,6 +2792,7 @@ struct VkrVulkanRenderer {
   uint32_t fsr31_output_height;
   VkrVulkanFsr31History fsr31_history;
   VkrVulkanFroxelHistory froxel_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
+  VkrVulkanCloudHistory cloud_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   VkrVulkanSsgiHistory ssgi_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   /* Independent of command slots: cancelled SDK dispatches advance its rings.
    */
@@ -2802,6 +2913,14 @@ struct VkrVulkanRenderer {
   VkrGpuSlotHandle dfg_sampler_slot;
   uint64_t dfg_upload_retire_value;
   bool8_t dfg_upload_pending;
+  /** Cloud base, detail and weather noise (ADR-074). Renderer lifetime;
+      the first submitted IBL bake generates them on the GPU. */
+  VkrVulkanImage cloud_noise_images[VKR_VULKAN_CLOUD_NOISE_COUNT];
+  VkrGpuSlotHandle cloud_noise_texture_slots[VKR_VULKAN_CLOUD_NOISE_COUNT];
+  VkrGpuSlotHandle cloud_noise_storage_slots[VKR_VULKAN_CLOUD_NOISE_COUNT];
+  VkSampler cloud_noise_sampler;
+  VkrGpuSlotHandle cloud_noise_sampler_slot;
+  bool8_t cloud_noise_pending;
   /** Immutable matrix/amplitude RGBA16F tables. One shared staging buffer
       retires after their first successful upload; descriptor rows and images
       remain renderer-owned for the device lifetime. */
@@ -2824,16 +2943,6 @@ struct VkrVulkanRenderer {
   VkrGpuSlotHandle anisotropy_texture_slots[VKR_ANISOTROPY_LUT_TABLE_COUNT];
   uint64_t anisotropy_upload_retire_value;
   bool8_t anisotropy_upload_pending;
-  /** Mutable renderer-lifetime atmosphere lookup cache. Images and descriptor
-     rows stay stable; only their contents change with a submitted revision. */
-  VkrVulkanImage atmosphere_transmittance;
-  VkrVulkanImage atmosphere_multiple_scattering;
-  VkImageView atmosphere_storage_views[2];
-  VkrGpuSlotHandle atmosphere_sampled_slots[2];
-  VkrGpuSlotHandle atmosphere_storage_slots[2];
-  VkrAtmosphereGpuParams atmosphere_lut_params;
-  uint64_t atmosphere_lut_revision;
-  bool8_t atmosphere_lut_valid;
   // Linear clamp sampler for immutable transmission feedback. Its permanent
   // slot avoids per-pass sampler publication and matches Metal filtering.
   VkSampler transmission_sampler;
@@ -3021,10 +3130,15 @@ bool8_t vkr_vk_commit_anisotropy_upload(VkrVulkanRenderer *renderer,
 void vkr_vk_collect_anisotropy_upload(VkrVulkanRenderer *renderer,
                                       uint64_t completed);
 void vkr_vk_retire_anisotropy_descriptor_slots(VkrVulkanRenderer *renderer);
-bool8_t vkr_vk_create_atmosphere_resources(VkrVulkanRenderer *renderer);
-void vkr_vk_destroy_atmosphere_resources(VkrVulkanRenderer *renderer);
-void vkr_vk_retire_atmosphere_descriptor_slots(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_prepare_cloud_noise(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedIbl *prepared);
+void vkr_vk_record_cloud_noise(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command,
+                               const VkrVulkanPreparedIbl *prepared);
+void vkr_vk_commit_cloud_noise(VkrVulkanRenderer *renderer,
+                               VkrVulkanFrameSlot *slot);
+void vkr_vk_destroy_cloud_noise(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_publish_storage_view(VkrVulkanRenderer *renderer,
                                     VkImageView view,
                                     VkrGpuSlotHandle *out_handle);
@@ -3045,11 +3159,22 @@ bool8_t vkr_vk_prepare_froxel_inject(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_froxel_integrate(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_sky(VkrVulkanRenderer *renderer,
+                           VkrVulkanPreparedCompute *prepared,
+                           const VkrRgPass *pass, bool8_t sky_view);
+bool8_t vkr_vk_prepare_cloud_shadow(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_cloud_trace(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedCompute *prepared,
+                                   const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_froxel_apply(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass);
 void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
                                   uint64_t submit_value);
+void vkr_vk_mark_cloud_submitted(VkrVulkanRenderer *renderer,
+                                 uint64_t submit_value);
 void vkr_vk_cancel_fsr31(VkrVulkanRenderer *renderer);
 void vkr_vk_bind_descriptor_buffers(VkrVulkanRenderer *renderer,
                                     VkCommandBuffer command);

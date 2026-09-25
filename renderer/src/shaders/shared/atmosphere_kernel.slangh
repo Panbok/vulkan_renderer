@@ -12,13 +12,31 @@
 #define VKR_ATMOSPHERE_MULTI_DIRECTIONS 64u
 #define VKR_ATMOSPHERE_MULTI_SAMPLES 20u
 #define VKR_ATMOSPHERE_SOURCE_SAMPLES 32u
-#define VKR_ATMOSPHERE_DISC_GRID 4u
 #define VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH 80.0f
+#define VKR_ATMOSPHERE_SKY_VIEW_WIDTH 192u
+#define VKR_ATMOSPHERE_SKY_VIEW_HEIGHT 108u
+#define VKR_ATMOSPHERE_AERIAL_SIZE 32u
+#define VKR_ATMOSPHERE_AERIAL_STEPS_PER_SLICE 2u
+#define VKR_ATMOSPHERE_DISC_RADIANCE_MAX 60000.0f
+// The glow keeps sky, disc and glow together inside RGBA16F.
+#define VKR_ATMOSPHERE_GLOW_RADIANCE_MAX 500.0f
+// Square degrees per square radian inverted: (pi / 180)^2.
+#define VKR_ATMOSPHERE_RADIANS_PER_DEGREE_SQUARED 3.0461742e-4f
+// The glow fades out 25 degrees from the sun: 2 - 2 cos(25 degrees), the
+// squared chord between unit directions that far apart.
+#define VKR_ATMOSPHERE_GLOW_CHORD_SQUARED_LIMIT 0.18738443f
+
+// Deferred background selected by the sky payload.
+#define VKR_SKY_MODE_NONE 0u
+#define VKR_SKY_MODE_CONSTANT 1u
+#define VKR_SKY_MODE_ATMOSPHERE 2u
 
 #if defined(__METAL_VERSION__)
 #define VKR_ATMOSPHERE_OUT(type) thread type &
+#define VKR_ATMOSPHERE_MUL(a, b) ((a) * (b))
 #else
 #define VKR_ATMOSPHERE_OUT(type) out type
+#define VKR_ATMOSPHERE_MUL(a, b) mul((a), (b))
 #endif
 
 // All distance-valued members are kilometres. `sun.xyz` points from a point in
@@ -28,11 +46,38 @@ struct VkrAtmosphereParams {
   float4 planet;         // bottom radius, top radius, observer altitude, Mie g.
   float4 rayleigh;       // beta RGB, scale height.
   float4 mie_scattering; // beta RGB, scale height.
-  float4 mie_extinction; // beta RGB, reserved.
+  float4 mie_extinction; // beta RGB, sun glow in the frame's sky record.
   float4 ozone;          // beta RGB, midpoint altitude.
   float4 ground;         // albedo RGB, ozone half-width.
   float4 sun;            // normalized toward-sun direction, cos(radius).
   float4 solar;          // top-of-atmosphere irradiance RGB, projected angle.
+};
+
+// Matches the 64-byte VkrCloudGpuParams C record (ADR-074). Radii are
+// kilometres from the planet centre; positions are world X/Z kilometres.
+struct VkrCloudParams {
+  float4 layer;  // base radius, top radius, extinction per km, coverage.
+  float4 noise;  // 1/base, 1/detail and 1/weather periods, 1 if rendered.
+  float4 wind;   // wind offset X/Z, march distance, reserved.
+  float4 shadow; // shadow-map centre X/Z, 1/extent, extent.
+};
+
+// Matches the 352-byte VkrSkyGpuParams C record. `atmosphere.planet.z` is the
+// camera altitude. The unjittered packet view-projection and its inverse only
+// map world positions to aerial-perspective froxels, so both backends share
+// them regardless of their raster clip convention.
+struct VkrSkyParams {
+  VkrAtmosphereParams atmosphere;
+#if defined(__METAL_VERSION__)
+  float4x4 view_projection;
+  float4x4 inverse_view_projection;
+#else
+  column_major float4x4 view_projection;
+  column_major float4x4 inverse_view_projection;
+#endif
+  float4 camera_position; // world units; w: kilometres per world unit.
+  float4 aerial;          // km per slice, slice count, 1/count, 1 if applied.
+  VkrCloudParams clouds;
 };
 
 struct VkrAtmosphereMedium {
@@ -196,25 +241,6 @@ float3 vkr_atmosphere_cube_direction(uint face, float2 uv) {
   }
 }
 
-float vkr_atmosphere_solar_disc_coverage(uint face, uint2 pixel, uint face_size,
-                                         float3 sun_direction,
-                                         float sun_cosine_radius) {
-  float covered = 0.0f;
-  for (uint y = 0u; y < VKR_ATMOSPHERE_DISC_GRID; ++y) {
-    for (uint x = 0u; x < VKR_ATMOSPHERE_DISC_GRID; ++x) {
-      float2 subpixel = (float2(pixel) + (float2(float(x), float(y)) + 0.5f) /
-                                             float(VKR_ATMOSPHERE_DISC_GRID)) /
-                        float(face_size);
-      float3 direction = vkr_atmosphere_safe_normalize(
-          vkr_atmosphere_cube_direction(face, subpixel),
-          float3(0.0f, 1.0f, 0.0f));
-      covered +=
-          dot(direction, sun_direction) >= sun_cosine_radius ? 1.0f : 0.0f;
-    }
-  }
-  return covered / float(VKR_ATMOSPHERE_DISC_GRID * VKR_ATMOSPHERE_DISC_GRID);
-}
-
 float3 vkr_atmosphere_segment_source_integral(float3 source, float3 extinction,
                                               float step) {
   float3 optical_depth = min(max(extinction * max(step, 0.0f), 0.0f),
@@ -248,6 +274,197 @@ float3 vkr_atmosphere_source_radiance(float3 radiance) {
   return radiance * min(1.0f, 5000.0f / max(peak, 5000.0f));
 }
 
+// Camera-dependent sky-view parameterization after Hillaire 2020. The camera
+// stands at the pole of the planet frame, so world +Y is its zenith and only
+// the view azimuth relative to the sun matters. `unit` places texel centres at
+// 0 and 1. V below one half spans zenith to horizon and above it horizon to
+// nadir, both squared toward the horizon. U is sqrt((1 - cos(azimuth)) / 2),
+// which concentrates texels around the sun.
+float vkr_sky_view_ground_angle(VkrAtmosphereParams params, float radius) {
+  float bottom = params.planet.x;
+  float horizon_distance = sqrt(max(radius * radius - bottom * bottom, 0.0f));
+  return acos(clamp(horizon_distance / radius, -1.0f, 1.0f));
+}
+
+bool vkr_sky_view_hits_ground(VkrAtmosphereParams params,
+                              float view_zenith_cosine) {
+  float radius = params.planet.x + params.planet.z;
+  float bottom = params.planet.x;
+  float horizon_distance = sqrt(max(radius * radius - bottom * bottom, 0.0f));
+  return view_zenith_cosine < -horizon_distance / radius;
+}
+
+void vkr_sky_view_angles(VkrAtmosphereParams params, float2 unit,
+                         VKR_ATMOSPHERE_OUT(float) view_zenith_cosine,
+                         VKR_ATMOSPHERE_OUT(float) light_view_cosine) {
+  float radius = params.planet.x + params.planet.z;
+  float ground_angle = vkr_sky_view_ground_angle(params, radius);
+  float zenith_horizon_angle = VKR_ATMOSPHERE_PI - ground_angle;
+  float view_zenith_angle;
+  if (unit.y < 0.5f) {
+    float to_horizon = 1.0f - 2.0f * unit.y;
+    view_zenith_angle =
+        zenith_horizon_angle * (1.0f - to_horizon * to_horizon);
+  } else {
+    float below_horizon = 2.0f * unit.y - 1.0f;
+    view_zenith_angle =
+        zenith_horizon_angle + ground_angle * below_horizon * below_horizon;
+  }
+  view_zenith_cosine = cos(view_zenith_angle);
+  light_view_cosine = 1.0f - 2.0f * unit.x * unit.x;
+}
+
+// The build direction for one texel, with the sun in the local +X/+Y plane.
+float3 vkr_sky_view_direction(float view_zenith_cosine,
+                              float light_view_cosine) {
+  float view_zenith_sine =
+      sqrt(max(1.0f - view_zenith_cosine * view_zenith_cosine, 0.0f));
+  float azimuth_sine =
+      sqrt(max(1.0f - light_view_cosine * light_view_cosine, 0.0f));
+  return float3(view_zenith_sine * light_view_cosine, view_zenith_cosine,
+                view_zenith_sine * azimuth_sine);
+}
+
+// Filtered texture coordinate for a normalized world view direction.
+float2 vkr_sky_view_uv(VkrAtmosphereParams params, float3 direction) {
+  float radius = params.planet.x + params.planet.z;
+  float ground_angle = vkr_sky_view_ground_angle(params, radius);
+  float zenith_horizon_angle = VKR_ATMOSPHERE_PI - ground_angle;
+  float view_zenith_angle = acos(clamp(direction.y, -1.0f, 1.0f));
+  float v;
+  if (!vkr_sky_view_hits_ground(params, direction.y)) {
+    float to_horizon =
+        sqrt(max(1.0f - view_zenith_angle / zenith_horizon_angle, 0.0f));
+    v = 0.5f * (1.0f - to_horizon);
+  } else {
+    float below_horizon = sqrt(max(
+        (view_zenith_angle - zenith_horizon_angle) / max(ground_angle, 1e-6f),
+        0.0f));
+    v = 0.5f + 0.5f * saturate(below_horizon);
+  }
+  // Sun and view azimuths are measured in the horizontal plane. At the zenith
+  // either one is undefined and the sky does not depend on it.
+  float2 view_horizontal = direction.xz;
+  float2 sun_horizontal = params.sun.xz;
+  float light_view_cosine = 1.0f;
+  float horizontal_squared = dot(view_horizontal, view_horizontal) *
+                             dot(sun_horizontal, sun_horizontal);
+  if (horizontal_squared > 1e-12f)
+    light_view_cosine = clamp(dot(view_horizontal, sun_horizontal) *
+                                  rsqrt(horizontal_squared),
+                              -1.0f, 1.0f);
+  float u = sqrt(saturate(0.5f - 0.5f * light_view_cosine));
+  float2 extent = float2(float(VKR_ATMOSPHERE_SKY_VIEW_WIDTH),
+                         float(VKR_ATMOSPHERE_SKY_VIEW_HEIGHT));
+  return float2(u, v) * (extent - 1.0f) / extent + 0.5f / extent;
+}
+
+// Visible solar disc radiance along a view direction, or zero outside the
+// disc. Neckel and Labs' power-law limb darkening is normalized by 1 + a/2 so
+// the disc still integrates to the published irradiance. `solar.w` is
+// pi*sin(radius)^2, which keeps the tiny angular radius precise.
+float3 vkr_atmosphere_sun_disc(VkrAtmosphereParams params, float3 direction,
+                               float3 view_transmittance) {
+  float3 sun = params.sun.xyz;
+  float sin_radius_squared = params.solar.w / VKR_ATMOSPHERE_PI;
+  float3 offset = cross(direction, sun);
+  float sin_angle_squared = dot(offset, offset);
+  if (dot(direction, sun) <= 0.0f || sin_angle_squared >= sin_radius_squared)
+    return float3(0.0f);
+  float cosine_from_limb =
+      sqrt(max(1.0f - sin_angle_squared / sin_radius_squared, 0.0f));
+  float3 exponent = float3(0.397f, 0.503f, 0.652f);
+  float3 limb = pow(float3(cosine_from_limb), exponent) *
+                (1.0f + 0.5f * exponent);
+  float3 radiance =
+      params.solar.rgb / params.solar.w * limb * view_transmittance;
+  float peak = max(radiance.x, max(radiance.y, radiance.z));
+  return radiance * min(1.0f, VKR_ATMOSPHERE_DISC_RADIANCE_MAX /
+                                  max(peak, VKR_ATMOSPHERE_DISC_RADIANCE_MAX));
+}
+
+// Visible glow around the sun: `glow * E / theta^2` with theta in degrees,
+// after Stiles and Holladay's veiling-glare formula, whose human-eye
+// coefficient is about 10, faded smoothly to zero 25 degrees out, where the
+// atmosphere's own forward scattering already brightens the sky. E is the
+// top-of-atmosphere irradiance attenuated along the view ray, so the glow
+// reddens and fades with the disc near the horizon, and it vanishes once the
+// sun sets. The chord between the view and sun directions measures theta: it
+// stays precise at the disc's radius, where the glow stops growing. It changes
+// only the drawn sky, never lighting.
+float3 vkr_atmosphere_sun_glow(VkrAtmosphereParams params, float3 direction,
+                               float3 view_transmittance) {
+  float glow = params.mie_extinction.w;
+  if (glow <= 0.0f || vkr_sky_view_hits_ground(params, params.sun.y))
+    return float3(0.0f);
+  float3 offset = direction - params.sun.xyz;
+  float chord_squared = dot(offset, offset);
+  if (chord_squared >= VKR_ATMOSPHERE_GLOW_CHORD_SQUARED_LIMIT)
+    return float3(0.0f);
+  float fade = 1.0f - chord_squared / VKR_ATMOSPHERE_GLOW_CHORD_SQUARED_LIMIT;
+  float angle_squared =
+      max(chord_squared, params.solar.w / VKR_ATMOSPHERE_PI);
+  float3 radiance = params.solar.rgb * view_transmittance *
+                    (glow * VKR_ATMOSPHERE_RADIANS_PER_DEGREE_SQUARED *
+                     fade * fade / angle_squared);
+  float peak = max(radiance.x, max(radiance.y, radiance.z));
+  return radiance * min(1.0f, VKR_ATMOSPHERE_GLOW_RADIANCE_MAX /
+                                  max(peak, VKR_ATMOSPHERE_GLOW_RADIANCE_MAX));
+}
+
+// Camera-to-slice distance in kilometres. Texel k stores the integral to the
+// squared-spaced depth ((k + 0.5) / N)^2 * N slices.
+float vkr_sky_aerial_slice_distance(VkrSkyParams sky, uint slice) {
+  float fraction = (float(slice) + 0.5f) * sky.aerial.z;
+  return fraction * fraction * sky.aerial.y * sky.aerial.x;
+}
+
+struct VkrSkyAerialCoordinate {
+  float3 uvw;
+  // Scales in-scatter and optical depth below the first texel's depth, so
+  // aerial perspective vanishes at the camera.
+  float weight;
+  uint valid;
+};
+
+VkrSkyAerialCoordinate vkr_sky_aerial_coordinate(VkrSkyParams sky,
+                                                 float3 world_position) {
+  VkrSkyAerialCoordinate result;
+  result.uvw = float3(0.0f);
+  result.weight = 0.0f;
+  result.valid = 0u;
+  float4 clip = VKR_ATMOSPHERE_MUL(sky.view_projection,
+                                   float4(world_position, 1.0f));
+  if (sky.aerial.w <= 0.0f || clip.w <= 1e-6f)
+    return result;
+  float distance_km =
+      length(world_position - sky.camera_position.xyz) * sky.camera_position.w;
+  float slice = distance_km / sky.aerial.x;
+  float first_slice = 0.25f * sky.aerial.z;
+  result.weight = saturate(slice / first_slice);
+  result.uvw = float3(clip.xy / clip.w * 0.5f + 0.5f,
+                      sqrt(max(slice, first_slice) * sky.aerial.z));
+  result.valid = 1u;
+  return result;
+}
+
+// `packed` holds aerial in-scatter and the mean transmittance.
+float3 vkr_sky_apply_aerial(float3 radiance, float4 packed, float weight) {
+  float transmittance = 1.0f - weight * (1.0f - saturate(packed.a));
+  return radiance * transmittance + packed.rgb * weight;
+}
+
+// Transparent layers attenuate only their own lobes: the ordered feedback
+// behind them already received aerial perspective at its own depth.
+float3 vkr_sky_apply_aerial_over_feedback(float3 local_radiance,
+                                          float3 feedback_weight,
+                                          float4 packed, float weight) {
+  float transmittance = 1.0f - weight * (1.0f - saturate(packed.a));
+  return local_radiance * transmittance +
+         packed.rgb * weight * (1.0f - saturate(feedback_weight));
+}
+
 #undef VKR_ATMOSPHERE_OUT
+#undef VKR_ATMOSPHERE_MUL
 
 #endif

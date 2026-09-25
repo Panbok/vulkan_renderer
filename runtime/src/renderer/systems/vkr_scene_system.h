@@ -180,8 +180,6 @@ typedef struct SceneShape {
 // Light Components
 // ============================================================================
 
-#define VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES 0.53f
-
 /**
  * @brief Directional light component.
  *
@@ -195,8 +193,35 @@ typedef struct SceneDirectionalLight {
   Vec3 direction_local; // Local-space direction (default: {0, -1, 0})
   /** Apparent solar-disc diameter in degrees; zero keeps a hard PCF edge. */
   float32_t sun_angular_diameter_degrees;
+  /** Colour temperature in [1000, 40000] kelvin whose unit-luminance
+      blackbody tints `color`, or zero for `color` alone. */
+  float32_t temperature_kelvin;
   bool8_t enabled; // Whether this light is active
+  /** Drives an enabled atmosphere's sun (ADR-058). Scene-authored lights
+      default to true; lights imported from glTF default to false. */
+  bool8_t atmosphere_sun;
 } SceneDirectionalLight;
+
+/** The enabled directional light the renderer lights with: the lowest render
+ * id, else the first found. An enabled atmosphere considers only atmosphere
+ * sun lights. `direction` is the world direction along incoming light and
+ * `color` includes the temperature tint. */
+typedef struct VkrSceneSunLight {
+  Vec3 direction;
+  Vec3 color;
+  float32_t intensity;
+  float32_t sun_angular_diameter_degrees;
+} VkrSceneSunLight;
+
+/** The scene's sun light, resolved once per frame by vkr_scene_sync_sun.
+ * `tint_kelvin` and `tint` memoize the temperature tint, which integrates the
+ * blackbody spectrum. */
+typedef struct VkrSceneSun {
+  VkrSceneSunLight light;
+  bool8_t found;
+  float32_t tint_kelvin;
+  Vec3 tint;
+} VkrSceneSun;
 
 /**
  * @brief Point light component.
@@ -229,25 +254,26 @@ typedef struct SceneRectangleLight {
 } SceneRectangleLight;
 
 /**
- * @brief Runtime status of scene environment IBL bake products.
+ * @brief Runtime status of the published global environment tuple.
  *
- * `PENDING` means a source cubemap is loaded and bake work is still required.
- * `READY` means the coefficient slot and prefilter handle are valid.
- * `FAILED` keeps rendering alive by forcing fallback IBL selection.
+ * `READY` means the source, prefilter and coefficient slot are valid.
+ * `FAILED` keeps rendering alive without a global environment.
  */
 typedef enum VkrSceneEnvironmentBakeState {
   VKR_SCENE_ENV_BAKE_STATE_NONE = 0,
-  VKR_SCENE_ENV_BAKE_STATE_SOURCE_LOADING,
-  VKR_SCENE_ENV_BAKE_STATE_CUBE_PENDING,
-  VKR_SCENE_ENV_BAKE_STATE_CONVOLUTION_PENDING,
   VKR_SCENE_ENV_BAKE_STATE_READY,
   VKR_SCENE_ENV_BAKE_STATE_FAILED,
 } VkrSceneEnvironmentBakeState;
 
+/** Largest constant environment radiance: the largest finite RGBA16F value. */
+#define VKR_SCENE_ENVIRONMENT_CONSTANT_MAX 65504.0f
+
+/** Producer of the global sky/IBL tuple. The atmosphere is the only sky
+    (ADR-058); a constant source serves isolated fixtures and previews. */
 typedef enum VkrSceneEnvironmentSourceKind {
   VKR_SCENE_ENV_SOURCE_NONE = 0,
-  VKR_SCENE_ENV_SOURCE_CUBEMAP,
-  VKR_SCENE_ENV_SOURCE_EQUIRECT,
+  VKR_SCENE_ENV_SOURCE_CONSTANT,
+  VKR_SCENE_ENV_SOURCE_ATMOSPHERE,
 } VkrSceneEnvironmentSourceKind;
 
 /**
@@ -300,20 +326,29 @@ typedef struct VkrSceneReflectionProbe {
 } VkrSceneReflectionProbe;
 
 /**
- * @brief Scene-owned environment IBL resources and controls.
+ * @brief Scene-owned global environment: authored sky-light controls and the
+ * published source/prefilter/SH tuple.
  *
  * Ownership:
  * - `source_cubemap` and `prefilter_cubemap` are retained by the scene and
  *   released by scene shutdown/reload paths. The diffuse response is L2
  *   coefficients owned by the renderer's slot pool (ADR-038).
- * - Bake products are scene-owned writable cubemaps generated at runtime and
- *   released with normal texture-system handle symmetry.
+ * - Bake products are scene-owned cubemaps generated at runtime and released
+ *   with normal texture-system handle symmetry.
  * - Prepared targets exist only until bake recording completes. Their backend
  *   objects retire after the submit serial that protects the recorded work.
+ *
+ * The authored controls apply to whichever source publishes the tuple. An
+ * atmosphere revision replaces only the tuple, so the controls survive it.
+ * `enabled` gates global IBL lighting; an atmosphere sky stays visible when
+ * it is false.
  */
 typedef struct VkrSceneEnvironment {
   bool8_t enabled;
   VkrSceneEnvironmentSourceKind source_kind;
+  /** Scene-linear radiance of a constant source, in
+      [0, VKR_SCENE_ENVIRONMENT_CONSTANT_MAX]. */
+  Vec3 constant_radiance;
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
@@ -321,9 +356,12 @@ typedef struct VkrSceneEnvironment {
       window. Validated at scene load; never interpreted during lighting. */
   float32_t sh_deringing;
 
-  VkrTextureHandle delivery_equirect;
   VkrTextureHandle source_cubemap;
   VkrTextureHandle prefilter_cubemap;
+  /** Lookup textures an atmosphere generation bakes beside its source. The
+      camera-dependent sky reads them every frame (ADR-058). */
+  VkrTextureHandle atmosphere_transmittance;
+  VkrTextureHandle atmosphere_multiple_scattering;
 
   uint32_t source_face_size;
   uint32_t source_mip_count;
@@ -343,17 +381,33 @@ typedef enum VkrSceneAtmosphereBakeState {
  * Scene-owned atmosphere publication state. `environment` remains the sole
  * frame-visible sky/IBL tuple. A single retired tuple preserves ownership when
  * its cold release cannot complete; it must drain before another replacement.
+ * Only its texture handles are meaningful. The cloud layer is part of each
+ * revision and publishes with it (ADR-074).
  */
 typedef struct VkrSceneAtmosphere {
+  /** The authored settings. `live_settings` replaces their sun with the
+      scene's sun light every frame; the frame draws the published medium lit
+      by that sun, while `requested_settings` follows it into the revision
+      bake at most every VKR_SCENE_SUN_REFRESH_SECONDS (ADR-058). */
+  VkrAtmosphereSettings authored_settings;
+  VkrAtmosphereSettings live_settings;
   VkrAtmosphereSettings requested_settings;
   VkrAtmosphereSettings candidate_settings;
   VkrAtmosphereSettings active_settings;
-  VkrAtmosphereBakeResult active_result;
+  VkrCloudSettings requested_clouds;
+  VkrCloudSettings candidate_clouds;
+  VkrCloudSettings active_clouds;
+  /** Seconds since the sun last requested a revision. */
+  float64_t sun_refresh_elapsed;
+  /** The frame's observer irradiance, memoized by its prepared parameters. */
+  VkrAtmosphereGpuParams frame_params;
+  Vec3 frame_irradiance;
   VkrSceneEnvironment retired_environment;
   VkrTextureHandle candidate_source_cubemap;
   VkrTextureHandle candidate_prefilter_cubemap;
+  VkrTextureHandle candidate_transmittance;
+  VkrTextureHandle candidate_multiple_scattering;
   float32_t requested_sh_deringing;
-  float32_t candidate_sh_deringing;
   uint64_t requested_revision;
   uint64_t candidate_revision;
   uint64_t active_revision;
@@ -455,6 +509,7 @@ typedef struct VkrScene {
 
   VkrSceneEnvironment environment; // Scene environment and bake state
   VkrSceneAtmosphere atmosphere;
+  VkrSceneSun sun;
   /** Scene-authored analytic fog, copied into each frame by the runtime. */
   VkrFogSettings fog;
   VkrFroxelFogSettings froxel_fog;
@@ -494,10 +549,37 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets);
 void vkr_scene_reset_diffuse_volume(VkrScene *scene,
                                     struct VkrRenderAssets *assets);
 
-/** Queues an atmosphere revision. GPU work begins at the cold world seam. */
+/** Queues an atmosphere revision. GPU work begins at the cold world seam.
+    `clouds` publishes with the revision and requires an enabled atmosphere.
+    `sh_deringing` is the global environment's authored window (ADR-038). */
 bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
                                      const VkrAtmosphereSettings *settings,
+                                     const VkrCloudSettings *clouds,
                                      float32_t sh_deringing);
+
+/** The sky light follows a moving sun with at most one revision request per
+    this many seconds; the drawn sun and direct light follow every frame. */
+#define VKR_SCENE_SUN_REFRESH_SECONDS 0.25
+
+/** Resolves `scene->sun` and makes an enabled atmosphere follow it: the
+    light's world direction, tinted colour times intensity and disc diameter
+    replace the authored sun in `live_settings`. Without an atmosphere sun
+    light the authored sun applies. A sun that differs from the requested
+    revision queues a new one immediately while nothing is published or the
+    latest request has not started baking, otherwise once
+    VKR_SCENE_SUN_REFRESH_SECONDS have passed since the last. Call once per
+    frame, with its duration, before the atmosphere preparation and the
+    lighting system read them (ADR-058). */
+void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds);
+
+/** The frame's atmosphere: the published medium, which the published lookups
+    baked, lit by the scene's current sun. Meaningful while a revision is
+    published. */
+VkrAtmosphereSettings
+vkr_scene_atmosphere_frame_settings(const VkrScene *scene);
+
+/** The frame's sun attenuated to the observer altitude: the direct light. */
+Vec3 vkr_scene_atmosphere_frame_irradiance(VkrScene *scene);
 
 /**
  * @brief Update scene transforms and prepare for renderer sync.

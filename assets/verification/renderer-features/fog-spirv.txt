@@ -1,7 +1,10 @@
-packet.fog_apply.comp.spv sha256=93eca1f87242808a02d00707ab1a776a10244ffdcd428b7bb893627cde252554 root=128 params=32 offsets=0,32,96,112,116,120 push=16
-packet.world.frag.spv sha256=5631ab35397df778c37c0bee336219bc54d9204ee91a31b3691c07a54d5af1d0 frame=576 ltc=560 fog=568 params=32 draw=48@frame24
-packet.world.temporal.frag.spv sha256=9d94addc0f6649ab832d00c0bb27c5d458ba82b64c8c41f4db40cef94a8c3e2b frame=576 ltc=560 fog=568 params=32 draw=48@frame24
-packet.transmission_shade.comp.spv sha256=6c308923fd539a99d666a1fc269ea9c04084effd3155786efb32cb741d28a742 frame=576 ltc=560 fog=568 params=32 draw=none
-packet.world.vert.spv sha256=25f5518d0957083227cc6e696d56439b060a42265de90d854221e45b0e7bdfdc frame=576 ltc=560 fog=568 params=32 draw=48@frame24
-packet.world.temporal.vert.spv sha256=c11068380d0c7d5ddeb93f1ecfb7715d71b7f59492f01021c518efc066b2ce77 frame=576 ltc=560 fog=568 params=32 draw=48@frame24
-Fog emitted SPIR-V layouts and validation: PASS
+packet.fog_apply.comp.spv sha256=225f0af1ea93a12e9a00013b47e6c1f39669322d371ca049273ac2ab978fbb1d root=0,48,112,128,132,136,144,152,156,160,168 params=0,16,32 valid=True
+packet.world.frag.spv sha256=2748d49a437ad60b3a2d0774399838a4eb362bf16df33e8a11b0a9dc2bfb3161 frame.fog=568 frame.froxel_fog=576 params=0,16,32 valid=True
+packet.world.temporal.frag.spv sha256=3554e431767d9fbb52e2c6722e3f8fac6ca4459bb480ccbc9981f09384e46093 frame.fog=568 frame.froxel_fog=576 params=0,16,32 valid=True
+packet.transmission_shade.comp.spv sha256=1a8eac6caa064dcd52762e3b18334c2eb8331c623b255448e34af3849c357293 frame.fog=568 frame.froxel_fog=576 params=0,16,32 valid=True
+packet.transmission_shade_production.comp.spv sha256=72327c17a244ed20e046bfad68ac560a0e27606c37380b1127fe03f36e6a4f69 frame.fog=568 frame.froxel_fog=576 params=0,16,32 valid=True
+packet.world.vert.spv sha256=c21ef6ac1b479e8318ebb65097717352a3d72ca40d90ce55b73fa4f60f3b42b4 frame.fog=568 frame.froxel_fog=576 params=0,16,32 valid=True
+packet.froxel_inject.comp.spv sha256=49ec12fe4650ba7b4be42428ecfc50e83a0060a503da976e9ee6cad69eda3d96 froxel.height_distance_phase=208 froxel.lighting=928 valid=True
+packet.froxel_integrate.comp.spv sha256=5ce6762b5f916811ca2022a28b7a598ce47680623103efe05a6d01a0cb74d4bd froxel.height_distance_phase=208 froxel.lighting=928 valid=True
+packet.froxel_apply.comp.spv sha256=95d9dbb7f237a5b87342384fbde7cb27be36619ccf13305323eab775bc7d37b5 froxel.height_distance_phase=208 froxel.lighting=928 valid=True
+Fog and froxel emitted SPIR-V layouts and validation: PASS

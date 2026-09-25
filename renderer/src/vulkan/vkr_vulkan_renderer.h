@@ -23,6 +23,8 @@ enum {
   // instances; the recording frame still needs one completion-safe output.
   VKR_VULKAN_HISTORY_INSTANCE_COUNT = 2 * VKR_VULKAN_FRAME_SLOT_COUNT - 1,
   VKR_VULKAN_TARGET_IMAGE_MAX = 8,
+  /* Cloud base volume, detail volume and weather map (ADR-074). */
+  VKR_VULKAN_CLOUD_NOISE_COUNT = 3,
   /* Sampled-image heap rows the renderer holds for its own device lifetime, so
      they are never available to published textures. Derived from the tables
      that occupy them, so adding a table moves the configuration bound and the
@@ -30,7 +32,7 @@ enum {
   VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS =
       1 /* black sentinel */ + 1 /* DFG */ + VKR_LTC_LUT_TABLE_COUNT +
       1 /* Charlie directional albedo */ + VKR_SHEEN_LTC_LUT_TABLE_COUNT +
-      VKR_ANISOTROPY_LUT_TABLE_COUNT + 2 /* atmosphere LUTs */,
+      VKR_ANISOTROPY_LUT_TABLE_COUNT + VKR_VULKAN_CLOUD_NOISE_COUNT,
 };
 
 typedef struct VkrVulkanRenderer VkrVulkanRenderer;
@@ -236,9 +238,6 @@ void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
                                              VkrDeviceMemoryStats *out_stats);
 void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
                                       VkrVulkanHeapMetrics *out_metrics);
-bool8_t vkr_vulkan_renderer_hdr_ibl_limits(const VkrVulkanRenderer *renderer,
-                                           uint32_t *out_max_cube_extent,
-                                           uint32_t *out_max_mip_levels);
 bool8_t
 vkr_vulkan_renderer_texture_format_supported(const VkrVulkanRenderer *renderer,
                                              VkrTextureFormat format);

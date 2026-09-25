@@ -12,15 +12,6 @@ uint16_t vkr_float32_to_float16(float32_t value);
 /** Converts IEEE-754 binary16 to binary32 exactly. */
 float32_t vkr_float16_to_float32(uint16_t value);
 
-/**
- * Validates a 2:1 equirect source and derives a power-of-two cube extent and
- * complete mip chain within the published device limits.
- */
-bool8_t
-vkr_ibl_derive_cubemap_size(uint32_t equirect_width, uint32_t equirect_height,
-                            uint32_t max_cube_extent, uint32_t max_mip_levels,
-                            uint32_t *out_face_size, uint32_t *out_mip_count);
-
 /*
  * Second-order spherical-harmonic diffuse response (ADR-038).
  *
@@ -47,7 +38,7 @@ vkr_ibl_derive_cubemap_size(uint32_t equirect_width, uint32_t equirect_height,
  * vkr_ibl_sh_pool.c static-asserts them against the frame-input probe maximum.
  */
 #define VKR_SH_SLOT_BLACK 0u
-/** Retained fallback environment, active scene environment, and every probe. */
+/** Active global environment, its replacement candidate, and every probe. */
 #define VKR_SH_LOGICAL_MAX 18u
 #define VKR_SH_GENERATION_COUNT 2u
 #define VKR_SH_REUSABLE_SLOTS (VKR_SH_LOGICAL_MAX * VKR_SH_GENERATION_COUNT)

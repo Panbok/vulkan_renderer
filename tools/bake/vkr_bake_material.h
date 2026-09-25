@@ -127,27 +127,6 @@ bool8_t vkr_bake_texture_store_dependency(const VkrBakeTextureStore *store,
                                           const char **out_sha256,
                                           uint64_t *out_byte_count);
 
-/* Environment paths are loaded from their authored source without selecting a
-   material sidecar. Source texels and dependency records remain store-owned. */
-bool8_t vkr_bake_texture_store_load_environment_2d(
-    VkrBakeTextureStore *store, const char *path, bool8_t srgb,
-    uint32_t *out_texture_index, VkrBakeMaterialError *out_error);
-bool8_t vkr_bake_texture_store_load_environment_equirect(
-    VkrBakeTextureStore *store, const char *path, uint32_t *out_texture_index,
-    VkrBakeMaterialError *out_error);
-bool8_t vkr_bake_texture_store_load_environment_cube_rgba16f(
-    VkrBakeTextureStore *store, const char *path, uint32_t *out_texture_index,
-    VkrBakeMaterialError *out_error);
-
-/* Environment sampling is mip-zero linear filtering. `repeat_u` implements
-   equirectangular longitude wrapping; cube faces use clamp-to-edge. */
-Vec4 vkr_bake_texture_store_sample_environment_2d(
-    const VkrBakeTextureStore *store, uint32_t texture_index, Vec2 uv,
-    bool8_t repeat_u);
-Vec4 vkr_bake_texture_store_sample_environment_cube_face(
-    const VkrBakeTextureStore *store, uint32_t texture_index, uint32_t face,
-    Vec2 uv);
-
 /* Material and texture file paths are UTF-8, null-terminated and borrowed only
    for this call. The loader resolves source and sidecar `.vkt` assets exactly
    once per canonical selected file. */

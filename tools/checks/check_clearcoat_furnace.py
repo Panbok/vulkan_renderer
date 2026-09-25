@@ -6,7 +6,7 @@ Prepare after ./build_release.sh:
 Capture tools/cases/local/clearcoat_furnace_local.case.json with
   tools/profiles/local-brdf-display-validation.json
 Then: python3 tools/checks/check_clearcoat_furnace.py <snapshot-directory>
-The fixture uses the existing assets/textures/brdf_white_local.hdr environment.
+The fixture uses a unit $.environment.constant source.
 """
 import json
 import math

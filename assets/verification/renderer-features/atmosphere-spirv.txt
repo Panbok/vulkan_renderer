@@ -1,6 +1,11 @@
-packet.atmosphere_transmittance.comp.spv sha256=c727dfbcfa13d3cf4f1ca512023038ef37ae255be35a82656068a76d98cd4eba params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
-packet.atmosphere_multiple_scattering.comp.spv sha256=24c3310fd84b2de549fb2b3e80a706cb6fc751f971a9b09e2f775943fdb1ea10 params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
-packet.atmosphere_source.comp.spv sha256=1a6bd870c2295c9413c034177420e64bf8d7aca823a181a65131d16006d23fa3 params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
-packet.atmosphere_sun.comp.spv sha256=70c49590a38d92369a380cbf9ffada8f365d39c1469538246f43c9e929e07c2a params=128 root=176 fields=0,128,132,136,140,144,148,152,160,168,172 push=16
-packet.deferred_lighting.comp.spv sha256=d7e8c5ccf4aabbefab96a3ede4d9958b0f4ad3b2cddd6b00521a61acd6536a25 root=144 solar_disk_radiance=128 push=16
-Atmosphere/deferred emitted SPIR-V layout and validation: PASS
+packet.atmosphere_transmittance.comp.spv sha256=bbe245823d40b8da00e084f5a3b7e91a2e8db69a9e03e72f8f34ea695ba2eeb6 VkrVulkanAtmosphereRoot=0,128,132,136,140,144,148,152,160,164 valid=True
+packet.atmosphere_multiple_scattering.comp.spv sha256=e3918a01689872f5dec97972098fc3e93ea5331f03b1e143acadd682be85d392 VkrVulkanAtmosphereRoot=0,128,132,136,140,144,148,152,160,164 valid=True
+packet.atmosphere_source.comp.spv sha256=14b3a6f9754a86a00dd7b61a05a5335aaee17db22c20dbbbeaba0125eda05317 VkrVulkanAtmosphereRoot=0,128,132,136,140,144,148,152,160,164 valid=True
+packet.sky_view.comp.spv sha256=966598596b74ef0e1993261567508682a02bd86841991fdc24c85a11e3355551 VkrVulkanSkyBuildRoot=0,8,12 sky=0,352,356,360,364,368,372,376,380,384,388,392 valid=True
+packet.aerial_perspective.comp.spv sha256=e8511213a3c8f7acdbec33b41cb4a27740a0b9373d745106949e0beaf91ea528 VkrVulkanSkyBuildRoot=0,8,12 sky=0,352,356,360,364,368,372,376,380,384,388,392 valid=True
+packet.fog_apply.comp.spv sha256=225f0af1ea93a12e9a00013b47e6c1f39669322d371ca049273ac2ab978fbb1d frame.sky=616 VkrVulkanFogRoot=0,48,112,128,132,136,144,152,156,160,168 sky=0,352,356,360,364,368,372,376,380,384,388,392 valid=True
+packet.froxel_apply.comp.spv sha256=95d9dbb7f237a5b87342384fbde7cb27be36619ccf13305323eab775bc7d37b5 frame.sky=616 VkrVkFroxelApplyRoot=0,8,16,20,24,28,32,40,44 sky=0,352,356,360,364,368,372,376,380,384,388,392 valid=True
+packet.deferred_lighting.comp.spv sha256=c87eba6a991d625c28c826ac233a7310f4fcfd264d5d6a468f5dc618b6274a36 sky_view_texture=112 sky_mode=120 sky_radiance=128 frame.sky=616 sky=0,352,356,360,364,368,372,376,380,384,388,392 valid=True
+packet.world.frag.spv sha256=2748d49a437ad60b3a2d0774399838a4eb362bf16df33e8a11b0a9dc2bfb3161 frame.sky=616 sky=0,352,356,360,364,368,372,376,380,384,388,392 valid=True
+packet.transmission_shade_production.comp.spv sha256=72327c17a244ed20e046bfad68ac560a0e27606c37380b1127fe03f36e6a4f69 frame.sky=616 sky=0,352,356,360,364,368,372,376,380,384,388,392 valid=True
+Atmosphere, sky-view, aerial-perspective, fog, deferred and forward emitted SPIR-V layout and validation: PASS

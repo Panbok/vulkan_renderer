@@ -9,6 +9,9 @@ typedef enum VkrPointLightKind {
   VKR_POINT_LIGHT_KIND_GLTF_SPOT = 2,
 } VkrPointLightKind;
 
+/** Apparent solar-disc diameter of a directional light that authors none. */
+#define VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES 0.53f
+
 #define VKR_MAX_SCENE_POINT_LIGHTS 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
 #define VKR_POINT_LIGHT_GRID_MAX_CELLS 384u

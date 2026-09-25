@@ -1713,10 +1713,10 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 163u,
-    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 150u,
-    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 150u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 149u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 167u,
+    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 154u,
+    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 154u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 153u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1796,6 +1796,10 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .subsurface_enabled = true_v,
       .fog_enabled = true_v,
       .froxel_fog_enabled = true_v,
+      .fog_apply_enabled = true_v,
+      .atmosphere_enabled = true_v,
+      .aerial_perspective_enabled = true_v,
+      .clouds_enabled = true_v,
       .dof_enabled = true_v,
       .motion_blur_enabled = true_v,
       .editor_overlay_enabled = true_v,

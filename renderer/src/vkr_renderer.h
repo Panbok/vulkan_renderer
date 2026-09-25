@@ -449,10 +449,6 @@ typedef struct VkrDeviceInformation {
   bool8_t supports_texture_bc5;
   /** EAC RG11: the only compressed two-channel target on ETC2-class GPUs. */
   bool8_t supports_texture_eac_rg11;
-  /** Exact RGBA16F source/cube combinations required by runtime HDR IBL. */
-  bool8_t supports_hdr_ibl;
-  uint32_t hdr_ibl_max_cube_extent;
-  uint32_t hdr_ibl_max_mip_levels;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
   uint32_t vendor_id;

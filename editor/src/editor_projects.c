@@ -112,7 +112,6 @@ struct VkrEditorProjects {
   char source_scene[1024];
   char models[PROJECT_MODEL_COUNT][1024];
   uint32_t model_count;
-  char environment_source[1024];
   char font_source[1024];
   char project_font_source[1024];
   char bootstrap_directory[2048];
@@ -120,6 +119,8 @@ struct VkrEditorProjects {
   float32_t environment_diffuse;
   float32_t environment_specular;
   bool8_t environment_enabled;
+  /** Physical sky, sun and global IBL from the scene atmosphere (ADR-058). */
+  bool8_t sky_enabled;
   bool8_t reflection_enabled;
   bool8_t bake_reflection;
   bool8_t bake_diffuse;
@@ -888,11 +889,11 @@ static void project_reset_scene_draft(VkrEditorProjects *projects) {
   snprintf(projects->scene_name, sizeof(projects->scene_name),
            "Untitled scene");
   projects->source_scene[0] = '\0';
-  projects->environment_source[0] = '\0';
   projects->font_source[0] = '\0';
   projects->model_count = 0;
   projects->light_count = 0;
   projects->environment_enabled = false_v;
+  projects->sky_enabled = false_v;
   projects->environment_intensity = 1;
   projects->environment_diffuse = 1;
   projects->environment_specular = 1;
@@ -1041,9 +1042,12 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
       ok = vkr_json_writer_string(writer, project_string(projects->models[i]));
     }
     ok = ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_name(writer, string8_lit("atmosphere")) &&
+         vkr_json_writer_begin_object(writer) &&
+         project_json_bool(writer, "enabled", projects->sky_enabled) &&
+         vkr_json_writer_end_object(writer) &&
          vkr_json_writer_name(writer, string8_lit("environment")) &&
          vkr_json_writer_begin_object(writer) &&
-         project_json_text(writer, "source", projects->environment_source) &&
          project_json_bool(writer, "enabled", projects->environment_enabled) &&
          project_json_number(writer, "intensity",
                              projects->environment_intensity) &&
@@ -2040,9 +2044,8 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
                content_action.name);
       if (content_action.kind != VKR_EDITOR_CONTENT_ACTION_REBUILD &&
           content_action.kind != VKR_EDITOR_CONTENT_ACTION_RENAME) {
-        static const char *const extensions[] = {"gltf", "glb",  "obj", "png",
-                                                 "jpg",  "jpeg", "hdr", "ttf",
-                                                 "otf",  "mt"};
+        static const char *const extensions[] = {
+            "gltf", "glb", "obj", "png", "jpg", "jpeg", "ttf", "otf", "mt"};
         project_browse(projects, frame,
                        "Choose an asset to copy into the scene", extensions,
                        ArrayCount(extensions), false_v, projects->action_source,
@@ -2264,7 +2267,6 @@ static void project_build_scene_form(VkrEditorProjects *projects,
   }
   static const char *const scene_extensions[] = {"json"};
   static const char *const model_extensions[] = {"gltf", "glb", "obj"};
-  static const char *const hdr_extensions[] = {"hdr"};
   static const char *const font_extensions[] = {"ttf", "otf"};
   if (projects->import_scene) {
     project_label(ui, "scene.source.label",
@@ -2283,20 +2285,14 @@ static void project_build_scene_form(VkrEditorProjects *projects,
                   "reported during import.",
                   x, 203, width);
   } else {
-    project_label(ui, "sky.label", "HDR environment", x, 124, width);
-    project_field(ui, "sky.path", projects->environment_source,
-                  sizeof(projects->environment_source), x, 156, width - 90);
-    if (project_button(ui, "sky.browse", "Browse", x + width - 82, 156, 82,
-                       false_v)) {
-      project_browse(projects, frame, "Choose HDR environment", hdr_extensions,
-                     1, false_v, projects->environment_source,
-                     sizeof(projects->environment_source));
-      if (projects->environment_source[0]) {
-        projects->environment_enabled = true_v;
-      }
-      return;
+    project_label(ui, "sky.label", "Sky", x, 124, width);
+    const bool8_t had_sky = projects->sky_enabled;
+    project_check(ui, "sky.atmosphere", "Physical sky and sun",
+                  &projects->sky_enabled, x, 156, width);
+    if (projects->sky_enabled && !had_sky) {
+      projects->environment_enabled = true_v;
     }
-    project_check(ui, "sky.enabled", "Enable environment",
+    project_check(ui, "sky.enabled", "Sky lighting",
                   &projects->environment_enabled, x, 194, width);
     project_slider(ui, "sky.intensity", "Intensity",
                    &projects->environment_intensity, 0, 10, x, 230, width);

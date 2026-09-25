@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-14
+updated: 2026-09-24
 authority: context
 ---
 # Project vocabulary
@@ -56,7 +56,12 @@ below are starting points for checking a definition, not alternate API specs.
 | Local shadow face | One perspective depth layer for an opted-in punctual light: one per spot, six per point, allocated as complete groups from the bounded pool. | [ADR-019](adr/019-bounded-forward-spatial-lighting.md) |
 | CSM | Cascaded shadow mapping: directional shadow coverage split across depth intervals. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |
 | SDSM | Sample Distribution Shadow Maps: optional cascade-range fitting from completed occupied-depth feedback. | [ADR-033](adr/033-occupied-depth-sdsm-feedback.md) |
-| IBL | Image-based lighting derived from environment sources. Diffuse response uses SH; skybox and specular prefilter use cubemaps. | [ADR-038](adr/038-sh-l2-diffuse-irradiance.md) |
+| IBL | Image-based lighting derived from the global environment or local probes. Diffuse response uses SH; specular prefilter uses cubemaps. | [ADR-038](adr/038-sh-l2-diffuse-irradiance.md) |
+| Atmosphere sun light | The enabled directional light whose `atmosphere_sun` flag makes it drive the atmosphere's sun direction, tinted irradiance and disc; scene files default the flag on, glTF imports off. The drawn sky and direct light follow it every frame; the sky light refreshes at most every 0.25 s. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
+| Sun glow | Visual-only 1/theta^2 veiling glow around the sun disc, `atmosphere.sun_glow` (default 2, zero off), faded out 25 degrees from the sun; never part of lighting or the bake. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
+| Sky light | The scene `environment` block: enable flag, intensity, diffuse/specular scale and SH window applied to the atmosphere or a constant global source. Disabling it keeps the atmosphere sky visible. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
+| Sky-view lookup / aerial perspective | Per-frame atmosphere radiance around the camera, sampled for the visible sky / in-scatter and transmittance between the camera and a surface, applied before fog. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
+| Cloud layer / cloud shadow map | One volumetric layer between two altitudes, traced at half resolution into a history composited over the sky / the layer's transmittance along the sun, sampled by every sun evaluation. | [ADR-074](adr/074-volumetric-cloud-layer.md) |
 | SH L2 | Nine spherical-harmonic coefficients per color channel describing normalized diffuse response (`E/pi`), with authored deringing. | [vkr_ibl_math.h](../renderer/src/vkr_ibl_math.h) |
 | Refractive transmission | Surface transport using declared scene-color/depth feedback and bounded layer handling. Alpha blending is a separate behavior. | [ADR-018](adr/018-graph-declared-transmission-feedback.md) |
 | Thin-sheet diffuse transmission | A tinted opposite-hemisphere Lambert lobe funded by the base diffuse allocation; no refraction, medium crossing or spatial diffusion. Runtime backlighting uses direct light. | [ADR-065](adr/065-thin-sheet-diffuse-transmission.md) |

@@ -1066,6 +1066,62 @@ vkr_metal_packet_select_froxel_history(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
+/* Cloud radiance history holds camera-independent sky radiance; its stored
+   view-projection reprojects it (ADR-074). With temporal antialiasing only
+   its exact predecessor is eligible: the submission event wait orders it even
+   in flight, so accumulation never depends on GPU timing. Without it, the
+   newest completed producer of the same traced layer and grid seeds the
+   trace. */
+vkr_internal bool8_t
+vkr_metal_packet_select_cloud_history(VkrMetalPacketRenderer *renderer) {
+  renderer->selected_cloud_history_instance = UINT32_MAX;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.clouds_enabled)
+    return true_v;
+  VkrMetalPacketImage *history =
+      vkr_metal_packet_named_image_slot(renderer, "cloud_history");
+  if (!history || history->instance_count != renderer->history_instance_count ||
+      history->desc.type != VKR_TEXTURE_TYPE_2D ||
+      renderer->history_output_index >= history->instance_count)
+    return false_v;
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE)
+    return true_v;
+
+  const uint64_t signature = vkr_cloud_history_signature(
+      &packet->sky.clouds, packet->sky.camera_position.w);
+  const uint64_t completed = renderer->completion.signaledValue;
+  const uint64_t frame_index = packet->input.frame.frame_index;
+  uint64_t newest_submit = 0u;
+  for (uint32_t i = 0u; i < history->instance_count; ++i) {
+    const VkrMetalPacketCloudHistoryState *candidate =
+        &renderer->cloud_history[i];
+    const VkrMetalPacketImageInstance *image = &history->instances[i];
+    const bool8_t source_age_in_ring =
+        candidate->frame_index < frame_index &&
+        frame_index - candidate->frame_index <= history->instance_count;
+    const bool8_t ordered =
+        packet->temporal.enabled
+            ? renderer->selected_temporal_history_instance == i
+            : candidate->producer_submit_value <= completed;
+    if (i == renderer->history_output_index || !candidate->valid ||
+        !image->live || !image->history_valid || !source_age_in_ring ||
+        !ordered ||
+        image->history_producer_submit_value !=
+            candidate->producer_submit_value ||
+        candidate->signature != signature ||
+        candidate->graph_generation != history->graph_generation ||
+        candidate->width != history->desc.width ||
+        candidate->height != history->desc.height)
+      continue;
+    if (renderer->selected_cloud_history_instance == UINT32_MAX ||
+        candidate->producer_submit_value > newest_submit) {
+      renderer->selected_cloud_history_instance = i;
+      newest_submit = candidate->producer_submit_value;
+    }
+  }
+  return true_v;
+}
+
 /* SSR history is deliberately independent of TAA. Reflected-hit geometry and
  * identities reject changed correspondence; these cold checks prove a
  * same-content tuple before any prior texture is bound. A shared temporal
@@ -1922,6 +1978,45 @@ vkr_metal_packet_mark_froxel_history_submitted(
   output->history_valid = true_v;
 
   const uint32_t selected = renderer->selected_froxel_history_instance;
+  if (selected < history->instance_count)
+    history->instances[selected].last_use_submit_value = MAX(
+        history->instances[selected].last_use_submit_value, submit_value);
+}
+
+vkr_internal void
+vkr_metal_packet_mark_cloud_history_submitted(VkrMetalPacketRenderer *renderer,
+                                              uint64_t submit_value) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.clouds_enabled)
+    return;
+  VkrMetalPacketImage *history =
+      vkr_metal_packet_named_image_slot(renderer, "cloud_history");
+  const uint32_t current = renderer->history_output_index;
+  if (!history || history->instance_count != renderer->history_instance_count ||
+      current >= history->instance_count)
+    return;
+  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE) {
+    for (uint32_t i = 0u; i < history->instance_count; ++i)
+      renderer->cloud_history[i].valid = false_v;
+  }
+
+  renderer->cloud_history[current] = (VkrMetalPacketCloudHistoryState){
+      .view_projection = packet->sky.view_projection,
+      .signature = vkr_cloud_history_signature(&packet->sky.clouds,
+                                               packet->sky.camera_position.w),
+      .producer_submit_value = submit_value,
+      .frame_index = packet->input.frame.frame_index,
+      .width = history->desc.width,
+      .height = history->desc.height,
+      .graph_generation = history->graph_generation,
+      .valid = true_v,
+  };
+  VkrMetalPacketImageInstance *output = &history->instances[current];
+  output->history_producer_submit_value = submit_value;
+  output->history_frame_index = packet->input.frame.frame_index;
+  output->history_valid = true_v;
+
+  const uint32_t selected = renderer->selected_cloud_history_instance;
   if (selected < history->instance_count)
     history->instances[selected].last_use_submit_value = MAX(
         history->instances[selected].last_use_submit_value, submit_value);

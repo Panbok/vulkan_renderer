@@ -137,6 +137,16 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->froxel_fog_enabled =
       packet->scene_rendering &&
       packet->froxel_fog.grid_dimensions_cell_pixels[0] > 0u;
+  frame->atmosphere_enabled = packet->scene_rendering && packet->input.sky &&
+                              packet->input.sky->atmosphere.enabled;
+  frame->aerial_perspective_enabled =
+      frame->atmosphere_enabled && packet->sky.aerial.w > 0.0f;
+  frame->clouds_enabled =
+      frame->aerial_perspective_enabled && packet->sky.clouds.noise.w > 0.0f;
+  /* Froxel application owns aerial perspective when froxel fog is enabled. */
+  frame->fog_apply_enabled =
+      frame->fog_enabled ||
+      (frame->aerial_perspective_enabled && !frame->froxel_fog_enabled);
   frame->ssgi_enabled = packet->scene_rendering && packet->ssgi_enabled;
   frame->ssgi_depth_mip_count =
       frame->ssgi_enabled ? vkr_ssgi_depth_mip_count(frame->viewport_width,
@@ -270,6 +280,14 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_FROXEL_APPLY] = {"pass.froxel.apply",
                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SKY_VIEW_LUT] = {"pass.sky.view_lut",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_AERIAL_PERSPECTIVE] = {"pass.sky.aerial_perspective",
+                                            VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_CLOUD_SHADOW] = {"pass.clouds.shadow",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_CLOUD_TRACE] = {"pass.clouds.trace",
+                                     VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TEMPORAL_RESOLVE] = {"pass.temporal.resolve",
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_METALFX_STAGE] = {"pass.metalfx.stage",

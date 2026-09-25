@@ -240,6 +240,231 @@ static bool32_t test_rectangle_light_uses_rigid_parent_rotation(void) {
   return true_v;
 }
 
+/* An enabled atmosphere turns the sun light into its sun: the light must not
+ * light the frame directly before or besides the published atmosphere sun. */
+static bool32_t test_atmosphere_replaces_direct_sun_light(void) {
+  printf("  Running test_atmosphere_replaces_direct_sun_light...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 31u, 8u, &error));
+  VkrLightingSystem system;
+  assert(vkr_lighting_system_init(&system));
+
+  VkrEntityId sun = vkr_scene_create_entity(&scene, &error);
+  assert(sun.u64 != VKR_ENTITY_ID_INVALID.u64);
+  assert(vkr_scene_set_directional_light(
+      &scene, sun,
+      &(SceneDirectionalLight){
+          .color = vec3_one(),
+          .intensity = 1.0f,
+          .direction_local = vec3_new(0.0f, -1.0f, 0.0f),
+          .enabled = true_v,
+      }));
+  vkr_scene_update(&scene, 0.0);
+  vkr_scene_sync_sun(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  assert(system.directional.enabled == true_v);
+
+  VkrAtmosphereSettings atmosphere = vkr_atmosphere_settings_defaults();
+  atmosphere.enabled = true_v;
+  const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
+  assert(vkr_scene_request_atmosphere(&scene, &atmosphere, &clouds, 0.0f));
+  vkr_scene_sync_sun(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  assert(system.directional.enabled == false_v);
+
+  vkr_lighting_system_shutdown(&system);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_atmosphere_replaces_direct_sun_light PASSED\n");
+  return true_v;
+}
+
+/* The atmosphere sun light drives an enabled atmosphere: the sun points
+ * against the light's rotated direction with its tinted colour times
+ * intensity. Other directional lights are ignored, an unchanged light queues
+ * no revision, a hard-edged light keeps the authored disc, and without an
+ * enabled sun light the authored sun returns. */
+static bool32_t test_sun_light_drives_atmosphere_sun(void) {
+  printf("  Running test_sun_light_drives_atmosphere_sun...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 31u, 8u, &error));
+
+  VkrAtmosphereSettings authored = vkr_atmosphere_settings_defaults();
+  authored.enabled = true_v;
+  authored.sun_direction = vec3_new(0.0f, 1.0f, 0.0f);
+  authored.sun_angular_diameter_degrees = 0.75f;
+  const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
+  assert(vkr_scene_request_atmosphere(&scene, &authored, &clouds, 0.0f));
+  const VkrSceneAtmosphere *atmosphere = &scene.atmosphere;
+  uint64_t revision = atmosphere->requested_revision;
+
+  // An imported directional light, such as a glTF file's sun, is not one.
+  VkrEntityId imported = vkr_scene_create_entity(&scene, &error);
+  assert(imported.u64 != VKR_ENTITY_ID_INVALID.u64);
+  assert(vkr_scene_set_directional_light(
+      &scene, imported,
+      &(SceneDirectionalLight){
+          .intensity = 0.0f,
+          .direction_local = vec3_new(0.0f, -1.0f, 0.0f),
+          .enabled = true_v,
+      }));
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(scene.sun.found == false_v);
+  assert(atmosphere->requested_revision == revision);
+
+  // A quarter turn about +Y carries the local ray (0, -0.6, -0.8) to
+  // (-0.8, -0.6, 0), so the sun sits toward +X at elevation asin(0.6).
+  VkrEntityId sun = vkr_scene_create_entity(&scene, &error);
+  assert(sun.u64 != VKR_ENTITY_ID_INVALID.u64);
+  assert(vkr_scene_set_transform(
+      &scene, sun, vec3_zero(),
+      vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), 1.57079632679f),
+      vec3_one()));
+  SceneDirectionalLight light = {
+      .color = vec3_new(1.0f, 0.5f, 0.25f),
+      .intensity = 2.0f,
+      .direction_local = vec3_new(0.0f, -0.6f, -0.8f),
+      .enabled = true_v,
+      .atmosphere_sun = true_v,
+  };
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(atmosphere->requested_revision == ++revision);
+  const VkrAtmosphereSettings *requested = &atmosphere->requested_settings;
+  assert(lighting_test_vec3_near(requested->sun_direction,
+                                 vec3_new(0.8f, 0.6f, 0.0f)));
+  assert(lighting_test_vec3_near(requested->solar_irradiance,
+                                 vec3_new(2.0f, 1.0f, 0.5f)));
+  assert(requested->sun_angular_diameter_degrees == 0.75f);
+
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(atmosphere->requested_revision == revision);
+
+  // A 3000 K white light keeps its luminance and turns warm.
+  light.color = vec3_one();
+  light.temperature_kelvin = 3000.0f;
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(atmosphere->requested_revision == ++revision);
+  const Vec3 warm = requested->solar_irradiance;
+  assert(fabsf(0.2126f * warm.x + 0.7152f * warm.y + 0.0722f * warm.z - 2.0f) <
+         1e-3f);
+  assert(warm.x > warm.y && warm.y > warm.z);
+
+  light.sun_angular_diameter_degrees = 2.0f;
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(atmosphere->requested_revision == ++revision);
+  assert(requested->sun_angular_diameter_degrees == 2.0f);
+
+  light.enabled = false_v;
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(scene.sun.found == false_v);
+  assert(atmosphere->requested_revision == ++revision);
+  assert(lighting_test_vec3_near(requested->sun_direction,
+                                 vec3_new(0.0f, 1.0f, 0.0f)));
+  assert(lighting_test_vec3_near(requested->solar_irradiance,
+                                 authored.solar_irradiance));
+  assert(requested->sun_angular_diameter_degrees == 0.75f);
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_sun_light_drives_atmosphere_sun PASSED\n");
+  return true_v;
+}
+
+/* A moving sun light draws at once: the frame pairs the published medium with
+ * the live sun. Once a revision is published the sky light follows at most
+ * once per refresh interval, a request that has not started baking follows the
+ * light for free, and the last sun always gets its own revision. */
+static bool32_t test_sun_refresh_follows_moving_light(void) {
+  printf("  Running test_sun_refresh_follows_moving_light...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 31u, 8u, &error));
+  VkrAtmosphereSettings authored = vkr_atmosphere_settings_defaults();
+  authored.enabled = true_v;
+  authored.sun_direction = vec3_new(0.0f, 1.0f, 0.0f);
+  const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
+  assert(vkr_scene_request_atmosphere(&scene, &authored, &clouds, 0.0f));
+
+  VkrEntityId sun = vkr_scene_create_entity(&scene, &error);
+  assert(sun.u64 != VKR_ENTITY_ID_INVALID.u64);
+  SceneDirectionalLight light = {
+      .color = vkr_atmosphere_settings_defaults().solar_irradiance,
+      .intensity = 1.0f,
+      .direction_local = vec3_new(0.0f, -1.0f, 0.0f),
+      .enabled = true_v,
+      .atmosphere_sun = true_v,
+  };
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.0);
+
+  // Publish the first revision with a medium the authored settings lack.
+  VkrSceneAtmosphere *atmosphere = &scene.atmosphere;
+  atmosphere->active_settings = atmosphere->requested_settings;
+  atmosphere->active_settings.rayleigh_density_scale = 2.0f;
+  atmosphere->active_revision = atmosphere->requested_revision;
+  atmosphere->candidate_revision = 0u;
+  uint64_t revision = atmosphere->requested_revision;
+
+  light.direction_local = vec3_new(0.0f, -0.6f, -0.8f);
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.1);
+  assert(atmosphere->requested_revision == revision);
+  const VkrAtmosphereSettings frame =
+      vkr_scene_atmosphere_frame_settings(&scene);
+  assert(
+      lighting_test_vec3_near(frame.sun_direction, vec3_new(0.0f, 0.6f, 0.8f)));
+  assert(frame.rayleigh_density_scale == 2.0f);
+  vkr_scene_sync_sun(&scene, 0.1);
+  assert(atmosphere->requested_revision == revision);
+  vkr_scene_sync_sun(&scene, 0.1);
+  assert(atmosphere->requested_revision == ++revision);
+  assert(lighting_test_vec3_near(atmosphere->requested_settings.sun_direction,
+                                 vec3_new(0.0f, 0.6f, 0.8f)));
+
+  // Replacing the waiting request costs nothing, so it tracks every frame.
+  light.direction_local = vec3_new(0.0f, -0.8f, -0.6f);
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(atmosphere->requested_revision == ++revision);
+
+  // A baking request holds the next one back until the interval passes.
+  atmosphere->candidate_revision = atmosphere->requested_revision;
+  light.direction_local = vec3_new(0.0f, -0.5f, -0.866f);
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.1);
+  assert(atmosphere->requested_revision == revision);
+  vkr_scene_sync_sun(&scene, 0.2);
+  assert(atmosphere->requested_revision == ++revision);
+  assert(lighting_test_vec3_near(atmosphere->requested_settings.sun_direction,
+                                 vec3_normalize(vec3_new(0.0f, 0.5f, 0.866f))));
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_sun_refresh_follows_moving_light PASSED\n");
+  return true_v;
+}
+
 bool32_t run_lighting_system_tests(void) {
   printf("--- Running Lighting System tests... ---\n");
   bool32_t passed = true_v;
@@ -248,6 +473,9 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_point_light_grid_rejects_disjoint_range_aabbs();
   passed &= test_point_light_grid_represents_full_scene_capacity();
   passed &= test_unbounded_point_lights_are_global();
+  passed &= test_atmosphere_replaces_direct_sun_light();
+  passed &= test_sun_light_drives_atmosphere_sun();
+  passed &= test_sun_refresh_follows_moving_light();
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();

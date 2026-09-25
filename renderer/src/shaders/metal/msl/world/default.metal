@@ -192,12 +192,19 @@ static float4 vkr_metal_packet_shade(
     float3 sun_direction = normalize(-frame->directional_direction_enabled.xyz);
     bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                     dot(normal, sun_direction) < 0.0f;
-    float base_shadow = vkr_metal_packet_directional_shadow_sample(
-        frame, input.world_position, back_lit ? -normal : normal).factor;
+    float cloud_shadow =
+        vkr_metal_packet_cloud_shadow(frame, input.world_position);
+    float base_shadow =
+        vkr_metal_packet_directional_shadow_sample(
+            frame, input.world_position, back_lit ? -normal : normal)
+            .factor *
+        cloud_shadow;
     float layer_shadow = base_shadow;
     if (back_lit && clearcoat_active)
       layer_shadow = vkr_metal_packet_directional_shadow_sample(
-          frame, input.world_position, normal).factor;
+                         frame, input.world_position, normal)
+                         .factor *
+                     cloud_shadow;
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
@@ -385,6 +392,14 @@ vkr_metal_packet_temporal_blend_fragment(
   output.color = vkr_metal_packet_shade(surface, root, front_facing, primitive_id);
   if (output.color.a <= 1e-4)
     discard_fragment();
+  // Aerial perspective is the farther medium, so it applies before fog.
+  if (vkr_metal_packet_aerial_enabled(root->frame)) {
+    VkrMetalPacketAerialSample aerial = vkr_metal_packet_aerial_sample(
+        root->frame->sky, root->frame->sky->aerial_perspective,
+        input.world_position);
+    output.color.rgb = vkr_sky_apply_aerial(output.color.rgb, aerial.packed,
+                                            aerial.weight);
+  }
   if (vkr_froxel_enabled(*root->frame->froxel_fog)) {
     VkrFroxelSample froxel =
         vkr_metal_packet_froxel_sample(root->frame, input.world_position);
@@ -392,6 +407,7 @@ vkr_metal_packet_temporal_blend_fragment(
   } else if (root->frame->fog->color_density.w > 0.0f) {
     output.color.rgb = vkr_fog_apply_surface(
         output.color.rgb, *root->frame->fog,
+        vkr_metal_packet_fog_lighting(root->frame),
         root->frame->view_position.xyz, input.world_position);
   }
 

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-25
 authority: adr
 ---
 
@@ -27,9 +27,15 @@ samples beyond the authored maximum retain the terminal fog value. The authored
 fog maximum may exceed the camera raster far plane. Injection, sky sampling and
 local-light selection establish rays at device depths 0 and 0.5 and extrapolate
 to the requested view depth. A scene authors one height medium and up to 16 density
-boxes. Boxes add nonnegative density multipliers; color and phase remain global.
-The initial phase is isotropic. Illumination comes from the directional sun and
-at most two local lights that have complete shadow-view groups. Rank eligible
+boxes. Boxes add nonnegative density multipliers; color, phase and sky lighting
+remain global. Each light scatters through a normalized Henyey-Greenstein phase
+with the authored `anisotropy` in [-0.95, 0.95]; zero reproduces the isotropic
+phase. Illumination comes from the directional sun and
+at most two local lights that have complete shadow-view groups. With a positive
+`sky_lighting` in [0, 1] and a published atmosphere, the medium also scatters
+the sky light's average radiance, the published L2 SH mean scaled by the
+environment intensity and diffuse controls, times `sky_lighting`. The `color`
+albedo scales every source per unit extinction. Rank eligible
 lights by their conservative illumination over the fog-frustum bounds, breaking
 ties by source identity. Each froxel uses one shadow comparison per source.
 
@@ -56,7 +62,9 @@ only to fog source and accumulation. Final scene-linear composition preserves
 underlying HDR radiance, including the empty-medium identity above that bound.
 
 The public frame carries scene settings; preparation validates and packs one
-928-byte parameter record per frame slot. Existing graph allocation, history
+944-byte parameter record per frame slot. The anisotropy occupies the phase
+lane of `height_distance_phase`; `lighting.x` holds sky lighting, zeroed unless
+the frame publishes an enabled atmosphere. Existing graph allocation, history
 completion and resource retirement own all device storage. Three-dimensional
 images use one array layer; depth is a separate descriptor dimension.
 
@@ -64,8 +72,9 @@ images use one array layer; depth is a separate descriptor dimension.
 
 Fog adds bounded per-froxel lighting, integration and temporal bandwidth.
 Unselected local lights retain surface lighting but do not illuminate the volume.
-Low resolution limits thin shafts and density boundaries. Isotropic scattering
-does not model forward-scattering phase peaks.
+Low resolution limits thin shafts and density boundaries. The sky-light term
+is unshadowed and uses the sky light's average rather than its directional
+distribution.
 
 ## Alternatives considered
 
@@ -75,8 +84,8 @@ fog would retain a previous camera's light path.
 
 ## Revisit when
 
-Measured frame cost, moving-light trails, phase anisotropy or refracted volume
-transport requires a different quality or storage policy.
+Measured frame cost, moving-light trails, directional sky scattering or refracted
+volume transport requires a different quality or storage policy.
 
 ## Implementation
 
@@ -89,8 +98,10 @@ transport requires a different quality or storage policy.
 
 The HDR and ray corrections have a retained arithmetic regression:
 `python3 tools/checks/check_froxel_regression.py`. It executes the production
-shared helpers through Slang CPU compilation and checks 36 values against
-independent radiative-transfer and geometric expectations. It covers 1,000,
+shared helpers through Slang CPU compilation and checks 70 values against
+independent radiative-transfer and geometric expectations, including the
+Henyey-Greenstein normalization and mean cosine, the phase-weighted source and
+the SH average against a Fibonacci-sphere mean. It covers 1,000,
 10,000 and 60,000 scene radiance with empty/thin fog, ordered local composition,
 50/500/infinite raster far planes at a fixed 200-unit fog range, a density box
 beyond the 50-unit far plane, and homogeneous absorption. The original helper
@@ -123,6 +134,14 @@ and retains the same HDR tolerance for matching inputs. Every bright witness
 requires matching geometry. These captures establish the bright-HDR identity,
 not whole-frame byte identity across differing raster winners.
 
+After the atmosphere became the only sky, its aerial perspective attenuates the
+bright patches by one half-float step: 29,984/14,992/29,984 with fog off or
+empty and 29,968/14,984/29,968 with thin fog. The checker still passes: the
+empty-medium identity holds within 0.000061 relative over 230,398 pixels, and
+common sky pixels differ by at most 0.0000076 between the two far planes
+(snapshot reports sha256:b58b7cc1, b1ee2d9e, 809f9220, d77b13df and 96184db6
+for off, empty, thin, range 50 and range 500).
+
 Earlier Release and editor wrappers compile the production shaders and host contracts.
 Native Metal reflection and API validation pass. The lifecycle fixture checks
 completed history selection, camera reprojection, medium/projection invalidation,
@@ -149,6 +168,15 @@ the shader contract stays **UNALIGNED** under
 [ADR-044](044-shader-cross-backend-contract.md). Exact commands, report digests
 and retained payloads are indexed in the
 [local evidence ledger](../../assets/verification/renderer-features/froxel-evidence-digests.txt).
+
+On Bistro (`local.froxel.bistro.sky`, sky lighting 1, anisotropy 0.6) a
+reference region changes from RGB (0.058, 0.073, 0.069) with the isotropic
+unlit-sky medium to (0.061, 0.081, 0.084). Metal API validation of that case
+passes without diagnostics (report
+sha256:4dc24f8764aa8d51942636b77759b2f7019790e66f353395c7d84075091a302e).
+Vulkan SPIR-V validation/reflection confirms `lighting` at byte 928 of the
+944-byte record
+([fog-spirv.txt](../../assets/verification/renderer-features/fog-spirv.txt)).
 
 The corrected graph accounting reports exactly 11,059,200 added image bytes
 for six 80×45×64 volumes in the current two-slot renderer.

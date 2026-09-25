@@ -26,7 +26,9 @@ bool8_t vkr_froxel_fog_settings_valid(const VkrFroxelFogSettings *settings) {
       settings->color.z > 1.0f || !isfinite(settings->density) ||
       settings->density < 0.0f || !isfinite(settings->base_height) ||
       !isfinite(settings->height_falloff) || settings->height_falloff < 0.0f ||
-      !isfinite(settings->max_distance) || settings->max_distance <= 0.0f)
+      !isfinite(settings->max_distance) || settings->max_distance <= 0.0f ||
+      !(settings->sky_lighting >= 0.0f && settings->sky_lighting <= 1.0f) ||
+      !(settings->anisotropy >= -0.95f && settings->anisotropy <= 0.95f))
     return false_v;
   for (uint32_t i = 0; i < settings->box_count; ++i) {
     const VkrFroxelDensityBox *box = &settings->boxes[i];
@@ -161,13 +163,17 @@ VkrFroxelFogGpuParams vkr_froxel_fog_prepare(const VkrFrameInput *input,
       .inverse_raster_view_projection = mat4_inverse(view_projection),
       .color_density = {s->color.x, s->color.y, s->color.z, s->density},
       .height_distance_phase = {s->base_height, s->height_falloff,
-                                s->max_distance, 0.0f},
+                                s->max_distance, s->anisotropy},
       .depth_mapping = {near_distance, log_range, 1.0f / log_range, 0.0f},
       .temporal_clamp = {0.9f, 0.25f, 4.0f, 1e-6f},
       .grid_dimensions_cell_pixels =
           {Max(width / VKR_FROXEL_FOG_CELL_PIXELS, 1u),
            Max(height / VKR_FROXEL_FOG_CELL_PIXELS, 1u), VKR_FROXEL_FOG_DEPTH,
            VKR_FROXEL_FOG_CELL_PIXELS},
+      .lighting = {input->sky && input->sky->atmosphere.enabled
+                       ? s->sky_lighting
+                       : 0.0f,
+                   0.0f, 0.0f, 0.0f},
   };
   params.selected_local_indices_count[3] = s->box_count;
   for (uint32_t i = 0; i < s->box_count; ++i) {
@@ -206,7 +212,10 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
     HASH(input->world->publication_generation);
     HASH(input->world->caster_bounds_generation);
   }
+  HASH(params->lighting);
   if (input->lighting) {
+    /* The sky-light coefficients belong to the published source cube. */
+    HASH(input->lighting->ibl_source);
     HASH(input->lighting->directional_enabled);
     HASH(input->lighting->directional_direction);
     HASH(input->lighting->directional_color);

@@ -1740,6 +1740,14 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_froxel_integrate(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_FROXEL_APPLY:
     return vkr_vk_prepare_froxel_apply(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_SKY_VIEW_LUT:
+    return vkr_vk_prepare_sky(renderer, &prepared->compute, pass, true_v);
+  case VKR_RG_EXECUTOR_AERIAL_PERSPECTIVE:
+    return vkr_vk_prepare_sky(renderer, &prepared->compute, pass, false_v);
+  case VKR_RG_EXECUTOR_CLOUD_SHADOW:
+    return vkr_vk_prepare_cloud_shadow(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_CLOUD_TRACE:
+    return vkr_vk_prepare_cloud_trace(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SDSM_REDUCE:
     return vkr_vk_prepare_deferred_sdsm(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
@@ -1862,6 +1870,8 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   slot->froxel_history_input = NULL;
   slot->froxel_history_output = NULL;
   slot->froxel_history_valid = false_v;
+  slot->cloud_history_input = NULL;
+  slot->cloud_history_output = NULL;
   slot->temporal_previous_view_projection =
       renderer->graph->packet->temporal.current_view_projection;
   slot->temporal_previous_frame_index =

@@ -632,7 +632,8 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
   VkrEditorPassPayload editor_payload;
   VkrUiPassPayload ui_payload;
   const VkrScene *active_scene;
-  VkrSkyboxPassPayload skybox_payload;
+  VkrSkyPassPayload sky_payload;
+  bool8_t has_sky;
   VkrTextureHandle frame_ibl_source;
   bool8_t frame_ibl_enabled;
   float32_t frame_ibl_intensity;
@@ -977,47 +978,89 @@ vkr_internal void vkr_standard_scene_runtime_scale_picking_payload(
   }
 }
 
-/* Selects the frame IBL source and the skybox from a ready scene
-   environment or the default IBL. */
+/* The published cloud layer drifts with its wind. Offsets wrap at the weather
+   period, where the cloud noise tiles without a seam. */
+vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
+    VkrStandardSceneRuntime *application, float64_t delta) {
+  const VkrScene *scene = application->active_scene;
+  if (!scene || !scene->atmosphere.active_revision ||
+      !scene->atmosphere.active_clouds.enabled || !isfinite(delta) ||
+      delta <= 0.0)
+    return;
+  const float64_t period = (float64_t)VKR_CLOUD_WIND_PERIOD_M;
+  const float64_t wind[2] = {scene->atmosphere.active_clouds.wind_mps.x,
+                             scene->atmosphere.active_clouds.wind_mps.y};
+  for (uint32_t i = 0; i < 2u; ++i) {
+    const float64_t offset =
+        fmod(application->cloud_wind_offset_m[i] + wind[i] * delta, period);
+    application->cloud_wind_offset_m[i] =
+        offset < 0.0 ? offset + period : offset;
+  }
+}
+
+/* Narrowing can round an offset just below the period up to it. */
+vkr_internal float32_t
+vkr_standard_scene_runtime_cloud_offset(float64_t offset) {
+  const float32_t narrowed = (float32_t)offset;
+  return narrowed < VKR_CLOUD_WIND_PERIOD_M ? narrowed : 0.0f;
+}
+
+/* Selects the visible sky and the frame IBL from the scene's ready global
+   environment. A disabled sky light keeps an atmosphere sky visible and
+   removes only its image-based lighting. */
 vkr_internal void vkr_standard_scene_runtime_prepare_environment(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
   const VkrScene *active_scene = draw->active_scene;
-  draw->skybox_payload = (VkrSkyboxPassPayload){
-      .cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .material = VKR_MATERIAL_HANDLE_INVALID,
-      .solar_disk_radiance = vec3_new(0.0f, 0.0f, 0.0f),
+  VkrAtmosphereSettings no_atmosphere = vkr_atmosphere_settings_defaults();
+  no_atmosphere.enabled = false_v;
+  draw->sky_payload = (VkrSkyPassPayload){
+      .atmosphere = no_atmosphere,
+      .transmittance = VKR_TEXTURE_HANDLE_INVALID,
+      .multiple_scattering = VKR_TEXTURE_HANDLE_INVALID,
+      .clouds = vkr_cloud_settings_defaults(),
   };
-  const bool8_t scene_environment_ready =
-      active_scene && active_scene->environment.enabled &&
-      active_scene->environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_READY;
-  const VkrSceneEnvironment *scene_environment =
-      scene_environment_ready ? &active_scene->environment : NULL;
-  draw->frame_ibl_source = VKR_TEXTURE_HANDLE_INVALID;
-  if (scene_environment) {
-    draw->frame_ibl_source = scene_environment->source_cubemap;
-  } else if (application->assets.world_resources.ibl_default_ready) {
-    draw->frame_ibl_source =
-        application->assets.world_resources.ibl_fallback_source_cubemap;
-  }
-  draw->skybox_payload.cubemap = application->skybox_system.initialized
-                                     ? draw->frame_ibl_source
-                                     : VKR_TEXTURE_HANDLE_INVALID;
-  draw->frame_ibl_enabled = draw->frame_ibl_source.id != 0;
-  draw->frame_ibl_intensity = 1.0f;
-  draw->frame_ibl_diffuse_intensity = 1.0f;
-  draw->frame_ibl_specular_intensity = 1.0f;
-  if (scene_environment) {
-    draw->frame_ibl_enabled = true_v;
-    draw->frame_ibl_intensity = scene_environment->intensity;
-    draw->frame_ibl_diffuse_intensity = scene_environment->diffuse_intensity;
-    draw->frame_ibl_specular_intensity = scene_environment->specular_intensity;
-    if (active_scene->atmosphere.active_revision &&
+  draw->has_sky = false_v;
+  const VkrSceneEnvironment *environment =
+      active_scene && active_scene->environment.bake_state ==
+                          VKR_SCENE_ENV_BAKE_STATE_READY
+          ? &active_scene->environment
+          : NULL;
+  const bool8_t sky_light = environment && environment->enabled;
+
+  /* The published generation's medium travels with the lookup textures it
+     baked, so a pending candidate never mixes with the visible sky; the sun
+     is the scene's current one. */
+  if (application->skybox_system.initialized && environment) {
+    if (environment->source_kind == VKR_SCENE_ENV_SOURCE_ATMOSPHERE &&
+        active_scene->atmosphere.active_revision &&
         active_scene->atmosphere.active_settings.enabled) {
-      draw->skybox_payload.solar_disk_radiance =
-          active_scene->atmosphere.active_result.solar_disk_radiance;
+      draw->sky_payload.atmosphere =
+          vkr_scene_atmosphere_frame_settings(active_scene);
+      draw->sky_payload.clouds = active_scene->atmosphere.active_clouds;
+      draw->sky_payload.cloud_wind_offset_m =
+          vec2_new(vkr_standard_scene_runtime_cloud_offset(
+                       application->cloud_wind_offset_m[0]),
+                   vkr_standard_scene_runtime_cloud_offset(
+                       application->cloud_wind_offset_m[1]));
+      draw->sky_payload.transmittance = environment->atmosphere_transmittance;
+      draw->sky_payload.multiple_scattering =
+          environment->atmosphere_multiple_scattering;
+      draw->has_sky = true_v;
+    } else if (environment->source_kind == VKR_SCENE_ENV_SOURCE_CONSTANT) {
+      draw->sky_payload.constant_radiance = environment->constant_radiance;
+      draw->has_sky = true_v;
     }
   }
+
+  draw->frame_ibl_source =
+      sky_light ? environment->source_cubemap : VKR_TEXTURE_HANDLE_INVALID;
+  draw->frame_ibl_enabled = sky_light;
+  draw->frame_ibl_intensity = sky_light ? environment->intensity : 1.0f;
+  draw->frame_ibl_diffuse_intensity =
+      sky_light ? environment->diffuse_intensity : 1.0f;
+  draw->frame_ibl_specular_intensity =
+      sky_light ? environment->specular_intensity : 1.0f;
 }
 
 /* Applies queued world text edits and prepares visible text draws. Returns
@@ -1245,12 +1288,10 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
       .local_shadow = draw->local_shadow_payload.view_count
                           ? &draw->local_shadow_payload
                           : NULL,
-      .skybox =
-          !draw->scene_stopped && !application->config->disable_skybox &&
-                  draw->skybox_payload.cubemap.id != 0 &&
-                  draw->skybox_payload.cubemap.generation != VKR_INVALID_ID
-              ? &draw->skybox_payload
-              : NULL,
+      .sky = !draw->scene_stopped && !application->config->disable_skybox &&
+                     draw->has_sky
+                 ? &draw->sky_payload
+                 : NULL,
       .ui = &draw->ui_payload,
       .editor = draw->has_editor ? &draw->editor_payload : NULL,
       .picking = draw->has_picking ? &draw->picking_payload : NULL,
@@ -1572,19 +1613,22 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   vkr_camera_registry_update_all(camera_system);
 
   if (application->active_scene) {
+    vkr_scene_sync_sun(application->active_scene, delta);
     (void)vkr_world_resources_prepare_scene_atmosphere(
         &application->assets, &application->assets.world_resources,
         application->active_scene);
     vkr_world_resources_poll_scene_atmosphere(&application->assets,
                                               application->active_scene);
+    vkr_standard_scene_runtime_advance_cloud_wind(application, delta);
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
                                         application->active_scene);
     if (application->active_scene->atmosphere.active_revision &&
         application->active_scene->atmosphere.active_settings.enabled) {
+      const VkrAtmosphereSettings frame =
+          vkr_scene_atmosphere_frame_settings(application->active_scene);
       vkr_lighting_system_apply_atmosphere_sun(
-          &application->lighting_system,
-          &application->active_scene->atmosphere.active_settings,
-          &application->active_scene->atmosphere.active_result);
+          &application->lighting_system, &frame,
+          vkr_scene_atmosphere_frame_irradiance(application->active_scene));
     }
   }
 

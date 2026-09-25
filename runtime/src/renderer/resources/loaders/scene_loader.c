@@ -67,18 +67,20 @@ typedef struct SceneDirectionalLightImport {
   float32_t intensity;
   Vec3 direction_local;
   float32_t sun_angular_diameter_degrees;
+  float32_t temperature_kelvin;
   bool8_t enabled;
+  bool8_t atmosphere_sun;
 } SceneDirectionalLightImport;
 
+/* Sky-light controls for the global environment. The source is resolved after
+   the atmosphere block is parsed: an enabled atmosphere, else `constant`. */
 typedef struct SceneEnvironmentImport {
   bool8_t has_block;
   bool8_t valid;
   bool8_t enabled;
+  bool8_t has_constant;
   VkrSceneEnvironmentSourceKind source_kind;
-  String8 cubemap_path;
-  String8 cubemap_base_path;
-  String8 cubemap_extension;
-  String8 equirect_path;
+  Vec3 constant_radiance;
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
@@ -89,7 +91,8 @@ typedef struct SceneAtmosphereImport {
   bool8_t has_block;
   bool8_t valid;
   VkrAtmosphereSettings settings;
-  float32_t sh_deringing;
+  /** The optional `clouds` block publishes with the atmosphere revision. */
+  VkrCloudSettings clouds;
 } SceneAtmosphereImport;
 
 typedef struct SceneFogImport {
@@ -232,9 +235,6 @@ typedef struct VkrSceneLoaderAsyncPayload {
   SceneAtmosphereImport atmosphere_import;
   SceneFogImport fog_import;
   SceneFroxelFogImport froxel_fog_import;
-  VkrTexturePreparedLoad environment_prepared;
-  bool8_t environment_prepared_ready;
-  bool8_t environment_prepare_failed;
   bool8_t environment_applied;
   bool8_t atmosphere_applied;
   bool8_t fog_applied;
@@ -285,6 +285,9 @@ vkr_internal bool8_t scene_loader_alloc_copy_string(VkrAllocator *allocator,
 vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void);
 vkr_internal SceneEnvironmentImport
 scene_loader_parse_environment_import(String8 json);
+vkr_internal void
+scene_loader_resolve_environment_source(SceneEnvironmentImport *import,
+                                        bool8_t atmosphere_enabled);
 vkr_internal SceneAtmosphereImport scene_atmosphere_import_defaults(void);
 vkr_internal SceneAtmosphereImport
 scene_loader_parse_atmosphere_import(String8 json);
@@ -318,10 +321,10 @@ scene_loader_reset_scene_environment(VkrScene *scene,
                                      struct VkrRenderAssets *assets);
 vkr_internal void scene_loader_apply_environment_import(
     VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneEnvironmentImport *environment_import,
-    const VkrTexturePreparedLoad *prepared_environment, bool8_t prepare_failed);
+    const SceneEnvironmentImport *environment_import);
 vkr_internal bool8_t scene_loader_apply_atmosphere_import(
-    VkrScene *scene, const SceneAtmosphereImport *atmosphere_import);
+    VkrScene *scene, const SceneAtmosphereImport *atmosphere_import,
+    float32_t sh_deringing);
 vkr_internal void
 scene_loader_reset_scene_reflection_probes(VkrScene *scene,
                                            struct VkrRenderAssets *assets);
@@ -672,7 +675,19 @@ scene_directional_light_import_defaults(void) {
       .sun_angular_diameter_degrees =
           VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES,
       .enabled = true_v,
+      .atmosphere_sun = true_v,
   };
+}
+
+vkr_internal bool8_t scene_loader_constant_radiance_valid(Vec3 radiance) {
+  const float32_t channels[] = {radiance.x, radiance.y, radiance.z};
+  for (uint32_t i = 0; i < ArrayCount(channels); ++i) {
+    if (!isfinite(channels[i]) || channels[i] < 0.0f ||
+        channels[i] > VKR_SCENE_ENVIRONMENT_CONSTANT_MAX) {
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
@@ -680,11 +695,9 @@ vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
       .has_block = false_v,
       .valid = true_v,
       .enabled = false_v,
+      .has_constant = false_v,
       .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-      .cubemap_path = {0},
-      .cubemap_base_path = {0},
-      .cubemap_extension = {0},
-      .equirect_path = {0},
+      .constant_radiance = {0},
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
@@ -736,64 +749,68 @@ scene_loader_parse_environment_import(String8 json) {
     return result;
   }
 
-  if (!result.enabled) {
-    return result;
+  /* Image skies were replaced by the atmosphere (ADR-058). A stale field is
+     reported instead of silently dropping the author's sky. */
+  static const char *const removed_fields[] = {"equirect", "cubemap"};
+  for (uint32_t i = 0; i < ArrayCount(removed_fields); ++i) {
+    VkrJsonReader removed_reader = environment_object;
+    if (vkr_json_find_field(&removed_reader, removed_fields[i])) {
+      log_error("Scene loader: $.environment.%s was removed; author "
+                "$.atmosphere for a sky or $.environment.constant for uniform "
+                "radiance",
+                removed_fields[i]);
+      result.valid = false_v;
+      return result;
+    }
   }
 
-  VkrJsonReader cubemap_reader = environment_object;
-  const bool8_t has_cubemap_field =
-      vkr_json_find_field(&cubemap_reader, "cubemap");
-  const bool8_t has_equirect_field = scene_json_read_string_field(
-      &environment_object, "equirect", &result.equirect_path);
-  const bool8_t has_equirect =
-      has_equirect_field && result.equirect_path.length > 0u;
-
-  if (has_cubemap_field && has_equirect) {
-    log_warn("Scene loader: environment fields 'cubemap' and 'equirect' are "
-             "mutually exclusive; using fallback IBL");
-    result.valid = false_v;
-    return result;
-  }
-
-  if (has_equirect) {
-    result.source_kind = VKR_SCENE_ENV_SOURCE_EQUIRECT;
-    return result;
-  }
-
-  if (!has_cubemap_field || scene_json_parse_null(&cubemap_reader)) {
-    result.valid = false_v;
-    return result;
-  }
-
-  VkrJsonReader cubemap_object = {0};
-  if (!vkr_json_enter_object(&cubemap_reader, &cubemap_object)) {
-    result.valid = false_v;
-    return result;
-  }
-  VkrJsonReader base_path_reader = cubemap_object;
-  VkrJsonReader extension_reader = cubemap_object;
-  const bool8_t has_base_path_field =
-      vkr_json_find_field(&base_path_reader, "base_path");
-  const bool8_t has_extension_field =
-      vkr_json_find_field(&extension_reader, "extension");
-  const bool8_t has_path = scene_json_read_string_field(&cubemap_object, "path",
-                                                        &result.cubemap_path);
-  const bool8_t has_base_path = scene_json_read_string_field(
-      &cubemap_object, "base_path", &result.cubemap_base_path);
-  const bool8_t has_extension = scene_json_read_string_field(
-      &cubemap_object, "extension", &result.cubemap_extension);
-  const bool8_t direct = has_path && result.cubemap_path.length > 0u;
-  const bool8_t faces = has_base_path && has_extension &&
-                        result.cubemap_base_path.length > 0u &&
-                        result.cubemap_extension.length > 0u;
-  if (direct == faces ||
-      (direct && (has_base_path_field || has_extension_field))) {
-    result.valid = false_v;
-  } else {
-    result.source_kind = VKR_SCENE_ENV_SOURCE_CUBEMAP;
+  VkrJsonReader constant_reader = environment_object;
+  if (vkr_json_find_field(&constant_reader, "constant")) {
+    if (!scene_json_parse_vec3(&constant_reader, &result.constant_radiance) ||
+        !scene_loader_constant_radiance_valid(result.constant_radiance)) {
+      log_error("Scene loader: $.environment.constant must be three finite "
+                "values in [0, 65504]");
+      result.valid = false_v;
+      return result;
+    }
+    result.has_constant = true_v;
   }
 
   return result;
+}
+
+/* An enabled atmosphere supplies the global source, and every sky-light
+   control applies to it. Otherwise only an authored constant can. */
+vkr_internal void
+scene_loader_resolve_environment_source(SceneEnvironmentImport *import,
+                                        bool8_t atmosphere_enabled) {
+  if (!import->valid) {
+    return;
+  }
+
+  if (atmosphere_enabled) {
+    if (import->has_constant) {
+      log_error("Scene loader: $.environment.constant conflicts with an "
+                "enabled $.atmosphere");
+      import->valid = false_v;
+      return;
+    }
+    if (!import->has_block) {
+      import->enabled = true_v;
+    }
+    import->source_kind = VKR_SCENE_ENV_SOURCE_ATMOSPHERE;
+    return;
+  }
+
+  if (import->has_constant) {
+    import->source_kind = VKR_SCENE_ENV_SOURCE_CONSTANT;
+    return;
+  }
+  if (import->enabled) {
+    log_warn("Scene loader: enabled $.environment needs $.atmosphere or "
+             "$.environment.constant; no global environment is used");
+    import->valid = false_v;
+  }
 }
 
 vkr_internal SceneAtmosphereImport scene_atmosphere_import_defaults(void) {
@@ -803,8 +820,59 @@ vkr_internal SceneAtmosphereImport scene_atmosphere_import_defaults(void) {
       .has_block = false_v,
       .valid = true_v,
       .settings = settings,
-      .sh_deringing = 0.0f,
+      .clouds = vkr_cloud_settings_defaults(),
   };
+}
+
+/* Like the atmosphere, a supplied clouds object is validated even when it is
+   disabled. An enabled layer requires an enabled atmosphere. */
+vkr_internal bool8_t scene_loader_parse_cloud_import(String8 json,
+                                                     VkrCloudSettings *out) {
+  VkrJsonReader clouds_reader = vkr_json_reader_from_string(json);
+  if (!vkr_json_find_field(&clouds_reader, "clouds") ||
+      scene_json_parse_null(&clouds_reader))
+    return true_v;
+
+  VkrJsonReader clouds_object = {0};
+  if (!vkr_json_enter_object(&clouds_reader, &clouds_object))
+    goto invalid;
+  out->enabled = true_v;
+  VkrJsonReader field = clouds_object;
+  if (vkr_json_find_field(&field, "enabled") &&
+      !vkr_json_parse_bool(&field, &out->enabled))
+    goto invalid;
+  field = clouds_object;
+  if (vkr_json_find_field(&field, "base_altitude_m") &&
+      !vkr_json_parse_float(&field, &out->base_altitude_m))
+    goto invalid;
+  field = clouds_object;
+  if (vkr_json_find_field(&field, "top_altitude_m") &&
+      !vkr_json_parse_float(&field, &out->top_altitude_m))
+    goto invalid;
+  field = clouds_object;
+  if (vkr_json_find_field(&field, "coverage") &&
+      !vkr_json_parse_float(&field, &out->coverage))
+    goto invalid;
+  field = clouds_object;
+  if (vkr_json_find_field(&field, "density") &&
+      !vkr_json_parse_float(&field, &out->density))
+    goto invalid;
+  field = clouds_object;
+  if (vkr_json_find_field(&field, "wind_mps") &&
+      !scene_json_parse_vec2(&field, &out->wind_mps))
+    goto invalid;
+
+  VkrCloudSettings validation = *out;
+  validation.enabled = true_v;
+  if (vkr_cloud_settings_valid(&validation))
+    return true_v;
+
+invalid:
+  log_error("Scene loader: $.clouds must contain base_altitude_m >= 0, "
+            "top_altitude_m <= 20000 and at least 100 above the base, "
+            "coverage in [0,1], density in [0,1] per metre and finite "
+            "wind_mps components within 200");
+  return false_v;
 }
 
 /* Atmosphere JSON is stricter than a disabled renderer packet: every supplied
@@ -837,8 +905,20 @@ scene_loader_parse_atmosphere_import(String8 json) {
       !scene_json_parse_vec3(&field, &result.settings.sun_direction))
     goto invalid;
   field = atmosphere_object;
-  if (vkr_json_find_field(&field, "solar_irradiance") &&
+  const bool8_t has_solar_irradiance =
+      vkr_json_find_field(&field, "solar_irradiance");
+  if (has_solar_irradiance &&
       !scene_json_parse_vec3(&field, &result.settings.solar_irradiance))
+    goto invalid;
+  VkrAtmosphereSunAuthoring sun = {0};
+  field = atmosphere_object;
+  sun.has_temperature = vkr_json_find_field(&field, "sun_temperature_kelvin");
+  if (sun.has_temperature &&
+      !vkr_json_parse_float(&field, &sun.temperature_kelvin))
+    goto invalid;
+  field = atmosphere_object;
+  sun.has_illuminance = vkr_json_find_field(&field, "sun_illuminance");
+  if (sun.has_illuminance && !vkr_json_parse_float(&field, &sun.illuminance))
     goto invalid;
   field = atmosphere_object;
   if (vkr_json_find_field(&field, "ground_albedo") &&
@@ -852,6 +932,10 @@ scene_loader_parse_atmosphere_import(String8 json) {
   if (vkr_json_find_field(&field, "sun_angular_diameter_degrees") &&
       !vkr_json_parse_float(&field,
                             &result.settings.sun_angular_diameter_degrees))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "sun_glow") &&
+      !vkr_json_parse_float(&field, &result.settings.sun_glow))
     goto invalid;
   field = atmosphere_object;
   if (vkr_json_find_field(&field, "rayleigh_density_scale") &&
@@ -870,14 +954,32 @@ scene_loader_parse_atmosphere_import(String8 json) {
       !vkr_json_parse_float(&field, &result.settings.mie_anisotropy))
     goto invalid;
   field = atmosphere_object;
-  if (vkr_json_find_field(&field, "sh_deringing") &&
-      !vkr_json_parse_float(&field, &result.sh_deringing))
+  if (vkr_json_find_field(&field, "metres_per_world_unit") &&
+      !vkr_json_parse_float(&field, &result.settings.metres_per_world_unit))
     goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "sh_deringing")) {
+    log_error("Scene loader: $.atmosphere.sh_deringing moved to "
+              "$.environment.sh_deringing");
+    result.valid = false_v;
+    return result;
+  }
+  if (has_solar_irradiance && (sun.has_temperature || sun.has_illuminance)) {
+    log_error("Scene loader: $.atmosphere.solar_irradiance conflicts with "
+              "sun_temperature_kelvin and sun_illuminance");
+    result.valid = false_v;
+    return result;
+  }
+  if (!vkr_atmosphere_apply_sun_authoring(&result.settings, &sun)) {
+    log_error("Scene loader: $.atmosphere.sun_temperature_kelvin must be in "
+              "[1000,40000] and sun_illuminance finite and nonnegative");
+    result.valid = false_v;
+    return result;
+  }
 
   VkrAtmosphereSettings validation = result.settings;
   validation.enabled = true_v;
-  if (vkr_atmosphere_settings_valid(&validation) &&
-      isfinite(result.sh_deringing) && result.sh_deringing >= 0.0f)
+  if (vkr_atmosphere_settings_valid(&validation))
     return result;
 
 invalid:
@@ -886,8 +988,8 @@ invalid:
             "direction; finite nonnegative solar_irradiance; density scales in "
             "[0,100]; "
             "ground_albedo in [0,1]; altitude in [0,100000]; angular "
-            "diameter in [1e-16,5]; mie_anisotropy in [-.95,.95]; and finite "
-            "nonnegative sh_deringing");
+            "diameter in [1e-16,5]; sun_glow in [0,100]; mie_anisotropy in "
+            "[-.95,.95]; and metres_per_world_unit in [0.001,1000]");
   return result;
 }
 
@@ -949,6 +1051,14 @@ vkr_internal SceneFogImport scene_loader_parse_fog_import(String8 json) {
   if (vkr_json_find_field(&field, "sky_distance") &&
       !vkr_json_parse_float(&field, &result.settings.sky_distance))
     goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "sky_lighting") &&
+      !vkr_json_parse_float(&field, &result.settings.sky_lighting))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "anisotropy") &&
+      !vkr_json_parse_float(&field, &result.settings.anisotropy))
+    goto invalid;
 
   /* Force full authored-value validation: disabled frame packets may be zero
      for backwards compatibility, while an authored fog object cannot hide a
@@ -962,7 +1072,8 @@ invalid:
   result.valid = false_v;
   log_error("Scene loader: $.fog must contain finite nonnegative "
             "color/density/height_falloff, finite base_height, positive "
-            "max_distance/sky_distance, and sky_distance <= max_distance");
+            "max_distance/sky_distance, sky_distance <= max_distance, "
+            "sky_lighting in [0,1] and anisotropy in [-.95,.95]");
   return result;
 }
 
@@ -1010,6 +1121,14 @@ scene_loader_parse_froxel_fog_import(String8 json) {
       !vkr_json_parse_float(&field, &result.settings.max_distance))
     goto invalid;
   field = fog_object;
+  if (vkr_json_find_field(&field, "sky_lighting") &&
+      !vkr_json_parse_float(&field, &result.settings.sky_lighting))
+    goto invalid;
+  field = fog_object;
+  if (vkr_json_find_field(&field, "anisotropy") &&
+      !vkr_json_parse_float(&field, &result.settings.anisotropy))
+    goto invalid;
+  field = fog_object;
   if (vkr_json_find_field(&field, "density_boxes")) {
     vkr_json_skip_whitespace(&field);
     if (field.pos >= field.length || field.data[field.pos++] != '[')
@@ -1047,10 +1166,10 @@ scene_loader_parse_froxel_fog_import(String8 json) {
 
 invalid:
   result.valid = false_v;
-  log_error(
-      "Scene loader: $.volumetric_fog requires color in [0,1], "
-      "finite nonnegative density/height_falloff, finite base_height, "
-      "positive max_distance, and at most 16 ordered finite density boxes");
+  log_error("Scene loader: $.volumetric_fog requires color in [0,1], "
+            "finite nonnegative density/height_falloff, finite base_height, "
+            "positive max_distance, sky_lighting in [0,1], anisotropy in "
+            "[-.95,.95], and at most 16 ordered finite density boxes");
   return result;
 }
 
@@ -1638,66 +1757,63 @@ scene_loader_reset_scene_environment(VkrScene *scene, VkrRenderAssets *assets) {
   }
 
   if (assets) {
-    if (scene->atmosphere.candidate_prefilter_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &assets->texture_system,
-          scene->atmosphere.candidate_prefilter_cubemap);
-    }
-    if (scene->atmosphere.candidate_source_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &assets->texture_system, scene->atmosphere.candidate_source_cubemap);
-    }
-    if (scene->atmosphere.retired_environment.prefilter_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &assets->texture_system,
-          scene->atmosphere.retired_environment.prefilter_cubemap);
-    }
-    if (scene->atmosphere.retired_environment.source_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &assets->texture_system,
-          scene->atmosphere.retired_environment.source_cubemap);
-    }
-    if (scene->atmosphere.retired_environment.delivery_equirect.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &assets->texture_system,
-          scene->atmosphere.retired_environment.delivery_equirect);
-    }
-    if (scene->environment.prefilter_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &assets->texture_system, scene->environment.prefilter_cubemap);
-    }
-    if (scene->environment.source_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(&assets->texture_system,
-                                           scene->environment.source_cubemap);
-    }
-    if (scene->environment.delivery_equirect.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &assets->texture_system, scene->environment.delivery_equirect);
+    const VkrTextureHandle handles[] = {
+        scene->atmosphere.candidate_prefilter_cubemap,
+        scene->atmosphere.candidate_source_cubemap,
+        scene->atmosphere.candidate_transmittance,
+        scene->atmosphere.candidate_multiple_scattering,
+        scene->atmosphere.retired_environment.prefilter_cubemap,
+        scene->atmosphere.retired_environment.source_cubemap,
+        scene->atmosphere.retired_environment.atmosphere_transmittance,
+        scene->atmosphere.retired_environment.atmosphere_multiple_scattering,
+        scene->environment.prefilter_cubemap,
+        scene->environment.source_cubemap,
+        scene->environment.atmosphere_transmittance,
+        scene->environment.atmosphere_multiple_scattering,
+    };
+    for (uint32_t i = 0; i < ArrayCount(handles); ++i) {
+      if (handles[i].id != 0) {
+        vkr_texture_system_release_by_handle(&assets->texture_system,
+                                             handles[i]);
+      }
     }
   }
 
-  scene->environment =
-      (VkrSceneEnvironment){.enabled = false_v,
-                            .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-                            .intensity = 1.0f,
-                            .diffuse_intensity = 1.0f,
-                            .specular_intensity = 1.0f,
-                            .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
-                            .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-                            .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-                            .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE};
+  scene->environment = (VkrSceneEnvironment){
+      .enabled = false_v,
+      .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .atmosphere_transmittance = VKR_TEXTURE_HANDLE_INVALID,
+      .atmosphere_multiple_scattering = VKR_TEXTURE_HANDLE_INVALID,
+      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE};
   scene->atmosphere = (VkrSceneAtmosphere){
+      .authored_settings = vkr_atmosphere_settings_defaults(),
+      .live_settings = vkr_atmosphere_settings_defaults(),
       .requested_settings = vkr_atmosphere_settings_defaults(),
       .candidate_settings = vkr_atmosphere_settings_defaults(),
       .active_settings = vkr_atmosphere_settings_defaults(),
+      .requested_clouds = vkr_cloud_settings_defaults(),
+      .candidate_clouds = vkr_cloud_settings_defaults(),
+      .active_clouds = vkr_cloud_settings_defaults(),
       .retired_environment = {.source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-                              .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
                               .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
                               .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                              .atmosphere_transmittance =
+                                  VKR_TEXTURE_HANDLE_INVALID,
+                              .atmosphere_multiple_scattering =
+                                  VKR_TEXTURE_HANDLE_INVALID,
                               .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE},
       .candidate_source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .candidate_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_transmittance = VKR_TEXTURE_HANDLE_INVALID,
+      .candidate_multiple_scattering = VKR_TEXTURE_HANDLE_INVALID,
   };
+  scene->atmosphere.authored_settings.enabled = false_v;
+  scene->atmosphere.live_settings.enabled = false_v;
   scene->atmosphere.requested_settings.enabled = false_v;
   scene->atmosphere.candidate_settings.enabled = false_v;
   scene->atmosphere.active_settings.enabled = false_v;
@@ -1705,15 +1821,15 @@ scene_loader_reset_scene_environment(VkrScene *scene, VkrRenderAssets *assets) {
 
 vkr_internal void scene_loader_apply_environment_import(
     VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneEnvironmentImport *environment_import,
-    const VkrTexturePreparedLoad *prepared_environment,
-    bool8_t prepare_failed) {
+    const SceneEnvironmentImport *environment_import) {
   if (!scene) {
     return;
   }
 
   scene_loader_reset_scene_environment(scene, assets);
-  if (!environment_import || !environment_import->has_block) {
+  if (!environment_import ||
+      (!environment_import->has_block &&
+       environment_import->source_kind == VKR_SCENE_ENV_SOURCE_NONE)) {
     return;
   }
 
@@ -1724,129 +1840,43 @@ vkr_internal void scene_loader_apply_environment_import(
   scene->environment.sh_deringing = environment_import->sh_deringing;
   scene->environment.enabled = environment_import->enabled;
   scene->environment.source_kind = environment_import->source_kind;
+  scene->environment.constant_radiance = environment_import->constant_radiance;
 
   if (!environment_import->valid) {
-    log_warn("Scene loader: invalid environment block, using fallback IBL");
+    log_warn("Scene loader: invalid environment block; no global environment "
+             "is used");
     scene->environment.enabled = false_v;
-    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+    scene->environment.source_kind = VKR_SCENE_ENV_SOURCE_NONE;
     return;
   }
 
-  if (!environment_import->enabled) {
-    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+  /* The atmosphere publishes its tuple after its native bake completes. */
+  if (environment_import->source_kind != VKR_SCENE_ENV_SOURCE_CONSTANT ||
+      !environment_import->enabled) {
     return;
   }
 
   if (!assets) {
     log_warn("Scene loader: renderer missing while applying environment block");
     scene->environment.enabled = false_v;
-    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
     return;
-  }
-
-  /* Preparation already failed to load the source; record the failed load
-     instead of retrying it on this thread. */
-  if (prepare_failed) {
-    goto failed;
-  }
-
-  if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP) {
-    VkrTextureHandle source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-    VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
-    if (environment_import->cubemap_path.length > 0u) {
-      VkrTexturePreparedLoad local_prepared = {0};
-      const VkrTexturePreparedLoad *upload = prepared_environment;
-      if (!upload &&
-          !vkr_texture_system_prepare_load_from_file(
-              &assets->texture_system, environment_import->cubemap_path,
-              VKR_TEXTURE_RGBA_CHANNELS, &assets->scratch_allocator,
-              &local_prepared, &cubemap_error)) {
-        goto failed;
-      }
-      upload = upload ? upload : &local_prepared;
-      const bool8_t valid =
-          upload->description.type == VKR_TEXTURE_TYPE_CUBE_MAP;
-      const bool8_t finalized =
-          valid &&
-          vkr_texture_system_finalize_prepared_load(
-              &assets->texture_system, environment_import->cubemap_path, upload,
-              &source_cubemap, &cubemap_error);
-      vkr_texture_system_release_prepared_load(&local_prepared);
-      if (!finalized) {
-        goto failed;
-      }
-      vkr_texture_system_add_ref_by_handle(&assets->texture_system,
-                                           source_cubemap);
-    } else if (!vkr_texture_system_load_cube_map(
-                   &assets->texture_system,
-                   environment_import->cubemap_base_path,
-                   environment_import->cubemap_extension, &source_cubemap,
-                   &cubemap_error)) {
-      String8 err_str = vkr_renderer_get_error_string(cubemap_error);
-      log_warn("Scene loader: environment cubemap load failed for '%.*s': %.*s",
-               (int)environment_import->cubemap_base_path.length,
-               environment_import->cubemap_base_path.str, (int)err_str.length,
-               err_str.str);
-      goto failed;
-    }
-    scene->environment.source_cubemap = source_cubemap;
-  } else if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT) {
-    VkrTexturePreparedLoad local_prepared = {0};
-    const VkrTexturePreparedLoad *upload = prepared_environment;
-    VkrRendererError texture_error = VKR_RENDERER_ERROR_NONE;
-    if (!upload) {
-      if (!vkr_texture_system_prepare_load_from_file(
-              &assets->texture_system, environment_import->equirect_path,
-              VKR_TEXTURE_RGBA_CHANNELS, &assets->scratch_allocator,
-              &local_prepared, &texture_error)) {
-        goto failed;
-      }
-      upload = &local_prepared;
-    }
-
-    VkrTextureHandle delivery = VKR_TEXTURE_HANDLE_INVALID;
-    if (upload->description.type != VKR_TEXTURE_TYPE_2D ||
-        upload->description.format != VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT) {
-      vkr_texture_system_release_prepared_load(&local_prepared);
-      goto failed;
-    }
-    const bool8_t finalized = vkr_texture_system_finalize_prepared_load(
-        &assets->texture_system, environment_import->equirect_path, upload,
-        &delivery, &texture_error);
-    vkr_texture_system_release_prepared_load(&local_prepared);
-    if (!finalized) {
-      goto failed;
-    }
-    vkr_texture_system_add_ref_by_handle(&assets->texture_system, delivery);
-    scene->environment.delivery_equirect = delivery;
-    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_SOURCE_LOADING;
-  } else {
-    goto failed;
   }
 
   if (!vkr_world_resources_prepare_scene_environment(
           assets, &assets->world_resources, scene)) {
-    goto failed;
+    scene_loader_reset_scene_environment(scene, assets);
+    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
   }
-  if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT) {
-    log_info("Prepared scene HDR skybox environment: %.*s",
-             (int)environment_import->equirect_path.length,
-             environment_import->equirect_path.str);
-  }
-  return;
-
-failed:
-  scene_loader_reset_scene_environment(scene, assets);
-  scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
 }
 
 vkr_internal bool8_t scene_loader_apply_atmosphere_import(
-    VkrScene *scene, const SceneAtmosphereImport *atmosphere_import) {
+    VkrScene *scene, const SceneAtmosphereImport *atmosphere_import,
+    float32_t sh_deringing) {
   if (!scene || !atmosphere_import || !atmosphere_import->has_block)
     return true_v;
   if (!atmosphere_import->valid ||
       !vkr_scene_request_atmosphere(scene, &atmosphere_import->settings,
-                                    atmosphere_import->sh_deringing)) {
+                                    &atmosphere_import->clouds, sh_deringing)) {
     log_error("Scene loader: rejected $.atmosphere before scene mutation");
     return false_v;
   }
@@ -2716,6 +2746,16 @@ vkr_internal bool8_t scene_json_parse_directional_light(
     out_entity->directional_light.enabled = enabled;
   }
 
+  VkrJsonReader atmosphere_sun_reader = dir_light_obj;
+  if (vkr_json_find_field(&atmosphere_sun_reader, "atmosphere_sun") &&
+      !vkr_json_parse_bool(&atmosphere_sun_reader,
+                           &out_entity->directional_light.atmosphere_sun)) {
+    log_error("Scene loader: entity %u directional_light atmosphere_sun must "
+              "be a boolean",
+              entity_index);
+    return false_v;
+  }
+
   Vec3 color;
   if (scene_json_read_vec3_field(&dir_light_obj, "color", &color)) {
     out_entity->directional_light.color = color;
@@ -2746,6 +2786,21 @@ vkr_internal bool8_t scene_json_parse_directional_light(
     }
     out_entity->directional_light.sun_angular_diameter_degrees =
         sun_angular_diameter_degrees;
+  }
+
+  VkrJsonReader temperature_reader = dir_light_obj;
+  if (vkr_json_find_field(&temperature_reader, "temperature_kelvin")) {
+    float32_t temperature_kelvin = 0.0f;
+    if (!vkr_json_parse_float(&temperature_reader, &temperature_kelvin) ||
+        !(temperature_kelvin == 0.0f ||
+          (temperature_kelvin >= VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K &&
+           temperature_kelvin <= VKR_ATMOSPHERE_SUN_TEMPERATURE_MAX_K))) {
+      log_error("Scene loader: entity %u directional_light temperature_kelvin "
+                "must be 0 or in [1000, 40000]",
+                entity_index);
+      return false_v;
+    }
+    out_entity->directional_light.temperature_kelvin = temperature_kelvin;
   }
   return true_v;
 }
@@ -2866,13 +2921,15 @@ bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
     if (!vkr_entity_has_component(scene->world, entity, scene->comp_visibility))
       goto cleanup;
     if (node->punctual.kind == 1u) {
+      // An imported sun lights only scenes without an atmosphere.
       SceneDirectionalLight light = {
           .color = node->punctual.color,
           .intensity = node->punctual.intensity,
           .direction_local = {0, 0, -1},
           .sun_angular_diameter_degrees =
               VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES,
-          .enabled = true_v};
+          .enabled = true_v,
+          .atmosphere_sun = false_v};
       if (!vkr_scene_set_directional_light(scene, entity, &light))
         goto cleanup;
     } else if (node->punctual.kind == 2u || node->punctual.kind == 3u) {
@@ -3337,7 +3394,9 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .direction_local = light_import->direction_local,
         .sun_angular_diameter_degrees =
             light_import->sun_angular_diameter_degrees,
+        .temperature_kelvin = light_import->temperature_kelvin,
         .enabled = light_import->enabled,
+        .atmosphere_sun = light_import->atmosphere_sun,
     };
 
     if (!vkr_scene_set_directional_light(scene, entity, &light)) {
@@ -3630,7 +3689,7 @@ vkr_internal bool8_t scene_loader_wait_mesh_dependencies(
 
 static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
                                          String8 owner, VkrAllocator *scratch) {
-  uint64_t count = (uint64_t)payload->entity_count * 4 + 4 +
+  uint64_t count = (uint64_t)payload->entity_count * 4 + 1 +
                    (uint64_t)payload->reflection_probe_import_count * 2;
   String8 **paths = vkr_allocator_alloc(scratch, count * sizeof(*paths),
                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -3638,9 +3697,6 @@ static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
     return false_v;
   }
   uint64_t cursor = 0;
-  paths[cursor++] = &payload->environment_import.cubemap_path;
-  paths[cursor++] = &payload->environment_import.cubemap_base_path;
-  paths[cursor++] = &payload->environment_import.equirect_path;
   paths[cursor++] = &payload->diffuse_volume_import.path;
   for (uint32_t i = 0; i < payload->entity_count; ++i) {
     paths[cursor++] = &payload->imports[i].mesh_path;
@@ -3768,15 +3824,44 @@ vkr_internal bool8_t scene_loader_prepare_payload(
     }
   }
   payload->atmosphere_import = scene_loader_parse_atmosphere_import(json_copy);
-  if (!payload->atmosphere_import.valid) {
+  if (!payload->atmosphere_import.valid ||
+      !scene_loader_parse_cloud_import(json_copy,
+                                       &payload->atmosphere_import.clouds)) {
     scene_loader_destroy_async_payload(payload);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
+  if (payload->atmosphere_import.clouds.enabled &&
+      !payload->atmosphere_import.settings.enabled) {
+    log_error("Scene loader: enabled $.clouds requires an enabled "
+              "$.atmosphere");
+    scene_loader_destroy_async_payload(payload);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  /* One atmosphere sun light drives an enabled atmosphere (ADR-058); the
+     renderer lights with only one, so more are ambiguous authoring. */
+  if (payload->atmosphere_import.settings.enabled) {
+    uint32_t suns = 0u;
+    for (uint32_t index = 0; index < payload->entity_count; ++index) {
+      const SceneDirectionalLightImport *light =
+          &payload->imports[index].directional_light;
+      suns += payload->imports[index].has_directional_light && light->enabled &&
+                      light->atmosphere_sun
+                  ? 1u
+                  : 0u;
+    }
+    if (suns > 1u) {
+      log_warn("Scene loader: %u enabled atmosphere sun lights; only the "
+               "renderer's sun light drives $.atmosphere",
+               suns);
+    }
+  }
   payload->environment_import =
-      payload->atmosphere_import.settings.enabled
-          ? scene_environment_import_defaults()
-          : scene_loader_parse_environment_import(json_copy);
+      scene_loader_parse_environment_import(json_copy);
+  scene_loader_resolve_environment_source(
+      &payload->environment_import,
+      payload->atmosphere_import.settings.enabled);
   payload->diffuse_volume_import =
       scene_loader_parse_diffuse_volume_import(json_copy);
   payload->reflection_probe_import_count =
@@ -3786,31 +3871,6 @@ vkr_internal bool8_t scene_loader_prepare_payload(
     scene_loader_destroy_async_payload(payload);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
-  }
-  const bool8_t direct_cubemap =
-      payload->environment_import.source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP &&
-      payload->environment_import.cubemap_path.length > 0u;
-  const bool8_t equirect =
-      payload->environment_import.source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT;
-  if (payload->environment_import.valid &&
-      payload->environment_import.enabled && (equirect || direct_cubemap)) {
-    const String8 environment_path =
-        direct_cubemap ? payload->environment_import.cubemap_path
-                       : payload->environment_import.equirect_path;
-    VkrRendererError environment_error = VKR_RENDERER_ERROR_NONE;
-    if (vkr_texture_system_prepare_load_from_file(
-            &assets->texture_system, environment_path,
-            VKR_TEXTURE_RGBA_CHANNELS, temp_alloc,
-            &payload->environment_prepared, &environment_error) &&
-        (!direct_cubemap || payload->environment_prepared.description.type ==
-                                VKR_TEXTURE_TYPE_CUBE_MAP)) {
-      payload->environment_prepared_ready = true_v;
-    } else {
-      vkr_texture_system_release_prepared_load(&payload->environment_prepared);
-      payload->environment_prepare_failed = true_v;
-      log_warn("Scene loader: failed to prepare environment '%.*s'",
-               (int)environment_path.length, environment_path.str);
-    }
   }
   if (payload->diffuse_volume_import.has_block &&
       payload->diffuse_volume_import.valid) {
@@ -3996,22 +4056,17 @@ vkr_internal bool8_t scene_loader_finalize_step(
   }
 
   if (!async_payload->environment_applied) {
-    scene_loader_apply_environment_import(
-        scene, async_payload->assets, &async_payload->environment_import,
-        async_payload->environment_prepared_ready
-            ? &async_payload->environment_prepared
-            : NULL,
-        async_payload->environment_prepare_failed);
-    if (async_payload->environment_prepared_ready) {
-      vkr_texture_system_release_prepared_load(
-          &async_payload->environment_prepared);
-      async_payload->environment_prepared_ready = false_v;
-    }
+    scene_loader_apply_environment_import(scene, async_payload->assets,
+                                          &async_payload->environment_import);
     async_payload->environment_applied = true_v;
   }
   if (!async_payload->atmosphere_applied) {
+    const float32_t sh_deringing =
+        async_payload->environment_import.valid
+            ? async_payload->environment_import.sh_deringing
+            : 0.0f;
     if (!scene_loader_apply_atmosphere_import(
-            scene, &async_payload->atmosphere_import)) {
+            scene, &async_payload->atmosphere_import, sh_deringing)) {
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       return false_v;
     }
@@ -4287,6 +4342,14 @@ vkr_internal bool8_t vkr_scene_loader_estimate_async_finalize_cost(
   MemZero(out_cost, sizeof(*out_cost));
   VkrSceneLoaderAsyncPayload *async_payload =
       (VkrSceneLoaderAsyncPayload *)payload;
+  if (!async_payload->environment_applied &&
+      async_payload->environment_import.valid &&
+      async_payload->environment_import.enabled &&
+      async_payload->environment_import.source_kind ==
+          VKR_SCENE_ENV_SOURCE_CONSTANT) {
+    out_cost->gpu_upload_bytes += VKR_WORLD_RESOURCES_CONSTANT_CUBE_BYTES;
+    out_cost->gpu_upload_ops += 1u;
+  }
   if (async_payload->diffuse_volume_prepared_ready) {
     out_cost->gpu_upload_bytes +=
         async_payload->diffuse_volume_prepared.upload_data_size;
@@ -4308,10 +4371,6 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
     return;
   }
 
-  if (payload->environment_prepared_ready) {
-    vkr_texture_system_release_prepared_load(&payload->environment_prepared);
-    payload->environment_prepared_ready = false_v;
-  }
   if (payload->diffuse_volume_prepared_ready) {
     vkr_texture_system_release_prepared_load(&payload->diffuse_volume_prepared);
     payload->diffuse_volume_prepared_ready = false_v;

@@ -12,7 +12,7 @@ typedef struct VkrFrameInfo VkrFrameInfo;
 typedef struct VkrFrameGlobals VkrFrameGlobals;
 typedef struct VkrWorldPassPayload VkrWorldPassPayload;
 typedef struct VkrShadowPassPayload VkrShadowPassPayload;
-typedef struct VkrSkyboxPassPayload VkrSkyboxPassPayload;
+typedef struct VkrSkyPassPayload VkrSkyPassPayload;
 typedef struct VkrUiPassPayload VkrUiPassPayload;
 typedef struct VkrEditorPassPayload VkrEditorPassPayload;
 typedef struct VkrPickingPassPayload VkrPickingPassPayload;
@@ -605,6 +605,17 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t subsurface_enabled;
   bool8_t fog_enabled;
   bool8_t froxel_fog_enabled;
+  /** True when the sky has an enabled atmosphere: the frame builds its
+      sky-view lookup and aerial-perspective volume. */
+  bool8_t atmosphere_enabled;
+  /** True when aerial perspective applies to surfaces this frame. */
+  bool8_t aerial_perspective_enabled;
+  /** True when the cloud layer renders this frame: it traces the layer and
+      its sun-projected shadow map (ADR-074). */
+  bool8_t clouds_enabled;
+  /** True when the in-place opaque pass applies analytic fog or aerial
+      perspective. Froxel application owns the latter under froxel fog. */
+  bool8_t fog_apply_enabled;
   uint32_t ssr_depth_mip_count;
   uint32_t ssgi_depth_mip_count;
   /** Metal P19 state; false only for the diagnostic full-screen rollback. */

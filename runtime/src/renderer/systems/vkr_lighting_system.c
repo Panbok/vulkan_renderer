@@ -8,17 +8,6 @@
 // ============================================================================
 
 /**
- * @brief Context for syncing directional light from scene.
- */
-typedef struct DirectionalLightSyncContext {
-  VkrLightingSystem *system;
-  const VkrScene *scene;
-  bool8_t found;
-  uint32_t best_render_id;
-  bool8_t best_has_render_id;
-} DirectionalLightSyncContext;
-
-/**
  * @brief Context for syncing point lights from scene.
  */
 typedef struct PointLightSyncContext {
@@ -186,64 +175,6 @@ vkr_internal bool8_t point_light_intersects_grid_cell(
 // Chunk Callbacks
 // ============================================================================
 
-vkr_internal void sync_directional_light_cb(const VkrArchetype *arch,
-                                            VkrChunk *chunk, void *user) {
-  (void)arch;
-  DirectionalLightSyncContext *ctx = (DirectionalLightSyncContext *)user;
-
-  const VkrScene *scene = ctx->scene;
-  uint32_t count = vkr_entity_chunk_count(chunk);
-
-  VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
-  SceneDirectionalLight *lights =
-      (SceneDirectionalLight *)vkr_entity_chunk_column(
-          chunk, scene->comp_directional_light);
-
-  if (!entities || !lights)
-    return;
-
-  for (uint32_t i = 0; i < count; i++) {
-    if (!lights[i].enabled)
-      continue;
-
-    uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
-    bool8_t has_render_id = (render_id != 0);
-
-    if (ctx->found) {
-      if (ctx->best_has_render_id) {
-        if (!has_render_id || render_id >= ctx->best_render_id) {
-          continue;
-        }
-      } else {
-        if (!has_render_id) {
-          continue;
-        }
-      }
-    }
-
-    // Get transform to compute world direction
-    const SceneTransform *transform =
-        (const SceneTransform *)vkr_entity_get_component(
-            scene->world, entities[i], scene->comp_transform);
-
-    Vec3 world_direction = lights[i].direction_local;
-    if (transform) {
-      world_direction =
-          vkr_quat_rotate_vec3(transform->rotation, lights[i].direction_local);
-    }
-
-    ctx->system->directional.enabled = true_v;
-    ctx->system->directional.direction = world_direction;
-    ctx->system->directional.color = lights[i].color;
-    ctx->system->directional.intensity = lights[i].intensity;
-    ctx->system->directional.sun_angular_diameter_degrees =
-        lights[i].sun_angular_diameter_degrees;
-    ctx->found = true_v;
-    ctx->best_render_id = render_id;
-    ctx->best_has_render_id = has_render_id;
-  }
-}
-
 vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
                                        VkrChunk *chunk, void *user) {
   (void)arch;
@@ -372,17 +303,18 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
   system->point_light_dropped_count = 0;
   system->rectangle_light_count = 0;
 
-  // Sync directional light (take first enabled)
-  DirectionalLightSyncContext dir_ctx = {
-      .system = system,
-      .scene = scene,
-      .found = false_v,
-      .best_render_id = 0,
-      .best_has_render_id = false_v,
-  };
-  vkr_entity_query_compiled_each_chunk(
-      (VkrQueryCompiled *)&scene->query_directional_light,
-      sync_directional_light_cb, &dir_ctx);
+  /* An enabled atmosphere turns the sun light into its sun (ADR-058): the
+     published atmosphere sun replaces this empty record, so the light, sky
+     and bake agree. Otherwise the light shines directly. */
+  const VkrSceneSun *sun = &scene->sun;
+  if (!scene->atmosphere.requested_settings.enabled && sun->found) {
+    system->directional.enabled = true_v;
+    system->directional.direction = sun->light.direction;
+    system->directional.color = sun->light.color;
+    system->directional.intensity = sun->light.intensity;
+    system->directional.sun_angular_diameter_degrees =
+        sun->light.sun_angular_diameter_degrees;
+  }
 
   // Sync point lights
   PointLightSyncContext point_ctx = {
@@ -410,8 +342,8 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
 
 void vkr_lighting_system_apply_atmosphere_sun(
     VkrLightingSystem *system, const VkrAtmosphereSettings *settings,
-    const VkrAtmosphereBakeResult *result) {
-  if (!system || !settings || !result)
+    Vec3 irradiance) {
+  if (!system || !settings)
     return;
 
   /* Atmosphere sun_direction points from the observer toward the sun. The
@@ -421,7 +353,7 @@ void vkr_lighting_system_apply_atmosphere_sun(
   system->directional.direction =
       vec3_new(-settings->sun_direction.x, -settings->sun_direction.y,
                -settings->sun_direction.z);
-  system->directional.color = result->solar_irradiance;
+  system->directional.color = irradiance;
   system->directional.intensity = 1.0f;
   system->directional.sun_angular_diameter_degrees =
       settings->sun_angular_diameter_degrees;

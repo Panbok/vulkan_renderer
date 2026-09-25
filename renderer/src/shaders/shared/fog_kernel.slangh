@@ -14,6 +14,18 @@ struct VkrFogParams
     // x: base height, y: nonnegative height falloff, z: surface cap,
     // w: finite sky distance. All distances are world units.
     float4 height_distance;
+    // x: gray single-scattering albedo of a medium lit by the atmosphere, zero
+    // for the constant colour; y: sun-lobe Henyey-Greenstein anisotropy.
+    float4 sky_lighting;
+};
+
+// Light a sky-lit medium scatters: the attenuated sun toward `sun_direction`
+// and the sky light's average radiance.
+struct VkrFogLighting
+{
+    float3 sun_direction;
+    float3 sun_irradiance;
+    float3 sky_ambient;
 };
 
 struct VkrFogSample
@@ -64,6 +76,29 @@ float vkr_fog_optical_depth(VkrFogParams params, float camera_height,
     return max(exp(log_optical_depth), 0.0f);
 }
 
+// Henyey-Greenstein phase normalized over the sphere. `cosine` is
+// dot(camera-to-sample, sample-to-light), so positive values scatter forward.
+float vkr_fog_phase_hg(float g, float cosine)
+{
+    float g2 = g * g;
+    float denominator = max(1.0f + g2 - 2.0f * g * cosine, 1e-6f);
+    return (1.0f - g2) /
+           (4.0f * 3.14159265358979323846f * denominator * sqrt(denominator));
+}
+
+// Equilibrium in-scatter radiance along a unit view ray: the authored
+// constant colour, or the sun and sky light scattered by a gray medium.
+float3 vkr_fog_inscatter(VkrFogParams params, VkrFogLighting lighting,
+                         float3 ray_direction)
+{
+    float albedo = params.sky_lighting.x;
+    if (albedo <= 0.0f)
+        return params.color_density.rgb;
+    float phase = vkr_fog_phase_hg(params.sky_lighting.y,
+                                   dot(ray_direction, lighting.sun_direction));
+    return albedo * (lighting.sky_ambient + lighting.sun_irradiance * phase);
+}
+
 VkrFogSample vkr_fog_sample(VkrFogParams params, float camera_height,
                              float ray_height_direction, float distance)
 {
@@ -75,23 +110,27 @@ VkrFogSample vkr_fog_sample(VkrFogParams params, float camera_height,
     return result;
 }
 
-float3 vkr_fog_apply_sample(float3 radiance, VkrFogParams params,
-                             VkrFogSample sample)
+float3 vkr_fog_apply_sample(float3 radiance, float3 inscatter,
+                            VkrFogSample sample)
 {
     return radiance * sample.transmittance +
-           params.color_density.rgb * sample.inscatter_weight;
+           inscatter * sample.inscatter_weight;
 }
 
 // `feedback_weight` is the per-channel coefficient of an already-fogged
 // ordered background. Its complement alone receives this layer's in-scatter.
 float3 vkr_fog_apply_local_over_feedback(float3 local_radiance,
                                           float3 feedback_weight,
-                                          VkrFogParams params,
+                                          float3 inscatter,
                                           VkrFogSample sample)
 {
     return local_radiance * sample.transmittance +
-           params.color_density.rgb * sample.inscatter_weight *
-               (1.0f - feedback_weight);
+           inscatter * sample.inscatter_weight * (1.0f - feedback_weight);
+}
+
+float3 vkr_fog_direction(float3 ray)
+{
+    return ray * rsqrt(max(dot(ray, ray), 1e-12f));
 }
 
 VkrFogSample vkr_fog_surface_sample(VkrFogParams params,
@@ -111,10 +150,13 @@ VkrFogSample vkr_fog_surface_sample(VkrFogParams params,
 }
 
 float3 vkr_fog_apply_surface(float3 radiance, VkrFogParams params,
-                             float3 camera_position, float3 world_position)
+                             VkrFogLighting lighting, float3 camera_position,
+                             float3 world_position)
 {
+    float3 inscatter = vkr_fog_inscatter(
+        params, lighting, vkr_fog_direction(world_position - camera_position));
     return vkr_fog_apply_sample(
-        radiance, params,
+        radiance, inscatter,
         vkr_fog_surface_sample(params, camera_position, world_position));
 }
 
@@ -130,10 +172,13 @@ VkrFogSample vkr_fog_sky_sample(VkrFogParams params, float3 camera_position,
 }
 
 float3 vkr_fog_apply_sky(float3 radiance, VkrFogParams params,
-                         float3 camera_position, float3 ray_direction)
+                         VkrFogLighting lighting, float3 camera_position,
+                         float3 ray_direction)
 {
+    float3 inscatter = vkr_fog_inscatter(params, lighting,
+                                         vkr_fog_direction(ray_direction));
     return vkr_fog_apply_sample(
-        radiance, params,
+        radiance, inscatter,
         vkr_fog_sky_sample(params, camera_position, ray_direction));
 }
 

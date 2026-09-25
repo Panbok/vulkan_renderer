@@ -43,20 +43,19 @@ typedef struct VkrAssetPublisher {
   bool8_t (*bake_ibl_cubemap)(void *state, VkrTextureHandle source,
                               VkrTextureHandle prefilter,
                               float32_t sh_deringing);
-  bool8_t (*bake_hdr_environment)(void *state, VkrTextureHandle equirect,
-                                  VkrTextureHandle source,
-                                  VkrTextureHandle prefilter,
-                                  float32_t sh_deringing);
-  /** Queues a candidate generation; copies params before returning. */
+  /** Queues a candidate generation; copies params before returning. The
+      generation writes its own transmittance and multiple-scattering lookup
+      textures, which the camera-dependent sky reads after publication. */
   bool8_t (*bake_atmosphere)(void *state, const VkrAtmosphereGpuParams *params,
                              VkrTextureHandle source,
                              VkrTextureHandle prefilter,
+                             VkrTextureHandle transmittance,
+                             VkrTextureHandle multiple_scattering,
                              float32_t sh_deringing);
-  /** Nonblocking completion query. READY includes source, prefilter, SH and
-   * sun. */
-  VkrAtmosphereBakeStatus (*atmosphere_bake_status)(
-      void *state, VkrTextureHandle source,
-      VkrAtmosphereBakeResult *out_result);
+  /** Nonblocking completion query. READY includes the lookups, source,
+   * prefilter and SH. */
+  VkrAtmosphereBakeStatus (*atmosphere_bake_status)(void *state,
+                                                    VkrTextureHandle source);
   /* Published L2 coefficient slot for a source cubemap, or VKR_SH_SLOT_BLACK
      when it has none yet. Cold: the scene resolves it once per frame while
      packing probes (ADR-038). */

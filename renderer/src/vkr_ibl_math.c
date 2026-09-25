@@ -73,35 +73,6 @@ float32_t vkr_float16_to_float32(uint16_t value) {
   return negative ? -result : result;
 }
 
-bool8_t
-vkr_ibl_derive_cubemap_size(uint32_t equirect_width, uint32_t equirect_height,
-                            uint32_t max_cube_extent, uint32_t max_mip_levels,
-                            uint32_t *out_face_size, uint32_t *out_mip_count) {
-  if (!out_face_size || !out_mip_count || equirect_width == 0u ||
-      equirect_height == 0u ||
-      (uint64_t)equirect_width != (uint64_t)equirect_height * 2u ||
-      max_cube_extent == 0u || max_mip_levels == 0u) {
-    return false_v;
-  }
-
-  const uint32_t raw_size = Max(1u, equirect_width / 4u);
-  const uint32_t limited_size = Min(raw_size, max_cube_extent);
-  uint32_t face_size = 1u;
-  while (face_size <= limited_size / 2u) {
-    face_size *= 2u;
-  }
-
-  uint32_t mip_count = 1u;
-  for (uint32_t extent = face_size; extent > 1u; extent >>= 1u) {
-    mip_count++;
-  }
-  mip_count = Min(mip_count, max_mip_levels);
-
-  *out_face_size = face_size;
-  *out_mip_count = mip_count;
-  return true_v;
-}
-
 static float32_t vkr_ibl_sinc_pi(float32_t x) {
   if (x == 0.0f) {
     return 1.0f;

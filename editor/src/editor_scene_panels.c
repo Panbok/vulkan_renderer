@@ -20,6 +20,9 @@
   (PHYSICS_JOINT_BASE + VKR_SCENE_PHYSICS_MAX_JOINTS * 22u)
 #define NO_ROW UINT32_MAX
 #define TREE_VISIBLE_SLOTS 96u
+/** Transform, light and rectangle-size fields; 21 is the directional light's
+ * colour temperature. */
+#define INSPECTOR_NUMBER_COUNT 22u
 
 typedef struct EditorTreeNode {
   VkrEntityId entity;
@@ -54,8 +57,8 @@ struct VkrEditorScenePanels {
   uint32_t long_name_capacity;
   VkrSceneEditValues values;
   VkrSceneEditValues original_values;
-  char numbers[21][48];
-  char original_numbers[21][48];
+  char numbers[INSPECTOR_NUMBER_COUNT][48];
+  char original_numbers[INSPECTOR_NUMBER_COUNT][48];
   char physics_numbers[PHYSICS_NUMBER_COUNT][48];
   char physics_original_numbers[PHYSICS_NUMBER_COUNT][48];
   char impulse_numbers[6][48];
@@ -651,11 +654,12 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
   float32_t rotation[3];
   vkr_quat_to_euler(p->values.rotation, &rotation[0], &rotation[1],
                     &rotation[2]);
-  float32_t values[21] = {p->values.position.x,      p->values.position.y,
-                          p->values.position.z,      rotation[0] * 57.2957795f,
-                          rotation[1] * 57.2957795f, rotation[2] * 57.2957795f,
-                          p->values.scale.x,         p->values.scale.y,
-                          p->values.scale.z};
+  float32_t values[INSPECTOR_NUMBER_COUNT] = {
+      p->values.position.x,      p->values.position.y,
+      p->values.position.z,      rotation[0] * 57.2957795f,
+      rotation[1] * 57.2957795f, rotation[2] * 57.2957795f,
+      p->values.scale.x,         p->values.scale.y,
+      p->values.scale.z};
   Vec3 color = {0};
   float32_t intensity = 0, range = 0;
   Vec3 direction = {0};
@@ -686,7 +690,8 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
   values[16] = p->values.point_light.inner_cone_angle * 57.2957795f;
   values[17] = p->values.point_light.outer_cone_angle * 57.2957795f;
   values[18] = p->values.directional_light.sun_angular_diameter_degrees;
-  for (uint32_t i = 0; i < 21; i++)
+  values[21] = p->values.directional_light.temperature_kelvin;
+  for (uint32_t i = 0; i < INSPECTOR_NUMBER_COUNT; i++)
     snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", values[i]);
   const String8 full_name = vkr_scene_get_name(f->scene, f->selected_entity);
   const uint32_t name_capacity =
@@ -737,9 +742,9 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
     out->visibility = p->values.visibility;
     out->fields |= VKR_SCENE_EDIT_VISIBILITY;
   }
-  float32_t v[21] = {0};
-  bool8_t numeric_changed[21] = {0};
-  for (uint32_t i = 0; i < 21; ++i) {
+  float32_t v[INSPECTOR_NUMBER_COUNT] = {0};
+  bool8_t numeric_changed[INSPECTOR_NUMBER_COUNT] = {0};
+  for (uint32_t i = 0; i < INSPECTOR_NUMBER_COUNT; ++i) {
     if (!strcmp(p->numbers[i], p->original_numbers[i]))
       continue;
     char *end;
@@ -815,6 +820,15 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
       }
       out->directional_light.sun_angular_diameter_degrees = v[18];
     }
+    if (numeric_changed[21]) {
+      if (v[21] != 0.0f && (v[21] < VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K ||
+                            v[21] > VKR_ATMOSPHERE_SUN_TEMPERATURE_MAX_K)) {
+        snprintf(p->error, sizeof(p->error),
+                 "Temperature must be 0 or 1000..40000 K.");
+        return false_v;
+      }
+      out->directional_light.temperature_kelvin = v[21];
+    }
     if ((numeric_changed[16] || numeric_changed[17]) &&
         (out->point_light.inner_cone_angle < 0 ||
          out->point_light.outer_cone_angle <
@@ -839,6 +853,8 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
     }
     out->point_light.enabled = p->values.point_light.enabled;
     out->directional_light.enabled = p->values.directional_light.enabled;
+    out->directional_light.atmosphere_sun =
+        p->values.directional_light.atmosphere_sun;
     out->rectangle_light.enabled = p->values.rectangle_light.enabled;
     if ((p->original_values.fields & VKR_SCENE_EDIT_POINT_LIGHT) &&
         MemCompare(&out->point_light, &p->original_values.point_light,
@@ -895,6 +911,7 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
                           "save",
                           "light.point.enabled",
                           "light.directional.enabled",
+                          "light.directional.atmosphere_sun",
                           "light.rectangle.enabled"};
   for (uint32_t i = 0; i < ArrayCount(labels); ++i) {
     VkrUiId id = vkr_ui_id_stack_widget_label(
@@ -904,7 +921,7 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
     if (ui->active_id == id)
       ui->active_id = 0;
   }
-  for (uint32_t i = 0; i < 21; ++i) {
+  for (uint32_t i = 0; i < INSPECTOR_NUMBER_COUNT; ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
     VkrUiId id =
         vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
@@ -2040,28 +2057,32 @@ static bool8_t inspector_transform_light_fields(VkrEditorScenePanels *p,
   vkr_ui_label(ui, string8_lit("transform.title"),
                string8_lit("Local transform"), &c);
   *y += 26;
-  const char *labels[21] = {"Position X",
-                            "Position Y",
-                            "Position Z",
-                            "Rotation X (deg)",
-                            "Rotation Y (deg)",
-                            "Rotation Z (deg)",
-                            "Scale X",
-                            "Scale Y",
-                            "Scale Z",
-                            "Linear red",
-                            "Linear green",
-                            "Linear blue",
-                            "Intensity",
-                            "Range (0 = unlimited)",
-                            "Local yaw (deg)",
-                            "Local elevation (deg)",
-                            "Inner cone (deg)",
-                            "Outer cone (deg)",
-                            "Sun angular diameter (deg)",
-                            "Rectangle width",
-                            "Rectangle height"};
-  uint32_t total = lights->rectangle ? 21u : lights->light ? 19u : 9u;
+  const char *labels[INSPECTOR_NUMBER_COUNT] = {"Position X",
+                                                "Position Y",
+                                                "Position Z",
+                                                "Rotation X (deg)",
+                                                "Rotation Y (deg)",
+                                                "Rotation Z (deg)",
+                                                "Scale X",
+                                                "Scale Y",
+                                                "Scale Z",
+                                                "Linear red",
+                                                "Linear green",
+                                                "Linear blue",
+                                                "Intensity",
+                                                "Range (0 = unlimited)",
+                                                "Local yaw (deg)",
+                                                "Local elevation (deg)",
+                                                "Inner cone (deg)",
+                                                "Outer cone (deg)",
+                                                "Sun angular diameter (deg)",
+                                                "Rectangle width",
+                                                "Rectangle height",
+                                                "Temperature (K, 0 = off)"};
+  uint32_t total = lights->directional ? INSPECTOR_NUMBER_COUNT
+                   : lights->rectangle ? 21u
+                   : lights->light     ? 19u
+                                       : 9u;
   for (uint32_t i = 0; i < total; i++) {
     if (i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
       continue;
@@ -2094,6 +2115,14 @@ static bool8_t inspector_transform_light_fields(VkrEditorScenePanels *p,
                             string8_lit("Directional light enabled"),
                             &p->values.directional_light.enabled, &c);
         *y += 27;
+        c = widget_at(5, *y, w - 10, 24);
+        c.tooltip =
+            string8_lit("Drives the atmosphere's sun direction and color");
+        p->changed |=
+            vkr_ui_checkbox(ui, string8_lit("light.directional.atmosphere_sun"),
+                            string8_lit("Atmosphere sun"),
+                            &p->values.directional_light.atmosphere_sun, &c);
+        *y += 27;
       }
       if (lights->rectangle) {
         c = widget_at(5, *y, w - 10, 24);
@@ -2106,7 +2135,9 @@ static bool8_t inspector_transform_light_fields(VkrEditorScenePanels *p,
     }
     if ((i == 13 && !lights->point) || (i >= 14 && i < 16 && !lights->aimed) ||
         (i >= 16 && i < 18 && !lights->spot) ||
-        (i == 18 && !lights->directional) || (i >= 19 && !lights->rectangle))
+        (i == 18 && !lights->directional) ||
+        (i >= 19 && i < 21 && !lights->rectangle) ||
+        (i == 21 && !lights->directional))
       continue;
     (void)vkr_ui_push_id_u64(ui, i);
     c = widget_at(5, *y, w * 0.53f - 6, 24);

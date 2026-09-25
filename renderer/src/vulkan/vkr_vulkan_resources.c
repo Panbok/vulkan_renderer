@@ -934,6 +934,74 @@ void vkr_vk_retire_dfg_descriptor_slots(VkrVulkanRenderer *renderer) {
                                      NULL);
 }
 
+/* Cloud base, detail and weather noise (ADR-074). Their descriptor rows are
+   permanent; the first submitted IBL bake generates the contents. */
+vkr_internal bool8_t
+vkr_vk_create_cloud_noise_resources(VkrVulkanRenderer *renderer) {
+  const uint32_t sizes[VKR_VULKAN_CLOUD_NOISE_COUNT] = {
+      VKR_CLOUD_BASE_NOISE_SIZE, VKR_CLOUD_DETAIL_NOISE_SIZE,
+      VKR_CLOUD_WEATHER_SIZE};
+  for (uint32_t i = 0u; i < VKR_VULKAN_CLOUD_NOISE_COUNT; ++i) {
+    const bool8_t volume = i < 2u;
+    if (!vkr_vk_create_image_ex(
+            renderer, sizes[i], sizes[i], volume ? sizes[i] : 1u, 1u, 1u,
+            VK_FORMAT_R8_UNORM, 0u,
+            volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+            volume ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+            VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->cloud_noise_images[i],
+            NULL))
+      return false_v;
+  }
+  const VkSamplerCreateInfo sampler_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = VK_FILTER_LINEAR,
+      .minFilter = VK_FILTER_LINEAR,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+      .maxLod = 0.0f,
+  };
+  if (vkCreateSampler(vkr_vk_renderer_device(renderer), &sampler_info, NULL,
+                      &renderer->cloud_noise_sampler) != VK_SUCCESS)
+    return false_v;
+  renderer->cloud_noise_pending = true_v;
+  return true_v;
+}
+
+void vkr_vk_destroy_cloud_noise(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = renderer->completed_value;
+  for (uint32_t i = 0u; i < VKR_VULKAN_CLOUD_NOISE_COUNT; ++i) {
+    if (renderer->cloud_noise_texture_slots[i].generation &&
+        renderer->sampled_image_slots &&
+        vkr_gpu_slot_table_retire(renderer->sampled_image_slots,
+                                  renderer->cloud_noise_texture_slots[i],
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire a cloud noise sampled descriptor");
+    if (renderer->cloud_noise_storage_slots[i].generation &&
+        renderer->storage_image_slots &&
+        vkr_gpu_slot_table_retire(renderer->storage_image_slots,
+                                  renderer->cloud_noise_storage_slots[i],
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire a cloud noise storage descriptor");
+    renderer->cloud_noise_texture_slots[i] = (VkrGpuSlotHandle){0};
+    renderer->cloud_noise_storage_slots[i] = (VkrGpuSlotHandle){0};
+    vkr_vk_destroy_image(renderer, &renderer->cloud_noise_images[i]);
+  }
+  if (renderer->cloud_noise_sampler_slot.generation &&
+      renderer->sampler_slots &&
+      vkr_gpu_slot_table_retire(renderer->sampler_slots,
+                                renderer->cloud_noise_sampler_slot,
+                                completed) != VKR_GPU_SLOT_STATUS_OK)
+    log_error("Vulkan failed to retire the cloud noise sampler descriptor");
+  renderer->cloud_noise_sampler_slot = (VkrGpuSlotHandle){0};
+  if (renderer->cloud_noise_sampler)
+    vkDestroySampler(vkr_vk_renderer_device(renderer),
+                     renderer->cloud_noise_sampler, NULL);
+  renderer->cloud_noise_sampler = VK_NULL_HANDLE;
+}
+
 vkr_internal bool8_t vkr_vk_create_ltc_resources(VkrVulkanRenderer *renderer) {
   _Static_assert(sizeof(vkr_ltc_lut_pixels) == 64u * 1024u,
                  "LTC LUTs must remain two 64x64 RGBA16F tables");
@@ -1374,102 +1442,6 @@ void vkr_vk_retire_anisotropy_descriptor_slots(VkrVulkanRenderer *renderer) {
                                      NULL);
 }
 
-vkr_internal bool8_t vkr_vk_create_atmosphere_storage_view(
-    VkrVulkanRenderer *renderer, const VkrVulkanImage *image,
-    VkImageView *out_view) {
-  const VkImageViewCreateInfo info = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-      .image = image->handle,
-      .viewType = VK_IMAGE_VIEW_TYPE_2D,
-      .format = image->format,
-      .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                           .levelCount = 1u,
-                           .layerCount = 1u},
-  };
-  return vkCreateImageView(vkr_vk_renderer_device(renderer), &info, NULL,
-                           out_view) == VK_SUCCESS;
-}
-
-bool8_t vkr_vk_create_atmosphere_resources(VkrVulkanRenderer *renderer) {
-  VkFormatProperties properties = {0};
-  vkGetPhysicalDeviceFormatProperties(
-      vkr_vulkan_device_physical(renderer->device),
-      VK_FORMAT_R16G16B16A16_SFLOAT, &properties);
-  const VkFormatFeatureFlags required =
-      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-  if ((properties.optimalTilingFeatures & required) != required) {
-    log_error(
-        "Vulkan RGBA16F atmosphere LUT format lacks sampled/storage support");
-    return false_v;
-  }
-  if (!vkr_vk_create_image_ex(renderer, VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
-                              VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT, 1u, 1u, 1u,
-                              VK_FORMAT_R16G16B16A16_SFLOAT, 0u,
-                              VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
-                              VK_IMAGE_USAGE_SAMPLED_BIT |
-                                  VK_IMAGE_USAGE_STORAGE_BIT,
-                              VKR_GPU_ALLOCATION_OWNER_SHADER,
-                              &renderer->atmosphere_transmittance, NULL) ||
-      !vkr_vk_create_image_ex(
-          renderer, VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
-          VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE, 1u, 1u, 1u,
-          VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
-          VK_IMAGE_VIEW_TYPE_2D,
-          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-          VKR_GPU_ALLOCATION_OWNER_SHADER,
-          &renderer->atmosphere_multiple_scattering, NULL) ||
-      !vkr_vk_create_atmosphere_storage_view(
-          renderer, &renderer->atmosphere_transmittance,
-          &renderer->atmosphere_storage_views[0]) ||
-      !vkr_vk_create_atmosphere_storage_view(
-          renderer, &renderer->atmosphere_multiple_scattering,
-          &renderer->atmosphere_storage_views[1])) {
-    vkr_vk_destroy_atmosphere_resources(renderer);
-    return false_v;
-  }
-  return true_v;
-}
-
-void vkr_vk_retire_atmosphere_descriptor_slots(VkrVulkanRenderer *renderer) {
-  const uint64_t completed = renderer->completed_value;
-  for (uint32_t i = 0u; i < 2u; ++i) {
-    if (renderer->atmosphere_sampled_slots[i].generation &&
-        renderer->sampled_image_slots) {
-      (void)vkr_gpu_slot_table_retire(renderer->sampled_image_slots,
-                                      renderer->atmosphere_sampled_slots[i],
-                                      completed);
-      renderer->atmosphere_sampled_slots[i] = (VkrGpuSlotHandle){0};
-    }
-    if (renderer->atmosphere_storage_slots[i].generation &&
-        renderer->storage_image_slots) {
-      (void)vkr_gpu_slot_table_retire(renderer->storage_image_slots,
-                                      renderer->atmosphere_storage_slots[i],
-                                      completed);
-      renderer->atmosphere_storage_slots[i] = (VkrGpuSlotHandle){0};
-    }
-  }
-  if (renderer->sampled_image_slots)
-    (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
-                                     NULL);
-  if (renderer->storage_image_slots)
-    (void)vkr_gpu_slot_table_collect(renderer->storage_image_slots, completed,
-                                     NULL);
-}
-
-void vkr_vk_destroy_atmosphere_resources(VkrVulkanRenderer *renderer) {
-  VkDevice device = vkr_vk_renderer_device(renderer);
-  for (uint32_t i = 0u; i < 2u; ++i) {
-    if (renderer->atmosphere_storage_views[i]) {
-      vkDestroyImageView(device, renderer->atmosphere_storage_views[i], NULL);
-      renderer->atmosphere_storage_views[i] = VK_NULL_HANDLE;
-    }
-  }
-  vkr_vk_destroy_image(renderer, &renderer->atmosphere_multiple_scattering);
-  vkr_vk_destroy_image(renderer, &renderer->atmosphere_transmittance);
-  renderer->atmosphere_lut_revision = 0u;
-  renderer->atmosphere_lut_valid = false_v;
-}
-
 bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
                                      VkrVulkanFrameSlot *slot,
                                      uint64_t direct_bytes,
@@ -1623,8 +1595,8 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
     log_error("Vulkan failed to create anisotropy lookup resources");
     return false_v;
   }
-  if (!vkr_vk_create_atmosphere_resources(renderer)) {
-    log_error("Vulkan failed to create atmosphere lookup resources");
+  if (!vkr_vk_create_cloud_noise_resources(renderer)) {
+    log_error("Vulkan failed to create the cloud noise resources");
     return false_v;
   }
   if (!vkr_vk_create_target_set(
@@ -1982,8 +1954,8 @@ vkr_internal bool8_t vkr_vk_publish_fixed_sampler(
       expected_index, out_handle);
 }
 
-/* Sampled-image slots: 0 sentinel, 1 DFG, 2-3 LTC, 4-5 atmosphere, 6-10
- * sheen, 11-13 anisotropy. */
+/* Sampled-image slots: 0 sentinel, 1 DFG, 2-3 LTC, 4-8 sheen, 9-11
+ * anisotropy, 12-14 cloud noise. */
 vkr_internal bool8_t vkr_vk_publish_permanent_sampled_images(
     VkrVulkanRenderer *renderer, VkrGpuSlotHandle *out_sentinel) {
   if (!vkr_vk_publish_fixed_sampled_image(
@@ -2003,19 +1975,6 @@ vkr_internal bool8_t vkr_vk_publish_permanent_sampled_images(
       return false_v;
     }
   }
-  const VkrVulkanImage *atmosphere_images[] = {
-      &renderer->atmosphere_transmittance,
-      &renderer->atmosphere_multiple_scattering,
-  };
-  for (uint32_t image_index = 0u; image_index < ArrayCount(atmosphere_images);
-       ++image_index) {
-    if (!vkr_vk_publish_fixed_sampled_image(
-            renderer, atmosphere_images[image_index]->view,
-            VK_IMAGE_LAYOUT_GENERAL, 4u + image_index,
-            &renderer->atmosphere_sampled_slots[image_index])) {
-      return false_v;
-    }
-  }
   const VkrVulkanImage *sheen_images[1u + VKR_SHEEN_LTC_LUT_TABLE_COUNT];
   sheen_images[0] = &renderer->sheen_directional_albedo_image;
   for (uint32_t table = 0u; table < VKR_SHEEN_LTC_LUT_TABLE_COUNT; ++table) {
@@ -2025,7 +1984,7 @@ vkr_internal bool8_t vkr_vk_publish_permanent_sampled_images(
        ++image_index) {
     if (!vkr_vk_publish_fixed_sampled_image(
             renderer, sheen_images[image_index]->view,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6u + image_index,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 4u + image_index,
             &renderer->sheen_texture_slots[image_index])) {
       return false_v;
     }
@@ -2033,16 +1992,26 @@ vkr_internal bool8_t vkr_vk_publish_permanent_sampled_images(
   for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table) {
     if (!vkr_vk_publish_fixed_sampled_image(
             renderer, renderer->anisotropy_images[table].view,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 11u + table,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 9u + table,
             &renderer->anisotropy_texture_slots[table])) {
+      return false_v;
+    }
+  }
+  /* The noise stays in GENERAL: its one-time generation writes storage. */
+  for (uint32_t i = 0u; i < VKR_VULKAN_CLOUD_NOISE_COUNT; ++i) {
+    if (!vkr_vk_publish_fixed_sampled_image(
+            renderer, renderer->cloud_noise_images[i].view,
+            VK_IMAGE_LAYOUT_GENERAL, 9u + VKR_ANISOTROPY_LUT_TABLE_COUNT + i,
+            &renderer->cloud_noise_texture_slots[i])) {
       return false_v;
     }
   }
   return true_v;
 }
 
-/* Sampler slots: 0 sentinel, 1 shadow comparison, 2 transmission, 3 DFG. The
- * single dirty range in the caller publishes these contiguous rows. */
+/* Sampler slots: 0 sentinel, 1 shadow comparison, 2 transmission, 3 DFG,
+ * 4 cloud noise. The single dirty range in the caller publishes these
+ * contiguous rows. */
 vkr_internal bool8_t vkr_vk_publish_permanent_samplers(
     VkrVulkanRenderer *renderer, VkrGpuSlotHandle *out_sentinel) {
   VkrGpuSlotHandle shadow_comparison = {0};
@@ -2061,25 +2030,22 @@ vkr_internal bool8_t vkr_vk_publish_permanent_samplers(
   }
   renderer->transmission_sampler_slot = transmission.index;
   return vkr_vk_publish_fixed_sampler(renderer, &renderer->dfg_sampler, 3u,
-                                      &renderer->dfg_sampler_slot);
+                                      &renderer->dfg_sampler_slot) &&
+         vkr_vk_publish_fixed_sampler(renderer, &renderer->cloud_noise_sampler,
+                                      4u, &renderer->cloud_noise_sampler_slot);
 }
 
-/* Storage-image slots: 0 sentinel, then the atmosphere targets. */
+/* Storage-image slots: 0 sentinel, 1-3 cloud noise. */
 vkr_internal bool8_t
 vkr_vk_publish_permanent_storage_images(VkrVulkanRenderer *renderer) {
   if (!vkr_vk_publish_fixed_storage_image(
-          renderer, renderer->sentinel_image.view, 0u, NULL)) {
+          renderer, renderer->sentinel_image.view, 0u, NULL))
     return false_v;
-  }
-  for (uint32_t image_index = 0u;
-       image_index < ArrayCount(renderer->atmosphere_storage_views);
-       ++image_index) {
+  for (uint32_t i = 0u; i < VKR_VULKAN_CLOUD_NOISE_COUNT; ++i) {
     if (!vkr_vk_publish_fixed_storage_image(
-            renderer, renderer->atmosphere_storage_views[image_index],
-            1u + image_index,
-            &renderer->atmosphere_storage_slots[image_index])) {
+            renderer, renderer->cloud_noise_images[i].view, 1u + i,
+            &renderer->cloud_noise_storage_slots[i]))
       return false_v;
-    }
   }
   return true_v;
 }
@@ -2146,17 +2112,20 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
   return vkr_vk_mark_dirty(&renderer->resource_descriptor_dirty,
                            &renderer->resource_descriptors,
                            resource_layout->sampled_image_offset,
-                           properties->sampledImageDescriptorSize * 14u) &&
+                           properties->sampledImageDescriptorSize *
+                               VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS) &&
+         /* The sentinel and the three cloud noise storage rows. */
          vkr_vk_mark_dirty(&renderer->resource_descriptor_dirty,
                            &renderer->resource_descriptors,
                            resource_layout->storage_image_offset,
-                           properties->storageImageDescriptorSize * 3u) &&
-         /* Four permanent rows: sentinel, shadow comparison, transmission, DFG.
-          */
+                           properties->storageImageDescriptorSize *
+                               (1u + VKR_VULKAN_CLOUD_NOISE_COUNT)) &&
+         /* Five permanent rows: sentinel, shadow comparison, transmission,
+            DFG and cloud noise. */
          vkr_vk_mark_dirty(&renderer->sampler_descriptor_dirty,
                            &renderer->sampler_descriptors,
                            sampler_layout->sampler_offset,
-                           properties->samplerDescriptorSize * 4u) &&
+                           properties->samplerDescriptorSize * 5u) &&
          vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials, 0u,
                            sizeof(material.material)) &&
          vkr_vk_mark_dirty(&renderer->transmission_material_dirty,

@@ -142,7 +142,10 @@ vkr_internal void test_temporal_scene_signature(void) {
   };
   VkrShadowPassPayload shadow = {.cascade_count = 1u};
   shadow.cascades[0].light_view_projection = mat4_identity();
-  VkrSkyboxPassPayload sky = {.cubemap = {6u, 1u}};
+  VkrSkyPassPayload sky = {.atmosphere = vkr_atmosphere_settings_defaults(),
+                           .transmittance = {6u, 1u},
+                           .multiple_scattering = {7u, 1u}};
+  sky.atmosphere.enabled = true_v;
   VkrPreparedFrame packet = {
       .input =
           {
@@ -153,7 +156,7 @@ vkr_internal void test_temporal_scene_signature(void) {
               .world = &world,
               .lighting = &lighting,
               .shadow = &shadow,
-              .skybox = &sky,
+              .sky = &sky,
           },
       .gtao = {.enabled = true_v, .radius = 0.5f, .power = 2.2f}};
   const VkrTemporalSceneSignature baseline =
@@ -185,8 +188,10 @@ vkr_internal void test_temporal_scene_signature(void) {
   shadow.receiver.pcf_radius_texels = 0.0f;
   EXPECT_SCENE_CHANGE(shadow.cascades[0].light_view_projection.m03, 2.0f);
   shadow.cascades[0].light_view_projection.m03 = 0.0f;
-  EXPECT_SCENE_CHANGE(sky.cubemap.generation, 2u);
-  sky.cubemap.generation = 1u;
+  EXPECT_SCENE_CHANGE(sky.transmittance.generation, 2u);
+  sky.transmittance.generation = 1u;
+  EXPECT_SCENE_CHANGE(sky.atmosphere.sun_direction.x, 0.5f);
+  sky.atmosphere.sun_direction.x = 0.0f;
   EXPECT_SCENE_CHANGE(packet.input.globals.view_position.x, 1.0f);
   packet.input.globals.view_position.x = 0.0f;
   EXPECT_SCENE_CHANGE(packet.gtao.radius, 1.0f);

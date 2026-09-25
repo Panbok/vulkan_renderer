@@ -6,6 +6,11 @@ struct VkrVulkanFogRoot
     uint depth_texture;
     uint target_texture;
     uint2 extent;
+    VkrVulkanSky* sky;
+    uint aerial_perspective_texture;
+    uint reserved;
+    VkrVulkanPacketFrameRoot* frame;
+    uint2 frame_reserved;
 };
 
 struct VkrVulkanFogPush
@@ -40,19 +45,30 @@ void fog_apply_compute(uint3 thread_id : SV_DispatchThreadID)
     float4 current = g_storage_2d[root.target_texture][pixel];
     float device_depth =
         g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+    VkrFogLighting lighting = packet_fog_lighting(root.frame);
     float3 fogged;
     if (device_depth >= 1.0f)
     {
+        // The sky-view lookup already carries the atmosphere to its top.
         float3 far_world = vkr_vk_fog_world_position(root, pixel, 1.0f);
-        fogged = vkr_fog_apply_sky(current.rgb, root.params,
+        fogged = vkr_fog_apply_sky(current.rgb, root.params, lighting,
                                    root.camera_position.xyz,
                                    far_world - root.camera_position.xyz);
     }
     else
     {
-        fogged = vkr_fog_apply_surface(
-            current.rgb, root.params, root.camera_position.xyz,
-            vkr_vk_fog_world_position(root, pixel, device_depth));
+        float3 world = vkr_vk_fog_world_position(root, pixel, device_depth);
+        fogged = current.rgb;
+        // Aerial perspective is the farther medium, so it applies before fog.
+        if (root.sky.params.aerial.w > 0.0f)
+        {
+            VkrVkAerialSample aerial = packet_aerial_sample(
+                root.sky, root.aerial_perspective_texture, world);
+            fogged = vkr_sky_apply_aerial(fogged, aerial.packed,
+                                          aerial.weight);
+        }
+        fogged = vkr_fog_apply_surface(fogged, root.params, lighting,
+                                       root.camera_position.xyz, world);
     }
     g_storage_2d[root.target_texture][pixel] = float4(fogged, current.a);
 }

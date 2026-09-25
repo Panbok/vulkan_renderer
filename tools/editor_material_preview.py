@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Render one managed material on a canonical sphere in an isolated harness.
 
-Recipe 1: radius 1, 32 latitude/64 longitude intervals, fixed neutral studio HDR,
-35 degree camera, manual exposure 1, AgX, no temporal/post-process effects. The
-interactive renderer is never used. Callers own the bounded thumbnail cache.
+Recipe 2: radius 1, 32 latitude/64 longitude intervals, neutral constant
+ambient with two rectangular softboxes, 35 degree camera, manual exposure 1, AgX,
+no temporal/post-process effects. The interactive renderer is never used.
+Callers own the bounded thumbnail cache.
 """
 import argparse
 import json
@@ -21,7 +22,7 @@ import uuid
 from bake_reflection_probe import digest, confined_path, valid_scene_manifest
 from editor_project_jobs import atomic_json, load_json
 
-RECIPE = 'material-sphere-v1'
+RECIPE = 'material-sphere-v2'
 MAX_LOG_BYTES = 4 * 1024 * 1024
 _child = None
 _cancelled = False
@@ -140,22 +141,62 @@ def sphere_source(path):
     path.with_suffix('.mtl').write_text('newmtl preview_surface\nKd 0.5 0.5 0.5\n', encoding='utf-8')
 
 
-def neutral_environment(path):
-    # Small fixed linear HDR studio: neutral ambient and broad rectangular
-    # softboxes. No active-scene sky/exposure or external image dependency.
-    width, height = 64, 32
-    with path.open('wb') as output:
-        output.write(f'#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {height} +X {width}\n'.encode('ascii'))
-        for y in range(height):
-            for x in range(width):
-                value = 0.18 + 0.12 * (1 - y / (height - 1))
-                if 7 <= x <= 18 and 5 <= y <= 15:
-                    value += 3.0
-                if 40 <= x <= 46 and 8 <= y <= 20:
-                    value += 1.2
-                fraction, exponent = math.frexp(value)
-                channel = min(255, int(fraction * 256))
-                output.write(bytes((channel, channel, channel, exponent + 128)))
+# Neutral studio: the mean of the former generated sky gradient as a uniform
+# ambient, and softboxes at its former panel directions, angular extents and
+# radiance. Each entry is (direction toward the panel, width/height degrees,
+# radiance). No active-scene sky, exposure or external image is involved.
+STUDIO_AMBIENT = [0.24, 0.24, 0.24]
+STUDIO_SOFTBOXES = (((0.42, 0.15, 0.89), (39.0, 73.0), 1.2),
+                    ((0.51, 0.52, -0.69), (67.0, 62.0), 3.0))
+STUDIO_DISTANCE = 6.0
+
+
+def normalized(vector):
+    length = math.sqrt(sum(component * component for component in vector))
+    return [component / length for component in vector]
+
+
+def cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]]
+
+
+def quaternion_from_basis(x, y, z):
+    """Returns [x, y, z, w] for the rotation whose matrix columns are x, y, z."""
+    trace = x[0] + y[1] + z[2]
+    if trace > 0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        return [(y[2] - z[1]) / scale, (z[0] - x[2]) / scale,
+                (x[1] - y[0]) / scale, 0.25 * scale]
+    if x[0] > y[1] and x[0] > z[2]:
+        scale = math.sqrt(1.0 + x[0] - y[1] - z[2]) * 2.0
+        return [0.25 * scale, (y[0] + x[1]) / scale, (z[0] + x[2]) / scale,
+                (y[2] - z[1]) / scale]
+    if y[1] > z[2]:
+        scale = math.sqrt(1.0 + y[1] - x[0] - z[2]) * 2.0
+        return [(y[0] + x[1]) / scale, 0.25 * scale, (z[1] + y[2]) / scale,
+                (z[0] - x[2]) / scale]
+    scale = math.sqrt(1.0 + z[2] - x[0] - y[1]) * 2.0
+    return [(z[0] + x[2]) / scale, (z[1] + y[2]) / scale, 0.25 * scale,
+            (x[1] - y[0]) / scale]
+
+
+def studio_softboxes():
+    """Rectangle lights emit along local -Z, so local +Z points at the panel."""
+    entities = []
+    for index, (direction, extent_degrees, radiance) in enumerate(STUDIO_SOFTBOXES):
+        forward = normalized(direction)
+        right = normalized(cross([0.0, 1.0, 0.0], forward))
+        up = cross(forward, right)
+        size = [2.0 * STUDIO_DISTANCE * math.tan(math.radians(degrees) * 0.5)
+                for degrees in extent_degrees]
+        entities.append({
+            'name': f'Studio softbox {index + 1}', 'parent': None,
+            'transform': {'pos': [component * STUDIO_DISTANCE for component in forward],
+                          'rot': quaternion_from_basis(right, up, forward),
+                          'scale': [1, 1, 1]},
+            'rectangle_light': {'color': [1, 1, 1], 'radiance': radiance, 'size': size}})
+    return entities
 
 
 def publication(text, root):
@@ -219,14 +260,14 @@ def render(args):
         remap['materials'] = {key: './' + os.path.relpath(material, bundle).replace(os.sep, '/')
                               for key in mappings}
         atomic_json(remap_path, remap)
-        sky = job / 'studio.hdr'
-        neutral_environment(sky)
         transform = {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]}
         scene = {'version': 2, 'environment': {'enabled': True, 'intensity': 1,
-                 'diffuse_intensity': 1, 'specular_intensity': 1, 'equirect': sky.as_posix()},
+                 'diffuse_intensity': 1, 'specular_intensity': 1,
+                 'constant': STUDIO_AMBIENT},
                  'reflection_probes': [], 'entities': [
                      {'name': 'Canonical sphere', 'parent': None, 'transform': transform,
-                      'mesh': {'path': mesh.as_posix(), 'pipeline_domain': 'world'}}]}
+                      'mesh': {'path': mesh.as_posix(), 'pipeline_domain': 'world'}},
+                     *studio_softboxes()]}
         scene_path = job / 'preview.scene.json'
         atomic_json(scene_path, scene)
         case = {'schema_version': 1, 'asset_context': 'managed_workspace',

@@ -23,7 +23,9 @@
     "backend": "vulkan",
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
-    "render_mode": "default"
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 4.0
   },
   "camera": {
     "mode": "keyframes",

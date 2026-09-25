@@ -116,6 +116,19 @@ struct VkrMetalPacketLocalShadowTransmission {
     uint64_t reserved;
 };
 
+// Mirrors VkrMetalPacketSky in draw.metalh; this library does not read it.
+struct VkrMetalPacketSky {
+    VkrSkyParams params;
+    uint64_t aerial_perspective;
+    uint64_t transmittance;
+    uint64_t multiple_scattering;
+    uint64_t cloud_radiance;
+    uint64_t cloud_shadow;
+    uint64_t cloud_base_noise;
+    uint64_t cloud_detail_noise;
+    uint64_t cloud_weather;
+};
+
 struct VkrMetalPacketLocalShadowTransmissionDraw {
     uint64_t transmission_materials;
     uint face;
@@ -186,6 +199,7 @@ struct VkrMetalPacketFrameRoot
     VkrMetalPacketSheen* sheen;
     VkrMetalPacketAnisotropy* anisotropy;
     VkrMetalPacketLocalShadowTransmission* local_shadow_transmission;
+    VkrMetalPacketSky* sky;
 };
 
 #include "../../../shared/gpu_draw.slangh"

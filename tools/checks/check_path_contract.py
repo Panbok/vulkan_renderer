@@ -154,10 +154,10 @@ def main():
         directory.mkdir(parents=True)
         for face in jobs.FACES:
             (directory / f'cube_{face}.png').write_bytes(b'fixture')
-        scene = {'version': 3, 'id': 'fixture', 'assets': [{'id': 'cube', 'name': 'Cube', 'source_kind': 'faces', 'base_path': 'builds/fixture/cube', 'extension': 'png', 'artifacts': [{'role': 'environment', 'path': 'builds/fixture/cube_r.png'}]}], 'environment': {'asset': {'scope': 'scene', 'id': 'cube', 'role': 'environment'}}}
+        scene = {'version': 3, 'id': 'fixture', 'assets': [{'id': 'cube', 'name': 'Cube', 'source_kind': 'faces', 'base_path': 'builds/fixture/cube', 'extension': 'png', 'artifacts': [{'role': 'probe-cube', 'path': 'builds/fixture/cube_r.png'}]}], 'reflection_probes': [{'enabled': True, 'asset': {'scope': 'scene', 'id': 'cube', 'role': 'probe-cube'}}]}
         result = job.lower(scene, job.stage)
         runtime = jobs.load_json(result['runtime_path'])
-        assert runtime['environment']['cubemap']['base_path'] == str(directory / 'cube')
+        assert runtime['reflection_probes'][0]['cubemap']['base_path'] == str(directory / 'cube')
     print(f"Path contract passed: {len(corpus['cases'])} shared cases, containment, migration, OBJ/MTL, URI and six-face preparation")
 
 

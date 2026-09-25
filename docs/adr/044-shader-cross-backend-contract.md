@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-24
+updated: 2026-09-25
 authority: adr
 ---
 
@@ -391,9 +391,11 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Shadow receiver (UNALIGNED) | `shared/shadow_kernel.slangh`, `local_shadow.slangh`, `local_shadow_transmission.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
 | Baked diffuse volumes (UNALIGNED) | `shared/diffuse_volume_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Rectangle LTC (UNALIGNED) | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
-| Analytic fog (UNALIGNED) | `shared/fog_kernel.slangh` | `metal/msl/post/fog.metal` | `vulkan/slang/post/fog.slang` |
-| Froxel volumetric fog (UNALIGNED) | `shared/froxel_fog_kernel.slangh`, `punctual_light_kernel.slangh` | `metal/msl/post/froxel_fog.metal` | `vulkan/slang/post/froxel_fog.slang` |
+| Analytic fog (UNALIGNED) | `shared/fog_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/post/fog.metal`, `world/lighting.metalh` | `vulkan/slang/post/fog.slang`, `world/default.slang` |
+| Froxel volumetric fog (UNALIGNED) | `shared/froxel_fog_kernel.slangh`, `fog_kernel.slangh`, `punctual_light_kernel.slangh` | `metal/msl/post/froxel_fog.metal` | `vulkan/slang/post/froxel_fog.slang` |
 | IBL and SH | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
+| Sky atmosphere and aerial perspective (UNALIGNED) | `shared/atmosphere_kernel.slangh` | `metal/msl/ibl/atmosphere.metal`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/fog.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/atmosphere.slang`, `world/default.slang`, `deferred.slang`, `post/fog.slang`, `post/froxel_fog.slang` |
+| Volumetric clouds (UNALIGNED) | `shared/cloud_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/clouds.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
 | Opaque SSR (UNALIGNED) | `shared/ssr_kernel.slangh` | `metal/msl/post/ssr.metal` | `vulkan/slang/world/deferred.slang` |
 | Opaque SSGI (UNALIGNED) | `shared/ssgi_kernel.slangh` | `metal/msl/post/ssgi.metal` | `vulkan/slang/post/ssgi.slang` |
 | Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
@@ -623,12 +625,18 @@ clearcoat/sheen materials. The narrower immediate-neighbor trial is superseded
 by nine spaced rough taps; both results remain in the
 [full-resolution tracing record](../../assets/verification/renderer-features/ssr-full-resolution-tracing.txt).
 
-Analytic fog shares `VkrFogParams`, two `float4` values (32 bytes), between
-native passes. Packet version 38 appends its prepared fog pointer without
-growing either frame root: Metal uses byte 504 of its 512-byte root and Vulkan
-uses byte 568 of its 576-byte root. The Vulkan 8x8 compute root is 128 bytes:
-the parameter record, inverse view-projection, camera position, depth texture,
-target texture and extent begin at bytes 0/32/96/112/116/120. Emitted SPIR-V
+Analytic fog shares `VkrFogParams`, three `float4` values (48 bytes), between
+native passes: colour and density, height and distance limits, and sky lighting
+with anisotropy. The frame roots address it at byte 504 on Metal and byte 568 on
+Vulkan. Both 8x8 compute roots are 176 bytes. Metal places the parameter record,
+inverse view-projection, camera position, depth, target, extent, aerial volume,
+sky record and lit frame root at bytes 0/48/112/128/136/144/152/160/168. Vulkan
+places the parameter record, inverse view-projection, camera position, depth,
+target, extent, sky record, aerial descriptor and frame root at bytes
+0/48/112/128/132/136/144/152/160. The shared kernel owns the Henyey-Greenstein
+phase and the sky-lit in-scatter; native helpers derive the sun from the
+frame's directional light and the sky light's average from the published SH.
+The shared froxel regression checks that arithmetic on the CPU. Emitted SPIR-V
 reflection and Release compile-command C syntax checks pass; the retained
 diagnostic is [retained fog-spirv diagnostic](../../assets/verification/renderer-features/fog-spirv.txt).
 Metal Release and editor runs pass, including native MSL startup/API evidence
@@ -681,9 +689,11 @@ comparison remain unavailable, so SSGI is **UNALIGNED**.
 [ADR-060](060-screen-space-diffuse-indirect-lighting.md) owns the feature policy
 and acceptance evidence.
 
-Froxel volumetric fog uses a 928-byte `VkrFroxelFogParams` record. Fields through
+Froxel volumetric fog uses a 944-byte `VkrFroxelFogParams` record. Fields through
 byte 799 retain their existing offsets; unjittered current view-projection and
-jittered inverse raster view-projection append at bytes 800 and 864. Packet
+jittered inverse raster view-projection append at bytes 800 and 864, and the
+sky-lighting vector at byte 928. The phase lane carries the Henyey-Greenstein
+anisotropy that both native injection passes apply per light. Packet
 version 40 binds the Metal 512-byte frame root's froxel parameter pointer and
 integrated 3D texture at bytes 136 and 216. The Vulkan frame root is 592 bytes:
 the parameter address, integrated descriptor and sampler occupy bytes 576, 584
@@ -698,19 +708,51 @@ translation units compile successfully. Native Vulkan execution and bilateral
 comparison remain unavailable, so froxel fog is **UNALIGNED**.
 [ADR-059](059-froxel-volumetric-fog.md) records the implemented scope and evidence.
 
-Sky atmosphere uses shared 128-byte parameters and four cold compute stages.
-Its native bake root is 192 bytes on Metal and 176 bytes on Vulkan. The deferred
-lighting root appends a solar-radiance vector at byte 160 on Metal (176 bytes
-total) and byte 128 on Vulkan (144 total); common frame roots remain unchanged.
-Packet version 39 carries that radiance in the sky payload and includes it in
-temporal/SSR signatures. Actual Vulkan SPIR-V validation and reflection pass in
-[the retained diagnostic](../../assets/verification/renderer-features/atmosphere-spirv.txt). Native Metal
-startup and API validation pass. Independent direct-light comparison has maximum
-HDR error 0.000987, the zero-density sky is black outside the disc, and integrated
-visible disc irradiance differs from its authored value by 0.517% in the tested
-view. Ground/horizon, daylight, high-altitude and Bistro captures are finite.
+Sky atmosphere uses shared 128-byte parameters and three cold compute stages;
+the direct light's observer irradiance is a CPU integral, so no stage writes
+a readback. Its native bake root is 192 bytes on Metal and 176 bytes on
+Vulkan, with the scalar tail at byte 168 and 152; the lookup texture
+references name the generation's own textures. Both source stages add the
+sunlit Lambertian ground for below-horizon rays and write no disc coverage.
+Packet version 50 carries the published medium lit by the scene's current sun
+and the published lookups; the
+shared 352-byte `VkrSkyParams` record adds the camera altitude, the unjittered
+view-projection pair, the camera position with kilometres per world unit, the
+aerial constants and the 64-byte `VkrCloudParams` tail. Native sky records
+embed it and append texture references: 416 bytes on Metal and 400 on Vulkan,
+addressed from byte 536 of the Metal frame root and byte 616 of the Vulkan
+frame root, whose sizes are unchanged. Vulkan sky-record slots name the
+sampled heap; an aerial-perspective slot formerly taken from the storage heap
+is corrected. Both sky builders use a 16-byte root. The deferred lighting root
+keeps its size and reuses the sky slot, flag and radiance vector as the
+sky-view lookup, sky mode and constant radiance. The fog roots also
+address the aerial volume, and the Metal froxel application root grows to 64
+bytes to do so. Shared helpers own the sky-view mapping, analytic disc, sun
+glow and aerial coordinates; native files own every sample and write. The sky
+record carries the glow coefficient in `atmosphere.mie_extinction.w`, a lane
+the bake leaves zero.
+Actual Vulkan SPIR-V validation and layout reflection pass in
+[the retained diagnostic](../../assets/verification/renderer-features/atmosphere-spirv.txt).
+Metal startup reflection, API validation and Bistro captures pass, and the
+sky-view lookup agrees with the removed cube sky within 0.65% over open sky.
 Native Vulkan execution and bilateral comparison remain unavailable: atmosphere
 is **UNALIGNED**. [ADR-058](058-revision-baked-sky-atmosphere.md) owns the model.
+
+Volumetric clouds share `shared/cloud_kernel.slangh`: tileable noise
+synthesis, density shaping, the phase and multiple-scattering octaves, step
+integration, the layer segment, screen and sun-projected coordinates and the
+history blend. Native files own the march loops and every sample and write.
+Noise synthesis uses one root (32 bytes on Metal, 16 on Vulkan), the shadow
+builder the 16-byte sky builder root, and the trace a 128-byte root on both
+backends with the previous canonical view-projection, sky and frame addresses,
+depth, history and output textures, extents, frame index and history flag.
+Metal startup reflection validates the three roots and the embedded cloud
+record; Vulkan SPIR-V validation and layout reflection pass for the five
+cloud modules and every sky-record consumer in
+[the retained diagnostic](../../assets/verification/renderer-features/clouds-spirv.txt).
+Metal API validation and Bistro captures pass. Native Vulkan execution and
+bilateral comparison remain unavailable: clouds are **UNALIGNED**.
+[ADR-074](074-volumetric-cloud-layer.md) owns the model.
 
 AgX and grading share production kernels. Metal's post root is 48 bytes, with a
 grading-block pointer at byte 32; Vulkan's utility root is 560 bytes, with the
@@ -747,8 +789,7 @@ case loads Khronos synchronization validation and reports no API warnings or
 errors; ADR-052 records the small, mixed motion-quality changes and local cost.
 
 Exposure requires complete histogram groups and GTAO requires mip-selecting
-depth sampling under ADR-042. Equirectangular HDR conversion wraps longitude
-and clamps latitude, preserving the prepared source texture's pole behavior.
+depth sampling under ADR-042.
 
 Direct-light helpers reject noncontributing light hemispheres before half-vector
 construction. Shared GGX math defines zero contribution when the half-vector's

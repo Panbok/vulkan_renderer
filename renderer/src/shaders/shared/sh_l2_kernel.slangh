@@ -70,6 +70,18 @@ float3 vkr_sh_l2_evaluate(VkrShL2Packed coefficients,
     return max(result, float3(0.0f, 0.0f, 0.0f));
 }
 
+/**
+ * Average of the stored response over all normals, which equals the average
+ * incident radiance. Only the constant term and the z*z quadratic term, whose
+ * spherical mean is 1/3, survive the average.
+ */
+float3 vkr_sh_l2_average(VkrShL2Packed coefficients)
+{
+    return float3(coefficients.v[0].w + coefficients.v[3].z / 3.0f,
+                  coefficients.v[1].w + coefficients.v[4].z / 3.0f,
+                  coefficients.v[2].w + coefficients.v[5].z / 3.0f);
+}
+
 /** The nine real L2 basis values for one direction, in the stored order. */
 struct VkrShL2Basis
 {

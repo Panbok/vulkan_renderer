@@ -118,7 +118,11 @@ bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *v) {
         !isfinite(vec3_dot(p->direction_local, p->direction_local)) ||
         !isfinite(p->sun_angular_diameter_degrees) ||
         p->sun_angular_diameter_degrees < 0.0f ||
-        p->sun_angular_diameter_degrees >= 180.0f || p->enabled > 1 ||
+        p->sun_angular_diameter_degrees >= 180.0f ||
+        !(p->temperature_kelvin == 0.0f ||
+          (p->temperature_kelvin >= VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K &&
+           p->temperature_kelvin <= VKR_ATMOSPHERE_SUN_TEMPERATURE_MAX_K)) ||
+        p->enabled > 1 || p->atmosphere_sun > 1 ||
         vec3_dot(p->direction_local, p->direction_local) < 0.000001f)
       return false_v;
   }
@@ -723,7 +727,10 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !json_floats(w, "directional_intensity", &p->intensity, 1) ||
         !json_floats(w, "directional_sun_angular_diameter_degrees",
                      &p->sun_angular_diameter_degrees, 1) ||
-        !WRITE_BOOL("directional_enabled", p->enabled))
+        !json_floats(w, "directional_temperature_kelvin",
+                     &p->temperature_kelvin, 1) ||
+        !WRITE_BOOL("directional_enabled", p->enabled) ||
+        !WRITE_BOOL("directional_atmosphere_sun", p->atmosphere_sun))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) {
@@ -1391,10 +1398,13 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "rectangle_radiance",
                                "rectangle_size",
                                "rectangle_enabled",
-                               "physics"};
+                               "physics",
+                               "directional_temperature_kelvin",
+                               "directional_atmosphere_sun"};
   MemZero(v, sizeof(*v));
   v->directional_light.sun_angular_diameter_degrees =
       VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
+  v->directional_light.atmosphere_sun = true_v;
   uint32_t seen = 0;
   if (!edit_json_take(j, '{'))
     return false_v;
@@ -1517,6 +1527,12 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 24:
       ok = edit_json_bool(j, &v->rectangle_light.enabled);
       break;
+    case 26:
+      ok = edit_json_floats(j, &v->directional_light.temperature_kelvin, 1);
+      break;
+    case 27:
+      ok = edit_json_bool(j, &v->directional_light.atmosphere_sun);
+      break;
     }
     if (!ok)
       return false_v;
@@ -1538,6 +1554,10 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     required |= 15u << 15u;
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
     required |= seen & (1u << 20u); /* Old journals use the default angle. */
+  if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
+    required |= seen & (1u << 26u); /* Old journals use the light's colour. */
+  if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
+    required |= seen & (1u << 27u); /* Old journals keep the scene default. */
   if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
     required |= seen & (1u << 19u); /* Old journals default shadows off. */
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)

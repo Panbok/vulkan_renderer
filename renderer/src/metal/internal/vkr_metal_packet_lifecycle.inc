@@ -307,19 +307,6 @@ bool8_t vkr_metal_packet_renderer_drain(
     vkr_capture_ring_collect(&renderer->capture_ring,
                              renderer->completion.signaledValue);
 
-    if (renderer->atmosphere_lut_live_count) {
-      for (uint32_t i = 0u; i < renderer->atmosphere_lut_live_count; ++i) {
-        if (vkr_metal_memory_device_retire(
-                renderer->memory, renderer->atmosphere_luts[i].handle,
-                renderer->atmosphere_luts_last_use_submit_value) !=
-            VKR_METAL_MEMORY_STATUS_OK)
-          return false_v;
-        renderer->atmosphere_luts[i] = (VkrMetalTextureResource){0};
-      }
-      renderer->atmosphere_lut_live_count = 0u;
-      renderer->atmosphere_luts_live = false_v;
-    }
-
     for (uint32_t i = 0u; i < renderer->ltc_lut_live_count; ++i) {
       if (vkr_metal_memory_device_retire(renderer->memory,
                                          renderer->ltc_luts[i].handle,
@@ -364,6 +351,16 @@ bool8_t vkr_metal_packet_renderer_drain(
         return false_v;
       renderer->dfg_lut_live = false_v;
       renderer->dfg_lut = (VkrMetalTextureResource){0};
+    }
+    while (renderer->cloud_noise_live_count > 0u) {
+      const uint32_t index = renderer->cloud_noise_live_count - 1u;
+      if (vkr_metal_memory_device_retire(
+              renderer->memory, renderer->cloud_noise[index].handle,
+              renderer->cloud_noise_last_use_submit_value) !=
+          VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+      renderer->cloud_noise[index] = (VkrMetalTextureResource){0};
+      renderer->cloud_noise_live_count = index;
     }
 
     if (renderer->gtao_white_live) {
@@ -551,25 +548,19 @@ vkr_internal bool8_t vkr_metal_packet_bake_ibl_cubemap_adapter(
                                                     sh_deringing);
 }
 
-vkr_internal bool8_t vkr_metal_packet_bake_hdr_environment_adapter(
-    void *state, VkrTextureHandle equirect, VkrTextureHandle source,
-    VkrTextureHandle prefilter, float32_t sh_deringing) {
-  return vkr_metal_packet_renderer_bake_hdr_environment(
-      state, equirect, source, prefilter, sh_deringing);
-}
-
 vkr_internal bool8_t vkr_metal_packet_bake_atmosphere_adapter(
     void *state, const VkrAtmosphereGpuParams *params, VkrTextureHandle source,
-    VkrTextureHandle prefilter, float32_t sh_deringing) {
-  return vkr_metal_packet_renderer_bake_atmosphere(state, params, source,
-                                                   prefilter, sh_deringing);
+    VkrTextureHandle prefilter, VkrTextureHandle transmittance,
+    VkrTextureHandle multiple_scattering, float32_t sh_deringing) {
+  return vkr_metal_packet_renderer_bake_atmosphere(
+      state, params, source, prefilter, transmittance, multiple_scattering,
+      sh_deringing);
 }
 
 vkr_internal VkrAtmosphereBakeStatus
-vkr_metal_packet_atmosphere_bake_status_adapter(
-    void *state, VkrTextureHandle source, VkrAtmosphereBakeResult *out_result) {
-  return vkr_metal_packet_renderer_atmosphere_bake_status(state, source,
-                                                          out_result);
+vkr_metal_packet_atmosphere_bake_status_adapter(void *state,
+                                                VkrTextureHandle source) {
+  return vkr_metal_packet_renderer_atmosphere_bake_status(state, source);
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_texture_adapter(
@@ -623,8 +614,6 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                                  vkr_metal_packet_update_texture_sampler_adapter,
                              .bake_ibl_cubemap =
                                  vkr_metal_packet_bake_ibl_cubemap_adapter,
-                             .bake_hdr_environment =
-                                 vkr_metal_packet_bake_hdr_environment_adapter,
                              .bake_atmosphere =
                                  vkr_metal_packet_bake_atmosphere_adapter,
                              .atmosphere_bake_status =
@@ -738,10 +727,14 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->picking_text_pipeline release];
   [renderer->tonemap_pipeline release];
   [renderer->display_linear_pipeline release];
-  [renderer->ibl_equirect_pipeline release];
   [renderer->ibl_prefilter_pipeline release];
   [renderer->ibl_sh_pipeline release];
-  [renderer->atmosphere_sun_pipeline release];
+  [renderer->sky_view_pipeline release];
+  [renderer->aerial_perspective_pipeline release];
+  for (uint32_t i = 0u; i < VKR_METAL_PACKET_CLOUD_NOISE_COUNT; ++i)
+    [renderer->cloud_noise_pipelines[i] release];
+  [renderer->cloud_shadow_pipeline release];
+  [renderer->cloud_trace_pipeline release];
   [renderer->atmosphere_source_pipeline release];
   [renderer->atmosphere_multiple_scattering_pipeline release];
   [renderer->atmosphere_transmittance_pipeline release];

@@ -25,6 +25,13 @@ typedef struct VkrFroxelFogSettings {
   float32_t max_distance;
   uint32_t box_count;
   VkrFroxelDensityBox boxes[VKR_FROXEL_FOG_BOX_COUNT_MAX];
+  /** Strength in [0,1] of the published atmosphere's average sky radiance
+      scattered through the `color` albedo. Zero keeps sun and local lights
+      as the only sources. */
+  float32_t sky_lighting;
+  /** Henyey-Greenstein anisotropy of sun and local-light scattering in
+      [-0.95,0.95]; zero is the isotropic phase. */
+  float32_t anisotropy;
 } VkrFroxelFogSettings;
 
 typedef struct VkrFroxelDensityBoxGpu {
@@ -47,9 +54,12 @@ typedef struct VkrFroxelFogGpuParams {
   VkrFroxelDensityBoxGpu boxes[VKR_FROXEL_FOG_BOX_COUNT_MAX];
   Mat4 current_view_projection;
   Mat4 inverse_raster_view_projection;
+  /** x: sky-light strength, zero without a published atmosphere. The phase
+      anisotropy lives in `height_distance_phase.w`. */
+  Vec4 lighting;
 } VkrFroxelFogGpuParams;
 
-_Static_assert(sizeof(VkrFroxelFogGpuParams) == 928u, "Froxel fog ABI drift");
+_Static_assert(sizeof(VkrFroxelFogGpuParams) == 944u, "Froxel fog ABI drift");
 _Static_assert(offsetof(VkrFroxelFogGpuParams, boxes) == 288u,
                "Froxel box ABI drift");
 _Static_assert(offsetof(VkrFroxelFogGpuParams, current_view_projection) == 800u,

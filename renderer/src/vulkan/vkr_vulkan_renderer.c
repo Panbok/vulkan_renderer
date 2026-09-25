@@ -107,10 +107,10 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
        !config->image_count) ||
       config->image_count > VKR_VULKAN_TARGET_IMAGE_MAX ||
       !config->sampled_image_capacity || !config->storage_image_capacity ||
-      /* Sentinel, shadow comparison, transmission-feedback and DFG samplers
-         occupy the first four permanent rows before asset publication begins.
-       */
-      config->sampler_capacity < 4u || !config->geometry_capacity ||
+      /* Sentinel, shadow comparison, transmission-feedback, DFG and cloud
+         noise samplers occupy the first five permanent rows before asset
+         publication begins. */
+      config->sampler_capacity < 5u || !config->geometry_capacity ||
       !config->texture_capacity ||
       config->sampled_image_capacity <
           VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS ||
@@ -1080,6 +1080,7 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
   if (!vkr_vk_commit_anisotropy_upload(renderer, slot, signal_value))
     return vkr_vk_fail_after_submit(renderer,
                                     "the anisotropy upload could not retire");
+  vkr_vk_commit_cloud_noise(renderer, slot);
   if (slot->candidate_residency_pending) {
     slot->candidate_residency = slot->pending_candidate_residency;
     slot->candidate_residency_pending = false_v;
@@ -1095,6 +1096,7 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
     vkr_vk_mark_ssr_submitted(renderer, signal_value);
     vkr_vk_mark_ssgi_submitted(renderer, signal_value);
     vkr_vk_mark_froxel_submitted(renderer, signal_value);
+    vkr_vk_mark_cloud_submitted(renderer, signal_value);
     vkr_vk_mark_exposure_submitted(renderer, signal_value);
   }
   vkr_vk_mark_skinning_submitted(renderer, signal_value);
@@ -1122,16 +1124,14 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
    references the bake queued, counting a texture once per handle it fills. */
 vkr_internal bool8_t vkr_vk_ibl_bake_holds_references(
     VkrVulkanRenderer *renderer, const VkrVulkanPendingIblBake *job) {
-  const VkrTextureHandle handles[] = {job->equirect, job->source,
-                                      job->prefilter};
-  const uint32_t first_handle = job->convert_equirect ? 0u : 1u;
-  for (uint32_t i = first_handle; i < ArrayCount(handles); ++i) {
+  const VkrTextureHandle handles[] = {job->source, job->prefilter};
+  for (uint32_t i = 0u; i < ArrayCount(handles); ++i) {
     const VkrVulkanPublishedTexture *texture =
         vkr_vk_texture_publication(renderer, handles[i]);
     if (!texture)
       continue;
     uint32_t releases = 0u;
-    for (uint32_t j = first_handle; j < ArrayCount(handles); ++j) {
+    for (uint32_t j = 0u; j < ArrayCount(handles); ++j) {
       if (vkr_vk_texture_publication(renderer, handles[j]) == texture)
         releases++;
     }
@@ -1201,10 +1201,11 @@ vkr_internal bool8_t vkr_vk_commit_ibl_bake_recordings(
         (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, job->sh_slot);
       }
     }
-    const VkrTextureHandle handles[] = {job->equirect, job->source,
-                                        job->prefilter};
-    for (uint32_t handle_index = job->convert_equirect ? 0u : 1u;
-         handle_index < ArrayCount(handles); ++handle_index) {
+    const VkrTextureHandle handles[] = {job->source, job->prefilter,
+                                        job->transmittance,
+                                        job->multiple_scattering};
+    for (uint32_t handle_index = 0u; handle_index < ArrayCount(handles);
+         ++handle_index) {
       VkrVulkanPublishedTexture *texture =
           vkr_vk_texture_publication(renderer, handles[handle_index]);
       if (texture) {
@@ -1229,14 +1230,6 @@ vkr_internal bool8_t vkr_vk_commit_ibl_bake_recordings(
       job->atmosphere_submit_value = signal_value;
       job->submitted = true_v;
       job->recorded = false_v;
-      if (job->atmosphere_rebuild_luts) {
-        renderer->atmosphere_lut_params = job->atmosphere_params;
-        renderer->atmosphere_lut_valid = true_v;
-        renderer->atmosphere_lut_revision++;
-        renderer->atmosphere_transmittance.layout = VK_IMAGE_LAYOUT_GENERAL;
-        renderer->atmosphere_multiple_scattering.layout =
-            VK_IMAGE_LAYOUT_GENERAL;
-      }
       if (pending_ibl_write != i)
         renderer->pending_ibl_bakes[pending_ibl_write] = *job;
       pending_ibl_write++;
@@ -1771,54 +1764,6 @@ VkrAllocator *vkr_vulkan_renderer_allocator(VkrVulkanRenderer *renderer) {
   return renderer ? renderer->allocator : NULL;
 }
 
-bool8_t vkr_vulkan_renderer_hdr_ibl_limits(const VkrVulkanRenderer *renderer,
-                                           uint32_t *out_max_cube_extent,
-                                           uint32_t *out_max_mip_levels) {
-  if (out_max_cube_extent)
-    *out_max_cube_extent = 0u;
-  if (out_max_mip_levels)
-    *out_max_mip_levels = 0u;
-  if (!renderer || !renderer->device)
-    return false_v;
-  VkFormatProperties3 properties3 = {
-      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
-  };
-  VkFormatProperties2 properties2 = {
-      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
-      .pNext = &properties3,
-  };
-  vkGetPhysicalDeviceFormatProperties2(
-      vkr_vulkan_device_physical(renderer->device),
-      VK_FORMAT_R16G16B16A16_SFLOAT, &properties2);
-  const VkFormatFeatureFlags2 required =
-      VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
-      VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
-      VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-      VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
-      VK_FORMAT_FEATURE_2_BLIT_DST_BIT |
-      VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-  if ((properties3.optimalTilingFeatures & required) != required)
-    return false_v;
-  const VkPhysicalDeviceProperties2 *device_properties =
-      vkr_vulkan_device_properties(renderer->device);
-  if (!device_properties)
-    return false_v;
-  const uint32_t extent =
-      Min(device_properties->properties.limits.maxImageDimensionCube,
-          (uint32_t)VKR_IBL_PREFILTER_SIZE);
-  if (!extent)
-    return false_v;
-  uint32_t mip_count = 1u;
-  for (uint32_t size = extent; size > 1u; size >>= 1u)
-    mip_count++;
-  mip_count = Min(mip_count, (uint32_t)VKR_IBL_PREFILTER_MIP_COUNT);
-  if (out_max_cube_extent)
-    *out_max_cube_extent = extent;
-  if (out_max_mip_levels)
-    *out_max_mip_levels = mip_count;
-  return true_v;
-}
-
 VkrRendererError vkr_vulkan_renderer_get_pixel_readback_result(
     VkrVulkanRenderer *renderer, VkrPixelReadbackResult *out_result) {
   if (!renderer || !out_result)
@@ -2225,7 +2170,7 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     vkr_vk_retire_ltc_descriptor_slots(renderer);
     vkr_vk_retire_sheen_descriptor_slots(renderer);
     vkr_vk_retire_anisotropy_descriptor_slots(renderer);
-    vkr_vk_retire_atmosphere_descriptor_slots(renderer);
+    vkr_vk_destroy_cloud_noise(renderer);
     if (renderer->dfg_sampler)
       vkDestroySampler(device, renderer->dfg_sampler, NULL);
     for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
@@ -2241,7 +2186,6 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     }
     vkr_vk_destroy_geometry_megabuffer(renderer);
     vkr_vk_destroy_lookup_resources(renderer);
-    vkr_vk_destroy_atmosphere_resources(renderer);
     vkr_vk_destroy_image(renderer, &renderer->sentinel_image);
     vkr_vk_destroy_buffer(renderer, &renderer->materials);
     /* The pool has renderer lifetime and is released only here, after the

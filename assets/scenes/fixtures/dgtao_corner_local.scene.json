@@ -5,7 +5,7 @@
     "intensity": 1,
     "diffuse_intensity": 1,
     "specular_intensity": 1,
-    "equirect": "assets/textures/dgtao_white_local.hdr"
+    "constant": [1, 1, 1]
   },
   "entities": [
     {

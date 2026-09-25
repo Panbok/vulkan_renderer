@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-12
+updated: 2026-09-24
 authority: proposal
 ---
 # Editor Projects
@@ -130,7 +130,7 @@ for the project name again.
 | Section | Controls and behavior |
 |---|---|
 | Identity | Required scene name; stable ID generated internally. |
-| Environment | None or HDR environment. Native `.hdr` picker, source dimensions/preview, enabled, overall/diffuse/specular intensity and supported SH deringing. Use loader defaults, displayed as actual numbers. Import existing cubemap/atmosphere settings losslessly; procedural-sky authoring UI is a later extension. |
+| Sky | Physical-sky toggle for the scene atmosphere (ADR-058), sky-light enable and overall/diffuse/specular intensity. Use loader defaults, displayed as actual numbers. Import existing atmosphere settings losslessly; sun and atmosphere parameter authoring is a later extension. |
 | Reflection probes | Scene-level enable/disable for the draft's probes; list with add/remove, center, positive extents, blend distance, intensity and diffuse/specular contribution. Reuse existing limits and validators. |
 | Models | Zero or more `.gltf`, `.glb`, `.obj` files, selected through native multi-select; per-import root transform, dependency summary and diagnostics. Import is allowed without any model. |
 | Font | Inherit project default, or choose a scene font. Select source TTF/OTF or an existing managed font. This affects scene text; editor UI fonts stay editor-owned. |
@@ -143,7 +143,7 @@ accidentally duplicate them. Do not add a default sun when the imported content
 already supplies one. **Add default light** is explicit. Other entity types in an
 imported scene must survive even though the initial creation UI only adds lights.
 
-HDR skybox lighting and local reflection probes are distinct. Disabling local
+Sky lighting and local reflection probes are distinct. Disabling local
 probes does not disable global environment lighting. Project graphics settings can
 suppress probe rendering without deleting scene probe data.
 
@@ -373,7 +373,7 @@ The v3 resource-field mapping is:
 | Entity `mesh.path` | `mesh.asset` reference with mesh artifact role; keep other mesh fields. |
 | Shape `material.path` / material lookup name | `material.asset` reference with material role; display names never resolve identity. |
 | Text `text3d.font` lookup name | `text3d.font` reference, or null for scene/project inheritance. |
-| Environment `equirect`, `cubemap` / face base path | `environment.asset` reference with environment role and source kind in its asset record; scalar environment fields stay in the scene. |
+| Environment `equirect`, `cubemap` | Removed with image skies (ADR-058); import drops them with a warning. Scalar sky-light fields and the atmosphere stay in the scene. |
 | Probe `cubemap` / face base path | Probe `asset` reference with probe-cube role; capture and influence parameters remain scene-owned. |
 | Diffuse volume `path` | Diffuse volume `asset` reference with volume role. |
 | Material texture paths, font config source/artifact paths, cooked mesh material dependencies | Bundle-relative paths for newly cooked bundles; explicit immutable remap records for cooked-only legacy bundles. |
@@ -670,8 +670,7 @@ extensions; the storage contract already supports project-owned shared assets.
 | Asset | Preview |
 |---|---|
 | LDR texture | Image thumbnail, correct color-space interpretation, checkerboard for alpha. Data maps can expose channel/normal views in inspection. |
-| HDR environment | Fixed documented exposure/tonemap, independent of the active scene's exposure. |
-| Material | Canonical sphere, fixed camera, neutral HDR environment and fixed rendering settings; show fallback plus diagnostic for unavailable dependencies. |
+| Material | Canonical sphere, fixed camera, neutral constant ambient with two rectangle-light softboxes and fixed rendering settings; show fallback plus diagnostic for unavailable dependencies. |
 | Mesh | Vector mesh/type icon only, never a rendered model preview. |
 | Font | Font icon and metadata in v1; optional sample text in Inspector using the existing font system. |
 | Scene, source, probe, volume, unknown supported artifact | Distinct type icon and metadata; no arbitrary scene/mesh render for a thumbnail. |

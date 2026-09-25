@@ -37,8 +37,6 @@ bool8_t vkr_render_assets_initialize(
   if (!vkr_allocator_arena(&assets->scratch_allocator))
     return false_v;
   if (metrics_producers) {
-    assets->hdr_decode_metrics = metrics_producers->hdr_decode;
-    assets->ibl_conversion_metrics = metrics_producers->ibl_conversion;
     assets->ibl_convolution_metrics = metrics_producers->ibl_convolution;
   }
   log_debug("Initializing resource registry");
@@ -71,7 +69,6 @@ bool8_t vkr_render_assets_initialize(
     return false_v;
   }
   log_debug("Initializing material assets");
-  assets->texture_system.hdr_decode_metrics = assets->hdr_decode_metrics;
   VkrMaterialSystemConfig material_config = {
       .max_material_count = 8192,
       .asset_publisher = assets->asset_publisher,

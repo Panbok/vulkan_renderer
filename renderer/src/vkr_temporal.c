@@ -83,6 +83,40 @@ temporal_scene_candidates(VkrTemporalSceneSignature *signature,
   }
 }
 
+/* The published atmosphere generation and its authored settings are content.
+   The camera altitude that selects the sky-view lookup is not. */
+vkr_internal void temporal_scene_sky(VkrTemporalSceneSignature *signature,
+                                     const VkrSkyPassPayload *sky) {
+  temporal_scene_lane(signature, sky != NULL);
+  if (!sky)
+    return;
+  const VkrAtmosphereSettings *atmosphere = &sky->atmosphere;
+  temporal_scene_lane(signature, atmosphere->enabled);
+  temporal_scene_vec3(signature, atmosphere->sun_direction);
+  temporal_scene_vec3(signature, atmosphere->solar_irradiance);
+  temporal_scene_vec3(signature, atmosphere->ground_albedo);
+  temporal_scene_floats(signature, atmosphere->observer_altitude_m,
+                        atmosphere->sun_angular_diameter_degrees);
+  temporal_scene_floats(signature, atmosphere->rayleigh_density_scale,
+                        atmosphere->mie_density_scale);
+  temporal_scene_floats(signature, atmosphere->ozone_density_scale,
+                        atmosphere->mie_anisotropy);
+  temporal_scene_floats(signature, atmosphere->metres_per_world_unit,
+                        atmosphere->sun_glow);
+  temporal_scene_pair(signature, sky->transmittance.id,
+                      sky->transmittance.generation);
+  temporal_scene_pair(signature, sky->multiple_scattering.id,
+                      sky->multiple_scattering.generation);
+  temporal_scene_vec3(signature, sky->constant_radiance);
+  /* The wind offset animates every frame; only the authored layer resets. */
+  const VkrCloudSettings *clouds = &sky->clouds;
+  temporal_scene_lane(signature, clouds->enabled);
+  temporal_scene_floats(signature, clouds->base_altitude_m,
+                        clouds->top_altitude_m);
+  temporal_scene_floats(signature, clouds->coverage, clouds->density);
+  temporal_scene_floats(signature, clouds->wind_mps.x, clouds->wind_mps.y);
+}
+
 vkr_internal void temporal_scene_lighting(VkrTemporalSceneSignature *signature,
                                           const VkrFrameLighting *lighting) {
   temporal_scene_lane(signature, lighting != NULL);
@@ -253,14 +287,7 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
       temporal_scene_vec4(&signature, local->views[i].projection_params);
     }
   }
-  temporal_scene_lane(&signature, packet->input.skybox != NULL);
-  if (packet->input.skybox) {
-    temporal_scene_pair(&signature, packet->input.skybox->cubemap.id,
-                        packet->input.skybox->cubemap.generation);
-    temporal_scene_pair(&signature, packet->input.skybox->material.id,
-                        packet->input.skybox->material.generation);
-    temporal_scene_vec3(&signature, packet->input.skybox->solar_disk_radiance);
-  }
+  temporal_scene_sky(&signature, packet->input.sky);
   return signature;
 }
 
@@ -311,14 +338,7 @@ vkr_ssr_content_signature(const VkrPreparedFrame *packet) {
     temporal_scene_pair(&signature, receiver->pcf_sample_count,
                         receiver->pcf_uniform_early_out);
   }
-  temporal_scene_lane(&signature, packet->input.skybox != NULL);
-  if (packet->input.skybox) {
-    temporal_scene_pair(&signature, packet->input.skybox->cubemap.id,
-                        packet->input.skybox->cubemap.generation);
-    temporal_scene_pair(&signature, packet->input.skybox->material.id,
-                        packet->input.skybox->material.generation);
-    temporal_scene_vec3(&signature, packet->input.skybox->solar_disk_radiance);
-  }
+  temporal_scene_sky(&signature, packet->input.sky);
   return signature;
 }
 

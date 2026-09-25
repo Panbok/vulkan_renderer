@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-13
+updated: 2026-09-25
 authority: adr
 ---
 
@@ -193,7 +193,10 @@ Normal Release Metal checks on 2026-09-12 established selected workflows:
   SHA-256 `6a764bad3f60c4cdfb9179f16db892ceff835fedebdf228a597aac41b504db00`.
   Its preview owner checked the harness report, image and dependency digests before
   publication. These are material-preview execution and output checks, not a
-  timing comparison.
+  timing comparison. That digest belongs to recipe 1's HDR studio; recipe 2
+  lights the sphere with a constant ambient and two rectangle-light softboxes
+  under [ADR-058](058-revision-baked-sky-atmosphere.md), and a 256-pixel job
+  published a ready thumbnail with the same report and digest checks.
 - `./build_test.sh` completed the CPU suite, including managed closure, dock tab
   geometry and gesture checks. CPU preview checks covered Unicode paths, bounded
   dimensions, alpha filtering, HDR mapping and failed-input publication. Read-only

@@ -41,6 +41,9 @@ struct EntityImport {
   VkrBakeSceneLight point_light = {};
   bool has_directional_light = false;
   VkrBakeSceneLight directional_light = {};
+  float32_t directional_sun_angular_diameter_degrees =
+      VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
+  bool8_t directional_atmosphere_sun = true_v;
   bool has_rectangle_light = false;
   VkrBakeSceneLight rectangle_light = {};
 };
@@ -426,11 +429,29 @@ bool parse_directional_light(const VkrJsonReader *entity, EntityImport *out) {
   (void)read_vec3(&object, "color", &light.color);
   (void)read_float(&object, "intensity", &light.intensity);
   (void)read_vec3(&object, "direction_local", &light.direction);
+  float32_t temperature = 0.0f;
+  float32_t diameter =
+      VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
+  bool8_t atmosphere_sun = true_v;
   if (!finite_vec3(light.color) || !finite_vec3(light.direction) ||
-      !std::isfinite(light.intensity))
+      !std::isfinite(light.intensity) ||
+      !read_optional_float(&object, "temperature_kelvin", &temperature) ||
+      !read_optional_float(&object, "sun_angular_diameter_degrees",
+                           &diameter) ||
+      !read_optional_bool(&object, "atmosphere_sun", &atmosphere_sun))
     return false;
+  if (temperature != 0.0f &&
+      (temperature < VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K ||
+       temperature > VKR_ATMOSPHERE_SUN_TEMPERATURE_MAX_K))
+    return false;
+  // A colour temperature tints the authored colour, as in the runtime.
+  if (temperature > 0.0f)
+    light.color =
+        vec3_mul(light.color, vkr_atmosphere_blackbody_rgb(temperature));
   out->directional_light = light;
   out->has_directional_light = true;
+  out->directional_sun_angular_diameter_degrees = diameter;
+  out->directional_atmosphere_sun = atmosphere_sun;
   return true;
 }
 
@@ -499,64 +520,71 @@ bool parse_entities(const std::vector<uint8_t> &bytes,
   return true;
 }
 
+/* Largest finite RGBA16F value: the runtime constant-source bound. */
+constexpr float32_t k_constant_radiance_max = 65504.0f;
+
+bool constant_radiance_valid(Vec3 radiance) {
+  const float32_t channels[] = {radiance.x, radiance.y, radiance.z};
+  for (float32_t channel : channels) {
+    if (!std::isfinite(channel) || channel < 0.0f ||
+        channel > k_constant_radiance_max) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* Mirrors the runtime loader's sky-light rules; any stale or conflicting
+   field fails the bake instead of silently changing its transport. */
 bool parse_environment(const std::vector<uint8_t> &bytes,
-                       VkrBakeSceneEnvironment *out,
-                       std::vector<std::string> *dependencies) {
-  (void)dependencies;
+                       bool8_t atmosphere_enabled,
+                       VkrBakeSceneEnvironment *out) {
   VkrJsonReader root = vkr_json_reader_create(bytes.data(), bytes.size());
   VkrJsonReader reader = root;
-  if (!vkr_json_find_field(&reader, "environment"))
-    return true;
-  if (parse_null(&reader))
-    return true;
-  VkrJsonReader object = {};
-  if (!vkr_json_enter_object(&reader, &object))
-    return false;
-  out->enabled = true_v;
-  (void)read_bool(&object, "enabled", &out->enabled);
-  (void)read_float(&object, "intensity", &out->intensity);
-  (void)read_float(&object, "diffuse_intensity", &out->diffuse_intensity);
-  (void)read_float(&object, "specular_intensity", &out->specular_intensity);
-  (void)read_float(&object, "sh_deringing", &out->sh_deringing);
-  if (!out->enabled)
-    return true;
-  VkrJsonReader cube = object;
-  const bool has_cube = vkr_json_find_field(&cube, "cubemap");
-  std::string equirect;
-  const bool has_equirect_field = read_string(&object, "equirect", &equirect);
-  const bool has_equirect = has_equirect_field && !equirect.empty();
-  if (has_cube && has_equirect)
-    return false;
-  if (has_equirect) {
-    out->kind = VkrBakeSceneEnvironmentKind::Equirect;
-    out->path = equirect;
+  const bool has_block = vkr_json_find_field(&reader, "environment");
+  if (has_block && !parse_null(&reader)) {
+    VkrJsonReader object = {};
+    if (!vkr_json_enter_object(&reader, &object)) {
+      return false;
+    }
+    out->enabled = true_v;
+    (void)read_bool(&object, "enabled", &out->enabled);
+    (void)read_float(&object, "intensity", &out->intensity);
+    (void)read_float(&object, "diffuse_intensity", &out->diffuse_intensity);
+    (void)read_float(&object, "specular_intensity", &out->specular_intensity);
+    (void)read_float(&object, "sh_deringing", &out->sh_deringing);
+    if (!std::isfinite(out->sh_deringing) || out->sh_deringing < 0.0f) {
+      return false;
+    }
+
+    for (const char *removed : {"equirect", "cubemap"}) {
+      VkrJsonReader field = object;
+      if (vkr_json_find_field(&field, removed)) {
+        return false;
+      }
+    }
+
+    VkrJsonReader constant = object;
+    if (vkr_json_find_field(&constant, "constant")) {
+      if (!parse_vec3(&constant, &out->constant_radiance) ||
+          !constant_radiance_valid(out->constant_radiance)) {
+        return false;
+      }
+      out->kind = VkrBakeSceneEnvironmentKind::Constant;
+    }
+  }
+
+  if (atmosphere_enabled) {
+    if (out->kind == VkrBakeSceneEnvironmentKind::Constant) {
+      return false;
+    }
+    if (!has_block) {
+      out->enabled = true_v;
+    }
+    out->kind = VkrBakeSceneEnvironmentKind::Atmosphere;
     return true;
   }
-  if (!has_cube || parse_null(&cube))
-    return false;
-  VkrJsonReader cube_object = {};
-  if (!vkr_json_enter_object(&cube, &cube_object))
-    return false;
-  VkrJsonReader base_field = cube_object;
-  VkrJsonReader extension_field = cube_object;
-  const bool has_base_field = vkr_json_find_field(&base_field, "base_path");
-  const bool has_extension_field =
-      vkr_json_find_field(&extension_field, "extension");
-  const bool has_path = read_string(&cube_object, "path", &out->path);
-  const bool has_base = read_string(&cube_object, "base_path", &out->base_path);
-  const bool has_extension =
-      read_string(&cube_object, "extension", &out->extension);
-  const bool direct = has_path && !out->path.empty();
-  const bool faces = has_base && has_extension && !out->base_path.empty() &&
-                     !out->extension.empty();
-  if (direct == faces || (direct && (has_base_field || has_extension_field)))
-    return false;
-  if (direct) {
-    out->kind = VkrBakeSceneEnvironmentKind::CubemapPath;
-    return true;
-  }
-  out->kind = VkrBakeSceneEnvironmentKind::CubemapFaces;
-  return true;
+  return !out->enabled || out->kind == VkrBakeSceneEnvironmentKind::Constant;
 }
 
 bool parse_subsurface(const std::vector<uint8_t> &bytes, VkrBakeScene *scene) {
@@ -582,9 +610,8 @@ bool parse_subsurface(const std::vector<uint8_t> &bytes, VkrBakeScene *scene) {
 }
 
 bool parse_atmosphere(const std::vector<uint8_t> &bytes,
-                      VkrAtmosphereSettings *out, float32_t *out_sh_deringing) {
+                      VkrAtmosphereSettings *out) {
   *out = vkr_atmosphere_settings_defaults();
-  *out_sh_deringing = 0.0f;
   out->enabled = false_v;
   VkrJsonReader root = vkr_json_reader_create(bytes.data(), bytes.size());
   VkrJsonReader reader = root;
@@ -608,57 +635,65 @@ bool parse_atmosphere(const std::vector<uint8_t> &bytes,
     VkrJsonReader input = object;
     return !vkr_json_find_field(&input, field) || parse_vec3(&input, value);
   };
+  VkrJsonReader solar = object;
+  const bool has_solar_irradiance =
+      vkr_json_find_field(&solar, "solar_irradiance");
+  VkrAtmosphereSunAuthoring sun = {};
+  VkrJsonReader temperature = object;
+  sun.has_temperature =
+      vkr_json_find_field(&temperature, "sun_temperature_kelvin");
+  VkrJsonReader illuminance = object;
+  sun.has_illuminance = vkr_json_find_field(&illuminance, "sun_illuminance");
   if (!optional_bool("enabled", &out->enabled) ||
       !optional_vec3("sun_direction", &out->sun_direction) ||
       !optional_vec3("solar_irradiance", &out->solar_irradiance) ||
+      !optional_float("sun_temperature_kelvin", &sun.temperature_kelvin) ||
+      !optional_float("sun_illuminance", &sun.illuminance) ||
       !optional_vec3("ground_albedo", &out->ground_albedo) ||
       !optional_float("observer_altitude_m", &out->observer_altitude_m) ||
       !optional_float("sun_angular_diameter_degrees",
                       &out->sun_angular_diameter_degrees) ||
+      !optional_float("sun_glow", &out->sun_glow) ||
       !optional_float("rayleigh_density_scale", &out->rayleigh_density_scale) ||
       !optional_float("mie_density_scale", &out->mie_density_scale) ||
       !optional_float("ozone_density_scale", &out->ozone_density_scale) ||
       !optional_float("mie_anisotropy", &out->mie_anisotropy) ||
-      !optional_float("sh_deringing", out_sh_deringing) ||
-      *out_sh_deringing < 0.0f)
+      !optional_float("metres_per_world_unit", &out->metres_per_world_unit))
     return false;
+  /* The SH window moved to $.environment.sh_deringing with the runtime. */
+  VkrJsonReader moved = object;
+  if (vkr_json_find_field(&moved, "sh_deringing")) {
+    return false;
+  }
+  if (has_solar_irradiance && (sun.has_temperature || sun.has_illuminance)) {
+    return false;
+  }
+  if (!vkr_atmosphere_apply_sun_authoring(out, &sun)) {
+    return false;
+  }
   VkrAtmosphereSettings validation = *out;
   validation.enabled = true_v;
   return vkr_atmosphere_settings_valid(&validation);
 }
 
-bool load_environment(VkrBakeScene *scene) {
-  VkrBakeSceneEnvironment &environment = scene->environment;
-  if (!environment.enabled)
-    return true;
-  VkrBakeMaterialError error = VKR_BAKE_MATERIAL_ERROR_NONE;
-  switch (environment.kind) {
-  case VkrBakeSceneEnvironmentKind::Equirect:
-    return vkr_bake_texture_store_load_environment_equirect(
-        scene->texture_store, environment.path.c_str(),
-        &environment.texture_index, &error);
-  case VkrBakeSceneEnvironmentKind::CubemapPath:
-    return vkr_bake_texture_store_load_environment_cube_rgba16f(
-        scene->texture_store, environment.path.c_str(),
-        &environment.texture_index, &error);
-  case VkrBakeSceneEnvironmentKind::CubemapFaces: {
-    /* Runtime face order and image orientation: +X, -X, +Y, -Y, +Z, -Z. */
-    static constexpr const char *suffixes[] = {"_r.", "_l.", "_u.",
-                                               "_d.", "_f.", "_b."};
-    for (uint32_t face = 0u; face < 6u; ++face) {
-      const std::string path =
-          environment.base_path + suffixes[face] + environment.extension;
-      if (!vkr_bake_texture_store_load_environment_2d(
-              scene->texture_store, path.c_str(), true_v,
-              &environment.face_texture_indices[face], &error))
-        return false;
-    }
-    return true;
+/* Mirrors vkr_scene_sync_sun for a scene with one atmosphere sun light: the
+   first enabled one drives an enabled atmosphere's sun through its local
+   rotation. An unusable light keeps the authored sun. */
+void apply_sun_light(const std::vector<EntityImport> &entities,
+                     VkrAtmosphereSettings *settings) {
+  if (!settings->enabled)
+    return;
+  for (const EntityImport &entity : entities) {
+    const VkrBakeSceneLight &light = entity.directional_light;
+    if (!entity.has_directional_light || !light.enabled ||
+        !entity.directional_atmosphere_sun)
+      continue;
+    (void)vkr_atmosphere_apply_sun_light(
+        settings, vkr_quat_rotate_vec3(entity.rotation, light.direction),
+        vec3_scale(light.color, light.intensity),
+        entity.directional_sun_angular_diameter_degrees);
+    return;
   }
-  case VkrBakeSceneEnvironmentKind::None:
-    return false;
-  }
-  return false;
 }
 
 bool compute_entity_worlds(const std::vector<EntityImport> &entities,
@@ -819,6 +854,10 @@ bool8_t append_mesh_triangle(void *user, const VkrBakeTriangle *triangle,
 
 bool8_t append_mesh_light(void *user, const VkrBakeMeshLight *source) {
   MeshAppendContext *context = static_cast<MeshAppendContext *>(user);
+  // The runtime lights an atmosphere scene with its sun alone.
+  if (source->kind == VKR_BAKE_MESH_LIGHT_DIRECTIONAL &&
+      context->scene->atmosphere.enabled)
+    return true_v;
   try {
     VkrBakeSceneLight light = {};
     light.kind = source->kind == VKR_BAKE_MESH_LIGHT_DIRECTIONAL
@@ -1003,20 +1042,21 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       return false;
     }
     VkrAtmosphereSettings atmosphere_settings = {};
-    float32_t atmosphere_sh_deringing = 0.0f;
     if (!append_unique_path(&scene->dependency_paths, scene_path) ||
         !parse_subsurface(json, scene) ||
-        !parse_atmosphere(json, &atmosphere_settings,
-                          &atmosphere_sh_deringing) ||
-        !vkr_bake_atmosphere_build(&scene->atmosphere, &atmosphere_settings) ||
-        (!scene->atmosphere.enabled &&
-         !parse_environment(json, &scene->environment,
-                            &scene->dependency_paths))) {
+        !parse_atmosphere(json, &atmosphere_settings)) {
       set_error(VkrBakeSceneError::Parse, out_error);
       reset_scene(scene);
       return false;
     }
-    scene->atmosphere.sh_deringing = atmosphere_sh_deringing;
+    apply_sun_light(entities, &atmosphere_settings);
+    if (!vkr_bake_atmosphere_build(&scene->atmosphere, &atmosphere_settings) ||
+        !parse_environment(json, scene->atmosphere.enabled,
+                           &scene->environment)) {
+      set_error(VkrBakeSceneError::Parse, out_error);
+      reset_scene(scene);
+      return false;
+    }
     std::vector<Mat4> worlds;
     if (!compute_entity_worlds(entities, true, &worlds)) {
       set_error(VkrBakeSceneError::Parse, out_error);
@@ -1032,11 +1072,6 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
     scene->texture_store = vkr_bake_texture_store_create(scene->allocator);
     if (!scene->texture_store) {
       set_error(VkrBakeSceneError::OutOfMemory, out_error);
-      reset_scene(scene);
-      return false;
-    }
-    if (!scene->atmosphere.enabled && !load_environment(scene)) {
-      set_error(VkrBakeSceneError::Unsupported, out_error);
       reset_scene(scene);
       return false;
     }
@@ -1104,67 +1139,19 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
 
 Vec3 vkr_bake_scene_sample_environment(const VkrBakeScene *scene,
                                        Vec3 direction) {
-  const Vec3 black = vec3_zero();
-  if (scene->atmosphere.enabled)
-    return vkr_bake_atmosphere_sample(&scene->atmosphere, direction);
-  if (!scene->environment.enabled ||
-      scene->environment.kind == VkrBakeSceneEnvironmentKind::None)
-    return black;
   const VkrBakeSceneEnvironment &environment = scene->environment;
-  Vec4 sample = vec4_new(0.0f, 0.0f, 0.0f, 1.0f);
-  if (environment.kind == VkrBakeSceneEnvironmentKind::Equirect) {
-    constexpr float32_t inverse_two_pi = 0.15915494309189535f;
-    constexpr float32_t inverse_pi = 0.3183098861837907f;
-    const Vec2 uv =
-        vec2_new(atan2f(direction.z, direction.x) * inverse_two_pi + 0.5f,
-                 acosf(fmaxf(-1.0f, fminf(direction.y, 1.0f))) * inverse_pi);
-    sample = vkr_bake_texture_store_sample_environment_2d(
-        scene->texture_store, environment.texture_index, uv, true_v);
-  } else {
-    const float32_t x = direction.x;
-    const float32_t y = direction.y;
-    const float32_t z = direction.z;
-    const float32_t ax = fabsf(x), ay = fabsf(y), az = fabsf(z);
-    uint32_t face = 0u;
-    Vec2 uv = vec2_new(0.5f, 0.5f);
-    if (ax >= ay && ax >= az) {
-      const float32_t inverse = 0.5f / ax;
-      if (x >= 0.0f) {
-        face = 0u;
-        uv = vec2_new(0.5f - z * inverse, 0.5f - y * inverse);
-      } else {
-        face = 1u;
-        uv = vec2_new(0.5f + z * inverse, 0.5f - y * inverse);
-      }
-    } else if (ay >= az) {
-      const float32_t inverse = 0.5f / ay;
-      if (y >= 0.0f) {
-        face = 2u;
-        uv = vec2_new(0.5f + x * inverse, 0.5f + z * inverse);
-      } else {
-        face = 3u;
-        uv = vec2_new(0.5f + x * inverse, 0.5f - z * inverse);
-      }
-    } else {
-      const float32_t inverse = 0.5f / az;
-      if (z >= 0.0f) {
-        face = 4u;
-        uv = vec2_new(0.5f + x * inverse, 0.5f - y * inverse);
-      } else {
-        face = 5u;
-        uv = vec2_new(0.5f - x * inverse, 0.5f - y * inverse);
-      }
-    }
-    if (environment.kind == VkrBakeSceneEnvironmentKind::CubemapPath) {
-      sample = vkr_bake_texture_store_sample_environment_cube_face(
-          scene->texture_store, environment.texture_index, face, uv);
-    } else if (environment.kind == VkrBakeSceneEnvironmentKind::CubemapFaces) {
-      sample = vkr_bake_texture_store_sample_environment_2d(
-          scene->texture_store, environment.face_texture_indices[face], uv,
-          false_v);
-    }
+  if (!environment.enabled) {
+    return vec3_zero();
   }
-  return vec3_new(sample.x * environment.intensity,
-                  sample.y * environment.intensity,
-                  sample.z * environment.intensity);
+
+  /* Transport scales sky radiance by the overall sky-light intensity, the
+     convention the image environment used before the atmosphere replaced it. */
+  if (environment.kind == VkrBakeSceneEnvironmentKind::Atmosphere) {
+    return vec3_scale(vkr_bake_atmosphere_sample(&scene->atmosphere, direction),
+                      environment.intensity);
+  }
+  if (environment.kind == VkrBakeSceneEnvironmentKind::Constant) {
+    return vec3_scale(environment.constant_radiance, environment.intensity);
+  }
+  return vec3_zero();
 }

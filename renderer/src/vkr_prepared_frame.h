@@ -37,4 +37,6 @@ typedef struct VkrPreparedFrame {
   VkrFogGpuParams fog;
   VkrFroxelFogGpuParams froxel_fog;
   uint64_t froxel_fog_signature;
+  /** Zeroed unless the packet's sky has an enabled atmosphere. */
+  VkrSkyGpuParams sky;
 } VkrPreparedFrame;

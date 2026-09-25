@@ -98,12 +98,10 @@ vkr_add_vulkan_packet_shader("packet.ui.vert" ui_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.ui.frag" ui_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.ui_rect.vert" ui_rect_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.ui_rect.frag" ui_rect_fragment fragment)
-vkr_add_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
 vkr_add_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
 vkr_add_vulkan_packet_shader("packet.atmosphere_transmittance.comp" atmosphere_transmittance_compute compute)
 vkr_add_vulkan_packet_shader("packet.atmosphere_multiple_scattering.comp" atmosphere_multiple_scattering_compute compute)
 vkr_add_vulkan_packet_shader("packet.atmosphere_source.comp" atmosphere_source_compute compute)
-vkr_add_vulkan_packet_shader("packet.atmosphere_sun.comp" atmosphere_sun_compute compute)
 vkr_add_vulkan_packet_shader(
     "packet.ibl_sh.comp" ibl_sh compute -DVKR_VULKAN_IBL_SH_ROOT=1)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classify compute)
@@ -173,6 +171,13 @@ vkr_add_vulkan_packet_shader("packet.fog_apply.comp" fog_apply_compute compute)
 vkr_add_vulkan_packet_shader("packet.froxel_inject.comp" froxel_inject_compute compute)
 vkr_add_vulkan_packet_shader("packet.froxel_integrate.comp" froxel_integrate_compute compute)
 vkr_add_vulkan_packet_shader("packet.froxel_apply.comp" froxel_apply_compute compute)
+vkr_add_vulkan_packet_shader("packet.sky_view.comp" sky_view_compute compute)
+vkr_add_vulkan_packet_shader("packet.aerial_perspective.comp" aerial_perspective_compute compute)
+vkr_add_vulkan_packet_shader("packet.cloud_base_noise.comp" cloud_base_noise_compute compute)
+vkr_add_vulkan_packet_shader("packet.cloud_detail_noise.comp" cloud_detail_noise_compute compute)
+vkr_add_vulkan_packet_shader("packet.cloud_weather.comp" cloud_weather_compute compute)
+vkr_add_vulkan_packet_shader("packet.cloud_shadow.comp" cloud_shadow_compute compute)
+vkr_add_vulkan_packet_shader("packet.cloud_trace.comp" cloud_trace_compute compute)
 vkr_add_vulkan_packet_shader("packet.bloom_combine.comp" vk_bloom_combine compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
@@ -317,6 +322,7 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/fog_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/froxel_fog_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/atmosphere_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/cloud_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/temporal_contract.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/temporal_filter_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/dfg_contract.slangh"
@@ -353,10 +359,10 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/gpu_draws.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/common.metalh"
-        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/equirect_to_cube.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/sh_projection.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/specular_prefilter.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/atmosphere.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/clouds.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ui/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/exposure.metal"

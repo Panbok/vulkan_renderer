@@ -187,13 +187,9 @@ uint32_t mix_seed(uint32_t x) {
 float random_unit(uint32_t seed) {
   return (float)(mix_seed(seed) >> 8) * (1.0f / 16777216.0f);
 }
-Vec3 legacy_environment(void *scene, Vec3 direction) {
+Vec3 scene_environment(void *scene, Vec3 direction) {
   return vkr_bake_scene_sample_environment((const VkrBakeScene *)scene,
                                            direction);
-}
-Vec3 atmosphere_environment(void *scene, Vec3 direction) {
-  return vkr_bake_atmosphere_sample(
-      &static_cast<const VkrBakeScene *>(scene)->atmosphere, direction);
 }
 
 int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
@@ -207,12 +203,10 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
                     (uint32_t)scene.lights.size(),
                     scene.subsurface_profiles, scene.subsurface_profile_count};
   settings.environment_radiance =
-      scene.atmosphere.enabled
-          ? atmosphere_environment
-          : (scene.environment.enabled &&
-                     scene.environment.kind != VkrBakeSceneEnvironmentKind::None
-                 ? legacy_environment
-                 : nullptr);
+      scene.environment.enabled &&
+              scene.environment.kind != VkrBakeSceneEnvironmentKind::None
+          ? scene_environment
+          : nullptr;
   settings.environment_user = &scene;
   settings.max_depth = options.max_depth;
   settings.rr_start_depth = options.max_depth >= 4u ? 4u : 0u;
@@ -268,9 +262,7 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
   }
   std::vector<VkrDiffuseVolumeProbe> probes(rooms.probe_count);
   std::vector<Vec3> radiance(6u * options.face_size * options.face_size);
-  const float32_t sh_deringing = scene.atmosphere.enabled
-                                     ? scene.atmosphere.sh_deringing
-                                     : scene.environment.sh_deringing;
+  const float32_t sh_deringing = scene.environment.sh_deringing;
   for (uint32_t probe = 0; probe < rooms.probe_count; ++probe) {
     probes[probe].region_id = rooms.probes[probe].region_id;
     if (!probes[probe].region_id)
@@ -444,7 +436,9 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
              << ",\"model_version\":" << VKR_BAKE_ATMOSPHERE_MODEL_VERSION
              << ",\"params_hash\":\"" << std::hex
              << vkr_bake_atmosphere_recipe_hash(&scene.atmosphere) << std::dec
-             << "\",\"sh_deringing\":" << scene.atmosphere.sh_deringing
+             << "\",\"sh_deringing\":"
+             << (scene.atmosphere.enabled ? scene.environment.sh_deringing
+                                          : 0.0f)
              << "},\"triangles\":" << scene.triangles.size()
              << ",\"materials\":" << scene.materials.size()
              << ",\"zero_area_triangles\":" << scene.zero_area_triangle_count

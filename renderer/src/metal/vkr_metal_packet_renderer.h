@@ -164,20 +164,6 @@ typedef struct VkrMetalPacketMaterialCreateInfo {
   float32_t alpha_cutoff;
 } VkrMetalPacketMaterialCreateInfo;
 
-/** Tightly packed RGBA8 faces ordered +X, -X, +Y, -Y, +Z, -Z. */
-typedef struct VkrMetalPacketCubemapCreateInfo {
-  const uint8_t *rgba8_faces;
-  uint32_t extent;
-} VkrMetalPacketCubemapCreateInfo;
-
-/** Decoded 2:1 RGBA16F environment payload, matching the shared HDR decoder. */
-typedef struct VkrMetalPacketHdrEnvironmentCreateInfo {
-  const uint16_t *rgba16_equirect;
-  uint32_t width;
-  uint32_t height;
-  uint32_t cube_extent;
-} VkrMetalPacketHdrEnvironmentCreateInfo;
-
 enum {
   VKR_METAL_PACKET_TIMING_NAME_CAPACITY = 64,
   VKR_METAL_PACKET_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_PASS_TIMINGS,
@@ -299,10 +285,6 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
 bool8_t
 vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
                                            VkrMaterialHandle handle);
-bool8_t vkr_metal_packet_renderer_create_cubemap(
-    VkrMetalPacketRenderer *renderer,
-    const VkrMetalPacketCubemapCreateInfo *create_info,
-    VkrTextureHandle *out_handle);
 bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
@@ -331,23 +313,16 @@ bool8_t vkr_metal_packet_renderer_update_texture_sampler(
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source,
     VkrTextureHandle prefilter, float32_t sh_deringing);
-/** Queues one source-owned atmosphere candidate. Query completion separately;
- * this never blocks ordinary publication polling. */
+/** Queues one source-owned atmosphere candidate that also writes its own
+ * lookup textures. Query completion separately; this never blocks ordinary
+ * publication polling. */
 bool8_t vkr_metal_packet_renderer_bake_atmosphere(
     VkrMetalPacketRenderer *renderer, const VkrAtmosphereGpuParams *params,
     VkrTextureHandle source, VkrTextureHandle prefilter,
+    VkrTextureHandle transmittance, VkrTextureHandle multiple_scattering,
     float32_t sh_deringing);
 VkrAtmosphereBakeStatus vkr_metal_packet_renderer_atmosphere_bake_status(
-    VkrMetalPacketRenderer *renderer, VkrTextureHandle source,
-    VkrAtmosphereBakeResult *out_result);
-bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
-    VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect,
-    VkrTextureHandle source, VkrTextureHandle prefilter,
-    float32_t sh_deringing);
-bool8_t vkr_metal_packet_renderer_create_hdr_environment(
-    VkrMetalPacketRenderer *renderer,
-    const VkrMetalPacketHdrEnvironmentCreateInfo *create_info,
-    VkrTextureHandle *out_handle);
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle source);
 bool8_t
 vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
                                           VkrTextureHandle handle);

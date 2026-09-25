@@ -421,6 +421,31 @@ bool32_t run_scene_edit_tests(void) {
   assert(!vkr_scene_edit_apply(&state, &scene, parent, &physics));
   assert(vkr_scene_physics_collider_entity(&scene, parent, 42).u64 ==
          collider.u64);
+  /* Directional records carry the colour temperature and atmosphere-sun flag
+     at their own journal keys; a crossed key index drops or rejects them. */
+  assert(vkr_scene_set_directional_light(
+      &scene, child,
+      &(SceneDirectionalLight){.color = vec3_one(),
+                               .intensity = 1.0f,
+                               .direction_local = vec3_new(0, -1, 0),
+                               .enabled = true_v,
+                               .atmosphere_sun = true_v}));
+  vkr_scene_edit_reset(&state, &allocator, 1);
+  VkrSceneEditValues sun;
+  assert(vkr_scene_edit_read(&scene, child, &sun));
+  sun.fields = VKR_SCENE_EDIT_DIRECTIONAL_LIGHT;
+  sun.directional_light.temperature_kelvin = 3200.0f;
+  sun.directional_light.atmosphere_sun = false_v;
+  assert(vkr_scene_edit_apply(&state, &scene, child, &sun));
+  assert(vkr_scene_edit_save(&state, &scene, file_path));
+  SceneDirectionalLight *light = vkr_scene_get_directional_light(&scene, child);
+  light->temperature_kelvin = 0.0f;
+  light->atmosphere_sun = true_v;
+  vkr_scene_edit_reset(&state, &allocator, 1);
+  assert(vkr_scene_edit_load(&state, &scene, file_path));
+  light = vkr_scene_get_directional_light(&scene, child);
+  assert(light->temperature_kelvin == 3200.0f && !light->atmosphere_sun);
+
   FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_remove(&saved_path) == FILE_ERROR_NONE);
   vkr_scene_edit_reset(&state, &allocator, 0);

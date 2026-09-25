@@ -104,9 +104,14 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      "!fsr31_enabled",
      VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED},
     {"gtao_enabled", VKR_RG_JSON_CONDITION_GTAO_ENABLED},
-    {"fog_enabled && editor_enabled", VKR_RG_JSON_CONDITION_FOG_EDITOR_ENABLED},
-    {"fog_enabled && !editor_enabled",
-     VKR_RG_JSON_CONDITION_FOG_EDITOR_DISABLED},
+    {"fog_apply_enabled && editor_enabled",
+     VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_ENABLED},
+    {"fog_apply_enabled && !editor_enabled",
+     VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_DISABLED},
+    {"atmosphere_enabled", VKR_RG_JSON_CONDITION_ATMOSPHERE_ENABLED},
+    {"aerial_perspective_enabled",
+     VKR_RG_JSON_CONDITION_AERIAL_PERSPECTIVE_ENABLED},
+    {"clouds_enabled", VKR_RG_JSON_CONDITION_CLOUDS_ENABLED},
     {"froxel_fog_enabled", VKR_RG_JSON_CONDITION_FROXEL_FOG_ENABLED},
     {"froxel_fog_enabled && editor_enabled",
      VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_ENABLED},
@@ -2119,10 +2124,16 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
            !frame->metalfx_enabled && !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_GTAO_ENABLED:
     return frame->gtao_enabled;
-  case VKR_RG_JSON_CONDITION_FOG_EDITOR_ENABLED:
-    return frame->fog_enabled && frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_FOG_EDITOR_DISABLED:
-    return frame->fog_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_ENABLED:
+    return frame->fog_apply_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_DISABLED:
+    return frame->fog_apply_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_ATMOSPHERE_ENABLED:
+    return frame->atmosphere_enabled;
+  case VKR_RG_JSON_CONDITION_AERIAL_PERSPECTIVE_ENABLED:
+    return frame->aerial_perspective_enabled;
+  case VKR_RG_JSON_CONDITION_CLOUDS_ENABLED:
+    return frame->clouds_enabled;
   case VKR_RG_JSON_CONDITION_FROXEL_FOG_ENABLED:
     return frame->froxel_fog_enabled;
   case VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_ENABLED:

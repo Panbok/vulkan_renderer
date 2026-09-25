@@ -1,24 +1,3 @@
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void ibl_equirect(uint3 position : SV_DispatchThreadID)
-{
-    VkrVulkanIblRoot* root = (VkrVulkanIblRoot*)g_push.root;
-    if (position.x >= root.target_size || position.y >= root.target_size ||
-        position.z >= 6u)
-        return;
-    float2 face_uv =
-        (float2(position.xy) + 0.5f) / float(root.target_size);
-    float3 direction = normalize(cube_direction(position.z, face_uv));
-    float2 environment_uv = float2(
-        atan2(direction.z, direction.x) * (0.5f / vkr_pi) + 0.5f,
-        acos(clamp(direction.y, -1.0f, 1.0f)) / vkr_pi);
-    // IBL-root descriptor indices are dynamically uniform; see
-    // packet_directional_shadow.
-    g_storage_images[root.target_texture][position] =
-        g_textures[root.source_texture].SampleLevel(
-            g_samplers[root.source_sampler], environment_uv, 0.0f);
-}
-
 // One workgroup per destination slot. A fixed lane assignment and a fixed
 // reduction order make repetitions bit-deterministic without floating-point
 // atomics; the bounded source mip limits the work, but determinism comes from

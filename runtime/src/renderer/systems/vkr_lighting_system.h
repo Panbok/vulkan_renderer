@@ -51,16 +51,19 @@ void vkr_lighting_system_shutdown(VkrLightingSystem *system);
 
 /**
  * @brief Syncs from the ECS.
+ * The directional light comes from the sun that vkr_scene_sync_sun resolved.
  * @param system The lighting system to sync from the ECS.
  * @param scene The scene to sync from.
  */
 void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
                                          const VkrScene *scene);
 
-/** Replaces the selected authored sun with the active atmosphere sun. */
+/** Lights with the frame's atmosphere sun: `settings` pairs the published
+ * medium with the scene's current sun, and `irradiance` is that sun
+ * attenuated to the observer. */
 void vkr_lighting_system_apply_atmosphere_sun(
     VkrLightingSystem *system, const VkrAtmosphereSettings *settings,
-    const VkrAtmosphereBakeResult *result);
+    Vec3 irradiance);
 
 /** Rebuilds the conservative world-space lookup from point_lights. Public for
  * deterministic CPU coverage tests; scene sync calls it automatically. */

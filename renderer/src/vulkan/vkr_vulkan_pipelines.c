@@ -1292,11 +1292,11 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, normal_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, scene_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, extent),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_view_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_sampler),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_enabled),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_mode),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, gtao_visibility_texture),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, solar_disk_radiance),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_radiance),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, direct_source_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, ssgi_enabled),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, clearcoat_texture),
@@ -1318,7 +1318,6 @@ vkr_global const VkrVulkanReflectedField s_vk_atmosphere_fields[] = {
                                multiple_scattering_storage),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAtmosphereRoot, source_storage),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAtmosphereRoot, sampler),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAtmosphereRoot, sun_output),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAtmosphereRoot, extent),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAtmosphereRoot, face_size),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanAtmosphereRoot, reserved),
@@ -1517,6 +1516,40 @@ vkr_global const VkrVulkanReflectedField s_vk_fog_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, depth_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, target_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, sky),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, aerial_perspective_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, frame),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFogRoot, frame_reserved),
+};
+
+vkr_global const VkrVulkanReflectedField s_vk_sky_build_fields[] = {
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkyBuildRoot, sky),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkyBuildRoot, output_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSkyBuildRoot, reserved),
+};
+
+vkr_global const VkrVulkanReflectedField s_vk_cloud_noise_fields[] = {
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudNoiseRoot, base_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudNoiseRoot, detail_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudNoiseRoot, weather_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudNoiseRoot, reserved),
+};
+
+vkr_global const VkrVulkanReflectedField s_vk_cloud_trace_fields[] = {
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot,
+                               previous_view_projection),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, sky),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, frame),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, depth_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, history_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, history_sampler),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, output_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, depth_extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, frame_index),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, history_valid),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCloudTraceRoot, reserved),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_froxel_inject_fields[] = {
@@ -1551,6 +1584,8 @@ vkr_global const VkrVulkanReflectedField s_vk_froxel_apply_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFroxelApplyRoot, integrated_sampler),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFroxelApplyRoot, target_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFroxelApplyRoot, extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFroxelApplyRoot,
+                               aerial_perspective_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanFroxelApplyRoot, reserved),
 };
 
@@ -1673,6 +1708,27 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
     VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV, "ssgi_composite_compute",
         s_vk_ssgi_composite_fields, VkrVulkanSsgiCompositeRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_SKY_VIEW_COMP_SPV,
+                              "sky_view_compute", s_vk_sky_build_fields,
+                              VkrVulkanSkyBuildRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_AERIAL_PERSPECTIVE_COMP_SPV,
+                              "aerial_perspective_compute",
+                              s_vk_sky_build_fields, VkrVulkanSkyBuildRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_CLOUD_BASE_NOISE_COMP_SPV,
+                              "cloud_base_noise_compute",
+                              s_vk_cloud_noise_fields, VkrVulkanCloudNoiseRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_CLOUD_DETAIL_NOISE_COMP_SPV,
+                              "cloud_detail_noise_compute",
+                              s_vk_cloud_noise_fields, VkrVulkanCloudNoiseRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV,
+                              "cloud_weather_compute", s_vk_cloud_noise_fields,
+                              VkrVulkanCloudNoiseRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV,
+                              "cloud_shadow_compute", s_vk_sky_build_fields,
+                              VkrVulkanSkyBuildRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV,
+                              "cloud_trace_compute", s_vk_cloud_trace_fields,
+                              VkrVulkanCloudTraceRoot),
     VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV,
                               "fog_apply_compute", s_vk_fog_fields,
                               VkrVulkanFogRoot),
@@ -1714,9 +1770,6 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
     VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV,
                               "atmosphere_source_compute",
                               s_vk_atmosphere_fields, VkrVulkanAtmosphereRoot),
-    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV,
-                              "atmosphere_sun_compute", s_vk_atmosphere_fields,
-                              VkrVulkanAtmosphereRoot),
     {.shader = VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
      .entry = "vk_gpu_draw_classify",
      .fields = s_vk_cull_fields,
@@ -2381,12 +2434,10 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
 
 vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer) {
   vkr_local_persist const char *const paths[VKR_VULKAN_IBL_PIPELINE_COUNT] = {
-      VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV,
       VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV,
       VKR_VULKAN_PACKET_IBL_SH_COMP_SPV,
   };
   vkr_local_persist const char *const entries[VKR_VULKAN_IBL_PIPELINE_COUNT] = {
-      "ibl_equirect",
       "ibl_prefilter",
       "ibl_sh",
   };
@@ -2421,14 +2472,12 @@ vkr_vk_create_atmosphere_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV,
           VKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV,
           VKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV,
-          VKR_VULKAN_PACKET_ATMOSPHERE_SUN_COMP_SPV,
       };
   vkr_local_persist const char
       *const entries[VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT] = {
           "atmosphere_transmittance_compute",
           "atmosphere_multiple_scattering_compute",
           "atmosphere_source_compute",
-          "atmosphere_sun_compute",
       };
   for (uint32_t i = 0u; i < VKR_VULKAN_ATMOSPHERE_PIPELINE_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],
@@ -2482,6 +2531,13 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV,
       VKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV,
       VKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV,
+      VKR_VULKAN_PACKET_SKY_VIEW_COMP_SPV,
+      VKR_VULKAN_PACKET_AERIAL_PERSPECTIVE_COMP_SPV,
+      VKR_VULKAN_PACKET_CLOUD_BASE_NOISE_COMP_SPV,
+      VKR_VULKAN_PACKET_CLOUD_DETAIL_NOISE_COMP_SPV,
+      VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV,
+      VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV,
+      VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV,
       VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV,
       VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
       VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
@@ -2546,6 +2602,13 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "froxel_inject_compute",
       "froxel_integrate_compute",
       "froxel_apply_compute",
+      "sky_view_compute",
+      "aerial_perspective_compute",
+      "cloud_base_noise_compute",
+      "cloud_detail_noise_compute",
+      "cloud_weather_compute",
+      "cloud_shadow_compute",
+      "cloud_trace_compute",
       "vk_sdsm_reduce",
       "vk_picking_resolve",
       "vk_transmission_shade",

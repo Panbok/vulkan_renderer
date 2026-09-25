@@ -3,6 +3,7 @@
 #include "allocator_test.h"
 #include "arena_test.h"
 #include "array_test.h"
+#include "atmosphere_tests.h"
 #include "atomic_test.h"
 #include "bloom_test.h"
 #include "debug_overlay_test.h"

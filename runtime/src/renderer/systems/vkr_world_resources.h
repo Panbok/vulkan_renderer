@@ -2,9 +2,7 @@
 
 /**
  * @file vkr_world_resources.h
- * @brief Fallback IBL resources, scene bake preparation, and 3D text slots.
- *
- * Retains fallback IBL handles and persistent 3D text slots.
+ * @brief Scene environment and probe bake preparation, and 3D text slots.
  */
 
 #include "containers/array.h"
@@ -37,27 +35,22 @@ typedef struct VkrWorldTextSlot {
 } VkrWorldTextSlot;
 Array(VkrWorldTextSlot);
 
+/** Upload size of the one-texel-per-face RGBA16F constant environment cube. */
+#define VKR_WORLD_RESOURCES_CONSTANT_CUBE_BYTES (6u * 4u * sizeof(uint16_t))
+
 /**
- * @brief World IBL state and 3D text slots.
+ * @brief World 3D text slots.
  *
- * Retains fallback IBL handles and a fixed array of packet-ready 3D text slots.
+ * Holds a fixed array of packet-ready 3D text slots.
  */
 typedef struct VkrWorldResources {
   Array_VkrWorldTextSlot text_slots; /**< Allocated 3D text slots */
-
-  VkrTextureHandle ibl_fallback_source_cubemap;
-  VkrTextureHandle ibl_fallback_prefilter_cubemap;
-
-  bool8_t ibl_default_ready;
-  bool8_t hdr_capability_failure_logged;
-  uint32_t hdr_ibl_max_cube_extent;
-  uint32_t hdr_ibl_max_mip_levels;
 
   bool8_t initialized; /**< Resources have been initialized */
 } VkrWorldResources;
 
 /**
- * @brief Initialize text slots and fallback IBL state.
+ * @brief Initialize text slots.
  * @param assets Published asset owner
  * @param resources World resources to initialize
  * @return true on success, false on failure
@@ -66,14 +59,15 @@ bool8_t vkr_world_resources_init(struct VkrRenderAssets *assets,
                                  VkrWorldResources *resources);
 
 /**
- * @brief Release fallback IBL handles and text resources.
+ * @brief Release text resources.
  * @param assets Published asset owner
  * @param resources World resources to shutdown
  */
 void vkr_world_resources_shutdown(struct VkrRenderAssets *assets,
                                   VkrWorldResources *resources);
 
-/** Prepares scene-owned source and prefilter textures for native baking. */
+/** Uploads an enabled constant source and queues its prefilter and SH bake.
+    Atmosphere sources publish through the atmosphere poll instead. */
 bool8_t
 vkr_world_resources_prepare_scene_environment(struct VkrRenderAssets *assets,
                                               VkrWorldResources *resources,
@@ -97,8 +91,8 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
 /**
  * @brief Produces scene IBL maps when the scene environment bake is pending.
  *
- * Failure does not abort rendering; bake state transitions to FAILED so
- * fallback maps remain active.
+ * Failure does not abort rendering; bake state transitions to FAILED and the
+ * scene renders without a global environment.
  */
 void vkr_world_resources_bake_scene_ibl_if_pending(
     struct VkrRenderAssets *assets, VkrWorldResources *resources,

@@ -263,7 +263,7 @@ def legacy_source(value, origin, legacy_root):
         raise JobError('Missing legacy asset path')
     path = Path(value.split('?', 1)[0])
     candidates = [path] if path.is_absolute() else [origin / path, legacy_root / path]
-    if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.tga', '.hdr'):
+    if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.tga'):
         candidates += [Path(str(candidate) + '.vkt') for candidate in list(candidates) if not candidate.is_file()]
     matches = set()
     for candidate in candidates:
@@ -884,16 +884,16 @@ class Job:
             raise JobError('Font cooker did not publish its artifact')
         return self.artifact('font', source.stem, config, import_id=import_id, source=copied)
 
-    def import_environment(self, value, origin, source_kind=None):
+    def import_cubemap(self, value, origin):
+        """Imports a reflection-probe cube; image skies were replaced by the atmosphere."""
         if isinstance(value, dict) and value.get('path'):
             if value.get('base_path') or value.get('extension'):
                 raise JobError('Cubemap mixes a packed path and face paths')
-            return self.import_environment(value['path'], origin, 'cubemap')
+            return self.import_cubemap(value['path'], origin)
         if isinstance(value, str):
             source = legacy_source(value, origin, self.legacy_root)
             copied = self.copy_blob(source, self.stage / 'builds' / 'environments')
-            return self.artifact('environment', source.stem, copied,
-                                 source_kind=source_kind or ('equirect' if source.suffix.lower() == '.hdr' else 'cubemap'))
+            return self.artifact('environment', source.stem, copied, source_kind='cubemap')
         if isinstance(value, dict) and value.get('base_path'):
             extension = value.get('extension', 'png').lstrip('.')
             if not extension.isascii() or not extension.isalnum():
@@ -917,7 +917,7 @@ class Job:
                                       source_kind='faces', base_path=managed_reference(directory / 'cube', self.stage),
                                       extension=output_extension)
             return reference
-        raise JobError('Unsupported environment asset')
+        raise JobError('Unsupported cubemap asset')
 
     def inspect_mesh(self, mesh):
         mesh = Path(mesh).resolve(strict=True)
@@ -1092,12 +1092,14 @@ class Job:
         scene = copy.deepcopy(scene)
         environment = scene.get('environment')
         if isinstance(environment, dict):
-            field = 'equirect' if environment.get('equirect') else 'cubemap'
-            if environment.get(field):
-                environment['asset'] = self.import_environment(environment.pop(field), source.parent, field)
+            for field in ('equirect', 'cubemap'):
+                if field in environment:
+                    environment.pop(field)
+                    self.warnings.append(f'Dropped the removed environment {field} sky image; '
+                                         'author atmosphere or environment.constant instead')
         for probe in scene.get('reflection_probes', []):
             if probe.get('cubemap'):
-                reference = self.import_environment(probe.pop('cubemap'), source.parent)
+                reference = self.import_cubemap(probe.pop('cubemap'), source.parent)
                 reference['role'] = 'probe-cube'
                 self.assets[-1]['artifacts'][0]['role'] = 'probe-cube'
                 probe['asset'] = reference
@@ -1268,12 +1270,15 @@ class Job:
             scene = {'version': 3, 'entities': [], 'environment': {'enabled': False},
                      'reflection_probes': []}
         self.append_entities(scene)
-        environment = self.request.get('environment') or {}
-        if environment.get('source'):
+        # The physical sky supplies the sky, sun and global IBL; the environment
+        # block keeps only its sky-light scales.
+        atmosphere = self.request.get('atmosphere') or {}
+        if atmosphere.get('enabled'):
+            environment = self.request.get('environment') or {}
+            scene['atmosphere'] = {'enabled': True}
             scene['environment'] = {key: environment[key] for key in
                 ('enabled', 'intensity', 'diffuse_intensity', 'specular_intensity') if key in environment}
             scene['environment'].setdefault('enabled', True)
-            scene['environment']['asset'] = self.import_environment(environment['source'], Path.cwd())
         if self.request.get('reflection_probes') is not None:
             scene['reflection_probes'] = copy.deepcopy(self.request['reflection_probes'])
         for probe in scene.get('reflection_probes', []):
@@ -1377,6 +1382,8 @@ class Job:
                 raise JobError('Duplicate authored override target')
             target[key] = edit
             expected = source_fingerprint(self.scene_id.encode())
+        if any(key in environment for key in ('asset', 'equirect', 'cubemap')):
+            raise JobError('Scene environment images were removed; author atmosphere or environment.constant')
             if entities[index].get('mesh'):
                 info = self.inspect_mesh(entities[index]['mesh']['path'])
                 if info['nodes']:
@@ -1399,7 +1406,9 @@ class Job:
             if fields & 16:
                 entity['directional_light'] = dict(color=edit['directional_color'], direction_local=edit['directional_direction'],
                     intensity=edit['directional_intensity'][0], enabled=edit['directional_enabled'],
-                    sun_angular_diameter_degrees=edit.get('directional_sun_angular_diameter_degrees', [0.53])[0])
+                    sun_angular_diameter_degrees=edit.get('directional_sun_angular_diameter_degrees', [0.53])[0],
+                    temperature_kelvin=edit.get('directional_temperature_kelvin', [0.0])[0],
+                    atmosphere_sun=edit.get('directional_atmosphere_sun', True))
             if fields & 32:
                 entity['rectangle_light'] = dict(color=edit['rectangle_color'], radiance=edit['rectangle_radiance'][0],
                     size=edit['rectangle_size'], enabled=edit['rectangle_enabled'])
@@ -1714,15 +1723,15 @@ class Job:
             fonts[name] = {'name': name, 'config': str(path)}
             return name
 
-        def cube(component, default_role, environment=False):
+        def cube(component, default_role):
             if 'asset' not in component:
-                if component.get('enabled') and not environment:
+                if component.get('enabled'):
                     raise JobError('Enabled probe has no cubemap asset; bake it or disable the probe')
-                if any(key in component for key in ('equirect', 'cubemap')):
-                    raise JobError('Managed environment/probe still contains a legacy path')
+                if 'cubemap' in component:
+                    raise JobError('Managed probe still contains a legacy path')
                 return
-            if any(key in component for key in ('equirect', 'cubemap')):
-                raise JobError('Managed environment mixes asset and legacy path fields')
+            if 'cubemap' in component:
+                raise JobError('Managed probe mixes asset and legacy path fields')
             path, record, owner = asset(component.pop('asset'), default_role)
             kind = record.get('source_kind', 'cubemap')
             if kind == 'faces':
@@ -1732,18 +1741,13 @@ class Job:
                     contained(owner, managed_reference(base, owner) + '_' + face + '.' + extension)
                 component['cubemap'] = {'base_path': str(base), 'extension': extension}
             else:
-                if environment and kind == 'equirect':
-                    component['equirect'] = str(path)
-                else:
-                    component['cubemap'] = {'path': str(path)}
+                component['cubemap'] = {'path': str(path)}
 
         runtime = copy.deepcopy(scene)
         runtime['version'] = 2
         runtime['source_identity'] = self.scene_id
         for field in ('id', 'assets', 'default_font', 'bake_recipes', 'edit_overlay'):
             runtime.pop(field, None)
-        if isinstance(runtime.get('environment'), dict):
-            cube(runtime['environment'], 'environment', True)
         for probe in runtime.get('reflection_probes', []):
             cube(probe, 'probe-cube')
         for volume in ([runtime['diffuse_volume']] if runtime.get('diffuse_volume') else []):
@@ -1972,7 +1976,7 @@ class Job:
                     import_id = str(uuid.uuid4())
                     material = self.import_material(source, self.stage / 'builds' / import_id, import_id, 0)
                     self.artifact('material', source.stem, material, import_id=import_id, source=material)
-                elif suffix in ('.png', '.jpg', '.jpeg', '.bmp', '.tga', '.hdr', '.vkt'):
+                elif suffix in ('.png', '.jpg', '.jpeg', '.bmp', '.tga', '.vkt'):
                     imported = self.copy_blob(source, self.stage / 'builds' / str(uuid.uuid4()))
                     self.artifact('texture', source.stem, imported, source=imported)
                 else:

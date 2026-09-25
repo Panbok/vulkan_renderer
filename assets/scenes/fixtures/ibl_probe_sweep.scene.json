@@ -5,7 +5,7 @@
     "intensity": 2.0,
     "diffuse_intensity": 1.0,
     "specular_intensity": 0.0,
-    "equirect": "assets/textures/citrus_orchard_puresky_4k.hdr"
+    "constant": [0.77, 0.84, 0.97]
   },
   "reflection_probes": [
     { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 1.0, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },

@@ -2757,10 +2757,8 @@ bool8_t vkr_vk_asset_unpublish_material(void *state, VkrMaterialHandle handle) {
 }
 
 vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
-                                           VkrTextureHandle equirect,
                                            VkrTextureHandle source,
                                            VkrTextureHandle prefilter,
-                                           bool8_t convert_equirect,
                                            float32_t sh_deringing) {
   if (!renderer ||
       renderer->pending_ibl_bake_count >= VKR_VULKAN_PENDING_IBL_BAKE_MAX)
@@ -2769,24 +2767,14 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
       vkr_vk_published_texture(renderer, source, NULL);
   VkrVulkanPublishedTexture *prefilter_texture =
       vkr_vk_published_texture(renderer, prefilter, NULL);
-  VkrVulkanPublishedTexture *equirect_texture =
-      convert_equirect ? vkr_vk_published_texture(renderer, equirect, NULL)
-                       : NULL;
   if (!source_texture || !prefilter_texture ||
-      (convert_equirect && !equirect_texture) ||
       source_texture->image.array_layers != 6u ||
       prefilter_texture->image.array_layers != 6u ||
       source_texture->image.width != source_texture->image.height ||
       prefilter_texture->image.width != prefilter_texture->image.height ||
       prefilter_texture->storage_slot_count !=
           prefilter_texture->image.mip_levels ||
-      prefilter_texture->image.format != VK_FORMAT_R16G16B16A16_SFLOAT ||
-      (convert_equirect &&
-       (source_texture->image.format != VK_FORMAT_R16G16B16A16_SFLOAT ||
-        equirect_texture->image.array_layers != 1u ||
-        equirect_texture->image.width != equirect_texture->image.height * 2u ||
-        source_texture->storage_slot_count !=
-            source_texture->image.mip_levels)))
+      prefilter_texture->image.format != VK_FORMAT_R16G16B16A16_SFLOAT)
     return false_v;
   if (!vkr_vk_publish_ibl_sh_texel_view(renderer, source_texture)) {
     log_error("Vulkan could not publish the exact-texel SH view for cubemap "
@@ -2794,18 +2782,14 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
               source.id, source.generation);
     return false_v;
   }
-  VkrVulkanPublishedTexture *referenced[] = {equirect_texture, source_texture,
-                                             prefilter_texture};
-  for (uint32_t i = convert_equirect ? 0u : 1u; i < ArrayCount(referenced); ++i)
-    referenced[i]->ibl_reference_count++;
+  source_texture->ibl_reference_count++;
+  prefilter_texture->ibl_reference_count++;
   source_texture->ibl_prefilter = prefilter;
   vkr_vk_advance_radiance_revision(renderer);
   renderer->pending_ibl_bakes[renderer->pending_ibl_bake_count++] =
       (VkrVulkanPendingIblBake){
-          .equirect = equirect,
           .source = source,
           .prefilter = prefilter,
-          .convert_equirect = convert_equirect,
           .sh_deringing = sh_deringing,
       };
   return true_v;
@@ -2822,21 +2806,15 @@ vkr_internal bool8_t vkr_vk_asset_bake_ibl_cubemap(void *state,
                                                    VkrTextureHandle source,
                                                    VkrTextureHandle prefilter,
                                                    float32_t sh_deringing) {
-  return vkr_vk_queue_ibl_bake(state, VKR_TEXTURE_HANDLE_INVALID, source,
-                               prefilter, false_v, sh_deringing);
-}
-
-vkr_internal bool8_t vkr_vk_asset_bake_hdr_environment(
-    void *state, VkrTextureHandle equirect, VkrTextureHandle source,
-    VkrTextureHandle prefilter, float32_t sh_deringing) {
-  return vkr_vk_queue_ibl_bake(state, equirect, source, prefilter, true_v,
-                               sh_deringing);
+  return vkr_vk_queue_ibl_bake(state, source, prefilter, sh_deringing);
 }
 
 vkr_internal void
 vkr_vk_release_atmosphere_references(VkrVulkanRenderer *renderer,
                                      VkrVulkanPendingIblBake *job) {
-  const VkrTextureHandle handles[] = {job->source, job->prefilter};
+  const VkrTextureHandle handles[] = {job->source, job->prefilter,
+                                      job->transmittance,
+                                      job->multiple_scattering};
   for (uint32_t i = 0u; i < ArrayCount(handles); ++i) {
     VkrVulkanPublishedTexture *texture =
         vkr_vk_texture_publication(renderer, handles[i]);
@@ -2862,9 +2840,6 @@ vkr_vk_clear_atmosphere_prefilter(VkrVulkanRenderer *renderer,
 
 vkr_internal void vkr_vk_remove_atmosphere_bake(VkrVulkanRenderer *renderer,
                                                 uint32_t index) {
-  VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[index];
-  if (job->atmosphere_sun_readback.handle)
-    vkr_vk_destroy_buffer(renderer, &job->atmosphere_sun_readback);
   const uint32_t last = renderer->pending_ibl_bake_count - 1u;
   if (index != last)
     renderer->pending_ibl_bakes[index] = renderer->pending_ibl_bakes[last];
@@ -2873,9 +2848,26 @@ vkr_internal void vkr_vk_remove_atmosphere_bake(VkrVulkanRenderer *renderer,
   renderer->pending_ibl_bake_count = last;
 }
 
+/* A generation's lookup texture is a writable 2D RGBA16F publication of the
+   exact contract size with one storage view. */
+vkr_internal VkrVulkanPublishedTexture *
+vkr_vk_atmosphere_lookup(VkrVulkanRenderer *renderer, VkrTextureHandle handle,
+                         uint32_t width, uint32_t height) {
+  VkrVulkanPublishedTexture *texture =
+      vkr_vk_published_texture(renderer, handle, NULL);
+  return texture && texture->image.width == width &&
+                 texture->image.height == height &&
+                 texture->image.array_layers == 1u &&
+                 texture->image.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+                 texture->storage_slot_count >= 1u
+             ? texture
+             : NULL;
+}
+
 vkr_internal bool8_t vkr_vk_asset_bake_atmosphere(
     void *state, const VkrAtmosphereGpuParams *params, VkrTextureHandle source,
-    VkrTextureHandle prefilter, float32_t sh_deringing) {
+    VkrTextureHandle prefilter, VkrTextureHandle transmittance,
+    VkrTextureHandle multiple_scattering, float32_t sh_deringing) {
   VkrVulkanRenderer *renderer = state;
   if (!renderer || !params ||
       renderer->pending_ibl_bake_count >= VKR_VULKAN_PENDING_IBL_BAKE_MAX)
@@ -2888,44 +2880,37 @@ vkr_internal bool8_t vkr_vk_asset_bake_atmosphere(
   }
   VkrVulkanPublishedTexture *source_texture =
       vkr_vk_published_texture(renderer, source, NULL);
+  VkrVulkanPublishedTexture *transmittance_texture = vkr_vk_atmosphere_lookup(
+      renderer, transmittance, VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
+      VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT);
+  VkrVulkanPublishedTexture *multiple_scattering_texture =
+      vkr_vk_atmosphere_lookup(renderer, multiple_scattering,
+                               VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
+                               VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE);
   if (!source_texture ||
       source_texture->image.width != VKR_ATMOSPHERE_SOURCE_SIZE ||
       source_texture->image.height != VKR_ATMOSPHERE_SOURCE_SIZE ||
       source_texture->image.mip_levels != VKR_IBL_PREFILTER_MIP_COUNT ||
-      source_texture->storage_slot_count != source_texture->image.mip_levels)
+      source_texture->storage_slot_count != source_texture->image.mip_levels ||
+      !transmittance_texture || !multiple_scattering_texture ||
+      !vkr_vk_queue_ibl_bake(renderer, source, prefilter, sh_deringing))
     return false_v;
-  VkrVulkanBuffer readback = {0};
-  if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
-                            VKR_GPU_ALLOCATION_OWNER_READBACK, sizeof(Vec4),
-                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                            &readback) ||
-      !readback.allocation.mapped || !readback.address)
-    goto cleanup;
-  if (!vkr_vk_queue_ibl_bake(renderer, VKR_TEXTURE_HANDLE_INVALID, source,
-                             prefilter, false_v, sh_deringing))
-    goto cleanup;
   VkrVulkanPendingIblBake *job =
       &renderer->pending_ibl_bakes[renderer->pending_ibl_bake_count - 1u];
   job->is_atmosphere = true_v;
   job->atmosphere_params = *params;
-  job->atmosphere_sun_readback = readback;
-  job->atmosphere_rebuild_luts = !renderer->atmosphere_lut_valid ||
-                                 MemCompare(&renderer->atmosphere_lut_params,
-                                            params, sizeof(*params)) != 0;
-  source_texture->atmosphere_bake_result = (VkrAtmosphereBakeResult){0};
+  /* The job holds both lookups until the status query consumes it, exactly
+     like its source and prefilter. */
+  job->transmittance = transmittance;
+  job->multiple_scattering = multiple_scattering;
+  transmittance_texture->ibl_reference_count++;
+  multiple_scattering_texture->ibl_reference_count++;
   source_texture->atmosphere_bake_ready = false_v;
   return true_v;
-
-cleanup:
-  vkr_vk_destroy_buffer(renderer, &readback);
-  return false_v;
 }
 
-vkr_internal VkrAtmosphereBakeStatus vkr_vk_asset_atmosphere_bake_status(
-    void *state, VkrTextureHandle source, VkrAtmosphereBakeResult *out_result) {
-  if (out_result)
-    *out_result = (VkrAtmosphereBakeResult){0};
+vkr_internal VkrAtmosphereBakeStatus
+vkr_vk_asset_atmosphere_bake_status(void *state, VkrTextureHandle source) {
   VkrVulkanRenderer *renderer = state;
   if (!renderer)
     return VKR_ATMOSPHERE_BAKE_FAILED;
@@ -2946,46 +2931,21 @@ vkr_internal VkrAtmosphereBakeStatus vkr_vk_asset_atmosphere_bake_status(
       return VKR_ATMOSPHERE_BAKE_PENDING;
     VkrVulkanPublishedTexture *texture =
         vkr_vk_texture_publication(renderer, job->source);
-    if (!texture || texture->ibl_sh_slot == VKR_SH_SLOT_BLACK ||
-        !vkr_vk_invalidate(renderer, &job->atmosphere_sun_readback.allocation,
-                           0u, sizeof(Vec4))) {
+    if (!texture || texture->ibl_sh_slot == VKR_SH_SLOT_BLACK) {
       vkr_vk_release_atmosphere_references(renderer, job);
       vkr_vk_clear_atmosphere_prefilter(renderer, job);
       vkr_vk_remove_atmosphere_bake(renderer, i);
       return VKR_ATMOSPHERE_BAKE_FAILED;
     }
-    const Vec4 irradiance =
-        *(const Vec4 *)job->atmosphere_sun_readback.allocation.mapped;
-    if (!isfinite(irradiance.x) || !isfinite(irradiance.y) ||
-        !isfinite(irradiance.z) || irradiance.x < 0.0f || irradiance.y < 0.0f ||
-        irradiance.z < 0.0f || !(job->atmosphere_params.solar.w > 0.0f)) {
-      vkr_vk_release_atmosphere_references(renderer, job);
-      vkr_vk_clear_atmosphere_prefilter(renderer, job);
-      vkr_vk_remove_atmosphere_bake(renderer, i);
-      return VKR_ATMOSPHERE_BAKE_FAILED;
-    }
-    const VkrAtmosphereBakeResult result = {
-        .solar_irradiance = {irradiance.x, irradiance.y, irradiance.z},
-        .solar_disk_radiance = {irradiance.x / job->atmosphere_params.solar.w,
-                                irradiance.y / job->atmosphere_params.solar.w,
-                                irradiance.z / job->atmosphere_params.solar.w},
-    };
-    texture->atmosphere_bake_result = result;
     texture->atmosphere_bake_ready = true_v;
-    if (out_result)
-      *out_result = result;
     vkr_vk_release_atmosphere_references(renderer, job);
     vkr_vk_remove_atmosphere_bake(renderer, i);
     return VKR_ATMOSPHERE_BAKE_READY;
   }
   const VkrVulkanPublishedTexture *texture =
       vkr_vk_texture_publication(renderer, source);
-  if (texture && texture->atmosphere_bake_ready) {
-    if (out_result)
-      *out_result = texture->atmosphere_bake_result;
-    return VKR_ATMOSPHERE_BAKE_READY;
-  }
-  return VKR_ATMOSPHERE_BAKE_FAILED;
+  return texture && texture->atmosphere_bake_ready ? VKR_ATMOSPHERE_BAKE_READY
+                                                   : VKR_ATMOSPHERE_BAKE_FAILED;
 }
 
 vkr_internal bool8_t vkr_vk_asset_publications_idle(void *state) {
@@ -3023,8 +2983,6 @@ void vkr_vulkan_renderer_get_asset_publisher(VkrVulkanRenderer *renderer,
                                   vkr_vk_asset_update_texture_sampler,
                               .bake_ibl_cubemap =
                                   vkr_vk_asset_bake_ibl_cubemap,
-                              .bake_hdr_environment =
-                                  vkr_vk_asset_bake_hdr_environment,
                               .bake_atmosphere = vkr_vk_asset_bake_atmosphere,
                               .atmosphere_bake_status =
                                   vkr_vk_asset_atmosphere_bake_status,

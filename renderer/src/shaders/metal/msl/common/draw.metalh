@@ -158,6 +158,22 @@ struct alignas(16) VkrMetalPacketLocalShadowTransmission {
   ulong reserved;
 };
 
+// Frame-slot sky record. The builders read both lookup textures of the
+// published generation; forward shading samples aerial perspective and the
+// deferred disc samples transmittance. Deferred lighting composites the cloud
+// radiance over the sky, and every sun evaluation samples the cloud shadow.
+struct alignas(16) VkrMetalPacketSky {
+  VkrSkyParams params;
+  texture3d<float, access::sample> aerial_perspective;
+  texture2d<float, access::sample> transmittance;
+  texture2d<float, access::sample> multiple_scattering;
+  texture2d<float, access::sample> cloud_radiance;
+  texture2d<float, access::sample> cloud_shadow;
+  texture3d<float, access::sample> cloud_base_noise;
+  texture3d<float, access::sample> cloud_detail_noise;
+  texture2d<float, access::sample> cloud_weather;
+};
+
 struct alignas(16) VkrMetalPacketLocalShadowTransmissionDraw {
   device VkrMetalPacketTransmissionMaterial *transmission_materials;
   uint face;
@@ -230,6 +246,7 @@ struct VkrMetalPacketFrameRoot {
   constant VkrMetalPacketSheen *sheen;
   constant VkrMetalPacketAnisotropy *anisotropy;
   constant VkrMetalPacketLocalShadowTransmission *local_shadow_transmission;
+  constant VkrMetalPacketSky *sky;
 };
 
 struct VkrGpuGeometryRow {

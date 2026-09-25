@@ -145,7 +145,6 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [012](adr/012-texture-compression-pipeline.md) | KTX2/UASTC texture artifacts with capability-selected transcode | implemented |
 | [014](adr/014-offscreen-present-target.md) | Window and offscreen targets share frame submission | implemented |
 | [015](adr/015-metrics-module.md) | Bounded typed metrics and pinned snapshots | implemented |
-| [016](adr/016-hdr-environment-format.md) | HDR source delivery and cubemap sampling | implemented |
 | [017](adr/017-prepared-specular-glossiness-lowering.md) | Prepare PBR materials before publication | implemented |
 | [018](adr/018-graph-declared-transmission-feedback.md) | Ordered transmission with declared feedback | implemented |
 | [019](adr/019-bounded-forward-spatial-lighting.md) | Bounded punctual lighting, cached transmitting local shadows and probes | implemented |
@@ -180,7 +179,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [055](adr/055-screen-space-reflections.md) | Full-source opaque SSR, reflected-hit reprojection and incoming-radiance history | implemented |
 | [056](adr/056-rectangular-ltc-lights.md) | One-sided rectangular LTC emitters, runtime lookup and baker transport | implemented |
 | [057](adr/057-analytic-height-fog.md) | Analytic scene-linear height fog with ordered transmission composition | implemented |
-| [058](adr/058-revision-baked-sky-atmosphere.md) | Revision-baked sky and global IBL with unified sun | implemented |
+| [058](adr/058-revision-baked-sky-atmosphere.md) | Atmosphere as the only sky, camera-dependent sky and aerial perspective, sky-light controls, constant fixture source and unified sun | implemented |
 | [059](adr/059-froxel-volumetric-fog.md) | Bounded volumetric fog with independent scattering history | implemented |
 | [060](adr/060-screen-space-diffuse-indirect-lighting.md) | Optional SSGI with synchronized history and jitter correction | implemented |
 | [061](adr/061-extended-linear-display-output.md) | Optional EDR/scRGB output with OS headroom and SDR fallback | implemented |
@@ -198,6 +197,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [072](adr/072-entity-collision-and-rigid-body-physics.md) | Scene-owned Jolt bodies/joints, cooked collision, bone attachments, queries and transactional editor authoring | implemented |
 
 | [073](adr/073-native-gameplay-foundation.md) | Shared scene ticks independent of input focus, ordered input, C player/weapon client, persisted editor player bindings, action animation, native character stance and camera rigs; general visual/prefab authoring pending | partial |
+| [074](adr/074-volumetric-cloud-layer.md) | One volumetric cloud layer: runtime-generated noise, half-resolution traced history, sun-projected shadows and aerial perspective at cloud depth | implemented |
 
 ## Proposals
 
