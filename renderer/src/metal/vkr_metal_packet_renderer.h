@@ -77,7 +77,8 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrDisplayOutputSnapshot (*display_output_snapshot)(void *context);
   /** Requested window presentation policy; offscreen targets ignore it. */
   VkrPresentMode requested_present_mode;
-  /** Managed native heaps, transfer rings and explicit buffers/ICBs. */
+  /** Managed native heaps, transfer rings and explicit buffers/ICBs. Zero
+   * selects two thirds of the device's recommended working set. */
   uint64_t managed_budget_size;
   uint64_t heap_chunk_size;
   uint64_t upload_ring_size;

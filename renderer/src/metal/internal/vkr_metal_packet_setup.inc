@@ -2554,8 +2554,7 @@ vkr_internal bool8_t vkr_metal_packet_create_arguments_valid(
     VkrMetalPacketRenderer **out_renderer) {
   if (!config || !out_renderer || !config->allocator || !config->graph_path ||
       !config->slang_msl_path || !config->fragment_msl_path ||
-      config->managed_budget_size == 0 || config->heap_chunk_size == 0 ||
-      config->upload_ring_size == 0 ||
+      config->heap_chunk_size == 0 || config->upload_ring_size == 0 ||
       config->upload_ring_size > config->upload_ring_max_size ||
       config->frame_slot_count < 2u || config->capture_ring_capacity == 0 ||
       config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
@@ -2880,6 +2879,17 @@ vkr_internal bool8_t vkr_metal_packet_create_commit_feedback_records(
   return commit_feedback_created;
 }
 
+/* An explicit request wins. Otherwise two thirds of the recommended working
+ * set leaves room for driver, MetalFX and drawable allocations outside the
+ * cap and for the rest of the system on unified memory. */
+vkr_internal uint64_t vkr_metal_packet_managed_budget(id<MTLDevice> device,
+                                                      uint64_t requested) {
+  if (requested)
+    return requested;
+  const uint64_t recommended = device.recommendedMaxWorkingSetSize;
+  return recommended ? recommended / 3u * 2u : GB(5);
+}
+
 /* Creates the memory device, material table, IBL targets, lookup textures,
  * pipelines, executor registry and render graph, then finalizes the pipeline
  * archive. */
@@ -2893,7 +2903,8 @@ vkr_internal bool8_t vkr_metal_packet_create_device_resources(
                  .metal_device = renderer->device,
                  .allocator = renderer->allocator,
                  .diagnostics = &renderer->diagnostics,
-                 .managed_budget_size = config->managed_budget_size,
+                 .managed_budget_size = vkr_metal_packet_managed_budget(
+                     renderer->device, config->managed_budget_size),
                  .heap_chunk_size = config->heap_chunk_size,
                  .upload_ring_size = config->upload_ring_size,
                  .upload_ring_max_size = config->upload_ring_max_size,
@@ -3057,7 +3068,10 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
           "Metal managed GPU budget: %llu MiB (demand-created heaps; driver "
           "recommended "
           "working set: %llu MiB)",
-          (unsigned long long)(config->managed_budget_size / MB(1)),
+          (unsigned long long)(vkr_metal_packet_managed_budget(
+                                   renderer->device,
+                                   config->managed_budget_size) /
+                               MB(1)),
           (unsigned long long)(renderer->device.recommendedMaxWorkingSetSize /
                                MB(1)));
       *out_renderer = renderer;

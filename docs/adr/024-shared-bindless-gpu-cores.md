@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-09-25
 authority: adr
 ---
 
@@ -87,8 +87,14 @@ after GPU completion and reclamation of superseded targets, as specified in
 [ADR-046](046-editor-viewport-mapping-and-picking.md). Successful ordinary
 replacement retains its asynchronous retirement policy.
 
-The default managed allocation ceiling is 5 GiB, configurable at startup through
-`VKR_METAL_MEMORY_BUDGET_MB` (positive integer MiB). The cap includes committed
+The default managed allocation ceiling is two thirds of the device's
+`recommendedMaxWorkingSetSize`, or 5 GiB when the device reports none;
+`VKR_METAL_MEMORY_BUDGET_MB` (positive integer MiB) overrides it at startup. The
+remaining third covers allocations outside the cap and the rest of the system on
+unified memory. A fixed 5 GiB default rejected a Bistro import whose 3.4 GiB of
+referenced textures, inflated by paired normal/roughness variants
+([ADR-012](012-texture-compression-pipeline.md)), plus render targets exceeded it;
+a 16 GB M1 Pro reports 11.84 GiB, so its default is 7.9 GiB. The cap includes committed
 heap backing, the existing upload/readback rings, material and SH buffers, and
 ICBs. It covers spare heap capacity and resources awaiting completion. Allocation
 and reconciliation against native sizes happen before publication. Metal offers
@@ -101,7 +107,7 @@ so bounded Scene recovery can run; other native creation failures remain termina
 Device-reported allocation and residency footprints remain separate observations.
 Driver/validation/compiler storage, opaque command and counter heaps, MetalFX
 internals, and external drawables are outside the managed cap. Texture views do
-not get charged a second time. A 5 GiB managed cap does not guarantee a 5 GiB
+not get charged a second time. The managed cap does not guarantee a matching
 process footprint or that the host has enough available memory.
 
 Metal transfer buffers start at 32 MiB upload and 64 KiB readback per frame slot.
@@ -294,6 +300,11 @@ The shared contract avoids two retirement implementations without hiding native
 resource behavior. Ring pressure fails or waits at owning boundaries; it cannot
 overwrite in-flight storage. Vulkan pools and transfer rings retain capacity after logical release; an empty
 Metal placement heap releases its backing after completed retirement.
+
+In 90-second Release editor runs of that Bistro import on the 16 GB M1 Pro, the
+fixed cap logged `managed=5363142704 cap=5368709120` exhaustion. The derived cap
+rendered it without budget errors and exited 0, while free system memory fell
+from 68% to about 20%. The cap bounds accepted allocations, not host pressure.
 
 ## Alternatives considered
 

@@ -1056,9 +1056,10 @@ Vulkan pools keyed device/upload/staging/readback blocks, with persistent mappin
 required dedicated-allocation exceptions. Completion-protected Vulkan frame slots
 keep directly read uploads separate from copy-only candidate staging; both retain
 capacity grown during frame preflight. Metal creates placement heaps on demand
-and releases empty heaps after completed retirement. Its default 5 GiB managed
-allocation cap includes heap capacity, upload/readback rings and explicit native
-buffers/ICBs; opaque driver allocations remain outside that cap. Separate lifetime
+and releases empty heaps after completed retirement. Its default managed
+allocation cap, two thirds of the device's recommended working set, includes
+heap capacity, upload/readback rings and explicit native buffers/ICBs; opaque
+driver allocations remain outside that cap. Separate lifetime
 groups keep asset textures from pinning retired Scene heaps. Transfer buffers grow
 on demand after their GPU and CPU consumers finish. Graph draw tables use scene
 candidate capacities on both backends; native caches retain sufficient backing
@@ -1072,7 +1073,7 @@ the physical output and leaves UI native. App recovery stops at the existing
 25% floor; standalone Vulkan has no Scene-output override capability.
 Metal entrypoints use autorelease pools for temporary Objective-C objects;
 resources that span calls retain explicit ownership and completion-gated release.
-`VKR_METAL_MEMORY_BUDGET_MB` configures the cap at startup. See
+`VKR_METAL_MEMORY_BUDGET_MB` overrides the cap at startup. See
 [ADR-024](adr/024-shared-bindless-gpu-cores.md) for budget and failure semantics. Its candidate preparation initializes only referenced
 geometry rows in the existing completion-protected upload span; static residency
 hits refresh those rows while marking resource use. Shared cores track logical
