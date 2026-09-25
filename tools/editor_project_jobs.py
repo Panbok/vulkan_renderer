@@ -11,6 +11,7 @@ removes its own staging tree and never edits the previous scene or project.
 import argparse
 import base64
 import copy
+import ctypes
 import hashlib
 import json
 import math
@@ -255,6 +256,10 @@ def source_file(value):
         raise JobError(f'Source file is unavailable: {value}: {error}') from error
     if not path.is_file():
         raise JobError(f'Source is not a regular file: {path}')
+    with path.open('rb') as stream:
+        if stream.read(128).startswith(b'version https://git-lfs.github.com/spec/v1\n'):
+            raise JobError(f'Source is a Git LFS pointer, not asset data: {path}. '
+                           'Run git lfs pull in the source repository, then import again.')
     return path
 
 
@@ -276,6 +281,59 @@ def legacy_source(value, origin, legacy_root):
     if len(matches) != 1:
         raise JobError(f'Legacy dependency is missing or ambiguous: {value}')
     return matches.pop()
+
+
+def gltf_texture_source(value, origin, legacy_root):
+    """Locates a glTF image the way the mesh cooker does for repository models
+    (tools/assets/mesh_loader_gltf.c): beside the model first, then, for a model
+    inside the repository's assets tree, under assets and assets/textures, again
+    under assets/textures without a legacy `objects/` prefix, and by file name
+    in assets/textures. A cooked `.vkt` stands in for a missing source at each
+    place. Models elsewhere resolve only beside themselves."""
+    direct = origin / value
+    candidates = [direct]
+    assets = legacy_root / 'assets'
+    try:
+        repository_model = origin.resolve().is_relative_to(assets.resolve())
+    except OSError:
+        repository_model = False
+    if repository_model:
+        textures = assets / 'textures'
+        candidates += [assets / value, textures / value]
+        if value.startswith('objects/') and len(value) > len('objects/'):
+            candidates.append(textures / value[len('objects/'):])
+        candidates.append(textures / Path(value).name)
+    for candidate in candidates:
+        for path in (candidate, Path(str(candidate) + '.vkt')):
+            if path.is_file():
+                return path
+    return direct
+
+
+_CLONEFILE = None
+
+
+def clone_file(source, destination):
+    """Clones `source` copy-on-write where the file system can (APFS on macOS):
+    the clone shares the source's blocks until either file changes, so a large
+    closure imported from the same volume costs almost no space. Returns False
+    when the caller must copy the bytes instead."""
+    global _CLONEFILE
+    if _CLONEFILE is None:
+        _CLONEFILE = False
+        if sys.platform == 'darwin':
+            try:
+                function = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True).clonefile
+                function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
+                function.restype = ctypes.c_int
+                _CLONEFILE = function
+            except (OSError, AttributeError):
+                pass
+    if not _CLONEFILE or _CLONEFILE(os.fsencode(source), os.fsencode(destination), 0) != 0:
+        return False
+    # A clone keeps the source's mode; a copy is writable by its owner.
+    os.chmod(destination, stat.S_IMODE(os.stat(destination).st_mode) | stat.S_IWUSR)
+    return True
 
 
 def relative_reference(path, owner):
@@ -500,7 +558,8 @@ class Job:
         before = digest(source)
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+        if not clone_file(source, destination):
+            shutil.copyfile(source, destination)
         if digest(destination) != before or digest(source) != before:
             destination.unlink(missing_ok=True)
             raise JobError(f'Source changed while copying: {source.name}')
@@ -545,8 +604,10 @@ class Job:
         dependencies = []
         material_names = []
 
-        def dependency(value, origin):
-            resolved = source_file(origin / value)
+        def dependency(value, origin, texture=False):
+            located = (gltf_texture_source(value, origin, self.legacy_root)
+                       if texture else origin / value)
+            resolved = source_file(located)
             copied = self.copy_blob(resolved, directory / 'dependencies')
             dependencies.append({'path': managed_reference(copied, directory),
                                  'sha256': digest(copied), 'bytes': copied.stat().st_size})
@@ -582,7 +643,8 @@ class Job:
                 for item in model.get(field, []):
                     uri = item.get('uri')
                     if uri and not uri.startswith('data:'):
-                        copied = dependency(gltf_uri_path(uri), source.parent)
+                        copied = dependency(gltf_uri_path(uri), source.parent,
+                                            texture=field == 'images')
                         item['uri'] = managed_reference(copied, directory)
             if binary is None:
                 atomic_json(destination, model)
@@ -1320,6 +1382,8 @@ class Job:
         if not isinstance(scene.get('entities', []), list) or len(scene.get('entities', [])) > 65536:
             raise JobError('Invalid entity array')
         environment = scene.get('environment') or {}
+        if any(key in environment for key in ('asset', 'equirect', 'cubemap')):
+            raise JobError('Scene environment images were removed; author atmosphere or environment.constant')
         for key in ('intensity', 'diffuse_intensity', 'specular_intensity'):
             value = environment.get(key, 1)
             if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
@@ -1382,8 +1446,6 @@ class Job:
                 raise JobError('Duplicate authored override target')
             target[key] = edit
             expected = source_fingerprint(self.scene_id.encode())
-        if any(key in environment for key in ('asset', 'equirect', 'cubemap')):
-            raise JobError('Scene environment images were removed; author atmosphere or environment.constant')
             if entities[index].get('mesh'):
                 info = self.inspect_mesh(entities[index]['mesh']['path'])
                 if info['nodes']:

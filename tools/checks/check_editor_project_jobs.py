@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import shutil
 import struct
+import sys
 import tempfile
 import uuid
 
@@ -48,6 +49,24 @@ def main():
         if args.collision_cooker:
             request['tools']['collision'] = str(Path(args.collision_cooker).resolve())
         result_path = root / 'result.json'
+        # An unresolved LFS source must fail before publishing a scene.
+        pointer = source / 'pointer.obj'
+        pointer.write_text('version https://git-lfs.github.com/spec/v1\n'
+                           'oid sha256:' + '0' * 64 + '\nsize 12659983\n')
+        pointer_request = dict(request, scene_id=str(uuid.uuid4()), models=[str(pointer)],
+                               atmosphere={'enabled': True}, environment={'intensity': 0.5})
+        assert jobs.Job(pointer_request, result_path).execute() == 1
+        assert 'Git LFS pointer' in result_path.read_text()
+        assert not (project / 'scenes' / pointer_request['scene_id']).exists()
+        assert manifest.read_bytes() == original_manifest
+        assert not list((project / '.staging').iterdir())
+        # Resolved content publishes; a physical-sky request keeps its sky-light scale.
+        pointer.write_bytes(model.read_bytes())
+        assert jobs.Job(pointer_request, result_path).execute() == 0
+        pointer_runtime = jobs.load_json(jobs.load_json(result_path)['runtime_path'])
+        assert Path(pointer_runtime['entities'][0]['mesh']['path']).is_file()
+        assert pointer_runtime['atmosphere'] == {'enabled': True}
+        assert pointer_runtime['environment'] == {'intensity': 0.5, 'enabled': True}
         assert jobs.Job(request, result_path).execute() == 0
         result = jobs.load_json(result_path)
         scene_path = Path(result['scene_path'])
@@ -87,6 +106,37 @@ def main():
             'scenes': [{'nodes': [1]}], 'scene': 0}))
         node_request = dict(request, scene_id=str(uuid.uuid4()), models=[str(gltf_path)])
         assert jobs.Job(node_request, result_path).execute() == 0
+        # A repository glTF keeps the mesh cooker's texture layout: an image it
+        # names under objects/ lives under assets/textures. Outside the
+        # repository's assets tree the same model must fail instead of guessing.
+        legacy = root / 'legacy'
+        texture = legacy / 'assets' / 'textures' / 'props' / 'pixel.png'
+        texture.parent.mkdir(parents=True)
+        texture.write_bytes((source / 'nested' / 'pixel.png').read_bytes())
+        textured = json.loads(gltf_path.read_text())
+        textured['images'] = [{'uri': 'objects/props/pixel.png'}]
+        repository_model = legacy / 'assets' / 'models' / 'legacy.gltf'
+        repository_model.parent.mkdir(parents=True)
+        repository_model.write_text(json.dumps(textured))
+        legacy_request = dict(request, scene_id=str(uuid.uuid4()),
+                              models=[str(repository_model)], legacy_root=str(legacy))
+        legacy_result = root / 'legacy_result.json'
+        assert jobs.Job(legacy_request, legacy_result).execute() == 0
+        legacy_root = Path(jobs.load_json(legacy_result)['scene_path']).parent
+        snapshot = next(legacy_root.glob('sources/*/source.gltf'))
+        copied = snapshot.parent / jobs.load_json(snapshot)['images'][0]['uri']
+        assert copied.read_bytes() == texture.read_bytes()
+        outside_model = source / 'outside.gltf'
+        outside_model.write_text(json.dumps(textured))
+        outside_request = dict(legacy_request, scene_id=str(uuid.uuid4()),
+                               models=[str(outside_model)])
+        assert jobs.Job(outside_request, legacy_result).execute() == 1
+        assert 'Source file is unavailable' in legacy_result.read_text()
+        # On APFS an import clones its closure instead of duplicating it.
+        if sys.platform == 'darwin':
+            clone = root / 'clone.png'
+            assert jobs.clone_file(texture, clone)
+            assert clone.read_bytes() == texture.read_bytes()
         node_result = jobs.load_json(result_path)
         node_scene = jobs.load_json(node_result['scene_path'])
         node_runtime = jobs.load_json(node_result['runtime_path'])

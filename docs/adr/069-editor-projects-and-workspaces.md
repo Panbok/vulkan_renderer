@@ -39,6 +39,14 @@ default font, editor settings and scene-specific editor recall. Each scene has
 its own `scenes/<id>/scene.json` version 3, inventory and artifact directories.
 Display names can change independently of IDs. Paths in manifests resolve within
 the declared owner; imports copy their dependency closure into the workspace.
+A glTF image resolves beside its model; a model inside the repository's
+`assets` tree also finds it where the mesh cooker looks, under `assets` and
+`assets/textures`, without a legacy `objects/` prefix and by file name, so the
+repository Bistro imports with its shipped texture layout. Models elsewhere
+resolve only beside themselves. On APFS the job clones every file it copies
+copy-on-write, so a closure from the same volume, such as Bistro's 3.1 GiB of
+source textures, and the texture cache's copies into a bundle share their
+blocks instead of duplicating them; other file systems copy the bytes.
 The editor holds an OS-backed workspace write lease. A second editor can inspect
 the workspace without publishing changes or previews into it.
 
