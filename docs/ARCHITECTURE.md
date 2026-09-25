@@ -214,8 +214,8 @@ deletion; project-shared assets remain. Incomplete file removal offers Retry.
 import, dirty-state prompts, scene activation and progress. Preparation progress
 and errors stay inside Scene; runtime streaming displays without a loading
 overlay while other editor panels remain usable. Its
-[job process](../tools/editor_project_jobs.py) validates scene version 3 and lowers
-inventory references to explicit runtime paths. Imports preserve cooked geometry
+[job process](../tools/editor_project_jobs.py) validates scene versions 3 and 4
+and lowers inventory references to explicit runtime paths. Imports preserve cooked geometry
 identity, copy material/texture dependencies and publish fresh artifact revisions
 before changing manifest references. Scene saves use immutable overlay revisions
 and manifest fingerprint checks. Workspace writer leases cover asynchronous
@@ -252,7 +252,8 @@ ownership, publication decisions and selected native Metal evidence. Native
 Windows/Vulkan parity, long-session stability and frame-budget acceptance remain
 separate gates.
 
-Managed JSON documents remain bounded to 1 MiB and nesting depth 32. The
+Managed JSON documents remain bounded to 1 MiB and nesting depth 32; a version 4
+scene's immutable inventory revision holds its asset records within 16 MiB. The
 [project store](../editor/src/editor_project_store.c) sizes temporary token storage
 from input bytes rather than imposing a smaller asset-count ceiling. Settings
 updates merge owned fields into prior objects, retaining unknown nested fields;

@@ -1761,14 +1761,16 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
   }
   char scene_id[37] = {0};
   String8 version = {0};
+  // Version 4 differs only by naming an inventory revision, which the
+  // overlay update preserves with every other member.
   if (!vkr_editor_project_json_member(document, "version", &version, error) ||
-      version.length != 1 || version.str[0] != '3' ||
+      version.length != 1 || (version.str[0] != '3' && version.str[0] != '4') ||
       !vkr_editor_project_json_string(document, "id", scene_id,
                                       sizeof(scene_id), error) ||
       !project_id_valid(scene_id)) {
     project_error(
         error,
-        "Authored managed saves require scene version 3 and its identity");
+        "Authored managed saves require scene version 3 or 4 and its identity");
     goto cleanup;
   }
   char lock_name[64];

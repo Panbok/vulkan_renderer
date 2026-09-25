@@ -75,7 +75,7 @@ def main():
         assert jobs.Job(request, result_path).execute() == 0, result_path.read_text()
         result = jobs.load_json(result_path)
         scene_path = Path(result['scene_path'])
-        managed = jobs.load_json(scene_path)
+        managed = jobs.read_managed_scene(scene_path)
         mesh = next(record for record in managed['assets'] if record['kind'] == 'mesh')
         assert [item['role'] for item in mesh['artifacts']] == ['mesh', 'animation']
         assert mesh['animation_count'] == 1
@@ -93,10 +93,10 @@ def main():
                       'states': [], 'transitions': []}
         managed['entities'][0]['animation'].update(clip=0, playing=False, rate=-0.5,
                                                   loop=False, controller=controller)
-        jobs.atomic_json(scene_path, managed)
+        jobs.write_managed_scene(scene_path, managed)
         rebuild = dict(request, operation='rebuild_asset', scene_path=str(scene_path), asset_id=mesh['id'])
         assert jobs.Job(rebuild, result_path).execute() == 0, result_path.read_text()
-        updated = jobs.load_json(scene_path)
+        updated = jobs.read_managed_scene(scene_path)
         latest = jobs.load_json(jobs.load_json(result_path)['runtime_path'])
         controls = latest['entities'][0]['animation']
         assert controls['controller'] == controller
@@ -117,7 +117,7 @@ def main():
         source.write_text(json.dumps(static))
         reimport = dict(rebuild, operation='reimport_asset', source=str(source))
         assert jobs.Job(reimport, result_path).execute() == 0, result_path.read_text()
-        static_scene = jobs.load_json(scene_path)
+        static_scene = jobs.read_managed_scene(scene_path)
         assert 'animation' not in static_scene['entities'][0]
         record = next(item for item in static_scene['assets'] if item['id'] == mesh['id'])
         assert [item['role'] for item in record['artifacts']] == ['mesh']

@@ -40,7 +40,12 @@ are saved.
 workspace manifest and UUID-named project directories. Each project has a
 `project.json` with a display name, ordered scene references, asset inventory,
 default font, editor settings and scene-specific editor recall. Each scene has
-its own `scenes/<id>/scene.json` version 3, inventory and artifact directories.
+its own `scenes/<id>/scene.json` and artifact directories. Scene version 4 keeps
+its asset records in an immutable `inventory/<id>.json` revision named by the
+manifest, so the manifest stays within the 1 MiB store limit while an inventory
+may reach 16 MiB. A job publishes a new inventory revision before atomically
+replacing the manifest, as with edit overlays. Version 3 manifests with inline
+records remain readable and become version 4 at their next job publication.
 Display names can change independently of IDs. Paths in manifests resolve within
 the declared owner; imports copy their dependency closure into the workspace.
 A glTF image resolves beside its model; a model inside the repository's
@@ -100,7 +105,7 @@ entity. Adding is durable publication, outside Inspector undo history. Failed
 jobs return to the draft for correction; Cancel reloads the original scene.
 
 The [job process](../../tools/editor_project_jobs.py) validates managed scene
-version 3 and lowers typed asset references into explicit runtime scene and font
+versions 3 and 4 and lowers typed asset references into explicit runtime scene and font
 inputs. Runtime loaders do not discover workspaces. New source imports use
 explicit cooker destinations. Cooked-only imports preserve `.vkb` geometry bytes
 and use an adjacent versioned material-remap document; the
@@ -155,7 +160,8 @@ U+052F; on-demand glyph rasterization and IME composition are separate work.
 cancelled or error results with caller-released UTF-8 paths on the UI thread.
 Managed editor native close requests remain pending until the dirty-state flow
 resolves them. [Content](../../editor/src/editor_content.c) indexes manifests on
-refresh and virtualizes filtered asset cards. Its layout follows the navigation,
+refresh, reading a version 4 scene's inventory revision in place because it may
+exceed the 1 MiB manifest parser, and virtualizes filtered asset cards. Its layout follows the navigation,
 sources, search and asset-view organization described in Epic's
 [Content Browser interface](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine).
 The left sources tree groups Scene, Project and Editor inventories into logical

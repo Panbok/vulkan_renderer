@@ -112,6 +112,35 @@ static void project_test_overlay(VkrAllocator *allocator,
       &edits, &scene,
       (String8){.str = (uint8_t *)overlay, .length = strlen(overlay)}));
   assert(vkr_scene_get_transform(&scene, entity)->position.x == 7);
+  // A version 4 manifest keeps its inventory revision across overlay saves.
+  project_test_write(manifest,
+                     "{\"version\":4,\"id\":\"00000000-0000-4000-8000-"
+                     "000000000003\",\"entities\":[],\"inventory\":"
+                     "\"inventory/records.json\"}");
+  uint64_t inventory_fingerprint = 0;
+  assert(vkr_editor_project_json_read_file(manifest, allocator, &document,
+                                           &inventory_fingerprint, &error));
+  assert(vkr_scene_edit_read(&scene, entity, &values));
+  values.position.x = 8;
+  assert(vkr_scene_edit_apply(&edits, &scene, entity, &values));
+  assert(vkr_editor_project_save_scene_overlay(
+      manifest, &inventory_fingerprint, &edits, &scene, allocator, &error));
+  assert(vkr_editor_project_json_read_file(manifest, allocator, &published,
+                                           &observed, &error));
+  char inventory[64];
+  assert(vkr_editor_project_json_string(published, "inventory", inventory,
+                                        sizeof(inventory), &error));
+  assert(strcmp(inventory, "inventory/records.json") == 0);
+  char inventory_overlay_relative[128];
+  char inventory_overlay[1024];
+  assert(vkr_editor_project_json_string(
+      published, "edit_overlay", inventory_overlay_relative,
+      sizeof(inventory_overlay_relative), &error));
+  assert(vkr_editor_project_resolve(scene_root, inventory_overlay_relative,
+                                    inventory_overlay, &error));
+  FilePath inventory_overlay_file = project_test_path(inventory_overlay);
+  assert(file_remove(&inventory_overlay_file) == FILE_ERROR_NONE);
+  fingerprint = observed;
   assert(vkr_scene_edit_read(&scene, entity, &values));
   values.position.x = 9;
   assert(vkr_scene_edit_apply(&edits, &scene, entity, &values));

@@ -118,7 +118,8 @@ Editor workflow terms:
 | Managed reference | Owner-relative serialized path with `/` separators and validated raw segments, resolved with physical containment checks. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Resource reference | Runtime asset reference with explicit owner-relative or legacy repository-root semantics, separate from a source format URI. | [Asset resolver](../lib/src/filesystem/vkr_asset_path.h) |
 | Project | Version 1 JSON owner of a name, scene membership, default font, asset inventory and editor preferences. | [ADR-069](adr/069-editor-projects-and-workspaces.md) |
-| Managed scene | Version 3 authored scene document with stable ID, typed inventory references and separate build revisions; jobs lower it to runtime inputs. | [Project jobs](../tools/editor_project_jobs.py) |
+| Managed scene | Version 4 authored scene document with stable ID, typed asset references and separate build revisions; its asset records live in the immutable inventory revision it names (version 3 kept them inline). Jobs lower it to runtime inputs. | [Project jobs](../tools/editor_project_jobs.py) |
+| Derived texture cache | Workspace `cache/generated` directory of cooker-derived textures named by source content and parameters; managed bundles hold clones of the variants their materials use. | [Mesh cooker](../tools/assets/vkr_mesh_cook_source.c) |
 | Source identity | Stable managed-scene or cooked source-node identity used to bind authored edits independently of imported file location. | [Scene loader](../runtime/src/renderer/resources/loaders/scene_loader.c) |
 | Bakery | Editor queue for cooker, renderer-table and scene-bake processes; managed project jobs publish into an explicit workspace. | [Bakery](../editor/src/editor_bakery.c) |
 | Content | Manifest-indexed asset browser with virtualized cards, texture/material previews and icons for other asset types. | [Content browser](../editor/src/editor_content.c) |

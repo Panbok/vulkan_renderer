@@ -3,6 +3,7 @@
 
 CLI: --request request.json --result result.json. Request/result version is 1.
 Managed documents use v3 scene fields from docs/proposals/editor-projects.md;
+v4 moves the scene's asset records into a named immutable inventory revision;
 artifacts have {role,path,version}, asset references have {scope,id,role}.
 Only the C project store publishes project membership. A failed/cancelled job
 removes its own staging tree and never edits the previous scene or project.
@@ -30,6 +31,10 @@ from urllib.parse import unquote, urlsplit, parse_qs
 VERSION = 1
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_MANAGED_DOCUMENT_BYTES = 1024 * 1024
+# Scene v4 keeps its asset records in an immutable inventory revision, so the
+# scene manifest stays small while large imports keep every record.
+MANAGED_SCENE_VERSION = 4
+MAX_INVENTORY_BYTES = 16 * 1024 * 1024
 MAX_IMPORT_BYTES = 8 * 1024 * 1024 * 1024
 MAX_IMPORT_FILES = 16384
 FACES = ('r', 'l', 'u', 'd', 'f', 'b')
@@ -78,11 +83,12 @@ def load_json(path, limit=MAX_JSON_BYTES):
     return value
 
 
-def validate_managed_document(value):
+def validate_managed_document(value, limit=MAX_MANAGED_DOCUMENT_BYTES):
     """Match the project store's durable document limits before publication."""
     encoded = (json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
-    if len(encoded) > MAX_MANAGED_DOCUMENT_BYTES:
-        raise JobError('Managed document exceeds the 1 MiB project-store limit; split the scene into smaller scenes')
+    if len(encoded) > limit:
+        raise JobError(f'Managed document exceeds the {limit // (1024 * 1024)} MiB project-store limit; '
+                       'split the scene into smaller scenes')
     def visit(item, depth):
         if isinstance(item, (dict, list)):
             depth += 1
@@ -101,7 +107,7 @@ def validate_managed_document(value):
 
 def atomic_json(path, value):
     path = Path(path)
-    if path.name == 'scene.json' and value.get('version') == 3:
+    if path.name == 'scene.json' and value.get('version') in (3, MANAGED_SCENE_VERSION):
         validate_managed_document(value)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp',
@@ -115,6 +121,46 @@ def atomic_json(path, value):
         os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+def read_managed_scene(path):
+    """Loads a managed scene with its asset records inline, as jobs edit it.
+    Version 3 stores them in scene.json; version 4 names an inventory revision."""
+    path = Path(path)
+    scene = load_json(path, MAX_MANAGED_DOCUMENT_BYTES)
+    if scene.get('version') != MANAGED_SCENE_VERSION:
+        return scene
+    reference = scene.pop('inventory', None)
+    if not isinstance(reference, str) or 'assets' in scene:
+        raise JobError('Managed scene needs exactly one inventory reference')
+    inventory = load_json(contained(path.parent, reference), MAX_INVENTORY_BYTES)
+    if inventory.get('version') != 1 or not isinstance(inventory.get('assets'), list):
+        raise JobError('Managed scene inventory is invalid')
+    scene['assets'] = inventory['assets']
+    return scene
+
+
+def validate_managed_scene(scene, reference='inventory/' + '0' * 36 + '.json'):
+    """Splits an in-memory scene into its v4 manifest and inventory revision,
+    checking each against its own durable limit."""
+    document = {key: value for key, value in scene.items() if key != 'assets'}
+    document.update(version=MANAGED_SCENE_VERSION, inventory=reference)
+    inventory = {'version': 1, 'assets': scene.get('assets', [])}
+    validate_managed_document(document)
+    validate_managed_document(inventory, MAX_INVENTORY_BYTES)
+    return document, inventory
+
+
+def write_managed_scene(path, scene):
+    """Publishes an immutable inventory revision, then atomically points
+    scene.json at it; a failure before the replacement leaves the previous
+    scene and its inventory intact."""
+    path = Path(path)
+    reference = 'inventory/' + str(uuid.uuid4()) + '.json'
+    document, inventory = validate_managed_scene(scene, reference)
+    atomic_json(path.parent / reference, inventory)
+    atomic_json(path, document)
+    scene['version'] = MANAGED_SCENE_VERSION
 
 
 def publish_directory(source, destination):
@@ -1165,8 +1211,8 @@ class Job:
     def import_scene(self, source):
         source = source_file(source)
         scene = load_json(source)
-        if scene.get('version') == 3:
-            return self.import_managed_scene(scene, source.parent)
+        if scene.get('version') in (3, MANAGED_SCENE_VERSION):
+            return self.import_managed_scene(read_managed_scene(source), source.parent)
         if scene.get('version', 1) not in (1, 2):
             raise JobError('Unsupported scene JSON version')
         scene = copy.deepcopy(scene)
@@ -1228,7 +1274,7 @@ class Job:
         # A managed scene bundle is the dependency closure. Copy only this owner;
         # project/editor references are resolved explicitly below, never by basename.
         for child in origin.iterdir():
-            if child.name in ('.runtime', 'scene.json'):
+            if child.name in ('.runtime', 'scene.json', 'inventory'):
                 continue
             if child.is_symlink():
                 raise JobError('Resolve symlinks before importing a managed scene')
@@ -1370,20 +1416,20 @@ class Job:
                 probe['asset'] = {'scope': 'scene', 'id': asset_id, 'role': 'probe-cube'}
         if self.request.get('font_source'):
             scene['default_font'] = self.import_font(self.request['font_source'])
-        scene.update(version=3, id=self.scene_id, assets=self.assets)
+        scene.update(version=MANAGED_SCENE_VERSION, id=self.scene_id, assets=self.assets)
         scene.setdefault('default_font', None)
         scene.setdefault('edit_overlay', None)
         scene.setdefault('bake_recipes', {})
         self.validate_semantics(scene)
         self.perform_bakes(scene)
-        atomic_json(self.stage / 'scene.json', scene)
+        validate_managed_scene(scene)
         self.progress('Validating scene dependencies', 0.85)
         self.validate_semantics(scene)
         pending_bakes = scene['bake_recipes'].get('prepare_assets') is False and (scene['bake_recipes'].get('reflection') or scene['bake_recipes'].get('diffuse'))
         unbuilt = any(not record.get('artifacts') for record in self.assets) or pending_bakes
         if not unbuilt:
             self.lower(scene, self.stage, publish_runtime=False)
-        atomic_json(self.stage / 'scene.json', scene)
+        write_managed_scene(self.stage / 'scene.json', scene)
         self.final.parent.mkdir(parents=True, exist_ok=True)
         if self.final.exists():
             raise JobError('Scene was created by another writer')
@@ -1747,7 +1793,7 @@ class Job:
                 raise JobError('Managed fonts require a cooked MTSDF artifact')
 
     def lower(self, scene, root, publish_runtime=True):
-        if scene.get('version') != 3 or scene.get('id') != self.scene_id:
+        if scene.get('version') not in (3, MANAGED_SCENE_VERSION) or scene.get('id') != self.scene_id:
             raise JobError('Managed scene version or ID mismatch')
         project = self.project_document()
         inventories = {'scene': (root, scene.get('assets', [])),
@@ -1907,7 +1953,7 @@ class Job:
         self.progress('Resolving scene assets', 0.2)
         scene_bytes = path.read_bytes()
         project_before = digest(self.project_path) if self.read_only else None
-        scene = migrate_source_references(load_json(path, MAX_MANAGED_DOCUMENT_BYTES), path)
+        scene = migrate_source_references(read_managed_scene(path), path)
         self.validate_semantics(scene)
         pending_bakes = scene.get('bake_recipes', {}).get('prepare_assets') is False and (scene.get('bake_recipes', {}).get('reflection') or scene.get('bake_recipes', {}).get('diffuse'))
         if any(not record.get('artifacts') for record in scene.get('assets', [])) or pending_bakes or self.texture_repair_bundles(scene, path.parent):
@@ -2025,16 +2071,16 @@ class Job:
             raise JobError('Scene changed while preparing assets; retry the build')
         # Transfer ownership before publication: cancellation may retain an orphan
         # revision, but can never delete a revision referenced by a committed scene.
-        validate_managed_document(scene)
+        validate_managed_scene(scene)
         self.published_builds.clear()
-        atomic_json(path, scene)
+        write_managed_scene(path, scene)
         return result
 
     def edit_assets(self):
         path = Path(self.request['scene_path']).resolve(strict=True)
         if path != (self.final / 'scene.json').resolve():
             raise JobError('Asset operation scene does not match project membership')
-        scene = migrate_source_references(load_json(path), path)
+        scene = migrate_source_references(read_managed_scene(path), path)
         fingerprint = digest(path)
         if scene.get('edit_overlay'):
             load_json(contained(path.parent, scene['edit_overlay']))
@@ -2090,7 +2136,7 @@ class Job:
                 result = self.lower(scene, path.parent)
                 if digest(path) != fingerprint:
                     raise JobError('Scene changed during rename; retry')
-                atomic_json(path, scene)
+                write_managed_scene(path, scene)
                 return result
             asset_id = record['id']
             import_id = record.get('import_id') or str(uuid.uuid4())
@@ -2181,9 +2227,9 @@ class Job:
             raise JobError('Scene changed during import; retry without losing the previous revision')
         # Transfer ownership before publication: cancellation may retain an orphan
         # revision, but can never delete a revision referenced by a committed scene.
-        validate_managed_document(scene)
+        validate_managed_scene(scene)
         self.published_builds.clear()
-        atomic_json(path, scene)
+        write_managed_scene(path, scene)
         if added_entity is not None:
             result['added_scene_entity'] = added_entity
         return result
@@ -2261,7 +2307,7 @@ class Job:
                 path = Path(self.request['scene_path']).resolve(strict=True)
                 if path != (self.final / 'scene.json').resolve():
                     raise JobError('Bake scene does not match project membership')
-                result = self.prepare_unbuilt(path, migrate_source_references(load_json(path), path))
+                result = self.prepare_unbuilt(path, migrate_source_references(read_managed_scene(path), path))
             elif self.request.get('operation') == 'prepare_scene':
                 result = self.prepare(self.request['scene_path'])
             elif self.request.get('operation') in ('add_entities', 'import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset'):

@@ -113,9 +113,12 @@ def main():
         assert jobs.Job(request, result_path).execute() == 0
         result = jobs.load_json(result_path)
         scene_path = Path(result['scene_path'])
-        managed = jobs.load_json(scene_path)
+        managed = jobs.read_managed_scene(scene_path)
         runtime = jobs.load_json(result['runtime_path'])
-        assert managed['version'] == 3 and runtime['version'] == 2
+        assert managed['version'] == 4 and runtime['version'] == 2
+        # Scene v4 keeps records in an immutable inventory revision.
+        stored = jobs.load_json(scene_path)
+        assert 'assets' not in stored and (scene_path.parent / stored['inventory']).is_file()
         assert manifest.read_bytes() == original_manifest, 'Job published project membership'
         assert '.staging' not in json.dumps(managed)
         assert str(source) not in json.dumps(managed)
@@ -128,12 +131,12 @@ def main():
         assert jobs.Job(unbuilt_request, result_path).execute() == 0
         unbuilt_result = jobs.load_json(result_path)
         assert unbuilt_result['status'] == 'unbuilt' and 'runtime_path' not in unbuilt_result
-        unbuilt_scene = jobs.load_json(unbuilt_result['scene_path'])
+        unbuilt_scene = jobs.read_managed_scene(unbuilt_result['scene_path'])
         assert not unbuilt_scene['assets'][0]['artifacts']
         finish = dict(unbuilt_request, operation='prepare_scene', scene_path=unbuilt_result['scene_path'])
         assert jobs.Job(finish, result_path).execute() == 0
         assert jobs.load_json(result_path)['status'] == 'complete'
-        assert jobs.load_json(unbuilt_result['scene_path'])['assets'][0]['artifacts']
+        assert jobs.read_managed_scene(unbuilt_result['scene_path'])['assets'][0]['artifacts']
         if args.diffuse_baker:
             # An open triangle encloses no room: the real baker's inspection
             # proves every cell invalid, so the scene publishes without a volume.
@@ -143,7 +146,7 @@ def main():
             assert jobs.Job(open_request, result_path).execute() == 0
             open_result = jobs.load_json(result_path)
             assert any('Diffuse volume skipped' in warning for warning in open_result['warnings'])
-            open_scene = jobs.load_json(open_result['scene_path'])
+            open_scene = jobs.read_managed_scene(open_result['scene_path'])
             assert 'diffuse_volume' not in open_scene
             assert not any(item['kind'] == 'volume' for item in open_scene['assets'])
             assert 'diffuse_volume' not in jobs.load_json(open_result['runtime_path'])
@@ -235,7 +238,7 @@ def main():
             assert jobs.clone_file(texture, clone)
             assert clone.read_bytes() == texture.read_bytes()
         node_result = jobs.load_json(result_path)
-        node_scene = jobs.load_json(node_result['scene_path'])
+        node_scene = jobs.read_managed_scene(node_result['scene_path'])
         node_runtime = jobs.load_json(node_result['runtime_path'])
         node_mesh = Path(node_runtime['entities'][0]['mesh']['path'])
         node_job = jobs.Job(node_request, result_path)
@@ -289,13 +292,13 @@ def main():
                         'scene_entity': 0, 'gltf_node': 1, 'fingerprint': node_hash}}],
                     'colliders': [{'shape': 4, 'asset': 'shared-shape.vkc'}]}}]}
             jobs.atomic_json(node_root / 'edits' / 'node.json', journal)
-            jobs.atomic_json(node_root / 'scene.json', node_scene)
+            jobs.write_managed_scene(node_root / 'scene.json', node_scene)
             clone = dict(request, scene_id=str(uuid.uuid4()), models=[],
                          source_scene=str(node_root / 'scene.json'))
             assert jobs.Job(clone, result_path).execute() == 0, result_path.read_text()
             clone_result = jobs.load_json(result_path)
             clone_path = Path(clone_result['scene_path'])
-            clone_scene = jobs.load_json(clone_path)
+            clone_scene = jobs.read_managed_scene(clone_path)
             cloned = jobs.load_json(clone_path.parent / clone_scene['edit_overlay'])
             assert cloned['version'] == 3 and cloned['collision_settings'] == journal['collision_settings']
             record = cloned['overrides'][0]
@@ -320,7 +323,7 @@ def main():
                                 legacy_root=str(workspace))
             assert jobs.Job(legacy_clone, result_path).execute() == 0, result_path.read_text()
             legacy_result = jobs.load_json(result_path)
-            legacy_scene = jobs.load_json(legacy_result['scene_path'])
+            legacy_scene = jobs.read_managed_scene(legacy_result['scene_path'])
             legacy_overlay = jobs.load_json(Path(legacy_result['scene_path']).parent / legacy_scene['edit_overlay'])
             assert (workspace / legacy_overlay['overrides'][0]['physics']['colliders'][0]['asset']).read_bytes() == cooked_bytes
             # Corrupt native geometry fails atomically before a destination appears.
@@ -344,12 +347,12 @@ def main():
             detached_clone = dict(clone, scene_id=str(uuid.uuid4()), source_scene=str(detached / 'scene.json'))
             assert jobs.Job(detached_clone, result_path).execute() == 0, result_path.read_text()
             detached_result = jobs.load_json(result_path)
-            detached_scene = jobs.load_json(detached_result['scene_path'])
+            detached_scene = jobs.read_managed_scene(detached_result['scene_path'])
             detached_overlay = jobs.load_json(Path(detached_result['scene_path']).parent / detached_scene['edit_overlay'])
             assert (workspace / detached_overlay['overrides'][0]['physics']['colliders'][0]['asset']).read_bytes() == cooked_bytes
             # Restore the source journal for independent relocation checks below.
             node_scene.pop('edit_overlay')
-            jobs.atomic_json(node_root / 'scene.json', node_scene)
+            jobs.write_managed_scene(node_root / 'scene.json', node_scene)
 
         model.unlink()
         assert any((scene_path.parent / 'sources').rglob('source.obj'))
@@ -426,9 +429,9 @@ def main():
             selected_overlay = scene_path.parent / 'edits' / 'readonly-selected.json'
             journal = {'version': 1, 'overrides': []}
             jobs.atomic_json(selected_overlay, journal)
-            with_overlay = jobs.load_json(scene_path)
+            with_overlay = jobs.read_managed_scene(scene_path)
             with_overlay['edit_overlay'] = 'edits/readonly-selected.json'
-            jobs.atomic_json(scene_path, with_overlay)
+            jobs.write_managed_scene(scene_path, with_overlay)
             before = workspace_snapshot()
             assert jobs.Job(readonly_request, result_path).execute() == 0
             copied_overlay = Path(jobs.load_json(result_path)['edit_path'])
@@ -436,33 +439,43 @@ def main():
             assert workspace_snapshot() == before, 'Read-only overlay copy modified the workspace'
             scene_path.write_bytes(authored_before)
             selected_overlay.unlink()
-            unbuilt_readonly = jobs.load_json(scene_path)
+            unbuilt_readonly = jobs.read_managed_scene(scene_path)
             unbuilt_readonly['assets'][0]['artifacts'] = []
-            jobs.atomic_json(scene_path, unbuilt_readonly)
+            jobs.write_managed_scene(scene_path, unbuilt_readonly)
             before = workspace_snapshot()
             assert jobs.Job(readonly_request, result_path).execute() == 1
             assert 'write access' in jobs.load_json(result_path)['error']
             assert workspace_snapshot() == before, 'Read-only open prepared unbuilt assets'
             scene_path.write_bytes(authored_before)
-            readonly_scene = jobs.load_json(scene_path)
+            readonly_scene = jobs.read_managed_scene(scene_path)
             before_document = scene_path.read_bytes()
             readonly_scene['assets'][0]['fingerprint'] = 'sha256:' + '0' * 64
-            jobs.atomic_json(scene_path, readonly_scene)
+            jobs.write_managed_scene(scene_path, readonly_scene)
             before = workspace_snapshot()
             assert jobs.Job(readonly_request, result_path).execute() == 1
             assert workspace_snapshot() == before, 'Read-only validation repaired stale content'
             scene_path.write_bytes(before_document)
 
         # Publication must reject documents that the C store cannot read.
-        oversized = jobs.load_json(scene_path)
+        oversized = jobs.read_managed_scene(scene_path)
         oversized['large_extension'] = 'x' * jobs.MAX_MANAGED_DOCUMENT_BYTES
         original_bytes = scene_path.read_bytes()
         try:
-            jobs.atomic_json(scene_path, oversized)
+            jobs.write_managed_scene(scene_path, oversized)
             raise AssertionError('Oversized managed scene was published')
         except jobs.JobError as error:
             assert '1 MiB' in str(error)
         assert scene_path.read_bytes() == original_bytes
+        # Records beyond the 1 MiB manifest limit publish through the inventory.
+        large = jobs.read_managed_scene(scene_path)
+        filler = [dict(large['assets'][0], id=str(uuid.uuid4()), name='x' * 900) for _ in range(1500)]
+        large['assets'] = large['assets'] + filler
+        jobs.write_managed_scene(scene_path, large)
+        stored = jobs.load_json(scene_path)
+        assert scene_path.stat().st_size < 64 * 1024
+        assert (scene_path.parent / stored['inventory']).stat().st_size > jobs.MAX_MANAGED_DOCUMENT_BYTES
+        assert len(jobs.read_managed_scene(scene_path)['assets']) == len(large['assets'])
+        scene_path.write_bytes(original_bytes)
 
         missing = dict(request, scene_id=str(uuid.uuid4()), models=[str(source / 'missing.obj')])
         assert jobs.Job(missing, result_path).execute() == 1
@@ -473,14 +486,14 @@ def main():
         # The selected journal is authoritative; an absent explicit revision is a load error.
         local_prepare = dict(request, operation='prepare_scene', scene_path=str(scene_path))
         original_scene = scene_path.read_bytes()
-        bad = jobs.load_json(scene_path)
+        bad = jobs.read_managed_scene(scene_path)
         bad['edit_overlay'] = 'edits/missing.json'
-        jobs.atomic_json(scene_path, bad)
+        jobs.write_managed_scene(scene_path, bad)
         assert jobs.Job(local_prepare, result_path).execute() == 1
         scene_path.write_bytes(original_scene)
-        bad = jobs.load_json(scene_path)
+        bad = jobs.read_managed_scene(scene_path)
         bad['assets'][0]['fingerprint'] = 'sha256:' + '0' * 64
-        jobs.atomic_json(scene_path, bad)
+        jobs.write_managed_scene(scene_path, bad)
         assert jobs.Job(local_prepare, result_path).execute() == 1
         scene_path.write_bytes(original_scene)
 
@@ -490,7 +503,7 @@ def main():
             'source_fingerprint': jobs.source_fingerprint(request['scene_id'].encode()), 'fields': 7,
             'name': 'Edited wrapper', 'position': [2, 3, 4], 'rotation': [0, 0, 0, 1],
             'scale': [1, 1, 1], 'visible': True, 'inherit': True}]})
-        effective = jobs.load_json(scene_path)
+        effective = jobs.read_managed_scene(scene_path)
         effective['edit_overlay'] = 'edits/test.json'
         job = jobs.Job(local_prepare, result_path)
         baked = jobs.load_json(job.effective_bake_runtime(effective, scene_path.parent)['runtime_path'])
@@ -501,23 +514,23 @@ def main():
         mesh_record = next(item for item in managed['assets'] if item['kind'] == 'mesh')
         asset_operation = dict(local_prepare, operation='rename_asset', asset_id=mesh_record['id'], name='Renamed model')
         assert jobs.Job(asset_operation, result_path).execute() == 0
-        renamed = next(item for item in jobs.load_json(scene_path)['assets'] if item['id'] == mesh_record['id'])
+        renamed = next(item for item in jobs.read_managed_scene(scene_path)['assets'] if item['id'] == mesh_record['id'])
         assert renamed['name'] == 'Renamed model' and renamed['import_id'] == mesh_record['import_id']
 
         # Inject cancellation immediately after scene publication; referenced revisions survive.
         rebuild = dict(local_prepare, operation='rebuild_asset', asset_id=mesh_record['id'])
-        legacy_scene = jobs.load_json(scene_path)
+        legacy_scene = jobs.read_managed_scene(scene_path)
         legacy_mesh = next(item for item in legacy_scene['assets'] if item['id'] == mesh_record['id'])
         legacy_mesh['source'] = legacy_mesh['source'].replace('/', '\\')
         valid_source = legacy_mesh['source']
         legacy_mesh['source'] = '..\\outside.obj'
-        jobs.atomic_json(scene_path, legacy_scene)
+        jobs.write_managed_scene(scene_path, legacy_scene)
         invalid_scene = scene_path.read_bytes()
         assert jobs.Job(rebuild, result_path).execute() == 1
         assert 'escapes its owner' in jobs.load_json(result_path)['error']
         assert scene_path.read_bytes() == invalid_scene
         legacy_mesh['source'] = valid_source
-        jobs.atomic_json(scene_path, legacy_scene)
+        jobs.write_managed_scene(scene_path, legacy_scene)
         transaction = jobs.Job(rebuild, result_path)
         write_json = jobs.atomic_json
         fired = False
@@ -533,7 +546,7 @@ def main():
         finally:
             jobs.atomic_json = write_json
         assert fired
-        after = jobs.load_json(scene_path)
+        after = jobs.read_managed_scene(scene_path)
         rebuilt_mesh = next(item for item in after['assets'] if item['id'] == mesh_record['id'])
         assert '\\' not in rebuilt_mesh['source'], 'Legacy source path was not normalized'
         for item in after['assets']:
@@ -542,9 +555,9 @@ def main():
         assert jobs.Job(local_prepare, result_path).execute() == 0
 
         relocated_scene = Path(prepare['scene_path'])
-        document = jobs.load_json(relocated_scene)
+        document = jobs.read_managed_scene(relocated_scene)
         document['assets'][0]['artifacts'][0]['path'] = '../outside.vkb'
-        jobs.atomic_json(relocated_scene, document)
+        jobs.write_managed_scene(relocated_scene, document)
         assert jobs.Job(prepare, result_path).execute() == 1
         assert jobs.load_json(result_path)['status'] == 'failed'
         print('Project jobs: copied source closure, cooked-only remap, relocation, missing-input rollback and traversal rejection passed')

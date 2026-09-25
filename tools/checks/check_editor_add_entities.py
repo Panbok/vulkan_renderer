@@ -35,7 +35,7 @@ def main():
         assert jobs.Job(request, result_path).execute() == 0
         initial = jobs.load_json(result_path)
         scene_path = Path(initial['scene_path'])
-        scene = jobs.load_json(scene_path)
+        scene = jobs.read_managed_scene(scene_path)
         original_entities = copy.deepcopy(scene['entities'])
         overlay_path = scene_path.parent / 'edits' / 'original.json'
         jobs.atomic_json(overlay_path, {'version': 1, 'overrides': [{
@@ -43,7 +43,7 @@ def main():
             'source_fingerprint': jobs.source_fingerprint(request['scene_id'].encode()),
             'fields': 2, 'name': 'Saved original'}]})
         scene['edit_overlay'] = 'edits/original.json'
-        jobs.atomic_json(scene_path, scene)
+        jobs.write_managed_scene(scene_path, scene)
         overlay_bytes = overlay_path.read_bytes()
         additions = [
             {'name': 'Point', 'transform': transform, 'point_light': light['point_light']},
@@ -58,7 +58,7 @@ def main():
         add_request = dict(request, operation='add_entities', scene_path=str(scene_path), lights=additions)
         assert jobs.Job(add_request, result_path).execute() == 0
         result = jobs.load_json(result_path)
-        scene = jobs.load_json(scene_path)
+        scene = jobs.read_managed_scene(scene_path)
         assert result['added_scene_entity'] == 1
         assert scene['entities'][:1] == original_entities
         assert len(scene['entities']) == 5
@@ -90,7 +90,7 @@ def main():
         assert result['added_scene_entity'] == 6
         runtime = jobs.load_json(result['runtime_path'])
         assert Path(runtime['entities'][6]['mesh']['path']).read_bytes() == cooked_bytes
-        assert jobs.load_json(scene_path)['entities'][:5] == scene['entities']
+        assert jobs.read_managed_scene(scene_path)['entities'][:5] == scene['entities']
         assert overlay_path.read_bytes() == overlay_bytes
         reopen = dict(model_request, operation='prepare_scene')
         assert jobs.Job(reopen, result_path).execute() == 0

@@ -367,7 +367,9 @@ probe semantics. Version 3 adds `id`, `assets`, `default_font` (null means inher
 `bake_recipes`, `edit_overlay` (null or an owned revision path), and stable IDs for
 newly authored entity wrappers. Replace managed
 resource string fields with typed asset references in v3; v1/v2 paths remain
-supported only through the legacy loading/import context.
+supported only through the legacy loading/import context. Version 4, recorded in
+ADR-069, moves `assets` into an immutable inventory revision that the manifest
+names; the mapping below is unchanged.
 
 The v3 resource-field mapping is:
 

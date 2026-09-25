@@ -369,18 +369,21 @@ static bool8_t content_reserve(VkrEditorContent *content) {
   return true_v;
 }
 
-static void content_read_inventory(VkrEditorContent *content, const char *root,
-                                   const char *manifest, uint32_t scope) {
+/* Returns a null-terminated copy of a JSON document of at most 16 MiB, owned
+ * by the content allocator with size + 1 bytes. Missing files are silent. */
+static uint8_t *content_load_document(VkrEditorContent *content,
+                                      const char *manifest,
+                                      uint64_t *out_size) {
   FilePath path = {.path = content_string(manifest),
                    .type = FILE_PATH_TYPE_ABSOLUTE};
   FileStats stats = {0};
   if (file_stats(&path, &stats) != FILE_ERROR_NONE) {
-    return;
+    return NULL;
   }
   if (!stats.size || stats.size > MB(16)) {
     snprintf(content->diagnostic, sizeof(content->diagnostic),
              "Inventory is empty or exceeds 16 MiB: %.350s", manifest);
-    return;
+    return NULL;
   }
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -388,28 +391,75 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
   uint8_t *bytes = vkr_allocator_alloc(content->allocator, stats.size + 1,
                                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
   uint64_t read = 0;
-  if (!bytes || file_open(&path, mode, &file) != FILE_ERROR_NONE ||
-      file_read_into(&file, bytes, stats.size, &read) != FILE_ERROR_NONE ||
-      read != stats.size) {
+  const bool8_t loaded =
+      bytes && file_open(&path, mode, &file) == FILE_ERROR_NONE &&
+      file_read_into(&file, bytes, stats.size, &read) == FILE_ERROR_NONE &&
+      read == stats.size;
+  file_close(&file);
+  if (!loaded) {
     snprintf(content->diagnostic, sizeof(content->diagnostic),
              "Cannot read inventory: %.350s", manifest);
-    goto cleanup;
+    if (bytes) {
+      vkr_allocator_free(content->allocator, bytes, stats.size + 1,
+                         VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+    }
+    return NULL;
   }
   bytes[read] = 0;
-  String8 document = {.str = bytes, .length = read};
   content->inventory_key = content_hash(content->inventory_key, bytes, read);
-  String8 assets = {0};
+  *out_size = read;
+  return bytes;
+}
+
+static void content_read_inventory(VkrEditorContent *content, const char *root,
+                                   const char *manifest, uint32_t scope) {
+  uint64_t size = 0;
+  uint8_t *bytes = content_load_document(content, manifest, &size);
+  if (!bytes) {
+    return;
+  }
+  String8 document = {.str = bytes, .length = size};
   VkrEditorProjectError error = {0};
-  if (!vkr_editor_project_json_member(document, "assets", &assets, &error)) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic), "%.450s",
-             error.message);
-    goto cleanup;
+  VkrJsonReader list = {0};
+  char inventory_reference[CONTENT_PATH] = {0};
+  if (scope == 0 &&
+      vkr_editor_project_json_string(document, "inventory", inventory_reference,
+                                     sizeof(inventory_reference), &error)) {
+    /* Scene v4 keeps its records in an immutable inventory revision that may
+     * exceed the 1 MiB manifest parser, so its array is walked in place. */
+    char inventory[CONTENT_PATH];
+    vkr_allocator_free(content->allocator, bytes, size + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+    bytes = NULL;
+    if (!vkr_editor_project_resolve(root, inventory_reference, inventory,
+                                    &error)) {
+      snprintf(content->diagnostic, sizeof(content->diagnostic), "%.450s",
+               error.message);
+      return;
+    }
+    bytes = content_load_document(content, inventory, &size);
+    if (!bytes) {
+      return;
+    }
+    list = vkr_json_reader_from_string((String8){.str = bytes, .length = size});
+    if (!vkr_json_find_array(&list, "assets")) {
+      snprintf(content->diagnostic, sizeof(content->diagnostic),
+               "Scene inventory has no asset list: %.350s", inventory);
+      goto cleanup;
+    }
+  } else {
+    String8 assets = {0};
+    if (!vkr_editor_project_json_member(document, "assets", &assets, &error)) {
+      snprintf(content->diagnostic, sizeof(content->diagnostic), "%.450s",
+               error.message);
+      goto cleanup;
+    }
+    if (!assets.length || assets.str[0] != '[') {
+      goto cleanup;
+    }
+    list = vkr_json_reader_from_string(assets);
+    list.pos = 1;
   }
-  VkrJsonReader list = vkr_json_reader_from_string(assets);
-  if (!assets.length || assets.str[0] != '[') {
-    goto cleanup;
-  }
-  list.pos = 1;
   while (vkr_json_next_array_element(&list)) {
     VkrJsonReader object = {0};
     if (!vkr_json_enter_object(&list, &object) || !content_reserve(content)) {
@@ -476,9 +526,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     content->entries[content->count++] = entry;
   }
 cleanup:
-  file_close(&file);
   if (bytes) {
-    vkr_allocator_free(content->allocator, bytes, stats.size + 1,
+    vkr_allocator_free(content->allocator, bytes, size + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
   }
 }
