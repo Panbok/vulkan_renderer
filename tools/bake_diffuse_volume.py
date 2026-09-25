@@ -21,6 +21,13 @@ DVOL_HEADER_BYTES = 112
 DVOL_PROBE_BYTES = 116
 DVOL_CELL_BYTES = 4
 BAKER_DIAGNOSTIC_BYTES = 4096
+# Distinct from failure (1) and usage errors (2): nothing was published because
+# no interpolation cell is inside a closed room.
+NO_ROOM_CELLS_EXIT = 3
+
+
+class NoRoomCells(Exception):
+    """Inspection proved that the volume would contain only invalid cells."""
 
 
 def digest(path):
@@ -361,6 +368,15 @@ def bake(args, output, sidecar, manifest_destination):
     inspect, dependencies = inspect_manifest(inspect_path, scene)
     distinct_targets(output, sidecar, manifest_destination)
     protect_sources([Path(record['path']) for record in dependencies], output, sidecar, manifest_destination)
+    # The baker refuses an all-invalid volume; do not repeat room detection to
+    # reach that refusal. An all-invalid volume renders like no volume.
+    if not inspect['valid_cells']:
+        raise NoRoomCells(
+            f"no interpolation cell lies inside a closed room (valid probes "
+            f"{inspect['valid_probes']}/{inspect['probes']}, valid cells 0/{inspect['cells']}). "
+            f"Open and exterior scenes keep environment and reflection-probe diffuse lighting; "
+            f"for an interior, use a finer --grid, --bounds around the room, or close geometry "
+            f"gaps. Inspection: {job}")
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(dir=output.parent, prefix=output.name + '.', suffix='.vkdv')
     os.close(descriptor)
@@ -451,6 +467,9 @@ def main():
         manifest = Path(args.manifest).resolve() if args.manifest else Path(str(output) + '.manifest.json').resolve()
         bake(args, output, sidecar, manifest)
         return 0
+    except NoRoomCells as error:
+        print(f'Diffuse-volume bake skipped: {error}', file=sys.stderr)
+        return NO_ROOM_CELLS_EXIT
     except (OSError, TypeError, ValueError, RuntimeError, json.JSONDecodeError, struct.error,
             subprocess.SubprocessError) as error:
         print(f'Diffuse-volume bake failed: {error}', file=sys.stderr)

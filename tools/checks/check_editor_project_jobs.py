@@ -91,6 +91,26 @@ def main():
         assert jobs.Job(finish, result_path).execute() == 0
         assert jobs.load_json(result_path)['status'] == 'complete'
         assert jobs.load_json(unbuilt_result['scene_path'])['assets'][0]['artifacts']
+        if args.diffuse_baker:
+            # An open triangle encloses no room: the real baker's inspection
+            # proves every cell invalid, so the scene publishes without a volume.
+            open_request = dict(request, scene_id=str(uuid.uuid4()), bakes={'diffuse': True},
+                                diffuse_settings={'grid': [2, 2, 2], 'bounds': [-1, -1, -1, 2, 2, 2]},
+                                tools=dict(request['tools'], diffuse=str(Path(args.diffuse_baker).resolve())))
+            assert jobs.Job(open_request, result_path).execute() == 0
+            open_result = jobs.load_json(result_path)
+            assert any('Diffuse volume skipped' in warning for warning in open_result['warnings'])
+            open_scene = jobs.load_json(open_result['scene_path'])
+            assert 'diffuse_volume' not in open_scene
+            assert not any(item['kind'] == 'volume' for item in open_scene['assets'])
+            assert 'diffuse_volume' not in jobs.load_json(open_result['runtime_path'])
+            builds = Path(open_result['scene_path']).parent / 'builds'
+            assert all(any(revision.iterdir()) for revision in builds.iterdir()), 'Skipped bake left a revision'
+            # Only the no-room status is accepted; an invalid recipe still fails.
+            invalid_request = dict(open_request, scene_id=str(uuid.uuid4()), diffuse_settings={'grid': [1, 2, 2]})
+            assert jobs.Job(invalid_request, result_path).execute() == 1
+            assert 'Baking diffuse volume failed (exit 1)' in jobs.load_json(result_path)['error']
+            assert not (project / 'scenes' / invalid_request['scene_id']).exists()
         # Source-node transforms use an immutable geometry-preserving bake variant.
         gltf_path = source / 'node.gltf'
         binary = struct.pack('<9f3H', 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 2)

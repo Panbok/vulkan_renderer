@@ -109,6 +109,9 @@ a complete exact-reference map when that document exists. Managed scene source
 identity and cooked source-node identities preserve edit bindings across path
 changes. Importing a legacy overlay validates its original source identity before
 remapping it to managed content.
+A requested diffuse bake whose inspection finds no closed-room cell publishes
+the scene without a diffuse volume and returns a result warning. Any earlier
+volume is dropped. Every other bake failure still fails the job.
 
 Jobs stage copied inputs and fresh build revisions, validate dependencies and
 check the current manifest fingerprint before replacing its JSON. Artifact

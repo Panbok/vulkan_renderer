@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-25
 authority: adr
 ---
 
@@ -75,7 +75,10 @@ recipe, tool and wrapper digests, and validates the resulting `.vkdv` file. It
 checks the same closure before publication and writes the sidecar
 `.vkdv.bake.json`; `--check --output volume.vkdv` rejects stale inputs or corrupt
 output. The wrapper publishes only after its temporary output, manifest, and
-source checks succeed.
+source checks succeed. When inspection finds no valid cell, the wrapper stops
+before the bake pass and exits 3 without output. The baker refuses to bake an
+all-invalid volume, and such a volume would render like no volume. Open and
+exterior scenes such as Bistro at the default whole-scene grid take this path.
 
 ### Runtime and shader contract
 

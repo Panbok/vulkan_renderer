@@ -33,6 +33,17 @@ MAX_MANAGED_DOCUMENT_BYTES = 1024 * 1024
 MAX_IMPORT_BYTES = 8 * 1024 * 1024 * 1024
 MAX_IMPORT_FILES = 16384
 FACES = ('r', 'l', 'u', 'd', 'f', 'b')
+# bake_diffuse_volume.py status: no closed-room cell, so no volume published.
+DIFFUSE_NO_ROOM_CELLS = 3
+# Workspace cleanup grace periods. Revisions and staging wait a day so an
+# editor still streaming a replaced revision keeps its files; unlisted scene
+# and project directories wait an hour past any in-flight creation.
+UNREFERENCED_GRACE_SECONDS = 24 * 60 * 60
+ORPHAN_GRACE_SECONDS = 60 * 60
+JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60
+CLEANUP_OPERATIONS = ('create_project', 'create_scene', 'bake_scene', 'delete_scene', 'delete_project',
+                      'add_entities',
+                      'import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset')
 
 
 class JobError(Exception):
@@ -502,7 +513,7 @@ class Job:
             return
         raise Cancelled('Project preparation cancelled')
 
-    def run_tool(self, tool, arguments, label):
+    def run_tool(self, tool, arguments, label, accepted=()):
         detail = tool
         for flag in ('--input', '--layer', '--config', '--scene'):
             if flag in arguments and arguments.index(flag) + 1 < len(arguments):
@@ -547,8 +558,9 @@ class Job:
                 except ProcessLookupError:
                     pass
             self.child = None
-        if code:
+        if code and code not in accepted:
             raise JobError(f'{label} failed (exit {code}); see the job log')
+        return code
 
     def copy_file(self, source, destination):
         source = source_file(source)
@@ -1408,13 +1420,14 @@ class Job:
             if 'enabled' in probe and not isinstance(probe['enabled'], bool):
                 raise JobError('Probe enabled must be boolean')
 
-    def run_script(self, script, arguments, label):
+    def run_script(self, script, arguments, label, accepted=()):
         executable = self.tools.get('python') or sys.executable
         # Keep all child handling in run_tool, including cancellation/reaping.
         original = self.tools.get('_script_python')
         self.tools['_script_python'] = executable
         try:
-            self.run_tool('_script_python', [Path(__file__).resolve().parent / script, *arguments], label)
+            return self.run_tool('_script_python', [Path(__file__).resolve().parent / script, *arguments],
+                                 label, accepted)
         finally:
             if original is None:
                 self.tools.pop('_script_python', None)
@@ -1629,22 +1642,35 @@ class Job:
             for field in ('voxel_size', 'face_size', 'samples', 'max_depth', 'seed', 'photons', 'photon_radius'):
                 if field in settings:
                     arguments += ['--' + field.replace('_', '-'), settings[field]]
-            self.run_script('bake_diffuse_volume.py', arguments, 'Baking diffuse volume')
-            if not destination.is_file():
-                raise JobError('Diffuse baker did not publish its artifact')
-            record = {'id': str(uuid.uuid4()), 'kind': 'volume', 'name': 'Diffuse volume',
-                'import_id': revision, 'source': None, 'artifacts': [{'role': 'volume',
-                    'path': managed_reference(destination, asset_root), 'version': 1}],
-                'fingerprint': 'sha256:' + digest(destination),
-                'recipe': {'tool': 'diffuse', 'version': 1, 'settings': settings}}
+            code = self.run_script('bake_diffuse_volume.py', arguments, 'Baking diffuse volume',
+                                   (DIFFUSE_NO_ROOM_CELLS,))
             previous_ref = scene.get('diffuse_volume', {}).get('asset', {})
             previous = next((item for item in self.assets if item['id'] == previous_ref.get('id')), None)
-            if previous is not None:
-                record['id'] = previous['id']
-                self.assets.remove(previous)
-            self.assets.append(record)
+            if code == DIFFUSE_NO_ROOM_CELLS:
+                # An all-invalid volume renders like no volume (ADR-054). A
+                # previous volume describes other geometry, so it is dropped.
+                destination.parent.rmdir()
+                if previous is not None:
+                    self.assets.remove(previous)
+                scene.pop('diffuse_volume', None)
+                warning = ('Diffuse volume skipped: no interpolation cell lies inside a closed room, '
+                           'so the scene keeps environment and reflection-probe diffuse lighting')
+                self.warnings.append(warning)
+                print(f'Warning: {warning}', flush=True)
+            else:
+                if not destination.is_file():
+                    raise JobError('Diffuse baker did not publish its artifact')
+                record = {'id': str(uuid.uuid4()), 'kind': 'volume', 'name': 'Diffuse volume',
+                    'import_id': revision, 'source': None, 'artifacts': [{'role': 'volume',
+                        'path': managed_reference(destination, asset_root), 'version': 1}],
+                    'fingerprint': 'sha256:' + digest(destination),
+                    'recipe': {'tool': 'diffuse', 'version': 1, 'settings': settings}}
+                if previous is not None:
+                    record['id'] = previous['id']
+                    self.assets.remove(previous)
+                self.assets.append(record)
+                scene['diffuse_volume'] = {'asset': {'scope': 'scene', 'id': record['id'], 'role': 'volume'}}
             scene['assets'] = self.assets
-            scene['diffuse_volume'] = {'asset': {'scope': 'scene', 'id': record['id'], 'role': 'volume'}}
 
     def project_document(self):
         project = load_json(self.project_path) if self.project_path.is_file() else {'assets': [], 'default_font': None}
