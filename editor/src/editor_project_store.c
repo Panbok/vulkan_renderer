@@ -1188,9 +1188,10 @@ bool8_t vkr_editor_workspace_open(const char *directory, bool8_t create,
   return project_json_finish(&json, true_v);
 }
 
-bool8_t vkr_editor_project_begin(VkrEditorWorkspace *workspace,
-                                 const char *name, VkrEditorProject *project,
-                                 VkrEditorProjectError *error) {
+// Reserves the directory and defaults; only creation publishes the manifest.
+static bool8_t project_begin(VkrEditorWorkspace *workspace, const char *name,
+                             VkrEditorProject *project,
+                             VkrEditorProjectError *error) {
   if (!workspace || !project || !vkr_editor_project_name_valid(name, error)) {
     return false_v;
   }
@@ -1256,7 +1257,7 @@ bool8_t vkr_editor_project_begin(VkrEditorWorkspace *workspace,
 bool8_t vkr_editor_project_create(VkrEditorWorkspace *workspace,
                                   const char *name, VkrEditorProject *project,
                                   VkrEditorProjectError *error) {
-  return vkr_editor_project_begin(workspace, name, project, error) &&
+  return project_begin(workspace, name, project, error) &&
          vkr_editor_project_save(project, error);
 }
 

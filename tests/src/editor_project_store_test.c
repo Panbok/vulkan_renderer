@@ -373,8 +373,8 @@ bool32_t run_editor_project_store_tests(void) {
   assert(!workspace.initialized);
   FilePath not_created = project_test_path(workspace.root);
   assert(!file_exists(&not_created));
-  assert(vkr_editor_project_begin(&workspace, "Portable project", &s_project,
-                                  &error));
+  assert(vkr_editor_project_create(&workspace, "Portable project", &s_project,
+                                   &error));
   VkrEditorWorkspaceLease lease = {0};
   VkrEditorWorkspaceLease competing_lease = {0};
   assert(vkr_editor_workspace_lease_acquire(&workspace, &lease, &error));
@@ -384,14 +384,17 @@ bool32_t run_editor_project_store_tests(void) {
   assert(
       vkr_editor_workspace_lease_acquire(&workspace, &competing_lease, &error));
   vkr_editor_workspace_lease_release(&competing_lease);
+  // Creation publishes the manifest, so a failed first project job cannot
+  // leave an unlisted directory behind.
   uint32_t visits = 0;
   assert(vkr_editor_workspace_visit(&workspace, project_test_visit, &visits,
                                     &error));
-  assert(visits == 0);
+  assert(visits == 1);
   s_project.editor_settings =
       string8_lit("{\"version\":1,\"graphics\":{\"exposure\":1.75},\"future\":{"
                   "\"text\":\"日\",\"n\":9007199254740993}}");
   assert(vkr_editor_project_save(&s_project, &error));
+  visits = 0;
   assert(vkr_editor_workspace_visit(&workspace, project_test_visit, &visits,
                                     &error));
   assert(visits == 1);

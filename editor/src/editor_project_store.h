@@ -61,6 +61,8 @@ bool8_t vkr_editor_project_load(const VkrEditorWorkspace *workspace,
                                 const char *id, VkrAllocator *allocator,
                                 VkrEditorProject *project,
                                 VkrEditorProjectError *error);
+// Initializes the workspace when needed, then reserves a project directory and
+// publishes its default project.json, so later job failures leave it listed.
 bool8_t vkr_editor_project_create(VkrEditorWorkspace *workspace,
                                   const char *name, VkrEditorProject *project,
                                   VkrEditorProjectError *error);
@@ -98,10 +100,6 @@ bool8_t vkr_editor_project_json_member(String8 object, const char *name,
                                        String8 *value,
                                        VkrEditorProjectError *error);
 
-// Reserve a draft directory and defaults without publishing project.json.
-bool8_t vkr_editor_project_begin(VkrEditorWorkspace *workspace,
-                                 const char *name, VkrEditorProject *project,
-                                 VkrEditorProjectError *error);
 bool8_t vkr_editor_project_json_string(String8 object, const char *name,
                                        char *out, uint32_t capacity,
                                        VkrEditorProjectError *error);

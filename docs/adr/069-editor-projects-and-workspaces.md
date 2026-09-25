@@ -29,8 +29,12 @@ its `.vkreditor` child owns managed data. A machine-local locator remembers the
 chosen directory. Explicit `--scene` remains the legacy scene entry point.
 Creating or opening an empty project enters the editor without loading a scene
 or automatically opening the Scenes modal. Creating project resources is a
-project job, not scene loading. Default and cleared hierarchy search text remain
-valid empty strings when project settings are saved.
+project job, not scene loading. Creation publishes `project.json` with default
+settings before that job starts; the job then imports the project font and the
+optional first scene. A failed or cancelled first job therefore leaves a listed
+project without that scene instead of an unlisted directory. Default and
+cleared hierarchy search text remain valid empty strings when project settings
+are saved.
 
 [Project storage](../../editor/src/editor_project_store.c) owns a versioned
 workspace manifest and UUID-named project directories. Each project has a
@@ -69,12 +73,14 @@ creation/import, progress, Save/Discard/Cancel decisions and preference saves.
 Preparation, validation and resolution use a compact centered Scene loader:
 status text, a short progress bar and a small Cancel button. Its backdrop blurs
 the retained Scene image and darkens it without blurring UI. With no retained
-image, first startup has a dark backdrop. Cancelled or failed preparation offers a single centered Retry
-button; diagnostic tooltips and Bakery retain details. These controls do not
-capture the whole editor. The loader
+image, first startup has a dark backdrop. Cancelled or failed preparation offers
+Back and Retry; diagnostic tooltips and Bakery retain details. These controls do
+not capture the whole editor. The loader
 disappears when the runtime accepts the asynchronous scene request, so streamed
-scene content remains visible. Project/scene switching is disabled until the
-active preparation or activation finishes.
+scene content remains visible. Project/scene switching is disabled while a job
+is queued or running, or while activation is pending. Back, or Projects/Scenes
+navigation, abandons a stopped request and keeps whatever the job committed;
+a new project whose first job stopped then opens with its saved settings.
 Projects and Scenes use the shared navigation-button style on the left before Metrics,
 with a distinct background highlight.
 Graphics controls, runtime input/presentation preferences, layout, panel state,

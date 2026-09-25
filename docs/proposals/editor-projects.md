@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-24
+updated: 2026-09-25
 authority: proposal
 ---
 # Editor Projects
@@ -121,7 +121,8 @@ selection UI. Generate stable IDs independently. Validate again on submission.
 Allow multiple scene drafts before project submission. Each may be edited or
 removed. Cancelling a draft performs no project publication. Submission displays
 a review of sources, warnings, required conversions, optional bakes and planned
-storage. **Create project** starts the transaction. For an existing project,
+storage. **Create project** publishes the project manifest, as ADR-069 requires,
+then starts the scene transaction. For an existing project,
 **Add scene** reuses the same scene form and publication pipeline without asking
 for the project name again.
 
@@ -194,8 +195,9 @@ from scene activation and optional texture-streaming progress.
 
 Cancel terminates the active child process tree, stops dependent jobs and waits
 for writer shutdown before cleanup. Publication is a short noncancellable boundary;
-show **Finishing save** there. Failure keeps the draft and diagnostics with
-**Retry failed work**, **Back to setup**, and **Discard draft**. Successfully
+show **Finishing save** there. Failure keeps the published project, the scene
+draft and diagnostics with **Retry failed work**, **Back to setup**, and
+**Discard draft**. Successfully
 validated work can be reused only after its fingerprint is rechecked.
 
 If creation saved successfully but runtime loading fails, report **Project saved;
@@ -265,7 +267,8 @@ manifest with supporting shared assets; each scene owns a separate folder.
 records. `.vkreditor` is created only when first project creation begins writing
 its staging data. Until then the chooser uses installed bootstrap resources.
 Install/copy the verified editor bundle on that first transaction. Cancel may leave
-an initialized empty workspace and reusable bundle, but no published project.
+an initialized workspace, a reusable bundle and the published project without
+the cancelled scene.
 
 Source copies are authoritative rebuild inputs, not a cache. Builds are immutable
 artifacts referenced by manifests. Thumbnail caches and local state are disposable.

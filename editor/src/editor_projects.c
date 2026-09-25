@@ -155,7 +155,9 @@ struct VkrEditorProjects {
   uint64_t job_id;
   bool8_t job_creates_scene;
   bool8_t job_creates_project;
-  bool8_t unpublished_project;
+  /** Published with defaults; its first job imports the project font and
+   * first scene. Project settings stay unrestored until that job completes. */
+  bool8_t creating_project;
   bool8_t waiting_activation;
   bool8_t dialog_closed;
   bool8_t settings_dirty;
@@ -426,7 +428,7 @@ static bool8_t project_save_settings(VkrEditorProjects *projects,
   if (!project_finish_settings_save(projects)) {
     return false_v;
   }
-  if (!projects->project || projects->unpublished_project ||
+  if (!projects->project || projects->creating_project ||
       !projects->settings_restored || projects->read_only) {
     return true_v;
   }
@@ -459,7 +461,7 @@ static bool8_t project_save_settings(VkrEditorProjects *projects,
 static void project_queue_settings_save(VkrEditorProjects *projects,
                                         VkrEditorUi *editor,
                                         const VkrUiDockTree *dock) {
-  if (!projects->project || projects->unpublished_project ||
+  if (!projects->project || projects->creating_project ||
       !projects->settings_restored || projects->read_only ||
       (projects->settings_save && projects->settings_save->worker)) {
     return;
@@ -756,7 +758,7 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
   projects->project_allocator = allocator;
   projects->project = candidate;
   projects->active_scene = UINT32_MAX;
-  projects->unpublished_project = false_v;
+  projects->creating_project = false_v;
   project_restore_settings(projects, editor, frame);
   *frame->scene_request = (VkrSampleSceneRequest){
       .unload = true_v, .discard_edits = projects->discard_edits};
@@ -1028,7 +1030,7 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
                         projects->bootstrap_directory) &&
       project_json_text(
           writer, "project_font_source",
-          projects->unpublished_project ? projects->project_font_source : "");
+          projects->creating_project ? projects->project_font_source : "");
   if (create_scene) {
     ok = ok && project_json_text(writer, "scene_id", projects->scene_id) &&
          project_json_text(writer, "scene_name", projects->scene_name) &&
@@ -1314,7 +1316,7 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
              "Choose a scene JSON file first.");
     return;
   }
-  if (projects->view == PROJECT_VIEW_CREATE && !projects->unpublished_project) {
+  if (projects->view == PROJECT_VIEW_CREATE && !projects->creating_project) {
     Arena *arena = arena_create(MB(4), KB(256));
     if (!arena) {
       return;
@@ -1323,9 +1325,12 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
     vkr_allocator_arena(&allocator);
     VkrEditorProject *project = vkr_allocator_alloc(
         &allocator, sizeof(*project), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    /* Publish the manifest before the first job: a failed scene or font job
+     * must leave the project listed, with zero scenes, rather than orphan an
+     * unlisted directory. */
     if (!project ||
-        !vkr_editor_project_begin(&projects->workspace, projects->project_name,
-                                  project, &error)) {
+        !vkr_editor_project_create(&projects->workspace, projects->project_name,
+                                   project, &error)) {
       project_error(projects, &error);
       vkr_allocator_release_global_accounting(&allocator);
       arena_destroy(arena);
@@ -1338,9 +1343,10 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
     projects->project_arena = arena;
     projects->project_allocator = allocator;
     projects->project = project;
-    projects->unpublished_project = true_v;
+    projects->creating_project = true_v;
     projects->active_scene = UINT32_MAX;
     projects->settings_restored = false_v;
+    project_refresh(projects);
   }
   if (projects->project->scene_count == VKR_EDITOR_PROJECT_MAX_SCENES ||
       !vkr_editor_project_id_generate(projects->scene_id, &error)) {
@@ -1462,7 +1468,7 @@ static void project_job_complete(VkrEditorProjects *projects,
       projects->job_id = 0;
       return;
     }
-    projects->unpublished_project = false_v;
+    projects->creating_project = false_v;
     project_restore_settings(projects, editor, frame);
     projects->view = PROJECT_VIEW_EDITOR;
     projects->job_id = 0;
@@ -1487,7 +1493,7 @@ static void project_job_complete(VkrEditorProjects *projects,
       projects->job_id = 0;
       return;
     }
-    projects->unpublished_project = false_v;
+    projects->creating_project = false_v;
     if (!projects->settings_restored) {
       project_restore_settings(projects, editor, frame);
     }
@@ -1611,7 +1617,7 @@ static void project_choose_workspace(VkrEditorProjects *projects,
   }
   projects->project = NULL;
   projects->settings_restored = false_v;
-  projects->unpublished_project = false_v;
+  projects->creating_project = false_v;
   vkr_editor_workspace_lease_release(&projects->lease);
   projects->workspace = workspace;
   projects->read_only = false_v;
@@ -1931,6 +1937,13 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
         snprintf(projects->message, sizeof(projects->message),
                  "Scene removed from project; file deletion is incomplete. "
                  "Retry to finish. See Bakery for details.");
+      } else if (projects->creating_project) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "%s. The project is saved without this scene; Back opens "
+                 "it. See Bakery for the job output.",
+                 status == VKR_EDITOR_PROJECT_JOB_CANCELLED
+                     ? "Creation cancelled"
+                     : "Creation failed");
       } else {
         snprintf(
             projects->message, sizeof(projects->message),
@@ -2093,7 +2106,7 @@ static void project_build_chooser(VkrEditorProjects *projects,
     project_reset_scene_draft(projects);
     projects->project_name[0] = '\0';
     projects->project_font_source[0] = '\0';
-    projects->unpublished_project = false_v;
+    projects->creating_project = false_v;
     projects->view = PROJECT_VIEW_CREATE;
     return;
   }
@@ -2849,9 +2862,8 @@ static void project_build_footer(VkrEditorProjects *projects,
                   projects->view == PROJECT_VIEW_CONFIRM ||
                   projects->view == PROJECT_VIEW_DELETE
               ? "Cancel"
-          : projects->project && !projects->unpublished_project
-              ? "Back to editor"
-              : "Back",
+          : projects->project && !projects->creating_project ? "Back to editor"
+                                                             : "Back",
           12, height - 65,
           projects->view == PROJECT_VIEW_ADD_ENTITY
               ? Min(148.0f, (width - 60) * .5f)
@@ -2878,7 +2890,7 @@ static void project_build_footer(VkrEditorProjects *projects,
       projects->closing = false_v;
       projects->view = projects->resume_view;
     } else {
-      projects->view = projects->project && !projects->unpublished_project
+      projects->view = projects->project && !projects->creating_project
                            ? PROJECT_VIEW_EDITOR
                            : PROJECT_VIEW_CHOOSER;
     }
@@ -3014,6 +3026,42 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
 }
 
+/* A failed or cancelled job keeps its request so Retry can resubmit it. */
+static bool8_t project_job_stopped(const VkrEditorProjects *projects,
+                                   VkrEditorUi *editor) {
+  if (!projects->job_id) {
+    return false_v;
+  }
+  const VkrEditorProjectJobStatus status =
+      vkr_editor_bakery_project_status(editor->bakery, projects->job_id, NULL);
+  return status == VKR_EDITOR_PROJECT_JOB_FAILED ||
+         status == VKR_EDITOR_PROJECT_JOB_CANCELLED;
+}
+
+/* Abandons a stopped request so navigation, scene actions and previews
+ * resume. Committed project and scene files stay as the job left them. */
+static void project_leave_failed_job(VkrEditorProjects *projects,
+                                     VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     ProjectView view) {
+  projects->job_id = 0;
+  projects->job_creates_project = false_v;
+  projects->job_creates_scene = false_v;
+  projects->operation[0] = '\0';
+  projects->progress_stage[0] = '\0';
+  projects->progress_detail[0] = '\0';
+  if (projects->creating_project) {
+    /* Creation published the manifest; opening it restores its settings. */
+    char id[37];
+    snprintf(id, sizeof(id), "%s", projects->project->id);
+    if (!project_load(projects, id, editor, frame)) {
+      projects->view = PROJECT_VIEW_CHOOSER;
+    }
+    return;
+  }
+  projects->view = view;
+}
+
 void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
                                               VkrEditorUi *editor,
                                               const VkrSampleUiFrame *frame) {
@@ -3131,8 +3179,14 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
       vkr_editor_bakery_project_cancel(editor->bakery, projects->job_id);
     }
   } else {
-    if (vkr_ui_button(ui, string8_lit("scene.prepare.retry"),
-                      string8_lit("Retry"), &action)) {
+    VkrUiWidgetConfig back = action;
+    back.placement.margin_pt.left = Max(0.0f, (width - 160) * .5f);
+    action.placement.margin_pt.left = back.placement.margin_pt.left + 84;
+    if (vkr_ui_button(ui, string8_lit("scene.prepare.back"),
+                      string8_lit("Back"), &back)) {
+      project_leave_failed_job(projects, editor, frame, PROJECT_VIEW_SCENES);
+    } else if (vkr_ui_button(ui, string8_lit("scene.prepare.retry"),
+                             string8_lit("Retry"), &action)) {
       if (!projects->job_id && strcmp(projects->operation, "delete_scene")) {
         project_job_complete(projects, editor, frame);
       } else {
@@ -3224,6 +3278,8 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
     return;
   }
   VkrUiSystem *ui = frame->ui;
+  /* Only a queued or running job locks navigation; a stopped one is left. */
+  const bool8_t stopped = project_job_stopped(projects, editor);
   for (uint32_t i = 0; i < 2; ++i) {
     const bool8_t active = projects->dropdown == i + 1;
     VkrUiWidgetConfig button =
@@ -3231,9 +3287,10 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
     button.style.background_color = active ? (Vec4){.13f, .36f, .38f, .95f}
                                            : (Vec4){.09f, .22f, .24f, .85f};
     button.style.text_color = (Vec4){.78f, .92f, .91f, 1};
-    button.disabled = projects->job_id || projects->waiting_activation ||
-                      !strcmp(projects->operation, "delete_scene") ||
-                      (i == 1 && !projects->project);
+    button.disabled =
+        (projects->job_id && !stopped) || projects->waiting_activation ||
+        (!stopped && !strcmp(projects->operation, "delete_scene")) ||
+        (i == 1 && !projects->project);
     button.tooltip =
         i == 1 ? string8_lit("Choose a scene in the current project")
         : projects->read_only
@@ -3251,6 +3308,9 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
         projects->dropdown_opened = false_v;
         (void)vkr_ui_keyboard_layer_set(ui, 0);
         continue;
+      }
+      if (projects->job_id && stopped) {
+        project_leave_failed_job(projects, editor, frame, PROJECT_VIEW_EDITOR);
       }
       if (i == 0) {
         if (!project_save_settings(projects, editor, frame->dock)) {
