@@ -205,7 +205,10 @@ Authored environment, lights, probes and overrides
 remain scene data. Explicit `--scene` retains legacy startup.
 Creating or opening a project with no scenes enters the editor with no world
 scene. Project resource preparation does not mark a scene as loading, and scene
-selection remains an explicit action.
+selection remains an explicit action. Creation publishes the project manifest
+before its first job, so a failed first scene leaves the project listed.
+Successful write jobs remove unused cache entries, stale revisions, abandoned
+directories and old job logs; ADR-069 defines what stays reachable.
 Confirmed scene deletion atomically removes project membership and recall, then
 uses a background job to erase scene-owned files. Active scenes unload before
 deletion; project-shared assets remain. Incomplete file removal offers Retry.

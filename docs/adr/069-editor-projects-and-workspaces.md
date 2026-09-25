@@ -52,10 +52,28 @@ A glTF image resolves beside its model; a model inside the repository's
 `assets` tree also finds it where the mesh cooker looks, under `assets` and
 `assets/textures`, without a legacy `objects/` prefix and by file name, so the
 repository Bistro imports with its shipped texture layout. Models elsewhere
-resolve only beside themselves. On APFS the job clones every file it copies
-copy-on-write, so a closure from the same volume, such as Bistro's 3.1 GiB of
-source textures, and the texture cache's copies into a bundle share their
-blocks instead of duplicating them; other file systems copy the bytes.
+resolve only beside themselves. On APFS the job and the mesh cooker clone every
+file they copy copy-on-write, so a closure from the same volume, such as
+Bistro's 3.1 GiB of source textures, and a bundle's `dependencies` and
+`textures` copies share blocks instead of duplicating them; other file systems
+copy the bytes. The cooker writes derived textures (paired normal/roughness,
+cutout, converted specular-glossiness and embedded images) once into
+`.vkreditor/cache/generated`, named by source content and parameters, so later
+imports reuse them. Job-packed material textures use `.vkreditor/cache/textures`
+keyed by source hash and class; after a packer rebuild the packer revalidates a
+cached output and recooks only when its recorded recipe no longer matches.
+
+Every successful write job then cleans the workspace on a best-effort basis;
+read-only and scene-opening jobs do not, and a cleanup failure never fails the
+published job. A cache entry survives while a listed scene's records or the
+project's assets name its content digest, because bundles hold clones or copies
+of cache files rather than paths into the cache. `cache/generated-index.json`
+retains derived-file digests between runs. If any scene or project manifest is
+unreadable, no cache entry is removed. Build and inventory revisions a live
+scene no longer names are removed after 24 hours, so an editor still streaming a
+replaced revision keeps its files; staging leftovers also wait 24 hours.
+Unlisted scene directories and project directories without `project.json` are
+removed after one hour, and job directories after seven days.
 The editor holds an OS-backed workspace write lease. A second editor can inspect
 the workspace without publishing changes or previews into it.
 

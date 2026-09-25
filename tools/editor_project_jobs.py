@@ -25,6 +25,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from urllib.parse import unquote, urlsplit, parse_qs
 
@@ -161,6 +162,42 @@ def write_managed_scene(path, scene):
     atomic_json(path.parent / reference, inventory)
     atomic_json(path, document)
     scene['version'] = MANAGED_SCENE_VERSION
+
+
+def document_references(value, digests, revisions):
+    """Collects content digests and owner-relative build revisions that a
+    managed document names anywhere in its structure."""
+    if isinstance(value, dict):
+        for child in value.values():
+            document_references(child, digests, revisions)
+    elif isinstance(value, list):
+        for child in value:
+            document_references(child, digests, revisions)
+    elif isinstance(value, str):
+        text = value.removeprefix('sha256:')
+        if len(text) == 64 and all(c in '0123456789abcdef' for c in text):
+            digests.add(text)
+        parts = value.removeprefix('./').split('/')
+        if len(parts) > 1 and parts[0] == 'builds':
+            revisions.add(parts[1])
+
+
+def remove_tree(path):
+    """Removes a directory or file without following links; returns bytes freed."""
+    if path.is_symlink() or not path.exists():
+        path.unlink(missing_ok=True)
+        return 0
+    if path.is_file():
+        size = path.stat().st_size
+        path.unlink()
+        return size
+    size = sum(child.stat().st_size for child in path.rglob('*') if child.is_file() and not child.is_symlink())
+    shutil.rmtree(path)
+    return size
+
+
+def older_than(path, seconds, now):
+    return now - path.lstat().st_mtime > seconds
 
 
 def publish_directory(source, destination):
@@ -2234,6 +2271,137 @@ class Job:
             result['added_scene_entity'] = added_entity
         return result
 
+    def cleanup_after_success(self):
+        """Runs workspace cleanup after a published write. The result is already
+        durable, so a cleanup failure or cancellation only leaves garbage."""
+        if self.read_only or self.request.get('operation') not in CLEANUP_OPERATIONS:
+            return
+        try:
+            self.collect_garbage()
+        except (JobError, OSError, ValueError, KeyError, TypeError) as error:
+            print(f'Warning: workspace cleanup stopped: {error}', flush=True)
+
+    def collect_garbage(self):
+        """Removes workspace data that no listed scene can reach. Bundles hold
+        clones or copies of cache files, so a cache entry is kept only while a
+        scene record names its content digest; when any scene is unreadable the
+        caches are left alone. Returns (paths removed, bytes freed)."""
+        now = time.time()
+        removed = []
+        freed = 0
+
+        def drop(path):
+            nonlocal freed
+            freed += remove_tree(path)
+            removed.append(path)
+
+        digests = set()
+        readable = True
+        projects = self.workspace / 'projects'
+        for project in sorted(projects.iterdir()) if projects.is_dir() else []:
+            if project.is_symlink() or not project.is_dir():
+                continue
+            try:
+                identifier(project.name)
+            except JobError:
+                continue
+            manifest = project / 'project.json'
+            if not manifest.is_file():
+                if project != self.project_root and older_than(project, ORPHAN_GRACE_SECONDS, now):
+                    drop(project)
+                continue
+            try:
+                document = load_json(manifest, MAX_MANAGED_DOCUMENT_BYTES)
+                members = {entry['id'] for entry in document.get('scenes', [])}
+            except (JobError, KeyError, TypeError):
+                readable = False
+                continue
+            document_references(document.get('assets', []), digests, set())
+            staging = project / '.staging'
+            for child in sorted(staging.iterdir()) if staging.is_dir() else []:
+                if older_than(child, UNREFERENCED_GRACE_SECONDS, now):
+                    drop(child)
+            scenes = project / 'scenes'
+            for scene_root in sorted(scenes.iterdir()) if scenes.is_dir() else []:
+                if scene_root.is_symlink() or not scene_root.is_dir():
+                    continue
+                # A recent unlisted scene may await its membership save; it
+                # stays live until the grace period proves it abandoned.
+                if (scene_root.name not in members and scene_root != self.final and
+                        older_than(scene_root, ORPHAN_GRACE_SECONDS, now)):
+                    drop(scene_root)
+                    continue
+                try:
+                    scene = read_managed_scene(scene_root / 'scene.json')
+                    raw = load_json(scene_root / 'scene.json', MAX_MANAGED_DOCUMENT_BYTES)
+                    overlay = (load_json(contained(scene_root, scene['edit_overlay']))
+                               if scene.get('edit_overlay') else {})
+                except (JobError, OSError, KeyError, TypeError, ValueError):
+                    readable = False
+                    continue
+                revisions = set()
+                document_references([scene, overlay], digests, revisions)
+                for revision in sorted((scene_root / 'builds').glob('*')):
+                    if revision.name not in revisions and older_than(revision, UNREFERENCED_GRACE_SECONDS, now):
+                        drop(revision)
+                current = raw.get('inventory')
+                for inventory in sorted((scene_root / 'inventory').glob('*.json')):
+                    if (managed_reference(inventory, scene_root) != current and
+                            older_than(inventory, UNREFERENCED_GRACE_SECONDS, now)):
+                        drop(inventory)
+        if readable:
+            freed_before = freed
+            textures = self.workspace / 'cache' / 'textures'
+            for entry in sorted(textures.iterdir()) if textures.is_dir() else []:
+                manifest = entry / 'manifest.json'
+                try:
+                    recorded = load_json(manifest) if manifest.is_file() else None
+                except JobError:
+                    recorded = {}
+                if recorded is None:
+                    if older_than(entry, UNREFERENCED_GRACE_SECONDS, now):
+                        drop(entry)
+                elif (recorded.get('recipe', {}).get('version') != 2 or
+                      recorded.get('sha256') not in digests):
+                    drop(entry)
+            generated = self.workspace / 'cache' / 'generated'
+            index_path = self.workspace / 'cache' / 'generated-index.json'
+            try:
+                index = load_json(index_path) if index_path.is_file() else {}
+            except JobError:
+                index = {}
+            kept = {}
+            for path in sorted(generated.rglob('*')) if generated.is_dir() else []:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                relative = managed_reference(path, generated)
+                info = path.stat()
+                known = index.get(relative)
+                if known and known[0] == info.st_size and known[1] == info.st_mtime_ns:
+                    content = known[2]
+                else:
+                    content = digest(path)
+                if content in digests:
+                    kept[relative] = [info.st_size, info.st_mtime_ns, content]
+                elif '.tmp' not in path.name or older_than(path, UNREFERENCED_GRACE_SECONDS, now):
+                    drop(path)
+            for directory in sorted(generated.rglob('*'), reverse=True) if generated.is_dir() else []:
+                if directory.is_dir() and not directory.is_symlink() and not any(directory.iterdir()):
+                    directory.rmdir()
+            if generated.is_dir():
+                atomic_json(index_path, kept)
+            if freed > freed_before:
+                print(f'Workspace cleanup: removed unused cache entries ({(freed - freed_before) / 2**20:.1f} MiB)',
+                      flush=True)
+        jobs = self.workspace / 'jobs'
+        for job in sorted(jobs.iterdir()) if jobs.is_dir() else []:
+            if job != self.result_path.parent and older_than(job, JOB_RETENTION_SECONDS, now):
+                drop(job)
+        if removed:
+            print(f'Workspace cleanup: removed {len(removed)} unreferenced paths, '
+                  f'{freed / 2**20:.1f} MiB', flush=True)
+        return removed, freed
+
     def delete_scene(self):
         """Erase scene-owned files only after the project store removed membership."""
         if self.read_only:
@@ -2295,6 +2463,7 @@ class Job:
                 atomic_json(self.result_path, result)
                 atomic_json(self.progress_path, {'version': VERSION, 'status': 'complete',
                                                 'stage': 'Scene deleted', 'progress': 1.0})
+                self.cleanup_after_success()
                 return 0
             self.ensure_bootstrap()
             if not self.read_only:
@@ -2327,6 +2496,7 @@ class Job:
                                             'stage': 'Ready', 'progress': 1.0})
             self.final_owned = False
             self.project_builds.clear()
+            self.cleanup_after_success()
             return 0
         except (JobError, OSError, ValueError, KeyError, TypeError) as error:
             status = 'cancelled' if self.cancelled else 'failed'
