@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-09-25
 authority: adr
 ---
 # ADR-012: KTX2/UASTC texture artifacts with capability-selected transcode
@@ -79,7 +79,10 @@ It also retains the mean fourth power of effective perceptual roughness
 the encoded roughness is
 `(min(1, mean(r^4) + min(0.25, 2*(1-L^2)/(L*(3-L^2)))))^(1/4)`, where `L` is
 the mean normal length clamped to one. At zero length, use a flat direction and
-variance 0.25. This uses a
+variance 0.25. The encoded normal depends only on the normal source and scale,
+so its output is named and recorded by those inputs and shared by every
+roughness input and factor; the roughness output keeps the full pair key. This
+uses a
 [vMF concentration approximation](https://graphicrants.blogspot.com/2018/05/normal-map-filtering-using-vmf-part-3.html)
 for a bounded isotropic GGX width adjustment, not an exact convolution of GGX
 lobes. The fourth-power domain and variance cap match the existing runtime
@@ -135,6 +138,14 @@ Texture class is part of the asset contract: color, normal, and data textures
 cannot share an arbitrary transcode policy. Writable and resize paths must
 reject block-compressed textures. A legacy raw `.vkt` is migration support, not
 the canonical artifact.
+
+Paired roughness outputs multiply full-resolution textures by distinct factor
+and scale combinations. Before normal outputs were shared, a managed Bistro
+import produced 374 paired files (2.2 GiB), 198 of them for materials without a
+roughness map, and one normal map had 24 identical variants; the 187 normal
+variants had 119 distinct (source, scale) inputs. Its materials referenced
+577 textures (3.4 GiB); with render targets the Scene exceeded the former fixed
+5 GiB Metal cap ([ADR-024](024-shared-bindless-gpu-cores.md)).
 
 ## Alternatives considered
 

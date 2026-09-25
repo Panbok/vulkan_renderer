@@ -24,7 +24,8 @@ static void vkr_mesh_cooker_print_usage(const char *program) {
           "--source-patches <patches.json>\n"
           "Usage: %s --input <mesh.obj|mesh.gltf|mesh.glb> "
           "--output <mesh.vkb> [--light-range <definition-name>=<meters>]... "
-          "[--bundle-root <absolute-directory> --import-id <id>]\n",
+          "[--bundle-root <absolute-directory> --import-id <id> "
+          "[--generated-root <absolute-directory>]]\n",
           program, program, program);
 }
 
@@ -279,6 +280,7 @@ VKR_MAIN(argc, argv) {
   const char *output = NULL;
   const char *bundle_root = NULL;
   const char *import_id = NULL;
+  const char *generated_root = NULL;
   bool8_t inspect = false_v;
   const char *source_patches = NULL;
   VkrSceneLightRangeOverride light_ranges[VKR_MESH_COOKER_MAX_LIGHT_RANGES] = {
@@ -297,6 +299,8 @@ VKR_MAIN(argc, argv) {
       bundle_root = argv[++i];
     } else if (strcmp(argv[i], "--import-id") == 0 && i + 1 < argc) {
       import_id = argv[++i];
+    } else if (strcmp(argv[i], "--generated-root") == 0 && i + 1 < argc) {
+      generated_root = argv[++i];
     } else if (strcmp(argv[i], "--light-range") == 0 && i + 1 < argc) {
       if (light_range_count == VKR_MESH_COOKER_MAX_LIGHT_RANGES) {
         vkr_mesh_cooker_print_usage(argv[0]);
@@ -326,7 +330,8 @@ VKR_MAIN(argc, argv) {
       return 2;
     }
   }
-  if (!input || !output || ((bundle_root != NULL) != (import_id != NULL))) {
+  if (!input || !output || ((bundle_root != NULL) != (import_id != NULL)) ||
+      (generated_root && !bundle_root)) {
     vkr_mesh_cooker_print_usage(argv[0]);
     return 2;
   }
@@ -370,6 +375,9 @@ VKR_MAIN(argc, argv) {
                 input_path, output_path,
                 string8_create((uint8_t *)bundle_root, strlen(bundle_root)),
                 string8_create((uint8_t *)import_id, strlen(import_id)),
+                generated_root ? string8_create((uint8_t *)generated_root,
+                                                strlen(generated_root))
+                               : (String8){0},
                 light_ranges, light_range_count, &source_allocator,
                 &scratch_allocator, &stats, &error)
           : vkr_mesh_cook_source_with_light_ranges(

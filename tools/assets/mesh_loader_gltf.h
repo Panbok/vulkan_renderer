@@ -48,11 +48,12 @@ typedef bool8_t (*VkrMeshLoaderGltfPrimitiveFn)(
  * generated material file paths.
  */
 typedef struct VkrMeshLoaderGltfParseInfo {
-  String8 source_path;          // The path to the glTF source file.
-  String8 source_dir;           // The directory of the glTF source file.
-  String8 bundle_root;          // Optional absolute managed output root.
-  String8 import_id;            // Stable managed namespace; never a host path.
-  String8 source_stem;          // The stem of the glTF source file.
+  String8 source_path;    // The path to the glTF source file.
+  String8 source_dir;     // The directory of the glTF source file.
+  String8 bundle_root;    // Optional absolute managed output root.
+  String8 import_id;      // Stable managed namespace; never a host path.
+  String8 generated_root; // Optional absolute shared derived-texture root.
+  String8 source_stem;    // The stem of the glTF source file.
   VkrAllocator *load_allocator; // The allocator to use for loading resources.
   VkrAllocator *scratch_allocator; // The allocator to use for scratch memory.
   VkrRendererError *out_error;     // The error to use for the output.

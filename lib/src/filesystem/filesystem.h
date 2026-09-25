@@ -203,6 +203,7 @@ typedef enum FileError {
   FILE_ERROR_FILE_EMPTY,     /**< File is empty */
   FILE_ERROR_ALREADY_EXISTS, /**< Destination already exists */
   FILE_ERROR_OUT_OF_MEMORY,  /**< An allocation for the result failed */
+  FILE_ERROR_UNSUPPORTED,    /**< The filesystem cannot perform the request */
   FILE_ERROR_COUNT,          /**< Total number of error types */
 } FileError;
 
@@ -547,6 +548,15 @@ FileError file_remove(const FilePath *path);
  */
 FileError file_rename(const FilePath *source, const FilePath *destination,
                       bool8_t overwrite);
+
+/**
+ * Creates `destination` as a copy-on-write clone of `source`, sharing its
+ * blocks until either file changes (APFS). The clone is owner-writable. An
+ * existing destination fails with FILE_ERROR_ALREADY_EXISTS; a filesystem or
+ * volume pair without cloning reports FILE_ERROR_UNSUPPORTED, and callers copy
+ * the bytes instead. Failure leaves no destination.
+ */
+FileError file_clone(const FilePath *source, const FilePath *destination);
 
 /**
  * Resolves an existing path, following symbolic links/reparse points, into a

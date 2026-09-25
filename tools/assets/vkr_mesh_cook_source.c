@@ -89,6 +89,7 @@ typedef struct VkrMeshLoaderState {
   String8 material_dir;
   String8 bundle_root;
   String8 import_id;
+  String8 generated_root;
 
   VkrRendererError *out_error;
 } VkrMeshLoaderState;
@@ -1306,6 +1307,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
     Vector_String8 generated_asset_paths = {.allocator = state->load_allocator};
     VkrMeshLoaderGltfParseInfo parse_info = {
         .bundle_root = state->bundle_root,
+        .generated_root = state->generated_root,
         .import_id = state->import_id,
         .source_path = state->source_path,
         .source_dir = state->source_dir,
@@ -1349,6 +1351,39 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
   return false_v;
 }
 
+/* Content naming makes an existing blob the same bytes. A copy-on-write clone
+ * shares the source's blocks where the file system can; otherwise the bytes
+ * already read for naming are written. */
+vkr_internal bool8_t vkr_mesh_loader_bundle_store(VkrMeshLoaderState *state,
+                                                  String8 source,
+                                                  String8 physical,
+                                                  String8 bytes) {
+  const String8 from_text = string8_create_formatted(
+      state->scratch_allocator, "%.*s", (int32_t)source.length, source.str);
+  const String8 to_text = string8_create_formatted(
+      state->scratch_allocator, "%.*s", (int32_t)physical.length, physical.str);
+  const String8 directory =
+      file_path_get_directory(state->scratch_allocator, physical);
+  if (!from_text.str || !to_text.str || !directory.str ||
+      !file_ensure_directory(state->scratch_allocator, &directory)) {
+    return false_v;
+  }
+  const FilePath from = file_path_create(
+      (const char *)from_text.str, state->scratch_allocator,
+      vkr_mesh_loader_path_is_absolute(source) ? FILE_PATH_TYPE_ABSOLUTE
+                                               : FILE_PATH_TYPE_RELATIVE);
+  const FilePath to =
+      file_path_create((const char *)to_text.str, state->scratch_allocator,
+                       FILE_PATH_TYPE_ABSOLUTE);
+  if (file_exists(&to)) {
+    return true_v;
+  }
+  const FileError cloned = file_clone(&from, &to);
+  return cloned == FILE_ERROR_NONE || cloned == FILE_ERROR_ALREADY_EXISTS ||
+         vkr_mesh_cooked_write_atomic(state->scratch_allocator, physical,
+                                      bytes.str, bytes.length);
+}
+
 /* Each copied blob is identified by its contents, retaining its extension.
  * The job allocator owns references; temporary bytes end with the local scope.
  */
@@ -1383,8 +1418,8 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_copy(VkrMeshLoaderState *state,
           (unsigned long long)hash, (int32_t)extension.length, extension.str);
       *out_physical = file_path_join(state->load_allocator, state->bundle_root,
                                      *out_reference);
-      ok = vkr_mesh_cooked_write_atomic(state->scratch_allocator, *out_physical,
-                                        bytes.str, bytes.length);
+      ok = out_physical->str &&
+           vkr_mesh_loader_bundle_store(state, source, *out_physical, bytes);
     }
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
@@ -1445,7 +1480,8 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_material(VkrMeshLoaderState *state,
 
 vkr_internal bool8_t vkr_mesh_cook_source_internal(
     String8 source_path, String8 output_path, String8 bundle_root,
-    String8 import_id, const VkrSceneLightRangeOverride *range_overrides,
+    String8 import_id, String8 generated_root,
+    const VkrSceneLightRangeOverride *range_overrides,
     uint32_t range_override_count, VkrAllocator *source_allocator,
     VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
     VkrRendererError *out_error) {
@@ -1476,6 +1512,7 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
     return false_v;
   state.bundle_root = bundle_root;
   state.import_id = import_id;
+  state.generated_root = generated_root;
   if (bundle_root.length) {
     state.material_dir =
         file_path_join(source_allocator, bundle_root, string8_lit("materials"));
@@ -1688,21 +1725,25 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
     uint32_t range_override_count, VkrAllocator *source_allocator,
     VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
     VkrRendererError *out_error) {
-  return vkr_mesh_cook_source_internal(source_path, output_path, (String8){0},
-                                       (String8){0}, range_overrides,
-                                       range_override_count, source_allocator,
-                                       scratch_allocator, out_stats, out_error);
+  return vkr_mesh_cook_source_internal(
+      source_path, output_path, (String8){0}, (String8){0}, (String8){0},
+      range_overrides, range_override_count, source_allocator,
+      scratch_allocator, out_stats, out_error);
 }
 
 bool8_t vkr_mesh_cook_source_managed(
     String8 source_path, String8 output_path, String8 bundle_root,
-    String8 import_id, const VkrSceneLightRangeOverride *range_overrides,
+    String8 import_id, String8 generated_root,
+    const VkrSceneLightRangeOverride *range_overrides,
     uint32_t range_override_count, VkrAllocator *source_allocator,
     VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
     VkrRendererError *out_error) {
   bool8_t valid =
-      vkr_mesh_loader_path_is_absolute(bundle_root) && import_id.length &&
-      import_id.length <= 128 && output_path.length > bundle_root.length + 1 &&
+      vkr_mesh_loader_path_is_absolute(bundle_root) &&
+      (!generated_root.length ||
+       vkr_mesh_loader_path_is_absolute(generated_root)) &&
+      import_id.length && import_id.length <= 128 &&
+      output_path.length > bundle_root.length + 1 &&
       MemCompare(output_path.str, bundle_root.str, bundle_root.length) == 0 &&
       (output_path.str[bundle_root.length] == '/' ||
        output_path.str[bundle_root.length] == '\\');
@@ -1721,8 +1762,8 @@ bool8_t vkr_mesh_cook_source_managed(
     }
     return false_v;
   }
-  return vkr_mesh_cook_source_internal(source_path, output_path, bundle_root,
-                                       import_id, range_overrides,
-                                       range_override_count, source_allocator,
-                                       scratch_allocator, out_stats, out_error);
+  return vkr_mesh_cook_source_internal(
+      source_path, output_path, bundle_root, import_id, generated_root,
+      range_overrides, range_override_count, source_allocator,
+      scratch_allocator, out_stats, out_error);
 }

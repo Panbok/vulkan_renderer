@@ -401,6 +401,9 @@ class Job:
         self.collision_inspections = set()
         self.texture_seeds = {}
         self.texture_tool_hash = None
+        # Content-addressed derived textures shared by every import in the
+        # workspace; bundles hold clones of the variants their materials use.
+        self.generated_root = self.workspace / 'cache' / 'generated'
         self.asset_display_names = {}
         self.source_display_names = {}
 
@@ -759,8 +762,10 @@ class Job:
                 'fingerprint': 'sha256:' + digest(snapshot)})
             atomic_json(self.stage / 'imports' / (import_id + '.json'), self.sources[import_id])
             return {'scope': 'scene', 'id': asset_id, 'role': 'mesh'}
+        self.generated_root.mkdir(parents=True, exist_ok=True)
         self.run_tool('mesh', ['--input', snapshot, '--output', mesh,
-                              '--bundle-root', bundle, '--import-id', import_id], 'Cooking model')
+                              '--bundle-root', bundle, '--import-id', import_id,
+                              '--generated-root', self.generated_root], 'Cooking model')
         reference = self.artifact('mesh', Path(source).stem, mesh, import_id=import_id, source=snapshot)
         self.cook_model_animation(self.assets[-1], snapshot, mesh)
         self.index_bundle(bundle, import_id)
@@ -793,31 +798,32 @@ class Job:
             if not destination.is_file():
                 if self.texture_tool_hash is None:
                     self.texture_tool_hash = digest(source_file(self.tools.get('texture')))
-                recipe = {'version': 1, 'source': source_hash, 'class': texture_class,
-                          'tool': self.texture_tool_hash, 'shape': '2d', 'strict': True}
+                # The key names the inputs only. The packer owns its encoding policy:
+                # a rebuilt packer revalidates a cached file instead of recooking it.
+                recipe = {'version': 2, 'source': source_hash, 'class': texture_class,
+                          'shape': '2d', 'strict': True}
                 cache_key = hashlib.sha256(json.dumps(recipe, sort_keys=True).encode()).hexdigest()
                 cache = self.workspace / 'cache' / 'textures' / cache_key
                 cache.mkdir(parents=True, exist_ok=True)
                 cached = cache / 'texture.vkt'
                 manifest = cache / 'manifest.json'
-                valid = False
-                if cached.is_file() and manifest.is_file():
-                    recorded = load_json(manifest)
-                    valid = recorded.get('recipe') == recipe and recorded.get('sha256') == digest(cached)
-                if not valid:
+                recorded = load_json(manifest) if cached.is_file() and manifest.is_file() else {}
+                intact = recorded.get('recipe') == recipe and recorded.get('sha256') == digest(cached)
+                if not intact or recorded.get('tool') != self.texture_tool_hash:
                     temporary = cache / (str(uuid.uuid4()) + '.vkt')
                     try:
-                        seed = self.texture_seeds.get(source_hash)
+                        seed = cached if intact else self.texture_seeds.get(source_hash)
                         if seed and seed.is_file():
                             self.copy_file(seed, temporary)
-                        # The packer independently validates a seeded cache's source
-                        # hash, class and full recipe; mismatch forces a fresh cook.
+                        # The packer independently validates a seed's source hash,
+                        # class and full recipe; a mismatch forces a fresh cook.
                         self.run_tool('texture', ['--output', temporary, '--type', '2d', '--layer', source,
                             '--texture-class', texture_class, '--strict', '--no-progress'], 'Preparing texture')
                         if not temporary.is_file():
                             raise JobError('Texture packer did not publish its artifact')
                         os.replace(temporary, cached)
-                        atomic_json(manifest, {'version': 1, 'recipe': recipe, 'sha256': digest(cached)})
+                        atomic_json(manifest, {'version': 1, 'recipe': recipe, 'sha256': digest(cached),
+                                               'tool': self.texture_tool_hash})
                     finally:
                         temporary.unlink(missing_ok=True)
                 self.copy_file(cached, destination)
@@ -1981,8 +1987,10 @@ class Job:
             if record['kind'] == 'mesh':
                 source = contained(path.parent, record['source'])
                 output = bundle / 'mesh.vkb'
+                self.generated_root.mkdir(parents=True, exist_ok=True)
                 self.run_tool('mesh', ['--input', source, '--output', output,
-                    '--bundle-root', bundle, '--import-id', record['import_id']], 'Preparing model')
+                    '--bundle-root', bundle, '--import-id', record['import_id'],
+                    '--generated-root', self.generated_root], 'Preparing model')
                 self.index_bundle(bundle, record['import_id'])
             elif record['kind'] == 'font':
                 config = contained(path.parent, record['recipe']['config'])
@@ -2103,8 +2111,10 @@ class Job:
                     source = self.snapshot_model(source, revision)
                     record['source'] = managed_reference(source, self.stage)
                 output = bundle / 'mesh.vkb'
+                self.generated_root.mkdir(parents=True, exist_ok=True)
                 self.run_tool('mesh', ['--input', source, '--output', output,
-                    '--bundle-root', bundle, '--import-id', import_id], 'Rebuilding model')
+                    '--bundle-root', bundle, '--import-id', import_id,
+                    '--generated-root', self.generated_root], 'Rebuilding model')
                 existing = {(item['kind'], item.get('source_key', item['name'])): item for item in self.assets
                             if item.get('import_id') == import_id and item['id'] != asset_id}
                 previous_count = len(self.assets)

@@ -443,6 +443,14 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
                                       : fs_windows_error(GetLastError());
 }
 
+FileError file_clone(const FilePath *source, const FilePath *destination) {
+  if (!source || !source->path.str || !destination || !destination->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  // Block cloning needs ReFS/Dev Drive extent duplication; callers copy.
+  return FILE_ERROR_UNSUPPORTED;
+}
+
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
                          VkrAllocator *line_allocator, uint64_t max_line_length,
                          String8 *out_line) {

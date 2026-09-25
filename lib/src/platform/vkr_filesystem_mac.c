@@ -7,6 +7,8 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <sys/clonefile.h>
+#include <sys/stat.h>
 
 FILE *file_fopen(const char *utf8_path, const char *mode) {
   if (!utf8_path || !mode) {
@@ -312,6 +314,32 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
     return FILE_ERROR_ALREADY_EXISTS;
   }
   return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_clone(const FilePath *source, const FilePath *destination) {
+  if (!source || !source->path.str || !destination || !destination->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  const char *from = (const char *)source->path.str;
+  const char *to = (const char *)destination->path.str;
+  if (clonefile(from, to, 0) != 0) {
+    if (errno == EEXIST) {
+      return FILE_ERROR_ALREADY_EXISTS;
+    }
+    if (errno == ENOENT) {
+      return FILE_ERROR_NOT_FOUND;
+    }
+    // Other volumes and file systems without cloning report ENOTSUP/EXDEV.
+    return errno == ENOTSUP || errno == EXDEV ? FILE_ERROR_UNSUPPORTED
+                                              : FILE_ERROR_IO_ERROR;
+  }
+  // A clone keeps the source's mode; a copy would be owner-writable.
+  struct stat info;
+  if (stat(to, &info) != 0 || chmod(to, info.st_mode | S_IWUSR) != 0) {
+    (void)unlink(to);
+    return FILE_ERROR_IO_ERROR;
+  }
+  return FILE_ERROR_NONE;
 }
 
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,

@@ -385,7 +385,90 @@ vkr_internal void test_file_get_error_strings(void) {
   assert(strcmp((const char *)err.str, "Invalid handle") == 0);
   err = file_get_error_string(FILE_ERROR_IO_ERROR);
   assert(strcmp((const char *)err.str, "I/O error") == 0);
+  err = file_get_error_string(FILE_ERROR_UNSUPPORTED);
+  assert(strcmp((const char *)err.str, "Not supported by this filesystem") ==
+         0);
   printf("  test_file_get_error_strings PASSED\n");
+}
+
+vkr_internal void test_file_clone(void) {
+  printf("  Running test_file_clone...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  const uint32_t id = ++g_fs_test_counter;
+  String8 directory_text =
+      string8_create_formatted(&allocator, "%s%s/clone_%u", PROJECT_SOURCE_DIR,
+                               FS_TEST_RELATIVE_DIR, id);
+  FilePath directory = {.path = directory_text,
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory_exclusive(&directory) == FILE_ERROR_NONE);
+  String8 source_text = string8_create_formatted(
+      &allocator, "%s/source.bin", (const char *)directory_text.str);
+  String8 clone_text = string8_create_formatted(
+      &allocator, "%s/clone.bin", (const char *)directory_text.str);
+  String8 missing_text = string8_create_formatted(
+      &allocator, "%s/missing.bin", (const char *)directory_text.str);
+  FilePath source = {.path = source_text, .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath clone = {.path = clone_text, .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath missing = {.path = missing_text, .type = FILE_PATH_TYPE_ABSOLUTE};
+
+  FileMode write_mode = bitset8_create();
+  bitset8_set(&write_mode, FILE_MODE_WRITE);
+  bitset8_set(&write_mode, FILE_MODE_BINARY);
+  bitset8_set(&write_mode, FILE_MODE_TRUNCATE);
+  FileHandle file = {0};
+  const uint8_t payload[] = {4u, 3u, 2u, 1u};
+  uint64_t transferred = 0u;
+  assert(file_open(&source, write_mode, &file) == FILE_ERROR_NONE);
+  assert(file_write(&file, sizeof(payload), payload, &transferred) ==
+         FILE_ERROR_NONE);
+  file_close(&file);
+#if !defined(_WIN32)
+  // A read-only source must still yield an owner-writable clone.
+  assert(chmod((const char *)source_text.str, 0444) == 0);
+#endif
+
+  const FileError cloned = file_clone(&source, &clone);
+  if (cloned == FILE_ERROR_UNSUPPORTED) {
+    // Callers copy on file systems without cloning; nothing was created.
+    assert(!file_exists(&clone));
+    assert(file_clone(&missing, &clone) == FILE_ERROR_UNSUPPORTED);
+  } else {
+    assert(cloned == FILE_ERROR_NONE);
+    FileMode read_mode = bitset8_create();
+    bitset8_set(&read_mode, FILE_MODE_READ);
+    bitset8_set(&read_mode, FILE_MODE_BINARY);
+    uint8_t received[sizeof(payload)] = {0};
+    assert(file_open(&clone, read_mode, &file) == FILE_ERROR_NONE);
+    assert(file_read_into(&file, received, sizeof(received), &transferred) ==
+           FILE_ERROR_NONE);
+    file_close(&file);
+    assert(transferred == sizeof(payload) &&
+           MemCompare(received, payload, sizeof(payload)) == 0);
+    // Writing the clone leaves the source bytes unchanged.
+    const uint8_t replacement[] = {7u};
+    assert(file_open(&clone, write_mode, &file) == FILE_ERROR_NONE);
+    assert(file_write(&file, sizeof(replacement), replacement, &transferred) ==
+           FILE_ERROR_NONE);
+    file_close(&file);
+    assert(file_open(&source, read_mode, &file) == FILE_ERROR_NONE);
+    assert(file_read_into(&file, received, sizeof(received), &transferred) ==
+           FILE_ERROR_NONE);
+    file_close(&file);
+    assert(MemCompare(received, payload, sizeof(payload)) == 0);
+    assert(file_clone(&source, &clone) == FILE_ERROR_ALREADY_EXISTS);
+    assert(file_clone(&missing, &missing) == FILE_ERROR_NOT_FOUND);
+    assert(file_remove(&clone) == FILE_ERROR_NONE);
+  }
+
+#if !defined(_WIN32)
+  assert(chmod((const char *)source_text.str, 0644) == 0);
+#endif
+  assert(file_remove(&source) == FILE_ERROR_NONE);
+  fs_test_remove_dir((const char *)directory_text.str);
+  arena_destroy(arena);
+  printf("  test_file_clone PASSED\n");
 }
 
 vkr_internal void test_file_portable_publication_primitives(void) {
@@ -597,6 +680,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_load_spirv_shader();
   test_file_path_helpers();
   test_file_get_error_strings();
+  test_file_clone();
   test_file_portable_publication_primitives();
   test_file_io_failures_release_owned_outputs();
   test_file_allocation_failures();

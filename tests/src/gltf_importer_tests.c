@@ -2013,12 +2013,14 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   const uint64_t normal_hash = gltf_test_hash_file_bytes(normal_path);
   const uint64_t metallic_roughness_hash =
       gltf_test_hash_file_bytes(metallic_roughness_path);
-  char expected_pair_paths[8][1200] = {{0}};
+  // A normal output depends only on its source and scale, so the rougher and
+  // factor-only materials reuse the scale-0.5 normal; each roughness input
+  // still receives its own paired output.
+  char expected_pair_paths[6][1200] = {{0}};
   snprintf(expected_pair_paths[0], sizeof(expected_pair_paths[0]),
            "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
-           "roughness_%016llx_scale_3f000000_factor_3e800000_normal.vkt",
-           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
-           (unsigned long long)metallic_roughness_hash);
+           "scale_3f000000_normal.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
   snprintf(expected_pair_paths[1], sizeof(expected_pair_paths[1]),
            "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f000000_factor_3e800000_metalrough.vkt",
@@ -2026,9 +2028,8 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[2], sizeof(expected_pair_paths[2]),
            "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
-           "roughness_%016llx_scale_3f400000_factor_3e800000_normal.vkt",
-           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
-           (unsigned long long)metallic_roughness_hash);
+           "scale_3f400000_normal.vkt",
+           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
   snprintf(expected_pair_paths[3], sizeof(expected_pair_paths[3]),
            "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f400000_factor_3e800000_metalrough.vkt",
@@ -2036,19 +2037,10 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
            (unsigned long long)metallic_roughness_hash);
   snprintf(expected_pair_paths[4], sizeof(expected_pair_paths[4]),
            "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
-           "roughness_%016llx_scale_3f000000_factor_3f000000_normal.vkt",
-           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
-           (unsigned long long)metallic_roughness_hash);
-  snprintf(expected_pair_paths[5], sizeof(expected_pair_paths[5]),
-           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_%016llx_scale_3f000000_factor_3f000000_metalrough.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash,
            (unsigned long long)metallic_roughness_hash);
-  snprintf(expected_pair_paths[6], sizeof(expected_pair_paths[6]),
-           "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
-           "roughness_missing_scale_3f000000_factor_3e800000_normal.vkt",
-           PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
-  snprintf(expected_pair_paths[7], sizeof(expected_pair_paths[7]),
+  snprintf(expected_pair_paths[5], sizeof(expected_pair_paths[5]),
            "%sassets/textures/generated/normalrough_v2/normal_%016llx_"
            "roughness_missing_scale_3f000000_factor_3e800000_metalrough.vkt",
            PROJECT_SOURCE_DIR, (unsigned long long)normal_hash);
@@ -2120,12 +2112,12 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   parse_info.out_generated_asset_paths = &generated_assets;
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
   assert(error == VKR_RENDERER_ERROR_NONE);
-  assert(generated_assets.length == 8u);
+  assert(generated_assets.length == 6u);
 
   String8 shared_normal = {0};
   String8 shared_metallic_roughness = {0};
   String8 scaled_normal = {0};
-  String8 rougher_normal = {0};
+  String8 rougher_metallic_roughness = {0};
   String8 factor_only_metallic_roughness = {0};
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
     String8 *path = vector_get_String8(&generated_assets, i);
@@ -2135,26 +2127,23 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
         string8_contains_cstr(path, "roughness_missing") &&
         string8_contains_cstr(path, "_metalrough.vkt")) {
       factor_only_metallic_roughness = *path;
-    } else if (string8_contains_cstr(path, "scale_3f000000_factor_3e800000") &&
-               !string8_contains_cstr(path, "roughness_missing") &&
-               string8_contains_cstr(path, "_normal.vkt")) {
+    } else if (string8_contains_cstr(path, "scale_3f000000_normal.vkt")) {
       shared_normal = *path;
     } else if (string8_contains_cstr(path, "scale_3f000000_factor_3e800000") &&
                string8_contains_cstr(path, "_metalrough.vkt")) {
       shared_metallic_roughness = *path;
-    } else if (string8_contains_cstr(path, "scale_3f400000_factor_3e800000") &&
-               string8_contains_cstr(path, "_normal.vkt")) {
+    } else if (string8_contains_cstr(path, "scale_3f400000_normal.vkt")) {
       scaled_normal = *path;
     } else if (string8_contains_cstr(path, "scale_3f000000_factor_3f000000") &&
-               string8_contains_cstr(path, "_normal.vkt")) {
-      rougher_normal = *path;
+               string8_contains_cstr(path, "_metalrough.vkt")) {
+      rougher_metallic_roughness = *path;
     }
   }
   assert(shared_normal.str && shared_metallic_roughness.str);
-  assert(scaled_normal.str && rougher_normal.str);
+  assert(scaled_normal.str && rougher_metallic_roughness.str);
   assert(factor_only_metallic_roughness.str);
   assert(!string8_equals(&shared_normal, &scaled_normal));
-  assert(!string8_equals(&shared_normal, &rougher_normal));
+  assert(!string8_contains_cstr(&shared_normal, "roughness"));
 
   char material_paths[10][1024] = {{0}};
   String8 materials[10] = {0};
@@ -2191,6 +2180,18 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   assert(strstr((const char *)materials[4].str, "metallic=0.700000"));
   assert(strstr((const char *)materials[4].str,
                 factor_only_metallic_roughness_reference));
+  // A different roughness factor or a missing roughness map changes only the
+  // paired roughness output; the normal output is shared.
+  char rougher_metallic_roughness_reference[1200];
+  snprintf(rougher_metallic_roughness_reference,
+           sizeof(rougher_metallic_roughness_reference),
+           "metallic_roughness_texture=%.*s?tc=data_mask",
+           (int32_t)rougher_metallic_roughness.length,
+           rougher_metallic_roughness.str);
+  assert(strstr((const char *)materials[3].str,
+                rougher_metallic_roughness_reference));
+  assert(strstr((const char *)materials[3].str, shared_normal_reference));
+  assert(strstr((const char *)materials[4].str, shared_normal_reference));
 
   const char *normal_source_reference =
       "normal_texture=assets/textures/gltf_importer_normalrough/normal.png?"
@@ -2216,7 +2217,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   assert(strstr((const char *)materials[9].str, normal_source_reference));
 
   const String8 first_material = materials[0];
-  String8 first_generated_assets[8] = {0};
+  String8 first_generated_assets[6] = {0};
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
     first_generated_assets[i] = *vector_get_String8(&generated_assets, i);
   }
@@ -2224,7 +2225,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   error = VKR_RENDERER_ERROR_NONE;
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
   assert(error == VKR_RENDERER_ERROR_NONE);
-  assert(generated_assets.length == 8u);
+  assert(generated_assets.length == 6u);
   for (uint64_t i = 0; i < ArrayCount(first_generated_assets); ++i) {
     assert(gltf_test_vector_contains_path(
         &generated_assets, (const char *)first_generated_assets[i].str));

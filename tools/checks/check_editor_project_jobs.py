@@ -10,6 +10,49 @@ import struct
 import sys
 import tempfile
 import uuid
+import zlib
+
+
+def write_png(path, width, height, rgb):
+    """Writes an opaque 8-bit RGB PNG filled with one color."""
+    raw = b''.join(b'\0' + bytes(rgb) * width for _ in range(height))
+
+    def chunk(tag, data):
+        return (struct.pack('>I', len(data)) + tag + data +
+                struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
+
+    path.write_bytes(b'\x89PNG\r\n\x1a\n' +
+                     chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)) +
+                     chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+
+
+def paired_gltf(path, normal_uri, roughness_factors):
+    """One triangle per material; every material shares one normal map."""
+    positions = struct.pack('<9f', 0, 0, 0, 1, 0, 0, 0, 1, 0)
+    uvs = struct.pack('<6f', 0, 0, 1, 0, 0, 1)
+    indices = struct.pack('<3H', 0, 1, 2) + b'\0\0'
+    binary = positions + uvs + indices
+    count = len(roughness_factors)
+    path.write_text(json.dumps({'asset': {'version': '2.0'},
+        'buffers': [{'byteLength': len(binary),
+                     'uri': 'data:application/octet-stream;base64,' + base64.b64encode(binary).decode()}],
+        'bufferViews': [{'buffer': 0, 'byteLength': 36}, {'buffer': 0, 'byteOffset': 36, 'byteLength': 24},
+                        {'buffer': 0, 'byteOffset': 60, 'byteLength': 6}],
+        'accessors': [{'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3',
+                       'min': [0, 0, 0], 'max': [1, 1, 0]},
+                      {'bufferView': 1, 'componentType': 5126, 'count': 3, 'type': 'VEC2'},
+                      {'bufferView': 2, 'componentType': 5123, 'count': 3, 'type': 'SCALAR'}],
+        'images': [{'uri': normal_uri}],
+        'samplers': [{'magFilter': 9729, 'minFilter': 9987, 'wrapS': 10497, 'wrapT': 10497}],
+        'textures': [{'source': 0, 'sampler': 0}],
+        'materials': [{'normalTexture': {'index': 0},
+                       'pbrMetallicRoughness': {'roughnessFactor': factor}}
+                      for factor in roughness_factors],
+        'meshes': [{'primitives': [{'attributes': {'POSITION': 0, 'TEXCOORD_0': 1},
+                                    'indices': 2, 'material': index}]}
+                   for index in range(count)],
+        'nodes': [{'mesh': index} for index in range(count)],
+        'scenes': [{'nodes': list(range(count))}], 'scene': 0}))
 
 
 def main():
@@ -111,6 +154,40 @@ def main():
             assert jobs.Job(invalid_request, result_path).execute() == 1
             assert 'Baking diffuse volume failed (exit 1)' in jobs.load_json(result_path)['error']
             assert not (project / 'scenes' / invalid_request['scene_id']).exists()
+        # Materials sharing a normal map share its encoded normal; only the
+        # roughness pair varies by factor. Derived variants live once in the
+        # workspace cache, bundles hold byte-identical copies, and a second
+        # import reuses the cache instead of recooking.
+        write_png(source / 'shared_normal.png', 8, 8, (128, 128, 255))
+        paired_model = source / 'paired.gltf'
+        paired_gltf(paired_model, 'shared_normal.png', [0.5, 0.8])
+        paired_request = dict(request, scene_id=str(uuid.uuid4()), models=[str(paired_model)])
+        assert jobs.Job(paired_request, result_path).execute() == 0
+        generated = workspace / 'cache' / 'generated' / 'normalrough_v2'
+        normals = sorted(generated.glob('*_normal.vkt'))
+        roughness = sorted(generated.glob('*_metalrough.vkt'))
+        assert len(normals) == 1 and len(roughness) == 2, (normals, roughness)
+        assert '_roughness_' not in normals[0].name
+        paired_root = Path(jobs.load_json(result_path)['scene_path']).parent
+        assert not list(paired_root.glob('builds/*/textures/generated')), 'Bundle kept derived intermediates'
+        paired_textures = {}
+        for material in paired_root.glob('builds/*/materials/*.mt'):
+            for line in material.read_text(encoding='utf-8').splitlines():
+                key, _, value = line.partition('=')
+                if key in ('normal_texture', 'metallic_roughness_texture'):
+                    resolved = (material.parent / value.split('?')[0]).resolve()
+                    paired_textures.setdefault(key, set()).add(resolved)
+        assert len(paired_textures['normal_texture']) == 1
+        assert len(paired_textures['metallic_roughness_texture']) == 2
+        cached_bytes = {path.read_bytes() for path in [*normals, *roughness]}
+        assert all(path.read_bytes() in cached_bytes
+                   for paths in paired_textures.values() for path in paths)
+        stamps = {path: path.stat().st_mtime_ns for path in [*normals, *roughness]}
+        reuse_request = dict(paired_request, scene_id=str(uuid.uuid4()))
+        assert jobs.Job(reuse_request, result_path).execute() == 0
+        assert {path: path.stat().st_mtime_ns for path in stamps} == stamps, 'Cached variants were recooked'
+        assert len(list(generated.glob('*.vkt'))) == 3
+
         # Source-node transforms use an immutable geometry-preserving bake variant.
         gltf_path = source / 'node.gltf'
         binary = struct.pack('<9f3H', 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 2)

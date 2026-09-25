@@ -246,6 +246,8 @@ String8 file_get_error_string(FileError error) {
     return string8_lit("Already exists");
   case FILE_ERROR_OUT_OF_MEMORY:
     return string8_lit("Out of memory");
+  case FILE_ERROR_UNSUPPORTED:
+    return string8_lit("Not supported by this filesystem");
   case FILE_ERROR_COUNT:
     break;
   }

@@ -46,6 +46,15 @@ vkr_internal String8 vkr_mesh_loader_gltf_output_path(
   if (!info->bundle_root.length) {
     return legacy_path;
   }
+  /* Derived names encode source content and parameters, so a shared root
+   * lets later imports reuse them; bundling clones what materials use. */
+  const String8 generated = string8_lit("assets/textures/generated/");
+  if (info->generated_root.length && legacy_path.length > generated.length &&
+      MemCompare(legacy_path.str, generated.str, generated.length) == 0) {
+    String8 suffix =
+        string8_substring(&legacy_path, generated.length, legacy_path.length);
+    return file_path_join(info->load_allocator, info->generated_root, suffix);
+  }
   String8 suffix = string8_substring(&legacy_path, 7, legacy_path.length);
   return file_path_join(info->load_allocator, info->bundle_root, suffix);
 }
@@ -822,13 +831,21 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
                              (unsigned long long)normal_hash, normal_scale_bits,
                              roughness_factor_bits);
   recipe = vkr_mesh_loader_gltf_output_path(info, recipe);
-  if (!recipe.str) {
+  /* The encoded normal depends only on its source and scale; roughness and
+   * its factor change only the paired roughness, so materials share it. */
+  String8 normal_recipe = string8_create_formatted(
+      info->load_allocator,
+      "assets/textures/generated/normalrough_v%u/normal_%016llx_scale_%08x",
+      VKR_VKT_NORMAL_ROUGHNESS_POLICY_VERSION, (unsigned long long)normal_hash,
+      normal_scale_bits);
+  normal_recipe = vkr_mesh_loader_gltf_output_path(info, normal_recipe);
+  if (!recipe.str || !normal_recipe.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
-  String8 normal_variant =
-      string8_create_formatted(info->load_allocator, "%.*s_normal.vkt",
-                               (int32_t)recipe.length, recipe.str);
+  String8 normal_variant = string8_create_formatted(
+      info->load_allocator, "%.*s_normal.vkt", (int32_t)normal_recipe.length,
+      normal_recipe.str);
   String8 roughness_variant =
       string8_create_formatted(info->load_allocator, "%.*s_metalrough.vkt",
                                (int32_t)recipe.length, recipe.str);

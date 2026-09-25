@@ -21,10 +21,14 @@ bool8_t vkr_mesh_cook_source_with_light_ranges(
 /* Managed outputs live below an absolute bundle root. output_path must be a
  * direct child of that root. import_id contains only ASCII letters, digits,
  * '-' and '_'. All published dependency references are file-relative. The
- * caller owns the unpublished bundle and removes it on failure/cancellation. */
+ * caller owns the unpublished bundle and removes it on failure/cancellation.
+ * An optional absolute generated_root receives content-addressed derived
+ * textures shared across imports; the bundle holds clones or copies of the
+ * variants it references. Empty keeps them below the bundle. */
 bool8_t vkr_mesh_cook_source_managed(
     String8 source_path, String8 output_path, String8 bundle_root,
-    String8 import_id, const VkrSceneLightRangeOverride *range_overrides,
+    String8 import_id, String8 generated_root,
+    const VkrSceneLightRangeOverride *range_overrides,
     uint32_t range_override_count, VkrAllocator *source_allocator,
     VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
     VkrRendererError *out_error);

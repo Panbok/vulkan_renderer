@@ -661,10 +661,14 @@ std::string pack_settings_identity(TextureClass texture_class,
   if (config.normal_roughness) {
     settings << ";normal_roughness=vmf-alpha2-v"
              << VKR_VKT_NORMAL_ROUGHNESS_POLICY_VERSION
-             << ";normal_scale=" << std::hexfloat << config.normal_scale
-             << ";roughness_factor=" << config.roughness_factor
-             << ";roughness_source=" << config.roughness_source
-             << ";uv=matched-extents-repeat-linear;variance_cap=0.25";
+             << ";normal_scale=" << std::hexfloat << config.normal_scale;
+    // The encoded normal depends only on its source and scale, so one
+    // normal output serves every roughness input paired with it.
+    if (texture_class != TextureClass::kNormalRg) {
+      settings << ";roughness_factor=" << config.roughness_factor
+               << ";roughness_source=" << config.roughness_source;
+    }
+    settings << ";uv=matched-extents-repeat-linear;variance_cap=0.25";
   }
   return settings.str();
 }
@@ -1222,9 +1226,12 @@ int vkr_vkt_pack_normal_roughness(const char *normal_source,
         roughness_factor == 0.0f ? 0.0f : roughness_factor;
     config.roughness_source = roughness_source != nullptr;
     config.basis_threads = resolve_basis_thread_count(config.basis_threads);
+    // The normal output records only its own source; see
+    // pack_settings_identity.
+    const std::vector<fs::path> normal_sources = {sources.front()};
     const bool normal_cached =
-        should_skip_output(sources, normal_path, TextureClass::kNormalRg,
-                           TextureShape::k2D, config);
+        should_skip_output(normal_sources, normal_path,
+                           TextureClass::kNormalRg, TextureShape::k2D, config);
     const bool roughness_cached =
         should_skip_output(sources, roughness_path, TextureClass::kDataMask,
                            TextureShape::k2D, config);
@@ -1258,7 +1265,7 @@ int vkr_vkt_pack_normal_roughness(const char *normal_source,
         analyze_alpha(roughness_image.pixels.data(), roughness_image.width,
                       roughness_image.height);
     if ((!normal_cached &&
-         !write_packed_sources(sources, normal, normal_path,
+         !write_packed_sources(normal_sources, normal, normal_path,
                                TextureClass::kNormalRg, TextureShape::k2D,
                                config, {})) ||
         (!roughness_cached &&
