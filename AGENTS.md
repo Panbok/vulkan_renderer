@@ -123,6 +123,9 @@ Preserve pending payloads and other tasks' output during cleanup.
 Keep `.codex/skills/` and `.claude/skills/` as byte-identical regular-file
 copies, including scripts and metadata. `CLAUDE.md` imports this file. Update
 affected authoritative docs when claims move; `docs/INDEX.md` inventories every
-retained document. Commits use scoped Conventional Commit messages. PRs state
-behavior, exact verification, relevant issues, and unavailable native checks;
-rendering/UI changes include a screenshot or clip and identify asset changes.
+retained document. A commit message is one line,
+`<type>(<scope>): <message>`, where type is `feat`, `fix`, `doc` or `chore`,
+for example `fix(editor): import repository glTF textures`. Add no body and no
+co-author or tool-attribution trailer. PRs state behavior, exact verification,
+relevant issues, and unavailable native checks; rendering/UI changes include a
+screenshot or clip and identify asset changes.
