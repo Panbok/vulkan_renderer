@@ -1261,6 +1261,43 @@ bool8_t vkr_editor_project_create(VkrEditorWorkspace *workspace,
          vkr_editor_project_save(project, error);
 }
 
+bool8_t vkr_editor_project_unpublish(const VkrEditorWorkspace *workspace,
+                                     const char *id,
+                                     VkrEditorProjectError *error) {
+  if (!workspace || !workspace->initialized || !project_id_valid(id)) {
+    return project_error(
+        error, "Select an initialized workspace and valid project identity");
+  }
+  char relative[128];
+  char manifest[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char lock_directory[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  snprintf(relative, sizeof(relative), "projects/%s/project.json", id);
+  if (!vkr_editor_project_resolve(workspace->root, relative, manifest, error)) {
+    return false_v;
+  }
+  snprintf(relative, sizeof(relative), "projects/%s", id);
+  if (!vkr_editor_project_resolve(workspace->root, relative, lock_directory,
+                                  error)) {
+    return false_v;
+  }
+  char lock_name[64];
+  snprintf(lock_name, sizeof(lock_name), "project-%s", id);
+  VkrPlatformProcessLock lock = {0};
+  if (!vkr_platform_process_lock_acquire(lock_name, lock_directory, &lock)) {
+    return project_error(error,
+                         "Project is currently being saved by another editor");
+  }
+  // Removing the manifest is the commit point: discovery skips the directory.
+  FilePath path = project_path(manifest);
+  const FileError removed = file_remove(&path);
+  vkr_platform_process_lock_release(&lock);
+  if (removed != FILE_ERROR_NONE) {
+    return project_error(error, "Cannot remove project manifest: %s",
+                         (const char *)file_get_error_string(removed).str);
+  }
+  return true_v;
+}
+
 bool8_t vkr_editor_workspace_visit(const VkrEditorWorkspace *workspace,
                                    VkrEditorProjectVisitor visitor,
                                    void *context,

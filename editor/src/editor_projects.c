@@ -33,6 +33,7 @@ typedef enum ProjectView {
   PROJECT_VIEW_CONFIRM,
   PROJECT_VIEW_RENAME,
   PROJECT_VIEW_DELETE,
+  PROJECT_VIEW_DELETE_PROJECT,
   PROJECT_VIEW_EDITOR,
 } ProjectView;
 
@@ -167,6 +168,11 @@ struct VkrEditorProjects {
   bool8_t awaiting_save;
   bool8_t rename_project;
   bool8_t delete_waiting_unload;
+  /** Project chosen for deletion; its erase job runs after unpublishing. */
+  char delete_project_id[37];
+  char delete_project_name[513];
+  bool8_t delete_project_waiting_unload;
+  uint64_t delete_project_job;
   char rename_name[513];
   char action_name[513];
   char message[512];
@@ -1277,6 +1283,121 @@ static void project_delete_scene(VkrEditorProjects *projects,
   project_refresh(projects);
 }
 
+/* Writes a delete_project request for an unpublished project and queues it.
+ * The erase job refuses a published manifest, links and reparse points. */
+static uint64_t project_start_delete_job(VkrEditorProjects *projects,
+                                         VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame) {
+  VkrEditorProjectError error = {0};
+  char job_id[37];
+  char job_directory[1024];
+  char request_path[1100];
+  char result_path[1100];
+  char manifest_path[1100];
+  if (!vkr_editor_project_id_generate(job_id, &error)) {
+    return 0;
+  }
+  snprintf(job_directory, sizeof(job_directory), "%s/jobs/%s",
+           projects->workspace.root, job_id);
+  snprintf(request_path, sizeof(request_path), "%s/request.json",
+           job_directory);
+  snprintf(result_path, sizeof(result_path), "%s/result.json", job_directory);
+  snprintf(manifest_path, sizeof(manifest_path), "%s/projects/%s/project.json",
+           projects->workspace.root, projects->delete_project_id);
+  String8 directory = project_string(job_directory);
+  VkrJsonFileWriter file = {0};
+  if (!file_ensure_directory(frame->ui->frame_allocator, &directory) ||
+      !vkr_json_file_writer_begin(&file, project_string(request_path))) {
+    return 0;
+  }
+  VkrJsonWriter *writer = &file.writer;
+  const bool8_t ok =
+      vkr_json_writer_begin_object(writer) &&
+      project_json_number(writer, "version", 1) &&
+      project_json_bool(writer, "read_only", false_v) &&
+      project_json_text(writer, "operation", "delete_project") &&
+      project_json_text(writer, "workspace_root", projects->workspace.root) &&
+      project_json_text(writer, "project_path", manifest_path) &&
+      vkr_json_writer_end_object(writer) && vkr_json_file_writer_commit(&file);
+  if (!ok) {
+    vkr_json_file_writer_abort(&file);
+    return 0;
+  }
+  return vkr_editor_bakery_project_start(editor->bakery, request_path,
+                                         result_path);
+}
+
+/* Unloads the project's scene when it is open, unpublishes its manifest so
+ * discovery drops it, then erases its files in the background. */
+static void project_delete_project(VkrEditorProjects *projects,
+                                   VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame) {
+  const bool8_t active =
+      projects->project &&
+      strcmp(projects->project->id, projects->delete_project_id) == 0;
+  if (!projects->delete_project_waiting_unload) {
+    if (projects->read_only || projects->job_id ||
+        projects->waiting_activation || frame->scene_loading ||
+        projects->delete_project_job ||
+        vkr_editor_bakery_busy(editor->bakery)) {
+      snprintf(projects->message, sizeof(projects->message),
+               "Project deletion requires a writable, idle workspace.");
+      return;
+    }
+    if (active) {
+      if (!vkr_editor_content_stop_previews(editor->content)) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "Cannot stop asset previews. Retry deleting the project.");
+        return;
+      }
+      if (!project_finish_settings_save(projects)) {
+        return;
+      }
+      if (frame->scene) {
+        *frame->scene_request =
+            (VkrSampleSceneRequest){.unload = true_v, .discard_edits = true_v};
+        projects->delete_project_waiting_unload = true_v;
+        return;
+      }
+    }
+  } else if (frame->scene) {
+    return;
+  }
+  projects->delete_project_waiting_unload = false_v;
+  VkrEditorProjectError error = {0};
+  if (!vkr_editor_project_unpublish(&projects->workspace,
+                                    projects->delete_project_id, &error)) {
+    project_error(projects, &error);
+    return;
+  }
+  if (active) {
+    vkr_editor_content_set_project(editor->content, "", "", "");
+    if (projects->project_arena) {
+      vkr_allocator_release_global_accounting(&projects->project_allocator);
+      arena_destroy(projects->project_arena);
+      projects->project_arena = NULL;
+    }
+    projects->project = NULL;
+    projects->active_scene = UINT32_MAX;
+    projects->settings_restored = false_v;
+    projects->creating_project = false_v;
+    projects->runtime_path[0] = '\0';
+    projects->scene_manifest_path[0] = '\0';
+    projects->scene_manifest_fingerprint = 0;
+    projects->edit_path[0] = '\0';
+    projects->content_scene[0] = '\0';
+  }
+  projects->delete_project_job =
+      project_start_delete_job(projects, editor, frame);
+  snprintf(projects->message, sizeof(projects->message),
+           projects->delete_project_job
+               ? "Project deleted. Its files are being erased."
+               : "Project deleted. Its files will be erased by the next "
+                 "asset job.");
+  projects->view = PROJECT_VIEW_CHOOSER;
+  project_refresh(projects);
+}
+
 static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame) {
   VkrEditorProjectError error = {0};
@@ -1853,6 +1974,23 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   if (projects->delete_waiting_unload) {
     project_delete_scene(projects, editor, frame);
   }
+  if (projects->delete_project_waiting_unload) {
+    project_delete_project(projects, editor, frame);
+  }
+  if (projects->delete_project_job) {
+    const VkrEditorProjectJobStatus status = vkr_editor_bakery_project_status(
+        editor->bakery, projects->delete_project_job, NULL);
+    if (status == VKR_EDITOR_PROJECT_JOB_FAILED ||
+        status == VKR_EDITOR_PROJECT_JOB_CANCELLED) {
+      snprintf(projects->message, sizeof(projects->message),
+               "Project deleted, but erasing its files stopped. The next asset "
+               "job removes them; see Bakery for details.");
+    }
+    if (status != VKR_EDITOR_PROJECT_JOB_QUEUED &&
+        status != VKR_EDITOR_PROJECT_JOB_RUNNING) {
+      projects->delete_project_job = 0;
+    }
+  }
   if (projects->scan_index < projects->card_count) {
     ProjectCard *card = &projects->cards[projects->scan_index++];
     VkrAllocatorScope scope =
@@ -2080,7 +2218,8 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   if (projects->project && now >= projects->next_settings_check) {
     projects->next_settings_check = now + .25;
     project_remember_scene(projects, editor, frame);
-    if (!projects->job_id && !projects->delete_waiting_unload) {
+    if (!projects->job_id && !projects->delete_waiting_unload &&
+        !projects->delete_project_waiting_unload) {
       project_queue_settings_save(projects, editor, frame->dock);
     }
   }
@@ -2131,7 +2270,23 @@ static void project_build_chooser(VkrEditorProjects *projects,
     char label[640];
     snprintf(label, sizeof(label), "%s  /  %u scenes%s", card->name,
              card->scenes, card->error[0] ? "  /  Unable to open" : "");
-    if (project_button(ui, "project.open", label, 12, y, width - 24,
+    if (project_button(ui, "project.delete", "Delete", width - 112, y, 100,
+                       projects->read_only || projects->job_id ||
+                           projects->waiting_activation ||
+                           frame->scene_loading ||
+                           projects->delete_project_job ||
+                           vkr_editor_bakery_busy(editor->bakery))) {
+      snprintf(projects->delete_project_id, sizeof(projects->delete_project_id),
+               "%s", card->id);
+      snprintf(projects->delete_project_name,
+               sizeof(projects->delete_project_name), "%s", card->name);
+      projects->message[0] = '\0';
+      projects->resume_view = PROJECT_VIEW_CHOOSER;
+      projects->view = PROJECT_VIEW_DELETE_PROJECT;
+      (void)vkr_ui_pop_id(ui);
+      return;
+    }
+    if (project_button(ui, "project.open", label, 12, y, width - 132,
                        card->error[0] || i >= projects->scan_index)) {
       if (frame->edits->revision != frame->edits->saved_revision) {
         snprintf(projects->initial_project, sizeof(projects->initial_project),
@@ -2719,13 +2874,62 @@ static void project_build_delete_form(VkrEditorProjects *projects,
   }
 }
 
+static void project_build_delete_project_form(VkrEditorProjects *projects,
+                                              VkrEditorUi *editor,
+                                              const VkrSampleUiFrame *frame,
+                                              float32_t body_width) {
+  VkrUiSystem *ui = frame->ui;
+  const bool8_t active =
+      projects->project &&
+      strcmp(projects->project->id, projects->delete_project_id) == 0;
+  project_label(ui, "delete.project.name", projects->delete_project_name, 12,
+                12, body_width - 24);
+  project_label(ui, "delete.project.warning",
+                "Permanently erase this project, all of its scenes and their "
+                "managed files.",
+                12, 56, body_width - 24);
+  project_label(ui, "delete.project.edits",
+                active ? "The open scene will unload. Unsaved edits will be "
+                         "discarded."
+                       : "The current project stays open.",
+                12, 96, body_width - 24);
+  project_label(ui, "delete.project.cache",
+                "Workspace caches that no other project uses are removed. "
+                "This cannot be undone.",
+                12, 136, body_width - 24);
+  if (project_button(ui, "delete.project.confirm", "Delete permanently", 12,
+                     184, 190,
+                     projects->read_only || frame->scene_loading ||
+                         projects->job_id || projects->waiting_activation ||
+                         projects->delete_project_waiting_unload ||
+                         projects->delete_project_job ||
+                         vkr_editor_bakery_busy(editor->bakery))) {
+    project_delete_project(projects, editor, frame);
+  }
+}
+
 static void project_build_scene_list(VkrEditorProjects *projects,
                                      VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      float32_t body_width) {
   VkrUiSystem *ui = frame->ui;
   project_label(ui, "scene.project", projects->project->name, 12, 0,
-                body_width - 142);
+                body_width - 284);
+  if (project_button(
+          ui, "project.delete", "Delete project", body_width - 284, 0, 136,
+          projects->read_only || frame->scene_loading || projects->job_id ||
+              projects->waiting_activation || projects->delete_project_job ||
+              vkr_editor_bakery_busy(editor->bakery))) {
+    snprintf(projects->delete_project_id, sizeof(projects->delete_project_id),
+             "%s", projects->project->id);
+    snprintf(projects->delete_project_name,
+             sizeof(projects->delete_project_name), "%s",
+             projects->project->name);
+    projects->message[0] = '\0';
+    projects->resume_view = PROJECT_VIEW_SCENES;
+    projects->view = PROJECT_VIEW_DELETE_PROJECT;
+    return;
+  }
   if (project_button(ui, "project.rename", "Rename project", body_width - 142,
                      0, 130, projects->read_only)) {
     projects->rename_project = true_v;
@@ -2860,7 +3064,8 @@ static void project_build_footer(VkrEditorProjects *projects,
           ui, "projects.back",
           projects->view == PROJECT_VIEW_ADD_ENTITY ||
                   projects->view == PROJECT_VIEW_CONFIRM ||
-                  projects->view == PROJECT_VIEW_DELETE
+                  projects->view == PROJECT_VIEW_DELETE ||
+                  projects->view == PROJECT_VIEW_DELETE_PROJECT
               ? "Cancel"
           : projects->project && !projects->creating_project ? "Back to editor"
                                                              : "Back",
@@ -2869,6 +3074,7 @@ static void project_build_footer(VkrEditorProjects *projects,
               ? Min(148.0f, (width - 60) * .5f)
               : 148.0f,
           projects->delete_waiting_unload ||
+              projects->delete_project_waiting_unload ||
               (projects->view == PROJECT_VIEW_CHOOSER && !projects->project))) {
     if ((projects->view == PROJECT_VIEW_ADD_ENTITY ||
          (projects->view == PROJECT_VIEW_CONFIRM &&
@@ -2881,6 +3087,8 @@ static void project_build_footer(VkrEditorProjects *projects,
       } else {
         projects->view = PROJECT_VIEW_EDITOR;
       }
+    } else if (projects->view == PROJECT_VIEW_DELETE_PROJECT) {
+      projects->view = projects->resume_view;
     } else if (projects->view == PROJECT_VIEW_DELETE) {
       projects->view = PROJECT_VIEW_SCENES;
       projects->delete_waiting_unload = false_v;
@@ -2971,6 +3179,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       : projects->view == PROJECT_VIEW_SCENES     ? "Scenes"
       : projects->view == PROJECT_VIEW_RENAME     ? "Rename"
       : projects->view == PROJECT_VIEW_DELETE     ? "Delete scene permanently?"
+      : projects->view == PROJECT_VIEW_DELETE_PROJECT
+          ? "Delete project permanently?"
       : projects->view == PROJECT_VIEW_CONFIRM
           ? projects->closing ? "Close editor" : "Unsaved scene edits"
           : "Preparing your project";
@@ -3010,6 +3220,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       project_build_create_form(projects, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_RENAME) {
       project_build_rename_form(projects, frame, body_width);
+    } else if (projects->view == PROJECT_VIEW_DELETE_PROJECT) {
+      project_build_delete_project_form(projects, editor, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_DELETE && projects->project &&
                projects->pending_scene < projects->project->scene_count) {
       project_build_delete_form(projects, editor, frame, body_width);

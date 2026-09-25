@@ -461,7 +461,7 @@ class Job:
             raise JobError('Project must belong directly to the chosen workspace projects directory')
         identifier(self.project_root.name)
         self.scene_id = identifier(request['scene_id']) if request.get('scene_id') else None
-        if self.scene_id is None and request.get('operation') != 'create_project':
+        if self.scene_id is None and request.get('operation') not in ('create_project', 'delete_project'):
             raise JobError('Scene operation requires a scene identifier')
         self.final = self.project_root / 'scenes' / (self.scene_id or 'unused')
         self.legacy_root = Path(request.get('legacy_root') or Path(__file__).resolve().parents[1]).resolve()
@@ -2402,6 +2402,36 @@ class Job:
                   f'{freed / 2**20:.1f} MiB', flush=True)
         return removed, freed
 
+    def delete_project(self):
+        """Erase a project directory only after the project store unpublished
+        its manifest, so a listed project is never erased."""
+        if self.read_only:
+            raise JobError('Cannot delete a project in a read-only workspace')
+        if self.result_path.is_relative_to(self.project_root):
+            raise JobError('Delete result must be outside the project directory')
+        if self.project_path.exists() or self.project_path.is_symlink():
+            raise JobError('Project is still published; remove its manifest before deleting files')
+        pending = [self.project_root]
+        while pending:
+            directory = pending.pop()
+            try:
+                info = directory.lstat()
+            except FileNotFoundError:
+                if directory == self.project_root:
+                    return {'version': VERSION, 'status': 'complete',
+                            'deleted_project_id': self.project_root.name}
+                raise
+            # Junctions and other Windows reparse points must never become
+            # recursive deletion roots, even when their targets are local.
+            if (stat.S_ISLNK(info.st_mode) or
+                    getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise JobError(f'Project deletion refuses links or reparse points: {directory}')
+            if stat.S_ISDIR(info.st_mode):
+                pending.extend(directory.iterdir())
+        self.progress('Deleting project files', 0.1)
+        shutil.rmtree(self.project_root)
+        return {'version': VERSION, 'status': 'complete', 'deleted_project_id': self.project_root.name}
+
     def delete_scene(self):
         """Erase scene-owned files only after the project store removed membership."""
         if self.read_only:
@@ -2458,11 +2488,13 @@ class Job:
 
     def execute(self):
         try:
-            if self.request.get('operation') == 'delete_scene':
-                result = self.delete_scene()
+            if self.request.get('operation') in ('delete_scene', 'delete_project'):
+                deleting_scene = self.request['operation'] == 'delete_scene'
+                result = self.delete_scene() if deleting_scene else self.delete_project()
                 atomic_json(self.result_path, result)
                 atomic_json(self.progress_path, {'version': VERSION, 'status': 'complete',
-                                                'stage': 'Scene deleted', 'progress': 1.0})
+                                                'stage': 'Scene deleted' if deleting_scene else 'Project deleted',
+                                                'progress': 1.0})
                 self.cleanup_after_success()
                 return 0
             self.ensure_bootstrap()

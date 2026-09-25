@@ -47,6 +47,12 @@ static bool8_t project_test_visit(const char *id, void *context) {
   return true_v;
 }
 
+static bool8_t project_test_count(const char *id, void *context) {
+  (void)id;
+  ++*(uint32_t *)context;
+  return true_v;
+}
+
 static void project_test_overlay(VkrAllocator *allocator,
                                  const char *project_manifest) {
   char root[1024];
@@ -567,8 +573,20 @@ bool32_t run_editor_project_store_tests(void) {
   assert(!vkr_editor_project_save(&s_loaded, &error));
   assert(!vkr_editor_project_load(&workspace, s_project.id, &allocator,
                                   &s_project, &error));
+  // Unpublishing removes discovery before any file erasure, even for a
+  // manifest this store cannot parse; repeating it reports the missing file.
+  uint32_t listed = 0;
+  assert(vkr_editor_workspace_visit(&workspace, project_test_count, &listed,
+                                    &error));
+  assert(listed == 1);
+  assert(vkr_editor_project_unpublish(&workspace, s_loaded.id, &error));
+  listed = 0;
+  assert(vkr_editor_workspace_visit(&workspace, project_test_count, &listed,
+                                    &error));
+  assert(listed == 0);
+  assert(!vkr_editor_project_unpublish(&workspace, s_loaded.id, &error));
   FilePath final_manifest = project_test_path(s_loaded.manifest_path);
-  assert(file_remove(&final_manifest) == FILE_ERROR_NONE);
+  assert(!file_exists(&final_manifest));
   char project_root[1024];
   assert(vkr_string_copy_bounded(project_root, sizeof(project_root),
                                  s_loaded.manifest_path));

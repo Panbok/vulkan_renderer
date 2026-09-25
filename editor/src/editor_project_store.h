@@ -66,6 +66,12 @@ bool8_t vkr_editor_project_load(const VkrEditorWorkspace *workspace,
 bool8_t vkr_editor_project_create(VkrEditorWorkspace *workspace,
                                   const char *name, VkrEditorProject *project,
                                   VkrEditorProjectError *error);
+// Removes project.json under the project lock, so discovery no longer lists
+// the project. Files remain until a delete_project job erases the directory.
+// Requires the workspace write lease; callers first stop the project's users.
+bool8_t vkr_editor_project_unpublish(const VkrEditorWorkspace *workspace,
+                                     const char *id,
+                                     VkrEditorProjectError *error);
 // Synchronously validates and atomically replaces the manifest. Refuses a stale
 // fingerprint and concurrent writers; failure preserves the previous manifest.
 bool8_t vkr_editor_project_save(VkrEditorProject *project,

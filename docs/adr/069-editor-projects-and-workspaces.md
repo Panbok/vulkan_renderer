@@ -86,7 +86,16 @@ rollback. A background `delete_scene` job then erases only the unreferenced
 Windows reparse points. File-removal failure or cancellation leaves membership
 removed and offers Retry to finish cleanup; it does not claim the files survived
 unchanged. An interrupted editor retains the job request in the workspace jobs
-directory, but automatic cleanup resumption after restart is not implemented.
+directory; a later write job removes the unlisted scene directory once it has
+been unmodified for an hour, but deletion itself does not resume after restart.
+Projects can be deleted from their chooser card or the Scenes view after
+confirmation. Deleting the open project unloads its scene and discards unsaved
+edits. The store then removes `project.json` under the project lock, which is
+the commit point that drops it from discovery, and a background
+`delete_project` job erases the unlisted directory. That job refuses a still
+published manifest, links and Windows reparse points; if it stops, workspace
+cleanup removes the directory after an hour. Its cleanup pass frees cache
+entries that only the deleted project used.
 CPU storage tests cover ordering, recall removal, conflicts and empty projects;
 isolated filesystem checks cover deletion, retries and Windows junction refusal.
 Native interaction and active-scene retirement through this dialog remain unverified.
@@ -202,6 +211,41 @@ retirement owners; the browser retains at most 64 texture requests and prunes it
 generated disk cache through a bounded worker operation.
 
 ## Verification and limits
+
+Publishing the manifest at creation passes the Release editor build and the CPU
+project-store suite. A native click-through of a failed first scene job remains
+unverified. `tools/checks/check_editor_project_jobs.py` with the Release mesh
+cooker, texture packer and diffuse baker covers the open-scene diffuse skip and
+an invalid recipe that still fails.
+
+On 2026-09-25 the Release editor opened a scratch copy of a new project's
+manifest without loading a scene. It exited 0 and wrote graphics, runtime,
+layout and panel settings; before the animation owner wrote an empty object,
+every such save failed and shutdown exited 6. A scratch scene failing job
+validation showed Back and Retry in a native screenshot. Clicking Back or the
+navigation after a failure was not exercised natively.
+
+Two production `create_scene` jobs imported the repository Bistro glTF into one
+scratch workspace on the 16 GB M1 Pro, preparing assets without bakes. The first
+took 772 s and consumed 3.11 GiB of disk, against about 14 GB for the earlier
+layout. It wrote 306 paired files (119 shared normals), 280 converted
+specular-glossiness and 18 cutout files to `cache/generated`, and 185 packed
+material textures to `cache/textures`; the bundle kept no derived intermediates.
+The second import packed no texture, took 332 s and consumed 0.30 GiB, including
+swap-file noise on the shared volume. Materials reference 509 textures
+(2.95 GiB) instead of 577 (3.38 GiB); all 187 earlier per-factor normals and
+187 roughness outputs match the new files' KTX level bytes exactly. The v4
+manifest is 887 bytes with a 930 KB inventory. A 90-second Release editor run
+rendered the import at 5,093 MiB managed GPU memory without budget errors. A
+scratch scene with a 1.89 MB, 1,504-record inventory listed 1,506 assets in
+Content, including two editor fonts.
+`tools/checks/check_editor_workspace_cleanup.py` builds a synthetic workspace
+and checks each keep and remove rule, the grace periods, a second pass that
+removes nothing, the unreadable-manifest guard, and cleanup after a real
+`create_scene` job. It also checks that `delete_project` refuses a published
+project and a link, erases an unpublished project, and frees its cache entries.
+The CPU store suite checks unpublishing. Native clicks through the deletion
+dialog were not exercised. Existing job checks pass with cleanup active.
 
 Entity addition passes the Release editor build and
 `tools/checks/check_editor_add_entities.py --mesh-cooker <built cooker>`.

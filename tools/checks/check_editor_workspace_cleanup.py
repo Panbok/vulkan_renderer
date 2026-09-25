@@ -141,8 +141,39 @@ def main():
         assert absent(generated / 'cutout_v1' / 'unused.vkt'), 'Write job skipped cleanup'
         assert present(generated / 'normalrough_v2' / 'used_normal.vkt')
 
+        # Project deletion erases only an unpublished project, refuses links,
+        # and frees cache entries that no remaining project uses.
+        doomed_id = str(uuid.uuid4())
+        doomed = workspace / 'projects' / doomed_id
+        doomed_scene = doomed / 'scenes' / str(uuid.uuid4())
+        only_doomed = write(doomed_scene / 'builds' / 'r' / 'texture.vkt', b'only in doomed project')
+        jobs.atomic_json(doomed / 'project.json', {'version': 1, 'assets': [], 'scenes': [
+            {'id': doomed_scene.name, 'name': 'Doomed', 'path': f'scenes/{doomed_scene.name}/scene.json'}]})
+        jobs.write_managed_scene(doomed_scene / 'scene.json', {'version': 4, 'id': doomed_scene.name,
+            'entities': [], 'assets': [{'id': str(uuid.uuid4()), 'kind': 'texture', 'name': 'doomed',
+            'artifacts': [{'role': 'texture', 'path': 'builds/r/texture.vkt', 'version': 1}],
+            'fingerprint': 'sha256:' + only_doomed}]})
+        write(generated / 'cutout_v1' / 'doomed.vkt', b'only in doomed project')
+        delete = {'version': 1, 'operation': 'delete_project', 'workspace_root': str(workspace),
+                  'project_path': str(doomed / 'project.json')}
+        assert jobs.Job(delete, recent_job / 'delete.json').execute() == 1, 'Published project was erased'
+        assert present(doomed / 'project.json', generated / 'cutout_v1' / 'doomed.vkt')
+        (doomed / 'project.json').unlink()
+        assert jobs.Job(delete, recent_job / 'delete.json').execute() == 0
+        assert absent(doomed), 'Unpublished project survived deletion'
+        assert absent(generated / 'cutout_v1' / 'doomed.vkt'), 'Deleted project cache kept'
+        assert present(generated / 'normalrough_v2' / 'used_normal.vkt', scene_root)
+        linked = workspace / 'projects' / str(uuid.uuid4())
+        outside = Path(temporary) / 'outside'
+        write(outside / 'keep.bin', b'outside')
+        (linked / 'scenes').mkdir(parents=True)
+        (linked / 'scenes' / 'link').symlink_to(outside, target_is_directory=True)
+        linked_delete = dict(delete, project_path=str(linked / 'project.json'))
+        assert jobs.Job(linked_delete, recent_job / 'linked.json').execute() == 1
+        assert present(outside / 'keep.bin', linked), 'Link refusal erased data'
     print('Workspace cleanup: reachable revisions, caches and pending scenes kept; '
-          'abandoned scenes, projects, staging, stale revisions, unused caches and old jobs removed')
+          'abandoned scenes, projects, staging, stale revisions, unused caches and old jobs removed; '
+          'project deletion refuses published projects and links')
 
 
 if __name__ == '__main__':
