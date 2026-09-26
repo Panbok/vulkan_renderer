@@ -52,7 +52,10 @@
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #define VKR_SIMD_ARM_NEON 1
 #include <arm_neon.h>
-#elif defined(__AVX2__) || defined(__AVX__)
+// The x86 path emits FMA, so AVX alone (Sandy/Ivy Bridge) takes the scalar
+// path. MSVC enables FMA with /arch:AVX2 but never defines __FMA__.
+#elif defined(__FMA__) ||                                                      \
+    (defined(_MSC_VER) && !defined(__clang__) && defined(__AVX2__))
 #define VKR_SIMD_X86_AVX 1
 #include <immintrin.h>
 #endif

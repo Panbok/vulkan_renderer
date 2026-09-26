@@ -305,6 +305,8 @@ static void test_mat4_mul_vec3_translation(void) {
   assert(vec3_equals(translated_origin, vec3_new(-3.5f, 4.0f, 7.0f),
                      VKR_FLOAT_EPSILON) &&
          "mat4_mul_vec3 translation failed");
+  // The translation column's W of 1 must not leak into the Vec3 padding.
+  assert(translated_origin.w == 0.0f && "mat4_mul_vec3 result W must be 0");
 
   printf("  test_mat4_mul_vec3_translation PASSED\n");
 }

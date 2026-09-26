@@ -554,12 +554,15 @@ static INLINE Vec4 mat4_mul_vec4(Mat4 m, Vec4 v) {
 }
 
 /* Treats v as a point (w = 1) and does not divide by w; use mat4_mul_vec4 for
- * directions or projections. */
+ * directions or projections. The result's W is 0, like every Vec3. */
 static INLINE Vec3 mat4_mul_vec3(Mat4 m, Vec3 v) {
-  return vec3_add(
+  Vec3 result = vec3_add(
       vec3_add(vec3_add(vec3_scale(m.cols[0], v.x), vec3_scale(m.cols[1], v.y)),
                vec3_scale(m.cols[2], v.z)),
-      vec3_scale(m.cols[3], 1.0f));
+      m.cols[3]);
+
+  // The columns' W lanes sum to the point's clip W (1 for an affine matrix).
+  return vkr_simd_set_w_f32x4(result, 0.0f);
 }
 
 /* The unit -Z column, the facing direction. */

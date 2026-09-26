@@ -552,6 +552,22 @@ static void test_simd_shuffle(void) {
   assert(simd_vector_equals(custom, expected_custom, VKR_FLOAT_EPSILON) &&
          "Custom shuffle failed");
 
+  // The constant-index permute must select lanes in the same order.
+  VKR_SIMD_F32X4 constant_reverse = VkrSimdShuffleF32x4(v, 3, 2, 1, 0);
+  assert(simd_vector_equals(constant_reverse, expected_reverse,
+                            VKR_FLOAT_EPSILON) &&
+         "Constant reverse shuffle failed");
+  VKR_SIMD_F32X4 constant_custom = VkrSimdShuffleF32x4(v, 1, 3, 0, 2);
+  assert(
+      simd_vector_equals(constant_custom, expected_custom, VKR_FLOAT_EPSILON) &&
+      "Constant custom shuffle failed");
+
+  VKR_SIMD_F32X4 with_w = vkr_simd_set_w_f32x4(v, -5.0f);
+  VKR_SIMD_F32X4 expected_with_w =
+      vkr_simd_set_f32x4(10.0f, 20.0f, 30.0f, -5.0f);
+  assert(simd_vector_equals(with_w, expected_with_w, VKR_FLOAT_EPSILON) &&
+         "vkr_simd_set_w_f32x4 failed");
+
   printf("  test_simd_shuffle PASSED\n");
 }
 

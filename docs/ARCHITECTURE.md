@@ -86,7 +86,9 @@ libraries were compiled with `NDEBUG`.
 renderer, CPU tester and application targets. It defaults to `native` for
 GCC/Clang (`-march=native`), which tunes binaries for the build host, and to
 `AVX2` for MSVC (`/arch:AVX2`). Binaries meant for other machines need a
-portable value such as `x86-64-v3` or `armv8.2-a`.
+portable value such as `x86-64-v3` or `armv8.2-a`. The x86 vector-math path in
+`lib/src/math/vkr_simd.h` needs FMA (`x86-64-v3`, or `/arch:AVX2` on MSVC);
+lower x86 baselines, including AVX without FMA, compile its scalar fallback.
 
 [Root CMake configuration](../CMakeLists.txt) maps imported Debug,
 RelWithDebInfo and MinSizeRel dependencies to Release. Windows uses the Release

@@ -148,10 +148,15 @@ vkr_internal INLINE float32_t vkr_simd_dot3_f32x4(VKR_SIMD_F32X4 a,
 vkr_internal INLINE float32_t vkr_simd_dot4_f32x4(VKR_SIMD_F32X4 a,
                                                   VKR_SIMD_F32X4 b);
 
-/* Lane indices in [0, 3]; they may be run-time values. */
+/* Lane indices in [0, 3]; they may be run-time values, which go through memory.
+ * Constant indices use VkrSimdShuffleF32x4, a single permute instruction. */
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
                                                           int32_t x, int32_t y,
                                                           int32_t z, int32_t w);
+
+/* Returns v with lane W replaced by w, without a round trip through memory. */
+vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_set_w_f32x4(VKR_SIMD_F32X4 v,
+                                                        float32_t w);
 
 typedef enum VkrSimdCompareMode {
   VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE = 0,
@@ -375,6 +380,13 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
   result.elements[1] = v.elements[y];
   result.elements[2] = v.elements[z];
   result.elements[3] = v.elements[w];
+  return result;
+}
+
+vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_set_w_f32x4(VKR_SIMD_F32X4 v,
+                                                        float32_t w) {
+  VKR_SIMD_F32X4 result;
+  result.neon = vsetq_lane_f32(w, v.neon, 3);
   return result;
 }
 
@@ -665,6 +677,10 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
                                                           int32_t x, int32_t y,
                                                           int32_t z,
                                                           int32_t w) {
+  assert(x >= 0 && x < 4);
+  assert(y >= 0 && y < 4);
+  assert(z >= 0 && z < 4);
+  assert(w >= 0 && w < 4);
   // _mm_shuffle_ps requires a compile-time constant for the control mask,
   // so we must do the shuffle manually for variable indices.
   VKR_SIMD_F32X4 result;
@@ -676,6 +692,13 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
   out[2] = tmp[z];
   out[3] = tmp[w];
   result.sse = _mm_loadu_ps(out);
+  return result;
+}
+
+vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_set_w_f32x4(VKR_SIMD_F32X4 v,
+                                                        float32_t w) {
+  VKR_SIMD_F32X4 result;
+  result.sse = _mm_blend_ps(v.sse, _mm_set1_ps(w), 0x8);
   return result;
 }
 
@@ -947,6 +970,12 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
   return result;
 }
 
+vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_set_w_f32x4(VKR_SIMD_F32X4 v,
+                                                        float32_t w) {
+  v.w = w;
+  return v;
+}
+
 vkr_internal INLINE VKR_SIMD_I32X4 vkr_simd_set_i32x4(int32_t x, int32_t y,
                                                       int32_t z, int32_t w) {
   VKR_SIMD_I32X4 result = {{x, y, z, w}};
@@ -1060,4 +1089,24 @@ vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
     return false_v;
   }
 }
+#endif
+
+// VkrSimdShuffleF32x4(v, x, y, z, w): lane i of the result is lane <index i>
+// of v. Indices must be integer constants in [0, 3]; v is evaluated more than
+// once, so pass a named value. Compilers without a constant permute builtin use
+// the run-time vkr_simd_shuffle_f32x4.
+#if VKR_SIMD_ARM_NEON && defined(__clang__)
+#define VkrSimdShuffleF32x4(v, x, y, z, w)                                     \
+  ((VKR_SIMD_F32X4){                                                           \
+      .neon = __builtin_shufflevector((v).neon, (v).neon, x, y, z, w)})
+#elif VKR_SIMD_ARM_NEON && defined(__GNUC__)
+#define VkrSimdShuffleF32x4(v, x, y, z, w)                                     \
+  ((VKR_SIMD_F32X4){                                                           \
+      .neon = __builtin_shuffle((v).neon, (uint32x4_t){x, y, z, w})})
+#elif VKR_SIMD_X86_AVX
+#define VkrSimdShuffleF32x4(v, x, y, z, w)                                     \
+  ((VKR_SIMD_F32X4){                                                           \
+      .sse = _mm_shuffle_ps((v).sse, (v).sse, _MM_SHUFFLE(w, z, y, x))})
+#else
+#define VkrSimdShuffleF32x4(v, x, y, z, w) vkr_simd_shuffle_f32x4(v, x, y, z, w)
 #endif

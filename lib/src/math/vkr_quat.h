@@ -119,39 +119,31 @@ vkr_internal INLINE VkrQuat vkr_quat_inverse(VkrQuat q) {
 
 /* a * b applies b first, then a. */
 vkr_internal INLINE VkrQuat vkr_quat_mul(VkrQuat a, VkrQuat b) {
-  // Calculate w: a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
-  Vec4 a_for_w = vkr_simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
-  Vec4 b_for_w = vkr_simd_shuffle_f32x4(b, 3, 0, 1, 2); // [b.w, b.x, b.y, b.z]
-  Vec4 sign_w = vkr_simd_set_f32x4(1.0f, -1.0f, -1.0f, -1.0f);
-  Vec4 terms_w =
-      vkr_simd_mul_f32x4(a_for_w, vkr_simd_mul_f32x4(b_for_w, sign_w));
-  float32_t w = vkr_simd_hadd_f32x4(terms_w);
+  // Each component of a scales a signed permutation of b, one lane per
+  // output component:
+  //   x = a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y
+  //   y = a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x
+  //   z = a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
+  //   w = a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
+  Vec4 b_wzyx = VkrSimdShuffleF32x4(b, 3, 2, 1, 0);
+  Vec4 b_zwxy = VkrSimdShuffleF32x4(b, 2, 3, 0, 1);
+  Vec4 b_yxwz = VkrSimdShuffleF32x4(b, 1, 0, 3, 2);
 
-  // Calculate x: a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y
-  Vec4 a_for_x = vkr_simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
-  Vec4 b_for_x = vkr_simd_shuffle_f32x4(b, 0, 3, 2, 1); // [b.x, b.w, b.z, b.y]
-  Vec4 sign_x = vkr_simd_set_f32x4(1.0f, 1.0f, 1.0f, -1.0f);
-  Vec4 terms_x =
-      vkr_simd_mul_f32x4(a_for_x, vkr_simd_mul_f32x4(b_for_x, sign_x));
-  float32_t x = vkr_simd_hadd_f32x4(terms_x);
+  Vec4 sign_x = vkr_simd_set_f32x4(1.0f, -1.0f, 1.0f, -1.0f);
+  Vec4 sign_y = vkr_simd_set_f32x4(1.0f, 1.0f, -1.0f, -1.0f);
+  Vec4 sign_z = vkr_simd_set_f32x4(-1.0f, 1.0f, 1.0f, -1.0f);
 
-  // Calculate y: a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x
-  Vec4 a_for_y = vkr_simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
-  Vec4 b_for_y = vkr_simd_shuffle_f32x4(b, 1, 2, 3, 0); // [b.y, b.z, b.w, b.x]
-  Vec4 sign_y = vkr_simd_set_f32x4(1.0f, -1.0f, 1.0f, 1.0f);
-  Vec4 terms_y =
-      vkr_simd_mul_f32x4(a_for_y, vkr_simd_mul_f32x4(b_for_y, sign_y));
-  float32_t y = vkr_simd_hadd_f32x4(terms_y);
+  Vec4 terms_w = vkr_simd_mul_f32x4(vkr_simd_set1_f32x4(a.w), b);
+  Vec4 terms_x = vkr_simd_mul_f32x4(vkr_simd_set1_f32x4(a.x),
+                                    vkr_simd_mul_f32x4(b_wzyx, sign_x));
+  Vec4 terms_y = vkr_simd_mul_f32x4(vkr_simd_set1_f32x4(a.y),
+                                    vkr_simd_mul_f32x4(b_zwxy, sign_y));
+  Vec4 terms_z = vkr_simd_mul_f32x4(vkr_simd_set1_f32x4(a.z),
+                                    vkr_simd_mul_f32x4(b_yxwz, sign_z));
 
-  // Calculate z: a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
-  Vec4 a_for_z = vkr_simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
-  Vec4 b_for_z = vkr_simd_shuffle_f32x4(b, 2, 1, 0, 3); // [b.z, b.y, b.x, b.w]
-  Vec4 sign_z = vkr_simd_set_f32x4(1.0f, 1.0f, -1.0f, 1.0f);
-  Vec4 terms_z =
-      vkr_simd_mul_f32x4(a_for_z, vkr_simd_mul_f32x4(b_for_z, sign_z));
-  float32_t z = vkr_simd_hadd_f32x4(terms_z);
-
-  return vec4_new(x, y, z, w);
+  // Pairwise, in the order the NEON and SSE horizontal adds used.
+  return vkr_simd_add_f32x4(vkr_simd_add_f32x4(terms_w, terms_x),
+                            vkr_simd_add_f32x4(terms_y, terms_z));
 }
 
 vkr_internal INLINE VkrQuat vkr_quat_add(VkrQuat a, VkrQuat b) {

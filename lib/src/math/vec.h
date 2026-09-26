@@ -206,7 +206,7 @@ static INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) { return vkr_simd_mul_f32x4(a, b); }
 /* Divisors are not checked. W divides by 1, so the padding stays 0. */
 static INLINE Vec3 vec3_div(Vec3 a, Vec3 b) {
   // Set W to 1 to avoid division by 0 (result W is ignored)
-  Vec3 b_safe = vkr_simd_set_f32x4(b.x, b.y, b.z, 1.0f);
+  Vec3 b_safe = vkr_simd_set_w_f32x4(b, 1.0f);
   return vkr_simd_div_f32x4(a, b_safe);
 }
 
@@ -220,16 +220,16 @@ static INLINE float32_t vec3_dot(Vec3 a, Vec3 b) {
 
 /* Right-hand rule; the result's W is 0. */
 static INLINE Vec3 vec3_cross(Vec3 a, Vec3 b) {
-  Vec3 a_yzx = vkr_simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
-  Vec3 b_yzx = vkr_simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
-  Vec3 a_zxy = vkr_simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
-  Vec3 b_zxy = vkr_simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
+  Vec3 a_yzx = VkrSimdShuffleF32x4(a, 1, 2, 0, 3); // (y, z, x, w)
+  Vec3 b_yzx = VkrSimdShuffleF32x4(b, 1, 2, 0, 3); // (y, z, x, w)
 
-  Vec3 result = vkr_simd_sub_f32x4(vkr_simd_mul_f32x4(a_yzx, b_zxy),
-                                   vkr_simd_mul_f32x4(a_zxy, b_yzx));
+  // a * b.yzx - a.yzx * b is the cross product in (z, x, y) order; each lane
+  // is the same product difference as the textbook form.
+  Vec3 cross_zxy = vkr_simd_sub_f32x4(vkr_simd_mul_f32x4(a, b_yzx),
+                                      vkr_simd_mul_f32x4(a_yzx, b));
+  Vec3 result = VkrSimdShuffleF32x4(cross_zxy, 1, 2, 0, 3);
 
-  result.w = 0.0f;
-  return result;
+  return vkr_simd_set_w_f32x4(result, 0.0f);
 }
 
 static INLINE float32_t vec3_length_squared(Vec3 v) {
@@ -240,16 +240,14 @@ static INLINE float32_t vec3_length(Vec3 v) {
   return vkr_sqrt_f32(vec3_length_squared(v));
 }
 
-/* Returns the zero vector when the length is at most VKR_FLOAT_EPSILON. The
- * reciprocal square root is refined to float precision (vkr_simd_rsqrt_f32x4).
- */
+/* Returns the zero vector when the length is at most VKR_FLOAT_EPSILON. */
 static INLINE Vec3 vec3_normalize(Vec3 v) {
   float32_t len_sq = vec3_length_squared(v);
   if (len_sq > VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
-    Vec3 result = vkr_simd_mul_f32x4(
-        v, vkr_simd_rsqrt_f32x4(vkr_simd_set1_f32x4(len_sq)));
-    result.w = 0.0f;
-    return result;
+    // A rounded square root and divide measured faster on Apple M1 than the
+    // Newton-refined vkr_simd_rsqrt_f32x4 estimate, with a smaller error.
+    Vec3 result = vec3_scale(v, 1.0f / vkr_sqrt_f32(len_sq));
+    return vkr_simd_set_w_f32x4(result, 0.0f);
   }
   return vec3_zero();
 }
@@ -258,16 +256,18 @@ static INLINE Vec3 vec3_negate(Vec3 v) {
   return vkr_simd_sub_f32x4(vec3_zero(), v); // W stays 0
 }
 
-/* True when every component differs by at most epsilon. */
+/* True when every XYZ component differs by at most epsilon; W is ignored. */
 static INLINE bool8_t vec3_equal(Vec3 a, Vec3 b, float32_t epsilon) {
-  return vkr_simd_compare_f32x4(a, b, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON,
-                                epsilon);
+  return vkr_simd_compare_f32x4(vkr_simd_set_w_f32x4(a, 0.0f),
+                                vkr_simd_set_w_f32x4(b, 0.0f),
+                                VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON, epsilon);
 }
 
-/* True when any component differs by more than epsilon. */
+/* True when any XYZ component differs by more than epsilon; W is ignored. */
 static INLINE bool8_t vec3_not_equal(Vec3 a, Vec3 b, float32_t epsilon) {
-  return vkr_simd_compare_f32x4(a, b, VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
-                                epsilon);
+  return vkr_simd_compare_f32x4(
+      vkr_simd_set_w_f32x4(a, 0.0f), vkr_simd_set_w_f32x4(b, 0.0f),
+      VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON, epsilon);
 }
 
 // =============================================================================
@@ -290,17 +290,7 @@ static INLINE float32_t vec4_dot(Vec4 a, Vec4 b) {
 
 /* Cross product of the XYZ parts; input W is ignored and the result's W is 0.
  */
-static INLINE Vec4 vec4_cross3(Vec4 a, Vec4 b) {
-  Vec4 a_yzx = vkr_simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
-  Vec4 b_yzx = vkr_simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
-  Vec4 a_zxy = vkr_simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
-  Vec4 b_zxy = vkr_simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
-
-  Vec4 result = vkr_simd_sub_f32x4(vkr_simd_mul_f32x4(a_yzx, b_zxy),
-                                   vkr_simd_mul_f32x4(a_zxy, b_yzx));
-  result.w = 0.0f; // Ensure W component is 0 for 3D cross product
-  return result;
-}
+static INLINE Vec4 vec4_cross3(Vec4 a, Vec4 b) { return vec3_cross(a, b); }
 
 static INLINE float32_t vec4_length_squared(Vec4 v) { return vec4_dot(v, v); }
 
@@ -313,8 +303,7 @@ static INLINE float32_t vec4_length(Vec4 v) {
 static INLINE Vec4 vec4_normalize(Vec4 v) {
   float32_t len_sq = vec4_length_squared(v);
   if (len_sq > VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
-    return vkr_simd_mul_f32x4(
-        v, vkr_simd_rsqrt_f32x4(vkr_simd_set1_f32x4(len_sq)));
+    return vec4_scale(v, 1.0f / vkr_sqrt_f32(len_sq)); // As vec3_normalize.
   }
   return vec4_zero();
 }
@@ -444,15 +433,12 @@ static INLINE float32_t vec4_distance(Vec4 a, Vec4 b) {
 
 /* Sets W to 0. */
 static INLINE Vec3 vec4_to_vec3(Vec4 v) {
-  v.w = 0.0f;
-  return v;
+  return vkr_simd_set_w_f32x4(v, 0.0f);
 }
 
 /* Use w = 1 for points and w = 0 for directions. */
 static INLINE Vec4 vec3_to_vec4(Vec3 v, float32_t w) {
-  Vec4 result = v;
-  result.w = w;
-  return result;
+  return vkr_simd_set_w_f32x4(v, w);
 }
 
 static INLINE Vec2 vec3_to_vec2(Vec3 v) { return (Vec2){v.x, v.y}; }

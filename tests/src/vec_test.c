@@ -365,6 +365,12 @@ static void test_vec3_comparisons(void) {
   assert(vec3_not_equal(base, far_point, loose_epsilon) &&
          "vec3_not_equal should detect large differences");
 
+  // A point promoted to W = 1 is still the same Vec3.
+  Vec3 base_point = vec3_to_vec4(base, 1.0f);
+  assert(vec3_equal(base_point, base, 0.0f) && "vec3_equal should ignore W");
+  assert(!vec3_not_equal(base_point, base, 0.0f) &&
+         "vec3_not_equal should ignore W");
+
   printf("  test_vec3_comparisons PASSED\n");
 }
 
