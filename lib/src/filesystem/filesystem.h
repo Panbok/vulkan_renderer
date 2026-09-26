@@ -587,6 +587,16 @@ bool8_t file_path_starts_with(const char *path, const char *prefix);
 String8 file_path_get_directory(VkrAllocator *allocator, String8 path);
 
 /**
+ * @brief Borrows the final component of a path: the text after its last
+ * separator, or the whole path when it has none. A trailing separator yields
+ * an empty name.
+ *
+ * @param path The file path; the result views its storage.
+ * @return A view into `path`, valid while `path` is.
+ */
+String8 file_path_get_name(String8 path);
+
+/**
  * @brief Joins a directory path and filename into a single path.
  *
  * Concatenates the directory and filename with appropriate path separator.

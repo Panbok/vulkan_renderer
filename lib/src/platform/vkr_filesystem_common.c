@@ -67,6 +67,17 @@ String8 file_path_get_directory(VkrAllocator *allocator, String8 path) {
   return fs_string_duplicate(allocator, &directory);
 }
 
+String8 file_path_get_name(String8 path) {
+  if (!path.str) {
+    return (String8){0};
+  }
+  uint64_t start = path.length;
+  while (start > 0 && !fs_is_separator(path.str[start - 1])) {
+    --start;
+  }
+  return (String8){.str = path.str + start, .length = path.length - start};
+}
+
 String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
   if (!dir.str || dir.length == 0) {
     return fs_string_duplicate(allocator, &file);

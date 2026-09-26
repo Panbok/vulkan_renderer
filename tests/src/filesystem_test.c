@@ -373,6 +373,12 @@ vkr_internal void test_file_path_helpers(void) {
   String8 joined = file_path_join(&allocator, dir, filename);
   assert(strcmp((const char *)joined.str, "/tmp/assets/shader.spv") == 0);
 
+  const String8 name = file_path_get_name(sample);
+  assert(name.length == string_length("output.bin") &&
+         MemCompare(name.str, "output.bin", name.length) == 0);
+  assert(file_path_get_name(filename).length == filename.length);
+  assert(file_path_get_name(string8_lit("/tmp/assets/")).length == 0);
+
   arena_destroy(arena);
   printf("  test_file_path_helpers PASSED\n");
 }
