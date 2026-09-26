@@ -12,8 +12,6 @@ function(vkr_configure_application_target target)
                      "${CMAKE_SOURCE_DIR}")
     endif()
 
-    target_compile_options(${target} PRIVATE ${VKR_ARCH_FLAG})
-
     target_link_libraries(${target} PRIVATE vkr_sample_runtime)
     target_compile_definitions(${target} PRIVATE
         $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=1>

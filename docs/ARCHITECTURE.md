@@ -64,9 +64,13 @@ upstream target options. Vendored and fetched dependencies, including the
 separate KTX reader and mesh codecs, compile with `NDEBUG` and `-O3` (`/O2` for
 MSVC) in every configuration. VKR-owned Release and RelWithDebInfo targets use
 `-O3` or `/O2` plus function/data sections and linker removal of unused code.
-Release additionally enables interprocedural optimization when CMake's compiler
-and linker check succeeds; `VKR_ENABLE_IPO=OFF` disables it. These settings do not
-enable fast-math or establish a frame-time improvement.
+Release and RelWithDebInfo additionally enable interprocedural optimization when
+CMake's compiler and linker check succeeds; `VKR_ENABLE_IPO=OFF` disables it.
+CMake applies its IPO flags to C and C++ only, so the policy passes the same
+ThinLTO flag to Objective-C sources, including the Metal backend. GCC and Clang
+targets also compile with `-fno-math-errno`, Apple's default, because no VKR
+code reads `errno` after a math call. These settings do not enable fast-math or
+establish a frame-time improvement.
 
 The same policy compiles every VKR-owned Clang or GCC target with `-Wall -Wextra
 -Wshadow`. It omits unused parameters, omitted designated-initializer fields,
@@ -82,8 +86,11 @@ assumption. The CPU tester undefines `NDEBUG` in every configuration so its
 assertions always run; `VKR_TEST_LIBRARIES_NDEBUG` reports whether the linked
 libraries were compiled with `NDEBUG`.
 
-`VKR_TARGET_ARCH` selects the instruction-set baseline for C code and for the
-renderer, CPU tester and application targets. It defaults to `native` for
+`VKR_TARGET_ARCH` selects the instruction-set baseline for every C, C++ and
+Objective-C target, including dependencies, except Jolt and its `vkr_physics`
+adapter: Jolt enables AVX2 and FMA from the compiler's target macros, which would
+change physics results, so they keep the compiler default until physics
+determinism settles that choice. It defaults to `native` for
 GCC/Clang (`-march=native`), which tunes binaries for the build host, and to
 `AVX2` for MSVC (`/arch:AVX2`). Binaries meant for other machines need a
 portable value such as `x86-64-v3` or `armv8.2-a`. The x86 vector-math path in

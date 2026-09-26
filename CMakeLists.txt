@@ -75,7 +75,7 @@ if(MSVC)
     endforeach()
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Zi -W4 /FC")
 endif()
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${VKR_ARCH_FLAG}")
+# vkr_apply_build_policy applies VKR_ARCH_FLAG to every target and language.
 
 include(cmake/vkr_build_policy.cmake)
 

@@ -198,9 +198,6 @@ add_dependencies(renderer_lib vkr_vulkan_packet_shaders)
 
 target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 
-# The instruction-set baseline also covers the Objective-C and C++ sources.
-target_compile_options(renderer_lib PRIVATE ${VKR_ARCH_FLAG})
-
 # Find Vulkan package
 find_package(Vulkan REQUIRED)
 

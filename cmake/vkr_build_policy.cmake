@@ -56,6 +56,15 @@ function(vkr_apply_build_policy directory)
             set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY
                          "${CMAKE_MSVC_RUNTIME_LIBRARY}")
         endif()
+        # The instruction-set baseline covers C, C++ and Objective-C, so C++
+        # dependencies and the Metal backend match the C code. Jolt enables
+        # AVX2, FMA and other x86 extensions from the compiler's target macros,
+        # which changes its floating-point results; it and vkr_physics, which
+        # compiles Jolt's inline headers, keep the compiler default baseline.
+        if(NOT target MATCHES "^(Jolt|vkr_physics)$")
+            target_compile_options(${target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:${VKR_ARCH_FLAG}>")
+        endif()
         if(vendor)
             # Consumers include dependency headers as system headers, so the
             # VKR warning policy does not apply to third-party code.
@@ -119,10 +128,24 @@ function(vkr_apply_build_policy directory)
                     "$<$<CONFIG:Release,RelWithDebInfo>:-O3>"
                     "$<$<CONFIG:Release,RelWithDebInfo>:-ffunction-sections>"
                     "$<$<CONFIG:Release,RelWithDebInfo>:-fdata-sections>")
+                # Apple targets already default to this. Elsewhere errno-setting
+                # math keeps sqrt and similar calls out of line and blocks
+                # vectorization; VKR never reads errno after a math call.
+                target_compile_options(${target} PRIVATE -fno-math-errno)
             endif()
             vkr_apply_warnings(${target})
             if(VKR_ENABLE_IPO AND VKR_IPO_SUPPORTED)
                 set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+                # RelWithDebInfo is the profiling build; without the same
+                # cross-module inlining its profiles would not describe Release.
+                set_property(TARGET ${target} PROPERTY
+                             INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+                # CMake applies IPO flags to C and C++ only, which left the
+                # Objective-C Metal backend outside the link-time optimization.
+                if(NOT MSVC)
+                    target_compile_options(${target} PRIVATE
+                        "$<$<AND:$<CONFIG:Release,RelWithDebInfo>,$<COMPILE_LANGUAGE:OBJC,OBJCXX>>:${CMAKE_C_COMPILE_OPTIONS_IPO}>")
+                endif()
             endif()
         endif()
         if(type MATCHES "^(EXECUTABLE|SHARED_LIBRARY|MODULE_LIBRARY)$")
