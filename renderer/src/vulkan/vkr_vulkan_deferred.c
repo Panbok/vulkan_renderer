@@ -1058,7 +1058,10 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   if (!visible || !states || !commands)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
-  const uint32_t layer = pass->desc.depth_attachment.desc.slice.base_layer;
+  /* Local faces share one atlas layer, so their repeat index names the view. */
+  const uint32_t layer =
+      local_shadow ? pass->desc.repeat_index
+                   : pass->desc.depth_attachment.desc.slice.base_layer;
   const uint32_t view_index =
       shadow ? 1u + layer +
                    (local_shadow ? renderer->prepared_frame.shadow_cascade_count
@@ -1373,9 +1376,75 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
+/* Shadow.LocalMask shares the lighting root; it binds only the visibility
+   inputs and the mask it writes. */
+bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint32_t vbuffer = 0u, depth = 0u, normal = 0u, mask = 0u;
+  uint32_t local_shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 13u);
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 16u, &mask) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 8u,
+                                     &local_shadow_texture) ||
+      !visible)
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  uint64_t frame_address = 0u;
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, &frame_address);
+  if (!frame_root)
+    return false_v;
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
+      view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, local_shadow_texture, true_v);
+  const VkrVulkanLocalShadowMaskRoot root = {
+      .frame = frame_address,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .visible_rows = visible->buffer.address,
+      .vbuffer_texture = vbuffer,
+      .depth_texture = depth,
+      .normal_texture = normal,
+      .mask_texture = mask,
+      .extent = {renderer->prepared_frame.viewport_width,
+                 renderer->prepared_frame.viewport_height},
+      .contact_noise_index = packet->temporal.enabled
+                                 ? packet->input.frame.frame_index %
+                                       VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD
+                                 : 0u,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanLocalShadowMaskRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK];
+  prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
+/* The base kernel shades every tile unless the frame has layered materials;
+   then the layered pass owns tiles that carry layer data. */
+bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedCompute *prepared,
+                                         const VkrRgPass *pass,
+                                         bool8_t layered) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint32_t vbuffer = 0u, depth = 0u, albedo = 0u, specular = 0u, normal = 0u,
@@ -1397,6 +1466,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       !visible) {
     return false_v;
   }
+  uint32_t local_shadow_mask = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 16u, &local_shadow_mask))
+    return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
                                         packet->input.globals.view);
@@ -1466,6 +1539,9 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .clearcoat_texture = clearcoat,
       .sheen_texture = sheen,
       .anisotropy_texture = anisotropy,
+      .layered_tiles =
+          renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u,
+      .local_shadow_mask_texture = local_shadow_mask,
       .visible_rows = visible->buffer.address,
       .subsurface_source_texture = subsurface_source,
       .subsurface_profile_count =
@@ -1479,7 +1555,9 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                  &prepared->root_address))
     return false_v;
   prepared->pipelines[prepared->dispatch_count] =
-      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING];
+      renderer->deferred_pipelines
+          [layered ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED
+                   : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING];
   {
     prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
     prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;

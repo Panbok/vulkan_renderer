@@ -1007,6 +1007,8 @@ typedef struct VkrRetainedShadowToken {
 
 typedef struct VkrRetainedLocalShadowToken {
   uint64_t resource_generation;
+  /** Atlas layers with retained content; a face also needs matching history
+   * for its square. */
   uint32_t valid_layer_mask;
   /** depth0, color0, depth1, color1, and first-overflow depth, respectively. */
   uint64_t transmission_resource_generations

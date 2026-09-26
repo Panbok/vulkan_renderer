@@ -91,7 +91,7 @@ void vkr_shadow_system_set_depth_range_sample(
 
 void vkr_shadow_system_resolve_local_selection(
     VkrShadowSystem *system, const VkrPointLight *lights, uint32_t light_count,
-    Vec3 camera_position, uint32_t face_budget, uint32_t map_size,
+    const VkrLocalShadowCamera *camera, uint32_t face_budget, uint32_t map_size,
     VkrLocalShadowPassPayload *out_payload) {
   if (!out_payload)
     return;
@@ -101,8 +101,8 @@ void vkr_shadow_system_resolve_local_selection(
     return;
   }
   vkr_local_shadow_prepare_selection(&system->local_selection, lights,
-                                     light_count, camera_position, face_budget,
-                                     map_size, out_payload);
+                                     light_count, camera, face_budget, map_size,
+                                     out_payload);
 }
 
 vkr_internal void vkr_shadow_sdsm_use_fixed(VkrShadowSystem *system,
@@ -1576,6 +1576,21 @@ vkr_internal bool8_t vkr_shadow_local_dynamic_overlaps_light(
          distance_squared <= reach * reach;
 }
 
+/* Depth contents depend on the face projection and atlas square only; shadow
+ * strength is a receiver-side blend and may change without a redraw. */
+vkr_internal bool8_t vkr_shadow_local_view_projection_equal(
+    const VkrLocalShadowView *a, const VkrLocalShadowView *b) {
+  return MemCompare(&a->light_view_projection, &b->light_view_projection,
+                    sizeof(a->light_view_projection)) == 0 &&
+         MemCompare(&a->light_position_near, &b->light_position_near,
+                    sizeof(a->light_position_near)) == 0 &&
+         MemCompare(&a->light_direction_far, &b->light_direction_far,
+                    sizeof(a->light_direction_far)) == 0 &&
+         MemCompare(&a->projection_params, &b->projection_params,
+                    sizeof(a->projection_params)) == 0 &&
+         MemCompare(&a->atlas_rect, &b->atlas_rect, sizeof(a->atlas_rect)) == 0;
+}
+
 vkr_internal bool8_t vkr_shadow_local_face_reusable(
     const VkrLocalShadowFaceHistory *history,
     VkrRetainedLocalShadowToken retained_token,
@@ -1584,7 +1599,9 @@ vkr_internal bool8_t vkr_shadow_local_face_reusable(
     uint32_t face_in_group, uint32_t face_index,
     const VkrLocalShadowView *view) {
   const uint32_t bit = UINT32_C(1) << face_index;
-  return selection->valid && (retained_token.valid_layer_mask & bit) != 0u &&
+  const uint32_t atlas_layer_bit = UINT32_C(1) << (uint32_t)view->atlas_rect.w;
+  return selection->valid &&
+         (retained_token.valid_layer_mask & atlas_layer_bit) != 0u &&
          retained_token.resource_generation != 0u &&
          (candidates->transmission_gpu_candidate_count == 0u ||
           ((retained_token.transmission_valid_layer_mask & bit) != 0u &&
@@ -1597,18 +1614,17 @@ vkr_internal bool8_t vkr_shadow_local_face_reusable(
          history->publication_generation ==
              candidates->publication_generation &&
          history->resource_generation == retained_token.resource_generation &&
-         history->layout_generation == selection->layout_generation &&
          history->render_id == light->render_id &&
          history->light_kind == (uint32_t)light->kind &&
          history->face_in_group == face_in_group &&
-         MemCompare(&history->view, view, sizeof(*view)) == 0;
+         vkr_shadow_local_view_projection_equal(&history->view, view);
 }
 
 void vkr_shadow_system_resolve_local_shadows(
     VkrShadowSystem *system, uint32_t image_index,
     VkrRetainedLocalShadowToken retained_token,
     const VkrWorldPassPayload *candidates, const VkrPointLight *lights,
-    uint32_t light_count, Vec3 camera_position,
+    uint32_t light_count, const VkrLocalShadowCamera *camera,
     VkrLocalShadowPassPayload *out_payload) {
   if (!out_payload)
     return;
@@ -1617,12 +1633,17 @@ void vkr_shadow_system_resolve_local_shadows(
     return;
 
   vkr_local_shadow_prepare_selection(
-      &system->local_selection, lights, light_count, camera_position,
+      &system->local_selection, lights, light_count, camera,
       system->config.local_shadow_face_budget,
       system->config.local_shadow_map_size, out_payload);
   system->pending_local_history = (VkrLocalShadowPendingHistory){0};
   if (out_payload->view_count == 0u)
     return;
+  /* A layer without retained contents invalidates every face on it, so each
+   * redraws after the layer is cleared. */
+  out_payload->atlas_clear_mask =
+      ~retained_token.valid_layer_mask &
+      ((UINT32_C(1) << VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT) - 1u);
 
   const uint32_t shadow_count = candidates->gpu_shadow_candidate_count;
   const uint32_t static_count =
@@ -1689,7 +1710,6 @@ void vkr_shadow_system_resolve_local_shadows(
           .static_generation = candidates->static_generation,
           .publication_generation = candidates->publication_generation,
           .resource_generation = retained_token.resource_generation,
-          .layout_generation = system->local_selection.layout_generation,
           .render_id = light->render_id,
           .light_kind = (uint32_t)light->kind,
           .face_in_group = face,

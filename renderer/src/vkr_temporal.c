@@ -285,6 +285,7 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
       temporal_scene_vec4(&signature, local->views[i].light_position_near);
       temporal_scene_vec4(&signature, local->views[i].light_direction_far);
       temporal_scene_vec4(&signature, local->views[i].projection_params);
+      temporal_scene_vec4(&signature, local->views[i].shadow_params);
     }
   }
   temporal_scene_sky(&signature, packet->input.sky);
@@ -385,6 +386,7 @@ vkr_ssgi_content_signature(const VkrPreparedFrame *packet) {
       temporal_scene_vec4(&signature, local->views[i].light_position_near);
       temporal_scene_vec4(&signature, local->views[i].light_direction_far);
       temporal_scene_vec4(&signature, local->views[i].projection_params);
+      temporal_scene_vec4(&signature, local->views[i].shadow_params);
     }
   }
   return signature;
@@ -458,17 +460,23 @@ vkr_internal bool8_t vkr_temporal_matrix_equal(Mat4 a, Mat4 b) {
   return MemCompare(&a, &b, sizeof(a)) == 0 ? true_v : false_v;
 }
 
-vkr_internal bool8_t vkr_temporal_camera_cut(
-    const VkrTemporalState *state, const VkrTemporalFrameInput *input) {
-  const Vec3 delta = vec3_sub(input->view_position, state->view_position);
+bool8_t vkr_temporal_is_camera_cut(Vec3 previous_position, Mat4 previous_view,
+                                   Vec3 position, Mat4 view) {
+  const Vec3 delta = vec3_sub(position, previous_position);
   if (vec3_length_squared(delta) >
       VKR_TEMPORAL_CAMERA_CUT_DISTANCE * VKR_TEMPORAL_CAMERA_CUT_DISTANCE)
     return true_v;
-  return vec3_dot(vkr_temporal_view_forward(state->view),
-                  vkr_temporal_view_forward(input->view)) <
+  return vec3_dot(vkr_temporal_view_forward(previous_view),
+                  vkr_temporal_view_forward(view)) <
                  VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT
              ? true_v
              : false_v;
+}
+
+vkr_internal bool8_t vkr_temporal_camera_cut(
+    const VkrTemporalState *state, const VkrTemporalFrameInput *input) {
+  return vkr_temporal_is_camera_cut(state->view_position, state->view,
+                                    input->view_position, input->view);
 }
 
 vkr_internal Mat4 vkr_temporal_jitter_projection(Mat4 projection,

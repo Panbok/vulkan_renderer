@@ -89,6 +89,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT:
   case VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT:
   case VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT:
+  case VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT:
   case VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT:
@@ -549,6 +550,7 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
                                              VKR_METAL_PACKET_ABI_INSTANCE)))
     return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT ||
+      record_id == VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT ||
       record_id == VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT) {
     MTLStructType *frame_type =
         vkr_metal_packet_nested_struct(root.bufferStructType, "frame");
@@ -865,6 +867,11 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
       MTLPixelFormatInvalid, false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
       @"VKR Metal packet GPU shadow opaque");
+  renderer->depth_clear_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_depth_clear_vertex", nil, NULL,
+      MTLPixelFormatInvalid, false_v, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
+      @"VKR Metal packet depth clear");
   renderer->vbuffer_opaque_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
       "vkr_metal_packet_vbuffer_opaque_fragment", MTLPixelFormatRG32Uint,
@@ -1154,11 +1161,21 @@ vkr_internal void vkr_metal_packet_create_scene_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_ssr_composite",
       VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT, false_v,
       @"VKR Metal packet SSR composite");
+  renderer->local_shadow_mask_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_local_shadow_mask",
+          VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT, false_v,
+          @"VKR Metal packet local shadow mask");
   renderer->deferred_lighting_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_deferred_lighting",
           VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
           @"VKR Metal packet deferred lighting");
+  renderer->deferred_lighting_layered_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_deferred_lighting_layered",
+          VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
+          @"VKR Metal packet layered deferred lighting");
 }
 
 /* Creates the temporal, transmission, picking, reduction and exposure
@@ -1355,7 +1372,10 @@ vkr_internal bool8_t vkr_metal_packet_deferred_pipelines_ready(
       !renderer->fog_pipeline || !renderer->froxel_inject_pipeline ||
       !renderer->froxel_integrate_pipeline ||
       !renderer->froxel_apply_pipeline ||
-      !renderer->deferred_lighting_pipeline || !renderer->sh_coefficients ||
+      !renderer->local_shadow_mask_pipeline ||
+      !renderer->deferred_lighting_pipeline ||
+      !renderer->deferred_lighting_layered_pipeline ||
+      !renderer->sh_coefficients ||
       renderer->sh_coefficients.gpuAddress == 0 || !renderer->ibl_sh_pipeline ||
       !renderer->atmosphere_transmittance_pipeline ||
       !renderer->atmosphere_multiple_scattering_pipeline ||
@@ -1387,6 +1407,7 @@ vkr_internal bool8_t vkr_metal_packet_deferred_pipelines_ready(
       !renderer->bloom_upsample_pipeline || !renderer->bloom_combine_pipeline ||
       !renderer->animation_preview_pipeline || !renderer->gpu_shadow_pipeline ||
       !renderer->gpu_shadow_opaque_pipeline ||
+      !renderer->depth_clear_pipeline ||
       !renderer->local_shadow_transmission_pipelines[0] ||
       !renderer->local_shadow_transmission_pipelines[1] ||
       !renderer->local_shadow_transmission_pipelines[2] ||
@@ -1408,6 +1429,9 @@ vkr_metal_packet_create_render_states(VkrMetalPacketRenderer *renderer)
   depth.depthCompareFunction = MTLCompareFunctionLess;
   depth.depthWriteEnabled = YES;
   renderer->depth_write_state =
+      [renderer->device newDepthStencilStateWithDescriptor:depth];
+  depth.depthCompareFunction = MTLCompareFunctionAlways;
+  renderer->depth_clear_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
   depth.depthCompareFunction = MTLCompareFunctionLessEqual;
   depth.depthWriteEnabled = NO;
@@ -1457,6 +1481,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->local_shadow_transmission_pipelines[2],
        "local shadow transmission overflow pipeline"},
       {renderer->gpu_shadow_opaque_pipeline, "opaque GPU shadow pipeline"},
+      {renderer->depth_clear_pipeline, "depth clear pipeline"},
       {renderer->vbuffer_pipeline, "visibility-buffer pipeline"},
       {renderer->vbuffer_opaque_pipeline, "opaque visibility-buffer pipeline"},
       {renderer->transmission_vbuffer_pipeline,
@@ -1501,7 +1526,10 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->cloud_noise_pipelines[2], "Cloud weather pipeline"},
       {renderer->cloud_shadow_pipeline, "Cloud shadow pipeline"},
       {renderer->cloud_trace_pipeline, "Cloud trace pipeline"},
+      {renderer->local_shadow_mask_pipeline, "local shadow mask pipeline"},
       {renderer->deferred_lighting_pipeline, "deferred lighting pipeline"},
+      {renderer->deferred_lighting_layered_pipeline,
+       "layered deferred lighting pipeline"},
       {renderer->temporal_resolve_pipeline, "temporal resolve pipeline"},
       {renderer->metalfx_stabilize_pipeline, "MetalFX stationary accumulation"},
       {renderer->transmission_shade_pipeline, "transmission shade pipeline"},
@@ -1547,6 +1575,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->bloom_upsample_pipeline, "bloom upsample pipeline"},
       {renderer->bloom_combine_pipeline, "bloom combine pipeline"},
       {renderer->depth_write_state, "depth-write state"},
+      {renderer->depth_clear_state, "depth-clear state"},
       {renderer->depth_read_state, "depth-read state"},
       {renderer->argument_table, "argument table"},
   };

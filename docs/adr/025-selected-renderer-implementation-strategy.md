@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-09
+updated: 2026-09-26
 authority: adr
 ---
 
@@ -52,8 +52,10 @@ failures propagate through begin/render/cancel. A Metal failure after queue comm
 also reports `DEVICE_ERROR`; already-submitted GPU work and native history cannot
 be rolled back as though preparation had failed.
 
-The shared native pass/timing capacity is 163, derived from the authored main
-graph's full feature and repeat envelope. Disabling temporal reconstruction
+The shared native pass/timing capacity is 282, derived from the authored main
+graph's full feature and repeat envelope, including the local-shadow atlas
+clear, opaque and transmitting passes for all 32 local-shadow faces, the local
+shadow mask and the layered deferred-lighting pass. Disabling temporal reconstruction
 restores culling HZB generation, so the no-TAA graph is larger than the MetalFX
 or FSR graph. The CPU graph-expansion check covers all three modes and the 720p
 envelope without allocating 16K render targets. Backend-owned pass records,
@@ -61,6 +63,20 @@ labels and timestamp capacity are reserved at initialization and released at
 renderer teardown; GPU completion rules and image budgets are unchanged.
 The [Bistro capacity check](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
 records the reproduced overflow, CPU graph envelope and native Metal validation.
+
+Metal records each run of consecutive compute and transfer passes in one
+compute encoder; graphics and MetalFX passes keep their own encoders. On the M1
+development host every encoder boundary left the GPU idle for 25 to 50 µs, about
+2.2 ms per Bistro frame. A run first waits, with one queue consumer barrier, for
+every producer its passes need from earlier encoders. Each later pass takes an
+intra-encoder barrier with its own dependency stages, limited to dispatch and
+blit stages, so passes without a dependency may overlap. The run ends with the
+union of its passes' producer barriers and the capture barriers. Per-pass
+timestamps and debug groups remain inside the shared encoder, so timings of
+overlapping passes are less isolated. In matched runs without timestamps, the
+Bistro street view fell from 16.54 ms to 15.31 ms per frame and the motion case
+from 16.84 ms to 15.82 ms. Vulkan records one command buffer with pipeline
+barriers and is unchanged.
 
 Preserve GPU-pointer roots, bindless texture/sampler tables and the authored
 render graph. GPU ranges still need native backing for indexed/indirect commands;

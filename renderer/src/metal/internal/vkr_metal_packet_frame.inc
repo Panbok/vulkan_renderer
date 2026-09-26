@@ -1003,6 +1003,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   upload->root_cursor += draw_root_slots;
   uint32_t frame_flags = 0u;
   for (uint32_t view = 0u; view < view_count; ++view) {
+    if (!transmission &&
+        vkr_metal_packet_gpu_draw_view_idle(renderer, packet, view)) {
+      draw_roots[view] = (VkrMetalPacketDrawRoot){0};
+      continue;
+    }
     const bool8_t camera_view = view == 0u;
     const uint32_t first_local_view =
         1u + renderer->prepared_frame.shadow_cascade_count;
@@ -1015,7 +1020,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     const uint32_t shadow_map_size =
         transmission_view
             ? renderer->prepared_frame.local_shadow_transmission_map_size
-        : local_view ? renderer->prepared_frame.local_shadow_map_size
+        : local_view ? (uint32_t)(packet->input.local_shadow->views[local_face]
+                                      .atlas_rect.z *
+                                  (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE)
                      : renderer->prepared_frame.shadow_map_size;
     const Mat4 view_projection =
         camera_view
@@ -1087,6 +1094,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     return false_v;
   prepared->gpu_encode.group_count = encode_group_count;
   prepared->gpu_encode.candidate_count = candidate_count;
+  prepared->gpu_encode.idle_views[0] = 0u;
+  prepared->gpu_encode.idle_views[1] = 0u;
+  for (uint32_t view = 0u; !transmission && view < view_count; ++view) {
+    if (vkr_metal_packet_gpu_draw_view_idle(renderer, packet, view))
+      prepared->gpu_encode.idle_views[view / 64u] |= UINT64_C(1)
+                                                     << (view % 64u);
+  }
   for (uint32_t group = 0u; group < encode_group_count; ++group) {
     const uint32_t first_view = group * encode_group_size;
     const uint32_t group_view_count =
@@ -1114,6 +1128,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
         .commands = icb,
         .root = view_root_gpu,
         .arguments = icb_argument_gpu,
+        .first_view = first_view,
         .view_count = group_view_count,
     };
   }
@@ -2460,11 +2475,79 @@ vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
+/* Shadow.LocalMask shares the deferred lighting root; it binds only the
+   visibility inputs and the mask it writes. */
+vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_mask(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  if (!renderer->deferred_lighting_pipeline)
+  id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  id<MTLTexture> normal = vkr_metal_packet_pass_texture(renderer, pass, 4u);
+  id<MTLTexture> mask = vkr_metal_packet_pass_texture(renderer, pass, 16u);
+  VkrMetalPacketGraphBufferInstance *visible =
+      vkr_metal_packet_pass_buffer(renderer, pass, 13u);
+  if (!renderer->local_shadow_mask_pipeline || !vbuffer || !depth ||
+      !normal || !mask || !visible || vbuffer.width == 0u ||
+      vbuffer.height == 0u || vbuffer.width > UINT32_MAX ||
+      vbuffer.height > UINT32_MAX)
+    return false_v;
+
+  uint64_t frame_root_gpu = 0u;
+  uint32_t frame_flags = 0u;
+  const Mat4 view_projection = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y,
+      mat4_mul(packet->temporal.jittered_projection,
+               packet->input.globals.view));
+  if (!vkr_metal_packet_create_frame_root(
+          renderer, packet, upload, upload->gpu_draw_instances_gpu,
+          (uint32_t)vbuffer.width, (uint32_t)vbuffer.height, view_projection,
+          true_v, false_v, &frame_root_gpu, &frame_flags))
+    return false_v;
+
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketLocalShadowMaskRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketLocalShadowMaskRoot){
+      .frame = frame_root_gpu,
+      .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .normal_texture_id = normal.gpuResourceID._impl,
+      .mask_texture_id = mask.gpuResourceID._impl,
+      .visible_rows = visible->resource.gpu_address,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .extent = {(uint32_t)vbuffer.width, (uint32_t)vbuffer.height},
+      .contact_noise_index =
+          packet->temporal.enabled
+              ? packet->input.frame.frame_index %
+                    VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD
+              : 0u,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->local_shadow_mask_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(vbuffer.width, vbuffer.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
+    renderer->ibl_last_use_submit_value = renderer->submit_value + 1u;
+  return true_v;
+}
+
+/* The base kernel shades every tile unless the frame has layered materials;
+   then the layered pass owns tiles that carry layer data. */
+vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload, bool8_t layered)
+    API_AVAILABLE(macos(26.0)) {
+  id<MTLComputePipelineState> pipeline =
+      layered ? renderer->deferred_lighting_layered_pipeline
+              : renderer->deferred_lighting_pipeline;
+  if (!pipeline)
     return false_v;
   id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -2483,12 +2566,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
   id<MTLTexture> sheen = vkr_metal_packet_pass_texture(renderer, pass, 11u);
   id<MTLTexture> anisotropy =
       vkr_metal_packet_pass_texture(renderer, pass, 12u);
+  id<MTLTexture> local_shadow_mask =
+      vkr_metal_packet_pass_texture(renderer, pass, 16u);
   VkrMetalPacketGraphBufferInstance *visible =
       vkr_metal_packet_pass_buffer(renderer, pass, 13u);
   if (!vbuffer || !depth || !albedo || !specular || !normal ||
       (!clearcoat && vkr_rg_pass_find_image_use(&pass->desc, 10u, 0u)) ||
       (!sheen && vkr_rg_pass_find_image_use(&pass->desc, 11u, 0u)) ||
       (!anisotropy && vkr_rg_pass_find_image_use(&pass->desc, 12u, 0u)) ||
+      (!local_shadow_mask &&
+       vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u)) ||
       !hdr || !visible || !gtao_visibility ||
       (ssgi_enabled && !direct_source) || !renderer->gtao_white_live ||
       vbuffer.width == 0u || vbuffer.height == 0u ||
@@ -2551,16 +2638,19 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
       .direct_source_texture_id =
           ssgi_enabled ? direct_source.gpuResourceID._impl : 0u,
       .ssgi_enabled = ssgi_enabled ? 1u : 0u,
+      .layered_tiles =
+          renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u,
       .clearcoat_texture_id = clearcoat.gpuResourceID._impl,
       .sheen_texture_id = sheen.gpuResourceID._impl,
       .anisotropy_texture_id = anisotropy.gpuResourceID._impl,
+      .local_shadow_mask_texture_id = local_shadow_mask.gpuResourceID._impl,
       .visible_rows = visible->resource.gpu_address,
       .subsurface_source_texture_id = subsurface_source.gpuResourceID._impl,
       .subsurface_profile_count =
           packet->subsurface_enabled ? packet->subsurface.dimensions[2] : 0u,
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
-      .pipeline = renderer->deferred_lighting_pipeline,
+      .pipeline = pipeline,
       .root = root_gpu,
       .threads = MTLSizeMake(vbuffer.width, vbuffer.height, 1u),
       .group_size = MTLSizeMake(8u, 8u, 1u),
@@ -3768,13 +3858,28 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         (uint32_t)target.height, result);
   }
   if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
+    /* The face draws into its own atlas square and clears only that square,
+       even without casters, since the atlas is loaded rather than cleared. */
     const uint32_t face = pass->desc.repeat_index;
-    if (!packet->input.world || renderer->gpu_draw_count == 0u)
-      return true_v;
-    return vkr_metal_packet_prepare_gpu_shadow(
-        renderer, pass, packet, prepared,
-        1u + renderer->prepared_frame.shadow_cascade_count + face, NULL,
-        (uint32_t)target.width, (uint32_t)target.height, result);
+    if (!packet->input.local_shadow ||
+        face >= packet->input.local_shadow->view_count)
+      return false_v;
+    if (packet->input.world && renderer->gpu_draw_count > 0u &&
+        !vkr_metal_packet_prepare_gpu_shadow(
+            renderer, pass, packet, prepared,
+            1u + renderer->prepared_frame.shadow_cascade_count + face, NULL,
+            (uint32_t)target.width, (uint32_t)target.height, result))
+      return false_v;
+    const Vec4 rect = packet->input.local_shadow->views[face].atlas_rect;
+    const float32_t atlas = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
+    const uint32_t x = (uint32_t)(rect.x * atlas);
+    const uint32_t y = (uint32_t)(rect.y * atlas);
+    const uint32_t size = (uint32_t)(rect.z * atlas);
+    prepared->indirect.viewport = (MTLViewport){x, y, size, size, 0.0, 1.0};
+    prepared->indirect.clear_rect = (MTLScissorRect){x, y, size, size};
+    prepared->indirect.clear_depth = true_v;
+    prepared->active = true_v;
+    return true_v;
   }
   if (kind >= VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0 &&
       kind <= VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW) {
@@ -3900,7 +4005,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     return vkr_metal_packet_prepare_tonemap(
         renderer, pass, packet, prepared, upload, (uint32_t)target.width,
         (uint32_t)target.height, &packet->editor_image_rect_px);
-  if (kind == VKR_RG_EXECUTOR_EDITOR_CLEAR) {
+  if (kind == VKR_RG_EXECUTOR_CLEAR) {
     prepared->active = true_v;
     return true_v;
   }
@@ -3950,9 +4055,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_GBUFFER_RESOLVE:
     return vkr_metal_packet_prepare_gbuffer_resolve(renderer, pass, packet,
                                                     prepared, upload);
-  case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
-    return vkr_metal_packet_prepare_deferred_lighting(renderer, pass, packet,
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK:
+    return vkr_metal_packet_prepare_local_shadow_mask(renderer, pass, packet,
                                                       prepared, upload);
+  case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
+    return vkr_metal_packet_prepare_deferred_lighting(
+        renderer, pass, packet, prepared, upload, false_v);
+  case VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED:
+    return vkr_metal_packet_prepare_deferred_lighting(
+        renderer, pass, packet, prepared, upload, true_v);
   case VKR_RG_EXECUTOR_FOG_APPLY:
     return vkr_metal_packet_prepare_fog(renderer, pass, packet, prepared,
                                         upload);
@@ -4807,117 +4918,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
   return passed;
 }
 
-/* Encodes one prepared graph pass and records its CPU timing row. */
-vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
-    VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameSubmission *submission,
-    const VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketResult *out_result) API_AVAILABLE(macos(26.0)) {
+/* Appends one pass's timing row. GPU duration arrives with the submission's
+   timestamp heap when the pass wrote its interval. */
+vkr_internal void vkr_metal_packet_record_pass_timing(
+    const VkrMetalPacketFrameSubmission *submission,
+    const VkrMetalPacketPreparedPass *prepared, bool8_t encoder_timing_pass,
+    CFTimeInterval pass_cpu_begin, VkrMetalPacketResult *out_result)
+    API_AVAILABLE(macos(26.0)) {
   const VkrRgPass *pass = prepared->source;
-  const uint32_t *pass_index = &prepared->index;
-  const bool8_t metalfx_pass =
-      prepared->kind == VKR_RG_EXECUTOR_METALFX_TEMPORAL;
-  const bool8_t encoder_timing_pass =
-      submission->pass_timing_requested &&
-      pass->desc.type != VKR_RG_PASS_TYPE_TRANSFER && !metalfx_pass;
-  const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
-  if (pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS) {
-    id<MTL4RenderCommandEncoder> encoder =
-        [renderer->command_buffer renderCommandEncoderWithDescriptor:
-                                      renderer->render_passes[prepared->index]];
-    if (!encoder) {
-      submission->failed_pass = pass;
-      return false_v;
-    }
-    encoder.label = prepared->label;
-    if (encoder_timing_pass)
-      [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                                  afterStage:MTLRenderStageFragment
-                                    intoHeap:renderer->active_command_slot
-                                                 ->timestamp_heap
-                                     atIndex:(NSUInteger)prepared->index * 2u];
-    vkr_metal_packet_record_consumers(encoder, prepared);
-    if (prepared->active)
-      vkr_metal_packet_record_graphics_pass(renderer, encoder, prepared);
-    vkr_metal_packet_record_producers(encoder, prepared);
-    out_result->dependency_count +=
-        prepared->consumer_count + prepared->producer_count;
-    if (prepared->last_present_writer) {
-      vkr_metal_dependency_encode_producer(encoder,
-                                           &submission->capture_barrier);
-      out_result->dependency_count++;
-    }
-    if (prepared->kind == VKR_RG_EXECUTOR_SHADOW &&
-        pass->desc.repeat_index + 1u ==
-            renderer->prepared_frame.shadow_cascade_count) {
-      vkr_metal_dependency_encode_producer(encoder,
-                                           &submission->shadow_capture_barrier);
-      out_result->dependency_count++;
-    }
-    if (submission->capture_count > 0u) {
-      vkr_metal_dependency_encode_producer(encoder,
-                                           &submission->batch_capture_barrier);
-      out_result->dependency_count++;
-    }
-    if (encoder_timing_pass)
-      [encoder
-          writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                             afterStage:MTLRenderStageFragment
-                               intoHeap:renderer->active_command_slot
-                                            ->timestamp_heap
-                                atIndex:(NSUInteger)prepared->index * 2u + 1u];
-    [encoder endEncoding];
-    out_result->graphics_pass_count++;
-  } else if (metalfx_pass) {
-    vkr_metal_packet_record_metalfx(renderer, prepared);
-    out_result->compute_pass_count++;
-  } else {
-    id<MTL4ComputeCommandEncoder> encoder =
-        [renderer->command_buffer computeCommandEncoder];
-    if (!encoder) {
-      submission->failed_pass = pass;
-      return false_v;
-    }
-    encoder.label = prepared->label;
-    if (encoder_timing_pass)
-      [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                                    intoHeap:renderer->active_command_slot
-                                                 ->timestamp_heap
-                                     atIndex:(NSUInteger)prepared->index * 2u];
-    vkr_metal_packet_record_consumers(encoder, prepared);
-    if (prepared->active) {
-      if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
-        vkr_metal_packet_record_transfer(encoder, &prepared->transfer);
-      else
-        vkr_metal_packet_record_compute_pass(renderer, encoder, prepared);
-    }
-    vkr_metal_packet_record_producers(encoder, prepared);
-    out_result->dependency_count +=
-        prepared->consumer_count + prepared->producer_count;
-    if (submission->ibl_bake && prepared->kind == VKR_RG_EXECUTOR_IBL_BAKE) {
-      vkr_metal_dependency_encode_producer(encoder,
-                                           &submission->ibl_capture_barrier);
-      out_result->dependency_count++;
-    }
-    if (submission->capture_count > 0u || submission->deferred_diagnostics ||
-        submission->transmission_coverage ||
-        submission->readback_layout.sdsm_size > 0u ||
-        submission->readback_layout.exposure_size > 0u) {
-      vkr_metal_dependency_encode_producer(encoder,
-                                           &submission->batch_capture_barrier);
-      out_result->dependency_count++;
-    }
-    if (encoder_timing_pass)
-      [encoder
-          writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                               intoHeap:renderer->active_command_slot
-                                            ->timestamp_heap
-                                atIndex:(NSUInteger)prepared->index * 2u + 1u];
-    [encoder endEncoding];
-    if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
-      out_result->transfer_pass_count++;
-    else
-      out_result->compute_pass_count++;
-  }
   if (out_result->pass_timing_count < VKR_METAL_PACKET_MAX_PASS_TIMINGS) {
     VkrMetalPacketPassTiming *timing =
         &out_result->pass_timings[out_result->pass_timing_count++];
@@ -4927,7 +4935,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
     if (name_length > 0)
       MemCopy(timing->name, pass->desc.name.str, name_length);
     timing->name[name_length] = '\0';
-    timing->pass_index = *pass_index;
+    timing->pass_index = prepared->index;
     timing->cpu_ms = prepared->preparation_cpu_ms +
                      (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
     timing->valid = false_v;
@@ -4939,6 +4947,201 @@ vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
                    : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED);
   }
   out_result->executed_pass_count++;
+}
+
+/* Compute and transfer passes share one encoder per run; graphics and MetalFX
+   passes own theirs. */
+vkr_internal bool8_t
+vkr_metal_packet_pass_batchable(const VkrMetalPacketPreparedPass *prepared) {
+  return prepared->source->desc.type != VKR_RG_PASS_TYPE_GRAPHICS &&
+         prepared->kind != VKR_RG_EXECUTOR_METALFX_TEMPORAL;
+}
+
+vkr_internal void
+vkr_metal_packet_merge_dependency(VkrMetalDependency *merged,
+                                  const VkrMetalDependency *dependency) {
+  merged->src_stages |= dependency->src_stages;
+  merged->dst_stages |= dependency->dst_stages;
+  merged->visibility_options |= dependency->visibility_options;
+}
+
+/* Encodes a graphics or MetalFX pass and records its timing row. */
+vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameSubmission *submission,
+    const VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketResult *out_result) API_AVAILABLE(macos(26.0)) {
+  const VkrRgPass *pass = prepared->source;
+  const bool8_t metalfx_pass =
+      prepared->kind == VKR_RG_EXECUTOR_METALFX_TEMPORAL;
+  const bool8_t encoder_timing_pass =
+      submission->pass_timing_requested && !metalfx_pass;
+  const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
+  if (metalfx_pass) {
+    vkr_metal_packet_record_metalfx(renderer, prepared);
+    out_result->compute_pass_count++;
+    vkr_metal_packet_record_pass_timing(submission, prepared,
+                                        encoder_timing_pass, pass_cpu_begin,
+                                        out_result);
+    return true_v;
+  }
+  id<MTL4RenderCommandEncoder> encoder =
+      [renderer->command_buffer renderCommandEncoderWithDescriptor:
+                                    renderer->render_passes[prepared->index]];
+  if (!encoder) {
+    submission->failed_pass = pass;
+    return false_v;
+  }
+  encoder.label = prepared->label;
+  if (encoder_timing_pass)
+    [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                afterStage:MTLRenderStageFragment
+                                  intoHeap:renderer->active_command_slot
+                                               ->timestamp_heap
+                                   atIndex:(NSUInteger)prepared->index * 2u];
+  vkr_metal_packet_record_consumers(encoder, prepared);
+  if (prepared->active)
+    vkr_metal_packet_record_graphics_pass(renderer, encoder, prepared);
+  vkr_metal_packet_record_producers(encoder, prepared);
+  out_result->dependency_count +=
+      prepared->consumer_count + prepared->producer_count;
+  if (prepared->last_present_writer) {
+    vkr_metal_dependency_encode_producer(encoder,
+                                         &submission->capture_barrier);
+    out_result->dependency_count++;
+  }
+  if (prepared->kind == VKR_RG_EXECUTOR_SHADOW &&
+      pass->desc.repeat_index + 1u ==
+          renderer->prepared_frame.shadow_cascade_count) {
+    vkr_metal_dependency_encode_producer(encoder,
+                                         &submission->shadow_capture_barrier);
+    out_result->dependency_count++;
+  }
+  if (submission->capture_count > 0u) {
+    vkr_metal_dependency_encode_producer(encoder,
+                                         &submission->batch_capture_barrier);
+    out_result->dependency_count++;
+  }
+  if (encoder_timing_pass)
+    [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                afterStage:MTLRenderStageFragment
+                                  intoHeap:renderer->active_command_slot
+                                               ->timestamp_heap
+                                   atIndex:(NSUInteger)prepared->index * 2u +
+                                           1u];
+  [encoder endEncoding];
+  out_result->graphics_pass_count++;
+  vkr_metal_packet_record_pass_timing(submission, prepared, encoder_timing_pass,
+                                      pass_cpu_begin, out_result);
+  return true_v;
+}
+
+/* Every encoder boundary drains the GPU (about 25-50 us on the M1), so a run
+   of consecutive compute and transfer passes shares one encoder. The graph's
+   dependencies keep their meaning: the run first waits for every producer its
+   passes need from earlier encoders, each later pass takes an intra-encoder
+   barrier covering producers earlier in the run, and the run ends with the
+   union of its passes' producer barriers for later encoders. Passes without a
+   dependency between them may overlap. */
+vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameSubmission *submission,
+    uint64_t first, uint64_t end, VkrMetalPacketResult *out_result)
+    API_AVAILABLE(macos(26.0)) {
+  const MTLStages encoder_stages = MTLStageDispatch | MTLStageBlit;
+  VkrMetalDependency wait = {0};
+  VkrMetalDependency signal = {0};
+  bool8_t ibl_capture = false_v;
+  for (uint64_t order = first; order < end; ++order) {
+    const VkrMetalPacketPreparedPass *prepared =
+        &submission->prepared_passes[order];
+    if (prepared->source->culled)
+      continue;
+    for (uint32_t i = 0u; i < prepared->consumer_count; ++i)
+      vkr_metal_packet_merge_dependency(&wait, &prepared->consumers[i]);
+    for (uint32_t i = 0u; i < prepared->producer_count; ++i)
+      vkr_metal_packet_merge_dependency(&signal, &prepared->producers[i]);
+    ibl_capture = ibl_capture || (submission->ibl_bake &&
+                                  prepared->kind == VKR_RG_EXECUTOR_IBL_BAKE);
+  }
+
+  id<MTL4ComputeCommandEncoder> encoder =
+      [renderer->command_buffer computeCommandEncoder];
+  if (!encoder) {
+    submission->failed_pass = submission->prepared_passes[first].source;
+    return false_v;
+  }
+  encoder.label = submission->prepared_passes[first].label;
+  if (wait.src_stages != 0u)
+    vkr_metal_dependency_encode_consumer(encoder, &wait);
+
+  bool8_t first_pass = true_v;
+  for (uint64_t order = first; order < end; ++order) {
+    const VkrMetalPacketPreparedPass *prepared =
+        &submission->prepared_passes[order];
+    const VkrRgPass *pass = prepared->source;
+    if (pass->culled)
+      continue;
+    const bool8_t transfer = pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER;
+    const bool8_t encoder_timing_pass =
+        submission->pass_timing_requested && !transfer;
+    const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
+    if (!first_pass && prepared->consumer_count > 0u) {
+      VkrMetalDependency ordering = {0};
+      for (uint32_t i = 0u; i < prepared->consumer_count; ++i)
+        vkr_metal_packet_merge_dependency(&ordering, &prepared->consumers[i]);
+      /* Producers in earlier encoders were awaited at the run's start; only
+         this encoder's stages order the passes inside it. */
+      ordering.src_stages &= encoder_stages;
+      ordering.dst_stages &= encoder_stages;
+      if (ordering.src_stages != 0u && ordering.dst_stages != 0u)
+        vkr_metal_dependency_encode_intra(encoder, &ordering);
+    }
+    first_pass = false_v;
+    [encoder pushDebugGroup:prepared->label];
+    if (encoder_timing_pass)
+      [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                    intoHeap:renderer->active_command_slot
+                                                 ->timestamp_heap
+                                     atIndex:(NSUInteger)prepared->index * 2u];
+    if (prepared->active) {
+      if (transfer)
+        vkr_metal_packet_record_transfer(encoder, &prepared->transfer);
+      else
+        vkr_metal_packet_record_compute_pass(renderer, encoder, prepared);
+    }
+    if (encoder_timing_pass)
+      [encoder
+          writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                               intoHeap:renderer->active_command_slot
+                                            ->timestamp_heap
+                                atIndex:(NSUInteger)prepared->index * 2u + 1u];
+    [encoder popDebugGroup];
+    out_result->dependency_count +=
+        prepared->consumer_count + prepared->producer_count;
+    if (transfer)
+      out_result->transfer_pass_count++;
+    else
+      out_result->compute_pass_count++;
+    vkr_metal_packet_record_pass_timing(submission, prepared,
+                                        encoder_timing_pass, pass_cpu_begin,
+                                        out_result);
+  }
+
+  if (signal.src_stages != 0u)
+    vkr_metal_dependency_encode_producer(encoder, &signal);
+  if (ibl_capture) {
+    vkr_metal_dependency_encode_producer(encoder,
+                                         &submission->ibl_capture_barrier);
+    out_result->dependency_count++;
+  }
+  if (submission->capture_count > 0u || submission->deferred_diagnostics ||
+      submission->transmission_coverage ||
+      submission->readback_layout.sdsm_size > 0u ||
+      submission->readback_layout.exposure_size > 0u) {
+    vkr_metal_dependency_encode_producer(encoder,
+                                         &submission->batch_capture_barrier);
+    out_result->dependency_count++;
+  }
+  [encoder endEncoding];
   return true_v;
 }
 
@@ -5115,14 +5318,27 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
   [renderer->command_buffer useResidencySets:residency_sets
                                        count:residency_set_count];
   bool8_t passed = true_v;
-  for (uint64_t order = 0u; passed && order < submission->prepared_count;
-       ++order) {
+  for (uint64_t order = 0u; passed && order < submission->prepared_count;) {
     const VkrMetalPacketPreparedPass *prepared =
         &submission->prepared_passes[order];
-    if (prepared->source->culled)
+    if (prepared->source->culled) {
+      ++order;
       continue;
-    passed = vkr_metal_packet_encode_graph_pass(renderer, submission, prepared,
-                                                out_result);
+    }
+    if (!vkr_metal_packet_pass_batchable(prepared)) {
+      passed = vkr_metal_packet_encode_graph_pass(renderer, submission,
+                                                  prepared, out_result);
+      ++order;
+      continue;
+    }
+    uint64_t end = order + 1u;
+    while (end < submission->prepared_count &&
+           (submission->prepared_passes[end].source->culled ||
+            vkr_metal_packet_pass_batchable(&submission->prepared_passes[end])))
+      ++end;
+    passed = vkr_metal_packet_encode_compute_run(renderer, submission, order,
+                                                 end, out_result);
+    order = end;
   }
   passed = passed && vkr_metal_packet_encode_frame_readback(
                          renderer, packet, submission, out_result);

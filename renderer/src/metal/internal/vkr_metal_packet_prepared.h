@@ -47,12 +47,16 @@ typedef struct VkrMetalPacketIndirectPass {
   uint64_t peel_root;
   MTLViewport viewport;
   VkrShadowConfigOverride depth_bias;
+  /* Local shadow faces clear only their atlas square before drawing. */
+  MTLScissorRect clear_rect;
+  bool8_t clear_depth;
 } VkrMetalPacketIndirectPass;
 
 typedef struct VkrMetalPacketGpuEncodeGroup {
   id<MTLIndirectCommandBuffer> commands;
   uint64_t root;
   uint64_t arguments;
+  uint32_t first_view;
   uint32_t view_count;
 } VkrMetalPacketGpuEncodeGroup;
 
@@ -121,6 +125,9 @@ typedef struct VkrMetalPacketPreparedPass {
           groups[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
       uint32_t group_count;
       uint32_t candidate_count;
+      /** Views that draw nothing this submission; their command ranges are
+       * neither reset nor encoded, and no pass executes them. */
+      uint64_t idle_views[2];
     } gpu_encode;
     struct {
       uint64_t prefilter_roots[VKR_IBL_PREFILTER_MIP_COUNT];

@@ -233,7 +233,8 @@ static float4 vkr_metal_packet_shade(
       frame, input.world_position, normal, view, base.rgb, metallic,
       roughness, f0, energy, clearcoat_active, clearcoat, sheen_active, sheen,
       sheen_normalization, punctual_irradiance, analytic_diffuse,
-      analytic_specular, clearcoat_direct, sheen_direct);
+      analytic_specular, clearcoat_direct, sheen_direct,
+      VkrMetalInlineLocalShadow{});
   VkrMetalPacketDirectResult rectangles =
       vkr_metal_packet_layered_rectangle_lights<true>(
           frame, input.world_position, normal, view, base.rgb, metallic,

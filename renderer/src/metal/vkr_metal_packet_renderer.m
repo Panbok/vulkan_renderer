@@ -49,7 +49,8 @@ enum {
   VKR_METAL_PACKET_TIMEOUT_MS = 5000,
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
   VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
-  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = 16,
+  /* The local shadow face array is the largest layered graph image. */
+  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
   VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
   VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
       VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
@@ -648,6 +649,7 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> local_shadow_transmission_pipelines[3];
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
+  id<MTLRenderPipelineState> depth_clear_pipeline;
   id<MTLRenderPipelineState> vbuffer_opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_pipeline;
   id<MTLRenderPipelineState> transmission_vbuffer_pipeline;
@@ -688,7 +690,10 @@ struct VkrMetalPacketRenderer {
   uint64_t previous_skinning_addresses[VKR_SKINNING_BINDING_CAPACITY];
   id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipelines[4];
+  id<MTLComputePipelineState> local_shadow_mask_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
+  /** Adds clearcoat, sheen and anisotropy; shades only tiles that use them. */
+  id<MTLComputePipelineState> deferred_lighting_layered_pipeline;
   id<MTLComputePipelineState> gtao_depth_prefilter_pipeline;
   id<MTLComputePipelineState> gtao_depth_mip_pipeline;
   id<MTLComputePipelineState> gtao_evaluate_pipeline;
@@ -739,6 +744,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> bloom_combine_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;
+  id<MTLDepthStencilState> depth_clear_state;
   id<MTLDepthStencilState> depth_read_state;
   id<MTL4ArgumentTable> argument_table;
   /* L2 diffuse coefficient slots (ADR-038). Renderer lifetime: the pool

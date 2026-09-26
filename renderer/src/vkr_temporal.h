@@ -104,6 +104,11 @@ Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index);
 Vec2 vkr_temporal_jitter_for_frame_phases(uint32_t frame_index,
                                           uint32_t phase_count);
 
+/** True when the camera moved or turned too far between two frames for history
+ * to follow it. Other camera-driven transitions snap on the same frames. */
+bool8_t vkr_temporal_is_camera_cut(Vec3 previous_position, Mat4 previous_view,
+                                   Vec3 position, Mat4 view);
+
 /** Builds frame-local temporal state without committing it. */
 VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
                                       const VkrTemporalFrameInput *input);

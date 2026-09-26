@@ -207,12 +207,33 @@ struct VkrVkLightingRoot
     uint clearcoat_texture;
     uint sheen_texture;
     uint anisotropy_texture;
-    uint visible_rows_reserved0;
-    uint visible_rows_reserved1;
+    // Nonzero when the layered kernel also runs and owns tiles with layer data.
+    uint layered_tiles;
+    // Shadow.LocalMask output: one RGBA8 layer per shadowed light.
+    uint local_shadow_mask_texture;
     uint visible_rows_reserved2;
     VkrGpuVisibleDrawRow* visible_rows;
     uint subsurface_source_texture;
     uint subsurface_profile_count;
+};
+
+// Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
+// and the noise index that varies the contact-shadow march between frames.
+struct VkrVkLocalShadowMaskRoot
+{
+    VkrVulkanPacketFrameRoot *frame;
+    uint2 frame_address_padding;
+    float4x4 inverse_view_projection;
+    VkrGpuVisibleDrawRow* visible_rows;
+    uint vbuffer_texture;
+    uint depth_texture;
+    uint normal_texture;
+    // One RGBA8 layer of local-shadow visibility per shadowed light.
+    uint mask_texture;
+    uint2 extent;
+    // Zero without temporal reconstruction, so the march pattern stays fixed.
+    uint contact_noise_index;
+    uint3 reserved;
 };
 
 struct VkrVkHzbRoot
@@ -428,6 +449,11 @@ struct VkrVkLightingPush
     VkrVkLightingRoot *root;
     uint2 reserved;
 };
+struct VkrVkLocalShadowMaskPush
+{
+    VkrVkLocalShadowMaskRoot *root;
+    uint2 reserved;
+};
 struct VkrVkTemporalResolvePush
 {
     VkrVkTemporalResolveRoot *root;
@@ -495,6 +521,8 @@ struct VkrVkTransmissionCompactPush
     g_temporal_transform_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkResolvePush> g_resolve_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkLightingPush> g_lighting_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkLocalShadowMaskPush>
+    g_local_shadow_mask_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkTemporalResolvePush>
     g_temporal_resolve_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkHzbPush> g_hzb_push;
@@ -1507,9 +1535,165 @@ float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
     return vkr_ggx_filter_roughness(roughness, normal_variance);
 }
 
+float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot *root, float2 ndc,
+                                  float depth)
+{
+    return vkr_vk_deferred_homogeneous(
+        mul(root.inverse_view_projection, float4(ndc, depth, 1.0f)));
+}
+
+// Contact visibility toward one light: marches the depth buffer from `origin`
+// along `direction` and stops at the first sample whose camera ray passes
+// behind a nearby surface. The march leaves the screen without occlusion.
+float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot *root, float3 origin,
+                              float3 direction, float march_length,
+                              float noise)
+{
+    VkrVulkanPacketFrameRoot *frame = root.frame;
+    float4 clip_origin = mul(frame.view_projection, float4(origin, 1.0f));
+    float4 clip_span =
+        mul(frame.view_projection, float4(direction * march_length, 0.0f));
+    for (uint step = 0u; step < VKR_LOCAL_SHADOW_CONTACT_STEPS; ++step)
+    {
+        float t = (float(step) + noise) / float(VKR_LOCAL_SHADOW_CONTACT_STEPS);
+        float4 clip = clip_origin + t * clip_span;
+        if (clip.w <= 1e-4f)
+            break;
+        float2 ndc = clip.xy / clip.w;
+        if (any(abs(ndc) >= 1.0f))
+            break;
+        // See vkr_vk_deferred_sky: no Y flip between NDC and pixels.
+        uint2 pixel = min(uint2((ndc * 0.5f + 0.5f) * float2(root.extent)),
+                          root.extent - 1u);
+        float3 surface = vk_local_shadow_mask_world(
+            root, ndc,
+            g_depth_textures[root.depth_texture].Load(int3(pixel, 0)));
+        float3 sample_position = origin + direction * (march_length * t);
+        float surface_in_front =
+            dot(surface - sample_position,
+                packet_view_direction(frame, sample_position));
+        if (vkr_local_shadow_contact_occluded(
+                surface_in_front,
+                distance(sample_position, frame.view_position.xyz)))
+            return vkr_local_shadow_contact_visibility(t);
+    }
+    return 1.0f;
+}
+
+// Shadow.LocalMask stores every in-range shadowed light's visibility with the
+// receiver normal, range test and light traversal of deferred lighting, so the
+// lighting kernels read one texel per light instead of filtering shadow maps.
+// A short contact-shadow march multiplies the filtered visibility of each light
+// that takes the full filter.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
+void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkLocalShadowMaskRoot *root = g_local_shadow_mask_push.root;
+    if (any(thread_id.xy >= root.extent))
+        return;
+    uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
+    if (encoded.x == 0u)
+        return;
+    VkrVulkanPacketFrameRoot *frame = root.frame;
+    float3 normal = vkr_vk_octahedral_decode(
+        g_storage_float2_2d[root.normal_texture][thread_id.xy]);
+    float depth =
+        g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
+    float2 ndc_xy =
+        (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
+    float3 world = vk_local_shadow_mask_world(root, ndc_xy, depth);
+    float camera_distance = distance(world, frame.view_position.xyz);
+    float contact_noise =
+        vkr_local_shadow_contact_noise(thread_id.xy, root.contact_noise_index);
+    float diffuse_transmission =
+        vkr_editor_neutral_lighting(frame.render_mode)
+            ? 0.0f
+            : frame.materials[root.visible_rows[encoded.x - 1u].material_index]
+                  .material_diffuse_transmission.w;
+    uint4 point_mask = packet_point_light_mask(frame, world);
+    uint point_count = min(frame.point_light_count, 128u);
+    for (uint word = 0u; word < 4u; ++word)
+    {
+        uint remaining = WaveActiveBitOr(point_mask[word]);
+        while (remaining != 0u)
+        {
+            uint bit = uint(firstbitlow(remaining));
+            remaining &= remaining - 1u;
+            uint light_index = word * 32u + bit;
+            if (light_index >= point_count ||
+                (point_mask[word] & (1u << bit)) == 0u)
+                continue;
+            VkrGpuPointLightRow light = frame.point_light_data[light_index];
+            if (light.p3.w == 0.0f)
+                continue;
+            VkrPunctualLightTerm term = vkr_punctual_light_term(
+                light.p0, light.p1, light.p2, light.p3, world);
+            if (!term.in_range || term.cone <= 0.0f)
+                continue;
+            bool back_lit = diffuse_transmission > 0.0f &&
+                            dot(normal, term.direction) < 0.0f;
+            float3 shadow_normal = back_lit ? -normal : normal;
+            float3 visibility = packet_local_shadow(
+                frame, light, term.kind, world, shadow_normal);
+            VkrLocalShadowView view =
+                frame.local_shadow_views[uint(light.p3.w) - 1u];
+            if (view.shadow_params.z < 0.5f && any(visibility > 0.0f) &&
+                dot(shadow_normal, term.direction) > 0.0f)
+            {
+                float3 origin =
+                    world + shadow_normal *
+                                vkr_local_shadow_contact_start_offset(
+                                    camera_distance);
+                float march_length =
+                    min(VKR_LOCAL_SHADOW_CONTACT_LENGTH,
+                        0.5f * distance(light.p0.xyz, world));
+                float contact = vk_local_contact_shadow(
+                    root, origin, term.direction, march_length, contact_noise);
+                visibility *= vkr_local_shadow_apply_strength(
+                    float3(contact), view.shadow_params.x);
+            }
+            g_storage_images[root.mask_texture]
+                            [uint3(thread_id.xy, uint(view.shadow_params.y))] =
+                float4(visibility, 1.0f);
+        }
+    }
+}
+
+groupshared uint g_deferred_tile_layered;
+
+// A pixel with no clearcoat, sheen or anisotropy G-buffer data shades
+// identically in the base kernel, which compiles those layers out.
+bool vk_deferred_pixel_layered(VkrVkLightingRoot *root, uint2 pixel)
+{
+    if (any(pixel >= root.extent) ||
+        g_storage_uint2_2d[root.vbuffer_texture][pixel].x == 0u)
+        return false;
+    return (root.clearcoat_texture != 0u &&
+            any(g_storage_2d[root.clearcoat_texture][pixel] != 0.0f)) ||
+           (root.sheen_texture != 0u &&
+            any(g_storage_2d[root.sheen_texture][pixel] != 0.0f)) ||
+           (root.anisotropy_texture != 0u &&
+            any(g_storage_2d[root.anisotropy_texture][pixel] != 0.0f));
+}
+
+// Both lighting kernels classify the same 8x8 group, so each tile is shaded
+// by exactly one of them. Every invocation reaches both barriers.
+bool vk_deferred_tile_layered(VkrVkLightingRoot *root, uint2 pixel,
+                              uint group_index)
+{
+    if (group_index == 0u)
+        g_deferred_tile_layered = 0u;
+    GroupMemoryBarrierWithGroupSync();
+    if (vk_deferred_pixel_layered(root, pixel))
+        InterlockedOr(g_deferred_tile_layered, 1u);
+    GroupMemoryBarrierWithGroupSync();
+    return g_deferred_tile_layered != 0u;
+}
+
+// Layered selects the clearcoat, sheen and anisotropy paths at compile time;
+// without them the kernel needs fewer registers.
+void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
 {
     VkrVkLightingRoot *root = g_lighting_push.root;
     if (any(thread_id.xy >= root.extent))
@@ -1579,7 +1763,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     // The G-buffer already folded metallic into diffuse albedo and F0, so the
     // shared helpers take a zero metallic factor here.
     float4 anisotropy_packed = 0.0f;
-    if (root.anisotropy_texture != 0u)
+    if (Layered && root.anisotropy_texture != 0u)
     {
         anisotropy_packed = g_storage_2d[root.anisotropy_texture][thread_id.xy];
     }
@@ -1591,22 +1775,23 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
             frame.materials[root.visible_rows[encoded.x - 1u].material_index].material_diffuse_transmission);
     }
     float4 clearcoat_packed = 0.0f;
-    if (root.clearcoat_texture != 0u)
+    if (Layered && root.clearcoat_texture != 0u)
     {
         clearcoat_packed = g_storage_2d[root.clearcoat_texture][thread_id.xy];
     }
-    bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
+    bool clearcoat_active =
+        Layered && vkr_clearcoat_active(clearcoat_packed.x);
     VkrClearcoatLayer clearcoat = (VkrClearcoatLayer)0;
     if (clearcoat_active)
         clearcoat = packet_prepare_clearcoat(
             frame, clearcoat_packed.x, clearcoat_packed.y,
             vkr_vk_octahedral_decode(clearcoat_packed.zw), view);
     float4 sheen_packed = 0.0f;
-    if (root.sheen_texture != 0u)
+    if (Layered && root.sheen_texture != 0u)
     {
         sheen_packed = g_storage_2d[root.sheen_texture][thread_id.xy];
     }
-    bool sheen_active = vkr_sheen_active(sheen_packed.rgb);
+    bool sheen_active = Layered && vkr_sheen_active(sheen_packed.rgb);
     VkrSheenLayer sheen = (VkrSheenLayer)0;
     VkrSheenLtcSample sheen_ltc = (VkrSheenLtcSample)0;
     if (sheen_active)
@@ -1661,10 +1846,11 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
                     frame.directional_color_intensity.w * directional_shadow,
                 sheen, sheen_ltc.energy_normalization);
     }
-    VkrVulkanDirectResult punctual = packet_punctual_layered(
+    VkrVulkanDirectResult punctual = packet_punctual_layered<true>(
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy,
         true, clearcoat_active, clearcoat, sheen_active, sheen,
-        sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct);
+        sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
+        root.local_shadow_mask_texture, thread_id.xy);
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
@@ -1794,6 +1980,29 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
                    sheen_direct * sheen_transmission +
                    clearcoat_indirect + sheen_indirect * sheen_transmission;
     g_storage_2d[root.scene_texture][thread_id.xy] = float4(color, 1.0f);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
+                          uint group_index : SV_GroupIndex)
+{
+    VkrVkLightingRoot *root = g_lighting_push.root;
+    if (root.layered_tiles != 0u &&
+        vk_deferred_tile_layered(root, thread_id.xy, group_index))
+        return;
+    vk_deferred_shade<false>(thread_id);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting_layered(uint3 thread_id : SV_DispatchThreadID,
+                                  uint group_index : SV_GroupIndex)
+{
+    VkrVkLightingRoot *root = g_lighting_push.root;
+    if (!vk_deferred_tile_layered(root, thread_id.xy, group_index))
+        return;
+    vk_deferred_shade<true>(thread_id);
 }
 
 float vkr_vk_temporal_luminance(float3 color)
@@ -3369,11 +3578,12 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         }
         // Each light list is traversed once for the base, coat and sheen
         // lobes; a fully transmissive base contributes specular only.
-        VkrVulkanDirectResult punctual = packet_punctual_layered(
+        VkrVulkanDirectResult punctual = packet_punctual_layered<false>(
             frame, world, surface.normal, view, surface.base.rgb,
             surface.metallic, surface.roughness, f0, energy, diffuse_enabled,
             clearcoat_active, clearcoat, sheen_active, sheen,
-            sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct);
+            sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
+            0u, uint2(0u, 0u));
         analytic_diffuse += punctual.diffuse;
         analytic_specular += punctual.specular;
         VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(

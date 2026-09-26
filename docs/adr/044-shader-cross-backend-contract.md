@@ -274,14 +274,42 @@ Its matched Release captures were byte-identical with SHA-256
 `82510845bfe55d00ca57c4948579a0ebe367e8dd210f8f42fa48b9a2b49a7c28`.
 This local Metal evidence does not close the bilateral UNALIGNED state.
 
-Local shadow views use a shared 112-byte record: matrix at byte 0, light
-position/near plane at 64, direction/far plane at 80, and perspective footprint
-and texel bias parameters at 96. Native frame roots append their local depth
+Local shadow views use a shared 144-byte record: matrix at byte 0, light
+position/near plane at 64, direction/far plane at 80, perspective footprint
+and texel bias parameters at 96, the light's shadow strength and mask layer
+at 112, and the face's atlas square and layer at 128. `shadow_params.z` of
+one selects a single hardware-filtered tap and no contact shadows on both
+backends. Both receivers map face
+UVs into the square through the shared `vkr_local_shadow_atlas_uv`. Both receivers read the strength from the light's first view, skip
+lookups at zero, and blend through the shared `vkr_local_shadow_apply_strength`.
+A point-light tap inside the receiver's face takes its reference depth from the
+shared `vkr_local_shadow_in_face_depth`. A transmission
+lookup stops after the first crossing depth when the receiver lies in front of
+it, and an opaque-occluded tap skips transmission; both are exact because the
+crossings are peeled in order. Native frame roots append their local depth
 array reference and view pointer. Punctual row `p3.w` stores first-view index
 plus one; zero means unshadowed. CPU point-face orientation and shared face-ray
 reconstruction use the same canonical negative projection-Y convention.
 Local shadow parity remains **UNALIGNED** until matched native Vulkan and Metal
 captures and diagnostics pass. Production compilation does not close that gate.
+Both backends run the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
+with its own 128-byte root: frame, G-buffer inputs, visible rows, inverse
+view-projection, extent and the contact-shadow noise index (byte 120 on Metal,
+112 on Vulkan). The deferred-lighting kernels read the mask array at byte 216 on
+Metal and 168 on Vulkan; those roots stay 240 and 192 bytes. The shared
+`local_shadow.slangh` owns the contact-shadow step count, length, noise,
+start offset, occlusion test and fade. Forward and transmission shading pass
+an inline visibility source (a functor on Metal, a Slang generic value parameter
+on Vulkan) to the shared punctual loop.
+2026-09-26: all 31 Vulkan modules that declare the record, including the mask
+and both deferred-lighting modules, pass `spirv-val` with offsets
+0/64/80/96/112/128, and the emitted Vulkan mask root matches the host offsets.
+Face passes draw into their atlas square: Metal clears it with a far-depth
+triangle under its viewport and scissor, Vulkan with `vkCmdClearAttachments`.
+API-only Metal validation of `bistro_light_leak_metal_validation` with the
+atlas, mask pass and contact shadows passes (report SHA-256
+`73a125116b28888a3dabcab438bea18ebdc2d137734299a628b4f0396467347e`). Native
+Vulkan execution remains unavailable.
 
 2026-09-07 local evidence on Apple M1 Pro / Metal 4 / Darwin 25.6.0:
 `./build_release.sh`, `./build_editor.sh Release`, and `./build_test.sh` pass.
@@ -436,7 +464,12 @@ raster far depth. Material planes are conditionally declared from an opaque
 feature aggregate; both native paths guard absent texture bindings. Deferred,
 forward and transmission lighting share active lobe traversal. Deferred lighting
 skips discarded environment diffuse, and SSGI excludes camera-directed specular
-from its source.
+from its source. Both backends split deferred lighting into base and layered
+kernels (Metal template instances, Slang generic value parameter) with the same
+8x8 group classification; the lighting root carries the split flag at byte 188
+on Metal and 164 on Vulkan. Both Vulkan modules pass `spirv-val` with matching
+root offsets; Metal API validation of the split path passes. Native Vulkan
+execution remains unavailable.
 
 SSGI depth-base now writes current-frame RG32UI receiver metadata with bit-preserved
 32-bit depth and an exact local offset. Trace, temporal and composite reuse it.

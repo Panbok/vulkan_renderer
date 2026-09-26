@@ -185,6 +185,8 @@ vkr_global const VkrGpuAbiField vkr_local_shadow_view_fields[] = {
                       "light_direction_far", 80),
     VKR_GPU_ABI_FIELD(VkrLocalShadowView, projection_params,
                       "projection_params", 96),
+    VKR_GPU_ABI_FIELD(VkrLocalShadowView, shadow_params, "shadow_params", 112),
+    VKR_GPU_ABI_FIELD(VkrLocalShadowView, atlas_rect, "atlas_rect", 128),
 };
 
 vkr_global const VkrGpuAbiField vkr_color_grading_fields[] = {
@@ -231,7 +233,7 @@ vkr_global const VkrGpuAbiRecord
             VKR_GPU_ABI_RECORD(VkrGpuVisibleDrawRow, "VkrGpuVisibleDrawRow", 32,
                                4, vkr_gpu_visible_draw_row_fields),
         [VKR_GPU_ABI_LOCAL_SHADOW_VIEW] =
-            VKR_GPU_ABI_RECORD(VkrLocalShadowView, "VkrLocalShadowView", 112,
+            VKR_GPU_ABI_RECORD(VkrLocalShadowView, "VkrLocalShadowView", 144,
                                16, vkr_local_shadow_view_fields),
         [VKR_GPU_ABI_POINT_LIGHT_ROW] =
             VKR_GPU_ABI_RECORD(VkrGpuPointLightRow, "VkrGpuPointLightRow", 64,

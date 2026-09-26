@@ -809,7 +809,11 @@ float3 packet_local_shadow_transmission(VkrVulkanPacketFrameRoot *frame,
     VkrVulkanLocalShadowTransmission maps = frame.local_shadow_transmission[0];
     uint2 pixel = min(uint2(saturate(uv) * float(maps.extent)), maps.extent - 1u);
     int4 address = int4(pixel, layer, 0u);
+    // Crossings are peeled in order from the light, so a receiver in front of
+    // the first one has no transmission prefix.
     float depth0 = g_depth_array_textures[maps.depth0_texture].Load(address);
+    if (receiver_depth <= depth0)
+        return 1.0f;
     float depth1 = g_depth_array_textures[maps.depth1_texture].Load(address);
     float overflow = g_depth_array_textures[maps.overflow_texture].Load(address);
     uint prefix = vkr_local_shadow_transmission_prefix_index(
@@ -832,6 +836,9 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
     if (encoded_view == 0u)
         return 1.0f;
     uint first_view = encoded_view - 1u;
+    float strength = frame.local_shadow_views[first_view].shadow_params.x;
+    if (strength <= 0.0f)
+        return 1.0f;
     float3 from_light = world_position - light.p0.xyz;
     uint face = kind == 2u ? 0u : vkr_local_shadow_face(from_light);
     VkrLocalShadowView data = frame.local_shadow_views[first_view + face];
@@ -855,7 +862,30 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
     float2 uv = clip.xy / clip.w * 0.5f + 0.5f;
     if (kind == 2u && (any(uv < 0.0f) || any(uv > 1.0f)))
         return 1.0f;
+    if (frame.local_shadow_views[first_view].shadow_params.z > 0.5f)
+    {
+        // Lights past the most important few take one hardware-filtered tap.
+        float reference = clip.z / clip.w;
+        float opaque = g_depth_array_textures[frame.local_shadow_texture]
+            .SampleCmpLevelZero(
+                g_comparison_samplers[frame.shadow_comparison_sampler],
+                float3(vkr_local_shadow_atlas_uv(data.atlas_rect,
+                                                 data.projection_params.y, uv),
+                       data.atlas_rect.w),
+                reference);
+        float3 transmission = opaque > 0.0f
+            ? packet_local_shadow_transmission(frame, uv, first_view + face,
+                                               reference)
+            : 1.0f;
+        return vkr_local_shadow_apply_strength(opaque * transmission, strength);
+    }
     float radial_distance = length(receiver - light.p0.xyz);
+    float4 origin_clip =
+        mul(data.light_view_projection, float4(light.p0.xyz, 1.0f));
+    float4 axis_clip = mul(data.light_view_projection,
+                           float4(data.light_direction_far.xyz, 0.0f));
+    float4 face_clip_terms =
+        float4(origin_clip.z, axis_clip.z, origin_clip.w, axis_clip.w);
     float3 visibility = 0.0f;
     [unroll] for (uint tap = 0u; tap < 9u; ++tap)
     {
@@ -870,6 +900,13 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                 visibility += 1.0f;
                 continue;
             }
+        }
+        else if (all(tap_uv >= 0.0f) && all(tap_uv <= 1.0f))
+        {
+            // Most taps stay in the centre face; only their depth changes.
+            tap_view += face;
+            reference = vkr_local_shadow_in_face_depth(
+                face_clip_terms, radial_distance, tap_uv);
         }
         else
         {
@@ -887,14 +924,21 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                 continue;
             }
         }
+        float4 tap_rect = frame.local_shadow_views[tap_view].atlas_rect;
+        float tap_texel =
+            frame.local_shadow_views[tap_view].projection_params.y;
         float opaque = g_depth_array_textures[frame.local_shadow_texture]
             .SampleCmpLevelZero(
                 g_comparison_samplers[frame.shadow_comparison_sampler],
-                float3(tap_uv, float(tap_view)), reference);
-        visibility += opaque * packet_local_shadow_transmission(
-            frame, tap_uv, tap_view, reference);
+                float3(vkr_local_shadow_atlas_uv(tap_rect, tap_texel, tap_uv),
+                       tap_rect.w),
+                reference);
+        // An opaque-occluded tap contributes zero whatever its transmission.
+        if (opaque > 0.0f)
+            visibility += opaque * packet_local_shadow_transmission(
+                frame, tap_uv, tap_view, reference);
     }
-    return visibility / 9.0f;
+    return vkr_local_shadow_apply_strength(visibility / 9.0f, strength);
 }
 
 float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
@@ -905,6 +949,9 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
     if (encoded_view == 0u)
         return 1.0f;
     uint first_view = encoded_view - 1u;
+    float strength = frame.local_shadow_views[first_view].shadow_params.x;
+    if (strength <= 0.0f)
+        return 1.0f;
     float3 from_light = world_position - light.p0.xyz;
     bool point = kind != 2u;
     uint face = point ? vkr_local_shadow_face(from_light) : 0u;
@@ -931,9 +978,15 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
         return 1.0f;
     float opaque = g_depth_array_textures[frame.local_shadow_texture].SampleCmpLevelZero(
         g_comparison_samplers[frame.shadow_comparison_sampler],
-        float3(uv, float(first_view + face)), projected.z);
-    return opaque * packet_local_shadow_transmission(
-        frame, uv, first_view + face, projected.z);
+        float3(vkr_local_shadow_atlas_uv(data.atlas_rect,
+                                         data.projection_params.y, uv),
+               data.atlas_rect.w),
+        projected.z);
+    float3 transmission = opaque > 0.0f
+        ? packet_local_shadow_transmission(frame, uv, first_view + face,
+                                           projected.z)
+        : 1.0f;
+    return vkr_local_shadow_apply_strength(opaque * transmission, strength);
 }
 
 // Every enabled punctual light for one shaded point, traversed once for the
@@ -942,7 +995,24 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
 // deferred path passes G-buffer diffuse albedo and zero. Both spell the same
 // product, so the paths shade identically. Without `diffuse_enabled` the base
 // contributes specular only, as for fully transmissive surfaces.
-VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
+// Visibility Shadow.LocalMask stored for one shadowed light at this pixel.
+float3 packet_local_shadow_mask(VkrVulkanPacketFrameRoot *frame,
+                                VkrGpuPointLightRow light, uint mask_texture,
+                                uint2 pixel)
+{
+    uint encoded_view = uint(light.p3.w);
+    if (encoded_view == 0u)
+        return 1.0f;
+    uint layer = uint(
+        frame.local_shadow_views[encoded_view - 1u].shadow_params.y);
+    return g_storage_images[mask_texture][uint3(pixel, layer)].rgb;
+}
+
+// UseMask selects the base visibility source at compile time: forward and
+// transmission shading filter the shadow maps inline, while deferred lighting
+// reads the mask for `pixel` from `mask_texture`.
+VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
+                                      VkrVulkanPacketFrameRoot *frame,
                                       float3 world_position, float3 normal,
                                       float3 view, float3 albedo,
                                       float metallic, float roughness,
@@ -951,7 +1021,8 @@ VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
                                       bool coat_active, VkrClearcoatLayer coat,
                                       bool sheen_active, VkrSheenLayer sheen,
                                       float sheen_normalization,
-                                      inout float3 coat_result, inout float3 sheen_result)
+                                      inout float3 coat_result, inout float3 sheen_result,
+                                      uint mask_texture, uint2 pixel)
 {
     VkrVulkanDirectResult result;
     result.irradiance = 0.0f;
@@ -991,8 +1062,15 @@ VkrVulkanDirectResult packet_punctual_layered(VkrVulkanPacketFrameRoot *frame,
             uint kind = term.kind;
             float3 light_direction = term.direction;
             float attenuation = term.attenuation * term.cone;
-            float3 visibility = packet_local_shadow(frame, light, kind, world_position,
-                vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy));
+            float3 visibility;
+            if (UseMask)
+                visibility = packet_local_shadow_mask(frame, light,
+                                                      mask_texture, pixel);
+            else
+                visibility = packet_local_shadow(frame, light, kind,
+                    world_position,
+                    vkr_ggx_diffuse_shadow_normal(normal, light_direction,
+                                                  energy));
             if (diffuse_enabled)
             {
                 VkrVulkanDirectResult direct = packet_direct(
@@ -1631,11 +1709,11 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
                 sheen, sheen_ltc.energy_normalization);
     }
     // Each light list is traversed once for the base, coat and sheen lobes.
-    VkrVulkanDirectResult punctual = packet_punctual_layered(
+    VkrVulkanDirectResult punctual = packet_punctual_layered<false>(
         frame, input.world_position, normal, view, base.rgb, metallic,
         roughness, f0, energy, true, clearcoat_active, clearcoat,
         sheen_active, sheen, sheen_ltc.energy_normalization,
-        clearcoat_direct, sheen_direct);
+        clearcoat_direct, sheen_direct, 0u, uint2(0u, 0u));
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
     VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(

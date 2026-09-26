@@ -447,8 +447,8 @@ static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
               "Metal packet IBL probe ABI must remain 64 bytes");
-static_assert(sizeof(VkrLocalShadowView) == 112,
-              "Local shadow view Metal ABI must remain 112 bytes");
+static_assert(sizeof(VkrLocalShadowView) == 144,
+              "Local shadow view Metal ABI must remain 144 bytes");
 static_assert(sizeof(VkrMetalPacketShadowCascade) == 96,
               "Metal packet shadow cascade ABI must remain 96 bytes");
 

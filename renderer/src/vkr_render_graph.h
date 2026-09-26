@@ -544,6 +544,9 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t clearcoat_enabled;
   bool8_t sheen_enabled;
   bool8_t anisotropy_enabled;
+  /** Any of clearcoat, sheen or anisotropy: deferred lighting splits its
+   * tiles between a base kernel and the layered kernel. */
+  bool8_t lighting_layers_enabled;
   bool8_t editor_image_available;
   bool8_t editor_overlay_enabled;
   /* The editor draws a selection mask and outlines its edge. */
@@ -649,6 +652,8 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t local_shadow_transmission_view_count;
   /** Bits of repeated local-shadow passes that must be instantiated. */
   uint32_t local_shadow_render_mask;
+  /** Atlas layers cleared whole before local-shadow faces draw. */
+  uint32_t local_shadow_atlas_clear_mask;
   uint32_t local_shadow_map_size;
   uint32_t local_shadow_transmission_map_size;
   uint32_t local_shadow_map_layer_count;

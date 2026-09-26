@@ -793,7 +793,7 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
    cascades and the shadow config into the shadow pass payload. */
 vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     VkrStandardSceneRuntime *application,
-    VkrStandardSceneRuntimeDrawContext *draw) {
+    VkrStandardSceneRuntimeDrawContext *draw, float64_t delta) {
   const VkrFrame *setup = draw->setup;
   if (!application->disable_directional_shadows &&
       draw->world_payload.gpu_shadow_candidate_count > 0u &&
@@ -812,12 +812,21 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
   if (!draw->scene_stopped && !application->disable_local_shadows &&
       draw->world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
+    const VkrLocalShadowCamera camera = {
+        .view = application->globals.view,
+        .position = application->globals.view_position,
+        .delta_seconds = (float32_t)delta,
+        .focal_pixels = application->globals.projection.m33 == 0.0f
+                            ? 0.5f * (float32_t)setup->window_height *
+                                  fabsf(application->globals.projection.m11)
+                            : 0.0f,
+    };
     vkr_shadow_system_resolve_local_shadows(
         &application->shadow_system, setup->image_index,
         setup->retained_local_shadow, &draw->world_payload,
         application->lighting_system.point_lights,
-        application->lighting_system.point_light_count,
-        application->globals.view_position, &draw->local_shadow_payload);
+        application->lighting_system.point_light_count, &camera,
+        &draw->local_shadow_payload);
   }
 
   const VkrShadowFrameData *shadow_frame = &draw->shadow_frame;
@@ -1551,7 +1560,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     return;
   }
 
-  vkr_standard_scene_runtime_prepare_shadow_payloads(application, &draw);
+  vkr_standard_scene_runtime_prepare_shadow_payloads(application, &draw, delta);
   vkr_standard_scene_runtime_prepare_picking_payload(application, &draw);
   vkr_standard_scene_runtime_prepare_editor_viewport(application, &draw);
   vkr_standard_scene_runtime_scale_picking_payload(application, &draw);

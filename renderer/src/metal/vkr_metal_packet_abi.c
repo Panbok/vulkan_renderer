@@ -1234,18 +1234,40 @@ vkr_global const VkrMetalPacketAbiField vkr_deferred_lighting_root_fields[] = {
                   "direct_source", 176),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, ssgi_enabled,
                   "ssgi_enabled", 184),
-    VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, ssgi_reserved,
-                  "ssgi_reserved", 188),
+    VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, layered_tiles,
+                  "layered_tiles", 188),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, clearcoat_texture_id,
                   "clearcoat", 192),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, sheen_texture_id, "sheen",
                   200),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, anisotropy_texture_id,
                   "anisotropy", 208),
+    VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot,
+                  local_shadow_mask_texture_id, "local_shadow_mask", 216),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, visible_rows,
                   "visible_rows", 224),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot,
                   subsurface_source_texture_id, "subsurface_source", 232),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_local_shadow_mask_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, frame, "frame", 0),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, vbuffer_texture_id,
+                  "vbuffer", 8),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, depth_texture_id, "depth",
+                  16),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, normal_texture_id,
+                  "normal", 24),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, mask_texture_id, "mask",
+                  32),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, visible_rows,
+                  "visible_rows", 40),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, inverse_view_projection,
+                  "inverse_view_projection", 48),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, extent, "extent", 112),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, contact_noise_index,
+                  "contact_noise_index", 120),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, reserved, "reserved", 124),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_metalfx_stabilize_root_fields[] = {
@@ -1693,6 +1715,10 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketDeferredLightingRoot,
                            "VkrMetalPacketDeferredLightingRoot", 240, 16,
                            vkr_deferred_lighting_root_fields),
+        [VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketLocalShadowMaskRoot,
+                           "VkrMetalPacketLocalShadowMaskRoot", 128, 16,
+                           vkr_local_shadow_mask_root_fields),
         [VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketMetalfxStabilizeRoot,
                            "VkrMetalPacketMetalfxStabilizeRoot", 64, 16,

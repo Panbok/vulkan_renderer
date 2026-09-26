@@ -399,7 +399,20 @@ uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketFrameRoot *root,
 // and zero metallic. Without EvaluateDiffuse the base contributes specular
 // only, as for fully transmissive surfaces. Sums accumulate into the caller's
 // running totals per light, preserving each pass's summation order.
-template <bool EvaluateDiffuse>
+//
+// LocalShadow supplies the base visibility of one shadowed light: forward and
+// transmission shading filter the shadow maps inline, while deferred lighting
+// reads the visibility Shadow.LocalMask stored for its pixel.
+struct VkrMetalInlineLocalShadow {
+  float3 operator()(constant VkrMetalPacketFrameRoot *frame,
+                    uint first_view_encoded, uint kind, float3 world_position,
+                    float3 normal) const {
+    return vkr_metal_packet_local_shadow_sample(frame, first_view_encoded, kind,
+                                                world_position, normal);
+  }
+};
+
+template <bool EvaluateDiffuse, typename LocalShadow>
 void vkr_metal_packet_punctual_layered(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
     float3 normal, float3 view, float3 albedo, float metallic,
@@ -408,7 +421,7 @@ void vkr_metal_packet_punctual_layered(
     VkrSheenLayer sheen, float sheen_normalization,
     thread float3 &irradiance_sum, thread float3 &diffuse_sum,
     thread float3 &specular_sum, thread float3 &coat_sum,
-    thread float3 &sheen_sum) {
+    thread float3 &sheen_sum, LocalShadow local_shadow) {
   uint4 point_mask = vkr_metal_packet_point_light_mask(frame, world_position);
   uint point_count = min(frame->point_light_count, 128u);
   for (uint word = 0u; word < 4u; ++word) {
@@ -444,9 +457,8 @@ void vkr_metal_packet_punctual_layered(
                       dot(normal, light_direction) < 0.0f;
       float3 shadow_normal = back_lit ? -normal : normal;
       float3 base_attenuation =
-          attenuation * vkr_metal_packet_local_shadow_sample(
-                            frame, uint(p3.w), kind, world_position,
-                            shadow_normal);
+          attenuation * local_shadow(frame, uint(p3.w), kind, world_position,
+                                     shadow_normal);
       float3 coat_attenuation = base_attenuation;
       if (coat_active && any(coat.normal != shadow_normal)) {
         coat_attenuation =

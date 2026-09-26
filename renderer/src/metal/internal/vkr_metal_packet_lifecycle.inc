@@ -722,6 +722,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->gpu_draw_icb_argument_encoder release];
   [renderer->depth_read_state release];
   [renderer->depth_write_state release];
+  [renderer->depth_clear_state release];
   [renderer->world_text_pipeline release];
   [renderer->picking_text_pipeline release];
   [renderer->tonemap_pipeline release];
@@ -766,7 +767,9 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->gtao_evaluate_pipeline release];
   [renderer->gtao_depth_mip_pipeline release];
   [renderer->gtao_depth_prefilter_pipeline release];
+  [renderer->local_shadow_mask_pipeline release];
   [renderer->deferred_lighting_pipeline release];
+  [renderer->deferred_lighting_layered_pipeline release];
   [renderer->temporal_resolve_pipeline release];
   [renderer->metalfx_stabilize_pipeline release];
   [renderer->transmission_shade_pipeline release];
@@ -805,6 +808,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
        i < ArrayCount(renderer->local_shadow_transmission_pipelines); ++i)
     [renderer->local_shadow_transmission_pipelines[i] release];
   [renderer->gpu_shadow_opaque_pipeline release];
+  [renderer->depth_clear_pipeline release];
   [renderer->vbuffer_opaque_pipeline release];
   [renderer->blend_pipeline release];
   [renderer->ui_pipeline release];

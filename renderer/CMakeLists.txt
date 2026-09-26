@@ -132,7 +132,9 @@ vkr_add_vulkan_packet_shader(
 vkr_add_vulkan_packet_shader(
     "packet.gbuffer_resolve.emissive_debug.comp" vk_gbuffer_resolve compute
     -DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=1 -DVKR_VULKAN_GBUFFER_WRITE_DEBUG=1)
+vkr_add_vulkan_packet_shader("packet.local_shadow_mask.comp" vk_local_shadow_mask compute)
 vkr_add_vulkan_packet_shader("packet.deferred_lighting.comp" vk_deferred_lighting compute)
+vkr_add_vulkan_packet_shader("packet.deferred_lighting_layered.comp" vk_deferred_lighting_layered compute)
 vkr_add_vulkan_packet_shader("packet.temporal_resolve.comp" vk_temporal_resolve compute)
 vkr_add_vulkan_packet_shader("packet.hzb_build.comp" vk_hzb_build compute)
 vkr_add_vulkan_packet_shader("packet.sdsm_reduce.comp" vk_sdsm_reduce compute)

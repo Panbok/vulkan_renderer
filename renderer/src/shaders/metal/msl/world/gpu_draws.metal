@@ -104,6 +104,18 @@ fragment uint2 vkr_metal_packet_transmission_vbuffer_fragment(
   return uint2(input.visible_row_index + 1u, primitive_id);
 }
 
+struct VkrMetalPacketDepthClearOutput {
+  float4 position [[position]];
+};
+
+// Clears one local shadow face's atlas square: a triangle covering the
+// viewport at far depth, drawn with an always-passing depth write.
+vertex VkrMetalPacketDepthClearOutput
+vkr_metal_packet_depth_clear_vertex(uint vertex_id [[vertex_id]]) {
+  float2 corner = float2((vertex_id << 1u) & 2u, vertex_id & 2u);
+  return {float4(corner * 2.0f - 1.0f, 1.0f, 1.0f)};
+}
+
 fragment void vkr_metal_packet_gpu_shadow_fragment(
     VkrMetalPacketVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]]) {
@@ -1108,11 +1120,13 @@ struct VkrMetalPacketDeferredLightingRoot {
   float4 sky_radiance;
   texture2d<float, access::write> direct_source;
   uint ssgi_enabled;
-  uint ssgi_reserved;
+  // Nonzero when the layered kernel also runs and owns tiles with layer data.
+  uint layered_tiles;
   texture2d<float, access::read> clearcoat;
   texture2d<float, access::read> sheen;
   texture2d<float, access::read> anisotropy;
-  uint2 visible_rows_reserved;
+  // One RGBA8 layer of local-shadow visibility per shadowed light.
+  texture2d_array<float, access::read_write> local_shadow_mask;
   device VkrGpuVisibleDrawRow *visible_rows;
   texture2d<float, access::write> subsurface_source;
 };
@@ -1196,9 +1210,187 @@ vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
   return radiance;
 }
 
-kernel void vkr_metal_packet_deferred_lighting(
-    constant VkrMetalPacketDeferredLightingRoot &root [[buffer(0)]],
+// Deferred lighting reads each shadowed light's visibility from the mask that
+// Shadow.LocalMask stored for this pixel, in the light's mask layer.
+struct VkrMetalDeferredShadowMask {
+  constant VkrMetalPacketDeferredLightingRoot *root;
+  uint2 pixel;
+
+  float3 operator()(constant VkrMetalPacketFrameRoot *frame,
+                    uint first_view_encoded, uint, float3, float3) const {
+    if (first_view_encoded == 0u)
+      return float3(1.0f);
+    uint layer = uint(
+        frame->local_shadow_views[first_view_encoded - 1u].shadow_params.y);
+    return root->local_shadow_mask.read(pixel, layer).rgb;
+  }
+};
+
+struct VkrMetalPacketLocalShadowMaskRoot {
+  constant VkrMetalPacketFrameRoot *frame;
+  texture2d<uint, access::read> vbuffer;
+  texture2d<float, access::read> depth;
+  texture2d<float, access::read> normal;
+  // One RGBA8 layer of local-shadow visibility per shadowed light.
+  texture2d_array<float, access::write> mask;
+  device VkrGpuVisibleDrawRow *visible_rows;
+  float4x4 inverse_view_projection;
+  uint2 extent;
+  // Zero without temporal reconstruction, so the march pattern stays fixed.
+  uint contact_noise_index;
+  uint reserved;
+};
+
+static float3 vkr_metal_packet_local_shadow_mask_world(
+    constant VkrMetalPacketLocalShadowMaskRoot &root, float2 ndc,
+    float depth) {
+  float4 world = root.inverse_view_projection * float4(ndc, depth, 1.0);
+  return world.xyz / max(abs(world.w), 1e-7) * sign(world.w);
+}
+
+// Contact visibility toward one light: marches the depth buffer from `origin`
+// along `direction` and stops at the first sample whose camera ray passes
+// behind a nearby surface. The march leaves the screen without occlusion.
+static float vkr_metal_packet_local_contact_shadow(
+    constant VkrMetalPacketLocalShadowMaskRoot &root, float3 origin,
+    float3 direction, float march_length, float noise) {
+  constant VkrMetalPacketFrameRoot *frame = root.frame;
+  // view_projection uses Slang's transposed draw-root convention.
+  float4 clip_origin = float4(origin, 1.0f) * frame->view_projection;
+  float4 clip_span =
+      float4(direction * march_length, 0.0f) * frame->view_projection;
+  for (uint step = 0u; step < VKR_LOCAL_SHADOW_CONTACT_STEPS; ++step) {
+    float t = (float(step) + noise) / float(VKR_LOCAL_SHADOW_CONTACT_STEPS);
+    float4 clip = clip_origin + t * clip_span;
+    if (clip.w <= 1e-4f)
+      break;
+    float2 ndc = clip.xy / clip.w;
+    if (any(abs(ndc) >= 1.0f))
+      break;
+    float2 uv = float2(ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f);
+    uint2 pixel = min(uint2(uv * float2(root.extent)), root.extent - 1u);
+    float3 surface = vkr_metal_packet_local_shadow_mask_world(
+        root, ndc, root.depth.read(pixel).x);
+    float3 sample_position = origin + direction * (march_length * t);
+    float surface_in_front =
+        dot(surface - sample_position,
+            vkr_metal_packet_view_direction(frame, sample_position));
+    if (vkr_local_shadow_contact_occluded(
+            surface_in_front,
+            distance(sample_position, frame->view_position.xyz)))
+      return vkr_local_shadow_contact_visibility(t);
+  }
+  return 1.0f;
+}
+
+// Shadow.LocalMask stores every in-range shadowed light's visibility with the
+// receiver normal, range test and light traversal of deferred lighting, so the
+// lighting kernels read one texel per light instead of filtering shadow maps.
+// A short contact-shadow march multiplies the filtered visibility of each light
+// that takes the full filter.
+kernel void vkr_metal_packet_local_shadow_mask(
+    constant VkrMetalPacketLocalShadowMaskRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
+  if (any(pixel >= root.extent))
+    return;
+  uint visible_index = root.vbuffer.read(pixel).x;
+  if (visible_index == 0u)
+    return;
+  constant VkrMetalPacketFrameRoot *frame = root.frame;
+  float3 normal =
+      vkr_metal_packet_octahedral_decode(root.normal.read(pixel).xy);
+  float3 world_position = vkr_metal_packet_local_shadow_mask_world(
+      root, vkr_metal_packet_resolve_ndc(float2(pixel) + 0.5, root.extent),
+      root.depth.read(pixel).x);
+  float camera_distance = distance(world_position, frame->view_position.xyz);
+  float contact_noise =
+      vkr_local_shadow_contact_noise(pixel, root.contact_noise_index);
+  float diffuse_transmission =
+      vkr_editor_neutral_lighting(frame->render_mode)
+          ? 0.0f
+          : frame->materials[root.visible_rows[visible_index - 1u]
+                                 .material_index]
+                .material_diffuse_transmission.w;
+  uint4 point_mask = vkr_metal_packet_point_light_mask(frame, world_position);
+  uint point_count = min(frame->point_light_count, 128u);
+  for (uint word = 0u; word < 4u; ++word) {
+    uint remaining = simd_or(point_mask[word]);
+    while (remaining != 0u) {
+      uint bit = ctz(remaining);
+      remaining &= remaining - 1u;
+      uint light_index = word * 32u + bit;
+      if (light_index >= point_count ||
+          (point_mask[word] & (1u << bit)) == 0u)
+        continue;
+      const device VkrGpuPointLightRow &light =
+          frame->point_light_data[light_index];
+      float4 p3 = light.p3;
+      if (p3.w == 0.0f)
+        continue;
+      VkrPunctualLightTerm term = vkr_punctual_light_term(
+          light.p0, light.p1, light.p2, p3, world_position);
+      if (!term.in_range || term.cone <= 0.0f)
+        continue;
+      bool back_lit = diffuse_transmission > 0.0f &&
+                      dot(normal, term.direction) < 0.0f;
+      float3 shadow_normal = back_lit ? -normal : normal;
+      float3 visibility = vkr_metal_packet_local_shadow_sample(
+          frame, uint(p3.w), term.kind, world_position, shadow_normal);
+      const device VkrLocalShadowView &view =
+          frame->local_shadow_views[uint(p3.w) - 1u];
+      if (view.shadow_params.z < 0.5f && any(visibility > 0.0f) &&
+          dot(shadow_normal, term.direction) > 0.0f) {
+        float3 origin =
+            world_position +
+            shadow_normal *
+                vkr_local_shadow_contact_start_offset(camera_distance);
+        float march_length =
+            min(VKR_LOCAL_SHADOW_CONTACT_LENGTH,
+                0.5f * distance(light.p0.xyz, world_position));
+        float contact = vkr_metal_packet_local_contact_shadow(
+            root, origin, term.direction, march_length, contact_noise);
+        visibility *= vkr_local_shadow_apply_strength(
+            float3(contact), view.shadow_params.x);
+      }
+      root.mask.write(float4(visibility, 1.0f), pixel,
+                      uint(view.shadow_params.y));
+    }
+  }
+}
+
+// A pixel with no clearcoat, sheen or anisotropy G-buffer data shades
+// identically in the base kernel, which compiles those layers out.
+static bool vkr_metal_packet_deferred_pixel_layered(
+    constant VkrMetalPacketDeferredLightingRoot &root, uint2 pixel) {
+  if (any(pixel >= root.extent) || root.vbuffer.read(pixel).x == 0u)
+    return false;
+  return (!is_null_texture(root.clearcoat) &&
+          any(root.clearcoat.read(pixel) != 0.0f)) ||
+         (!is_null_texture(root.sheen) &&
+          any(root.sheen.read(pixel) != 0.0f)) ||
+         (!is_null_texture(root.anisotropy) &&
+          any(root.anisotropy.read(pixel) != 0.0f));
+}
+
+// Both lighting kernels classify the same 8x8 group, so each tile is shaded
+// by exactly one of them. Every thread reaches both barriers.
+static bool vkr_metal_packet_deferred_tile_layered(
+    constant VkrMetalPacketDeferredLightingRoot &root, uint2 pixel,
+    uint thread_index, threadgroup atomic_uint &tile_layered) {
+  if (thread_index == 0u)
+    atomic_store_explicit(&tile_layered, 0u, memory_order_relaxed);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (vkr_metal_packet_deferred_pixel_layered(root, pixel))
+    atomic_fetch_or_explicit(&tile_layered, 1u, memory_order_relaxed);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  return atomic_load_explicit(&tile_layered, memory_order_relaxed) != 0u;
+}
+
+// Layered selects the clearcoat, sheen and anisotropy paths at compile time;
+// without them the kernel needs fewer registers.
+template <bool Layered>
+static void vkr_metal_packet_deferred_shade(
+    constant VkrMetalPacketDeferredLightingRoot &root, uint2 pixel) {
   if (any(pixel >= root.extent))
     return;
   if (root.ssgi_enabled != 0u)
@@ -1257,7 +1449,7 @@ kernel void vkr_metal_packet_deferred_lighting(
   float3 view = vkr_metal_packet_view_direction(frame, world_position);
   float no_v = max(dot(normal, view), 0.0);
   float4 anisotropy_packed = 0.0f;
-  if (!is_null_texture(root.anisotropy)) {
+  if (Layered && !is_null_texture(root.anisotropy)) {
     anisotropy_packed = root.anisotropy.read(pixel);
   }
   VkrGgxMaterialEnergy energy =
@@ -1267,20 +1459,21 @@ kernel void vkr_metal_packet_deferred_lighting(
         frame->materials[root.visible_rows[visible_index - 1u].material_index].material_diffuse_transmission);
   }
   float4 clearcoat_packed = 0.0f;
-  if (!is_null_texture(root.clearcoat)) {
+  if (Layered && !is_null_texture(root.clearcoat)) {
     clearcoat_packed = root.clearcoat.read(pixel);
   }
-  bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
+  bool clearcoat_active =
+      Layered && vkr_clearcoat_active(clearcoat_packed.x);
   VkrClearcoatLayer clearcoat = {};
   if (clearcoat_active)
     clearcoat = vkr_metal_packet_prepare_clearcoat(
         frame, clearcoat_packed.x, clearcoat_packed.y,
         vkr_metal_packet_octahedral_decode(clearcoat_packed.zw), view);
   float4 sheen_packed = 0.0f;
-  if (!is_null_texture(root.sheen)) {
+  if (Layered && !is_null_texture(root.sheen)) {
     sheen_packed = root.sheen.read(pixel);
   }
-  bool sheen_active = vkr_sheen_active(sheen_packed.rgb);
+  bool sheen_active = Layered && vkr_sheen_active(sheen_packed.rgb);
   VkrSheenLayer sheen = {};
   float sheen_normalization = 0.0f;
   if (sheen_active) {
@@ -1340,7 +1533,8 @@ kernel void vkr_metal_packet_deferred_lighting(
       frame, world_position, normal, view, diffuse_albedo, 0.0f, roughness,
       f0, energy, clearcoat_active, clearcoat, sheen_active, sheen,
       sheen_normalization, diffuse_irradiance, analytic_diffuse,
-      analytic_specular, clearcoat_direct, sheen_direct);
+      analytic_specular, clearcoat_direct, sheen_direct,
+      VkrMetalDeferredShadowMask{&root, pixel});
   VkrMetalPacketDirectResult rectangles =
       vkr_metal_packet_layered_rectangle_lights<true>(
           frame, world_position, normal, view, diffuse_albedo, 0.0f,
@@ -1461,6 +1655,29 @@ kernel void vkr_metal_packet_deferred_lighting(
   color += indirect_diffuse * base_transmission;
   color += hdr_seed.rgb * base_transmission;
   root.hdr.write(float4(color, 1.0), pixel);
+}
+
+kernel void vkr_metal_packet_deferred_lighting(
+    constant VkrMetalPacketDeferredLightingRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]]) {
+  threadgroup atomic_uint tile_layered;
+  if (root.layered_tiles != 0u &&
+      vkr_metal_packet_deferred_tile_layered(root, pixel, thread_index,
+                                             tile_layered))
+    return;
+  vkr_metal_packet_deferred_shade<false>(root, pixel);
+}
+
+kernel void vkr_metal_packet_deferred_lighting_layered(
+    constant VkrMetalPacketDeferredLightingRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]]) {
+  threadgroup atomic_uint tile_layered;
+  if (!vkr_metal_packet_deferred_tile_layered(root, pixel, thread_index,
+                                              tile_layered))
+    return;
+  vkr_metal_packet_deferred_shade<true>(root, pixel);
 }
 
 struct alignas(16) VkrMetalPacketTemporalResolveRoot {
@@ -2297,7 +2514,7 @@ static float3 vkr_metal_packet_transmission_lighting(
       surface.metallic, surface.roughness, f0, energy, clearcoat_active,
       clearcoat, sheen_active, sheen, sheen_normalization,
       punctual_irradiance, analytic_diffuse, analytic_specular,
-      clearcoat_direct, sheen_direct);
+      clearcoat_direct, sheen_direct, VkrMetalInlineLocalShadow{});
   VkrMetalPacketDirectResult rectangles =
       vkr_metal_packet_layered_rectangle_lights<DiffuseEnabled>(
           frame, world_position, surface.normal, view, surface.base.rgb,

@@ -10,7 +10,28 @@ struct VkrLocalShadowView {
     float4 light_position_near;
     float4 light_direction_far;
     float4 projection_params;
+    // x: shadow strength in [0, 1], shared by every face of the light.
+    // y: the light's Shadow.LocalMask layer.
+    // z: one when the light takes a single filtered tap and no contact
+    // shadows.
+    float4 shadow_params;
+    // The face's atlas square: xy corner and z side in atlas UV, w the layer.
+    float4 atlas_rect;
 };
+
+// Atlas coordinates of a face UV. Clamping half a face texel inside the
+// square keeps bilinear comparison taps off neighbouring faces.
+float2 vkr_local_shadow_atlas_uv(float4 atlas_rect, float face_texel, float2 uv)
+{
+    float2 inset = clamp(uv, 0.5f * face_texel, 1.0f - 0.5f * face_texel);
+    return atlas_rect.xy + inset * atlas_rect.z;
+}
+
+// Blends one light's shadow visibility toward unshadowed as its strength falls,
+// so a light entering or leaving the shadowed set changes continuously.
+float3 vkr_local_shadow_apply_strength(float3 visibility, float strength) {
+    return 1.0f - strength * (1.0f - visibility);
+}
 
 uint vkr_local_shadow_face(float3 direction) {
     float3 a = abs(direction);
@@ -34,6 +55,19 @@ float3 vkr_local_shadow_up(uint face) {
     return (face == 2u || face == 3u) ? float3(0, 0, 1) : float3(0, 1, 0);
 }
 
+// Comparison depth of a tap that stays inside its cube face, at the receiver's
+// radial distance from the light. Its face ray f + r * p.x - u * p.y has unit
+// forward component, so the forward distance is radial / |ray|; depth follows
+// from the face clip terms (origin z, axis z, origin w, axis w), which the
+// caller projects once per lookup. Equivalent to projecting the tap's point.
+float vkr_local_shadow_in_face_depth(float4 clip_terms, float radial_distance,
+                                     float2 uv) {
+    float2 p = uv * 2.0f - 1.0f;
+    float forward = radial_distance * rsqrt(1.0f + dot(p, p));
+    return (clip_terms.x + forward * clip_terms.y) /
+           (clip_terms.z + forward * clip_terms.w);
+}
+
 // UV follows canonical projection's negative Y scale. UV may lie outside the
 // face: reconstructing its ray allows the caller to sample the adjacent face.
 float3 vkr_local_shadow_direction(uint face, float2 uv) {
@@ -42,6 +76,47 @@ float3 vkr_local_shadow_direction(uint face, float2 uv) {
     float3 r = cross(f, u);
     float2 p = uv * 2.0f - 1.0f;
     return f + r * p.x - u * p.y;
+}
+
+// Contact shadows march VKR_LOCAL_SHADOW_CONTACT_STEPS depth-buffer samples
+// along at most VKR_LOCAL_SHADOW_CONTACT_LENGTH metres toward a shadowed light.
+// They recover occlusion near contacts that the shadow map's filter radius,
+// normal offset and bias remove.
+#define VKR_LOCAL_SHADOW_CONTACT_STEPS 8u
+#define VKR_LOCAL_SHADOW_CONTACT_LENGTH 0.25f
+
+// March start offset in [0, 1): an R2 sequence over the pixel, advanced by the
+// temporal noise index so TAA integrates the step pattern.
+float vkr_local_shadow_contact_noise(uint2 pixel, uint noise_index)
+{
+    float value = 0.5f + float(pixel.x) * 0.7548776662f +
+                  float(pixel.y) * 0.5698402910f +
+                  float(noise_index) * 0.6180339887f;
+    return value - floor(value);
+}
+
+// Distance from the receiver along its shadow normal at which the march
+// starts, so the receiver's own depth does not occlude it.
+float vkr_local_shadow_contact_start_offset(float camera_distance)
+{
+    return 0.01f + 0.004f * camera_distance;
+}
+
+// A march sample is occluded when the depth-buffer surface on its camera ray
+// lies in front of it by more than depth precision but less than the assumed
+// occluder thickness. Both scale with camera distance.
+bool vkr_local_shadow_contact_occluded(float surface_in_front,
+                                       float camera_distance)
+{
+    return surface_in_front > 0.004f * camera_distance &&
+           surface_in_front < 0.03f + 0.005f * camera_distance;
+}
+
+// Visibility after the first occluded sample at march fraction t: occluders in
+// the far half of the ray fade out so the ray's end leaves no hard line.
+float vkr_local_shadow_contact_visibility(float t)
+{
+    return saturate(2.0f * t - 1.0f);
 }
 
 #endif

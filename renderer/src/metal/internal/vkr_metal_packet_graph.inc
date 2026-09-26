@@ -1733,9 +1733,12 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
       }
     }
     const uint32_t extent =
-        resource == 0u ? renderer->prepared_frame.local_shadow_map_size
+        resource == 0u ? VKR_LOCAL_SHADOW_ATLAS_SIZE
                        : MIN(renderer->prepared_frame.local_shadow_map_size,
                              VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
+    const uint32_t layers =
+        resource == 0u ? VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT
+                       : renderer->prepared_frame.local_shadow_map_layer_count;
     const VkrTextureFormat format = resource == 2u || resource == 4u
                                         ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
                                         : VKR_TEXTURE_FORMAT_D32_SFLOAT;
@@ -1745,8 +1748,7 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
         slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
         slot->desc.type != VKR_TEXTURE_TYPE_2D || slot->desc.width != extent ||
         slot->desc.height != extent || slot->desc.format != format ||
-        slot->desc.layers !=
-            renderer->prepared_frame.local_shadow_map_layer_count)
+        slot->desc.layers != layers)
       return;
     const VkrMetalPacketImageInstance *instance = &slot->instances[image_index];
     if (!instance->live || !instance->resource.metal_texture)

@@ -187,9 +187,17 @@
 #define VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV                          \
   "packet.temporal_transform.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV                           \
+  "packet.local_shadow_mask.comp.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
+  "packet.deferred_lighting_layered.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV
 #define VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV                            \
@@ -410,7 +418,8 @@ enum {
   VKR_VULKAN_SENTINEL_UPLOAD_SIZE = 4,
   VKR_VULKAN_SWAPCHAIN_IMAGE_MAX = 8,
   VKR_VULKAN_RETIRED_SWAPCHAIN_MAX = 8,
-  VKR_VULKAN_GRAPH_LAYER_MAX = 16,
+  /* The local shadow face array is the largest layered graph image. */
+  VKR_VULKAN_GRAPH_LAYER_MAX = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
   VKR_VULKAN_TEXTURE_MIP_MAX = 16,
   VKR_VULKAN_PENDING_IBL_BAKE_MAX = 32,
   /* Preserve the former shared-upload ceiling for direct reads. Copy-only
@@ -531,7 +540,9 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG,
+  VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE,
   VKR_VULKAN_DEFERRED_PIPELINE_FSR31_STABILIZE,
@@ -863,7 +874,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t clearcoat_texture;
   uint32_t sheen_texture;
   uint32_t anisotropy_texture;
-  uint32_t visible_rows_padding[3];
+  /* Nonzero when the layered kernel also runs and owns layered tiles. */
+  uint32_t layered_tiles;
+  /* Shadow.LocalMask output: one RGBA8 layer per shadowed light. */
+  uint32_t local_shadow_mask_texture;
+  uint32_t visible_rows_padding;
   uint64_t visible_rows;
   uint32_t subsurface_source_texture;
   uint32_t subsurface_profile_count;
@@ -873,6 +888,30 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                    offsetof(VkrVulkanLightingRoot, subsurface_profile_count) ==
                        188u,
                "Subsurface source producer ABI drift");
+
+/** Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
+ * and the noise index that varies the contact-shadow march between frames. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
+  uint64_t frame;
+  uint64_t frame_padding;
+  Mat4 inverse_view_projection;
+  uint64_t visible_rows;
+  uint32_t vbuffer_texture;
+  uint32_t depth_texture;
+  uint32_t normal_texture;
+  /* One RGBA8 layer of visibility per shadowed light. */
+  uint32_t mask_texture;
+  uint32_t extent[2];
+  /* Zero without temporal reconstruction, so the march pattern stays fixed. */
+  uint32_t contact_noise_index;
+  uint32_t reserved[3];
+} VkrVulkanLocalShadowMaskRoot;
+_Static_assert(sizeof(VkrVulkanLocalShadowMaskRoot) == 128u &&
+                   offsetof(VkrVulkanLocalShadowMaskRoot, visible_rows) ==
+                       80u &&
+                   offsetof(VkrVulkanLocalShadowMaskRoot,
+                            contact_noise_index) == 112u,
+               "Local shadow mask root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanHzbRoot {
   uint32_t source_texture;
@@ -1798,7 +1837,11 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, direct_source_texture) == 144u &&
                    offsetof(VkrVulkanLightingRoot, ssgi_enabled) == 148u &&
                    offsetof(VkrVulkanLightingRoot, clearcoat_texture) == 152u &&
                    offsetof(VkrVulkanLightingRoot, sheen_texture) == 156u &&
-                   offsetof(VkrVulkanLightingRoot, anisotropy_texture) == 160u,
+                   offsetof(VkrVulkanLightingRoot, anisotropy_texture) ==
+                       160u &&
+                   offsetof(VkrVulkanLightingRoot, layered_tiles) == 164u &&
+                   offsetof(VkrVulkanLightingRoot, local_shadow_mask_texture) ==
+                       168u,
                "Deferred lighting-root SSGI/clearcoat ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, visible_rows) == 176u,
                "Deferred lighting-root visible-row ABI drift");
@@ -3224,9 +3267,13 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
                                           VkrVulkanPreparedCompute *prepared,
                                           const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
+bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedCompute *prepared,
+                                         const VkrRgPass *pass,
+                                         bool8_t layered);
 bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);

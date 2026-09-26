@@ -237,9 +237,19 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t state_flags;
 } VkrGpuVisibleDrawRow;
 
-#define VKR_LOCAL_SHADOW_FACE_COUNT_MAX 16u
+#define VKR_LOCAL_SHADOW_FACE_COUNT_MAX 32u
+/* The map size is the largest face; faces shrink with screen coverage. */
 #define VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT 1024u
+#define VKR_LOCAL_SHADOW_MAP_SIZE_MAX 1024u
+#define VKR_LOCAL_SHADOW_FACE_SIZE_MIN 128u
+/* Every local shadow face occupies a square of this depth atlas. */
+#define VKR_LOCAL_SHADOW_ATLAS_SIZE 4096u
+#define VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT 1u
 #define VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX 512u
+/* Each shadowed light owns one layer of the screen-space shadow mask. */
+#define VKR_LOCAL_SHADOW_MASK_LAYER_COUNT 8u
+/* Frames before the contact-shadow march pattern repeats under TAA. */
+#define VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD 64u
 
 /** Perspective shadow view. CPU stores canonical column-major matrices;
  * native upload applies the same lowering as its directional shadow views. */
@@ -248,8 +258,16 @@ typedef struct VkrLocalShadowView {
   Vec4 light_position_near;
   Vec4 light_direction_far;
   Vec4 projection_params; /* tan(half FOV), inverse size, bias, normal offset */
+  /** x: shadow strength in [0, 1], shared by every face of the light; receivers
+   * blend visibility toward one as it falls. y: the light's screen-space mask
+   * layer in [0, VKR_LOCAL_SHADOW_MASK_LAYER_COUNT). z: one when the light
+   * takes one filtered tap and no contact shadows, else zero. w is zero. */
+  Vec4 shadow_params;
+  /** The face's square in the atlas: xy is its top-left corner and z its side
+   * in atlas UV, w the atlas layer. projection_params.y is one face texel. */
+  Vec4 atlas_rect;
 } VkrLocalShadowView;
-_Static_assert(sizeof(VkrLocalShadowView) == 112u,
+_Static_assert(sizeof(VkrLocalShadowView) == 144u,
                "Local shadow view ABI drift");
 
 /** Shared packed punctual-light row. p3.w is native first shadow view + 1;

@@ -516,11 +516,13 @@ passes; Metal ignores inactive FSR declarations. Disabled
 declarations do not block startup. There is one GPU-driven world topology;
 no retained-forward/legacy world branch remains.
 
-Shared native pass and timing storage covers the main graph's 163-pass maximum.
+Shared native pass and timing storage covers the main graph's 282-pass maximum.
 The no-TAA path can expand beyond either temporal upscaler because it restores
 culling HZB generation. The graph-expansion test checks the full supported repeat
 envelope before native emission; [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
-records the ownership and bound.
+records the ownership and bound. Metal records each run of consecutive compute
+and transfer passes in one encoder, with intra-encoder barriers for the graph's
+dependencies inside the run.
 
 The graph describes image reads/writes/attachments, buffer access, compute
 and indirect dispatches, and transfer uses. Image state is tracked per mip/layer;
@@ -662,7 +664,12 @@ consumers guard absent bindings and use zero-feature defaults. Previously
 realized images may remain in the bounded graph cache until normal retirement;
 disabling a feature does not imply immediate memory reclamation. Deferred
 punctual and rectangle loops evaluate active lobes in one traversal, retaining
-normal-specific coat visibility. Valid baked-volume cells skip environment
+normal-specific coat visibility. Deferred lighting runs a base kernel without
+the layer paths; when a plane exists, a layered kernel shades the 8x8 tiles
+that contain layer data and the base kernel skips them. Both read local shadow
+visibility from the `Shadow.LocalMask` pass, which filters each shadowed
+light's maps once per pixel into its own mask layer and multiplies in a short
+screen-space contact-shadow march. Valid baked-volume cells skip environment
 diffuse evaluation while retaining environment specular.
 
 Thin-sheet diffuse transmission partitions residual base diffuse into front
@@ -751,10 +758,16 @@ baker transport and native-evidence limits.
 Scene-captured reflection probes persist as portable one-mip RGBA16F KTX2 assets.
 The offline baker captures six scene-linear views and records source provenance;
 normal scene loading uploads the cube and prepares SH/prefilter once. Ready local
-probes work without a global environment. Local-shadow selection maximizes bounded
-brightness/coverage scores with 15% incumbent preference under the 16-face budget.
-Per-target maps reuse submitted static contents only while revisions and complete
-light groups match; overlapping dynamic casters force their groups to redraw.
+probes work without a global environment. Local-shadow selection maximizes
+camera-distance-weighted importance with 15% incumbent preference under a
+30-face (High, five point lights) or 12-face (Balanced) budget. Lights past the
+three most important take a single filtered tap and no contact shadows. Faces are squares of one
+4096-squared depth atlas, sized from 128 up to 1024 (High) or 512 (Balanced)
+by the light's size on screen. Selection
+changes crossfade shadow strength over 0.25 s, so shadows do not pop, and
+retained lights keep their layers. Per-target maps reuse submitted static
+contents only while revisions and complete light groups match; overlapping
+dynamic casters force their groups to redraw.
 [ADR-019](adr/019-bounded-forward-spatial-lighting.md) owns these policies.
 
 The global environment source and GGX prefilter use cubemaps. Diffuse
@@ -1110,6 +1123,12 @@ See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-
 ## Remaining implementation and evidence boundaries
 
 These are limits of current code or retained acceptance, not scheduled promises:
+
+- The editor still owns one active scene that carries world singletons, a
+  hand-written Inspector, Hierarchy and Settings, and per-scene render ids,
+  physics world and collision matrix. [ADR-076](adr/076-project-object-model.md)
+  decides the replacement object model; the
+  [object model proposal](proposals/project-object-model.md) owns its phases.
 
 - New viewport camera/grid controls, text sizing and inspection modes pass the
   Release editor build with both production shader compilers. Focused CPU/native

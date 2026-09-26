@@ -35,6 +35,10 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"clearcoat_enabled", VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED},
     {"sheen_enabled", VKR_RG_JSON_CONDITION_SHEEN_ENABLED},
     {"anisotropy_enabled", VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED},
+    {"editor_enabled && lighting_layers_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_LIGHTING_LAYERS},
+    {"!editor_enabled && lighting_layers_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_LIGHTING_LAYERS},
     {"editor_overlay_enabled", VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED},
     {"editor_selection_enabled",
      VKR_RG_JSON_CONDITION_EDITOR_SELECTION_ENABLED},
@@ -51,6 +55,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"local_shadows_active", VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE},
     {"local_shadow_transmission_active",
      VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE},
+    {"local_shadow_atlas_clear",
+     VKR_RG_JSON_CONDITION_LOCAL_SHADOW_ATLAS_CLEAR},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
@@ -2035,6 +2041,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->sheen_enabled;
   case VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED:
     return frame->anisotropy_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_LIGHTING_LAYERS:
+    return frame->editor_enabled && frame->lighting_layers_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_LIGHTING_LAYERS:
+    return !frame->editor_enabled && frame->lighting_layers_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED:
     return frame->editor_overlay_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_SELECTION_ENABLED:
@@ -2059,6 +2069,9 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->local_shadow_view_count > 0u;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE:
     return frame->local_shadow_transmission_view_count > 0u;
+  case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_ATLAS_CLEAR:
+    return frame->local_shadow_view_count > 0u &&
+           frame->local_shadow_atlas_clear_mask != 0u;
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
     return frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
@@ -2377,9 +2390,9 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
       return true_v;
     }
     if (vkr_string8_equals_cstr_i(&extent->size_source,
-                                  "local_shadow_map_size")) {
-      *out_width = frame->local_shadow_map_size;
-      *out_height = frame->local_shadow_map_size;
+                                  "local_shadow_atlas_size")) {
+      *out_width = VKR_LOCAL_SHADOW_ATLAS_SIZE;
+      *out_height = VKR_LOCAL_SHADOW_ATLAS_SIZE;
       return true_v;
     }
     if (vkr_string8_equals_cstr_i(&extent->size_source, "shadow_map_size")) {

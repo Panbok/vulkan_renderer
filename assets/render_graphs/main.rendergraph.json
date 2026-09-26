@@ -51,9 +51,9 @@
       "type": "image",
       "extent": {
         "mode": "square",
-        "size_source": "local_shadow_map_size"
+        "size_source": "local_shadow_atlas_size"
       },
-      "layers_source": "local_shadow_map_layer_count",
+      "layers": 1,
       "format": "D32_SFLOAT",
       "usage": [
         "DEPTH_STENCIL_ATTACHMENT",
@@ -929,6 +929,26 @@
       "extent": {
         "mode": "viewport"
       },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "local_shadow_mask",
+      "type": "image",
+      "condition": "scene_rendering && local_shadows_active",
+      "extent": {
+        "mode": "viewport"
+      },
+      "layers": 8,
       "format": "R8G8B8A8_UNORM",
       "usage": [
         "STORAGE",
@@ -2356,6 +2376,28 @@
       "execute": "pass.shadow.cascade"
     },
     {
+      "name": "Shadow.Local.Clear",
+      "condition": "scene_rendering && local_shadow_atlas_clear",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "attachments": {
+        "depth": {
+          "image": "local_shadow_map",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          },
+          "slice": {
+            "base_layer": 0,
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.clear"
+    },
+    {
       "name": "Shadow.Local.${i}",
       "condition": "scene_rendering && local_shadows_active",
       "type": "graphics",
@@ -2395,14 +2437,10 @@
       "attachments": {
         "depth": {
           "image": "local_shadow_map",
-          "load": "CLEAR",
+          "load": "LOAD",
           "store": "STORE",
-          "clear": {
-            "depth": 1.0,
-            "stencil": 0
-          },
           "slice": {
-            "base_layer": "${i}",
+            "base_layer": 0,
             "layer_count": 1
           }
         }
@@ -3804,6 +3842,115 @@
       "execute": "pass.clouds.trace"
     },
     {
+      "name": "Shadow.LocalMask",
+      "type": "compute",
+      "condition": "scene_rendering && local_shadows_active",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
+        },
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "writes": [
+        {
+          "image": "local_shadow_mask",
+          "access": "STORAGE_WRITE",
+          "binding": 16
+        }
+      ],
+      "execute": "pass.local_shadow.mask"
+    },
+    {
       "name": "Lighting.Deferred.Fullscreen",
       "type": "compute",
       "condition": "scene_rendering && !editor_enabled",
@@ -3815,14 +3962,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 8,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "opaque_vbuffer",
@@ -3971,6 +4111,12 @@
           "access": "SAMPLED",
           "binding": 34,
           "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_mask",
+          "access": "STORAGE_READ",
+          "binding": 16,
+          "when": "local_shadows_active"
         }
       ],
       "writes": [
@@ -3995,6 +4141,196 @@
       "execute": "pass.lighting.deferred"
     },
     {
+      "name": "Lighting.Deferred.Layered.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && !editor_enabled && lighting_layers_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
+        },
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_albedo",
+          "access": "STORAGE_READ",
+          "binding": 2
+        },
+        {
+          "image": "gbuffer_specular",
+          "access": "STORAGE_READ",
+          "binding": 3
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "shadow_cascades_active"
+        },
+        {
+          "image": "hdr_pre_transmission",
+          "access": "STORAGE_READ",
+          "binding": 6
+        },
+        {
+          "image": "gtao_visibility",
+          "access": "SAMPLED",
+          "binding": 7,
+          "when": "gtao_enabled"
+        },
+        {
+          "image": "gbuffer_clearcoat",
+          "access": "STORAGE_READ",
+          "binding": 10,
+          "when": "clearcoat_enabled"
+        },
+        {
+          "image": "gbuffer_sheen",
+          "access": "STORAGE_READ",
+          "binding": 11,
+          "when": "sheen_enabled"
+        },
+        {
+          "image": "gbuffer_anisotropy",
+          "access": "STORAGE_READ",
+          "binding": 12,
+          "when": "anisotropy_enabled"
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "cloud_history",
+          "access": "SAMPLED",
+          "binding": 34,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_mask",
+          "access": "STORAGE_READ",
+          "binding": 16,
+          "when": "local_shadows_active"
+        }
+      ],
+      "writes": [
+        {
+          "image": "hdr_pre_transmission",
+          "access": "STORAGE_WRITE",
+          "binding": 6
+        },
+        {
+          "image": "ssgi_direct_source",
+          "access": "STORAGE_WRITE",
+          "binding": 9,
+          "when": "ssgi_enabled"
+        },
+        {
+          "image": "subsurface_diffuse",
+          "access": "STORAGE_WRITE",
+          "binding": 14,
+          "when": "subsurface_enabled"
+        }
+      ],
+      "execute": "pass.lighting.deferred.layered"
+    },
+    {
       "name": "Lighting.Deferred.Editor",
       "type": "compute",
       "condition": "scene_rendering && editor_enabled",
@@ -4006,14 +4342,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 8,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "opaque_vbuffer",
@@ -4162,6 +4491,12 @@
           "access": "SAMPLED",
           "binding": 34,
           "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_mask",
+          "access": "STORAGE_READ",
+          "binding": 16,
+          "when": "local_shadows_active"
         }
       ],
       "writes": [
@@ -4184,6 +4519,196 @@
         }
       ],
       "execute": "pass.lighting.deferred"
+    },
+    {
+      "name": "Lighting.Deferred.Layered.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && editor_enabled && lighting_layers_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
+        },
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_albedo",
+          "access": "STORAGE_READ",
+          "binding": 2
+        },
+        {
+          "image": "gbuffer_specular",
+          "access": "STORAGE_READ",
+          "binding": 3
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "shadow_cascades_active"
+        },
+        {
+          "image": "scene_pre_transmission",
+          "access": "STORAGE_READ",
+          "binding": 6
+        },
+        {
+          "image": "gtao_visibility",
+          "access": "SAMPLED",
+          "binding": 7,
+          "when": "gtao_enabled"
+        },
+        {
+          "image": "gbuffer_clearcoat",
+          "access": "STORAGE_READ",
+          "binding": 10,
+          "when": "clearcoat_enabled"
+        },
+        {
+          "image": "gbuffer_sheen",
+          "access": "STORAGE_READ",
+          "binding": 11,
+          "when": "sheen_enabled"
+        },
+        {
+          "image": "gbuffer_anisotropy",
+          "access": "STORAGE_READ",
+          "binding": 12,
+          "when": "anisotropy_enabled"
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_view_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "cloud_history",
+          "access": "SAMPLED",
+          "binding": 34,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_mask",
+          "access": "STORAGE_READ",
+          "binding": 16,
+          "when": "local_shadows_active"
+        }
+      ],
+      "writes": [
+        {
+          "image": "scene_pre_transmission",
+          "access": "STORAGE_WRITE",
+          "binding": 6
+        },
+        {
+          "image": "ssgi_direct_source",
+          "access": "STORAGE_WRITE",
+          "binding": 9,
+          "when": "ssgi_enabled"
+        },
+        {
+          "image": "subsurface_diffuse",
+          "access": "STORAGE_WRITE",
+          "binding": 14,
+          "when": "subsurface_enabled"
+        }
+      ],
+      "execute": "pass.lighting.deferred.layered"
     },
     {
       "name": "SSGI.DepthBase",
@@ -5138,14 +5663,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 3,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "local_shadow_transmission_depth0",
@@ -5751,14 +6269,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -5942,14 +6453,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -6237,14 +6741,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -6421,14 +6918,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -6709,14 +7199,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -6893,14 +7376,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -7181,14 +7657,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -7380,14 +7849,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -7579,14 +8041,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -7755,14 +8210,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -7924,14 +8372,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -8093,14 +8534,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -8277,14 +8711,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -8453,14 +8880,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -8622,14 +9042,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -8791,14 +9204,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 15,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "transmission_vbuffer",
@@ -9335,14 +9741,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 1,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "shadow_map",
@@ -9486,14 +9885,7 @@
           "image": "local_shadow_map",
           "access": "SAMPLED",
           "binding": 1,
-          "when": "local_shadows_active",
-          "repeat": {
-            "count_source": "local_shadow_view_count"
-          },
-          "subresource": {
-            "base_layer": "${i}",
-            "layer_count": 1
-          }
+          "when": "local_shadows_active"
         },
         {
           "image": "shadow_map",
@@ -11293,7 +11685,7 @@
           }
         ]
       },
-      "execute": "pass.editor.clear"
+      "execute": "pass.clear"
     },
     {
       "name": "Animation.Preview",

@@ -1618,11 +1618,24 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
     assert(prepared.clearcoat_enabled == ((mask & 1u) != 0u));
     assert(prepared.sheen_enabled == ((mask & 2u) != 0u));
     assert(prepared.anisotropy_enabled == ((mask & 4u) != 0u));
+    assert(prepared.lighting_layers_enabled == (mask != 0u));
     frame.clearcoat_enabled = prepared.clearcoat_enabled;
     frame.sheen_enabled = prepared.sheen_enabled;
     frame.anisotropy_enabled = prepared.anisotropy_enabled;
+    frame.lighting_layers_enabled = prepared.lighting_layers_enabled;
     assert(vkr_rg_begin_frame(graph, &frame));
     assert(vkr_rg_build_from_json(graph, &json, &frame));
+    /* Only frames with layered materials pay for the layered lighting kernel.
+     */
+    uint32_t layered_lighting_passes = 0u;
+    for (uint64_t i = 0u; i < graph->passes.length; ++i) {
+      const String8 name = graph->passes.data[i].desc.name;
+      const String8 prefix = string8_lit("Lighting.Deferred.Layered.");
+      if (name.length > prefix.length &&
+          MemCompare(name.str, prefix.str, prefix.length) == 0)
+        ++layered_lighting_passes;
+    }
+    assert(layered_lighting_passes == (mask != 0u ? 1u : 0u));
     const String8 plane_names[] = {
         string8_lit("gbuffer_clearcoat"),
         string8_lit("gbuffer_sheen"),
@@ -1713,10 +1726,10 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 167u,
-    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 154u,
-    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 154u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 153u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 282u,
+    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 269u,
+    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 269u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 268u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1770,9 +1783,15 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX,
       .shadow_cascade_render_mask = 0xffu,
       .hzb_build_enabled = true_v,
+      .clearcoat_enabled = true_v,
+      .sheen_enabled = true_v,
+      .anisotropy_enabled = true_v,
+      .lighting_layers_enabled = true_v,
       .local_shadow_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      .local_shadow_transmission_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_render_mask =
-          (UINT32_C(1) << VKR_LOCAL_SHADOW_FACE_COUNT_MAX) - 1u,
+          (uint32_t)((UINT64_C(1) << VKR_LOCAL_SHADOW_FACE_COUNT_MAX) - 1u),
+      .local_shadow_atlas_clear_mask = 1u,
       .local_shadow_map_layer_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
       .hzb_reduce_pass_count = 14u,
@@ -1812,8 +1831,9 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   for (uint64_t i = 0u; i < runtime->buffers.length; ++i) {
     const VkrRgBuffer *buffer = &runtime->buffers.data[i];
     if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_compaction_state")) {
-      const uint64_t view_count =
-          1u + frame.shadow_cascade_count + frame.local_shadow_view_count;
+      const uint64_t view_count = 1u + frame.shadow_cascade_count +
+                                  frame.local_shadow_view_count +
+                                  frame.local_shadow_transmission_view_count;
       assert(buffer->desc.size ==
              view_count * sizeof(VkrGpuDrawCompactionState));
       found_compaction_state = true_v;

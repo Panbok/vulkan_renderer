@@ -175,6 +175,7 @@ typedef struct VkrShadowCasterDepthBounds {
  */
 typedef struct VkrShadowConfig {
   uint32_t local_shadow_face_budget;
+  /** Largest local shadow face; faces shrink with the light's screen size. */
   uint32_t local_shadow_map_size;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
@@ -221,6 +222,13 @@ typedef struct VkrShadowConfig {
   VkrShadowSceneBounds scene_bounds;
 } VkrShadowConfig;
 
+/* Local-shadow faces per preset: five point lights for High, two for
+ * Balanced. Each shadowed light adds its PCF to every pixel in its range, so
+ * the budget, not the 32-face capacity, bounds that cost; lights past the
+ * three most important take a single filtered tap. */
+#define VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH 30u
+#define VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED 12u
+
 /**
  * @brief High-quality CSM preset (recommended on modern GPUs).
  *
@@ -244,7 +252,7 @@ typedef struct VkrShadowConfig {
  */
 #define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
-      .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,             \
+      .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH,           \
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
       .cascade_count = 4,                                                      \
       .shadow_map_size = 2048,                                                 \
@@ -290,8 +298,8 @@ typedef struct VkrShadowConfig {
  */
 #define VKR_SHADOW_CONFIG_BALANCED                                             \
   ((VkrShadowConfig){                                                          \
-      .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,             \
-      .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
+      .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED,       \
+      .local_shadow_map_size = 512u,                                           \
       .cascade_count = 3,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.75f,                                           \
@@ -400,21 +408,49 @@ typedef struct VkrLocalShadowSelectionGroup {
   uint32_t render_id;
   uint32_t light_kind;
   uint32_t face_count;
+  /** Zero-based first layer; kept while the light stays selected. */
+  uint32_t first_view;
+  /** Shadow strength in [0, 1]; a group enters and leaves at zero. */
+  float32_t strength;
+  /** Side in texels of every face of the light. */
+  uint32_t face_size;
+  /** The light takes one filtered tap and no contact shadows. */
+  bool8_t reduced;
+  /** Each face's atlas corner in VKR_LOCAL_SHADOW_FACE_SIZE_MIN cells,
+   * x | y << 8. */
+  uint32_t face_cells[6];
 } VkrLocalShadowSelectionGroup;
 
 /**
- * CPU-owned membership and compact layout for local shadow faces. The layout
- * remains stable while the selected light identities and face budget match.
- * Retained-image validity belongs to the later native-token cache.
+ * CPU-owned membership, compact layout, atlas placement and crossfade state
+ * for local shadow faces. A light that stays selected keeps its layers and,
+ * while its face size holds, its atlas squares; a newcomer takes free layers
+ * and squares, and the layout is compacted only when layers would otherwise
+ * stay unowned. Retained-image validity belongs to the later native-token
+ * cache.
  */
 typedef struct VkrLocalShadowSelection {
   VkrLocalShadowSelectionGroup groups[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+  /** Camera of the previous selection, for camera-cut detection. */
+  Mat4 camera_view;
+  Vec3 camera_position;
   uint32_t group_count;
   uint32_t face_count;
   uint32_t face_budget;
-  uint64_t layout_generation;
   bool8_t valid;
 } VkrLocalShadowSelection;
+
+/** Camera state that drives local-shadow selection, face sizes and the
+ * crossfade. */
+typedef struct VkrLocalShadowCamera {
+  Mat4 view;
+  Vec3 position;
+  /** Seconds since the previous selection; bounds each strength step. */
+  float32_t delta_seconds;
+  /** Vertical focal length in output pixels, half the height times
+   * projection.m11; zero without perspective gives every face the map size. */
+  float32_t focal_pixels;
+} VkrLocalShadowCamera;
 
 typedef struct VkrLocalShadowFaceHistory {
   VkrLocalShadowView view;
@@ -423,7 +459,6 @@ typedef struct VkrLocalShadowFaceHistory {
   uint64_t resource_generation;
   uint64_t transmission_resource_generations
       [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
-  uint64_t layout_generation;
   uint64_t last_submit_value;
   uint32_t render_id;
   uint32_t light_kind;
@@ -505,15 +540,17 @@ void vkr_shadow_system_set_depth_range_sample(
  */
 void vkr_shadow_system_resolve_local_selection(
     VkrShadowSystem *system, const struct VkrPointLight *lights,
-    uint32_t light_count, Vec3 camera_position, uint32_t face_budget,
-    uint32_t map_size, struct VkrLocalShadowPassPayload *out_payload);
+    uint32_t light_count, const VkrLocalShadowCamera *camera,
+    uint32_t face_budget, uint32_t map_size,
+    struct VkrLocalShadowPassPayload *out_payload);
 
 void vkr_shadow_system_resolve_local_shadows(
     VkrShadowSystem *system, uint32_t image_index,
     VkrRetainedLocalShadowToken retained_token,
     const struct VkrWorldPassPayload *candidates,
     const struct VkrPointLight *lights, uint32_t light_count,
-    Vec3 camera_position, struct VkrLocalShadowPassPayload *out_payload);
+    const VkrLocalShadowCamera *camera,
+    struct VkrLocalShadowPassPayload *out_payload);
 
 /**
  * @brief Rounds a light-space extent up to a whole texel multiple.

@@ -35,12 +35,17 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
   case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE: {
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
-      for (uint32_t view = 0u; view < group->view_count; ++view)
+      for (uint32_t view = 0u; view < group->view_count; ++view) {
+        const uint32_t absolute_view = group->first_view + view;
+        if ((pass->gpu_encode.idle_views[absolute_view / 64u] &
+             (UINT64_C(1) << (absolute_view % 64u))) != 0u)
+          continue;
         [encoder resetCommandsInBuffer:group->commands
                              withRange:NSMakeRange(
                                            (uint64_t)view *
                                                pass->gpu_encode.candidate_count,
                                            pass->gpu_encode.candidate_count)];
+      }
     }
     /* Metal 4 resets execute at the blit stage, concurrently with dispatches
        unless this intra-pass dependency orders command generation after them. */
@@ -163,7 +168,18 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
   }
   [encoder setViewport:draw->viewport];
+  if (draw->clear_depth) {
+    [encoder setScissorRect:draw->clear_rect];
+    [encoder setDepthStencilState:renderer->depth_clear_state];
+    [encoder setRenderPipelineState:renderer->depth_clear_pipeline];
+    [encoder setCullMode:MTLCullModeNone];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                vertexStart:0u
+                vertexCount:3u];
+  }
   [encoder setDepthStencilState:renderer->depth_write_state];
+  if (!draw->commands)
+    return;
   if (pass->kind == VKR_RG_EXECUTOR_SHADOW)
     [encoder setDepthBias:draw->depth_bias.depth_bias_constant
                slopeScale:draw->depth_bias.depth_bias_slope

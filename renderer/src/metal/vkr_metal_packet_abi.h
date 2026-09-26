@@ -17,6 +17,7 @@
 #include "vkr_gtao.h"
 #include "vkr_lighting.h"
 #include "vkr_motion_blur.h"
+#include "vkr_shadow.h"
 #include "vkr_ssgi.h"
 #include "vkr_ssr.h"
 #include "vkr_subsurface.h"
@@ -277,7 +278,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
 enum {
-  VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX = 41u,
+  /* Camera, directional cascades, then opaque and transmitting local faces. */
+  VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX =
+      1u + VKR_SHADOW_CASCADE_COUNT_MAX + 2u * VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
 };
 
 /** One frustum and routing policy in the bounded multi-view cull set. */
@@ -962,6 +965,30 @@ _Static_assert(
         offsetof(VkrMetalPacketMetalfxStabilizeRoot, reserved) == 56u,
     "MetalFX stabilize root field ABI drift");
 
+/** Per-dispatch Shadow.LocalMask inputs: the G-buffer surface, its camera
+ * reconstruction, and the noise index that varies the contact-shadow march
+ * between frames. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketLocalShadowMaskRoot {
+  uint64_t frame;
+  uint64_t vbuffer_texture_id;
+  uint64_t depth_texture_id;
+  uint64_t normal_texture_id;
+  /** One RGBA8 layer of visibility per shadowed light. */
+  uint64_t mask_texture_id;
+  uint64_t visible_rows;
+  Mat4 inverse_view_projection;
+  uint32_t extent[2];
+  /** Zero without temporal reconstruction, so the march pattern stays fixed. */
+  uint32_t contact_noise_index;
+  uint32_t reserved;
+} VkrMetalPacketLocalShadowMaskRoot;
+_Static_assert(sizeof(VkrMetalPacketLocalShadowMaskRoot) == 128u &&
+                   offsetof(VkrMetalPacketLocalShadowMaskRoot,
+                            inverse_view_projection) == 48u &&
+                   offsetof(VkrMetalPacketLocalShadowMaskRoot,
+                            contact_noise_index) == 120u,
+               "Metal local shadow mask root ABI drift");
+
 /** Per-dispatch deferred-lighting resources and reconstruction contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   uint64_t frame;
@@ -982,11 +1009,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   Vec4 sky_radiance;
   uint64_t direct_source_texture_id;
   uint32_t ssgi_enabled;
-  uint32_t ssgi_reserved;
+  /** Nonzero when the layered kernel also runs and owns layered tiles. */
+  uint32_t layered_tiles;
   uint64_t clearcoat_texture_id;
   uint64_t sheen_texture_id;
   uint64_t anisotropy_texture_id;
-  uint32_t visible_rows_padding[2];
+  /** Shadow.LocalMask output: one RGBA8 layer per shadowed light. */
+  uint64_t local_shadow_mask_texture_id;
   uint64_t visible_rows;
   uint64_t subsurface_source_texture_id;
 } VkrMetalPacketDeferredLightingRoot;
@@ -1318,6 +1347,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT,
   VKR_METAL_PACKET_ABI_FROXEL_APPLY_ROOT,
   VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT,
+  VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT,

@@ -13,6 +13,9 @@ struct VkrVulkanPreparedGraphPass {
   VkRenderingAttachmentInfo depth;
   VkViewport viewport;
   VkRect2D scissor;
+  /* Local shadow faces clear only their atlas square before drawing. */
+  VkClearRect depth_clear_rect;
+  bool8_t clear_depth_rect;
   VkrShadowConfigOverride depth_bias;
   VkrVulkanPreparedWorldDraws world;
   VkrVulkanPreparedOverlay overlay;
@@ -565,10 +568,9 @@ vkr_global const char *const s_vk_local_shadow_transmission_names
         "local_shadow_transmission_overflow",
 };
 
-vkr_internal VkrVulkanGraphImage *
-vkr_vk_retained_local_shadow_image(VkrVulkanRenderer *renderer,
-                                   uint32_t image_index, const char *name,
-                                   uint32_t extent, VkrTextureFormat format) {
+vkr_internal VkrVulkanGraphImage *vkr_vk_retained_local_shadow_image(
+    VkrVulkanRenderer *renderer, uint32_t image_index, const char *name,
+    uint32_t extent, uint32_t layers, VkrTextureFormat format) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
         vector_get_VkrRgImage(&renderer->graph->images, i);
@@ -582,8 +584,7 @@ vkr_vk_retained_local_shadow_image(VkrVulkanRenderer *renderer,
         slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
         slot->desc.type != VKR_TEXTURE_TYPE_2D || slot->desc.width != extent ||
         slot->desc.height != extent || slot->desc.format != format ||
-        slot->desc.layers !=
-            renderer->prepared_frame.local_shadow_map_layer_count ||
+        slot->desc.layers != layers ||
         !slot->instances[image_index].image.handle)
       return NULL;
     const VkrVulkanImage *physical = &slot->instances[image_index].image;
@@ -613,8 +614,8 @@ void vkr_vulkan_renderer_retained_local_shadow_token(
     VkrRetainedLocalShadowToken *out_token) {
   *out_token = (VkrRetainedLocalShadowToken){0};
   VkrVulkanGraphImage *opaque = vkr_vk_retained_local_shadow_image(
-      renderer, image_index, "local_shadow_map",
-      renderer->prepared_frame.local_shadow_map_size,
+      renderer, image_index, "local_shadow_map", VKR_LOCAL_SHADOW_ATLAS_SIZE,
+      VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT,
       renderer->prepared_frame.shadow_depth_format);
   if (opaque) {
     out_token->resource_generation = opaque->graph_generation;
@@ -628,6 +629,7 @@ void vkr_vulkan_renderer_retained_local_shadow_token(
   for (uint32_t i = 0u; i < VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT; ++i) {
     VkrVulkanGraphImage *image = vkr_vk_retained_local_shadow_image(
         renderer, image_index, s_vk_local_shadow_transmission_names[i], extent,
+        renderer->prepared_frame.local_shadow_map_layer_count,
         i == 1u || i == 3u ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
                            : VKR_TEXTURE_FORMAT_D32_SFLOAT);
     if (!image)
@@ -654,6 +656,7 @@ vkr_vk_prepare_local_shadow_transmission_sampling(VkrVulkanRenderer *renderer) {
     VkrVulkanGraphImage *image = vkr_vk_retained_local_shadow_image(
         renderer, renderer->prepared_frame.image_index,
         s_vk_local_shadow_transmission_names[i], extent,
+        renderer->prepared_frame.local_shadow_map_layer_count,
         i == 1u || i == 3u ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
                            : VKR_TEXTURE_FORMAT_D32_SFLOAT);
     if (!image || !image->instances[renderer->prepared_frame.image_index]
@@ -1202,10 +1205,30 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
   case VKR_RG_EXECUTOR_SHADOW: {
     if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
-      const uint32_t layer = pass->desc.depth_attachment.desc.slice.base_layer;
+      /* The face draws into its own atlas square and clears only that
+         square, since the atlas is loaded rather than cleared. */
+      const uint32_t face = pass->desc.repeat_index;
       if (!packet->input.local_shadow ||
-          layer >= packet->input.local_shadow->view_count)
+          face >= packet->input.local_shadow->view_count)
         return false_v;
+      const Vec4 rect = packet->input.local_shadow->views[face].atlas_rect;
+      const float32_t atlas = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
+      const uint32_t x = (uint32_t)(rect.x * atlas);
+      const uint32_t y = (uint32_t)(rect.y * atlas);
+      const uint32_t size = (uint32_t)(rect.z * atlas);
+      prepared->viewport = (VkViewport){
+          .x = (float32_t)x,
+          .y = (float32_t)y,
+          .width = (float32_t)size,
+          .height = (float32_t)size,
+          .minDepth = 0.0f,
+          .maxDepth = 1.0f,
+      };
+      prepared->scissor = (VkRect2D){.offset = {(int32_t)x, (int32_t)y},
+                                     .extent = {size, size}};
+      prepared->depth_clear_rect =
+          (VkClearRect){.rect = prepared->scissor, .layerCount = 1u};
+      prepared->clear_depth_rect = true_v;
       prepared->depth_bias = (VkrShadowConfigOverride){0};
       return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
                                             true_v, false_v, true_v);
@@ -1365,7 +1388,7 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                 (unsigned long long)slot->frame_upload.size);
     return recorded;
   }
-  case VKR_RG_EXECUTOR_EDITOR_CLEAR:
+  case VKR_RG_EXECUTOR_CLEAR:
     return true_v;
   case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
     return vkr_vk_prepare_animation_preview(renderer, &prepared->preview);
@@ -1654,7 +1677,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
   case VKR_RG_EXECUTOR_TONEMAP:
   case VKR_RG_EXECUTOR_EDITOR:
-  case VKR_RG_EXECUTOR_EDITOR_CLEAR:
+  case VKR_RG_EXECUTOR_CLEAR:
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
@@ -1722,8 +1745,14 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
                                         true_v);
   case VKR_RG_EXECUTOR_GBUFFER_RESOLVE:
     return vkr_vk_prepare_deferred_gbuffer(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK:
+    return vkr_vk_prepare_local_shadow_mask(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
-    return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass);
+    return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass,
+                                            false_v);
+  case VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED:
+    return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass,
+                                            true_v);
   case VKR_RG_EXECUTOR_TEMPORAL_RESOLVE:
     return vkr_vk_prepare_temporal_resolve(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_FSR31_PREPARE:
@@ -1975,6 +2004,14 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
   case VKR_RG_EXECUTOR_SHADOW:
+    if (prepared->clear_depth_rect) {
+      const VkClearAttachment clear = {
+          .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+          .clearValue = {.depthStencil = {.depth = 1.0f}},
+      };
+      vkCmdClearAttachments(command, 1u, &clear, 1u,
+                            &prepared->depth_clear_rect);
+    }
     vkCmdSetDepthBias(command, prepared->depth_bias.depth_bias_constant,
                       prepared->depth_bias.depth_bias_clamp,
                       prepared->depth_bias.depth_bias_slope);
@@ -2054,7 +2091,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
     case VKR_RG_EXECUTOR_TONEMAP:
     case VKR_RG_EXECUTOR_EDITOR:
-    case VKR_RG_EXECUTOR_EDITOR_CLEAR:
+    case VKR_RG_EXECUTOR_CLEAR:
     case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
     case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
     case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:

@@ -43,6 +43,9 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->anisotropy_enabled =
       packet->scene_rendering &&
       (material_features & VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY) != 0u;
+  frame->lighting_layers_enabled = frame->clearcoat_enabled ||
+                                   frame->sheen_enabled ||
+                                   frame->anisotropy_enabled;
   frame->editor_image_available = packet->editor_image_available;
   frame->editor_overlay_enabled = packet->scene_rendering &&
                                   packet->input.editor &&
@@ -114,6 +117,9 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           : 0u;
   frame->local_shadow_render_mask =
       packet->input.local_shadow ? packet->input.local_shadow->render_mask : 0u;
+  frame->local_shadow_atlas_clear_mask =
+      packet->input.local_shadow ? packet->input.local_shadow->atlas_clear_mask
+                                 : 0u;
   frame->local_shadow_map_size = packet->input.local_shadow
                                      ? packet->input.local_shadow->map_size
                                      : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
@@ -256,8 +262,12 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_GTAO_DENOISE] = {"pass.gtao.denoise",
                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK] = {"pass.local_shadow.mask",
+                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LIGHTING_DEFERRED] = {"pass.lighting.deferred",
                                            VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED] =
+        {"pass.lighting.deferred.layered", VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SSGI_DEPTH_BASE] = {"pass.ssgi.depth_base",
                                          VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SSGI_DEPTH_MIP] = {"pass.ssgi.depth_mip",
@@ -352,8 +362,7 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
     [VKR_RG_EXECUTOR_TONEMAP_PREPARE] = {"pass.tonemap.prepare",
                                          VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_EDITOR] = {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
-    [VKR_RG_EXECUTOR_EDITOR_CLEAR] = {"pass.editor.clear",
-                                      VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_CLEAR] = {"pass.clear", VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_EDITOR_OVERLAY] = {"pass.editor.overlay",
                                         VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING] = {"pass.editor.overlay.picking",
