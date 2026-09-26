@@ -61,6 +61,14 @@
 #define VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV                      \
   "packet.editor_overlay_picking.frag.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_SELECTION_OUTLINE_VERT_SPV
+#define VKR_VULKAN_PACKET_SELECTION_OUTLINE_VERT_SPV                           \
+  "packet.selection_outline.vert.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV
+#define VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV                           \
+  "packet.selection_outline.frag.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_WORLD_VERT_SPV
 #define VKR_VULKAN_PACKET_WORLD_VERT_SPV "packet.world.vert.spv"
 #endif
@@ -452,6 +460,8 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION_OVERFLOW,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING,
+  VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_MASK,
+  VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE,
   VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW,
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
 } VkrVulkanPacketPipeline;
@@ -492,6 +502,8 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_PICKING_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_VERTEX,
   VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_COUNT,
 } VkrVulkanPacketShader;
 
@@ -1572,6 +1584,21 @@ _Static_assert(offsetof(VkrVulkanEditorOverlayRoot, model_view_projection) ==
                    offsetof(VkrVulkanEditorOverlayRoot, object_id) == 104u,
                "Editor overlay root ABI offset drift");
 
+/** Full-screen selection outline root; the mask shares the Scene extent. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanSelectionOutlineRoot {
+  uint32_t mask_texture;
+  uint32_t radius_px;
+  uint32_t reserved[2];
+  Vec4 color;
+  uint64_t display_output;
+  uint64_t display_output_reserved;
+} VkrVulkanSelectionOutlineRoot;
+_Static_assert(sizeof(VkrVulkanSelectionOutlineRoot) == 48u &&
+                   offsetof(VkrVulkanSelectionOutlineRoot, color) == 16u &&
+                   offsetof(VkrVulkanSelectionOutlineRoot, display_output) ==
+                       32u,
+               "Selection outline root ABI drift");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanUiRoot {
   uint64_t vertices;
   uint32_t texture;
@@ -2249,6 +2276,11 @@ typedef struct VkrVulkanPreparedOverlay {
   uint64_t roots_address;
   uint32_t count;
 } VkrVulkanPreparedOverlay;
+
+typedef struct VkrVulkanPreparedSelectionOutline {
+  uint64_t root_address;
+  bool8_t enabled;
+} VkrVulkanPreparedSelectionOutline;
 
 typedef struct VkrVulkanPreparedTextDraw VkrVulkanPreparedTextDraw;
 typedef struct VkrVulkanPreparedUiDraw VkrVulkanPreparedUiDraw;
@@ -3316,10 +3348,17 @@ void vkr_vk_discard_unsubmitted_asset_uses(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_prepare_editor_overlay(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedOverlay *out,
-                                      bool8_t picking);
+                                      VkrVulkanPacketPipeline pipeline);
 void vkr_vk_record_editor_overlay(VkrVulkanRenderer *renderer,
                                   VkCommandBuffer command,
                                   const VkrVulkanPreparedOverlay *overlay);
+uint64_t vkr_vk_selection_mask_upload_size(uint32_t draw_count);
+bool8_t vkr_vk_prepare_selection_outline(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedSelectionOutline *out,
+                                         uint32_t mask_texture);
+void vkr_vk_record_selection_outline(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPreparedSelectionOutline *outline);
 
 bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,

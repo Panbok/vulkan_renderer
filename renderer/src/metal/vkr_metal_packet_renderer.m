@@ -390,6 +390,11 @@ typedef struct VkrMetalPacketFrameUpload {
   VkrMetalPacketPreparedDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
   uint64_t overlay_root_gpu;
   uint32_t overlay_draw_count;
+  /* Selection mask draws live in the upload slice; their roots follow the
+   * overlay roots. */
+  VkrMetalPacketPreparedDraw *selection_draws;
+  uint64_t selection_root_gpu;
+  uint32_t selection_draw_count;
   uint32_t direct_draw_count;
   uint32_t world_text_count;
   uint32_t root_capacity;
@@ -651,6 +656,10 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> picking_pipeline;
   id<MTLRenderPipelineState> editor_overlay_pipeline;
   id<MTLRenderPipelineState> editor_overlay_picking_pipeline;
+  /* Selection outline: overlay geometry into an R8 mask, then a full-screen
+   * edge pass over the Scene image. */
+  id<MTLRenderPipelineState> editor_selection_mask_pipeline;
+  id<MTLRenderPipelineState> editor_selection_outline_pipeline;
   id<MTLRenderPipelineState> animation_preview_pipeline;
   id<MTLRenderPipelineState> tonemap_pipeline;
   id<MTLRenderPipelineState> display_linear_pipeline;

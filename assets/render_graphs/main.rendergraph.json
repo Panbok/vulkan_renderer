@@ -30,6 +30,22 @@
       ]
     },
     {
+      "name": "editor_selection_mask",
+      "type": "image",
+      "condition": "editor_enabled && editor_image_available",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R8_UNORM",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "local_shadow_map",
       "condition": "scene_rendering && local_shadows_active",
       "type": "image",
@@ -11158,6 +11174,54 @@
         ]
       },
       "execute": "pass.tonemap"
+    },
+    {
+      "name": "Editor.SelectionMask",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_selection_enabled",
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_selection_mask",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.editor.selection.mask",
+      "reads": []
+    },
+    {
+      "name": "Editor.SelectionOutline",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_selection_enabled",
+      "reads": [
+        {
+          "image": "editor_selection_mask",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_scene_image",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.editor.selection.outline"
     },
     {
       "name": "Editor.Overlay",

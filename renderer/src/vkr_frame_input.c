@@ -790,6 +790,34 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
                             "must be finite");
       }
     }
+    VkrRendererError selection_error = vkr_renderer_validate_packet_array(
+        editor->selection_draws, editor->selection_draw_count,
+        VKR_EDITOR_SELECTION_DRAW_MAX, "packet.editor.selection_draws",
+        "packet.editor.selection_draw_count", out_validation_error);
+    if (selection_error != VKR_RENDERER_ERROR_NONE)
+      return selection_error;
+    for (uint32_t i = 0u; i < editor->selection_draw_count; ++i) {
+      const VkrEditorOverlayDraw *draw = &editor->selection_draws[i];
+      if (!draw->geometry.id)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.editor.selection_draws", "requires geometry");
+      for (uint32_t component = 0u; component < 16u; ++component) {
+        if (!isfinite(draw->model.elements[component]))
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.editor.selection_draws.model",
+                            "must be finite");
+      }
+    }
+    if (editor->selection_draw_count &&
+        (!vkr_renderer_ui_vec4_finite(editor->selection_color) ||
+         editor->selection_color.x < 0.0f || editor->selection_color.y < 0.0f ||
+         editor->selection_color.z < 0.0f || editor->selection_color.w < 0.0f ||
+         editor->selection_color.w > 1.0f || editor->selection_width_px < 1u ||
+         editor->selection_width_px > 8u))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.selection_color",
+                        "requires finite non-negative color, 0..1 alpha "
+                        "and a 1..8 pixel width");
     if (editor->scene_backdrop_blur > true_v) {
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.scene_backdrop_blur",

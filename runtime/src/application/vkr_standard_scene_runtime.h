@@ -175,6 +175,9 @@ typedef struct VkrStandardSceneRuntime {
   VkrLightingSystem lighting_system;
   VkrShadowSystem shadow_system;
   VkrUiSystem ui_system;
+  /* Editor selection whose meshes are outlined over the Scene image; the
+   * sample runtime publishes it each frame. */
+  VkrEntityId selection_outline_entity;
   /** Resolve UI anchors against the camera and viewport used by this packet. */
   void (*project_ui)(struct VkrStandardSceneRuntime *,
                      const VkrViewportMapping *);

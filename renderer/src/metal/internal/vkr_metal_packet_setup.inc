@@ -725,6 +725,7 @@ vkr_metal_packet_create_compute_pipeline(VkrMetalPacketRenderer *renderer,
 typedef struct VkrMetalPacketPresentationPipelines {
   id<MTLRenderPipelineState> ui;
   id<MTLRenderPipelineState> editor_overlay;
+  id<MTLRenderPipelineState> editor_selection_outline;
   id<MTLRenderPipelineState> tonemap;
 } VkrMetalPacketPresentationPipelines;
 
@@ -732,6 +733,7 @@ vkr_internal void vkr_metal_packet_release_presentation_pipelines(
     VkrMetalPacketPresentationPipelines *pipelines) API_AVAILABLE(macos(26.0)) {
   [pipelines->ui release];
   [pipelines->editor_overlay release];
+  [pipelines->editor_selection_outline release];
   [pipelines->tonemap release];
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
@@ -752,13 +754,19 @@ vkr_internal bool8_t vkr_metal_packet_create_presentation_pipelines(
       "vkr_metal_packet_editor_overlay_fragment", target_format, false_v,
       VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v, @"VKR Metal editor overlay");
+  out_pipelines->editor_selection_outline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_selection_outline_vertex", fragment,
+      "vkr_metal_packet_selection_outline_fragment", target_format, true_v,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT, false_v,
+      @"VKR Metal editor selection outline");
   out_pipelines->tonemap = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_tonemap_vertex", fragment,
       "vkr_metal_packet_tonemap_fragment", target_format, false_v,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
       false_v, @"VKR Metal packet tonemap");
   if (out_pipelines->ui && out_pipelines->editor_overlay &&
-      out_pipelines->tonemap)
+      out_pipelines->editor_selection_outline && out_pipelines->tonemap)
     return true_v;
   vkr_metal_packet_release_presentation_pipelines(out_pipelines);
   return false_v;
@@ -769,9 +777,12 @@ vkr_internal void vkr_metal_packet_install_presentation_pipelines(
     VkrMetalPacketPresentationPipelines *pipelines) API_AVAILABLE(macos(26.0)) {
   [renderer->ui_pipeline release];
   [renderer->editor_overlay_pipeline release];
+  [renderer->editor_selection_outline_pipeline release];
   [renderer->tonemap_pipeline release];
   renderer->ui_pipeline = pipelines->ui;
   renderer->editor_overlay_pipeline = pipelines->editor_overlay;
+  renderer->editor_selection_outline_pipeline =
+      pipelines->editor_selection_outline;
   renderer->tonemap_pipeline = pipelines->tonemap;
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
@@ -904,6 +915,13 @@ vkr_internal void vkr_metal_packet_create_picking_text_pipelines(
       false_v, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
       @"VKR Metal editor overlay picking");
+  /* Same overlay geometry path; the mask only keeps red. */
+  renderer->editor_selection_mask_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_editor_overlay_vertex", fragment,
+      "vkr_metal_packet_editor_overlay_fragment", MTLPixelFormatR8Unorm,
+      false_v, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
+      @"VKR Metal editor selection mask");
   renderer->world_text_pipeline = vkr_metal_packet_create_pipeline_with_targets(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float, true_v,
@@ -1423,6 +1441,10 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->editor_overlay_pipeline, "editor overlay pipeline"},
       {renderer->editor_overlay_picking_pipeline,
        "editor overlay picking pipeline"},
+      {renderer->editor_selection_mask_pipeline,
+       "editor selection mask pipeline"},
+      {renderer->editor_selection_outline_pipeline,
+       "editor selection outline pipeline"},
       {renderer->world_text_pipeline, "world text pipeline"},
       {renderer->picking_text_pipeline, "picking text pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},

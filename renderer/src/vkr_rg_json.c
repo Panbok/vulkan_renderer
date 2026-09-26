@@ -36,6 +36,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"sheen_enabled", VKR_RG_JSON_CONDITION_SHEEN_ENABLED},
     {"anisotropy_enabled", VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED},
     {"editor_overlay_enabled", VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED},
+    {"editor_selection_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_SELECTION_ENABLED},
     {"editor_overlay_enabled && picking_pending",
      VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_PICKING},
     {"editor_enabled && editor_image_available",
@@ -2035,6 +2037,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->anisotropy_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED:
     return frame->editor_overlay_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_SELECTION_ENABLED:
+    return frame->editor_selection_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_PICKING:
     return frame->editor_overlay_enabled && frame->picking_pending;
   case VKR_RG_JSON_CONDITION_EDITOR_IMAGE_AVAILABLE:

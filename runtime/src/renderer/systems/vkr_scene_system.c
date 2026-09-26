@@ -449,6 +449,21 @@ vkr_internal bool8_t scene_child_index_rebuild(VkrScene *scene) {
   return true_v;
 }
 
+const VkrEntityId *vkr_scene_get_children(const VkrScene *scene,
+                                          VkrEntityId parent,
+                                          uint32_t *out_count) {
+  *out_count = 0u;
+  if (!scene || !scene->child_index_valid || !parent.u64 ||
+      parent.parts.index >= scene->child_index_capacity)
+    return NULL;
+  const SceneChildIndexSlot *slot =
+      &scene->child_index_slots[parent.parts.index];
+  if (slot->parent_id.u64 != parent.u64)
+    return NULL;
+  *out_count = slot->child_count;
+  return slot->children;
+}
+
 vkr_internal bool8_t scene_child_index_ensure_built(VkrScene *scene) {
   if (!scene || !scene->queries_valid) {
     return false_v;

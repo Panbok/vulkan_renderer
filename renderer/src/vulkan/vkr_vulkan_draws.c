@@ -38,6 +38,10 @@ _Static_assert(VKR_EDITOR_OVERLAY_DRAW_MAX *
                    4096u,
                "Overlay draws exceed the graph pass upload reservation");
 
+uint64_t vkr_vk_selection_mask_upload_size(uint32_t draw_count) {
+  return (uint64_t)draw_count * sizeof(VkrVulkanPreparedOverlayDraw);
+}
+
 vkr_internal uint64_t vkr_vk_text_draw_upload_size(
     const VkrPreparedTextDraw *draws, uint32_t draw_count) {
   uint64_t size = (uint64_t)draw_count * sizeof(VkrVulkanPreparedTextDraw);
@@ -1286,26 +1290,37 @@ vkr_internal void vkr_vk_record_prepared_direct_draws(
     slot->blend_draw_count += draw_count;
 }
 
+// Overlay draws keep their colors and pick IDs; selection mask draws write
+// opaque white into the R8 mask.
 bool8_t vkr_vk_prepare_editor_overlay(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedOverlay *out,
-                                      bool8_t picking) {
+                                      VkrVulkanPacketPipeline pipeline) {
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const VkrEditorPassPayload *editor = packet->input.editor;
-  if (!editor || !editor->overlay_draw_count)
+  if (!editor)
+    return true_v;
+  const bool8_t mask =
+      pipeline == VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_MASK;
+  const VkrEditorOverlayDraw *sources =
+      mask ? editor->selection_draws : editor->overlay_draws;
+  const uint32_t source_count =
+      mask ? editor->selection_draw_count : editor->overlay_draw_count;
+  if (!source_count)
     return true_v;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t address = 0u;
   VkrVulkanPreparedOverlayDraw *draws = vkr_vk_frame_upload_allocate(
-      slot, editor->overlay_draw_count * sizeof(*draws),
+      slot, source_count * sizeof(*draws),
       _Alignof(VkrVulkanPreparedOverlayDraw), &address, NULL);
   if (!draws)
     return false_v;
   const Mat4 view_projection =
       mat4_mul(packet->input.globals.projection, packet->input.globals.view);
+  const Vec4 mask_color = {1.0f, 1.0f, 1.0f, 1.0f};
   uint32_t count = 0u;
-  for (uint32_t i = 0u; i < editor->overlay_draw_count; ++i) {
-    const VkrEditorOverlayDraw *source = &editor->overlay_draws[i];
+  for (uint32_t i = 0u; i < source_count; ++i) {
+    const VkrEditorOverlayDraw *source = &sources[i];
     VkrVulkanPublishedGeometry *geometry =
         vkr_vk_resolve_geometry(renderer, source->geometry);
     if (!geometry || source->submesh_index >= geometry->submesh_count)
@@ -1323,10 +1338,10 @@ bool8_t vkr_vk_prepare_editor_overlay(VkrVulkanRenderer *renderer,
                 .decode = geometry->gpu_row.decode_address,
                 .model_view_projection =
                     mat4_mul(view_projection, source->model),
-                .color = source->color,
+                .color = mask ? mask_color : source->color,
                 .first_vertex = geometry->gpu_row.first_vertex,
                 .decode_index = range->decode_index,
-                .object_id = source->object_id,
+                .object_id = mask ? 0u : source->object_id,
                 .display_output = slot->display_output,
             },
         .indices = geometry->indices.handle,
@@ -1339,8 +1354,7 @@ bool8_t vkr_vk_prepare_editor_overlay(VkrVulkanRenderer *renderer,
     geometry->last_use_submit_value = renderer->submit_value + 1u;
   }
   *out = (VkrVulkanPreparedOverlay){
-      .pipeline = picking ? VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING
-                          : VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
+      .pipeline = pipeline,
       .draws = draws,
       .roots_address = address,
       .count = count,
@@ -1372,6 +1386,49 @@ void vkr_vk_record_editor_overlay(VkrVulkanRenderer *renderer,
   }
   renderer->frame_slots[renderer->active_frame_slot].indexed_draw_count +=
       overlay->count;
+}
+
+bool8_t vkr_vk_prepare_selection_outline(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedSelectionOutline *out,
+                                         uint32_t mask_texture) {
+  const VkrEditorPassPayload *editor = renderer->graph->packet->input.editor;
+  if (!editor || !editor->selection_draw_count)
+    return true_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t address = 0u;
+  VkrVulkanSelectionOutlineRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanSelectionOutlineRoot), &address,
+      NULL);
+  if (!root)
+    return false_v;
+  *root = (VkrVulkanSelectionOutlineRoot){
+      .mask_texture = mask_texture,
+      .radius_px = editor->selection_width_px,
+      .color = editor->selection_color,
+      .display_output = slot->display_output,
+  };
+  *out = (VkrVulkanPreparedSelectionOutline){
+      .root_address = address,
+      .enabled = true_v,
+  };
+  return true_v;
+}
+
+void vkr_vk_record_selection_outline(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPreparedSelectionOutline *outline) {
+  if (!outline->enabled)
+    return;
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    renderer->packet_pipelines
+                        [VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE]);
+  const VkrVulkanPushConstants push = {.root = outline->root_address};
+  vkCmdPushConstants(command, renderer->pipeline_layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+                         VK_SHADER_STAGE_COMPUTE_BIT,
+                     0u, sizeof(push), &push);
+  vkCmdDraw(command, 3u, 1u, 0u, 0u);
 }
 
 bool8_t vkr_vk_prepare_packet_draws(

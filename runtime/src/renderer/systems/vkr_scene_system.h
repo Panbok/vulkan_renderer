@@ -724,6 +724,15 @@ bool8_t vkr_scene_set_name(VkrScene *scene, VkrEntityId entity, String8 name);
 String8 vkr_scene_get_name(const VkrScene *scene, VkrEntityId entity);
 
 /**
+ * Borrowed direct children of `parent` from the hierarchy index, valid until
+ * the hierarchy next changes. Empty (NULL, count 0) when `parent` has no
+ * children or the index is not built.
+ */
+const VkrEntityId *vkr_scene_get_children(const VkrScene *scene,
+                                          VkrEntityId parent,
+                                          uint32_t *out_count);
+
+/**
  * @brief Add or update transform component.
  * @param scene Scene containing the entity
  * @param entity Entity to modify

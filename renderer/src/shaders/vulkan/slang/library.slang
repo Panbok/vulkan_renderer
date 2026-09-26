@@ -63,5 +63,6 @@
 #include "ui/default.slang"
 
 #include "editor/overlay.slang"
+#include "editor/selection.slang"
 
 #include "editor/animation_preview.slang"

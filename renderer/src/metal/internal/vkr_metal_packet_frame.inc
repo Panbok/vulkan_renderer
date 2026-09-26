@@ -675,6 +675,37 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
   return true_v;
 }
 
+/* The outline reads the R8 selection mask at binding 0 and covers the whole
+ * Scene image; the mask shares that extent. */
+vkr_internal bool8_t vkr_metal_packet_prepare_selection_outline(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload, uint32_t target_width,
+    uint32_t target_height) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> mask = vkr_metal_packet_subresource_texture(
+      renderer, vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u));
+  if (!mask)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSelectionOutlineRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSelectionOutlineRoot){
+      .mask = mask.gpuResourceID._impl,
+      .color = packet->input.editor->selection_color,
+      .radius_px = packet->input.editor->selection_width_px,
+      .display_output = upload->display_output_gpu,
+  };
+  prepared->tonemap.root = root_gpu;
+  prepared->tonemap.viewport =
+      (MTLViewport){0.0, 0.0, target_width, target_height, 0.0, 1.0};
+  prepared->tonemap.scissor =
+      (MTLScissorRect){0u, 0u, target_width, target_height};
+  prepared->active = true_v;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload,
@@ -3841,6 +3872,24 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     result->indexed_draw_count += upload->overlay_draw_count;
     return true_v;
   }
+  if (kind == VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK) {
+    prepared->active = true_v;
+    prepared->world.direct = (VkrMetalPacketDirectPass){
+        .pipeline = renderer->editor_selection_mask_pipeline,
+        .depth = nil,
+        .draws = upload->selection_draws,
+        .count = upload->selection_draw_count,
+        .width = (uint32_t)target.width,
+        .height = (uint32_t)target.height,
+        .root_gpu = upload->selection_root_gpu,
+    };
+    result->indexed_draw_count += upload->selection_draw_count;
+    return true_v;
+  }
+  if (kind == VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE)
+    return vkr_metal_packet_prepare_selection_outline(
+        renderer, pass, packet, prepared, upload, (uint32_t)target.width,
+        (uint32_t)target.height);
   if (kind == VKR_RG_EXECUTOR_TONEMAP ||
       kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE) {
     return vkr_metal_packet_prepare_tonemap(renderer, pass, packet, prepared,

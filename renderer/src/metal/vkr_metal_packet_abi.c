@@ -1498,6 +1498,16 @@ vkr_global const VkrMetalPacketAbiField vkr_editor_overlay_root_fields[] = {
                   "display_output", 104),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_selection_outline_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketSelectionOutlineRoot, mask, "mask", 0),
+    VKR_ABI_FIELD(VkrMetalPacketSelectionOutlineRoot, color, "color", 16),
+    VKR_ABI_FIELD(VkrMetalPacketSelectionOutlineRoot, radius_px, "radius_px",
+                  32),
+    VKR_ABI_FIELD(VkrMetalPacketSelectionOutlineRoot, reserved, "reserved", 36),
+    VKR_ABI_FIELD(VkrMetalPacketSelectionOutlineRoot, display_output,
+                  "display_output", 40),
+};
+
 #define VKR_ABI_RECORD(TYPE, SHADER, SIZE, ALIGNMENT, FIELDS)                  \
   {#TYPE,                                                                      \
    SHADER,                                                                     \
@@ -1581,6 +1591,10 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketEditorOverlayRoot, "VkrMetalPacketEditorOverlayRoot",
             112, 16, vkr_editor_overlay_root_fields),
+        [VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketSelectionOutlineRoot,
+                           "VkrMetalPacketSelectionOutlineRoot", 48, 16,
+                           vkr_selection_outline_root_fields),
         [VKR_METAL_PACKET_ABI_GPU_DRAW_VIEW] = VKR_ABI_RECORD(
             VkrMetalPacketGpuDrawView, "VkrMetalPacketGpuDrawView", 112, 16,
             vkr_gpu_draw_view_fields),

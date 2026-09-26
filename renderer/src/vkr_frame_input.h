@@ -474,6 +474,9 @@ typedef struct VkrEditorOverlayDraw {
 } VkrEditorOverlayDraw;
 
 #define VKR_EDITOR_OVERLAY_DRAW_MAX 9u
+/** Selection outline mask draws: the selected entity and its descendants.
+    A larger selection outlines only its first draws. */
+#define VKR_EDITOR_SELECTION_DRAW_MAX 1024u
 
 typedef struct VkrEditorPassPayload {
   /** Scene destination in Y-down swapchain pixels: (x, y, width, height).
@@ -485,6 +488,15 @@ typedef struct VkrEditorPassPayload {
   bool8_t scene_backdrop_blur;
   const VkrEditorOverlayDraw *overlay_draws;
   uint32_t overlay_draw_count;
+  /** Submeshes whose mask edge is outlined over the Scene image, drawn with
+      the overlay camera and geometry path. Records reuse the overlay layout;
+      `color` and `object_id` are ignored. Borrowed through render. */
+  const VkrEditorOverlayDraw *selection_draws;
+  uint32_t selection_draw_count;
+  /** Outline color, linear RGB with alpha as coverage. */
+  Vec4 selection_color;
+  /** Outline reach in Scene-image pixels, 1..8. */
+  uint32_t selection_width_px;
 } VkrEditorPassPayload;
 
 /**

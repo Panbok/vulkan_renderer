@@ -1911,6 +1911,20 @@ vkr_vk_validate_editor_overlay_root_abi(VkrVulkanRenderer *renderer) {
 }
 
 vkr_internal bool8_t
+vkr_vk_validate_selection_outline_root_abi(VkrVulkanRenderer *renderer) {
+  static const VkrVulkanReflectedField fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSelectionOutlineRoot, mask_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSelectionOutlineRoot, radius_px),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSelectionOutlineRoot, color),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSelectionOutlineRoot, display_output),
+  };
+  return vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV,
+      "selection_outline_fragment", fields, ArrayCount(fields),
+      sizeof(VkrVulkanSelectionOutlineRoot));
+}
+
+vkr_internal bool8_t
 vkr_vk_validate_fullscreen_root_abi(VkrVulkanRenderer *renderer) {
   static const VkrVulkanReflectedField fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPacketUtilityRoot,
@@ -1972,6 +1986,7 @@ vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_validate_shader_abi(VkrVulkanRenderer *renderer) {
   return vkr_vk_validate_animation_preview_root_abi(renderer) &&
          vkr_vk_validate_editor_overlay_root_abi(renderer) &&
+         vkr_vk_validate_selection_outline_root_abi(renderer) &&
          vkr_vk_validate_fullscreen_root_abi(renderer) &&
          vkr_vk_validate_ui_root_abi(renderer) &&
          vkr_vk_validate_packet_root_abi(renderer) &&
@@ -2044,6 +2059,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "animation_preview_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX
                   ? "editor_overlay_vertex"
+              : vertex_shader ==
+                      VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_VERTEX
+                  ? "selection_outline_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX
                   ? "text_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_UI_VERTEX
@@ -2078,6 +2096,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
               : fragment_shader ==
                       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_PICKING_FRAGMENT
                   ? "editor_overlay_picking_fragment"
+              : fragment_shader ==
+                      VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT
+                  ? "selection_outline_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT
                   ? "text_fragment"
               : fragment_shader ==
@@ -2247,20 +2268,23 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
                                                VkFormat color_format) {
   const VkrVulkanPacketPipeline pipelines[] = {
       VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
+      VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE,
       VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
       VKR_VULKAN_PACKET_PIPELINE_UI,
   };
   const VkrVulkanPacketShader vertex_shaders[] = {
       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
+      VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_VERTEX,
       VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
       VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
   };
   const VkrVulkanPacketShader fragment_shaders[] = {
       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
+      VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT,
   };
-  const bool8_t blends[] = {false_v, false_v, true_v};
+  const bool8_t blends[] = {false_v, true_v, false_v, true_v};
   VkPipeline replacements[ArrayCount(pipelines)] = {0};
   for (uint32_t i = 0u; i < ArrayCount(pipelines); ++i) {
     if (vkr_vk_create_presentation_pipeline(
@@ -2308,6 +2332,8 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV,
       VKR_VULKAN_PACKET_ANIMATION_PREVIEW_VERT_SPV,
       VKR_VULKAN_PACKET_ANIMATION_PREVIEW_FRAG_SPV,
+      VKR_VULKAN_PACKET_SELECTION_OUTLINE_VERT_SPV,
+      VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV,
   };
   for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_SHADER_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],
@@ -2335,6 +2361,18 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
              VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_PICKING_FRAGMENT,
              VK_FORMAT_R32_UINT, VK_FORMAT_UNDEFINED, false_v, false_v, false_v,
+             false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_MASK,
+             VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
+             VK_FORMAT_R8_UNORM, VK_FORMAT_UNDEFINED, false_v, false_v, false_v,
+             false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE,
+             VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT,
+             presentation_format, VK_FORMAT_UNDEFINED, false_v, false_v, true_v,
              false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_PICKING,

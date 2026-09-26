@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-22
+updated: 2026-09-26
 authority: adr
 ---
 # ADR-046: One editor viewport mapping for scene presentation and interaction
@@ -44,6 +44,36 @@ handles draw last. Visible handles therefore take priority over scene surfaces
 and overlapping handles use the same order for color and picking. This requires
 no extra scene-sized image. Translation arrows, rotation rings and scale cubes
 are shown together; all scale cubes perform uniform scaling.
+
+### Selection outline
+
+The selected entity and its descendants draw an orange outline 2 points wide
+(1 to 8 physical pixels) around their combined silhouette. The runtime walks
+the selection's children and borrows up to 1,024 `VkrEditorOverlayDraw`
+records, one per mesh submesh, through `VkrEditorPassPayload.selection_draws`.
+A larger selection outlines its first 1,024 submeshes in depth-first order, and
+skinned meshes outline their bind pose. Packet validation rejects a larger
+count or a width outside 1 to 8 pixels. `Editor.SelectionMask`
+clears the R8 `editor_selection_mask` image, which has the retained Scene
+extent, and draws those submeshes in opaque white with the overlay vertex
+shader. Like the handles, it uses the unjittered projection without depth
+testing, so the outline also traces hidden parts of the selection.
+`Editor.SelectionOutline` then draws one full-screen triangle into
+`editor_scene_image`. Pixels inside the mask are discarded. Every other pixel
+reads twelve mask texels: the four axis neighbors at one and two steps plus the
+four diagonals, where a step is half the width and at least one pixel. The
+largest value scales the outline color's alpha, which blends over the Scene.
+The outline draws after tonemapping and before the gizmo handles. It never
+enters picking, lighting or temporal history.
+
+Both passes run only when Scene rendering is active, Scene is not stopped, and
+the selection has at least one drawable submesh (`editor_selection_enabled`).
+The cost is one scene-sized R8 image and two passes; with no selection both
+passes are skipped.
+A mask pass with an edge filter was chosen over per-object stencil or
+inverted-hull outlines, which need per-draw stencil state or mesh-specific
+extrusion. Metal
+and Vulkan draw the same mask geometry and use the same twelve-tap edge rule.
 
 Edits preserve the existing local TRS ownership and undo transactions. Translation
 uses the inverse parent transform; rotation converts through parent orientation
@@ -431,3 +461,6 @@ that cannot be expressed by the existing panel-to-target mapping.
 - [editor interaction caller](../../runtime/src/vkr_sample_runtime.c)
 - [camera basis and projection](../../runtime/src/renderer/systems/vkr_camera.c)
 - [viewport controls and grid](../../editor/src/editor_viewport.c)
+- [selection outline draws](../../runtime/src/application/vkr_standard_scene_runtime.c)
+- [Metal selection shader](../../renderer/src/shaders/metal/msl/editor/selection.metal)
+- [Vulkan selection shader](../../renderer/src/shaders/vulkan/slang/editor/selection.slang)

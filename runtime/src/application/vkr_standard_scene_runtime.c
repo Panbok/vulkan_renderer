@@ -1122,6 +1122,69 @@ vkr_internal bool8_t vkr_standard_scene_runtime_prepare_ui_payload(
   return true_v;
 }
 
+/* Selection outline: every submesh of the selected entity and its
+ * descendants, visited depth first through the hierarchy index. Storage is
+ * frame scratch; a selection past VKR_EDITOR_SELECTION_DRAW_MAX outlines its
+ * first draws only. Skinned meshes outline their bind pose. */
+vkr_internal void vkr_standard_scene_runtime_prepare_selection_outline(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrScene *scene = draw->active_scene;
+  const VkrEntityId selected = application->selection_outline_entity;
+  if (!scene || !selected.u64 || !vkr_scene_entity_alive(scene, selected))
+    return;
+  VkrEditorOverlayDraw *draws = vkr_allocator_alloc(
+      draw->scratch, sizeof(*draws) * VKR_EDITOR_SELECTION_DRAW_MAX,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrEntityId *stack = vkr_allocator_alloc(
+      draw->scratch, sizeof(*stack) * VKR_EDITOR_SELECTION_DRAW_MAX,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!draws || !stack)
+    return;
+  VkrMeshManager *meshes = &application->assets.mesh_manager;
+  uint32_t depth = 0u;
+  uint32_t count = 0u;
+  stack[depth++] = selected;
+  while (depth && count < VKR_EDITOR_SELECTION_DRAW_MAX) {
+    const VkrEntityId entity = stack[--depth];
+    uint32_t child_count = 0u;
+    const VkrEntityId *children =
+        vkr_scene_get_children(scene, entity, &child_count);
+    for (uint32_t i = 0u;
+         i < child_count && depth < VKR_EDITOR_SELECTION_DRAW_MAX; ++i)
+      stack[depth++] = children[i];
+    const SceneMeshRenderer *renderer = vkr_entity_get_component(
+        scene->world, entity, scene->comp_mesh_renderer);
+    VkrMeshInstance *instance =
+        renderer ? vkr_mesh_manager_get_instance(meshes, renderer->instance)
+                 : NULL;
+    if (!instance || !instance->visible ||
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+      continue;
+    const VkrMeshAsset *asset =
+        vkr_mesh_manager_get_live_asset(meshes, instance->asset);
+    for (uint64_t s = 0u; asset && s < asset->submeshes.length &&
+                          count < VKR_EDITOR_SELECTION_DRAW_MAX;
+         ++s) {
+      const VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
+      draws[count++] = (VkrEditorOverlayDraw){
+          .geometry = submesh->geometry,
+          .submesh_index = submesh->geometry_submesh_index,
+          .model = instance->model,
+      };
+    }
+  }
+  if (!count)
+    return;
+  const float32_t scale = application->ui_system.content_scale;
+  draw->editor_payload.selection_draws = draws;
+  draw->editor_payload.selection_draw_count = count;
+  /* Orange reads against both the blue accent and most scene colors. */
+  draw->editor_payload.selection_color = (Vec4){1.0f, 0.26f, 0.01f, 1.0f};
+  draw->editor_payload.selection_width_px = (uint32_t)vkr_clamp_f32(
+      roundf(2.0f * (scale > 0.0f ? scale : 1.0f)), 1.0f, 8.0f);
+}
+
 vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
@@ -1516,6 +1579,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         &application->gizmo_system, application->globals.view,
         application->globals.projection, &draw.editor_mapping, overlay_draws);
     draw.editor_payload.overlay_draws = overlay_draws;
+    vkr_standard_scene_runtime_prepare_selection_outline(application, &draw);
   }
 
   if (application->animation_preview.player && draw.active_scene &&

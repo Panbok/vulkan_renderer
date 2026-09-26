@@ -245,6 +245,24 @@ _Static_assert(offsetof(VkrMetalPacketEditorOverlayRoot, display_output) ==
 _Static_assert(sizeof(VkrMetalPacketEditorOverlayRoot) == 112,
                "Metal editor overlay root ABI size drift");
 
+/** Full-screen selection outline over the Scene image; `mask` is the R8
+ * selection mask's GPU resource ID at the Scene image extent. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketSelectionOutlineRoot {
+  uint64_t mask;
+  uint64_t padding;
+  Vec4 color;
+  uint32_t radius_px;
+  uint32_t reserved;
+  uint64_t display_output;
+} VkrMetalPacketSelectionOutlineRoot;
+
+_Static_assert(offsetof(VkrMetalPacketSelectionOutlineRoot, color) == 16u &&
+                   offsetof(VkrMetalPacketSelectionOutlineRoot,
+                            display_output) == 40u,
+               "Metal selection outline ABI offset drift");
+_Static_assert(sizeof(VkrMetalPacketSelectionOutlineRoot) == 48,
+               "Metal selection outline root ABI size drift");
+
 /** The only record written per indexed packet draw. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t geometry_rows;
@@ -1324,6 +1342,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_CLOUD_NOISE_ROOT,
   VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT,
+  VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

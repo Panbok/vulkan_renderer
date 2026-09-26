@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-09-26
 authority: adr
 ---
 
@@ -203,13 +203,18 @@ with no API warnings or errors; local cost and quality limits are in ADR-043.
 Current evidence state: **UNALIGNED** for every domain below. The production
 source audit covers their counterparts; same-revision bilateral native
 comparisons and runtime reflection checks remain incomplete.
-UI icon coverage uses shared CPU-generated opaque/transparent polygon rings
-through the existing 32-byte vertex format and native straight-alpha blending.
-Bootstrap MTSDF atlases increase their distance range to 16 texels at 64 texels/em;
-native coverage formulas and GPU roots are unchanged. Windows 100% scale captures
-were inspected, and a focused Debug editor run with the Khronos layer loaded
-reported no Vulkan validation errors. Matching Metal captures remain unavailable, so Text/UI stays
-UNALIGNED.
+The UI pass uses one pipeline per backend over a 96-byte vertex whose `mode`
+selects flat quad, MTSDF text, bitmap text, SDF box or image. The box mode
+shares one rounded-rectangle distance (per-corner radii, inner border, and a
+feather that ramps coverage across twice its softness) in `ui/default.metal` and
+`ui/default.slang`; the separate rounded-rectangle pipeline is removed. Editor
+icons are Phosphor MTSDF glyphs through the text mode. Host validation rejects
+glyph and image vertices in an untextured batch. The UI root is 48 bytes on
+Metal (a nested `VkrMetalPacketUiVertex` record) and 64 bytes on Vulkan. Both
+native roots compile and the macOS Release editor renders through Metal. Vulkan
+execution of this ABI and a bilateral image comparison are unavailable on this
+host, so Text/UI stays UNALIGNED.
+Bootstrap MTSDF atlases use a 16-texel distance range at 64 texels/em.
 Bounded Vulkan Release Bistro profiling and static/moving-camera snapshots pass
 on RX 6700 XT. A subsequent user-reported blur/static-jitter regression required
 preceding-submission history ordering, truthful center metadata, stationary
@@ -347,13 +352,24 @@ the unresolved Apple MetalTools limitation recorded above.
 ## Consequences
 
 Editor overlay color and picking share packed geometry and an unjittered MVP.
-Both native roots are 112 bytes with independently pinned layouts: Metal roots
-carry offset vertex/decode pointers, while Vulkan roots carry base addresses and
-explicit vertex/decode indices. Opaque linear color is written after tonemapping;
+The Metal root is 112 bytes and the Vulkan root 128 bytes, with independently
+pinned layouts: Metal roots carry offset vertex/decode pointers, while Vulkan
+roots carry base addresses and explicit vertex/decode indices. Opaque linear color is written after tonemapping;
 picking writes the supplied integer ID with identical primitive order and no
 depth test or culling. This new domain is **UNALIGNED** until same-revision native
 Metal/Vulkan captures and reflection checks pass; native Vulkan is unavailable
 on the current macOS host.
+
+The selection outline ([ADR-046](046-editor-viewport-mapping-and-picking.md#selection-outline))
+reuses the overlay vertex path to write opaque white into an R8 mask, then
+blends the outline color from a twelve-tap edge test over the mask. Both
+outline roots are 48 bytes: Metal carries a read-access texture reference,
+Vulkan a bindless texture index, and each pins its layout by static assertion;
+Vulkan also checks the reflected fragment root. The outline color goes through
+the UI display-output transform. Metal renders it in the Release Bistro editor;
+Vulkan SPIR-V compiles, passes `spirv-val` and matches the host offsets, but
+native Vulkan did not run because the host device is MoltenVK 1.2. The domain
+is **UNALIGNED** until a native Vulkan run and a same-revision comparison pass.
 
 Metal and Vulkan reject geometry range counts that cannot fit the existing
 32-bit temporal surface token before publication or narrowing loader counts.
@@ -384,6 +400,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 |---|---|---|---|
 | Editor inspection views (UNALIGNED) | `shared/editor_view.slangh` | `metal/msl/world/default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
+| Editor selection outline (UNALIGNED) | CPU `VkrEditorOverlayDraw` mask draws | `metal/msl/editor/overlay.metal`, `selection.metal` | `vulkan/slang/editor/overlay.slang`, `selection.slang` |
 | Compute skinning | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
 | Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
@@ -403,7 +420,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | MetalFX stationary accumulation (UNALIGNED: authorized Metal-only feature) | shared static-sample limit and CPU settling metadata | `metal/msl/post/metalfx.metal`, MetalFX SDK encode | — |
 | FSR 3.1 (UNALIGNED: authorized Vulkan-only feature) | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
 | Tonemap/FXAA/sharpening (UNALIGNED) | shared exposure state, `shared/sharpen_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
-| Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
+| Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
 mirrors the shared Slang record. Consult [`shared/README.md`](../../renderer/src/shaders/shared/README.md)
@@ -651,8 +668,9 @@ Extended-linear output is implemented under
 [ADR-061](061-extended-linear-display-output.md). The shared 16-byte display
 record carries headroom, native output scale and the selected extended-linear
 flag. Final, UI and editor-overlay roots are affected; world text remains
-scene-linear. Metal roots are tonemap 48B, UI 80B and overlay 112B; Vulkan
-roots are fullscreen 576B, UI 80B and overlay 128B. Generated SPIR-V validates
+scene-linear. Metal roots are tonemap 48B, UI 48B and overlay 112B; Vulkan
+roots are fullscreen 576B, UI 64B and overlay 128B (UI sizes as of the
+2026-09-25 vertex change). Generated SPIR-V validates
 the 16B parameter offsets 0/4/8/12 and root strides. Native Metal reflection,
 36-swatch FP16 output, one-time UI scaling, format transitions and API validation
 pass. The editor composite preserves pre-encoded highlights without a second

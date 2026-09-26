@@ -2179,36 +2179,36 @@ vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
 
 /* Packet validation owns the bounded overlay list; this boundary resolves the
  * published geometry before command emission and stamps its pending GPU use. */
-vkr_internal bool8_t vkr_metal_packet_prepare_overlay_draws(
+/* Prepares editor geometry draws with the overlay root layout: gizmo handles
+ * keep their colors and pick IDs, and selection mask draws write opaque white.
+ * Roots occupy slots [first_root, first_root + count). */
+vkr_internal bool8_t vkr_metal_packet_prepare_editor_draws(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
-    VkrMetalPacketFrameUpload *upload, uint32_t count) {
-  VkrMetalPacketMesh *meshes[VKR_EDITOR_OVERLAY_DRAW_MAX];
-  const VkrEditorOverlayDraw *sources = packet->input.editor->overlay_draws;
-  for (uint32_t i = 0u; i < count; ++i) {
-    const VkrEditorOverlayDraw *source = &sources[i];
-    meshes[i] = vkr_metal_packet_resolve_mesh(
-        renderer,
-        (VkrMeshHandle){source->geometry.id, source->geometry.generation});
-    if (!meshes[i] || source->submesh_index >= meshes[i]->submesh_count) {
-      log_error("Metal editor overlay %u has invalid geometry or submesh", i);
-      return false_v;
-    }
-  }
+    VkrMetalPacketFrameUpload *upload, const VkrEditorOverlayDraw *sources,
+    uint32_t count, uint32_t first_root, bool8_t mask,
+    VkrMetalPacketPreparedDraw *out_draws, uint64_t *out_root_gpu) {
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       mat4_mul(packet->input.globals.projection, packet->input.globals.view));
-  upload->overlay_draw_count = count;
-  upload->overlay_root_gpu = upload->root_gpu;
-  upload->root_cursor = count;
+  *out_root_gpu = upload->root_gpu +
+                  (uint64_t)first_root * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  upload->root_cursor = Max(upload->root_cursor, first_root + count);
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrEditorOverlayDraw *source = &sources[i];
-    VkrMetalPacketMesh *mesh = meshes[i];
+    VkrMetalPacketMesh *mesh = vkr_metal_packet_resolve_mesh(
+        renderer,
+        (VkrMeshHandle){source->geometry.id, source->geometry.generation});
+    if (!mesh || source->submesh_index >= mesh->submesh_count) {
+      log_error("Metal editor %s draw %u has invalid geometry or submesh",
+                mask ? "selection" : "overlay", i);
+      return false_v;
+    }
     const VkrMetalPacketSubmeshCreateInfo *submesh =
         &mesh->submeshes[source->submesh_index];
     const uint64_t index_offset =
         ((uint64_t)mesh->gpu_row.first_index + submesh->first_index) *
         sizeof(uint32_t);
-    upload->overlay_draws[i] = (VkrMetalPacketPreparedDraw){
+    out_draws[i] = (VkrMetalPacketPreparedDraw){
         .visible = {.index_count = submesh->index_count,
                     .vertex_offset = submesh->vertex_offset},
         .index_address = mesh->indices.gpu_address + index_offset,
@@ -2219,7 +2219,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_overlay_draws(
     VkrMetalPacketEditorOverlayRoot *root =
         (VkrMetalPacketEditorOverlayRoot
              *)(upload->root_cpu +
-                (uint64_t)i * VKR_METAL_PACKET_DRAW_ROOT_STRIDE);
+                (uint64_t)(first_root + i) * VKR_METAL_PACKET_DRAW_ROOT_STRIDE);
     *root = (VkrMetalPacketEditorOverlayRoot){
         .vertices = mesh->gpu_row.vertex_address +
                     (uint64_t)mesh->gpu_row.first_vertex *
@@ -2228,15 +2228,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_overlay_draws(
                   (uint64_t)submesh->decode_index *
                       sizeof(VkrGpuGeometryDecodeRecord),
         .model_view_projection = mat4_mul(view_projection, source->model),
-        .color = source->color,
-        .object_id = source->object_id,
+        .color = mask ? (Vec4){1.0f, 1.0f, 1.0f, 1.0f} : source->color,
+        .object_id = mask ? 0u : source->object_id,
         .display_output = upload->display_output_gpu,
     };
     mesh->last_use_submit_value = renderer->submit_value + 1u;
   }
-  VKR_METAL_DIAGNOSTIC(renderer, "editor_overlay_prepare",
-                       "count=%u first_id=%u last_id=%u", count,
-                       sources[0].object_id, sources[count - 1u].object_id);
+  VKR_METAL_DIAGNOSTIC(renderer, "editor_draw_prepare", "kind=%s count=%u",
+                       mask ? "selection" : "overlay", count);
   return true_v;
 }
 
@@ -2255,6 +2254,7 @@ typedef struct VkrMetalPacketUploadPlan {
   uint64_t resource_generation;
   uint32_t world_count;
   uint32_t overlay_count;
+  uint32_t selection_count;
   uint32_t shadow_count;
   uint32_t picking_count;
   uint32_t ui_batch_count;
@@ -2321,6 +2321,7 @@ typedef struct VkrMetalPacketUploadPlan {
   uint64_t ui_index_bytes;
   uint64_t display_output_offset;
   uint64_t direct_draw_offset;
+  uint64_t selection_draw_offset;
   uint64_t skinning_offset;
 } VkrMetalPacketUploadPlan;
 
@@ -2334,6 +2335,10 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
   plan->overlay_count =
       packet->input.editor && !packet->input.editor->scene_rendering_stopped
           ? packet->input.editor->overlay_draw_count
+          : 0u;
+  plan->selection_count =
+      packet->input.editor && !packet->input.editor->scene_rendering_stopped
+          ? packet->input.editor->selection_draw_count
           : 0u;
   plan->shadow_count = 0u;
   plan->picking_count = 0u;
@@ -2429,7 +2434,9 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
       direct_auxiliary_root_cells++;
     }
   }
-  plan->root_count = 1u + plan->overlay_count;
+  /* Overlay and selection draw roots, plus the selection outline's root. */
+  plan->root_count = 1u + plan->overlay_count + plan->selection_count +
+                     (plan->selection_count ? 1u : 0u);
   if (packet->input.animation_preview) {
     plan->root_count += packet->input.animation_preview->draw_count;
   }
@@ -2788,8 +2795,15 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_geometry(
       (uint64_t)plan->direct_draw_count * sizeof(VkrMetalPacketPreparedDraw);
   if (plan->direct_draw_offset > UINT64_MAX - direct_draw_bytes)
     return false_v;
+  plan->selection_draw_offset =
+      vkr_metal_packet_align_up(plan->direct_draw_offset + direct_draw_bytes,
+                                AlignOf(VkrMetalPacketPreparedDraw));
+  const uint64_t selection_draw_bytes =
+      (uint64_t)plan->selection_count * sizeof(VkrMetalPacketPreparedDraw);
+  if (plan->selection_draw_offset > UINT64_MAX - selection_draw_bytes)
+    return false_v;
   plan->skinning_offset = vkr_metal_packet_align_up(
-      plan->direct_draw_offset + direct_draw_bytes, 16u);
+      plan->selection_draw_offset + selection_draw_bytes, 16u);
   uint64_t skinning_bytes = 0u;
   if (plan->world) {
     plan->root_count += plan->world->skinning_count;
@@ -3489,9 +3503,22 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->text_uploads = renderer->text_uploads;
   upload->world_text_count = plan.world_text_count;
   upload->root_capacity = (uint32_t)plan.root_count;
+  upload->root_cursor = 0u;
+  upload->overlay_draw_count = plan.overlay_count;
   if (plan.overlay_count > 0u &&
-      !vkr_metal_packet_prepare_overlay_draws(renderer, packet, upload,
-                                              plan.overlay_count))
+      !vkr_metal_packet_prepare_editor_draws(
+          renderer, packet, upload, packet->input.editor->overlay_draws,
+          plan.overlay_count, 0u, false_v, upload->overlay_draws,
+          &upload->overlay_root_gpu))
+    return false_v;
+  upload->selection_draws =
+      (VkrMetalPacketPreparedDraw *)(cpu + plan.selection_draw_offset);
+  upload->selection_draw_count = plan.selection_count;
+  if (plan.selection_count > 0u &&
+      !vkr_metal_packet_prepare_editor_draws(
+          renderer, packet, upload, packet->input.editor->selection_draws,
+          plan.selection_count, plan.overlay_count, true_v,
+          upload->selection_draws, &upload->selection_root_gpu))
     return false_v;
   return true_v;
 }

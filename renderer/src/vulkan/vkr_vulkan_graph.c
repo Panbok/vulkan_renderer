@@ -16,6 +16,7 @@ struct VkrVulkanPreparedGraphPass {
   VkrShadowConfigOverride depth_bias;
   VkrVulkanPreparedWorldDraws world;
   VkrVulkanPreparedOverlay overlay;
+  VkrVulkanPreparedSelectionOutline selection_outline;
   VkrVulkanPreparedText text;
   VkrVulkanPreparedUi ui;
   VkrVulkanPreparedFullscreen fullscreen;
@@ -1276,7 +1277,20 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
     return vkr_vk_prepare_editor_overlay(
         renderer, &prepared->overlay,
-        kind == VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING);
+        kind == VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING
+            ? VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING
+            : VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY);
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
+    return vkr_vk_prepare_editor_overlay(
+        renderer, &prepared->overlay,
+        VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_MASK);
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE: {
+    uint32_t mask_texture = 0u;
+    if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &mask_texture))
+      return false_v;
+    return vkr_vk_prepare_selection_outline(
+        renderer, &prepared->selection_outline, mask_texture);
+  }
   case VKR_RG_EXECUTOR_EDITOR: {
     /* The retained sRGB texture already contains exposure, tonemap and FXAA.
        Decode/sample/re-encode it without applying those operations again. */
@@ -1546,6 +1560,12 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_UI:
       bytes += ui_root_bytes;
       break;
+    case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
+      if (renderer->graph->packet->input.editor) {
+        bytes += vkr_vk_selection_mask_upload_size(
+            renderer->graph->packet->input.editor->selection_draw_count);
+      }
+      break;
     case VKR_RG_EXECUTOR_IBL_BAKE:
       bytes +=
           (uint64_t)renderer->pending_ibl_bake_count *
@@ -1637,6 +1657,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_EDITOR_CLEAR:
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
   case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_RG_EXECUTOR_UI:
     return vkr_vk_prepare_graph_graphics_pass(renderer, prepared, pass, kind);
@@ -1970,7 +1992,12 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
     break;
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
     vkr_vk_record_editor_overlay(renderer, command, &prepared->overlay);
+    break;
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
+    vkr_vk_record_selection_outline(renderer, command,
+                                    &prepared->selection_outline);
     break;
   case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
   case VKR_RG_EXECUTOR_TONEMAP:
@@ -2030,6 +2057,8 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_EDITOR_CLEAR:
     case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
     case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
+    case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
+    case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
     case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
     case VKR_RG_EXECUTOR_UI:
       vkr_vk_record_graph_graphics_pass(renderer, command, prepared);

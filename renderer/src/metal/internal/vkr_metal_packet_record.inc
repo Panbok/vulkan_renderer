@@ -218,7 +218,8 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
   }
   case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
-  case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING: {
+  case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK: {
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
     if (direct->count)
       vkr_metal_packet_record_prepared_draws(
@@ -231,6 +232,18 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
       vkr_metal_packet_record_prepared_ui_draws(
           renderer, encoder, pass->ui.root_cpu, pass->ui.root_gpu,
           pass->ui.count, pass->ui.width, pass->ui.height);
+    break;
+  case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
+    [renderer->argument_table setAddress:pass->tonemap.root atIndex:1u];
+    [encoder setViewport:pass->tonemap.viewport];
+    [encoder setScissorRect:pass->tonemap.scissor];
+    [encoder
+        setRenderPipelineState:renderer->editor_selection_outline_pipeline];
+    [encoder setArgumentTable:renderer->argument_table
+                     atStages:MTLRenderStageFragment];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                vertexStart:0u
+                vertexCount:3u];
     break;
   case VKR_RG_EXECUTOR_TONEMAP:
   case VKR_RG_EXECUTOR_TONEMAP_PREPARE:

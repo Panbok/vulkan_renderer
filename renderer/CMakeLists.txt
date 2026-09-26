@@ -89,6 +89,8 @@ vkr_add_vulkan_packet_shader("packet.picking.frag" picking_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.editor_overlay.vert" editor_overlay_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.editor_overlay.frag" editor_overlay_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.editor_overlay_picking.frag" editor_overlay_picking_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.selection_outline.vert" selection_outline_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.selection_outline.frag" selection_outline_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.fullscreen.vert" fullscreen_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.fullscreen.frag" fullscreen_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.text.vert" text_vertex vertex)
@@ -345,6 +347,7 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/local_shadow_transmission.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/editor/overlay.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/editor/selection.metal"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/shadow/sampling.metalh"
         # Lighting follows shadow sampling: its punctual traversal applies the
