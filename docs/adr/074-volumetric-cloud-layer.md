@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-09-26
 authority: adr
 ---
 
@@ -33,7 +33,9 @@ X. The base is nonnegative, the top at most 20,000 m and at least 100 m above
 the base, coverage and density lie in [0, 1], and each wind component is finite
 with magnitude at most 200 m/s. The loader validates every supplied field even
 when the layer is disabled, and rejects an enabled layer without an enabled
-atmosphere.
+atmosphere. A scene without the object has no clouds. The editor's
+scene-creation job gives a new physical-sky scene `{"enabled": true}`, and
+keeps an imported scene's authored atmosphere and cloud objects.
 
 The layer is part of the atmosphere revision: the runtime's candidate carries it
 and publication moves it into the active settings with the lookup textures.
@@ -166,8 +168,8 @@ multiple-scattering model if front-lit clouds need calibrated brightness.
 
 The CPU suite checks the shadow-map centre against the sun ray's entry point
 into the base, the wind wrap, the render-mode rule and the authoring domain,
-and loads and rejects scene `clouds` objects. The full main graph has 167
-passes, the renderer's pass capacity.
+and loads and rejects scene `clouds` objects. When the layer shipped, the full
+main graph had 167 passes, then the renderer's pass capacity.
 
 Metal Release on the M1 Pro development host at 1280x720, five
 non-authoritative processes of 300 measured frames each, measured the layer in

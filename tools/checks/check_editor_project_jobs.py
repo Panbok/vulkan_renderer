@@ -103,12 +103,14 @@ def main():
         assert not (project / 'scenes' / pointer_request['scene_id']).exists()
         assert manifest.read_bytes() == original_manifest
         assert not list((project / '.staging').iterdir())
-        # Resolved content publishes; a physical-sky request keeps its sky-light scale.
+        # Resolved content publishes; a physical-sky request keeps its sky-light
+        # scale and starts with the default cloud layer.
         pointer.write_bytes(model.read_bytes())
         assert jobs.Job(pointer_request, result_path).execute() == 0
         pointer_runtime = jobs.load_json(jobs.load_json(result_path)['runtime_path'])
         assert Path(pointer_runtime['entities'][0]['mesh']['path']).is_file()
         assert pointer_runtime['atmosphere'] == {'enabled': True}
+        assert pointer_runtime['clouds'] == {'enabled': True}
         assert pointer_runtime['environment'] == {'intensity': 0.5, 'enabled': True}
         assert jobs.Job(request, result_path).execute() == 0
         result = jobs.load_json(result_path)

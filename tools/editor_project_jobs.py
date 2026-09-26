@@ -1437,11 +1437,14 @@ class Job:
                      'reflection_probes': []}
         self.append_entities(scene)
         # The physical sky supplies the sky, sun and global IBL; the environment
-        # block keeps only its sky-light scales.
+        # block keeps only its sky-light scales. An imported scene keeps its
+        # authored sun, medium and cloud layer; a new physical sky starts with
+        # the default cloud layer.
         atmosphere = self.request.get('atmosphere') or {}
         if atmosphere.get('enabled'):
             environment = self.request.get('environment') or {}
-            scene['atmosphere'] = {'enabled': True}
+            scene['atmosphere'] = {**(scene.get('atmosphere') or {}), 'enabled': True}
+            scene.setdefault('clouds', {'enabled': True})
             scene['environment'] = {key: environment[key] for key in
                 ('enabled', 'intensity', 'diffuse_intensity', 'specular_intensity') if key in environment}
             scene['environment'].setdefault('enabled', True)
