@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-24
+updated: 2026-09-26
 authority: proposal
 ---
 
@@ -381,6 +381,16 @@ insufficient.
   missing-file defaults, invalid-file rejection, versioned JSON, 0.25-second
   idle debounce, atomic save, and exit flush. Relaunch and verify persistence;
   also check the project `.vkr-graphics-settings.json` default path.
+- [ ] Unified title bar (source-only; never compiled on Windows): build the
+  editor and check the custom caption from `vkr_window_windows.c`. Dragging
+  the top bar moves the window, double-click maximizes, Aero Snap works,
+  the top 8 px band resizes, and side and bottom borders still resize. The
+  editor's minimize, maximize/restore and close buttons act, and close still
+  asks about unsaved edits. Hovering menus and buttons under the caption
+  region highlights them and they click, since non-client moves must reach
+  the UI. A maximized window keeps its top bar on screen. Check at 100% and
+  150% DPI and across a monitor transition. `vkr_window_resize_centered`
+  should produce the requested client size with the custom frame.
 - [x] Native macOS Graphics and Bakery acceptance is recorded in
   [ADR-027](../adr/027-immediate-mode-grid-ui.md): CPU/settings oracles,
   process-group cancellation, Release/Debug/editor wrappers without cooking,

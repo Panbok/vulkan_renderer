@@ -89,6 +89,8 @@ typedef struct VkrStandardSceneRuntimeConfig {
   float64_t fixed_delta_seconds;
   bool8_t disable_camera_controller;
   bool8_t window_hidden;
+  /* Editor-style top bar beneath a transparent native title bar. */
+  bool8_t unified_title_bar;
   bool8_t disable_skybox;
   /** Coarse renderer selection; zero-initialized preserves Vulkan. */
   VkrRendererBackendType renderer_backend;

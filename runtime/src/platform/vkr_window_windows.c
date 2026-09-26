@@ -52,11 +52,48 @@ typedef struct PlatformState {
   VkrAtomicUint32 display_output_sequence;
   VkrAtomicUint32 display_output_requested;
   bool8_t display_output_dirty;
+  /* Pointer shape requested by the UI. */
+  VkrWindowCursor cursor;
+  /* Unified title bar: the client area covers the caption, and the UI's
+   * published region (client pixels) acts as the caption for dragging,
+   * double-click maximize and snap. */
+  bool8_t unified_caption;
+  bool8_t drag_allowed;
+  int32_t drag_x;
+  int32_t drag_y;
+  int32_t drag_width;
+  int32_t drag_height;
 } PlatformState;
 
 // Forward declarations
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                     LPARAM lparam);
+
+/* Resize-frame thickness at a DPI; a unified caption keeps these borders. */
+static void window_frame_metrics(UINT dpi, int32_t *out_x, int32_t *out_y) {
+  const int32_t padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+  *out_x = GetSystemMetricsForDpi(SM_CXFRAME, dpi) + padding;
+  *out_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding;
+}
+
+/* Grows a client rectangle to its window frame. A unified caption has no
+ * caption row: only side and bottom borders surround the client, matching
+ * WM_NCCALCSIZE. */
+static bool8_t window_frame_for_client(const PlatformState *state, UINT dpi,
+                                       RECT *rect) {
+  if (state->unified_caption) {
+    int32_t frame_x = 0;
+    int32_t frame_y = 0;
+    window_frame_metrics(dpi, &frame_x, &frame_y);
+    rect->left -= frame_x;
+    rect->right += frame_x;
+    rect->bottom += frame_y;
+    return true_v;
+  }
+  const DWORD style = (DWORD)GetWindowLongPtr(state->window, GWL_STYLE);
+  const DWORD ex_style = (DWORD)GetWindowLongPtr(state->window, GWL_EXSTYLE);
+  return AdjustWindowRectExForDpi(rect, style, FALSE, ex_style, dpi) != 0;
+}
 static Keys translate_keycode(uint32_t vk_keycode);
 static void hide_cursor(PlatformState *state);
 static void show_cursor(PlatformState *state);
@@ -320,6 +357,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   state->event_manager = event_manager;
   state->input_state = &window->input_state;
   state->owner = window;
+  state->unified_caption = window->unified_title_bar;
   state->window_width = width;
   state->window_height = height;
   state->pending_high_surrogate = 0u;
@@ -570,15 +608,13 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
   }
 
   PlatformState *state = (PlatformState *)window->platform_state;
-  const DWORD style = (DWORD)GetWindowLongPtr(state->window, GWL_STYLE);
-  const DWORD ex_style = (DWORD)GetWindowLongPtr(state->window, GWL_EXSTYLE);
   const UINT dpi = GetDpiForWindow(state->window);
   if (!dpi) {
     log_error("Failed to query native window DPI");
     return false_v;
   }
   RECT rect = {0, 0, (LONG)width, (LONG)height};
-  if (!AdjustWindowRectExForDpi(&rect, style, FALSE, ex_style, dpi)) {
+  if (!window_frame_for_client(state, dpi, &rect)) {
     log_error("Failed to adjust native window client area to %u x %u at DPI "
               "%u (Win32 error %lu)",
               width, height, dpi, (unsigned long)GetLastError());
@@ -602,6 +638,65 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
   }
   window->width = width;
   window->height = height;
+  return true_v;
+}
+
+bool8_t vkr_window_resize_centered(VkrWindow *window, uint32_t width,
+                                   uint32_t height) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  if (width == 0 || height == 0) {
+    return false_v;
+  }
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  const UINT dpi = GetDpiForWindow(state->window);
+  if (!dpi) {
+    log_error("Failed to query native window DPI");
+    return false_v;
+  }
+
+  MONITORINFO monitor = {.cbSize = sizeof(monitor)};
+  if (!GetMonitorInfoA(
+          MonitorFromWindow(state->window, MONITOR_DEFAULTTONEAREST),
+          &monitor)) {
+    log_error("Failed to query the window's monitor work area (Win32 error "
+              "%lu)",
+              (unsigned long)GetLastError());
+    return false_v;
+  }
+
+  // Points become physical client pixels at this window's DPI.
+  RECT rect = {0, 0, MulDiv((int)width, (int)dpi, 96),
+               MulDiv((int)height, (int)dpi, 96)};
+  if (!window_frame_for_client(state, dpi, &rect)) {
+    log_error("Failed to adjust native window frame for %u x %u points at DPI "
+              "%u (Win32 error %lu)",
+              width, height, dpi, (unsigned long)GetLastError());
+    return false_v;
+  }
+
+  const RECT work = monitor.rcWork;
+  const LONG frame_width = Min(rect.right - rect.left, work.right - work.left);
+  const LONG frame_height = Min(rect.bottom - rect.top, work.bottom - work.top);
+  const LONG x = work.left + (work.right - work.left - frame_width) / 2;
+  const LONG y = work.top + (work.bottom - work.top - frame_height) / 2;
+  if (!SetWindowPos(state->window, NULL, x, y, frame_width, frame_height,
+                    SWP_NOZORDER | SWP_NOACTIVATE)) {
+    log_error("Failed to place native window at %ld x %ld (Win32 error %lu)",
+              frame_width, frame_height, (unsigned long)GetLastError());
+    return false_v;
+  }
+
+  RECT client_rect = {0};
+  if (!GetClientRect(state->window, &client_rect)) {
+    log_error("Failed to query the placed window client size (Win32 error "
+              "%lu)",
+              (unsigned long)GetLastError());
+    return false_v;
+  }
+  window->width = (uint32_t)(client_rect.right - client_rect.left);
+  window->height = (uint32_t)(client_rect.bottom - client_rect.top);
   return true_v;
 }
 
@@ -740,6 +835,57 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   }
 
   switch (msg) {
+  case WM_NCCALCSIZE: {
+    if (!state->unified_caption || !wparam)
+      return DefWindowProc(hwnd, msg, wparam, lparam);
+    /* Keep the side and bottom resize borders and drop the caption row. A
+     * maximized window extends past the monitor by its frame, so inset its
+     * top as well. */
+    NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lparam;
+    RECT *client = &params->rgrc[0];
+    int32_t frame_x = 0;
+    int32_t frame_y = 0;
+    window_frame_metrics(GetDpiForWindow(hwnd), &frame_x, &frame_y);
+    client->left += frame_x;
+    client->right -= frame_x;
+    client->bottom -= frame_y;
+    if (IsZoomed(hwnd))
+      client->top += frame_y;
+    return 0;
+  }
+
+  case WM_NCHITTEST: {
+    const LRESULT hit = DefWindowProc(hwnd, msg, wparam, lparam);
+    if (!state->unified_caption || hit != HTCLIENT || state->mouse_captured)
+      return hit;
+    POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+    ScreenToClient(hwnd, &point);
+    int32_t frame_x = 0;
+    int32_t frame_y = 0;
+    window_frame_metrics(GetDpiForWindow(hwnd), &frame_x, &frame_y);
+    /* The caption row no longer carries a top border; restore its resize. */
+    if (!IsZoomed(hwnd) && point.y < frame_y)
+      return HTTOP;
+    if (state->drag_allowed && point.x >= state->drag_x &&
+        point.y >= state->drag_y &&
+        point.x < state->drag_x + state->drag_width &&
+        point.y < state->drag_y + state->drag_height)
+      return HTCAPTION;
+    return HTCLIENT;
+  }
+
+  case WM_NCMOUSEMOVE: {
+    /* Over the caption region the pointer moves in non-client screen
+     * coordinates. The UI still needs them: seeing a control under the
+     * pointer is what turns the drag region off for that control. */
+    if (state->unified_caption && !state->mouse_captured) {
+      POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ScreenToClient(hwnd, &point);
+      input_process_mouse_move(state->input_state, point.x, point.y);
+    }
+    return DefWindowProc(hwnd, msg, wparam, lparam);
+  }
+
   case WM_CLOSE: {
     if (state->owner->defer_close) {
       state->close_requested = true_v;
@@ -899,6 +1045,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     return FALSE;
   }
 
+  case WM_SETCURSOR:
+    if (LOWORD(lparam) == HTCLIENT) {
+      update_cursor_image(state);
+      return TRUE;
+    }
+    return DefWindowProc(hwnd, msg, wparam, lparam);
+
   case WM_MOUSEWHEEL: {
     int16_t delta = GET_WHEEL_DELTA_WPARAM(wparam);
     int8_t wheel_delta = (int8_t)(delta / WHEEL_DELTA);
@@ -951,13 +1104,99 @@ static void show_cursor(PlatformState *state) {
   state->cursor_hidden = false_v;
 }
 
+static HCURSOR vkr_window_native_cursor(VkrWindowCursor cursor) {
+  switch (cursor) {
+  case VKR_WINDOW_CURSOR_IBEAM:
+    return LoadCursor(NULL, IDC_IBEAM);
+  case VKR_WINDOW_CURSOR_RESIZE_EW:
+    return LoadCursor(NULL, IDC_SIZEWE);
+  case VKR_WINDOW_CURSOR_RESIZE_NS:
+    return LoadCursor(NULL, IDC_SIZENS);
+  case VKR_WINDOW_CURSOR_HAND:
+  case VKR_WINDOW_CURSOR_GRAB:
+  case VKR_WINDOW_CURSOR_GRABBING:
+    return LoadCursor(NULL, IDC_HAND);
+  case VKR_WINDOW_CURSOR_CROSSHAIR:
+    return LoadCursor(NULL, IDC_CROSS);
+  case VKR_WINDOW_CURSOR_NOT_ALLOWED:
+    return LoadCursor(NULL, IDC_NO);
+  default:
+    return LoadCursor(NULL, IDC_ARROW);
+  }
+}
+
 static void update_cursor_image(PlatformState *state) {
   if (state->mouse_captured) {
     hide_cursor(state);
   } else {
     show_cursor(state);
-    SetCursor(LoadCursor(NULL, IDC_ARROW));
+    SetCursor(vkr_window_native_cursor(state->cursor));
   }
+}
+
+void vkr_window_set_cursor(VkrWindow *window, VkrWindowCursor cursor) {
+  if (!window || !window->platform_state || cursor >= VKR_WINDOW_CURSOR_COUNT)
+    return;
+  PlatformState *state = (PlatformState *)window->platform_state;
+  if (state->cursor == cursor)
+    return;
+  state->cursor = cursor;
+  if (!state->mouse_captured)
+    SetCursor(vkr_window_native_cursor(cursor));
+}
+
+/* WM_NCHITTEST answers HTCAPTION inside this region while it is allowed. */
+void vkr_window_set_title_drag_region(VkrWindow *window, int32_t x, int32_t y,
+                                      int32_t width, int32_t height,
+                                      bool8_t allowed) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (!state || !state->unified_caption)
+    return;
+  state->drag_x = x;
+  state->drag_y = y;
+  state->drag_width = width;
+  state->drag_height = height;
+  state->drag_allowed = allowed;
+}
+
+bool8_t vkr_window_draws_caption_buttons(const VkrWindow *window) {
+  const PlatformState *state =
+      window ? (const PlatformState *)window->platform_state : NULL;
+  return state && state->unified_caption;
+}
+
+void vkr_window_minimize(VkrWindow *window) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (state && state->window)
+    ShowWindow(state->window, SW_MINIMIZE);
+}
+
+void vkr_window_toggle_maximize(VkrWindow *window) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (state && state->window)
+    ShowWindow(state->window,
+               IsZoomed(state->window) ? SW_RESTORE : SW_MAXIMIZE);
+}
+
+bool8_t vkr_window_is_maximized(const VkrWindow *window) {
+  const PlatformState *state =
+      window ? (const PlatformState *)window->platform_state : NULL;
+  return state && state->window && IsZoomed(state->window);
+}
+
+void vkr_window_request_close(VkrWindow *window) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (state && state->window)
+    PostMessage(state->window, WM_CLOSE, 0, 0);
+}
+
+float32_t vkr_window_title_bar_inset(const VkrWindow *window) {
+  (void)window;
+  return 0.0f;
 }
 
 static void center_cursor_in_window(PlatformState *state) {

@@ -233,6 +233,10 @@ typedef struct VkrSamplePresentationConfig {
   float32_t render_scale;
   bool8_t paneled;
   bool8_t scene_only;
+  /** Initial client size in points, centered on screen; zero keeps the
+   * runtime default size and position. */
+  uint32_t window_width_pt;
+  uint32_t window_height_pt;
 } VkrSamplePresentationConfig;
 
 typedef struct VkrSampleRuntimeConfig {

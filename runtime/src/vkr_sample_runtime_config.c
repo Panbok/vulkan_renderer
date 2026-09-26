@@ -264,9 +264,16 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .title = runtime_config->title,
       .x = 100,
       .y = 100,
-      .width = paneled ? 1280 : 800,
-      .height = paneled ? 800 : 600,
+      .width = runtime_config->presentation.window_width_pt
+                   ? runtime_config->presentation.window_width_pt
+               : paneled ? 1280
+                         : 800,
+      .height = runtime_config->presentation.window_height_pt
+                    ? runtime_config->presentation.window_height_pt
+                : paneled ? 800
+                          : 600,
       .target_frame_rate = graphics->frame_limit,
+      .unified_title_bar = paneled,
       .app_arena_size = MB(1),
       .device_requirements =
           {

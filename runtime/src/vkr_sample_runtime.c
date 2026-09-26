@@ -4427,6 +4427,12 @@ int vkr_sample_runtime_run(int argc, char **argv,
     return 1;
   }
   application.host.window.defer_close = runtime_config->project_managed;
+  if (runtime_config->presentation.window_width_pt &&
+      runtime_config->presentation.window_height_pt) {
+    (void)vkr_window_resize_centered(
+        &application.host.window, runtime_config->presentation.window_width_pt,
+        runtime_config->presentation.window_height_pt);
+  }
   if (options.metal_validation_enabled &&
       renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
     log_info("Metal validation enabled; the Scene uses fixed-scale spatial "

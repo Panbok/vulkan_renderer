@@ -26,6 +26,7 @@ typedef struct VkrApplicationHostConfig {
   uint64_t target_frame_rate;
   bool8_t windowed;
   bool8_t window_hidden;
+  bool8_t unified_title_bar;
   float64_t fixed_delta_seconds;
 } VkrApplicationHostConfig;
 

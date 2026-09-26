@@ -68,6 +68,7 @@ bool8_t vkr_application_host_create(VkrApplicationHost *host,
     goto cleanup;
   if (config->windowed) {
     host->window.hidden = config->window_hidden;
+    host->window.unified_title_bar = config->unified_title_bar;
     if (!vkr_window_create(&host->window, &host->events, config->title,
                            config->x, config->y, config->width, config->height))
       goto cleanup;

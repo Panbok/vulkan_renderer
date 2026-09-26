@@ -75,6 +75,15 @@ typedef struct PlatformState {
    * copies the settled snapshot. */
   VkrAtomicUint64 display_output_state;
 
+  // Pointer shape requested by the UI.
+  VkrWindowCursor cursor;
+  // Unified title bar: backing-pixel drag rectangle published by the UI.
+  int32_t drag_x;
+  int32_t drag_y;
+  int32_t drag_width;
+  int32_t drag_height;
+  bool8_t drag_allowed;
+
   // Mouse capture state
   bool8_t cursor_hidden;
   bool8_t mouse_captured;
@@ -82,6 +91,8 @@ typedef struct PlatformState {
   float64_t restore_cursor_y;
   float64_t cursor_warp_delta_x;
   float64_t cursor_warp_delta_y;
+  /* Fraction of a wheel line carried between precise scroll events. */
+  float64_t scroll_remainder_lines;
 } PlatformState;
 
 static uint32_t vkr_window_display_output_float_bits(float32_t value) {
@@ -413,8 +424,28 @@ static void center_cursor_in_window(PlatformState *state);
     [self mouseMoved:event];
 }
 
+/* Content fills the window; only the UI's published title-bar area moves it,
+ * so controls under the transparent title bar still receive clicks. */
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
+}
+
 - (void)mouseDown:(NSEvent *)event {
   [self syncMouseButtonEvent:event];
+  if (platform_state->owner && platform_state->owner->unified_title_bar &&
+      !platform_state->mouse_captured && platform_state->drag_allowed) {
+    int32_t x = 0, y = 0;
+    input_get_mouse_position(platform_state->input_state, &x, &y);
+    if (x >= platform_state->drag_x && y >= platform_state->drag_y &&
+        x < platform_state->drag_x + platform_state->drag_width &&
+        y < platform_state->drag_y + platform_state->drag_height) {
+      if ([event clickCount] == 2)
+        [window performZoom:nil];
+      else
+        [window performWindowDragWithEvent:event];
+      return;
+    }
+  }
   input_process_button(platform_state->input_state, BUTTON_LEFT, true_v);
 }
 
@@ -545,9 +576,23 @@ static void center_cursor_in_window(PlatformState *state);
                      translate_keycode((uint32_t)[event keyCode]));
 }
 
+/* Wheel input is in lines, and the UI scrolls VKR_WINDOW_SCROLL_LINE_POINTS
+ * per line. Trackpads and Magic Mouse report precise deltas in points, so
+ * they accumulate into whole lines and content follows the finger instead of
+ * moving a line per point. A notched wheel already reports lines. */
+#define VKR_WINDOW_SCROLL_LINE_POINTS 32.0
+
 - (void)scrollWheel:(NSEvent *)event {
-  input_process_mouse_wheel(platform_state->input_state,
-                            (int8_t)[event scrollingDeltaY]);
+  float64_t lines = [event scrollingDeltaY];
+  if ([event hasPreciseScrollingDeltas]) {
+    platform_state->scroll_remainder_lines +=
+        lines / VKR_WINDOW_SCROLL_LINE_POINTS;
+    lines = trunc(platform_state->scroll_remainder_lines);
+    platform_state->scroll_remainder_lines -= lines;
+  }
+  if (lines != 0.0)
+    input_process_mouse_wheel(platform_state->input_state,
+                              (int8_t)Clamp(lines, -127.0, 127.0));
 }
 
 - (void)mouseEntered:(NSEvent *)event {
@@ -781,12 +826,14 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     }
 
     // Window creation
+    NSWindowStyleMask style_mask =
+        NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskTitled |
+        NSWindowStyleMaskClosable | NSWindowStyleMaskResizable;
+    if (window->unified_title_bar)
+      style_mask |= NSWindowStyleMaskFullSizeContentView;
     state->window =
         [[NSWindow alloc] initWithContentRect:NSMakeRect(x, y, width, height)
-                                    styleMask:NSWindowStyleMaskMiniaturizable |
-                                              NSWindowStyleMaskTitled |
-                                              NSWindowStyleMaskClosable |
-                                              NSWindowStyleMaskResizable
+                                    styleMask:style_mask
                                       backing:NSBackingStoreBuffered
                                         defer:NO];
     if (!state->window) {
@@ -820,6 +867,17 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     [state->view setWantsLayer:YES];
 
     // Setting window properties
+    if (window->unified_title_bar) {
+      /* A compact unified toolbar centers the traffic lights in the taller
+       * application top bar drawn beneath the transparent title bar. */
+      [state->window setTitlebarAppearsTransparent:YES];
+      [state->window setTitleVisibility:NSWindowTitleHidden];
+      NSToolbar *toolbar =
+          [[NSToolbar alloc] initWithIdentifier:@"vkr.unified.titlebar"];
+      [state->window setToolbar:toolbar];
+      [toolbar release];
+      [state->window setToolbarStyle:NSWindowToolbarStyleUnifiedCompact];
+    }
     [state->window setLevel:NSNormalWindowLevel];
     [state->window setContentView:state->view];
     [state->window makeFirstResponder:state->view];
@@ -1031,6 +1089,81 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
   return true_v;
 }
 
+bool8_t vkr_window_resize_centered(VkrWindow *window, uint32_t width,
+                                   uint32_t height) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  if (width == 0 || height == 0) {
+    return false_v;
+  }
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  @autoreleasepool {
+    if (!state->window || !state->view || !state->layer) {
+      return false_v;
+    }
+
+    NSScreen *screen = [state->window screen];
+    if (!screen) {
+      screen = [NSScreen mainScreen];
+    }
+    if (!screen) {
+      return false_v;
+    }
+
+    const NSRect area = [screen visibleFrame];
+    NSRect frame = [state->window
+        frameRectForContentRect:NSMakeRect(0.0, 0.0, width, height)];
+    frame.size.width = Min(frame.size.width, area.size.width);
+    frame.size.height = Min(frame.size.height, area.size.height);
+    frame.origin.x = area.origin.x + (area.size.width - frame.size.width) * 0.5;
+    frame.origin.y =
+        area.origin.y + (area.size.height - frame.size.height) * 0.5;
+    [state->window setFrame:frame display:YES];
+
+    const NSRect content = [state->window contentRectForFrameRect:frame];
+    const NSRect framebuffer =
+        [state->view convertRectToBacking:[state->view frame]];
+    [state->layer setDrawableSize:framebuffer.size];
+    window->width = (uint32_t)content.size.width;
+    window->height = (uint32_t)content.size.height;
+  }
+  return true_v;
+}
+
+/* macOS keeps the native traffic lights inside the unified title bar. */
+bool8_t vkr_window_draws_caption_buttons(const VkrWindow *window) {
+  (void)window;
+  return false_v;
+}
+
+void vkr_window_minimize(VkrWindow *window) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (state && state->window)
+    [state->window miniaturize:nil];
+}
+
+void vkr_window_toggle_maximize(VkrWindow *window) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (state && state->window)
+    [state->window zoom:nil];
+}
+
+bool8_t vkr_window_is_maximized(const VkrWindow *window) {
+  const PlatformState *state =
+      window ? (const PlatformState *)window->platform_state : NULL;
+  return state && state->window && [state->window isZoomed];
+}
+
+void vkr_window_request_close(VkrWindow *window) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (state && state->window)
+    [state->window performClose:nil];
+}
+
 void *vkr_window_get_cocoa_handle(VkrWindow *window) {
   if (!window || !window->platform_state) {
     return NULL;
@@ -1177,13 +1310,71 @@ void show_cursor(PlatformState *state) {
   }
 }
 
+static NSCursor *vkr_window_native_cursor(VkrWindowCursor cursor) {
+  switch (cursor) {
+  case VKR_WINDOW_CURSOR_IBEAM:
+    return [NSCursor IBeamCursor];
+  case VKR_WINDOW_CURSOR_RESIZE_EW:
+    return [NSCursor resizeLeftRightCursor];
+  case VKR_WINDOW_CURSOR_RESIZE_NS:
+    return [NSCursor resizeUpDownCursor];
+  case VKR_WINDOW_CURSOR_HAND:
+    return [NSCursor pointingHandCursor];
+  case VKR_WINDOW_CURSOR_GRAB:
+    return [NSCursor openHandCursor];
+  case VKR_WINDOW_CURSOR_GRABBING:
+    return [NSCursor closedHandCursor];
+  case VKR_WINDOW_CURSOR_CROSSHAIR:
+    return [NSCursor crosshairCursor];
+  case VKR_WINDOW_CURSOR_NOT_ALLOWED:
+    return [NSCursor operationNotAllowedCursor];
+  default:
+    return [NSCursor arrowCursor];
+  }
+}
+
 void update_cursor_image(PlatformState *state) {
   if (state->mouse_captured) {
     hide_cursor(state);
   } else {
     show_cursor(state);
-    [[NSCursor arrowCursor] set];
+    [vkr_window_native_cursor(state->cursor) set];
   }
+}
+
+void vkr_window_set_cursor(VkrWindow *window, VkrWindowCursor cursor) {
+  if (!window || !window->platform_state || cursor >= VKR_WINDOW_CURSOR_COUNT)
+    return;
+  PlatformState *state = (PlatformState *)window->platform_state;
+  if (state->cursor == cursor)
+    return;
+  state->cursor = cursor;
+  if (!state->mouse_captured)
+    [vkr_window_native_cursor(cursor) set];
+}
+
+void vkr_window_set_title_drag_region(VkrWindow *window, int32_t x, int32_t y,
+                                      int32_t width, int32_t height,
+                                      bool8_t allowed) {
+  if (!window || !window->platform_state || !window->unified_title_bar)
+    return;
+  PlatformState *state = (PlatformState *)window->platform_state;
+  state->drag_x = x;
+  state->drag_y = y;
+  state->drag_width = Max(0, width);
+  state->drag_height = Max(0, height);
+  state->drag_allowed = allowed;
+}
+
+float32_t vkr_window_title_bar_inset(const VkrWindow *window) {
+  if (!window || !window->platform_state || !window->unified_title_bar)
+    return 0.0f;
+  const PlatformState *state = (const PlatformState *)window->platform_state;
+  NSButton *zoom = [state->window standardWindowButton:NSWindowZoomButton];
+  if (!zoom)
+    return 0.0f;
+  const NSRect frame = [zoom convertRect:[zoom bounds] toView:nil];
+  return (float32_t)(frame.origin.x + frame.size.width) + 14.0f;
 }
 
 void center_cursor_in_window(PlatformState *state) {

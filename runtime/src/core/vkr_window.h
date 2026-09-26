@@ -50,6 +50,21 @@
  * platform-specific data (e.g., native window handles, delegates on macOS). The
  * window owns its `InputState`.
  */
+/** Pointer shape requested by the UI; the platform maps it to a native
+ * cursor while the pointer is over the window and not captured. */
+typedef enum VkrWindowCursor {
+  VKR_WINDOW_CURSOR_ARROW = 0,
+  VKR_WINDOW_CURSOR_IBEAM,
+  VKR_WINDOW_CURSOR_RESIZE_EW,
+  VKR_WINDOW_CURSOR_RESIZE_NS,
+  VKR_WINDOW_CURSOR_HAND,
+  VKR_WINDOW_CURSOR_GRAB,
+  VKR_WINDOW_CURSOR_GRABBING,
+  VKR_WINDOW_CURSOR_CROSSHAIR,
+  VKR_WINDOW_CURSOR_NOT_ALLOWED,
+  VKR_WINDOW_CURSOR_COUNT,
+} VkrWindowCursor;
+
 typedef struct VkrWindow {
   void *platform_state;        /**< Opaque pointer to platform-specific window
                                   state. Managed internally. */
@@ -70,6 +85,9 @@ typedef struct VkrWindow {
   bool8_t hidden;
   /** UI-thread opt-in: native close requests wait for resolve_close. */
   bool8_t defer_close;
+  /** Create-time opt-in: draw content beneath a transparent title bar so the
+   * application's top bar hosts the native window controls (macOS). */
+  bool8_t unified_title_bar;
 } VkrWindow;
 
 typedef struct VkrWindowPixelSize {
@@ -187,6 +205,20 @@ VkrWindowContentScale vkr_window_get_content_scale(const VkrWindow *window);
  */
 bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height);
 
+/**
+ * @brief Resizes the client area to `width` x `height` points and centers the
+ * window in the work area of its current screen.
+ *
+ * Points are authored-UI units: macOS uses them directly and Windows scales
+ * them by the window DPI. Each extent is clamped to the work area, so a large
+ * request fills the screen without covering the menu bar, Dock, or taskbar.
+ * Platform resize events remain the authority for the renderer's pixel extent.
+ *
+ * @return `true_v` when the platform accepted the new frame.
+ */
+bool8_t vkr_window_resize_centered(VkrWindow *window, uint32_t width,
+                                   uint32_t height);
+
 #if defined(PLATFORM_APPLE)
 /**
  * @brief Gets the Metal layer from the window for Vulkan surface creation.
@@ -228,6 +260,32 @@ void *vkr_window_get_win32_instance(VkrWindow *window);
  * platforms.
  */
 void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture);
+
+/** Request the pointer shape for subsequent pointer movement. */
+void vkr_window_set_cursor(VkrWindow *window, VkrWindowCursor cursor);
+
+/** Publish the unified title bar's draggable area in backing pixels
+ * (top-left origin). `allowed` is false while a control sits under the
+ * pointer; a press elsewhere in the rectangle drags the window and a double
+ * click zooms it. No-op without a unified title bar. */
+void vkr_window_set_title_drag_region(VkrWindow *window, int32_t x, int32_t y,
+                                      int32_t width, int32_t height,
+                                      bool8_t allowed);
+
+/** Leading width in points that the unified title bar reserves for native
+ * window controls; zero when the window has an ordinary title bar. */
+float32_t vkr_window_title_bar_inset(const VkrWindow *window);
+
+/** True when the application draws the minimize, maximize and close controls
+ * itself: a unified title bar on Windows. macOS keeps its native controls. */
+bool8_t vkr_window_draws_caption_buttons(const VkrWindow *window);
+
+/** Window-control actions for application-drawn caption buttons. A close
+ * request behaves like the native close control, so `defer_close` applies. */
+void vkr_window_minimize(VkrWindow *window);
+void vkr_window_toggle_maximize(VkrWindow *window);
+bool8_t vkr_window_is_maximized(const VkrWindow *window);
+void vkr_window_request_close(VkrWindow *window);
 
 /**
  * @brief Checks if the mouse is captured by the window.

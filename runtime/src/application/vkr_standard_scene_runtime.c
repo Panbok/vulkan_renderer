@@ -310,6 +310,7 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       .target_frame_rate = config->target_frame_rate,
       .windowed = windowed,
       .window_hidden = config->window_hidden,
+      .unified_title_bar = config->unified_title_bar,
       .fixed_delta_seconds = config->fixed_delta_seconds,
   };
   if (!vkr_application_host_create(&application->host, &host_config,
