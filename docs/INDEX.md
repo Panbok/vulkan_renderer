@@ -219,6 +219,7 @@ decisions before dependent implementation.
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
 | [Editor Projects](proposals/editor-projects.md) | Remaining Projects workflow, native-platform, inspection, retirement and frame-budget acceptance; implemented contracts are in ADR-069. |
 | [Portable path contract](proposals/portable-path-contract.md) | Remaining macOS, network-share and interactive scene-selection evidence gates; implemented contract is in ADR-070. |
+| [Lighting efficiency](proposals/lighting-efficiency.md) | Measured deferred-lighting and frame cost split and remaining ordered fixes: fewer passes in multi-pass chains, static and dynamic shadow atlas layers and half-precision BRDF terms. The material kernel split (ADR-062), Metal culling of only redrawn local faces (ADR-019), Metal compute-run encoders (ADR-025), in-face shadow taps, the local shadow mask pass, local contact shadows and the screen-sized shadow atlas (ADR-019) have shipped. |
 | [Graph-owned IBL baking](proposals/graph-owned-ibl-baking.md) | Declare queued bake resources and dependencies in the graph. |
 | [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md) | Active Windows/Vulkan record: native renderer subset executed; bilateral Metal, cooker, HDR/DPI, and manual editor gates remain. |
 | [Static-scene batching](proposals/static-scene-batching.md) | Evaluate static geometry merging against current GPU draw preparation. |
