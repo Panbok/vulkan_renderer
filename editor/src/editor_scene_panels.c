@@ -74,6 +74,16 @@ struct VkrEditorScenePanels {
   char error[128];
   bool8_t changed;
   float32_t inspector_scroll;
+  /* Measured content height of the previous Inspector build, in points. */
+  float32_t inspector_height;
+  /* Collapsed Inspector sections, indexed by InspectorSection. */
+  bool8_t section_collapsed[8];
+  bool8_t section_collapsed_init;
+  /* Continuous edits (scrubs and slider drags) share one undo entry. */
+  uint64_t gesture_counter;
+  uint64_t gesture;
+  VkrUiId gesture_owner;
+  bool8_t gesture_active;
 };
 
 static VkrUiWidgetConfig widget_at(float32_t x, float32_t y, float32_t width,
@@ -265,47 +275,119 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
   return true_v;
 }
 
+#define HIERARCHY_ROW_PT 24.0f
+#define HIERARCHY_INDENT_PT 16.0f
+#define HIERARCHY_LIST_TOP_PT 40.0f
+#define HIERARCHY_FOOTER_PT 22.0f
+
+/* Type icon and category hue for a hierarchy row, Godot-style: lights amber,
+ * geometry blue, physics green, groups neutral. */
+static VkrUiIcon hierarchy_entity_icon(const VkrScene *scene,
+                                       VkrEntityId entity, bool8_t has_child,
+                                       Vec4 *out_color) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const Vec4 light = {0.98f, 0.78f, 0.36f, 1.0f};
+  const Vec4 geometry = {0.47f, 0.70f, 0.98f, 1.0f};
+  const Vec4 physics = {0.45f, 0.84f, 0.56f, 1.0f};
+  VkrWorld *world = scene->world;
+  *out_color = light;
+  if (vkr_entity_get_component(world, entity, scene->comp_directional_light))
+    return VKR_UI_ICON_DIRECTIONAL_LIGHT;
+  const ScenePointLight *point =
+      vkr_entity_get_component(world, entity, scene->comp_point_light);
+  if (point)
+    return point->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
+               ? VKR_UI_ICON_SPOT_LIGHT
+               : VKR_UI_ICON_POINT_LIGHT;
+  if (vkr_entity_get_component(world, entity, scene->comp_rectangle_light))
+    return VKR_UI_ICON_RECT_LIGHT;
+  *out_color = physics;
+  if (scene->player_entity.u64 == entity.u64)
+    return VKR_UI_ICON_PERSON_WALK;
+  if (vkr_entity_get_component(world, entity, scene->comp_physics_body))
+    return VKR_UI_ICON_RIGID_BODY;
+  if (vkr_entity_get_component(world, entity, scene->comp_physics_collider))
+    return VKR_UI_ICON_COLLIDER;
+  *out_color = geometry;
+  if (vkr_entity_get_component(world, entity, scene->comp_mesh_renderer))
+    return VKR_UI_ICON_MESH;
+  if (vkr_entity_get_component(world, entity, scene->comp_text3d))
+    return VKR_UI_ICON_TEXT;
+  if (vkr_entity_get_component(world, entity, scene->comp_shape))
+    return VKR_UI_ICON_SHAPES;
+  *out_color = theme->text_secondary;
+  return has_child ? VKR_UI_ICON_FOLDER : VKR_UI_ICON_EMPTY;
+}
+
+/* Toggles one entity's own visibility through the undoable edit journal. */
+void vkr_editor_toggle_visibility(const VkrSampleUiFrame *frame,
+                                  VkrEntityId entity) {
+  VkrSceneEditValues values;
+  if (!vkr_scene_edit_read(frame->scene, entity, &values) ||
+      !(values.fields & VKR_SCENE_EDIT_VISIBILITY))
+    return;
+  values.fields = VKR_SCENE_EDIT_VISIBILITY;
+  values.visibility.visible = !values.visibility.visible;
+  *frame->scene_edit = (VkrSceneEditRequest){
+      .action = VKR_SCENE_EDIT_APPLY, .entity = entity, .values = values};
+}
+
 void vkr_editor_hierarchy_build(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame, VkrUiRect rect,
                                 VkrFontHandle heading) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   VkrEditorScenePanels *p = editor->scene_panels;
   VkrUiSystem *ui = frame->ui;
   float32_t w = rect.width / ui->content_scale,
             h = rect.height / ui->content_scale;
   if (w < 32 || h < 60)
     return;
-  VkrUiWidgetConfig c = widget_at(6, 5, w - 12, 26);
-  vkr_editor_action_style(&c, heading);
-  c.disabled =
-      !vkr_editor_projects_can_add_entity(editor->projects, editor, frame);
-  c.tooltip =
-      string8_lit("Add a model or light to the loaded, writable project scene");
-  if (vkr_ui_button(ui, string8_lit("hierarchy.add"),
-                    string8_lit("+ Add entity"), &c)) {
-    vkr_editor_projects_add_entity(editor->projects, editor, frame);
+  /* Toolbar: search with an Add action beside it. */
+  const VkrUiTrack tool_columns[] = {{.value = 1, .unit = VKR_UI_TRACK_FR},
+                                     {.value = 26, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig tools = vkr_ui_panel_config_default();
+  tools.placement.column = tools.placement.row = 0u;
+  tools.placement.justify = tools.placement.align = VKR_UI_ALIGN_START;
+  tools.placement.margin_pt = (VkrUiEdges){7, 0, 0, 8};
+  tools.columns = tool_columns;
+  tools.column_count = ArrayCount(tool_columns);
+  tools.style.gap_pt = theme->space_sm;
+  tools.style.min_size_pt = tools.style.max_size_pt = (Vec2){w - 16, 26};
+  if (vkr_ui_panel_begin(ui, string8_lit("hierarchy.tools"), &tools)) {
+    VkrUiTextEditBuffer search = {
+        (uint8_t *)p->search, (uint32_t)strlen(p->search), sizeof(p->search)};
+    VkrUiPlacement placement = VKR_UI_PLACEMENT_DEFAULT;
+    placement.column = placement.row = 0u;
+    p->rebuild |= vkr_editor_search_field(
+        ui, string8_lit("hierarchy.search"), &search, placement,
+        string8_lit("Search"),
+        string8_lit("Search scene nodes (matches keep their ancestors)"),
+        VKR_FONT_HANDLE_INVALID);
+    VkrUiWidgetConfig add = vkr_editor_icon_button_config(
+        1u, 0u, VKR_UI_ICON_PLUS_CIRCLE,
+        string8_lit("Add a model or light to the loaded, writable project "
+                    "scene"));
+    add.icon_color = theme->accent_hover;
+    add.disabled =
+        !vkr_editor_projects_can_add_entity(editor->projects, editor, frame);
+    if (vkr_ui_button(ui, string8_lit("hierarchy.add"), (String8){0}, &add))
+      vkr_editor_projects_add_entity(editor->projects, editor, frame);
+    (void)vkr_ui_panel_end(ui);
   }
-  c = widget_at(6, 39, w - 12, 24);
-  c.tooltip = string8_lit("Search scene nodes (matches keep their ancestors)");
-  vkr_editor_field_style(&c);
-  VkrUiTextEditBuffer search = {(uint8_t *)p->search,
-                                (uint32_t)strlen(p->search), sizeof(p->search)};
-  p->rebuild |=
-      vkr_ui_text_field(ui, string8_lit("hierarchy.search"), &search, &c);
-  if (!p->search[0] &&
-      ui->focused_id != vkr_ui_id_stack_widget_label(
-                            &ui->id_stack, string8_lit("hierarchy.search"))) {
-    c.style.background_color = (Vec4){0};
-    c.style.border_color = (Vec4){0};
-    c.style.text_color = (Vec4){0.67f, 0.72f, 0.77f, 1};
-    vkr_ui_label(ui, string8_lit("hierarchy.search.hint"),
-                 string8_lit("Search nodes"), &c);
-  }
+  VkrUiWidgetConfig c;
   if (!frame->scene) {
-    c = widget_at(6, 70, w - 12, 40);
-    vkr_ui_label(ui, string8_lit("no.scene"), string8_lit("No scene loaded."),
+    c = widget_at(8, 64, w - 16, 40);
+    c.style.text_color = theme->text_secondary;
+    c.placement.justify = VKR_UI_ALIGN_CENTER;
+    c.icon = VKR_UI_ICON_SCENE;
+    c.icon_size_pt = 18.0f;
+    c.icon_color = theme->text_disabled;
+    vkr_ui_label(ui, string8_lit("no.scene"), string8_lit("No scene loaded"),
                  &c);
-    c = widget_at(6, 114, w - 12, 28);
-    vkr_editor_action_style(&c, heading);
+    c = widget_at(Max(8.0f, w * 0.5f - 60.0f), 108, 120, 28);
+    vkr_editor_primary_style(&c, heading);
+    c.icon = VKR_UI_ICON_SCENE_LOAD;
+    c.icon_size_pt = 14.0f;
     c.disabled = frame->scene_loading;
     if (vkr_ui_button(ui, string8_lit("load.scene"), string8_lit("Load scene"),
                       &c))
@@ -325,27 +407,29 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
         break;
       }
   }
-  float32_t page = Max(0.0f, h - 92.0f);
+  const float32_t row_h = HIERARCHY_ROW_PT;
+  float32_t page =
+      Max(0.0f, h - HIERARCHY_LIST_TOP_PT - HIERARCHY_FOOTER_PT - 2.0f);
   const uint32_t selected_row = p->selected_row;
   if (frame->selected_entity.u64 != p->revealed.u64) {
     if (selected_row != NO_ROW) {
-      float32_t y = selected_row * 23.0f;
+      float32_t y = selected_row * row_h;
       if (y < p->hierarchy_scroll)
         p->hierarchy_scroll = y;
-      if (y + 23 > p->hierarchy_scroll + page)
-        p->hierarchy_scroll = Max(0.0f, y + 23 - page);
+      if (y + row_h > p->hierarchy_scroll + page)
+        p->hierarchy_scroll = Max(0.0f, y + row_h - page);
     }
     p->revealed = frame->selected_entity;
   }
   if (in_rect(ui, rect))
-    p->hierarchy_scroll -= ui->mouse_wheel * 46.0f;
+    p->hierarchy_scroll -= ui->mouse_wheel * row_h * 2.0f;
   p->hierarchy_scroll = vkr_clamp_f32(p->hierarchy_scroll, 0,
-                                      Max(0.0f, p->row_count * 23.0f - page));
-  uint32_t first = (uint32_t)(p->hierarchy_scroll / 23.0f);
+                                      Max(0.0f, p->row_count * row_h - page));
+  uint32_t first = (uint32_t)(p->hierarchy_scroll / row_h);
   uint32_t end = Min(p->row_count, first + Min(TREE_VISIBLE_SLOTS,
-                                               (uint32_t)(page / 23.0f) + 2u));
+                                               (uint32_t)(page / row_h) + 2u));
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
-  c = widget_at(0, 68, w, page);
+  c = widget_at(0, HIERARCHY_LIST_TOP_PT, w, page);
   list.placement = c.placement;
   list.style.min_size_pt = c.style.min_size_pt;
   list.style.max_size_pt = c.style.max_size_pt;
@@ -353,7 +437,7 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
   const VkrUiTrack track = {.value = 1, .unit = VKR_UI_TRACK_FR};
   list.columns = &track;
   list.column_count = 1;
-  const VkrUiTrack content_track = {.value = p->row_count * 23.0f,
+  const VkrUiTrack content_track = {.value = p->row_count * row_h,
                                     .unit = VKR_UI_TRACK_PX};
   list.rows = &content_track;
   list.row_count = 1;
@@ -365,9 +449,10 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
     for (uint32_t row = first; row < end; ++row) {
       EditorTreeNode *n = &p->nodes[p->rows[row]];
       const uint32_t slot = row - first;
-      const float32_t y = row * 23.0f;
+      const float32_t y = row * row_h;
       const float32_t visible_y = y - p->hierarchy_scroll;
-      const float32_t indent = Min(n->depth * 13.0f, Max(0.0f, w - 75));
+      const float32_t indent =
+          Min(n->depth * HIERARCHY_INDENT_PT, Max(0.0f, w - 90));
       (void)vkr_ui_push_id_u64(ui, slot);
       const VkrUiId node_id =
           vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("node"));
@@ -384,20 +469,17 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
         ui->focused_id = node_id;
         p->pending_focus = VKR_ENTITY_ID_INVALID;
       }
-      c = widget_at(4 + indent, y, 20, 22);
-      c.disabled = n->child == NO_ROW;
-      c.tooltip = string8_lit("Expand or collapse node");
-      if (n->child != NO_ROW &&
-          vkr_ui_button(ui, string8_lit("expand"),
-                        n->expanded ? string8_lit("-") : string8_lit("+"),
-                        &c)) {
-        n->expanded = !n->expanded;
-        p->rebuild = true_v;
-      }
-      c = widget_at(25 + indent, y, w - 30 - indent, 22);
-      c.style.text_color = (Vec4){0.88f, 0.9f, 0.93f, 1};
-      if (selected_row == row)
-        c.style.background_color = (Vec4){0.23f, 0.31f, 0.39f, 1};
+      const bool8_t selected = selected_row == row;
+      const SceneVisibility *visibility = vkr_entity_get_component(
+          frame->scene->world, n->entity, frame->scene->comp_visibility);
+      const bool8_t hidden = visibility && !visibility->visible;
+      /* Full-width row: hover and selection fills. */
+      c = widget_at(4, y, w - 8, row_h);
+      c.style.corner_radius_pt =
+          (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+      c.style.background_color = selected ? theme->selection : (Vec4){0};
+      c.style.hover_background_color =
+          selected ? theme->selection : theme->row_hover;
       String8 name = vkr_scene_get_name(frame->scene, n->entity);
       if (!name.length)
         name = string8_lit("(unnamed)");
@@ -405,14 +487,72 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c))
         *frame->scene_edit = (VkrSceneEditRequest){
             .action = VKR_SCENE_EDIT_SELECT, .entity = n->entity};
+      const bool8_t row_hot = ui->hot_id == node_id;
+      /* Right click selects the row and opens its context menu. */
+      if (row_hot && !ui->mouse_captured &&
+          input_button_just_pressed(frame->input, BUTTON_RIGHT)) {
+        *frame->scene_edit = (VkrSceneEditRequest){
+            .action = VKR_SCENE_EDIT_SELECT, .entity = n->entity};
+        editor->context_open = true_v;
+        editor->context_kind = VKR_EDITOR_CONTEXT_ENTITY;
+        editor->context_entity = n->entity;
+        editor->context_position_pt =
+            (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
+                   (float32_t)ui->mouse_y / ui->content_scale};
+        editor->menu = VKR_EDITOR_MENU_NONE;
+      }
+      if (n->child != NO_ROW) {
+        c = widget_at(6 + indent, y + 3, 18, 18);
+        vkr_editor_ghost_style(&c);
+        c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+        c.icon = n->expanded || p->search[0] ? VKR_UI_ICON_DISCLOSURE_OPEN
+                                             : VKR_UI_ICON_DISCLOSURE_CLOSED;
+        c.icon_size_pt = 10.0f;
+        c.icon_color = selected ? theme->text : theme->text_secondary;
+        c.tooltip = string8_lit("Expand or collapse (Left/Right arrows)");
+        if (vkr_ui_button(ui, string8_lit("expand"), (String8){0}, &c)) {
+          n->expanded = !n->expanded;
+          p->rebuild = true_v;
+        }
+      }
       uint64_t preview_length = Min(name.length, 160u);
       while (preview_length < name.length && preview_length &&
              (name.str[preview_length] & 0xc0u) == 0x80u)
         --preview_length;
-      c.style.background_color = (Vec4){0};
+      Vec4 icon_color;
+      /* Names use the eye button's space on rows that do not show it. */
+      const bool8_t show_eye = visibility && (row_hot || hidden || selected);
+      c = widget_at(26 + indent, y,
+                    Max(10.0f, w - (show_eye ? 58.0f : 36.0f) - indent), row_h);
+      c.placement.align = VKR_UI_ALIGN_START;
+      c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
+      c.style.text_color = hidden     ? theme->text_disabled
+                           : selected ? theme->text_on_accent
+                                      : theme->text;
+      c.icon = hierarchy_entity_icon(frame->scene, n->entity,
+                                     n->child != NO_ROW, &icon_color);
+      c.icon_size_pt = 14.0f;
+      c.icon_color = selected ? theme->text_on_accent : icon_color;
+      if (hidden)
+        c.icon_color.w = 0.45f;
+      c.tooltip = (String8){0};
       vkr_ui_label(ui, string8_lit("node.label"),
                    (String8){.str = name.str, .length = preview_length}, &c);
-      if (!navigated && !ui->mouse_captured && visible_y + 22 > 0 &&
+      if (show_eye) {
+        c = widget_at(w - 32, y + 2, 20, 20);
+        vkr_editor_ghost_style(&c);
+        c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+        c.icon = hidden ? VKR_UI_ICON_EYE_SLASH : VKR_UI_ICON_EYE;
+        c.icon_size_pt = 13.0f;
+        c.icon_color = hidden     ? theme->text_disabled
+                       : selected ? theme->text_on_accent
+                                  : theme->text_secondary;
+        c.tooltip = hidden ? string8_lit("Show (undoable)")
+                           : string8_lit("Hide (undoable)");
+        if (vkr_ui_button(ui, string8_lit("visibility"), (String8){0}, &c))
+          vkr_editor_toggle_visibility(frame, n->entity);
+      }
+      if (!navigated && !ui->mouse_captured && visible_y + row_h > 0 &&
           visible_y < page && ui->focused_id == node_id &&
           ui->keyboard_input_layer == ui->input_layer) {
         VkrEntityId target = VKR_ENTITY_ID_INVALID;
@@ -451,12 +591,18 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
   }
   if (next_focus.u64)
     p->pending_focus = next_focus;
-  c = widget_at(5, h - 23, w - 10, 22);
-  c.text.font = heading;
+  c = widget_at(10, h - HIERARCHY_FOOTER_PT, w - 20, HIERARCHY_FOOTER_PT);
+  c.placement.align = VKR_UI_ALIGN_START;
+  c.style.font_size_pt = theme->font_caption;
+  c.style.text_color = theme->text_secondary;
+  c.style.padding_pt = (VkrUiEdges){3, 0, 3, 0};
   vkr_ui_label(ui, string8_lit("count"),
-               string8_create_formatted(ui->frame_allocator,
-                                        "%u visible / %u nodes", p->row_count,
-                                        p->live_count),
+               p->search[0]
+                   ? string8_create_formatted(ui->frame_allocator,
+                                              "%u matches \xc2\xb7 %u nodes",
+                                              p->row_count, p->live_count)
+                   : string8_create_formatted(ui->frame_allocator, "%u nodes",
+                                              p->live_count),
                &c);
 }
 
@@ -1108,6 +1254,14 @@ static VkrEntityId physics_next_reference(const VkrScene *scene,
   return VKR_ENTITY_ID_INVALID;
 }
 
+/* Physics section buttons: unstyled callers get the secondary action style. */
+static bool8_t inspector_button(VkrUiSystem *ui, String8 id, String8 text,
+                                VkrUiWidgetConfig *config) {
+  if (config->style.background_color.w <= 0.0f)
+    vkr_editor_action_style(config, VKR_FONT_HANDLE_INVALID);
+  return vkr_ui_button(ui, id, text, config);
+}
+
 static void physics_layer_widgets(VkrEditorScenePanels *p,
                                   const VkrSampleUiFrame *f, float32_t w,
                                   float32_t *y, bool8_t disabled) {
@@ -1116,11 +1270,11 @@ static void physics_layer_widgets(VkrEditorScenePanels *p,
   VkrSceneCollisionLayers settings;
   vkr_scene_collision_layers_read(f->scene, &settings);
   VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
-  if (vkr_ui_button(ui, string8_lit("layers.expand"),
-                    p->show_collision_layers
-                        ? string8_lit("Hide layers and presets")
-                        : string8_lit("Layers and presets"),
-                    &c)) {
+  if (inspector_button(ui, string8_lit("layers.expand"),
+                       p->show_collision_layers
+                           ? string8_lit("Hide layers and presets")
+                           : string8_lit("Layers and presets"),
+                       &c)) {
     p->show_collision_layers = !p->show_collision_layers;
   }
   *y += 26;
@@ -1130,7 +1284,7 @@ static void physics_layer_widgets(VkrEditorScenePanels *p,
   if (settings.preset_count) {
     p->preset_index = Min(p->preset_index, settings.preset_count - 1u);
     c = widget_at(5, *y, w - 10, 24);
-    if (vkr_ui_button(
+    if (inspector_button(
             ui, string8_lit("preset.next"),
             string8_create_formatted(ui->frame_allocator, "Preset: %s (next)",
                                      settings.presets[p->preset_index].name),
@@ -1140,8 +1294,8 @@ static void physics_layer_widgets(VkrEditorScenePanels *p,
     *y += 26;
     c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
-    if (vkr_ui_button(ui, string8_lit("preset.apply"),
-                      string8_lit("Copy preset to draft"), &c) &&
+    if (inspector_button(ui, string8_lit("preset.apply"),
+                         string8_lit("Copy preset to draft"), &c) &&
         physics_numbers_parse(p, body)) {
       const VkrSceneCollisionPreset *preset =
           &settings.presets[p->preset_index];
@@ -1185,10 +1339,10 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
   VkrScenePhysicsAttachment *attachment = &p->values.physics.attachment;
   bool8_t focused = false_v;
   VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
-  if (vkr_ui_button(ui, string8_lit("attachment.expand"),
-                    p->show_attachment ? string8_lit("Hide bone attachment")
-                                       : string8_lit("Bone attachment"),
-                    &c)) {
+  if (inspector_button(ui, string8_lit("attachment.expand"),
+                       p->show_attachment ? string8_lit("Hide bone attachment")
+                                          : string8_lit("Bone attachment"),
+                       &c)) {
     p->show_attachment = !p->show_attachment;
   }
   *y += 26;
@@ -1223,7 +1377,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
   const String8 wrapper_name = wrapper.u64
                                    ? vkr_scene_get_name(f->scene, wrapper)
                                    : string8_lit("Choose animation");
-  if (vkr_ui_button(
+  if (inspector_button(
           ui, string8_lit("owner.next"),
           string8_create_formatted(ui->frame_allocator, "%.*s (next owner)",
                                    (int)wrapper_name.length, wrapper_name.str),
@@ -1255,10 +1409,10 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
     c = widget_at(5 + next * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
     c.disabled = disabled || !asset || !asset->node_count;
     (void)vkr_ui_push_id_u64(ui, next);
-    if (vkr_ui_button(ui, string8_lit("bone.choose"),
-                      next ? string8_lit("Next bone")
-                           : string8_lit("Previous bone"),
-                      &c) &&
+    if (inspector_button(ui, string8_lit("bone.choose"),
+                         next ? string8_lit("Next bone")
+                              : string8_lit("Previous bone"),
+                         &c) &&
         asset && asset->node_count) {
       attachment->source_node =
           (attachment->source_node + (next ? 1u : asset->node_count - 1u)) %
@@ -1293,8 +1447,8 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
     c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
     (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(ui, string8_lit("bone.match"), asset->nodes[i].name,
-                      &c)) {
+    if (inspector_button(ui, string8_lit("bone.match"), asset->nodes[i].name,
+                         &c)) {
       attachment->source_node = i;
       p->changed = true_v;
     }
@@ -1327,11 +1481,11 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
   VkrScenePhysicsSnapshot *body = &p->values.physics;
   bool8_t focused = false_v;
   VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
-  if (vkr_ui_button(ui, string8_lit("joints.expand"),
-                    string8_create_formatted(
-                        ui->frame_allocator, "%s joints (%u)",
-                        p->show_joints ? "Hide" : "Edit", body->joint_count),
-                    &c)) {
+  if (inspector_button(ui, string8_lit("joints.expand"),
+                       string8_create_formatted(
+                           ui->frame_allocator, "%s joints (%u)",
+                           p->show_joints ? "Hide" : "Edit", body->joint_count),
+                       &c)) {
     p->show_joints = !p->show_joints;
   }
   *y += 26;
@@ -1343,8 +1497,8 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
   c = widget_at(5, *y, w - 10, 24);
   c.disabled = disabled || body->joint_count == VKR_SCENE_PHYSICS_MAX_JOINTS ||
                !next_target.u64;
-  if (vkr_ui_button(ui, string8_lit("joint.add"),
-                    string8_lit("Add joint to another body"), &c) &&
+  if (inspector_button(ui, string8_lit("joint.add"),
+                       string8_lit("Add joint to another body"), &c) &&
       physics_numbers_parse(p, body)) {
     uint64_t id = 1;
     for (;;) {
@@ -1410,11 +1564,11 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
       *y += 26;
     }
     c = widget_at(5, *y, w - 10, 24);
-    if (vkr_ui_button(ui, string8_lit("joint.open"),
-                      p->open_joint == joint->authored_id
-                          ? string8_lit("Hide joint settings")
-                          : string8_lit("Edit joint settings"),
-                      &c)) {
+    if (inspector_button(ui, string8_lit("joint.open"),
+                         p->open_joint == joint->authored_id
+                             ? string8_lit("Hide joint settings")
+                             : string8_lit("Edit joint settings"),
+                         &c)) {
       p->open_joint =
           p->open_joint == joint->authored_id ? 0 : joint->authored_id;
     }
@@ -1425,11 +1579,11 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
     }
     c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
-    if (vkr_ui_button(ui, string8_lit("joint.type"),
-                      string8_create_formatted(ui->frame_allocator,
-                                               "%s (next type)",
-                                               types[joint->type]),
-                      &c)) {
+    if (inspector_button(ui, string8_lit("joint.type"),
+                         string8_create_formatted(ui->frame_allocator,
+                                                  "%s (next type)",
+                                                  types[joint->type]),
+                         &c)) {
       joint->type =
           (VkrPhysicsJointType)((joint->type + 1u) % ArrayCount(types));
       if (joint->type == VKR_PHYSICS_JOINT_DISTANCE) {
@@ -1447,7 +1601,7 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
                           : string8_lit("Missing target");
     c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
-    if (vkr_ui_button(
+    if (inspector_button(
             ui, string8_lit("joint.target"),
             string8_create_formatted(ui->frame_allocator, "%.*s (next target)",
                                      (int)target_name.length, target_name.str),
@@ -1491,8 +1645,8 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
     c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
     bool8_t removed = false_v;
-    if (vkr_ui_button(ui, string8_lit("joint.remove"),
-                      string8_lit("Remove joint"), &c) &&
+    if (inspector_button(ui, string8_lit("joint.remove"),
+                         string8_lit("Remove joint"), &c) &&
         physics_numbers_parse(p, body)) {
       MemCopy(joint, joint + 1, (body->joint_count - i - 1u) * sizeof(*joint));
       body->joint_count--;
@@ -1530,9 +1684,9 @@ static void physics_ragdoll_widgets(VkrEditorScenePanels *p,
     c = widget_at(5 + (i % 2u) * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
     c.disabled = p->changed || !vkr_scene_physics_is_paused(f->scene);
     (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(ui, string8_lit("ragdoll.action"),
-                      string8_create((uint8_t *)actions[i], strlen(actions[i])),
-                      &c)) {
+    if (inspector_button(
+            ui, string8_lit("ragdoll.action"),
+            string8_create((uint8_t *)actions[i], strlen(actions[i])), &c)) {
       uint32_t count = 0;
       const char *error = NULL;
       if (!vkr_scene_physics_ragdoll_plan(f->scene, f->selected_entity,
@@ -1575,10 +1729,10 @@ static bool8_t physics_body_widgets(VkrEditorScenePanels *p,
   c.disabled = !f->physics_request;
   c.tooltip = string8_lit("Temporary simulation/query mute. Not saved; "
                           "authored Body enabled is unchanged.");
-  if (vkr_ui_button(ui, string8_lit("session.mute"),
-                    muted ? string8_lit("Resume body (session)")
-                          : string8_lit("Mute body (session)"),
-                    &c) &&
+  if (inspector_button(ui, string8_lit("session.mute"),
+                       muted ? string8_lit("Resume body (session)")
+                             : string8_lit("Mute body (session)"),
+                       &c) &&
       f->physics_request) {
     *f->physics_request =
         (VkrSamplePhysicsRequest){.entity = f->selected_entity,
@@ -1591,9 +1745,9 @@ static bool8_t physics_body_widgets(VkrEditorScenePanels *p,
     c = widget_at(5 + i * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
     c.disabled = disabled || body->motion == (VkrPhysicsMotion)i;
     (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(ui, string8_lit("motion"),
-                      string8_create((uint8_t *)motions[i], strlen(motions[i])),
-                      &c)) {
+    if (inspector_button(
+            ui, string8_lit("motion"),
+            string8_create((uint8_t *)motions[i], strlen(motions[i])), &c)) {
       body->motion = (VkrPhysicsMotion)i;
       p->changed = true_v;
     }
@@ -1652,11 +1806,11 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
         &shape->enabled, &c);
     *y += 26;
     c = widget_at(5, *y, w - 10, 24);
-    if (vkr_ui_button(ui, string8_lit("expand"),
-                      p->open_collider == shape->authored_id
-                          ? string8_lit("Hide shape settings")
-                          : string8_lit("Edit shape settings"),
-                      &c)) {
+    if (inspector_button(ui, string8_lit("expand"),
+                         p->open_collider == shape->authored_id
+                             ? string8_lit("Hide shape settings")
+                             : string8_lit("Edit shape settings"),
+                         &c)) {
       p->open_collider =
           p->open_collider == shape->authored_id ? 0 : shape->authored_id;
     }
@@ -1716,8 +1870,8 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
     if (shape->shape < VKR_PHYSICS_CONVEX_HULL) {
       c = widget_at(5, *y, w - 10, 24);
       c.disabled = disabled;
-      if (vkr_ui_button(ui, string8_lit("fit"),
-                        string8_lit("Fit loaded bounds (approx.)"), &c) &&
+      if (inspector_button(ui, string8_lit("fit"),
+                           string8_lit("Fit loaded bounds (approx.)"), &c) &&
           physics_numbers_parse(p, body) && physics_fit_collider(p, f, shape)) {
         physics_numbers_read(p);
         p->changed = true_v;
@@ -1727,8 +1881,8 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
     c = widget_at(5, *y, (w - 10) / 2 - 3, 24);
     c.disabled =
         disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
-    if (vkr_ui_button(ui, string8_lit("duplicate"), string8_lit("Duplicate"),
-                      &c) &&
+    if (inspector_button(ui, string8_lit("duplicate"), string8_lit("Duplicate"),
+                         &c) &&
         physics_numbers_parse(p, body)) {
       const uint64_t id = physics_next_collider_id(body);
       body->colliders[body->collider_count] = *shape;
@@ -1739,7 +1893,8 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
     c = widget_at(w / 2, *y, w / 2 - 5, 24);
     c.disabled = disabled;
     bool8_t removed = false_v;
-    if (vkr_ui_button(ui, string8_lit("remove"), string8_lit("Remove"), &c) &&
+    if (inspector_button(ui, string8_lit("remove"), string8_lit("Remove"),
+                         &c) &&
         physics_numbers_parse(p, body)) {
       MemCopy(shape, shape + 1,
               (body->collider_count - i - 1u) * sizeof(*shape));
@@ -1794,8 +1949,8 @@ static void physics_impulse_widgets(VkrEditorScenePanels *p,
   }
   c = widget_at(5, *y, w - 10, 24);
   c.disabled = p->changed || !body->enabled;
-  if (vkr_ui_button(ui, string8_lit("impulse.apply"),
-                    string8_lit("Apply test impulse"), &c)) {
+  if (inspector_button(ui, string8_lit("impulse.apply"),
+                       string8_lit("Apply test impulse"), &c)) {
     float32_t values[6] = {0};
     bool8_t valid = true_v;
     for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
@@ -1867,9 +2022,9 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
     c.disabled =
         disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
     (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(ui, string8_lit("add"),
-                      string8_create((uint8_t *)shapes[i], strlen(shapes[i])),
-                      &c) &&
+    if (inspector_button(
+            ui, string8_lit("add"),
+            string8_create((uint8_t *)shapes[i], strlen(shapes[i])), &c) &&
         physics_numbers_parse(p, body)) {
       if (!body->present) {
         *body = vkr_scene_physics_default();
@@ -1899,8 +2054,8 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
   if (body->present) {
     c = widget_at(5, *y, w - 10, 24);
     c.disabled = disabled;
-    if (vkr_ui_button(ui, string8_lit("remove.body"),
-                      string8_lit("Remove body and colliders"), &c)) {
+    if (inspector_button(ui, string8_lit("remove.body"),
+                         string8_lit("Remove body and colliders"), &c)) {
       *body = vkr_scene_physics_default();
       body->present = false_v;
       body->collider_count = 0;
@@ -1940,78 +2095,305 @@ static InspectorLights inspector_lights(const VkrSceneEditValues *values) {
   return lights;
 }
 
-static float32_t inspector_content_height(const VkrEditorScenePanels *p,
-                                          const VkrSampleUiFrame *f,
-                                          const SceneTransform *tr,
-                                          const InspectorLights *lights) {
-  float32_t content_height =
-      5 + 27 + 29 + 27 + 30 + 26 + 9 * 26 + 29 + 30 + 44 + 88;
-  content_height += 140 + (p->values.physics.present ? 418 : 0);
-  if (p->values.physics.present) {
-    if (p->show_collision_layers) {
-      content_height += 18 * 26;
-    }
-    if (p->show_attachment) {
-      content_height += 12 * 26 + (p->bone_filter[0] ? 16 * 26 : 0);
-    }
-    if (p->show_joints) {
-      content_height += 26 + p->values.physics.joint_count * 78;
-      for (uint32_t i = 0; i < p->values.physics.joint_count; ++i) {
-        if (p->values.physics.joints[i].authored_id == p->open_joint) {
-          content_height += 650;
-        }
-      }
-    }
-  }
-  if (vkr_scene_animation_get_player(f->scene, f->selected_entity)) {
-    content_height += 78;
-  }
-  if (p->values.physics.present &&
-      p->values.physics.motion == VKR_PHYSICS_DYNAMIC) {
-    content_height += 80 + (p->impulse_at_point ? 6 : 3) * 26;
-  }
-  for (uint32_t i = 0; i < p->values.physics.collider_count; ++i) {
-    content_height += 52;
-    if (p->values.physics.colliders[i].authored_id == p->open_collider) {
-      content_height += 400;
-    }
-  }
-  if (lights->light)
-    content_height +=
-        26 + (lights->point + lights->directional) * 27 +
-        (4 + lights->point + (lights->aimed ? 4 : 0) + (lights->spot ? 4 : 0)) *
-            26;
-  if (lights->rectangle)
-    content_height += 3 * 26;
-  if (!(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
-    content_height -= 9 * 26;
-  if (tr && !tr->trs_editable)
-    content_height += 48 + 4 * 26;
-  return content_height;
+typedef enum InspectorSection {
+  INSPECTOR_SECTION_TRANSFORM = 0,
+  INSPECTOR_SECTION_LIGHT,
+  INSPECTOR_SECTION_PHYSICS,
+  INSPECTOR_SECTION_DEBUG,
+} InspectorSection;
+
+#define INSPECTOR_ROW_PT 26.0f
+#define INSPECTOR_PAD_PT 10.0f
+
+/* Collapsible section header; returns true while the section is expanded. */
+static bool8_t inspector_section(VkrEditorScenePanels *p, VkrUiSystem *ui,
+                                 float32_t w, float32_t *y,
+                                 InspectorSection section, VkrUiIcon icon,
+                                 Vec4 icon_color, const char *title,
+                                 VkrFontHandle heading) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const bool8_t expanded = !p->section_collapsed[section];
+  *y += 4;
+  VkrUiWidgetConfig header = widget_at(0, *y, w, 28);
+  header.style.background_color = theme->header;
+  header.style.hover_background_color = theme->raised;
+  header.style.border_pt = (VkrUiEdges){1, 0, 1, 0};
+  header.style.border_color = theme->separator;
+  header.tooltip = expanded ? string8_lit("Collapse section")
+                            : string8_lit("Expand section");
+  (void)vkr_ui_push_id_u64(ui, 0x5ec70000u + section);
+  if (vkr_ui_button(ui, string8_lit("section"), (String8){0}, &header))
+    p->section_collapsed[section] = expanded;
+  VkrUiWidgetConfig caret = widget_at(INSPECTOR_PAD_PT - 2, *y, 14, 28);
+  caret.placement.align = VKR_UI_ALIGN_START;
+  caret.style.padding_pt = (VkrUiEdges){9, 0, 9, 0};
+  caret.icon =
+      expanded ? VKR_UI_ICON_DISCLOSURE_OPEN : VKR_UI_ICON_DISCLOSURE_CLOSED;
+  caret.icon_size_pt = 10.0f;
+  caret.icon_color = theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("caret"), (String8){0}, &caret);
+  VkrUiWidgetConfig label =
+      widget_at(INSPECTOR_PAD_PT + 14, *y, w - INSPECTOR_PAD_PT - 20, 28);
+  label.placement.align = VKR_UI_ALIGN_START;
+  label.style.padding_pt = (VkrUiEdges){6, 4, 6, 2};
+  label.style.font_size_pt = theme->font_body;
+  label.style.text_color = theme->text;
+  label.text.font = heading;
+  label.icon = icon;
+  label.icon_size_pt = 14.0f;
+  label.icon_color = icon_color;
+  vkr_ui_label(ui, string8_lit("title"),
+               string8_create((uint8_t *)title, strlen(title)), &label);
+  (void)vkr_ui_pop_id(ui);
+  *y += 32;
+  return expanded;
 }
 
-static bool8_t inspector_node_fields(VkrEditorScenePanels *p,
-                                     const VkrSampleUiFrame *f, float32_t w,
-                                     float32_t h, float32_t *y,
-                                     VkrFontHandle heading) {
+/* Row label in secondary text, vertically centered in a row. */
+static void inspector_row_label(VkrUiSystem *ui, String8 id, const char *text,
+                                float32_t y, float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig label =
+      widget_at(INSPECTOR_PAD_PT, y, Max(8.0f, width), INSPECTOR_ROW_PT - 2);
+  label.placement.align = VKR_UI_ALIGN_START;
+  label.style.padding_pt = (VkrUiEdges){5, 2, 5, 0};
+  label.style.font_size_pt = theme->font_body;
+  label.style.text_color = theme->text_secondary;
+  vkr_ui_label(ui, id, string8_create((uint8_t *)text, strlen(text)), &label);
+}
+
+/* Starts or continues a continuous edit owned by `owner`; returns its id. */
+static uint64_t inspector_gesture(VkrEditorScenePanels *p, VkrUiId owner) {
+  if (!p->gesture_active || p->gesture_owner != owner) {
+    p->gesture = ++p->gesture_counter;
+    p->gesture_owner = owner;
+  }
+  p->gesture_active = true_v;
+  return p->gesture;
+}
+
+/* Drag-to-change handle: a tag or label that scrubs numbers[index] while
+ * held. Shift is 10x faster and Alt 10x finer. */
+static void inspector_scrub(VkrEditorScenePanels *p, const VkrSampleUiFrame *f,
+                            uint32_t index, float32_t step, VkrUiId handle) {
+  VkrUiSystem *ui = f->ui;
+  if (ui->active_id != handle)
+    return;
+  int32_t dx = 0, dy = 0;
+  input_get_mouse_delta(f->input, &dx, &dy);
+  (void)inspector_gesture(p, handle);
+  if (!dx)
+    return;
+  float32_t scale = step / Max(ui->content_scale, 1.0f);
+  if (input_is_key_down(f->input, KEY_SHIFT) ||
+      input_is_key_down(f->input, KEY_LSHIFT) ||
+      input_is_key_down(f->input, KEY_RSHIFT))
+    scale *= 10.0f;
+  if (input_is_key_down(f->input, KEY_LMENU) ||
+      input_is_key_down(f->input, KEY_RMENU))
+    scale *= 0.1f;
+  char *end = NULL;
+  const float32_t value = strtof(p->numbers[index], &end);
+  if (end == p->numbers[index] || !isfinite(value))
+    return;
+  snprintf(p->numbers[index], sizeof(p->numbers[index]), "%.6g",
+           value + (float32_t)dx * scale);
+  p->changed = true_v;
+}
+
+/* Numeric text field bound to numbers[index]. Returns true while focused. */
+static bool8_t inspector_number_field(VkrEditorScenePanels *p,
+                                      const VkrSampleUiFrame *f, uint32_t index,
+                                      float32_t x, float32_t y, float32_t width,
+                                      bool8_t read_only) {
+  VkrUiSystem *ui = f->ui;
+  VkrUiWidgetConfig field = widget_at(x, y + 1, width, INSPECTOR_ROW_PT - 4);
+  field.style.padding_pt = (VkrUiEdges){3, 6, 3, 6};
+  field.read_only = read_only;
+  vkr_editor_field_style(&field);
+  VkrUiTextEditBuffer value = {(uint8_t *)p->numbers[index],
+                               (uint32_t)strlen(p->numbers[index]),
+                               sizeof(p->numbers[index])};
+  (void)vkr_ui_push_id_u64(ui, 0x7a100000u + index);
+  p->changed |= vkr_ui_text_field(ui, string8_lit("value"), &value, &field);
+  const bool8_t focused =
+      ui->focused_id ==
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
+  (void)vkr_ui_pop_id(ui);
+  return focused;
+}
+
+/* Three axis fields with colored, scrubbable X/Y/Z (or R/G/B) tags. */
+static bool8_t inspector_vector_row(VkrEditorScenePanels *p,
+                                    const VkrSampleUiFrame *f, float32_t w,
+                                    float32_t *y, const char *label,
+                                    uint32_t first, float32_t step,
+                                    bool8_t read_only, bool8_t color) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = f->ui;
+  static const char *axis_names[2][3] = {{"X", "Y", "Z"}, {"R", "G", "B"}};
+  const Vec4 axis_colors[3] = {theme->axis_x, theme->axis_y, theme->axis_z};
+  /* Narrow panels move the label above the fields so each axis keeps a
+   * readable width. */
+  const bool8_t stacked = w < 300.0f;
+  const float32_t label_w =
+      stacked ? w - INSPECTOR_PAD_PT * 2 : Min(92.0f, w * 0.3f);
+  const float32_t left = INSPECTOR_PAD_PT + (stacked ? 0.0f : label_w);
+  const float32_t available = Max(60.0f, w - left - INSPECTOR_PAD_PT);
+  const float32_t cell = available / 3.0f;
+  bool8_t focused = false_v;
+  (void)vkr_ui_push_id_u64(ui, 0x7ec70000u + first);
+  inspector_row_label(ui, string8_lit("label"), label, *y, label_w - 4);
+  if (stacked)
+    *y += INSPECTOR_ROW_PT - 6;
+  for (uint32_t axis = 0; axis < 3; ++axis) {
+    const float32_t x = left + cell * (float32_t)axis;
+    VkrUiWidgetConfig tag = widget_at(x, *y + 1, 18, INSPECTOR_ROW_PT - 4);
+    tag.style.corner_radius_pt = (Vec4){theme->radius, 0, 0, theme->radius};
+    tag.style.background_color =
+        vkr_ui_color_alpha(axis_colors[axis], read_only ? 0.35f : 0.85f);
+    tag.style.hover_background_color = axis_colors[axis];
+    tag.style.text_color = theme->text_on_accent;
+    tag.style.font_size_pt = theme->font_caption;
+    tag.style.padding_pt = (VkrUiEdges){2, 0, 2, 0};
+    tag.disabled = read_only;
+    tag.tooltip = string8_lit("Drag to change (Shift faster, Alt finer)");
+    tag.cursor = VKR_WINDOW_CURSOR_RESIZE_EW;
+    (void)vkr_ui_push_id_u64(ui, axis);
+    const VkrUiId tag_id =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("tag"));
+    (void)vkr_ui_button(
+        ui, string8_lit("tag"),
+        string8_create((uint8_t *)axis_names[color ? 1 : 0][axis], 1u), &tag);
+    (void)vkr_ui_pop_id(ui);
+    if (!read_only)
+      inspector_scrub(p, f, first + axis, step, tag_id);
+    focused |= inspector_number_field(p, f, first + axis, x + 17, *y, cell - 20,
+                                      read_only);
+  }
+  (void)vkr_ui_pop_id(ui);
+  *y += INSPECTOR_ROW_PT + 2;
+  return focused;
+}
+
+/* Label, optional inline slider and field for one scalar. */
+static bool8_t inspector_scalar_row(VkrEditorScenePanels *p,
+                                    const VkrSampleUiFrame *f, float32_t w,
+                                    float32_t *y, const char *label,
+                                    uint32_t index, float32_t step,
+                                    bool8_t slider, float32_t minimum,
+                                    float32_t maximum, const char *tooltip) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = f->ui;
+  const float32_t label_w = Min(118.0f, w * 0.36f);
+  const float32_t left = INSPECTOR_PAD_PT + label_w;
+  const float32_t available = Max(60.0f, w - left - INSPECTOR_PAD_PT);
+  const float32_t field_w = slider ? Min(72.0f, available * 0.4f) : available;
+  bool8_t focused = false_v;
+  (void)vkr_ui_push_id_u64(ui, 0x5ca10000u + index);
+  /* The label itself scrubs, as in UE5 and Unity. */
+  VkrUiWidgetConfig handle =
+      widget_at(INSPECTOR_PAD_PT, *y, label_w - 4, INSPECTOR_ROW_PT - 2);
+  vkr_editor_ghost_style(&handle);
+  handle.style.padding_pt = (VkrUiEdges){5, 2, 5, 2};
+  handle.style.text_color = theme->text_secondary;
+  handle.style.font_size_pt = theme->font_body;
+  handle.tooltip = tooltip ? string8_create((uint8_t *)tooltip, strlen(tooltip))
+                           : string8_lit("Drag to change (Shift faster, Alt "
+                                         "finer)");
+  handle.cursor = VKR_WINDOW_CURSOR_RESIZE_EW;
+  const VkrUiId handle_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("handle"));
+  (void)vkr_ui_button(ui, string8_lit("handle"), (String8){0}, &handle);
+  inspector_scrub(p, f, index, step, handle_id);
+  VkrUiWidgetConfig text = handle;
+  text.placement.justify = VKR_UI_ALIGN_START;
+  text.style.background_color = (Vec4){0};
+  text.tooltip = (String8){0};
+  vkr_ui_label(ui, string8_lit("label"),
+               string8_create((uint8_t *)label, strlen(label)), &text);
+  if (slider) {
+    char *end = NULL;
+    const float32_t angle = strtof(p->numbers[index], &end);
+    const bool8_t valid = end != p->numbers[index] && !*end && isfinite(angle);
+    float32_t slider_value =
+        valid ? vkr_clamp_f32(angle, minimum, maximum) : minimum;
+    VkrUiWidgetConfig bar =
+        widget_at(left, *y + 2, available - field_w - 8, INSPECTOR_ROW_PT - 6);
+    bar.disabled = !valid;
+    bar.tooltip = tooltip ? string8_create((uint8_t *)tooltip, strlen(tooltip))
+                          : (String8){0};
+    const VkrUiId bar_id =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("slider"));
+    if (vkr_ui_slider_f32(ui, string8_lit("slider"), &slider_value, minimum,
+                          maximum, &bar)) {
+      snprintf(p->numbers[index], sizeof(p->numbers[index]), "%.5g",
+               slider_value);
+      p->changed = true_v;
+    }
+    if (ui->active_id == bar_id)
+      (void)inspector_gesture(p, bar_id);
+  }
+  focused |= inspector_number_field(p, f, index, w - INSPECTOR_PAD_PT - field_w,
+                                    *y, field_w, false_v);
+  (void)vkr_ui_pop_id(ui);
+  *y += INSPECTOR_ROW_PT + 2;
+  return focused;
+}
+
+static void inspector_checkbox_row(VkrEditorScenePanels *p, VkrUiSystem *ui,
+                                   float32_t w, float32_t *y, String8 id,
+                                   const char *label, bool8_t *value,
+                                   bool8_t disabled, String8 tooltip) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig c = widget_at(
+      INSPECTOR_PAD_PT, *y + 2, w - INSPECTOR_PAD_PT * 2, INSPECTOR_ROW_PT - 4);
+  c.placement.align = VKR_UI_ALIGN_START;
+  c.style.padding_pt = (VkrUiEdges){3, 2, 3, 0};
+  c.style.text_color = theme->text;
+  c.style.font_size_pt = theme->font_body;
+  c.disabled = disabled;
+  c.tooltip = tooltip;
+  p->changed |= vkr_ui_checkbox(
+      ui, id, string8_create((uint8_t *)label, strlen(label)), value, &c);
+  *y += INSPECTOR_ROW_PT;
+}
+
+/* Entity card: type icon, editable name and visibility controls. */
+static bool8_t inspector_header(VkrEditorScenePanels *p,
+                                const VkrSampleUiFrame *f, float32_t w,
+                                float32_t *y, VkrFontHandle heading) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = f->ui;
   bool8_t field_focus = false_v;
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
-  c.text.font = heading;
-  vkr_ui_label(ui, string8_lit("entity"),
-               string8_create_formatted(ui->frame_allocator,
-                                        "Entity %u / generation %u",
-                                        f->selected_entity.parts.index,
-                                        f->selected_entity.parts.generation),
-               &c);
-  *y += 27;
-  c = widget_at(5, *y, w - 10, 25);
+  const EditorTreeNode *node = NULL;
+  for (uint32_t i = 0; i < p->row_count && !node; ++i)
+    if (p->nodes[p->rows[i]].entity.u64 == f->selected_entity.u64)
+      node = &p->nodes[p->rows[i]];
+  Vec4 icon_color;
+  const VkrUiIcon icon = hierarchy_entity_icon(
+      f->scene, f->selected_entity, node && node->child != NO_ROW, &icon_color);
+  VkrUiWidgetConfig badge = widget_at(INSPECTOR_PAD_PT, *y + 2, 30, 30);
+  badge.style.background_color = vkr_ui_color_alpha(icon_color, 0.16f);
+  badge.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
+  badge.style.padding_pt = (VkrUiEdges){6, 6, 6, 6};
+  badge.icon = icon;
+  badge.icon_size_pt = 18.0f;
+  badge.icon_color = icon_color;
+  vkr_ui_label(ui, string8_lit("badge"), (String8){0}, &badge);
+
+  VkrUiWidgetConfig c = widget_at(INSPECTOR_PAD_PT + 38, *y + 3,
+                                  w - INSPECTOR_PAD_PT * 2 - 70, 28);
   c.read_only = !(p->values.fields & VKR_SCENE_EDIT_NAME);
+  c.style.font_size_pt = theme->font_emphasis;
+  c.style.padding_pt = (VkrUiEdges){4, 7, 4, 7};
+  /* Entity names are user content: the Regular face covers Latin Extended,
+   * Greek and Cyrillic, while headings cover Latin-1 only. */
   vkr_editor_field_style(&c);
   c.tooltip = c.read_only
                   ? string8_lit("Original name exceeds editable capacity; "
                                 "select and copy its full text")
-                  : string8_lit("Node name (up to 511 UTF-8 bytes)");
+                  : string8_lit("Rename (Enter applies, Escape reverts)");
   VkrUiTextEditBuffer name = {(uint8_t *)p->values.name,
                               (uint32_t)strlen(p->values.name),
                               sizeof(p->values.name)};
@@ -2020,273 +2402,296 @@ static bool8_t inspector_node_fields(VkrEditorScenePanels *p,
                                  p->long_name_capacity};
   if (c.read_only && !p->long_name) {
     vkr_ui_label(ui, string8_lit("name.unavailable"),
-                 string8_lit("Original name unavailable; editing disabled"),
-                 &c);
-  } else
+                 string8_lit("Original name unavailable"), &c);
+  } else {
     p->changed |= vkr_ui_text_field(ui, string8_lit("name"), &name, &c);
-  field_focus |=
-      *y + 24 > p->inspector_scroll && *y < h + p->inspector_scroll &&
-      ui->focused_id ==
-          vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("name"));
-  *y += 29;
-  c = widget_at(5, *y, w - 10, 24);
-  c.disabled = !(p->values.fields & VKR_SCENE_EDIT_VISIBILITY);
-  p->changed |=
-      vkr_ui_checkbox(ui, string8_lit("visibility"), string8_lit("Visible"),
-                      &p->values.visibility.visible, &c);
-  *y += 27;
-  c = widget_at(5, *y, w - 10, 24);
-  c.disabled = !(p->values.fields & VKR_SCENE_EDIT_VISIBILITY);
-  p->changed |= vkr_ui_checkbox(ui, string8_lit("inherit"),
-                                string8_lit("Inherit parent visibility"),
-                                &p->values.visibility.inherit_parent, &c);
-  *y += 30;
+  }
+  field_focus |= ui->focused_id == vkr_ui_id_stack_widget_label(
+                                       &ui->id_stack, string8_lit("name"));
+  const bool8_t can_hide = (p->values.fields & VKR_SCENE_EDIT_VISIBILITY) != 0;
+  VkrUiWidgetConfig eye = vkr_editor_icon_button_config(
+      0, 0,
+      p->values.visibility.visible ? VKR_UI_ICON_EYE : VKR_UI_ICON_EYE_SLASH,
+      p->values.visibility.visible ? string8_lit("Visible (click to hide)")
+                                   : string8_lit("Hidden (click to show)"));
+  eye.placement =
+      widget_at(w - INSPECTOR_PAD_PT - 26, *y + 4, 26, 26).placement;
+  eye.disabled = !can_hide;
+  vkr_editor_toggle_style(&eye, p->values.visibility.visible);
+  if (vkr_ui_button(ui, string8_lit("visibility"), (String8){0}, &eye)) {
+    p->values.visibility.visible = !p->values.visibility.visible;
+    p->changed = true_v;
+  }
+  *y += 38;
+  VkrUiWidgetConfig subtitle =
+      widget_at(INSPECTOR_PAD_PT + 38, *y - 4, w - INSPECTOR_PAD_PT * 2, 18);
+  subtitle.placement.align = VKR_UI_ALIGN_START;
+  subtitle.style.font_size_pt = theme->font_caption;
+  subtitle.style.text_color = theme->text_secondary;
+  subtitle.style.padding_pt = (VkrUiEdges){0, 2, 0, 2};
+  const InspectorLights lights = inspector_lights(&p->values);
+  const char *kind =
+      lights.directional          ? "Directional light"
+      : lights.spot               ? "Spot light"
+      : lights.point              ? "Point light"
+      : lights.rectangle          ? "Rectangle light"
+      : p->values.physics.present ? "Physics body"
+      : vkr_entity_get_component(f->scene->world, f->selected_entity,
+                                 f->scene->comp_mesh_renderer)
+          ? "Mesh"
+          : "Node";
+  vkr_ui_label(ui, string8_lit("kind"),
+               string8_create_formatted(ui->frame_allocator, "%s", kind),
+               &subtitle);
+  *y += 16;
+  inspector_checkbox_row(p, ui, w, y, string8_lit("inherit"),
+                         "Inherit parent visibility",
+                         &p->values.visibility.inherit_parent, !can_hide,
+                         string8_lit("Hidden when any ancestor is hidden"));
   return field_focus;
 }
 
-static bool8_t inspector_transform_light_fields(VkrEditorScenePanels *p,
-                                                const VkrSampleUiFrame *f,
-                                                float32_t w, float32_t h,
-                                                float32_t *y,
-                                                VkrFontHandle heading,
-                                                const InspectorLights *lights) {
+static bool8_t inspector_transform_section(VkrEditorScenePanels *p,
+                                           const VkrSampleUiFrame *f,
+                                           float32_t w, float32_t *y,
+                                           VkrFontHandle heading,
+                                           const SceneTransform *tr) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  bool8_t field_focus = false_v;
+  if (!inspector_section(p, f->ui, w, y, INSPECTOR_SECTION_TRANSFORM,
+                         VKR_UI_ICON_MOVE, theme->accent_hover, "Transform",
+                         heading))
+    return false_v;
+  if (tr && !tr->trs_editable) {
+    VkrUiWidgetConfig c =
+        widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 40);
+    c.style.text_color = theme->text_secondary;
+    c.style.font_size_pt = theme->font_caption;
+    c.text.layout.word_wrap = true_v;
+    c.text.layout.max_width = Max(1.0f, w - INSPECTOR_PAD_PT * 2);
+    c.icon = VKR_UI_ICON_LOCK;
+    c.icon_size_pt = 13.0f;
+    vkr_ui_label(f->ui, string8_lit("matrix.readonly"),
+                 string8_lit("Authored matrix with shear: transform is "
+                             "read-only. See Debug for its rows."),
+                 &c);
+    *y += 42;
+    return false_v;
+  }
+  const bool8_t read_only = !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM);
+  field_focus |= inspector_vector_row(p, f, w, y, "Location", 0, 0.01f,
+                                      read_only, false_v);
+  field_focus |=
+      inspector_vector_row(p, f, w, y, "Rotation", 3, 0.5f, read_only, false_v);
+  field_focus |=
+      inspector_vector_row(p, f, w, y, "Scale", 6, 0.005f, read_only, false_v);
+  return field_focus;
+}
+
+/* Linear light color shown as an sRGB swatch. */
+static Vec4 inspector_swatch(const VkrEditorScenePanels *p) {
+  float32_t rgb[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    const float32_t linear =
+        vkr_clamp_f32(strtof(p->numbers[9 + i], NULL), 0.0f, 1.0f);
+    rgb[i] = linear <= 0.0031308f ? linear * 12.92f
+                                  : 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f;
+  }
+  return (Vec4){rgb[0], rgb[1], rgb[2], 1.0f};
+}
+
+static bool8_t inspector_light_section(VkrEditorScenePanels *p,
+                                       const VkrSampleUiFrame *f, float32_t w,
+                                       float32_t *y, VkrFontHandle heading,
+                                       const InspectorLights *lights) {
   VkrUiSystem *ui = f->ui;
   bool8_t field_focus = false_v;
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
-  c.text.font = heading;
-  vkr_ui_label(ui, string8_lit("transform.title"),
-               string8_lit("Local transform"), &c);
-  *y += 26;
-  const char *labels[INSPECTOR_NUMBER_COUNT] = {"Position X",
-                                                "Position Y",
-                                                "Position Z",
-                                                "Rotation X (deg)",
-                                                "Rotation Y (deg)",
-                                                "Rotation Z (deg)",
-                                                "Scale X",
-                                                "Scale Y",
-                                                "Scale Z",
-                                                "Linear red",
-                                                "Linear green",
-                                                "Linear blue",
-                                                "Intensity",
-                                                "Range (0 = unlimited)",
-                                                "Local yaw (deg)",
-                                                "Local elevation (deg)",
-                                                "Inner cone (deg)",
-                                                "Outer cone (deg)",
-                                                "Sun angular diameter (deg)",
-                                                "Rectangle width",
-                                                "Rectangle height",
-                                                "Temperature (K, 0 = off)"};
-  uint32_t total = lights->directional ? INSPECTOR_NUMBER_COUNT
-                   : lights->rectangle ? 21u
-                   : lights->light     ? 19u
-                                       : 9u;
-  for (uint32_t i = 0; i < total; i++) {
-    if (i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM))
-      continue;
-    if (i == 9) {
-      c = widget_at(5, *y, w - 10, 24);
-      c.text.font = heading;
-      vkr_ui_label(ui, string8_lit("light.title"),
-                   lights->rectangle ? string8_lit("Rectangle light")
-                   : lights->spot    ? string8_lit("Spot light")
-                   : lights->point   ? string8_lit("Point light")
-                                     : string8_lit("Directional light"),
-                   &c);
-      *y += 26;
-      if (lights->point) {
-        c = widget_at(5, *y, w - 10, 24);
-        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.enabled"),
-                                      string8_lit("Light enabled"),
-                                      &p->values.point_light.enabled, &c);
-        *y += 27;
-        c = widget_at(5, *y, w - 10, 24);
-        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.shadow"),
-                                      string8_lit("Cast shadows"),
-                                      &p->values.point_light.casts_shadow, &c);
-        *y += 27;
-      }
-      if (lights->directional) {
-        c = widget_at(5, *y, w - 10, 24);
-        p->changed |=
-            vkr_ui_checkbox(ui, string8_lit("light.directional.enabled"),
-                            string8_lit("Directional light enabled"),
-                            &p->values.directional_light.enabled, &c);
-        *y += 27;
-        c = widget_at(5, *y, w - 10, 24);
-        c.tooltip =
-            string8_lit("Drives the atmosphere's sun direction and color");
-        p->changed |=
-            vkr_ui_checkbox(ui, string8_lit("light.directional.atmosphere_sun"),
-                            string8_lit("Atmosphere sun"),
-                            &p->values.directional_light.atmosphere_sun, &c);
-        *y += 27;
-      }
-      if (lights->rectangle) {
-        c = widget_at(5, *y, w - 10, 24);
-        p->changed |=
-            vkr_ui_checkbox(ui, string8_lit("light.rectangle.enabled"),
-                            string8_lit("Rectangle light enabled"),
-                            &p->values.rectangle_light.enabled, &c);
-        *y += 27;
-      }
-    }
-    if ((i == 13 && !lights->point) || (i >= 14 && i < 16 && !lights->aimed) ||
-        (i >= 16 && i < 18 && !lights->spot) ||
-        (i == 18 && !lights->directional) ||
-        (i >= 19 && i < 21 && !lights->rectangle) ||
-        (i == 21 && !lights->directional))
-      continue;
-    (void)vkr_ui_push_id_u64(ui, i);
-    c = widget_at(5, *y, w * 0.53f - 6, 24);
-    const char *label = i == 12 && lights->rectangle ? "Radiance" : labels[i];
-    vkr_ui_label(ui, string8_lit("label"),
-                 string8_create((uint8_t *)label, strlen(label)), &c);
-    c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
-    c.read_only = i < 9 && !(p->values.fields & VKR_SCENE_EDIT_TRANSFORM);
-    vkr_editor_field_style(&c);
-    VkrUiTextEditBuffer value = {(uint8_t *)p->numbers[i],
-                                 (uint32_t)strlen(p->numbers[i]),
-                                 sizeof(p->numbers[i])};
-    p->changed |= vkr_ui_text_field(ui, string8_lit("value"), &value, &c);
+  const char *title = lights->rectangle ? "Rectangle light"
+                      : lights->spot    ? "Spot light"
+                      : lights->point   ? "Point light"
+                                        : "Directional light";
+  const VkrUiIcon icon = lights->rectangle ? VKR_UI_ICON_RECT_LIGHT
+                         : lights->spot    ? VKR_UI_ICON_SPOT_LIGHT
+                         : lights->point   ? VKR_UI_ICON_POINT_LIGHT
+                                           : VKR_UI_ICON_DIRECTIONAL_LIGHT;
+  if (!inspector_section(p, ui, w, y, INSPECTOR_SECTION_LIGHT, icon,
+                         (Vec4){0.98f, 0.78f, 0.36f, 1.0f}, title, heading))
+    return false_v;
+  if (lights->point) {
+    inspector_checkbox_row(p, ui, w, y, string8_lit("light.point.enabled"),
+                           "Enabled", &p->values.point_light.enabled, false_v,
+                           (String8){0});
+    inspector_checkbox_row(p, ui, w, y, string8_lit("light.point.shadow"),
+                           "Cast shadows", &p->values.point_light.casts_shadow,
+                           false_v,
+                           string8_lit("Requires a finite positive range"));
+  }
+  if (lights->directional) {
+    inspector_checkbox_row(
+        p, ui, w, y, string8_lit("light.directional.enabled"), "Enabled",
+        &p->values.directional_light.enabled, false_v, (String8){0});
+    inspector_checkbox_row(
+        p, ui, w, y, string8_lit("light.directional.atmosphere_sun"),
+        "Atmosphere sun", &p->values.directional_light.atmosphere_sun, false_v,
+        string8_lit("Drives the atmosphere's sun direction and color"));
+  }
+  if (lights->rectangle)
+    inspector_checkbox_row(p, ui, w, y, string8_lit("light.rectangle.enabled"),
+                           "Enabled", &p->values.rectangle_light.enabled,
+                           false_v, (String8){0});
+  /* Color: swatch beside linear R/G/B fields. */
+  VkrUiWidgetConfig swatch =
+      widget_at(w - INSPECTOR_PAD_PT - 22, *y + 3, 22, INSPECTOR_ROW_PT - 6);
+  swatch.style.background_color = inspector_swatch(p);
+  swatch.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  swatch.style.border_color = vkr_ui_theme()->border_strong;
+  swatch.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
+  swatch.tooltip = string8_lit("Linear RGB color");
+  vkr_ui_label(ui, string8_lit("color.swatch"), (String8){0}, &swatch);
+  field_focus |= inspector_vector_row(p, f, w - 28, y, "Color", 9, 0.005f,
+                                      false_v, true_v);
+  field_focus |= inspector_scalar_row(
+      p, f, w, y, lights->rectangle ? "Radiance" : "Intensity", 12, 0.05f,
+      false_v, 0, 0, NULL);
+  if (lights->point)
     field_focus |=
-        *y + 24 > p->inspector_scroll && *y < h + p->inspector_scroll &&
-        ui->focused_id ==
-            vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("value"));
-    *y += 26;
-    if (i >= 14 && i < 19) {
-      const float32_t minimum = i == 14 ? -180.0f : i == 15 ? -90.0f : 0.0f;
-      const float32_t maximum = i == 14   ? 180.0f
-                                : i == 15 ? 90.0f
-                                : i == 18 ? 179.999f
-                                          : 90.0f;
-      char *end;
-      float32_t angle = strtof(p->numbers[i], &end);
-      const bool8_t valid = end != p->numbers[i] && !*end && isfinite(angle);
-      c = widget_at(5, *y, w - 11, 24);
-      c.disabled = !valid;
-      c.tooltip =
-          i < 16
-              ? string8_lit("Local light direction; node rotation also applies")
-          : i < 18
-              ? string8_lit("Cone half-angle; inner must be less than outer")
-              : string8_lit("Solar-disc diameter; zero keeps a hard PCF edge");
-      // The slider owns only this draft string. Apply creates the undo entry.
-      float32_t slider_angle =
-          valid ? vkr_clamp_f32(angle, minimum, maximum) : 0;
-      if (vkr_ui_slider_f32(ui, string8_lit("slider"), &slider_angle, minimum,
-                            maximum, &c)) {
-        snprintf(p->numbers[i], sizeof(p->numbers[i]), "%.7g", slider_angle);
-        p->changed = true_v;
-      }
-      field_focus |=
-          *y + 24 > p->inspector_scroll && *y < h + p->inspector_scroll &&
-          ui->focused_id == vkr_ui_id_stack_widget_label(&ui->id_stack,
-                                                         string8_lit("slider"));
-      *y += 26;
-    }
-    (void)vkr_ui_pop_id(ui);
+        inspector_scalar_row(p, f, w, y, "Range", 13, 0.05f, false_v, 0, 0,
+                             "Attenuation range; 0 is unlimited");
+  if (lights->aimed) {
+    field_focus |= inspector_scalar_row(
+        p, f, w, y, "Yaw", 14, 0.5f, true_v, -180.0f, 180.0f,
+        "Local light direction; node rotation also applies");
+    field_focus |= inspector_scalar_row(
+        p, f, w, y, "Elevation", 15, 0.5f, true_v, -90.0f, 90.0f,
+        "Local light direction; node rotation also applies");
+  }
+  if (lights->spot) {
+    field_focus |= inspector_scalar_row(
+        p, f, w, y, "Inner cone", 16, 0.25f, true_v, 0.0f, 90.0f,
+        "Cone half-angle in degrees; inner must be less than outer");
+    field_focus |= inspector_scalar_row(
+        p, f, w, y, "Outer cone", 17, 0.25f, true_v, 0.0f, 90.0f,
+        "Cone half-angle in degrees; inner must be less than outer");
+  }
+  if (lights->directional) {
+    field_focus |= inspector_scalar_row(
+        p, f, w, y, "Sun diameter", 18, 0.01f, true_v, 0.0f, 179.999f,
+        "Solar-disc diameter in degrees; zero keeps a hard PCF edge");
+    field_focus |= inspector_scalar_row(
+        p, f, w, y, "Temperature", 21, 10.0f, false_v, 0, 0,
+        "Color temperature in Kelvin; 0 uses the authored color");
+  }
+  if (lights->rectangle) {
+    field_focus |= inspector_scalar_row(p, f, w, y, "Width", 19, 0.01f, false_v,
+                                        0, 0, NULL);
+    field_focus |= inspector_scalar_row(p, f, w, y, "Height", 20, 0.01f,
+                                        false_v, 0, 0, NULL);
   }
   return field_focus;
 }
 
-static void inspector_matrix_rows(const VkrSampleUiFrame *f,
-                                  const SceneTransform *tr, float32_t w,
-                                  float32_t *y) {
+/* Internal identity for debugging imports, collapsed by default. */
+static void inspector_debug_section(VkrEditorScenePanels *p,
+                                    const VkrSampleUiFrame *f, float32_t w,
+                                    float32_t *y, VkrFontHandle heading,
+                                    const SceneTransform *tr) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = f->ui;
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 44);
-  vkr_ui_label(
-      ui, string8_lit("matrix.readonly"),
-      string8_lit(
-          "Authored local matrix (read-only).\nTRS editing is unavailable."),
-      &c);
-  *y += 48;
-  for (uint32_t row = 0; row < 4; ++row) {
-    const Vec4 values = mat4_row(tr->local, (int32_t)row);
-    String8 text =
-        string8_create_formatted(ui->frame_allocator, "%.7g  %.7g  %.7g  %.7g",
-                                 values.x, values.y, values.z, values.w);
-    // Formatted String8 storage has a terminator; the field retains its own
-    // copy.
-    c = widget_at(5, *y, w - 10, 24);
-    c.read_only = true_v;
-    vkr_editor_field_style(&c);
-    VkrUiTextEditBuffer matrix = {text.str, (uint32_t)text.length,
-                                  (uint32_t)text.length + 1u};
-    (void)vkr_ui_push_id_u64(ui, row);
-    (void)vkr_ui_text_field(ui, string8_lit("matrix.row"), &matrix, &c);
-    (void)vkr_ui_pop_id(ui);
-    *y += 26;
-  }
-}
-
-static void inspector_action_buttons(VkrEditorScenePanels *p,
-                                     const VkrSampleUiFrame *f, float32_t w,
-                                     float32_t *y, VkrFontHandle heading,
-                                     bool8_t field_focus) {
-  VkrUiSystem *ui = f->ui;
-  VkrUiWidgetConfig c = widget_at(5, *y, w / 3 - 7, 25);
-  vkr_editor_action_style(&c, heading);
-  c.disabled = !p->changed;
-  bool8_t apply =
-      vkr_ui_button(ui, string8_lit("apply"), string8_lit("Apply"), &c);
-  c = widget_at(w / 3, *y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  if (vkr_ui_button(ui, string8_lit("revert"), string8_lit("Revert"), &c) ||
-      (field_focus && pressed(f->input, KEY_ESCAPE)))
-    inspector_read(p, f);
-  c = widget_at(2 * w / 3, *y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  if (vkr_ui_button(ui, string8_lit("frame"), string8_lit("Frame"), &c))
-    *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_FRAME,
-                                           .entity = f->selected_entity};
-  if (apply || (field_focus && p->changed && pressed(f->input, KEY_ENTER))) {
-    VkrSceneEditValues values;
-    if (inspector_parse(p, &values)) {
-      if (values.fields)
-        *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_APPLY,
-                                               .entity = f->selected_entity,
-                                               .values = values};
+  if (!inspector_section(p, ui, w, y, INSPECTOR_SECTION_DEBUG,
+                         VKR_UI_ICON_LOG_DEBUG, theme->text_secondary, "Debug",
+                         heading))
+    return;
+  const SceneSourceIdentity *source = vkr_entity_get_component(
+      f->scene->world, f->selected_entity, f->scene->comp_source_identity);
+  char index_text[5][16] = {{0}};
+  if (source) {
+    const uint32_t indices[5] = {
+        source->gltf_node_index, source->gltf_mesh_index,
+        source->gltf_camera_index, source->gltf_skin_index,
+        source->gltf_light_index};
+    for (uint32_t i = 0; i < 5; ++i) {
+      if (indices[i] == UINT32_MAX)
+        snprintf(index_text[i], sizeof(index_text[i]), "none");
       else
-        inspector_read(p, f);
+        snprintf(index_text[i], sizeof(index_text[i]), "%u", indices[i]);
     }
   }
-  *y += 29;
-  c = widget_at(5, *y, w / 3 - 7, 25);
-  vkr_editor_action_style(&c, heading);
-  c.disabled = f->edits->undo_cursor == 0;
-  if (vkr_ui_button(ui, string8_lit("undo"), string8_lit("Undo"), &c))
-    f->scene_edit->action = VKR_SCENE_EDIT_UNDO;
-  c = widget_at(w / 3, *y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  c.disabled = f->edits->undo_cursor == f->edits->undo_count;
-  if (vkr_ui_button(ui, string8_lit("redo"), string8_lit("Redo"), &c))
-    f->scene_edit->action = VKR_SCENE_EDIT_REDO;
-  c = widget_at(2 * w / 3, *y, w / 3 - 5, 25);
-  vkr_editor_action_style(&c, heading);
-  if (vkr_ui_button(ui, string8_lit("save"), string8_lit("Save"), &c))
-    f->scene_edit->action = VKR_SCENE_EDIT_SAVE;
-  *y += 30;
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 92);
+  c.style.font_size_pt = theme->font_caption;
+  c.style.text_color = theme->text_secondary;
+  vkr_ui_label(
+      ui, string8_lit("identity"),
+      source ? string8_create_formatted(
+                   ui->frame_allocator,
+                   "Entity %u \xc2\xb7 generation %u\nSource entity %u\n"
+                   "glTF node %s \xc2\xb7 mesh %s\ncamera %s \xc2\xb7 skin %s "
+                   "\xc2\xb7 light %s",
+                   f->selected_entity.parts.index,
+                   f->selected_entity.parts.generation,
+                   source->scene_entity_index, index_text[0], index_text[1],
+                   index_text[2], index_text[3], index_text[4])
+             : string8_create_formatted(ui->frame_allocator,
+                                        "Entity %u \xc2\xb7 generation %u",
+                                        f->selected_entity.parts.index,
+                                        f->selected_entity.parts.generation),
+      &c);
+  *y += source ? 76 : 24;
+  if (tr && !tr->trs_editable) {
+    for (uint32_t row = 0; row < 4; ++row) {
+      const Vec4 values = mat4_row(tr->local, (int32_t)row);
+      String8 text = string8_create_formatted(
+          ui->frame_allocator, "%.7g  %.7g  %.7g  %.7g", values.x, values.y,
+          values.z, values.w);
+      // Formatted String8 storage has a terminator; the field retains its own
+      // copy.
+      c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
+      c.read_only = true_v;
+      vkr_editor_field_style(&c);
+      VkrUiTextEditBuffer matrix = {text.str, (uint32_t)text.length,
+                                    (uint32_t)text.length + 1u};
+      (void)vkr_ui_push_id_u64(ui, row);
+      (void)vkr_ui_text_field(ui, string8_lit("matrix.row"), &matrix, &c);
+      (void)vkr_ui_pop_id(ui);
+      *y += 26;
+    }
+  }
 }
 
 void vkr_editor_inspector_build(VkrEditorScenePanels *p,
                                 const VkrSampleUiFrame *f, VkrUiRect rect,
                                 VkrFontHandle heading) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = f->ui;
   float32_t w = rect.width / ui->content_scale,
             h = rect.height / ui->content_scale;
   if (w < 32 || h < 24)
     return;
-  VkrUiWidgetConfig c = widget_at(5, 5, w - 10, 25);
+  if (!p->section_collapsed_init) {
+    p->section_collapsed[INSPECTOR_SECTION_DEBUG] = true_v;
+    p->section_collapsed[INSPECTOR_SECTION_PHYSICS] = true_v;
+    p->section_collapsed_init = true_v;
+  }
+  VkrUiWidgetConfig c;
   if (!f->scene || !vkr_scene_entity_alive(f->scene, f->selected_entity)) {
-    c.style.min_size_pt.y = 44;
-    c.style.max_size_pt.y = 44;
+    const float32_t prompt_y = Max(16.0f, h * 0.3f);
+    c = widget_at(INSPECTOR_PAD_PT, prompt_y, w - INSPECTOR_PAD_PT * 2, 28);
+    c.center = true_v;
+    c.icon = VKR_UI_ICON_SELECT;
+    c.icon_size_pt = 24.0f;
+    c.icon_color = theme->text_disabled;
+    vkr_ui_label(ui, string8_lit("select.icon"), (String8){0}, &c);
+
+    c = widget_at(INSPECTOR_PAD_PT, prompt_y + 32.0f, w - INSPECTOR_PAD_PT * 2,
+                  48);
+    c.center = true_v;
+    c.style.text_color = theme->text_secondary;
     c.text.layout.word_wrap = true_v;
-    c.text.layout.max_width = Max(1.0f, w - 20.0f);
+    /* Wrap inside the label's 5 pt side padding. */
+    c.text.layout.max_width = Max(1.0f, w - INSPECTOR_PAD_PT * 2 - 10.0f);
+    c.text.layout.anchor.horizontal = VKR_TEXT_ALIGN_CENTER;
     vkr_ui_label(ui, string8_lit("select.prompt"),
-                 string8_lit("Select a scene node."), &c);
+                 string8_lit("Select an entity in the Scene or Hierarchy"), &c);
     inspector_clear_focus(ui);
     if (p->long_name) {
       vkr_allocator_free(p->allocator, p->long_name, p->long_name_capacity,
@@ -2306,6 +2711,7 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
     inspector_read(p, f);
     if (selection_changed) {
       p->inspector_scroll = 0;
+      p->gesture_active = false_v;
       // Stable field IDs never transfer an active edit to the new selection.
       inspector_clear_focus(ui);
     }
@@ -2313,12 +2719,21 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
   VkrEntityId physics_owner =
       vkr_scene_physics_owner(f->scene, f->selected_entity);
   if (physics_owner.u64 && physics_owner.u64 != f->selected_entity.u64) {
-    c = widget_at(5, 5, w - 10, 70);
+    c = widget_at(INSPECTOR_PAD_PT, 12, w - INSPECTOR_PAD_PT * 2, 50);
+    c.style.text_color = theme->text_secondary;
+    c.icon = VKR_UI_ICON_COLLIDER;
+    c.icon_size_pt = 16.0f;
+    c.icon_color = (Vec4){0.45f, 0.84f, 0.56f, 1.0f};
+    c.text.layout.word_wrap = true_v;
+    c.text.layout.max_width = Max(1.0f, w - 50.0f);
     vkr_ui_label(ui, string8_lit("collider.owner.info"),
-                 string8_lit("Collider child. Edit its shape and placement\nin "
+                 string8_lit("Collider child. Edit its shape and placement in "
                              "the owning body's collider list."),
                  &c);
-    c = widget_at(5, 80, w - 10, 26);
+    c = widget_at(INSPECTOR_PAD_PT, 70, Min(180.0f, w - 20), 28);
+    vkr_editor_action_style(&c, heading);
+    c.icon = VKR_UI_ICON_ARROW_UP;
+    c.icon_size_pt = 13.0f;
     if (vkr_ui_button(ui, string8_lit("collider.owner.select"),
                       string8_lit("Edit owning body"), &c)) {
       *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT,
@@ -2334,9 +2749,9 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
        MemCompare(&p->values.scale, &tr->scale, sizeof(Vec3))))
     inspector_read(p, f);
   const InspectorLights lights = inspector_lights(&p->values);
-  const float32_t content_height = inspector_content_height(p, f, tr, &lights);
   if (in_rect(ui, rect))
     p->inspector_scroll -= ui->mouse_wheel * 40.0f;
+  const float32_t content_height = Max(h, p->inspector_height);
   p->inspector_scroll =
       vkr_clamp_f32(p->inspector_scroll, 0, Max(0.0f, content_height - h));
   VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
@@ -2348,52 +2763,68 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
   if (!vkr_ui_scroll_area_begin(ui, string8_lit("inspector.scroll"), &scroll))
     return;
   (void)vkr_ui_scroll_area_offset_set(ui, p->inspector_scroll);
-  float32_t y = 5;
+  float32_t y = 8;
   bool8_t field_focus = false_v;
+  const bool8_t gesture_held = p->gesture_active;
+  p->gesture_active = false_v;
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.fields"));
-  field_focus |= inspector_node_fields(p, f, w, h, &y, heading);
-  field_focus |=
-      inspector_transform_light_fields(p, f, w, h, &y, heading, &lights);
-  if (tr && !tr->trs_editable) {
-    inspector_matrix_rows(f, tr, w, &y);
+  field_focus |= inspector_header(p, f, w, &y, heading);
+  if (p->error[0]) {
+    c = widget_at(INSPECTOR_PAD_PT, y, w - INSPECTOR_PAD_PT * 2, 36);
+    c.style.background_color = vkr_ui_color_alpha(theme->error, 0.14f);
+    c.style.corner_radius_pt = (Vec4){5, 5, 5, 5};
+    c.style.padding_pt = (VkrUiEdges){5, 8, 5, 8};
+    c.style.text_color = theme->text;
+    c.style.font_size_pt = theme->font_caption;
+    c.text.layout.word_wrap = true_v;
+    c.text.layout.max_width = Max(1.0f, w - 60.0f);
+    c.icon = VKR_UI_ICON_WARNING_FILL;
+    c.icon_size_pt = 14.0f;
+    c.icon_color = theme->error;
+    vkr_ui_label(
+        ui, string8_lit("error"),
+        (String8){.str = (uint8_t *)p->error, .length = strlen(p->error)}, &c);
+    y += 42;
   }
-  field_focus |= physics_inspector_build(p, f, w, &y, heading);
+  field_focus |= inspector_transform_section(p, f, w, &y, heading, tr);
+  if (lights.light)
+    field_focus |= inspector_light_section(p, f, w, &y, heading, &lights);
+  if (inspector_section(p, ui, w, &y, INSPECTOR_SECTION_PHYSICS,
+                        VKR_UI_ICON_PHYSICS, (Vec4){0.45f, 0.84f, 0.56f, 1.0f},
+                        "Physics", heading))
+    field_focus |= physics_inspector_build(p, f, w, &y, heading);
+  inspector_debug_section(p, f, w, &y, heading, tr);
   field_focus &=
       !ui->mouse_captured && ui->keyboard_input_layer == ui->input_layer;
-  inspector_action_buttons(p, f, w, &y, heading, field_focus);
-  c = widget_at(5, y, w - 10, 42);
-  c.style.text_color = (Vec4){0.95f, 0.72f, 0.4f, 1};
-  const char *status = p->error[0] ? p->error : f->edits->status;
-  vkr_ui_label(ui, string8_lit("status"),
-               (String8){.str = (uint8_t *)status, .length = strlen(status)},
-               &c);
-  y += 44;
-  const SceneSourceIdentity *source = vkr_entity_get_component(
-      f->scene->world, f->selected_entity, f->scene->comp_source_identity);
-  if (source) {
-    c = widget_at(5, y, w - 10, 84);
-    const uint32_t indices[5] = {
-        source->gltf_node_index, source->gltf_mesh_index,
-        source->gltf_camera_index, source->gltf_skin_index,
-        source->gltf_light_index};
-    char index_text[5][16];
-    for (uint32_t i = 0; i < 5; ++i) {
-      if (indices[i] == UINT32_MAX)
-        snprintf(index_text[i], sizeof(index_text[i]), "none");
-      else
-        snprintf(index_text[i], sizeof(index_text[i]), "%u", indices[i]);
-    }
-    vkr_ui_label(ui, string8_lit("source"),
-                 string8_create_formatted(
-                     ui->frame_allocator,
-                     "Source entity: %u\nglTF node: %s / mesh: %s\nCamera: %s "
-                     "/ skin: %s\nLight: %s",
-                     source->scene_entity_index, index_text[0], index_text[1],
-                     index_text[2], index_text[3], index_text[4]),
-                 &c);
-  }
   (void)vkr_ui_pop_id(ui);
   (void)vkr_ui_scroll_area_end(ui);
+  p->inspector_height = y + 16;
+
+  /* Live editing: Escape reverts a draft; Enter or leaving the field commits;
+   * toggles and continuous gestures apply at once, each gesture folding into
+   * one undo entry. */
+  if (field_focus && pressed(f->input, KEY_ESCAPE)) {
+    inspector_read(p, f);
+    return;
+  }
+  const bool8_t commit = p->changed && (p->gesture_active || !field_focus ||
+                                        pressed(f->input, KEY_ENTER));
+  if (!p->gesture_active && gesture_held)
+    p->gesture = 0;
+  if (commit) {
+    VkrSceneEditValues values;
+    if (inspector_parse(p, &values)) {
+      if (values.fields)
+        *f->scene_edit = (VkrSceneEditRequest){
+            .action = VKR_SCENE_EDIT_APPLY,
+            .entity = f->selected_entity,
+            .values = values,
+            .gesture = p->gesture_active ? p->gesture : 0u};
+      else
+        inspector_read(p, f);
+      p->changed = false_v;
+    }
+  }
 }
 
 bool8_t vkr_editor_scene_panels_write_json(const VkrEditorScenePanels *panels,

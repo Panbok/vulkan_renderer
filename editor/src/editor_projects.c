@@ -22,6 +22,8 @@
 #define PROJECT_LIGHT_COUNT 32u
 #define PROJECT_SETTINGS_CAPACITY KB(64)
 #define PROJECT_MODAL_LAYER 1000u
+/* Launcher heading row, aligned with the native window controls. */
+#define PROJECT_LAUNCHER_TITLE_PT 40.0f
 
 typedef enum ProjectView {
   PROJECT_VIEW_CHOOSER,
@@ -131,6 +133,10 @@ struct VkrEditorProjects {
   uint32_t probe_selected;
   bool8_t include_scene;
   bool8_t import_scene;
+  /* Scene form height measured on the previous build; sizes its scroll. */
+  float32_t form_height;
+  /* Pixel rectangle of the navigation button that opened `dropdown`. */
+  VkrUiRect dropdown_anchor_px;
   ProjectLightDraft lights[PROJECT_LIGHT_COUNT];
   uint32_t light_count;
   uint32_t light_selected;
@@ -325,17 +331,8 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
       project_json_text(&writer, "console_search",
                         (char *)editor->console.search) &&
       project_json_number(&writer, "graphics_tab", editor->graphics_tab) &&
-      project_json_number(&writer, "toolbar_x", editor->toolbar_offset_pt.x) &&
-      project_json_number(&writer, "toolbar_y", editor->toolbar_offset_pt.y) &&
-      project_json_number(&writer, "toolbar_columns",
-                          editor->toolbar_columns) &&
-      project_json_number(&writer, "toolbar_anchor_x",
-                          editor->toolbar_anchor_x) &&
-      project_json_number(&writer, "toolbar_anchor_y",
-                          editor->toolbar_anchor_y) &&
-      project_json_bool(&writer, "toolbar_initialized",
-                        editor->toolbar_initialized) &&
-      project_json_bool(&writer, "labels_expanded", editor->labels_expanded) &&
+      project_json_number(&writer, "ui_scale", editor->ui_scale) &&
+      project_json_bool(&writer, "reduce_motion", editor->reduce_motion) &&
       vkr_json_writer_name(&writer, string8_lit("console_levels")) &&
       vkr_json_writer_begin_array(&writer);
   for (uint32_t i = 0; ok && i < ArrayCount(editor->console.levels); ++i) {
@@ -561,10 +558,7 @@ static void project_restore_settings(VkrEditorProjects *projects,
   editor->labels_directional = true_v;
   editor->labels_spot = true_v;
   editor->labels_point = true_v;
-  editor->labels_expanded = false_v;
   editor->graphics_tab = 0;
-  editor->toolbar_initialized = false_v;
-  editor->toolbar_offset_pt = (Vec2){0};
   editor->console.follow_tail = true_v;
   editor->console.search[0] = '\0';
   for (uint32_t i = 0; i < ArrayCount(editor->console.levels); ++i) {
@@ -596,6 +590,15 @@ static void project_restore_settings(VkrEditorProjects *projects,
                           &editor->console.follow_tail);
   panels.pos = 0;
   int32_t tab = 0;
+  panels.pos = 0;
+  float32_t ui_scale = 1.0f;
+  (void)vkr_json_get_float(&panels, "ui_scale", &ui_scale);
+  vkr_ui_system_set_user_scale(frame->ui, ui_scale);
+  panels.pos = 0;
+  bool8_t reduce_motion = false_v;
+  (void)vkr_json_get_bool(&panels, "reduce_motion", &reduce_motion);
+  frame->ui->reduce_motion = reduce_motion;
+  panels.pos = 0;
   if (vkr_json_get_int(&panels, "graphics_tab", &tab) && tab >= 0 &&
       tab < VKR_EDITOR_GRAPHICS_TAB_COUNT) {
     editor->graphics_tab = (VkrEditorGraphicsTab)tab;
@@ -620,31 +623,6 @@ static void project_restore_settings(VkrEditorProjects *projects,
     }
   }
   panels = vkr_json_reader_from_string(panel_json);
-  (void)vkr_json_get_bool(&panels, "labels_expanded", &editor->labels_expanded);
-  panels.pos = 0;
-  (void)vkr_json_get_bool(&panels, "toolbar_initialized",
-                          &editor->toolbar_initialized);
-  panels.pos = 0;
-  (void)vkr_json_get_float(&panels, "toolbar_x", &editor->toolbar_offset_pt.x);
-  panels.pos = 0;
-  (void)vkr_json_get_float(&panels, "toolbar_y", &editor->toolbar_offset_pt.y);
-  int32_t value = 0;
-  panels.pos = 0;
-  if (vkr_json_get_int(&panels, "toolbar_columns", &value) && value > 0 &&
-      value <= 16) {
-    editor->toolbar_columns = (uint32_t)value;
-  }
-  panels.pos = 0;
-  if (vkr_json_get_int(&panels, "toolbar_anchor_x", &value) && value >= -1 &&
-      value <= 1) {
-    editor->toolbar_anchor_x = (int8_t)value;
-  }
-  panels.pos = 0;
-  if (vkr_json_get_int(&panels, "toolbar_anchor_y", &value) && value >= -1 &&
-      value <= 1) {
-    editor->toolbar_anchor_y = (int8_t)value;
-  }
-  panels = vkr_json_reader_from_string(panel_json);
   if (vkr_json_find_array(&panels, "windows")) {
     for (uint32_t i = 0;
          i < VKR_EDITOR_WINDOW_COUNT && vkr_json_next_array_element(&panels);
@@ -664,6 +642,7 @@ static void project_restore_settings(VkrEditorProjects *projects,
       entry.pos = 0;
       (void)vkr_json_get_float(&entry, "height", &candidate.size_pt.y);
       entry.pos = 0;
+      int32_t value = 0;
       if (vkr_json_get_int(&entry, "z", &value) && value >= 0) {
         candidate.z_order = (uint32_t)value;
       }
@@ -790,16 +769,16 @@ static VkrUiWidgetConfig project_widget(float32_t x, float32_t y,
   widget.placement.margin_pt.top = y;
   widget.style.min_size_pt = (Vec2){width, height};
   widget.style.max_size_pt = widget.style.min_size_pt;
-  widget.style.font_size_pt = 12;
-  widget.style.padding_pt = (VkrUiEdges){5, 8, 5, 8};
+  widget.style.font_size_pt = vkr_ui_theme()->font_body;
+  widget.style.padding_pt = (VkrUiEdges){5, 10, 5, 10};
+  widget.style.text_color = vkr_ui_theme()->text;
   return widget;
 }
 
 static void project_label(VkrUiSystem *ui, const char *id, const char *text,
                           float32_t x, float32_t y, float32_t width) {
   VkrUiWidgetConfig widget = project_widget(x, y, width, 28);
-  widget.text.font = ui->fonts->default_system_font_handle;
-  widget.style.text_color = (Vec4){0.75f, 0.80f, 0.86f, 1};
+  widget.style.text_color = vkr_ui_theme()->text_secondary;
   vkr_ui_label(ui, project_string(id), project_string(text), &widget);
 }
 
@@ -807,9 +786,8 @@ static bool8_t project_button(VkrUiSystem *ui, const char *id, const char *text,
                               float32_t x, float32_t y, float32_t width,
                               bool8_t disabled) {
   VkrUiWidgetConfig widget = project_widget(x, y, width, 30);
-  widget.text.font = ui->fonts->default_system_font_handle;
   widget.disabled = disabled;
-  if (strstr(id, "browse") || strstr(id, "workspace.choose")) {
+  if (strstr(id, "browse") || strstr(id, "workspace.")) {
     widget.icon = VKR_UI_ICON_FOLDER;
   } else if (strstr(id, "refresh") || strstr(id, "retry")) {
     widget.icon = VKR_UI_ICON_REFRESH;
@@ -828,8 +806,23 @@ static bool8_t project_button(VkrUiSystem *ui, const char *id, const char *text,
   } else if (strstr(id, "scene.open") || strstr(id, "scene.add")) {
     widget.icon = VKR_UI_ICON_SCENE;
   }
-  widget.style.background_color = (Vec4){0.14f, 0.27f, 0.37f, 1};
-  widget.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
+  /* Creation and submission are primary; deletion is destructive. */
+  const bool8_t primary = strstr(id, "submit") || strstr(id, "project.new") ||
+                          strstr(id, "scene.add") ||
+                          strstr(id, "workspace.choose");
+  if (primary)
+    vkr_editor_primary_style(&widget, VKR_FONT_HANDLE_INVALID);
+  else
+    vkr_editor_action_style(&widget, VKR_FONT_HANDLE_INVALID);
+  if (strstr(id, "delete")) {
+    widget.style.background_color =
+        vkr_ui_color_alpha(vkr_ui_theme()->error, 0.18f);
+    widget.style.hover_background_color =
+        vkr_ui_color_alpha(vkr_ui_theme()->error, 0.32f);
+    widget.style.border_color = vkr_ui_color_alpha(vkr_ui_theme()->error, 0.5f);
+    widget.icon = VKR_UI_ICON_TRASH;
+  }
+  widget.icon_size_pt = 14.0f;
   return vkr_ui_button(ui, project_string(id), project_string(text), &widget);
 }
 
@@ -837,7 +830,6 @@ static void project_field(VkrUiSystem *ui, const char *id, char *text,
                           uint32_t capacity, float32_t x, float32_t y,
                           float32_t width) {
   VkrUiWidgetConfig widget = project_widget(x, y, width, 30);
-  widget.text.font = ui->fonts->default_system_font_handle;
   vkr_editor_field_style(&widget);
   VkrUiTextEditBuffer buffer = {.data = (uint8_t *)text,
                                 .length = (uint32_t)strlen(text),
@@ -856,13 +848,22 @@ static void project_check(VkrUiSystem *ui, const char *id, const char *text,
 static void project_slider(VkrUiSystem *ui, const char *id, const char *name,
                            float32_t *value, float32_t min, float32_t max,
                            float32_t x, float32_t y, float32_t width) {
-  char text[96];
-  snprintf(text, sizeof(text), "%s: %.2f", name, (double)*value);
-  project_label(ui, id, text, x, y, width * .53f);
+  /* Name, track and value share one row, so no gap opens on wide forms. */
+  const float32_t label_width = Min(150.0f, width * .38f);
+  const float32_t value_width = 54.0f;
+  project_label(ui, id, name, x, y, label_width);
   VkrUiWidgetConfig widget =
-      project_widget(x + width * .55f, y, width * .45f, 27);
+      project_widget(x + label_width + 6.0f, y,
+                     Max(40.0f, width - label_width - value_width - 12.0f), 27);
   (void)vkr_ui_push_id_label(ui, project_string(id));
   (void)vkr_ui_slider_f32(ui, string8_lit("value"), value, min, max, &widget);
+  char text[32];
+  snprintf(text, sizeof(text), "%.2f", (double)*value);
+  VkrUiWidgetConfig readout =
+      project_widget(x + width - value_width, y, value_width, 27);
+  readout.style.text_color = vkr_ui_theme()->text;
+  readout.center = true_v;
+  vkr_ui_label(ui, string8_lit("readout"), project_string(text), &readout);
   (void)vkr_ui_pop_id(ui);
 }
 
@@ -1893,6 +1894,11 @@ bool8_t vkr_editor_projects_modal(const VkrEditorProjects *projects) {
          projects->view != PROJECT_VIEW_PROGRESS;
 }
 
+bool8_t vkr_editor_projects_launcher(const VkrEditorProjects *projects) {
+  return vkr_editor_projects_modal(projects) &&
+         (!projects->project || projects->creating_project);
+}
+
 bool8_t vkr_editor_projects_can_add_entity(const VkrEditorProjects *projects,
                                            VkrEditorUi *editor,
                                            const VkrSampleUiFrame *frame) {
@@ -2225,41 +2231,122 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   }
 }
 
+static void project_begin_create(VkrEditorProjects *projects) {
+  project_reset_scene_draft(projects);
+  projects->project_name[0] = '\0';
+  projects->project_font_source[0] = '\0';
+  projects->creating_project = false_v;
+  projects->view = PROJECT_VIEW_CREATE;
+}
+
 static void project_build_chooser(VkrEditorProjects *projects,
                                   VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
                                   float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = frame->ui;
-  project_label(ui, "workspace",
-                projects->workspace_directory[0]
-                    ? projects->workspace_directory
-                    : "Choose where your projects will live.",
-                12, 6, width - 24);
-  if (project_button(ui, "workspace.choose", "Choose workspace", 12, 40, 158,
-                     false_v)) {
+  if (!projects->workspace_directory[0]) {
+    /* First run: one clear step instead of a toolbar of disabled actions. */
+    VkrUiWidgetConfig mark = project_widget(width * 0.5f - 32, 40, 64, 64);
+    mark.style.background_color = vkr_ui_color_alpha(theme->accent, 0.16f);
+    mark.style.corner_radius_pt = (Vec4){16, 16, 16, 16};
+    mark.style.padding_pt = (VkrUiEdges){14, 14, 14, 14};
+    mark.icon = VKR_UI_ICON_BRAND;
+    mark.icon_size_pt = 36;
+    mark.icon_color = theme->accent_hover;
+    vkr_ui_label(ui, project_string("welcome.mark"), (String8){0}, &mark);
+    VkrUiWidgetConfig title = project_widget(0, 118, width, 32);
+    title.center = true_v;
+    title.style.font_size_pt = theme->font_heading;
+    title.text.font = editor->heading_font;
+    vkr_ui_label(ui, project_string("welcome.title"),
+                 project_string("Welcome to VKR"), &title);
+    VkrUiWidgetConfig subtitle = project_widget(0, 156, width, 24);
+    subtitle.center = true_v;
+    subtitle.style.text_color = theme->text_secondary;
+    vkr_ui_label(ui, project_string("welcome.subtitle"),
+                 project_string("Choose a workspace folder for your projects."),
+                 &subtitle);
+    if (project_button(ui, "workspace.choose", "Choose workspace",
+                       width * 0.5f - 90, 200, 180, false_v))
+      project_choose_workspace(projects, editor, frame);
+    return;
+  }
+  /* Hub toolbar: search on the left, workspace actions on the right, and
+   * the workspace folder as a caption beneath. */
+  const float32_t toolbar_y = 4.0f;
+  const float32_t new_width = 140.0f;
+  const float32_t change_width = 176.0f;
+  const float32_t new_x = width - 12.0f - new_width;
+  const float32_t change_x = new_x - 8.0f - change_width;
+  const float32_t refresh_x = change_x - 6.0f - 30.0f;
+  if (project_button(ui, "project.new", "New project", new_x, toolbar_y,
+                     new_width, !projects->workspace.root[0])) {
+    project_begin_create(projects);
+    return;
+  }
+  if (project_button(ui, "workspace.change", "Change workspace", change_x,
+                     toolbar_y, change_width, false_v)) {
     project_choose_workspace(projects, editor, frame);
     return;
   }
-  if (project_button(ui, "project.new", "New project", 178, 40, 130,
-                     !projects->workspace.root[0])) {
-    project_reset_scene_draft(projects);
-    projects->project_name[0] = '\0';
-    projects->project_font_source[0] = '\0';
-    projects->creating_project = false_v;
-    projects->view = PROJECT_VIEW_CREATE;
-    return;
-  }
-  if (project_button(ui, "projects.refresh", "Refresh", 316, 40, 88,
-                     !projects->workspace.root[0])) {
+  VkrUiWidgetConfig refresh = vkr_editor_icon_button_config(
+      0, 0, VKR_UI_ICON_REFRESH, string8_lit("Rescan the workspace"));
+  refresh.placement = project_widget(refresh_x, toolbar_y, 30, 30).placement;
+  refresh.disabled = !projects->workspace.root[0];
+  if (vkr_ui_button(ui, project_string("projects.refresh"), (String8){0},
+                    &refresh))
     project_refresh(projects);
-  }
-  project_field(ui, "project.search", projects->search,
-                sizeof(projects->search), 12, 82, width - 24);
-  float32_t y = 126;
+  VkrUiTextEditBuffer search = {.data = (uint8_t *)projects->search,
+                                .length = (uint32_t)strlen(projects->search),
+                                .capacity = sizeof(projects->search)};
+  VkrUiPlacement search_placement =
+      project_widget(12, toolbar_y + (30.0f - theme->control_height) * 0.5f, 0,
+                     0)
+          .placement;
+  search_placement.margin_pt.right =
+      Max(0.0f, width - Min(refresh_x - 12.0f, 12.0f + 320.0f));
+  (void)vkr_editor_search_field(
+      ui, project_string("project.search"), &search, search_placement,
+      project_string("Search projects"),
+      project_string("Filter projects by name"), VKR_FONT_HANDLE_INVALID);
+  VkrUiWidgetConfig path = project_widget(12, 44, width - 24, 22);
+  path.style.font_size_pt = theme->font_caption;
+  path.style.padding_pt = (VkrUiEdges){2, 2, 2, 2};
+  path.style.text_color = theme->text_secondary;
+  path.icon = VKR_UI_ICON_REVEAL;
+  path.icon_size_pt = 13.0f;
+  path.icon_color = theme->text_disabled;
+  path.tooltip = string8_lit("Workspace folder");
+  vkr_ui_label(ui, project_string("workspace"),
+               project_string(projects->workspace_directory), &path);
+  float32_t y = 80;
   if (!projects->card_count) {
-    project_label(ui, "projects.empty",
-                  "No projects yet. Create your first project to begin.", 12, y,
-                  width - 24);
+    /* An empty workspace offers the one next step, centered. */
+    VkrUiWidgetConfig mark = project_widget(12, y + 48, width - 24, 40);
+    mark.center = true_v;
+    mark.icon = VKR_UI_ICON_PROJECT;
+    mark.icon_size_pt = 32;
+    mark.icon_color = theme->text_disabled;
+    vkr_ui_label(ui, project_string("projects.empty.mark"), (String8){0},
+                 &mark);
+    VkrUiWidgetConfig title = project_widget(12, y + 96, width - 24, 28);
+    title.center = true_v;
+    title.text.font = editor->heading_font;
+    vkr_ui_label(ui, project_string("projects.empty.title"),
+                 project_string("No projects yet"), &title);
+    VkrUiWidgetConfig caption = project_widget(12, y + 124, width - 24, 24);
+    caption.center = true_v;
+    caption.style.text_color = theme->text_secondary;
+    vkr_ui_label(ui, project_string("projects.empty.caption"),
+                 project_string("Create a project to start building scenes."),
+                 &caption);
+    if (project_button(ui, "project.new.first", "Create project",
+                       width * 0.5f - 80.0f, y + 164, 160,
+                       !projects->workspace.root[0])) {
+      project_begin_create(projects);
+      return;
+    }
   }
   for (uint32_t i = 0; i < projects->card_count; ++i) {
     ProjectCard *card = &projects->cards[i];
@@ -2267,27 +2354,16 @@ static void project_build_chooser(VkrEditorProjects *projects,
       continue;
     }
     (void)vkr_ui_push_id_u64(ui, i);
-    char label[640];
-    snprintf(label, sizeof(label), "%s  /  %u scenes%s", card->name,
-             card->scenes, card->error[0] ? "  /  Unable to open" : "");
-    if (project_button(ui, "project.delete", "Delete", width - 112, y, 100,
-                       projects->read_only || projects->job_id ||
-                           projects->waiting_activation ||
-                           frame->scene_loading ||
-                           projects->delete_project_job ||
-                           vkr_editor_bakery_busy(editor->bakery))) {
-      snprintf(projects->delete_project_id, sizeof(projects->delete_project_id),
-               "%s", card->id);
-      snprintf(projects->delete_project_name,
-               sizeof(projects->delete_project_name), "%s", card->name);
-      projects->message[0] = '\0';
-      projects->resume_view = PROJECT_VIEW_CHOOSER;
-      projects->view = PROJECT_VIEW_DELETE_PROJECT;
-      (void)vkr_ui_pop_id(ui);
-      return;
-    }
-    if (project_button(ui, "project.open", label, 12, y, width - 132,
-                       card->error[0] || i >= projects->scan_index)) {
+    const bool8_t unavailable = card->error[0] || i >= projects->scan_index;
+    VkrUiWidgetConfig row = project_widget(12, y, width - 24, 52);
+    row.style.background_color = theme->raised;
+    row.style.hover_background_color = theme->raised_hover;
+    row.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+    row.style.border_color = theme->border;
+    row.style.corner_radius_pt = (Vec4){8, 8, 8, 8};
+    row.disabled = unavailable;
+    row.tooltip = project_string(card->name);
+    if (vkr_ui_button(ui, project_string("project.open"), (String8){0}, &row)) {
       if (frame->edits->revision != frame->edits->saved_revision) {
         snprintf(projects->initial_project, sizeof(projects->initial_project),
                  "%s", card->id);
@@ -2299,12 +2375,54 @@ static void project_build_chooser(VkrEditorProjects *projects,
       (void)vkr_ui_pop_id(ui);
       return;
     }
+    VkrUiWidgetConfig name = project_widget(24, y + 6, width - 170, 24);
+    /* Project names are user content, so they keep the wide-coverage face. */
+    name.style.font_size_pt = theme->font_emphasis;
+    name.style.padding_pt = (VkrUiEdges){2, 2, 2, 2};
+    name.icon = VKR_UI_ICON_PROJECT;
+    name.icon_size_pt = 16;
+    name.icon_color = theme->accent_hover;
+    name.disabled = unavailable;
+    vkr_ui_label(ui, project_string("project.name"), project_string(card->name),
+                 &name);
+    char detail[640];
+    snprintf(detail, sizeof(detail), "%u %s%s", card->scenes,
+             card->scenes == 1 ? "scene" : "scenes",
+             card->error[0] ? "  \xc2\xb7  Unable to open" : "");
+    VkrUiWidgetConfig caption = project_widget(48, y + 28, width - 190, 18);
+    caption.style.padding_pt = (VkrUiEdges){0, 2, 0, 2};
+    caption.style.font_size_pt = theme->font_caption;
+    caption.style.text_color =
+        card->error[0] ? theme->error : theme->text_secondary;
+    vkr_ui_label(ui, project_string("project.detail"), project_string(detail),
+                 &caption);
+    VkrUiWidgetConfig remove = vkr_editor_icon_button_config(
+        0, 0, VKR_UI_ICON_TRASH, string8_lit("Delete project permanently"));
+    remove.placement = project_widget(width - 52, y + 13, 26, 26).placement;
+    remove.style.hover_background_color =
+        vkr_ui_color_alpha(theme->error, 0.35f);
+    remove.disabled = projects->read_only || projects->job_id ||
+                      projects->waiting_activation || frame->scene_loading ||
+                      projects->delete_project_job ||
+                      vkr_editor_bakery_busy(editor->bakery);
+    if (vkr_ui_button(ui, project_string("project.delete"), (String8){0},
+                      &remove)) {
+      snprintf(projects->delete_project_id, sizeof(projects->delete_project_id),
+               "%s", card->id);
+      snprintf(projects->delete_project_name,
+               sizeof(projects->delete_project_name), "%s", card->name);
+      projects->message[0] = '\0';
+      projects->resume_view = PROJECT_VIEW_CHOOSER;
+      projects->view = PROJECT_VIEW_DELETE_PROJECT;
+      (void)vkr_ui_pop_id(ui);
+      return;
+    }
     if (card->error[0]) {
-      project_label(ui, "project.error", card->error, 20, y + 31, width - 40);
-      y += 29;
+      project_label(ui, "project.error", card->error, 20, y + 54, width - 40);
+      y += 26;
     }
     (void)vkr_ui_pop_id(ui);
-    y += 40;
+    y += 60;
   }
 }
 
@@ -2418,95 +2536,202 @@ static bool8_t project_entity_draft_valid(const VkrEditorProjects *projects) {
   return light->kind != 2 || light->outer_angle > light->inner_angle + .001f;
 }
 
-static void project_build_scene_form(VkrEditorProjects *projects,
-                                     const VkrSampleUiFrame *frame, float32_t x,
-                                     float32_t width) {
+#define PROJECT_CARD_HEADER_PT 38.0f
+#define PROJECT_CARD_PAD_PT 12.0f
+
+/* A titled card behind a group of rows. Draw it before the rows it holds;
+ * rows start at y + PROJECT_CARD_HEADER_PT inside the padding. */
+static void project_card(VkrUiSystem *ui, const char *id, const char *title,
+                         VkrUiIcon icon, float32_t x, float32_t y,
+                         float32_t width, float32_t height) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig card = project_widget(x, y, width, height);
+  card.style.background_color = theme->raised;
+  card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  card.style.border_color = theme->border;
+  card.style.corner_radius_pt = (Vec4){8, 8, 8, 8};
+  (void)vkr_ui_push_id_label(ui, project_string(id));
+  vkr_ui_label(ui, string8_lit("card"), (String8){0}, &card);
+  VkrUiWidgetConfig heading =
+      project_widget(x + PROJECT_CARD_PAD_PT, y + 6, width - 24, 28);
+  heading.style.padding_pt = (VkrUiEdges){0};
+  heading.style.text_color = theme->text;
+  heading.style.font_size_pt = theme->font_emphasis;
+  heading.icon = icon;
+  heading.icon_size_pt = 15.0f;
+  heading.icon_color = theme->accent_hover;
+  vkr_ui_label(ui, string8_lit("title"), project_string(title), &heading);
+  (void)vkr_ui_pop_id(ui);
+}
+
+/* Heights of the variable cards, so each card can draw before its rows. */
+static float32_t project_light_rows_height(const ProjectLightDraft *light) {
+  float32_t height = 294.0f + 30.0f;
+  if (light->kind == 0 || light->kind == 2)
+    height += 96.0f;
+  if (light->kind == 2 || light->kind == 3)
+    height += 64.0f;
+  return height;
+}
+
+static float32_t project_card_bottom(float32_t y, float32_t rows) {
+  return y + PROJECT_CARD_HEADER_PT + rows + 10.0f;
+}
+
+static float32_t project_build_environment_card(VkrEditorProjects *projects,
+                                                VkrUiSystem *ui, float32_t x,
+                                                float32_t y, float32_t width) {
+  const float32_t bottom = project_card_bottom(y, 2 * 30 + 3 * 32 + 30);
+  project_card(ui, "card.environment", "Environment", VKR_UI_ICON_SKY, x, y,
+               width, bottom - y);
+  const float32_t cx = x + PROJECT_CARD_PAD_PT;
+  const float32_t cw = width - PROJECT_CARD_PAD_PT * 2;
+  float32_t row = y + PROJECT_CARD_HEADER_PT;
+  const bool8_t had_sky = projects->sky_enabled;
+  project_check(ui, "sky.atmosphere", "Physical sky and sun",
+                &projects->sky_enabled, cx, row, cw);
+  if (projects->sky_enabled && !had_sky) {
+    projects->environment_enabled = true_v;
+  }
+  project_check(ui, "sky.enabled", "Sky lighting",
+                &projects->environment_enabled, cx, row + 30, cw);
+  project_slider(ui, "sky.intensity", "Intensity",
+                 &projects->environment_intensity, 0, 10, cx, row + 62, cw);
+  project_slider(ui, "sky.diffuse", "Diffuse", &projects->environment_diffuse,
+                 0, 4, cx, row + 94, cw);
+  project_slider(ui, "sky.specular", "Specular",
+                 &projects->environment_specular, 0, 4, cx, row + 126, cw);
+  project_check(ui, "probe.enabled", "Local reflection probes",
+                &projects->reflection_enabled, cx, row + 158, cw);
+  return bottom;
+}
+
+static float32_t project_build_probe_card(VkrEditorProjects *projects,
+                                          VkrUiSystem *ui, float32_t x,
+                                          float32_t y, float32_t width) {
+  const float32_t bottom = project_card_bottom(y, 10 * 32 + 2 * 38);
+  project_card(ui, "card.probe", "Reflection probe", VKR_UI_ICON_SPARKLE, x, y,
+               width, bottom - y);
+  const float32_t cx = x + PROJECT_CARD_PAD_PT;
+  const float32_t cw = width - PROJECT_CARD_PAD_PT * 2;
+  const float32_t row = y + PROJECT_CARD_HEADER_PT;
+  ProjectProbeDraft *probe = &projects->probes[projects->probe_selected];
+  static const char *const names[] = {
+      "Center X", "Center Y", "Center Z",  "Extent X", "Extent Y",
+      "Extent Z", "Blend",    "Intensity", "Diffuse",  "Specular"};
+  static const char *const ids[] = {
+      "probe.x",       "probe.y",       "probe.z",     "probe.ex",
+      "probe.ey",      "probe.ez",      "probe.blend", "probe.intensity",
+      "probe.diffuse", "probe.specular"};
+  float32_t *values[] = {
+      &probe->center.x,  &probe->center.y,  &probe->center.z, &probe->extents.x,
+      &probe->extents.y, &probe->extents.z, &probe->blend,    &probe->intensity,
+      &probe->diffuse,   &probe->specular};
+  static const float32_t ranges[][2] = {
+      {-100, 100}, {-100, 100}, {-100, 100}, {.1f, 100}, {.1f, 100},
+      {.1f, 100},  {0, 10},     {0, 10},     {0, 4},     {0, 4}};
+  for (uint32_t i = 0; i < ArrayCount(names); ++i)
+    project_slider(ui, ids[i], names[i], values[i], ranges[i][0], ranges[i][1],
+                   cx, row + i * 32.0f, cw);
+  const float32_t buttons = row + 10 * 32.0f;
+  char selection[80];
+  snprintf(selection, sizeof(selection), "Probe %u of %u / next",
+           projects->probe_selected + 1, projects->probe_count);
+  if (project_button(ui, "probe.next", selection, cx, buttons, cw,
+                     projects->probe_count < 2)) {
+    projects->probe_selected =
+        (projects->probe_selected + 1) % projects->probe_count;
+  }
+  if (project_button(ui, "probe.add", "Add probe", cx, buttons + 38, cw * .48f,
+                     projects->probe_count == ArrayCount(projects->probes))) {
+    projects->probes[projects->probe_count] =
+        (ProjectProbeDraft){.center = {0, 2, 0},
+                            .extents = {5, 3, 5},
+                            .blend = .5f,
+                            .intensity = 1,
+                            .diffuse = 1,
+                            .specular = 1};
+    projects->probe_selected = projects->probe_count++;
+  }
+  if (project_button(ui, "probe.remove", "Remove probe", cx + cw * .51f,
+                     buttons + 38, cw * .49f, projects->probe_count <= 1)) {
+    for (uint32_t i = projects->probe_selected + 1; i < projects->probe_count;
+         ++i) {
+      projects->probes[i - 1] = projects->probes[i];
+    }
+    --projects->probe_count;
+    projects->probe_selected =
+        Min(projects->probe_selected, projects->probe_count - 1);
+  }
+  return bottom;
+}
+
+/* Returns false when a file dialog ran; the caller ends this build. */
+static bool8_t project_build_models_card(VkrEditorProjects *projects,
+                                         const VkrSampleUiFrame *frame,
+                                         float32_t x, float32_t *y,
+                                         float32_t width) {
   VkrUiSystem *ui = frame->ui;
-  project_label(ui, "scene.name.label", "Scene name", x, 6, width);
-  project_field(ui, "scene.name", projects->scene_name,
-                sizeof(projects->scene_name), x, 36, width);
-  if (project_button(ui, "scene.new", "Create scene", x, 80, width * .48f,
-                     false_v)) {
-    projects->import_scene = false_v;
-  }
-  if (project_button(ui, "scene.import", "Import JSON", x + width * .51f, 80,
-                     width * .49f, false_v)) {
-    projects->import_scene = true_v;
-  }
-  static const char *const scene_extensions[] = {"json"};
+  const uint32_t lines = Max(1u, projects->model_count);
+  const float32_t bottom = project_card_bottom(*y, 38 + lines * 22.0f);
+  project_card(ui, "card.models", "Models", VKR_UI_ICON_MESH, x, *y, width,
+               bottom - *y);
+  const float32_t cx = x + PROJECT_CARD_PAD_PT;
+  const float32_t cw = width - PROJECT_CARD_PAD_PT * 2;
+  const float32_t row = *y + PROJECT_CARD_HEADER_PT;
   static const char *const model_extensions[] = {"gltf", "glb", "obj"};
-  static const char *const font_extensions[] = {"ttf", "otf"};
-  if (projects->import_scene) {
-    project_label(ui, "scene.source.label",
-                  "Copy a scene and its referenced assets", x, 126, width);
-    project_field(ui, "scene.source", projects->source_scene,
-                  sizeof(projects->source_scene), x, 160, width - 90);
-    if (project_button(ui, "scene.browse", "Browse", x + width - 82, 160, 82,
-                       false_v)) {
-      project_browse(projects, frame, "Import scene JSON", scene_extensions, 1,
-                     false_v, projects->source_scene,
-                     sizeof(projects->source_scene));
-      return;
+  if (project_button(ui, "model.add", "Add GLTF / GLB / OBJ", cx, row,
+                     cw * .64f, projects->model_count == PROJECT_MODEL_COUNT)) {
+    char selected[1024] = {0};
+    project_browse(projects, frame, "Import model", model_extensions, 3,
+                   false_v, selected, sizeof(selected));
+    if (selected[0]) {
+      snprintf(projects->models[projects->model_count++], 1024, "%s", selected);
     }
-    project_label(ui, "scene.source.info",
-                  "Original files remain unchanged. Missing dependencies are "
-                  "reported during import.",
-                  x, 203, width);
-  } else {
-    project_label(ui, "sky.label", "Sky", x, 124, width);
-    const bool8_t had_sky = projects->sky_enabled;
-    project_check(ui, "sky.atmosphere", "Physical sky and sun",
-                  &projects->sky_enabled, x, 156, width);
-    if (projects->sky_enabled && !had_sky) {
-      projects->environment_enabled = true_v;
-    }
-    project_check(ui, "sky.enabled", "Sky lighting",
-                  &projects->environment_enabled, x, 194, width);
-    project_slider(ui, "sky.intensity", "Intensity",
-                   &projects->environment_intensity, 0, 10, x, 230, width);
-    project_slider(ui, "sky.diffuse", "Diffuse", &projects->environment_diffuse,
-                   0, 4, x, 262, width);
-    project_slider(ui, "sky.specular", "Specular",
-                   &projects->environment_specular, 0, 4, x, 294, width);
-    project_check(ui, "probe.enabled", "Local reflection probes",
-                  &projects->reflection_enabled, x, 333, width);
-    project_label(ui, "models.label",
-                  "Models / copied with textures and materials", x, 376, width);
-    if (project_button(ui, "model.add", "Add GLTF / GLB / OBJ", x, 410,
-                       width * .70f,
-                       projects->model_count == PROJECT_MODEL_COUNT)) {
-      char selected[1024] = {0};
-      project_browse(projects, frame, "Import model", model_extensions, 3,
-                     false_v, selected, sizeof(selected));
-      if (selected[0]) {
-        snprintf(projects->models[projects->model_count++], 1024, "%s",
-                 selected);
-      }
-      return;
-    }
-    if (project_button(ui, "model.remove", "Remove last", x + width * .72f, 410,
-                       width * .28f, !projects->model_count)) {
-      --projects->model_count;
-    }
-    char model_summary[160];
-    snprintf(model_summary, sizeof(model_summary), "%u model%s selected",
-             projects->model_count, projects->model_count == 1 ? "" : "s");
-    project_label(ui, "models.count", model_summary, x, 447, width);
+    return false_v;
   }
-  project_label(ui, "font.label",
-                "Scene font / leave empty to inherit project default", x, 490,
-                width);
-  project_field(ui, "font.path", projects->font_source,
-                sizeof(projects->font_source), x, 524, width - 90);
-  if (project_button(ui, "font.browse", "Browse", x + width - 82, 524, 82,
-                     false_v)) {
-    project_browse(projects, frame, "Choose scene font", font_extensions, 2,
-                   false_v, projects->font_source,
-                   sizeof(projects->font_source));
-    return;
+  if (project_button(ui, "model.remove", "Remove last", cx + cw * .67f, row,
+                     cw * .33f, !projects->model_count)) {
+    --projects->model_count;
   }
-  project_label(ui, "lights.label", "Additional lights", x, 570, width);
-  if (project_button(ui, "light.add", "Add light", x, 604, width * .47f,
+  if (!projects->model_count) {
+    project_label(ui, "models.none",
+                  "No models yet; each is copied with its textures", cx,
+                  row + 38, cw);
+  }
+  for (uint32_t i = 0; i < projects->model_count; ++i) {
+    const char *path = projects->models[i];
+    (void)vkr_ui_push_id_u64(ui, i);
+    VkrUiWidgetConfig item = project_widget(cx, row + 38 + i * 22.0f, cw, 22);
+    item.style.padding_pt = (VkrUiEdges){2, 4, 2, 4};
+    item.style.text_color = vkr_ui_theme()->text;
+    item.icon = VKR_UI_ICON_MESH;
+    item.icon_size_pt = 12.0f;
+    item.icon_color = vkr_ui_theme()->text_secondary;
+    item.tooltip = project_string(path);
+    vkr_ui_label(ui, string8_lit("model"),
+                 file_path_get_name(project_string(path)), &item);
+    (void)vkr_ui_pop_id(ui);
+  }
+  *y = bottom;
+  return true_v;
+}
+
+static float32_t project_build_lights_card(VkrEditorProjects *projects,
+                                           VkrUiSystem *ui, float32_t x,
+                                           float32_t y, float32_t width) {
+  ProjectLightDraft *light = projects->light_count
+                                 ? &projects->lights[projects->light_selected]
+                                 : NULL;
+  const float32_t rows =
+      38 + (light ? project_light_rows_height(light) + 38 : 22);
+  const float32_t bottom = project_card_bottom(y, rows);
+  project_card(ui, "card.lights", "Additional lights", VKR_UI_ICON_LIGHT, x, y,
+               width, bottom - y);
+  const float32_t cx = x + PROJECT_CARD_PAD_PT;
+  const float32_t cw = width - PROJECT_CARD_PAD_PT * 2;
+  float32_t row = y + PROJECT_CARD_HEADER_PT;
+  if (project_button(ui, "light.add", "Add light", cx, row, cw * .48f,
                      projects->light_count == PROJECT_LIGHT_COUNT)) {
     const uint32_t i = projects->light_count++;
     projects->lights[i] = (ProjectLightDraft){.kind = 1,
@@ -2523,137 +2748,241 @@ static void project_build_scene_form(VkrEditorProjects *projects,
              "Light %u", i + 1);
     projects->light_selected = i;
   }
-  if (project_button(ui, "light.remove", "Remove last", x + width * .51f, 604,
-                     width * .49f, !projects->light_count)) {
+  if (project_button(ui, "light.remove", "Remove last", cx + cw * .51f, row,
+                     cw * .49f, !projects->light_count)) {
     --projects->light_count;
     projects->light_selected =
         projects->light_count ? projects->light_count - 1 : 0;
   }
-  if (projects->light_count) {
-    ProjectLightDraft *light = &projects->lights[projects->light_selected];
-    project_build_light_form(ui, light, x, 646, width);
-    if (project_button(ui, "light.previous", "Previous light", x, 948,
-                       width * .48f, projects->light_count < 2)) {
-      projects->light_selected =
-          (projects->light_selected + projects->light_count - 1) %
-          projects->light_count;
-    }
-    if (project_button(ui, "light.next", "Next light", x + width * .51f, 948,
-                       width * .49f, projects->light_count < 2)) {
-      projects->light_selected =
-          (projects->light_selected + 1) % projects->light_count;
-    }
+  row += 38;
+  /* The card height was fixed from the light shown before these buttons. */
+  if (!light || !projects->light_count) {
+    project_label(ui, "lights.none", "The scene keeps its default sun", cx, row,
+                  cw);
+    return bottom;
   }
-  project_label(ui, "bake.label", "Prepare assets and optional lighting bakes",
-                x, 1000, width);
-  project_check(ui, "bake.prepare",
-                "Prepare required assets (otherwise save unbuilt)",
-                &projects->prepare_assets, x, 1036, width);
-  project_check(ui, "bake.reflection", "Bake local reflection probes",
-                &projects->bake_reflection, x, 1072, width);
-  project_check(ui, "bake.diffuse",
-                "Bake diffuse volume (requires enclosed bounds)",
-                &projects->bake_diffuse, x, 1108, width);
-  project_label(ui, "bake.shared",
-                "Editor assets: reuse installed fonts. Compiled tables stay "
-                "with the renderer.",
-                x, 1150, width);
-  if (projects->reflection_enabled) {
-    ProjectProbeDraft *probe = &projects->probes[projects->probe_selected];
-    project_label(ui, "probe.tuning",
-                  "Probe influence / tune or accept defaults", x, 1200, width);
-    project_slider(ui, "probe.x", "Center X", &probe->center.x, -100, 100, x,
-                   1234, width);
-    project_slider(ui, "probe.y", "Center Y", &probe->center.y, -100, 100, x,
-                   1266, width);
-    project_slider(ui, "probe.z", "Center Z", &probe->center.z, -100, 100, x,
-                   1298, width);
-    project_slider(ui, "probe.ex", "Extent X", &probe->extents.x, .1f, 100, x,
-                   1330, width);
-    project_slider(ui, "probe.ey", "Extent Y", &probe->extents.y, .1f, 100, x,
-                   1362, width);
-    project_slider(ui, "probe.ez", "Extent Z", &probe->extents.z, .1f, 100, x,
-                   1394, width);
-    project_slider(ui, "probe.blend", "Blend distance", &probe->blend, 0, 10, x,
-                   1426, width);
-    project_slider(ui, "probe.intensity", "Intensity", &probe->intensity, 0, 10,
-                   x, 1458, width);
-    project_slider(ui, "probe.diffuse", "Diffuse contribution", &probe->diffuse,
-                   0, 4, x, 1490, width);
-    project_slider(ui, "probe.specular", "Specular contribution",
-                   &probe->specular, 0, 4, x, 1522, width);
-    char selection[80];
-    snprintf(selection, sizeof(selection), "Probe %u of %u / next",
-             projects->probe_selected + 1, projects->probe_count);
-    if (project_button(ui, "probe.next", selection, x, 1558, width,
-                       projects->probe_count < 2)) {
-      projects->probe_selected =
-          (projects->probe_selected + 1) % projects->probe_count;
-    }
-    if (project_button(ui, "probe.add", "Add probe", x, 1596, width * .48f,
-                       projects->probe_count == ArrayCount(projects->probes))) {
-      projects->probes[projects->probe_count] =
-          (ProjectProbeDraft){.center = {0, 2, 0},
-                              .extents = {5, 3, 5},
-                              .blend = .5f,
-                              .intensity = 1,
-                              .diffuse = 1,
-                              .specular = 1};
-      projects->probe_selected = projects->probe_count++;
-    }
-    if (project_button(ui, "probe.remove", "Remove probe", x + width * .51f,
-                       1596, width * .49f, projects->probe_count <= 1)) {
-      for (uint32_t i = projects->probe_selected + 1; i < projects->probe_count;
-           ++i) {
-        projects->probes[i - 1] = projects->probes[i];
-      }
-      --projects->probe_count;
-      projects->probe_selected =
-          Min(projects->probe_selected, projects->probe_count - 1);
-    }
+  light = &projects->lights[projects->light_selected];
+  project_build_light_form(ui, light, cx, row, cw);
+  row += 294;
+  project_check(ui, "light.shadows", "Cast shadows", &light->casts_shadow, cx,
+                row, cw);
+  row += 30;
+  if (light->kind == 0 || light->kind == 2) {
+    project_slider(ui, "light.dx", "Direction X", &light->direction.x, -1, 1,
+                   cx, row, cw);
+    project_slider(ui, "light.dy", "Direction Y", &light->direction.y, -1, 1,
+                   cx, row + 32, cw);
+    project_slider(ui, "light.dz", "Direction Z", &light->direction.z, -1, 1,
+                   cx, row + 64, cw);
+    row += 96;
   }
-  if (projects->light_count) {
-    ProjectLightDraft *light = &projects->lights[projects->light_selected];
-    project_label(ui, "light.tuning", "Selected light / additional settings", x,
-                  1670, width);
-    project_check(ui, "light.shadows", "Cast shadows", &light->casts_shadow, x,
-                  1706, width);
-    if (light->kind == 0 || light->kind == 2) {
-      project_slider(ui, "light.dx", "Direction X", &light->direction.x, -1, 1,
-                     x, 1740, width);
-      project_slider(ui, "light.dy", "Direction Y", &light->direction.y, -1, 1,
-                     x, 1772, width);
-      project_slider(ui, "light.dz", "Direction Z", &light->direction.z, -1, 1,
-                     x, 1804, width);
-    }
-    if (light->kind == 2) {
-      project_slider(ui, "light.inner", "Inner cone (radians)",
-                     &light->inner_angle, 0, 1.5f, x, 1840, width);
-      project_slider(ui, "light.outer", "Outer cone (radians)",
-                     &light->outer_angle, light->inner_angle, 1.55f, x, 1872,
-                     width);
-    }
-    if (light->kind == 3) {
-      project_slider(ui, "light.width", "Width", &light->size.x, .01f, 100, x,
-                     1740, width);
-      project_slider(ui, "light.height", "Height", &light->size.y, .01f, 100, x,
-                     1772, width);
-    }
+  if (light->kind == 2) {
+    project_slider(ui, "light.inner", "Inner cone", &light->inner_angle, 0,
+                   1.5f, cx, row, cw);
+    project_slider(ui, "light.outer", "Outer cone", &light->outer_angle,
+                   light->inner_angle, 1.55f, cx, row + 32, cw);
+    row += 64;
+  } else if (light->kind == 3) {
+    project_slider(ui, "light.width", "Width", &light->size.x, .01f, 100, cx,
+                   row, cw);
+    project_slider(ui, "light.height", "Height", &light->size.y, .01f, 100, cx,
+                   row + 32, cw);
+    row += 64;
   }
+  if (project_button(ui, "light.previous", "Previous light", cx, row, cw * .48f,
+                     projects->light_count < 2)) {
+    projects->light_selected =
+        (projects->light_selected + projects->light_count - 1) %
+        projects->light_count;
+  }
+  if (project_button(ui, "light.next", "Next light", cx + cw * .51f, row,
+                     cw * .49f, projects->light_count < 2)) {
+    projects->light_selected =
+        (projects->light_selected + 1) % projects->light_count;
+  }
+  return bottom;
 }
 
+/* Returns false when a file dialog ran; the caller ends this build. */
+static bool8_t project_build_font_card(VkrEditorProjects *projects,
+                                       const VkrSampleUiFrame *frame,
+                                       float32_t x, float32_t *y,
+                                       float32_t width) {
+  VkrUiSystem *ui = frame->ui;
+  const float32_t bottom = project_card_bottom(*y, 34 + 24);
+  project_card(ui, "card.font", "Scene font", VKR_UI_ICON_FONT, x, *y, width,
+               bottom - *y);
+  const float32_t cx = x + PROJECT_CARD_PAD_PT;
+  const float32_t cw = width - PROJECT_CARD_PAD_PT * 2;
+  const float32_t row = *y + PROJECT_CARD_HEADER_PT;
+  static const char *const font_extensions[] = {"ttf", "otf"};
+  project_field(ui, "font.path", projects->font_source,
+                sizeof(projects->font_source), cx, row, cw - 96);
+  if (project_button(ui, "font.browse", "Browse", cx + cw - 88, row, 88,
+                     false_v)) {
+    project_browse(projects, frame, "Choose scene font", font_extensions, 2,
+                   false_v, projects->font_source,
+                   sizeof(projects->font_source));
+    return false_v;
+  }
+  project_label(ui, "font.hint", "Leave empty to inherit the project font", cx,
+                row + 32, cw);
+  *y = bottom;
+  return true_v;
+}
+
+static float32_t project_build_build_card(VkrEditorProjects *projects,
+                                          VkrUiSystem *ui, float32_t x,
+                                          float32_t y, float32_t width) {
+  const float32_t bottom = project_card_bottom(y, 3 * 30 + 28);
+  project_card(ui, "card.build", "Prepare and bake", VKR_UI_ICON_BAKERY, x, y,
+               width, bottom - y);
+  const float32_t cx = x + PROJECT_CARD_PAD_PT;
+  const float32_t cw = width - PROJECT_CARD_PAD_PT * 2;
+  const float32_t row = y + PROJECT_CARD_HEADER_PT;
+  project_check(ui, "bake.prepare", "Prepare required assets now",
+                &projects->prepare_assets, cx, row, cw);
+  project_check(ui, "bake.reflection", "Bake local reflection probes",
+                &projects->bake_reflection, cx, row + 30, cw);
+  project_check(ui, "bake.diffuse",
+                "Bake diffuse volume (needs enclosed bounds)",
+                &projects->bake_diffuse, cx, row + 60, cw);
+  project_label(ui, "bake.shared",
+                "Unprepared scenes save now and build on first open", cx,
+                row + 90, cw);
+  return bottom;
+}
+
+/* Scene settings as titled cards: name and a Create/Import switch, then two
+ * columns when the form is wide. Returns the height used, so the caller can
+ * size its scroll area to the content instead of a fixed extent. */
+static float32_t project_build_scene_form(VkrEditorProjects *projects,
+                                          const VkrSampleUiFrame *frame,
+                                          float32_t x, float32_t width) {
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t switch_width = 232.0f;
+  const bool8_t inline_switch = width >= 560.0f;
+  const float32_t name_width =
+      inline_switch ? width - switch_width - 12 : width;
+  project_label(ui, "scene.name.label", "Scene name", x, 0, name_width);
+  project_field(ui, "scene.name", projects->scene_name,
+                sizeof(projects->scene_name), x, 28, name_width);
+  /* Segmented switch between authoring a new scene and importing one. */
+  const float32_t switch_x = inline_switch ? x + width - switch_width : x;
+  const float32_t switch_y = inline_switch ? 28 : 68;
+  static const char *const modes[] = {"Create new", "Import JSON"};
+  static const VkrUiIcon mode_icons[] = {VKR_UI_ICON_ADD,
+                                         VKR_UI_ICON_SCENE_LOAD};
+  for (uint32_t i = 0; i < 2; ++i) {
+    const bool8_t selected = projects->import_scene == (i == 1);
+    VkrUiWidgetConfig segment = project_widget(
+        switch_x + i * switch_width * .5f, switch_y, switch_width * .5f, 30);
+    vkr_editor_toggle_style(&segment, selected);
+    if (!selected) {
+      segment.style.background_color = theme->field;
+      segment.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+      segment.style.border_color = theme->border;
+    }
+    segment.icon = mode_icons[i];
+    segment.icon_size_pt = 13.0f;
+    segment.icon_color = selected ? theme->accent_hover : theme->text_secondary;
+    segment.style.corner_radius_pt =
+        i == 0 ? (Vec4){6, 0, 0, 6} : (Vec4){0, 6, 6, 0};
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("scene.mode"), project_string(modes[i]),
+                      &segment))
+      projects->import_scene = i == 1;
+    (void)vkr_ui_pop_id(ui);
+  }
+  const float32_t top = switch_y + 48;
+  const bool8_t columns = width >= 760.0f;
+  const float32_t column_width = columns ? (width - 16) * .5f : width;
+  const float32_t right_x = columns ? x + column_width + 16 : x;
+  float32_t left_y = top;
+  float32_t right_y = top;
+  if (projects->import_scene) {
+    static const char *const scene_extensions[] = {"json"};
+    const float32_t bottom = project_card_bottom(left_y, 26 + 36 + 26);
+    project_card(ui, "card.import", "Import a scene", VKR_UI_ICON_SCENE_LOAD, x,
+                 left_y, width, bottom - left_y);
+    const float32_t cx = x + PROJECT_CARD_PAD_PT;
+    const float32_t cw = width - PROJECT_CARD_PAD_PT * 2;
+    const float32_t row = left_y + PROJECT_CARD_HEADER_PT;
+    project_label(ui, "scene.source.label",
+                  "Scene JSON; its referenced assets are copied", cx, row, cw);
+    project_field(ui, "scene.source", projects->source_scene,
+                  sizeof(projects->source_scene), cx, row + 26, cw - 96);
+    if (project_button(ui, "scene.browse", "Browse", cx + cw - 88, row + 26, 88,
+                       false_v)) {
+      project_browse(projects, frame, "Import scene JSON", scene_extensions, 1,
+                     false_v, projects->source_scene,
+                     sizeof(projects->source_scene));
+      return projects->form_height;
+    }
+    project_label(ui, "scene.source.info",
+                  "Original files stay unchanged; missing dependencies are "
+                  "reported.",
+                  cx, row + 62, cw);
+    left_y = right_y = bottom + 12;
+  } else {
+    left_y =
+        project_build_environment_card(projects, ui, x, left_y, column_width) +
+        12;
+    if (projects->reflection_enabled)
+      left_y =
+          project_build_probe_card(projects, ui, x, left_y, column_width) + 12;
+    if (!columns)
+      right_y = left_y;
+    if (!project_build_models_card(projects, frame, right_x, &right_y,
+                                   column_width))
+      return projects->form_height;
+    right_y += 12;
+    right_y = project_build_lights_card(projects, ui, right_x, right_y,
+                                        column_width) +
+              12;
+    if (!columns)
+      left_y = right_y;
+  }
+  if (!project_build_font_card(projects, frame, x, &left_y, column_width))
+    return projects->form_height;
+  left_y += 12;
+  if (!columns)
+    right_y = left_y;
+  right_y =
+      project_build_build_card(projects, ui, right_x, right_y, column_width) +
+      12;
+  return Max(left_y, right_y);
+}
+
+/* Project or scene switcher anchored beneath its navigation button. It sizes
+ * to its rows, scrolls beyond eight, and offers the add action directly. */
 static void project_build_dropdown(VkrEditorProjects *projects,
                                    VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
-  const float32_t screen_width = ui->target_width / ui->content_scale;
-  const float32_t screen_height = ui->target_height / ui->content_scale;
-  const float32_t width = Min(420.0f, screen_width - 24);
-  const float32_t height = Min(440.0f, screen_height - 64);
-  const float32_t left = (screen_width - width) * .5f;
-  const float32_t top = (screen_height - height) * .5f;
-  const float32_t mx = (float32_t)ui->mouse_x / ui->content_scale;
-  const float32_t my = (float32_t)ui->mouse_y / ui->content_scale;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t scale = ui->content_scale;
+  const float32_t screen_width = ui->target_width / scale;
+  const float32_t screen_height = ui->target_height / scale;
+  const bool8_t project_list = projects->dropdown == 1;
+  const uint32_t count =
+      project_list ? projects->card_count : projects->project->scene_count;
+  const float32_t row_height = 32.0f;
+  const float32_t list_height =
+      count ? Min(count, 8u) * row_height : row_height;
+  const float32_t width = Min(360.0f, screen_width - 16);
+  const float32_t height = Min(38.0f + list_height + 50.0f, screen_height - 16);
+  const VkrUiRect anchor = projects->dropdown_anchor_px;
+  const float32_t left =
+      anchor.width > 0.0f
+          ? vkr_clamp_f32(anchor.x / scale, 8.0f, screen_width - width - 8)
+          : (screen_width - width) * .5f;
+  const float32_t top = anchor.height > 0.0f
+                            ? (anchor.y + anchor.height) / scale + 4.0f
+                            : (screen_height - height) * .5f;
+  const float32_t mx = (float32_t)ui->mouse_x / scale;
+  const float32_t my = (float32_t)ui->mouse_y / scale;
   const bool8_t just_opened = projects->dropdown_opened;
   projects->dropdown_opened = false_v;
   if (input_key_just_pressed(frame->input, KEY_ESCAPE) ||
@@ -2678,31 +3007,33 @@ static void project_build_dropdown(VkrEditorProjects *projects,
   panel.placement.column = panel.placement.row = 0;
   panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
   panel.placement.margin_pt = (VkrUiEdges){.top = top, .left = left};
+  panel.style = vkr_editor_glass_style();
+  panel.style.background_color.w = 1.0f;
+  panel.style.padding_pt = (VkrUiEdges){0};
   panel.style.min_size_pt = (Vec2){width, height};
   panel.style.max_size_pt = panel.style.min_size_pt;
-  panel.style.background_color = (Vec4){.075f, .093f, .12f, 1};
-  panel.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-  panel.style.border_color = (Vec4){.2f, .32f, .43f, 1};
   panel.columns = panel.rows = &one;
   panel.column_count = panel.row_count = 1;
   panel.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("projects.dropdown"), &panel)) {
     return;
   }
-  const bool8_t project_list = projects->dropdown == 1;
-  const uint32_t count =
-      project_list ? projects->card_count : projects->project->scene_count;
-  project_label(ui, "selector.title",
-                project_list ? "Switch project" : "Switch scene", 12, 6,
-                width - 24);
+  VkrUiWidgetConfig title = project_widget(12, 6, width - 24, 26);
+  title.style.padding_pt = (VkrUiEdges){0};
+  title.style.font_size_pt = theme->font_caption;
+  title.style.text_color = theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("selector.title"),
+               project_list ? string8_lit("Switch project")
+                            : string8_lit("Switch scene"),
+               &title);
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
   list.placement.column = list.placement.row = 0;
   list.placement.justify = list.placement.align = VKR_UI_ALIGN_START;
-  list.placement.margin_pt = (VkrUiEdges){.top = 40, .left = 8};
-  list.style.min_size_pt = (Vec2){width - 16, height - 98};
+  list.placement.margin_pt = (VkrUiEdges){.top = 34, .left = 4};
+  list.style.min_size_pt = (Vec2){width - 8, height - 34 - 50};
   list.style.max_size_pt = list.style.min_size_pt;
   const VkrUiTrack entries = {.unit = VKR_UI_TRACK_PX,
-                              .value = Max(40.0f, count * 36.0f)};
+                              .value = Max(row_height, count * row_height)};
   list.columns = &one;
   list.column_count = 1;
   list.rows = &entries;
@@ -2712,10 +3043,32 @@ static void project_build_dropdown(VkrEditorProjects *projects,
       (void)vkr_ui_push_id_u64(ui, i);
       const char *name = project_list ? projects->cards[i].name
                                       : projects->project->scenes[i].name;
-      if (project_button(ui, project_list ? "project.open" : "scene.open", name,
-                         0, i * 36.0f, width - 32,
-                         project_list && (i >= projects->scan_index ||
-                                          projects->cards[i].error[0]))) {
+      const bool8_t current =
+          project_list ? projects->project && !strcmp(projects->project->id,
+                                                      projects->cards[i].id)
+                       : projects->active_scene == i;
+      VkrUiWidgetConfig row =
+          project_widget(0, i * row_height, width - 16, row_height - 2);
+      row.fill = true_v;
+      vkr_editor_ghost_style(&row);
+      row.style.padding_pt = (VkrUiEdges){4, 10, 4, 10};
+      row.style.text_color = theme->text;
+      row.icon = current        ? VKR_UI_ICON_CHECK
+                 : project_list ? VKR_UI_ICON_PROJECT
+                                : VKR_UI_ICON_SCENE;
+      row.icon_size_pt = 14.0f;
+      row.icon_color = current ? theme->accent_hover : theme->text_secondary;
+      row.disabled = project_list &&
+                     (i >= projects->scan_index || projects->cards[i].error[0]);
+      /* Label text aligns left; the button only supplies the row. */
+      VkrUiWidgetConfig hit = row;
+      hit.icon = VKR_UI_ICON_NONE;
+      const bool8_t chosen =
+          vkr_ui_button(ui, string8_lit("entry"), (String8){0}, &hit);
+      row.style.background_color = (Vec4){0};
+      row.fill = false_v;
+      vkr_ui_label(ui, string8_lit("name"), project_string(name), &row);
+      if (chosen) {
         projects->dropdown = 0;
         projects->operation[0] = '\0';
         if (project_list) {
@@ -2741,18 +3094,34 @@ static void project_build_dropdown(VkrEditorProjects *projects,
       (void)vkr_ui_pop_id(ui);
     }
     if (!count) {
-      project_label(ui, "selector.empty",
-                    project_list ? "No projects in this workspace."
-                                 : "No scenes yet.",
-                    0, 0, width - 32);
+      VkrUiWidgetConfig empty = project_widget(0, 0, width - 16, row_height);
+      empty.style.text_color = theme->text_secondary;
+      empty.center = true_v;
+      vkr_ui_label(ui, string8_lit("selector.empty"),
+                   project_list ? string8_lit("No projects in this workspace")
+                                : string8_lit("No scenes in this project yet"),
+                   &empty);
     }
     (void)vkr_ui_scroll_area_end(ui);
   }
+  const float32_t footer = height - 42;
+  const float32_t half = (width - 32) * .5f;
   if (project_button(ui, "selector.manage",
-                     project_list ? "Manage projects..." : "Manage scenes...",
-                     12, height - 44, width - 24, false_v)) {
+                     project_list ? "Manage projects" : "Manage scenes", 12,
+                     footer, half, false_v)) {
     projects->dropdown = 0;
     projects->view = project_list ? PROJECT_VIEW_CHOOSER : PROJECT_VIEW_SCENES;
+  }
+  if (project_button(ui, project_list ? "project.new" : "scene.add",
+                     project_list ? "New project" : "Add scene", 20 + half,
+                     footer, half, projects->read_only)) {
+    projects->dropdown = 0;
+    if (project_list) {
+      project_begin_create(projects);
+    } else {
+      project_reset_scene_draft(projects);
+      projects->view = PROJECT_VIEW_ADD_SCENE;
+    }
   }
   (void)vkr_ui_panel_end(ui);
 }
@@ -2804,13 +3173,19 @@ static void project_build_create_form(VkrEditorProjects *projects,
       form.rows = &one;
       form.row_count = 1;
       if (vkr_ui_panel_begin(ui, string8_lit("narrow.scene"), &form)) {
-        project_build_scene_form(projects, frame, 12, body_width - 24);
+        projects->form_height =
+            320.0f +
+            project_build_scene_form(projects, frame, 12, body_width - 24);
         (void)vkr_ui_panel_end(ui);
       }
     } else {
-      project_build_scene_form(projects, frame, left + 12,
-                               body_width - left - 24);
+      projects->form_height =
+          Max(creating ? 320.0f : 0.0f,
+              project_build_scene_form(projects, frame, left + 12,
+                                       body_width - left - 24));
     }
+  } else {
+    projects->form_height = 320.0f;
   }
 }
 
@@ -2908,15 +3283,32 @@ static void project_build_delete_project_form(VkrEditorProjects *projects,
   }
 }
 
+/* Scenes of the open project as cards: click a card to open it; rename and
+ * delete sit at its end. An empty project offers Add scene in place. */
 static void project_build_scene_list(VkrEditorProjects *projects,
                                      VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      float32_t body_width) {
   VkrUiSystem *ui = frame->ui;
-  project_label(ui, "scene.project", projects->project->name, 12, 0,
-                body_width - 284);
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig name = project_widget(12, 0, body_width - 330, 30);
+  name.style.padding_pt = (VkrUiEdges){2, 2, 2, 2};
+  name.style.font_size_pt = theme->font_emphasis;
+  name.text.font = editor->heading_font;
+  name.icon = VKR_UI_ICON_PROJECT;
+  name.icon_size_pt = 16.0f;
+  name.icon_color = theme->accent_hover;
+  vkr_ui_label(ui, string8_lit("scene.project"),
+               project_string(projects->project->name), &name);
+  if (project_button(ui, "project.rename", "Rename project", body_width - 314,
+                     0, 150, projects->read_only)) {
+    projects->rename_project = true_v;
+    snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
+             projects->project->name);
+    projects->view = PROJECT_VIEW_RENAME;
+  }
   if (project_button(
-          ui, "project.delete", "Delete project", body_width - 284, 0, 136,
+          ui, "project.delete", "Delete project", body_width - 156, 0, 144,
           projects->read_only || frame->scene_loading || projects->job_id ||
               projects->waiting_activation || projects->delete_project_job ||
               vkr_editor_bakery_busy(editor->bakery))) {
@@ -2930,18 +3322,24 @@ static void project_build_scene_list(VkrEditorProjects *projects,
     projects->view = PROJECT_VIEW_DELETE_PROJECT;
     return;
   }
-  if (project_button(ui, "project.rename", "Rename project", body_width - 142,
-                     0, 130, projects->read_only)) {
-    projects->rename_project = true_v;
-    snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
-             projects->project->name);
-    projects->view = PROJECT_VIEW_RENAME;
-  }
+  const bool8_t locked = frame->scene_loading || projects->job_id ||
+                         projects->waiting_activation ||
+                         vkr_editor_bakery_busy(editor->bakery);
   for (uint32_t i = 0; i < projects->project->scene_count; ++i) {
     VkrEditorProjectScene *scene = &projects->project->scenes[i];
+    const float32_t y = 48 + i * 56.0f;
+    const bool8_t active = projects->active_scene == i;
     (void)vkr_ui_push_id_u64(ui, i);
-    if (project_button(ui, "scene.open", scene->name, 12, 46 + i * 40.0f,
-                       body_width - 230, false_v)) {
+    VkrUiWidgetConfig row = project_widget(12, y, body_width - 24, 48);
+    row.style.background_color = theme->raised;
+    row.style.hover_background_color = theme->raised_hover;
+    row.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+    row.style.border_color = active ? theme->accent : theme->border;
+    row.style.corner_radius_pt = (Vec4){8, 8, 8, 8};
+    row.disabled = locked;
+    row.tooltip = active ? string8_lit("Reopen this scene")
+                         : string8_lit("Open this scene");
+    if (vkr_ui_button(ui, string8_lit("scene.open"), (String8){0}, &row)) {
       projects->pending_scene = i;
       projects->operation[0] = '\0';
       if (frame->edits->revision != frame->edits->saved_revision) {
@@ -2951,19 +3349,45 @@ static void project_build_scene_list(VkrEditorProjects *projects,
         project_start_job(projects, editor, frame, false_v);
       }
     }
-    if (project_button(ui, "scene.rename", "Rename", body_width - 208,
-                       46 + i * 40.0f, 96, projects->read_only)) {
+    VkrUiWidgetConfig label = project_widget(24, y + 9, body_width - 200, 30);
+    label.style.padding_pt = (VkrUiEdges){2, 2, 2, 2};
+    label.style.text_color = theme->text;
+    label.icon = VKR_UI_ICON_SCENE;
+    label.icon_size_pt = 16.0f;
+    label.icon_color = active ? theme->accent_hover : theme->text_secondary;
+    vkr_ui_label(ui, string8_lit("scene.name"), project_string(scene->name),
+                 &label);
+    if (active) {
+      VkrUiWidgetConfig badge =
+          project_widget(body_width - 170, y + 14, 60, 20);
+      badge.style.padding_pt = (VkrUiEdges){1, 8, 1, 8};
+      badge.style.font_size_pt = theme->font_caption;
+      badge.style.background_color = vkr_ui_color_alpha(theme->accent, 0.22f);
+      badge.style.corner_radius_pt = (Vec4){10, 10, 10, 10};
+      badge.style.text_color = theme->accent_hover;
+      badge.center = true_v;
+      vkr_ui_label(ui, string8_lit("scene.badge"), string8_lit("Open"), &badge);
+    }
+    VkrUiWidgetConfig rename = vkr_editor_icon_button_config(
+        0, 0, VKR_UI_ICON_RENAME, string8_lit("Rename scene"));
+    rename.placement =
+        project_widget(body_width - 96, y + 11, 26, 26).placement;
+    rename.disabled = projects->read_only;
+    if (vkr_ui_button(ui, string8_lit("scene.rename"), (String8){0}, &rename)) {
       projects->pending_scene = i;
       projects->rename_project = false_v;
       snprintf(projects->rename_name, sizeof(projects->rename_name), "%s",
                scene->name);
       projects->view = PROJECT_VIEW_RENAME;
     }
-    if (project_button(ui, "scene.delete", "Delete", body_width - 108,
-                       46 + i * 40.0f, 96,
-                       projects->read_only || frame->scene_loading ||
-                           projects->job_id || projects->waiting_activation ||
-                           vkr_editor_bakery_busy(editor->bakery))) {
+    VkrUiWidgetConfig remove = vkr_editor_icon_button_config(
+        0, 0, VKR_UI_ICON_TRASH, string8_lit("Delete scene permanently"));
+    remove.placement =
+        project_widget(body_width - 62, y + 11, 26, 26).placement;
+    remove.style.hover_background_color =
+        vkr_ui_color_alpha(theme->error, 0.35f);
+    remove.disabled = projects->read_only || locked;
+    if (vkr_ui_button(ui, string8_lit("scene.delete"), (String8){0}, &remove)) {
       projects->pending_scene = i;
       projects->message[0] = '\0';
       projects->view = PROJECT_VIEW_DELETE;
@@ -2971,9 +3395,29 @@ static void project_build_scene_list(VkrEditorProjects *projects,
     (void)vkr_ui_pop_id(ui);
   }
   if (!projects->project->scene_count) {
-    project_label(ui, "scenes.empty",
-                  "This project has no scenes yet. Add one below.", 12, 46,
-                  body_width - 24);
+    VkrUiWidgetConfig mark = project_widget(12, 110, body_width - 24, 40);
+    mark.center = true_v;
+    mark.icon = VKR_UI_ICON_SCENE;
+    mark.icon_size_pt = 32;
+    mark.icon_color = theme->text_disabled;
+    vkr_ui_label(ui, string8_lit("scenes.empty.mark"), (String8){0}, &mark);
+    VkrUiWidgetConfig title = project_widget(12, 158, body_width - 24, 28);
+    title.center = true_v;
+    title.text.font = editor->heading_font;
+    vkr_ui_label(ui, string8_lit("scenes.empty.title"),
+                 string8_lit("No scenes yet"), &title);
+    VkrUiWidgetConfig caption = project_widget(12, 186, body_width - 24, 24);
+    caption.center = true_v;
+    caption.style.text_color = theme->text_secondary;
+    vkr_ui_label(ui, string8_lit("scenes.empty.caption"),
+                 string8_lit("Create a scene or import one from JSON."),
+                 &caption);
+    if (project_button(ui, "scene.add.first", "Add scene",
+                       body_width * 0.5f - 80.0f, 226, 160,
+                       projects->read_only)) {
+      project_reset_scene_draft(projects);
+      projects->view = PROJECT_VIEW_ADD_SCENE;
+    }
   }
 }
 
@@ -3054,13 +3498,17 @@ static void project_build_footer(VkrEditorProjects *projects,
                      width - 216, height - 65, 180, false_v)) {
     project_create(projects, editor, frame);
   }
-  if (projects->view == PROJECT_VIEW_SCENES &&
+  /* An empty project shows Add scene in its empty state instead. */
+  if (projects->view == PROJECT_VIEW_SCENES && projects->project->scene_count &&
       project_button(ui, "scene.add", "Add scene", width - 184, height - 65,
                      148, false_v)) {
     project_reset_scene_draft(projects);
     projects->view = PROJECT_VIEW_ADD_SCENE;
   }
-  if (project_button(
+  const bool8_t back_available =
+      !(projects->view == PROJECT_VIEW_CHOOSER && !projects->project);
+  if (back_available &&
+      project_button(
           ui, "projects.back",
           projects->view == PROJECT_VIEW_ADD_ENTITY ||
                   projects->view == PROJECT_VIEW_CONFIRM ||
@@ -3115,11 +3563,6 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
     return;
   }
   if (!projects || projects->view == PROJECT_VIEW_EDITOR) {
-    if (projects && projects->project && !projects->project->scene_count) {
-      /* Keep the first scene action available through the normal navigation. */
-      snprintf(projects->message, sizeof(projects->message),
-               "This project has no scenes. Use Scenes / Add scene.");
-    }
     return;
   }
   VkrUiSystem *ui = frame->ui;
@@ -3141,16 +3584,22 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
     background.column_count = 1;
     background.rows = &one;
     background.row_count = 1;
-    background.style.background_color = (Vec4){0.025f, 0.035f, 0.05f, 1};
+    background.style.background_color = vkr_ui_theme()->window;
     if (vkr_ui_panel_begin(ui, string8_lit("projects.background"),
                            &background)) {
       (void)vkr_ui_panel_end(ui);
     }
   }
+  /* Before a project opens, the Projects view is the whole launcher window;
+   * afterwards it floats over the editor as a dialog. */
+  const bool8_t launcher = vkr_editor_projects_launcher(projects);
   const float32_t width =
-      Min(projects->view == PROJECT_VIEW_ADD_ENTITY ? 620.0f : 1040.0f,
-          Max(280.0f, total_width - 40));
-  const float32_t height = Min(740.0f, Max(240.0f, total_height - 40));
+      launcher
+          ? total_width
+          : Min(projects->view == PROJECT_VIEW_ADD_ENTITY ? 620.0f : 1040.0f,
+                Max(280.0f, total_width - 40));
+  const float32_t height =
+      launcher ? total_height : Min(740.0f, Max(240.0f, total_height - 40));
   VkrUiPanelConfig modal = vkr_ui_panel_config_default();
   modal.placement.column = 0;
   modal.placement.row = 0;
@@ -3162,12 +3611,30 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
   modal.row_count = 1;
   modal.style.min_size_pt = (Vec2){width, height};
   modal.style.max_size_pt = modal.style.min_size_pt;
-  modal.style.padding_pt = (VkrUiEdges){12, 12, 12, 12};
-  modal.style.background_color = (Vec4){0.075f, 0.093f, 0.12f, 1};
-  modal.style.border_color = (Vec4){0.20f, 0.32f, 0.43f, 1};
-  modal.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-  modal.style.corner_radius_pt = (Vec4){10, 10, 10, 10};
+  modal.style = vkr_editor_glass_style();
+  modal.style.min_size_pt = (Vec2){width, height};
+  modal.style.max_size_pt = modal.style.min_size_pt;
+  modal.style.padding_pt = (VkrUiEdges){16, 16, 16, 16};
+  modal.style.background_color = vkr_ui_theme()->panel;
+  modal.style.corner_radius_pt = (Vec4){12, 12, 12, 12};
+  modal.style.shadow_offset_pt = (Vec2){0.0f, 16.0f};
+  modal.style.shadow_blur_pt = 40.0f;
   modal.clip_children = true_v;
+  float32_t heading_x = 8.0f;
+  if (launcher) {
+    /* The heading shares the native title bar row with the window controls,
+     * and that row drags the window. */
+    modal.style.padding_pt.top = 0.0f;
+    modal.style.border_pt = (VkrUiEdges){0};
+    modal.style.corner_radius_pt = (Vec4){0};
+    modal.style.shadow_color = (Vec4){0};
+    heading_x =
+        Max(heading_x, vkr_window_title_bar_inset(frame->window) - 8.0f);
+    vkr_window_set_title_drag_region(
+        frame->window, 0, 0, (int32_t)ui->target_width,
+        (int32_t)(PROJECT_LAUNCHER_TITLE_PT * ui->content_scale),
+        ui->hot_id == VKR_UI_ID_NONE);
+  }
   if (!vkr_ui_panel_begin(ui, string8_lit("projects.modal"), &modal)) {
     return;
   }
@@ -3184,16 +3651,17 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       : projects->view == PROJECT_VIEW_CONFIRM
           ? projects->closing ? "Close editor" : "Unsaved scene edits"
           : "Preparing your project";
-  VkrUiWidgetConfig heading = project_widget(8, 0, width - 40, 40);
-  heading.style.font_size_pt = 22;
+  VkrUiWidgetConfig heading =
+      project_widget(heading_x, 0, width - 32 - heading_x, 40);
+  heading.style.font_size_pt = vkr_ui_theme()->font_heading;
   heading.text.font = editor->heading_font;
-  heading.style.text_color = (Vec4){0.78f, 0.9f, 1, 1};
+  heading.style.text_color = vkr_ui_theme()->text;
   vkr_ui_label(ui, string8_lit("title"), project_string(title), &heading);
   const VkrUiTrack content = {
       .unit = VKR_UI_TRACK_PX,
       .value = projects->view == PROJECT_VIEW_CREATE ||
                        projects->view == PROJECT_VIEW_ADD_SCENE
-                   ? 2110
+                   ? Max(height - 160, projects->form_height + 24)
                : projects->view == PROJECT_VIEW_ADD_ENTITY
                    ? 550
                    : Max(height - 175, projects->card_count * 70.0f + 160)};
@@ -3308,7 +3776,8 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   overlay.row_count = 1;
   overlay.style.min_size_pt = (Vec2){width, height};
   overlay.style.max_size_pt = overlay.style.min_size_pt;
-  overlay.style.background_color = (Vec4){.025f, .035f, .05f, .38f};
+  overlay.style.background_color =
+      vkr_ui_color_alpha(vkr_ui_theme()->window, 0.55f);
   overlay.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("scene.prepare.overlay"), &overlay)) {
     return;
@@ -3327,10 +3796,9 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   label.placement.align = VKR_UI_ALIGN_START;
   label.placement.margin_pt.top = top;
   label.style.font_size_pt = 13;
-  label.style.text_color = (Vec4){.87f, .92f, .96f, 1};
+  label.style.text_color = vkr_ui_theme()->text;
   label.style.padding_pt = (VkrUiEdges){6, 0, 6, 0};
   label.style.max_size_pt.x = Max(1.0f, width - 32);
-  label.text.font = ui->fonts->default_system_font_handle;
   label.tooltip = project_string(
       projects->message[0] ? projects->message : projects->progress_detail);
   const char *stage =
@@ -3353,8 +3821,8 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   bar.placement.margin_pt.top = top + 36;
   bar.style.min_size_pt = (Vec2){bar_width, 4};
   bar.style.max_size_pt = bar.style.min_size_pt;
-  bar.style.background_color = (Vec4){.17f, .22f, .27f, 1};
-  bar.style.corner_radius_pt = (Vec4){2, 2, 2, 2};
+  bar.style.background_color = vkr_ui_theme()->raised;
+  bar.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
   bar.columns = &one;
   bar.column_count = 1;
   bar.rows = &one;
@@ -3372,7 +3840,8 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
           (bar_width - fill.style.min_size_pt.x) *
           (float32_t)(.5 - .5 * cos(vkr_platform_get_absolute_time() * 3));
       fill.style.max_size_pt = fill.style.min_size_pt;
-      fill.style.background_color = (Vec4){.22f, .68f, .78f, 1};
+      fill.style.background_color = vkr_ui_theme()->accent;
+      fill.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
       if (vkr_ui_panel_begin(ui, string8_lit("scene.prepare.fill"), &fill)) {
         (void)vkr_ui_panel_end(ui);
       }
@@ -3381,9 +3850,7 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
   }
   VkrUiWidgetConfig action =
       project_widget(Max(0.0f, (width - 76) * .5f), top + 56, 76, 26);
-  action.text.font = ui->fonts->default_system_font_handle;
-  action.style.background_color = (Vec4){.12f, .19f, .24f, .9f};
-  action.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
+  vkr_editor_action_style(&action, VKR_FONT_HANDLE_INVALID);
   action.disabled = projects->waiting_activation;
   if (running) {
     if (vkr_ui_button(ui, string8_lit("scene.prepare.cancel"),
@@ -3485,7 +3952,8 @@ void vkr_editor_projects_scene_action(VkrEditorProjects *projects,
 
 void vkr_editor_projects_navigation(VkrEditorProjects *projects,
                                     VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame) {
+                                    const VkrSampleUiFrame *frame,
+                                    uint32_t first_column) {
   if (!projects) {
     return;
   }
@@ -3494,17 +3962,19 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
   const bool8_t stopped = project_job_stopped(projects, editor);
   for (uint32_t i = 0; i < 2; ++i) {
     const bool8_t active = projects->dropdown == i + 1;
-    VkrUiWidgetConfig button =
-        vkr_editor_menu_button_config(1 + i, active, editor->heading_font);
-    button.style.background_color = active ? (Vec4){.13f, .36f, .38f, .95f}
-                                           : (Vec4){.09f, .22f, .24f, .85f};
-    button.style.text_color = (Vec4){.78f, .92f, .91f, 1};
+    VkrUiWidgetConfig button = vkr_editor_menu_button_config(
+        first_column + i, active, VKR_FONT_HANDLE_INVALID);
+    button.icon = i == 1 ? VKR_UI_ICON_SCENE : VKR_UI_ICON_PROJECT;
+    button.icon_size_pt = 14.0f;
+    button.icon_color = vkr_ui_theme()->accent_hover;
     button.disabled =
         (projects->job_id && !stopped) || projects->waiting_activation ||
         (!stopped && !strcmp(projects->operation, "delete_scene")) ||
         (i == 1 && !projects->project);
+    /* The open dropdown already names itself; no tooltip over it. */
     button.tooltip =
-        i == 1 ? string8_lit("Choose a scene in the current project")
+        active   ? (String8){0}
+        : i == 1 ? string8_lit("Choose a scene in the current project")
         : projects->read_only
             ? string8_lit(
                   "Read-only workspace: another editor holds its write lease")
@@ -3512,9 +3982,15 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
     const String8 title = i == 1                ? string8_lit("Scenes")
                           : projects->read_only ? string8_lit("Projects [RO]")
                                                 : string8_lit("Projects");
-    if (vkr_ui_button(ui,
-                      i == 1 ? string8_lit("scenes") : string8_lit("projects"),
-                      title, &button)) {
+    const String8 label =
+        i == 1 ? string8_lit("scenes") : string8_lit("projects");
+    const VkrUiId button_id =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, label);
+    const bool8_t clicked = vkr_ui_button(ui, label, title, &button);
+    /* The dropdown opens beneath the button that owns it. */
+    if (active || clicked)
+      (void)vkr_ui_widget_rect(ui, button_id, &projects->dropdown_anchor_px);
+    if (clicked) {
       if (active) {
         projects->dropdown = 0;
         projects->dropdown_opened = false_v;

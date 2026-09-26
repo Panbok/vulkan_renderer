@@ -22,9 +22,18 @@ static VkrUiWidgetConfig animation_widget(uint32_t column, uint32_t row) {
   VkrUiWidgetConfig widget = vkr_ui_widget_config_default();
   widget.placement.column = column;
   widget.placement.row = row;
-  widget.style.font_size_pt = 12;
-  widget.style.padding_pt = (VkrUiEdges){5, 7, 5, 7};
-  widget.style.background_color = (Vec4){0.12f, 0.17f, 0.22f, 1};
+  /* Bordered cells fill their grid track. */
+  widget.fill = true_v;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  widget.style.font_size_pt = theme->font_body;
+  widget.style.padding_pt = (VkrUiEdges){5, 8, 5, 8};
+  widget.style.background_color = theme->raised;
+  widget.style.hover_background_color = theme->raised_hover;
+  widget.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  widget.style.border_color = theme->border;
+  widget.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  widget.style.text_color = theme->text;
   return widget;
 }
 
@@ -41,6 +50,8 @@ static void animation_label(VkrUiSystem *ui, const char *id, const char *text,
                             uint32_t column, uint32_t row) {
   VkrUiWidgetConfig widget = animation_widget(column, row);
   widget.style.background_color = (Vec4){0};
+  widget.style.border_pt = (VkrUiEdges){0};
+  widget.style.text_color = vkr_ui_theme()->text_secondary;
   vkr_ui_label(ui, string8_create((uint8_t *)id, strlen(id)),
                string8_create((uint8_t *)text, strlen(text)), &widget);
 }
@@ -424,7 +435,10 @@ static void animation_graph(VkrEditorUi *editor,
   VkrUiPanelConfig canvas = vkr_ui_panel_config_default();
   canvas.placement.row = 6;
   canvas.placement.column_span = 4;
-  canvas.style.background_color = (Vec4){0.035f, 0.045f, 0.06f, 1};
+  canvas.style.background_color = vkr_ui_theme()->field;
+  canvas.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  canvas.style.border_color = vkr_ui_theme()->separator;
+  canvas.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
   canvas.style.padding_pt = (VkrUiEdges){0};
   canvas.clip_children = true_v;
   const VkrUiTrack track = {.value = 1, .unit = VKR_UI_TRACK_FR};
@@ -460,7 +474,7 @@ static void animation_graph(VkrEditorUi *editor,
     VkrUiWidgetConfig wire = animation_widget(0, 0);
     wire.style.background_color = (Vec4){0};
     wire.style.padding_pt = (VkrUiEdges){0};
-    wire.style.text_color = (Vec4){0.42f, 0.90f, 0.72f, 1};
+    wire.style.text_color = vkr_ui_theme()->success;
     (void)vkr_ui_push_id_u64(ui, edge + 100u);
     vkr_ui_bezier(ui, string8_lit("pose.connection"), points, 2.2f, &wire);
     (void)vkr_ui_pop_id(ui);
@@ -481,13 +495,15 @@ static void animation_graph(VkrEditorUi *editor,
     card.placement.margin_pt.left = position.x;
     card.placement.margin_pt.top = position.y;
     card.style.min_size_pt = card.style.max_size_pt = (Vec2){170, 36};
-    card.style.background_color = output ? (Vec4){0.10f, 0.24f, 0.20f, 1}
-                                         : (Vec4){0.10f, 0.15f, 0.22f, 1};
+    card.style.background_color = vkr_ui_theme()->raised;
+    card.style.shadow_color = vkr_ui_theme()->shadow;
+    card.style.shadow_offset_pt = (Vec2){0.0f, 3.0f};
+    card.style.shadow_blur_pt = 10.0f;
     if (!output && i == animation->selected_node) {
       card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-      card.style.border_color = (Vec4){0.95f, 0.72f, 0.30f, 1};
+      card.style.border_color = vkr_ui_theme()->accent;
     }
-    card.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
+    card.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
     card.style.padding_pt = (VkrUiEdges){0};
     card.clip_children = true_v;
     const VkrUiTrack columns[] = {
@@ -519,8 +535,9 @@ static void animation_graph(VkrEditorUi *editor,
       header.placement.column_span = 2;
       header.style.padding_pt = (VkrUiEdges){2, 5, 2, 5};
       header.style.font_size_pt = 11;
-      header.style.background_color = output ? (Vec4){0.13f, 0.34f, 0.25f, 1}
-                                             : (Vec4){0.15f, 0.27f, 0.40f, 1};
+      header.style.background_color = output ? (Vec4){0.13f, 0.36f, 0.24f, 1}
+                                             : (Vec4){0.14f, 0.26f, 0.46f, 1};
+      header.style.corner_radius_pt = (Vec4){5, 5, 0, 0};
       header.tooltip =
           string8_lit("Drag to move; select a node, then click Output to "
                       "connect; edit inputs in Properties");
@@ -535,8 +552,8 @@ static void animation_graph(VkrEditorUi *editor,
       port.style.corner_radius_pt = (Vec4){5, 5, 5, 5};
       port.style.background_color =
           output || i == animation->document.graph.root
-              ? (Vec4){0.42f, 0.90f, 0.72f, 1}
-              : (Vec4){0.55f, 0.63f, 0.71f, 1};
+              ? vkr_ui_theme()->success
+              : vkr_ui_theme()->text_secondary;
       port.tooltip = string8_lit("Pose connection");
       connect |= vkr_ui_button(ui, string8_lit("port"), (String8){0}, &port);
       if (!output && animation->document.graph.nodes[i].kind ==
@@ -551,7 +568,7 @@ static void animation_graph(VkrEditorUi *editor,
               (Vec2){6, 6};
           input_port.style.padding_pt = (VkrUiEdges){0};
           input_port.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
-          input_port.style.background_color = (Vec4){0.42f, 0.90f, 0.72f, 1};
+          input_port.style.background_color = vkr_ui_theme()->success;
           input_port.tooltip =
               input ? string8_lit("Connect selected node to input B")
                     : string8_lit("Connect selected node to input A");
@@ -1060,7 +1077,7 @@ static void animation_properties(VkrEditorUi *editor,
   panel.row_count = ArrayCount(rows);
   panel.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
   panel.style.gap_pt = 2;
-  panel.style.background_color = (Vec4){0.035f, 0.045f, 0.06f, 1};
+  panel.style.background_color = vkr_ui_theme()->panel;
   panel.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("properties"), &panel)) {
     return;
@@ -1111,7 +1128,8 @@ static void animation_build_preview(VkrEditorUi *editor,
   VkrEditorAnimation *animation = &editor->animation;
   VkrUiPanelConfig preview = vkr_ui_panel_config_default();
   preview.placement.column_span = 2;
-  preview.style.background_color = (Vec4){0.025f, 0.035f, 0.045f, 1};
+  preview.style.background_color = vkr_ui_theme()->field;
+  preview.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
   preview.style.gap_pt = 3;
   preview.clip_children = true_v;
   const VkrUiTrack preview_rows[] = {{.value = 1, .unit = VKR_UI_TRACK_FR},
@@ -1346,9 +1364,10 @@ static void animation_build_clip_browser(VkrEditorAnimation *animation,
       }
       (void)vkr_ui_push_id_u64(ui, clip);
       VkrUiWidgetConfig item = animation_widget(slot % 2u, 1u + slot / 2u);
-      item.style.background_color = clip == animation->selected_clip
-                                        ? (Vec4){0.16f, 0.36f, 0.46f, 1}
-                                        : (Vec4){0.12f, 0.17f, 0.22f, 1};
+      item.style.background_color =
+          clip == animation->selected_clip
+              ? vkr_ui_color_alpha(vkr_ui_theme()->accent, 0.24f)
+              : vkr_ui_theme()->raised;
       snprintf(status, sizeof(status), "%u  %.*s", clip,
                (int)Min(asset->clips[clip].name.length, 100u),
                asset->clips[clip].name.str);
@@ -1428,7 +1447,8 @@ static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
   timeline.placement.row_span = 1;
   timeline.style.gap_pt = 2;
   timeline.style.padding_pt = (VkrUiEdges){8, 2, 8, 2};
-  timeline.style.background_color = (Vec4){0.035f, 0.055f, 0.075f, 1};
+  timeline.style.background_color = vkr_ui_theme()->field;
+  timeline.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
   timeline.clip_children = true_v;
   const VkrUiTrack timeline_track = {.value = 1, .unit = VKR_UI_TRACK_FR};
   timeline.columns = &timeline_track;
@@ -1437,6 +1457,25 @@ static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
   const float32_t timeline_width =
       Max(1.0f, editor->windows[VKR_EDITOR_WINDOW_ANIMATION].size_pt.x - 20);
   if (vkr_ui_panel_begin(ui, string8_lit("timeline"), &timeline)) {
+    /* The ruler along the top scrubs; blocks sit below it. */
+    const float32_t ruler_height = 18.0f;
+    float32_t ruler_time = (float32_t)animation->time;
+    VkrUiWidgetConfig ruler = animation_widget(0, 0);
+    ruler.placement.justify = VKR_UI_ALIGN_START;
+    ruler.placement.align = VKR_UI_ALIGN_START;
+    ruler.style.min_size_pt = ruler.style.max_size_pt =
+        (Vec2){timeline_width, ruler_height};
+    ruler.style.background_color = (Vec4){0};
+    ruler.style.border_pt = (VkrUiEdges){0};
+    ruler.style.padding_pt = (VkrUiEdges){0};
+    ruler.tooltip = string8_lit("Drag to scrub the series");
+    if (timeline_duration > 0 &&
+        vkr_ui_slider_f32(ui, string8_lit("ruler"), &ruler_time, 0.0f,
+                          (float32_t)timeline_duration, &ruler)) {
+      animation->playing = false_v;
+      animation->time = ruler_time;
+      animation->pose_seek = true_v;
+    }
     float64_t start = 0;
     for (uint32_t i = 0; i < animation->document.block_count; ++i) {
       const uint32_t clip = animation->document.blocks[i];
@@ -1452,7 +1491,7 @@ static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
           timeline_duration > 0
               ? (float32_t)(start / timeline_duration) * timeline_width
               : 0;
-      block.placement.margin_pt.top = (i % 2u) * 18.0f;
+      block.placement.margin_pt.top = ruler_height + 4.0f + (i % 2u) * 18.0f;
       block.style.min_size_pt = block.style.max_size_pt = (Vec2){
           Max(2.0f, timeline_duration > 0
                         ? (float32_t)((end - start) / timeline_duration) *
@@ -1460,10 +1499,11 @@ static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
                         : timeline_width),
           130};
       block.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-      block.style.border_color = (Vec4){0.42f, 0.90f, 0.72f, 1};
-      block.style.background_color = i == animation->selected_block
-                                         ? (Vec4){0.20f, 0.42f, 0.50f, 1}
-                                         : (Vec4){0.14f, 0.24f, 0.34f, 1};
+      block.style.border_color = vkr_ui_theme()->accent;
+      block.style.background_color =
+          i == animation->selected_block
+              ? vkr_ui_color_alpha(vkr_ui_theme()->accent, 0.35f)
+              : (Vec4){0.16f, 0.26f, 0.42f, 1};
       block.tooltip = asset->clips[clip].name;
       if (vkr_ui_button(ui, string8_lit("block"),
                         string8_create((uint8_t *)status, strlen(status)),
@@ -1475,6 +1515,24 @@ static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
       }
       (void)vkr_ui_pop_id(ui);
       start = end - animation_overlap(&animation->document, asset, i);
+    }
+    /* Playhead: a line through the blocks at the current time. */
+    if (timeline_duration > 0) {
+      VkrUiWidgetConfig playhead = animation_widget(0, 0);
+      playhead.placement.justify = VKR_UI_ALIGN_START;
+      playhead.placement.align = VKR_UI_ALIGN_START;
+      playhead.placement.margin_pt.left =
+          (float32_t)(vkr_clamp_f32(
+              (float32_t)(animation->time / timeline_duration), 0.0f, 1.0f)) *
+              timeline_width -
+          1.0f;
+      playhead.style.min_size_pt = playhead.style.max_size_pt =
+          (Vec2){2.0f, 176.0f};
+      playhead.style.padding_pt = (VkrUiEdges){0};
+      playhead.style.border_pt = (VkrUiEdges){0};
+      playhead.style.corner_radius_pt = (Vec4){1, 1, 1, 1};
+      playhead.style.background_color = vkr_ui_theme()->warning;
+      vkr_ui_label(ui, string8_lit("playhead"), (String8){0}, &playhead);
     }
     (void)vkr_ui_panel_end(ui);
   }
@@ -1637,7 +1695,7 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
   if (animation->error) {
     VkrUiWidgetConfig error = animation_widget(0, 8);
     error.placement.column_span = 4;
-    error.style.text_color = (Vec4){1, 0.6f, 0.4f, 1};
+    error.style.text_color = vkr_ui_theme()->error;
     vkr_ui_label(
         ui, string8_lit("error"),
         string8_create((uint8_t *)animation->error, strlen(animation->error)),

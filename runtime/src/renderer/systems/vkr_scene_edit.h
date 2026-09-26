@@ -53,6 +53,9 @@ typedef struct VkrSceneEditRequest {
   const VkrSceneCollisionLayers *collision_layers;
   const VkrScenePhysicsChange *physics_batch;
   uint32_t physics_batch_count;
+  /* Nonzero groups consecutive APPLY requests of one continuous gesture, such
+   * as a slider or value scrub, into a single undo entry. */
+  uint64_t gesture;
 } VkrSceneEditRequest;
 
 typedef enum VkrSceneEditEntryKind {
@@ -81,6 +84,8 @@ typedef struct VkrSceneEditState {
   uint64_t generation;
   uint64_t revision;
   uint64_t saved_revision;
+  /* Gesture that produced the newest undo entry; zero after any other edit. */
+  uint64_t gesture;
   bool8_t sidecar_conflict;
   char status[192];
 } VkrSceneEditState;
@@ -93,6 +98,13 @@ void vkr_scene_edit_reset(VkrSceneEditState *state, VkrAllocator *allocator,
 bool8_t vkr_scene_edit_apply(VkrSceneEditState *state, VkrScene *scene,
                              VkrEntityId entity,
                              const VkrSceneEditValues *values);
+/** Apply like vkr_scene_edit_apply, but fold into the newest undo entry when
+ * it came from the same nonzero gesture, entity and fields. Physics edits
+ * always append. */
+bool8_t vkr_scene_edit_apply_gesture(VkrSceneEditState *state, VkrScene *scene,
+                                     VkrEntityId entity,
+                                     const VkrSceneEditValues *values,
+                                     uint64_t gesture);
 /** Append an already-applied edit without changing the scene. If allocation
  * fails, the caller must restore its pre-drag values. */
 bool8_t vkr_scene_edit_record_external(VkrSceneEditState *state,

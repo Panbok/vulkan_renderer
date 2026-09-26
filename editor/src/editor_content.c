@@ -2,6 +2,7 @@
 #include "core/vkr_atomic.h"
 #include "core/vkr_json.h"
 #include "core/vkr_threads.h"
+#include "editor_internal.h"
 #include "editor_project_store.h"
 #include "filesystem/filesystem.h"
 #include "renderer/systems/vkr_render_assets.h"
@@ -1045,10 +1046,12 @@ static VkrUiWidgetConfig content_widget(uint32_t column, uint32_t row) {
   VkrUiWidgetConfig config = vkr_ui_widget_config_default();
   config.placement.column = column;
   config.placement.row = row;
-  config.style.font_size_pt = 11;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  config.style.font_size_pt = theme->font_body;
   config.style.padding_pt = (VkrUiEdges){3, 6, 3, 6};
-  config.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
-  config.style.text_color = (Vec4){0.84f, 0.87f, 0.9f, 1};
+  config.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  config.style.text_color = theme->text;
   return config;
 }
 
@@ -1068,10 +1071,10 @@ static void content_action(VkrEditorContent *content,
 }
 
 static const Vec4 content_type_colors[CONTENT_KIND_COUNT] = {
-    {0.46f, 0.24f, 0.68f, 1}, {0.20f, 0.56f, 0.31f, 1},
-    {0.18f, 0.50f, 0.66f, 1}, {0.65f, 0.40f, 0.20f, 1},
-    {0.59f, 0.44f, 0.17f, 1}, {0.25f, 0.43f, 0.68f, 1},
-    {0.26f, 0.56f, 0.56f, 1}, {0.39f, 0.42f, 0.47f, 1},
+    {0.72f, 0.52f, 0.96f, 1}, {0.45f, 0.84f, 0.56f, 1},
+    {0.42f, 0.76f, 0.95f, 1}, {0.96f, 0.64f, 0.40f, 1},
+    {0.96f, 0.78f, 0.42f, 1}, {0.50f, 0.68f, 0.98f, 1},
+    {0.42f, 0.84f, 0.86f, 1}, {0.66f, 0.70f, 0.76f, 1},
 };
 
 static void content_navigate(VkrEditorContent *content, uint32_t scope,
@@ -1167,17 +1170,17 @@ static void content_scrollbar(VkrUiSystem *ui, String8 id, uint32_t column,
   background.style.min_size_pt = (Vec2){14, height};
   background.style.max_size_pt = background.style.min_size_pt;
   background.style.padding_pt = (VkrUiEdges){0};
-  background.style.background_color = (Vec4){0.045f, 0.05f, 0.06f, 1};
+  background.style.background_color = (Vec4){0};
   (void)vkr_ui_push_id_label(ui, id);
   vkr_ui_label(ui, string8_lit("track"), (String8){0}, &background);
   VkrUiWidgetConfig thumb = background;
   thumb.placement.margin_pt.top = travel * *first / maximum;
   thumb.placement.margin_pt.right = 3;
-  thumb.style.min_size_pt = (Vec2){8, thumb_height};
+  thumb.style.min_size_pt = (Vec2){6, thumb_height};
   thumb.style.max_size_pt = thumb.style.min_size_pt;
-  thumb.style.background_color = state->dragging
-                                     ? (Vec4){0.38f, 0.58f, 0.72f, 1}
-                                     : (Vec4){0.27f, 0.31f, 0.36f, 1};
+  thumb.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
+  thumb.style.background_color =
+      state->dragging ? vkr_ui_theme()->accent : vkr_ui_theme()->border_strong;
   vkr_ui_label(ui, string8_lit("thumb"), (String8){0}, &thumb);
   (void)vkr_ui_pop_id(ui);
 }
@@ -1288,8 +1291,9 @@ static void content_sources(VkrEditorContent *content, VkrUiSystem *ui,
   panel.placement.row = 0;
   panel.rows = rows;
   panel.row_count = 5 + (shown_scope ? CONTENT_KIND_COUNT : 0);
-  panel.style.background_color = (Vec4){0.075f, 0.08f, 0.09f, 1};
-  panel.style.padding_pt = (VkrUiEdges){4, 18, 4, 4};
+  const VkrUiTheme *theme = vkr_ui_theme();
+  panel.style.background_color = theme->header;
+  panel.style.padding_pt = (VkrUiEdges){6, 18, 6, 6};
   panel.clip_children = true_v;
   const uint32_t visible =
       Max(1u, (uint32_t)(Max(0.0f, area.height / ui->content_scale - 8) / 26));
@@ -1306,12 +1310,16 @@ static void content_sources(VkrEditorContent *content, VkrUiSystem *ui,
   }
   (void)vkr_ui_scroll_area_offset_set(ui, content->source_first_row * 26.0f);
   VkrUiWidgetConfig heading = content_widget(0, 0);
-  heading.style.text_color = (Vec4){0.55f, 0.59f, 0.65f, 1};
-  vkr_ui_label(ui, string8_lit("heading"), string8_lit("SOURCES"), &heading);
+  heading.style.text_color = theme->text_secondary;
+  heading.style.font_size_pt = theme->font_caption;
+  vkr_ui_label(ui, string8_lit("heading"), string8_lit("Sources"), &heading);
   VkrUiWidgetConfig all = content_widget(0, 1);
+  all.placement.justify = VKR_UI_ALIGN_STRETCH;
+  all.fill = true_v;
   all.icon = VKR_UI_ICON_CONTENT;
+  all.icon_color = theme->accent_hover;
   all.style.background_color =
-      !content->scope_filter ? (Vec4){0.18f, 0.29f, 0.40f, 1} : (Vec4){0};
+      !content->scope_filter ? theme->selection : (Vec4){0};
   if (vkr_ui_button(ui, string8_lit("all"), string8_lit("All assets"), &all)) {
     content_navigate(content, 0, 0);
   }
@@ -1319,10 +1327,14 @@ static void content_sources(VkrEditorContent *content, VkrUiSystem *ui,
   for (uint32_t scope = 0; scope < 3; ++scope) {
     (void)vkr_ui_push_id_u64(ui, scope);
     VkrUiWidgetConfig folder = content_widget(0, row++);
-    folder.icon = VKR_UI_ICON_FOLDER;
+    folder.placement.justify = VKR_UI_ALIGN_STRETCH;
+    folder.fill = true_v;
+    folder.icon = content->scope_filter == scope + 1 ? VKR_UI_ICON_REVEAL
+                                                     : VKR_UI_ICON_FOLDER;
+    folder.icon_color = (Vec4){0.96f, 0.78f, 0.42f, 1.0f};
     folder.style.background_color =
         content->scope_filter == scope + 1 && !content->type_filter
-            ? (Vec4){0.18f, 0.29f, 0.40f, 1}
+            ? theme->selection
             : (Vec4){0};
     if (vkr_ui_button(ui, string8_lit("scope"),
                       content_string(content_scopes[scope]), &folder)) {
@@ -1331,11 +1343,13 @@ static void content_sources(VkrEditorContent *content, VkrUiSystem *ui,
     if (shown_scope == scope + 1) {
       for (uint32_t kind = 0; kind < CONTENT_KIND_COUNT; ++kind) {
         VkrUiWidgetConfig child = content_widget(0, row++);
-        child.placement.margin_pt.left = 14;
+        child.placement.justify = VKR_UI_ALIGN_STRETCH;
+        child.fill = true_v;
+        child.placement.margin_pt.left = 16;
         child.icon = content_icons[kind];
-        child.style.background_color = content->type_filter == kind + 1
-                                           ? (Vec4){0.18f, 0.29f, 0.40f, 1}
-                                           : (Vec4){0};
+        child.icon_color = content_type_colors[kind];
+        child.style.background_color =
+            content->type_filter == kind + 1 ? theme->selection : (Vec4){0};
         String8 label = string8_create_formatted(
             ui->frame_allocator, "%s (%u)", content_kinds[kind],
             content->source_counts[scope][kind]);
@@ -1365,34 +1379,40 @@ static void content_build_navigation(VkrEditorContent *content,
   navigation.columns = navigation_columns;
   navigation.column_count = ArrayCount(navigation_columns);
   if (vkr_ui_panel_begin(ui, string8_lit("navigation"), &navigation)) {
-    VkrUiWidgetConfig back = content_widget(0, 0);
+    VkrUiWidgetConfig back = vkr_editor_icon_button_config(
+        0, 0, VKR_UI_ICON_ARROW_LEFT,
+        string8_lit("Back to previous source folder"));
     back.disabled = !content->history_count || !content->history_index;
-    back.tooltip = string8_lit("Back to previous source folder");
-    if (vkr_ui_button(ui, string8_lit("back"), string8_lit("<"), &back)) {
+    if (vkr_ui_button(ui, string8_lit("back"), (String8){0}, &back)) {
       content_history_step(content, -1);
     }
-    VkrUiWidgetConfig forward = content_widget(1, 0);
+    VkrUiWidgetConfig forward = vkr_editor_icon_button_config(
+        1, 0, VKR_UI_ICON_ARROW_RIGHT,
+        string8_lit("Forward to next source folder"));
     forward.disabled = !content->history_count ||
                        content->history_index + 1 == content->history_count;
-    forward.tooltip = string8_lit("Forward to next source folder");
-    if (vkr_ui_button(ui, string8_lit("forward"), string8_lit(">"), &forward)) {
+    if (vkr_ui_button(ui, string8_lit("forward"), (String8){0}, &forward)) {
       content_history_step(content, 1);
     }
-    VkrUiWidgetConfig up = content_widget(2, 0);
+    VkrUiWidgetConfig up = vkr_editor_icon_button_config(
+        2, 0, VKR_UI_ICON_ARROW_UP,
+        string8_lit("Up to containing source folder"));
     up.disabled = !content->scope_filter && !content->type_filter;
-    up.tooltip = string8_lit("Up to containing source folder");
-    if (vkr_ui_button(ui, string8_lit("up"), string8_lit("^"), &up)) {
+    if (vkr_ui_button(ui, string8_lit("up"), (String8){0}, &up)) {
       content_navigate(content,
                        content->type_filter ? content->scope_filter : 0, 0);
     }
     VkrUiWidgetConfig breadcrumb = content_widget(3, 0);
+    vkr_editor_ghost_style(&breadcrumb);
+    breadcrumb.style.text_color = vkr_ui_theme()->text_secondary;
     breadcrumb.icon = VKR_UI_ICON_FOLDER;
+    breadcrumb.icon_color = (Vec4){0.96f, 0.78f, 0.42f, 1.0f};
     breadcrumb.tooltip = string8_lit("Go up to the containing source folder");
     String8 path = string8_create_formatted(
-        ui->frame_allocator, "Content  /  %s%s%s",
+        ui->frame_allocator, "Content / %s%s%s",
         content->scope_filter ? content_scopes[content->scope_filter - 1]
                               : "All assets",
-        content->type_filter ? "  /  " : "",
+        content->type_filter ? " / " : "",
         content->type_filter ? content_kinds[content->type_filter - 1] : "");
     if (vkr_ui_button(ui, string8_lit("breadcrumb"), path, &breadcrumb)) {
       content_navigate(content,
@@ -1419,59 +1439,64 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
   tools.rows = toolbar_rows;
   tools.row_count = ArrayCount(toolbar_rows);
   tools.style.gap_pt = 4;
-  tools.style.padding_pt = (VkrUiEdges){2, 6, 2, 6};
-  tools.style.background_color = (Vec4){0.115f, 0.12f, 0.135f, 1};
+  tools.style.padding_pt = (VkrUiEdges){4, 8, 4, 8};
+  tools.style.background_color = vkr_ui_theme()->panel;
   if (vkr_ui_panel_begin(ui, string8_lit("tools"), &tools)) {
     VkrUiWidgetConfig import = content_widget(0, 0);
-    import.icon = VKR_UI_ICON_ADD;
+    vkr_editor_primary_style(&import, VKR_FONT_HANDLE_INVALID);
+    import.icon = VKR_UI_ICON_IMPORT;
+    import.icon_size_pt = 14;
     import.disabled = content->read_only || !content->project[0];
-    import.style.background_color = (Vec4){0.16f, 0.38f, 0.26f, 1};
+    import.tooltip = string8_lit("Import models, textures and fonts");
     if (vkr_ui_button(ui, string8_lit("import"), string8_lit("Import"),
                       &import)) {
       content_action(content, VKR_EDITOR_CONTENT_ACTION_IMPORT);
     }
-    VkrUiWidgetConfig refresh = content_widget(1, 0);
-    refresh.icon = VKR_UI_ICON_REFRESH;
-    refresh.tooltip = string8_lit("Refresh asset inventories");
+    VkrUiWidgetConfig refresh = vkr_editor_icon_button_config(
+        1, 0, VKR_UI_ICON_REFRESH, string8_lit("Refresh asset inventories"));
     if (vkr_ui_button(ui, string8_lit("refresh"), (String8){0}, &refresh)) {
       vkr_editor_content_refresh(content);
     }
     content_build_navigation(content, ui);
     VkrUiWidgetConfig details = content_widget(3, 0);
-    details.icon = VKR_UI_ICON_INSPECTOR;
+    vkr_editor_ghost_style(&details);
+    details.icon = VKR_UI_ICON_SIDEBAR;
+    details.icon_size_pt = 14;
+    details.tooltip = string8_lit("Show or hide the asset details panel");
+    vkr_editor_toggle_style(&details, !content->details_hidden);
     details.disabled = width < 1040 || height < 240;
     if (vkr_ui_button(ui, string8_lit("details"), string8_lit("Details"),
                       &details)) {
       content->details_hidden = !content->details_hidden;
     }
-    VkrUiWidgetConfig size = content_widget(4, 0);
-    size.tooltip = string8_lit("Toggle small / large asset cards");
-    if (vkr_ui_button(ui, string8_lit("size"),
-                      content_string(content->size == 128 ? "S" : "L"),
-                      &size)) {
+    VkrUiWidgetConfig size = vkr_editor_icon_button_config(
+        4, 0, content->size == 128 ? VKR_UI_ICON_ZOOM_IN : VKR_UI_ICON_ZOOM_OUT,
+        content->size == 128 ? string8_lit("Larger asset cards")
+                             : string8_lit("Smaller asset cards"));
+    if (vkr_ui_button(ui, string8_lit("size"), (String8){0}, &size)) {
       content->size = content->size == 128 ? 256 : 128;
     }
     VkrUiTextEditBuffer query = {.data = content->query,
                                  .length = content->query_length,
                                  .capacity = sizeof(content->query)};
-    VkrUiWidgetConfig search = content_widget(0, 1);
-    search.placement.column_span = 3;
-    search.placement.margin_pt.left = 62;
-    VkrUiWidgetConfig search_label = content_widget(0, 1);
-    search_label.icon = VKR_UI_ICON_SEARCH;
-    search_label.style.font_size_pt = 10;
-    vkr_ui_label(ui, string8_lit("search-label"), string8_lit("Search"),
-                 &search_label);
-    search.icon = VKR_UI_ICON_SEARCH;
-    search.text.font = ui->fonts->default_system_font_handle;
-    search.tooltip = string8_lit("Search assets by name");
-    search.style.background_color = (Vec4){0.065f, 0.07f, 0.08f, 1};
-    if (vkr_ui_text_field(ui, string8_lit("search"), &query, &search)) {
+    VkrUiPlacement search = VKR_UI_PLACEMENT_DEFAULT;
+    search.column = 0;
+    search.row = 1;
+    search.column_span = 3;
+    if (vkr_editor_search_field(ui, string8_lit("search"), &query, search,
+                                string8_lit("Search assets"),
+                                string8_lit("Search assets by name"),
+                                VKR_FONT_HANDLE_INVALID)) {
       content->query_length = query.length;
       content->filter_dirty = true_v;
       content->first_row = 0;
     }
     VkrUiWidgetConfig type = content_widget(3, 1);
+    vkr_editor_ghost_style(&type);
+    type.style.text_color = vkr_ui_theme()->text;
+    type.icon = VKR_UI_ICON_FILTER;
+    type.icon_size_pt = 13;
+    type.tooltip = string8_lit("Cycle the asset type filter");
     if (vkr_ui_button(
             ui, string8_lit("type"),
             content_string(content->type_filter
@@ -1481,10 +1506,13 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
       content_navigate(content, content->scope_filter,
                        (content->type_filter + 1) % (CONTENT_KIND_COUNT + 1));
     }
-    VkrUiWidgetConfig sort = content_widget(4, 1);
-    if (vkr_ui_button(ui, string8_lit("sort"),
-                      content_string(content->reverse_sort ? "Z–A" : "A–Z"),
-                      &sort)) {
+    VkrUiWidgetConfig sort = vkr_editor_icon_button_config(
+        4, 1,
+        content->reverse_sort ? VKR_UI_ICON_SORT_DESCENDING
+                              : VKR_UI_ICON_SORT_ASCENDING,
+        content->reverse_sort ? string8_lit("Sorted Z to A")
+                              : string8_lit("Sorted A to Z"));
+    if (vkr_ui_button(ui, string8_lit("sort"), (String8){0}, &sort)) {
       content->reverse_sort = !content->reverse_sort;
       content->filter_dirty = true_v;
     }
@@ -1506,23 +1534,26 @@ static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
   card.rows = card_rows;
   card.row_count = ArrayCount(card_rows);
   card.clip_children = true_v;
-  card.style.background_color = asset == content->selected
-                                    ? (Vec4){0.13f, 0.24f, 0.29f, 1}
-                                    : (Vec4){0.085f, 0.105f, 0.13f, 1};
-  card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-  card.style.border_color = asset == content->selected
-                                ? (Vec4){0.38f, 0.68f, 0.75f, 1}
-                                : (Vec4){0.15f, 0.19f, 0.23f, 1};
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const bool8_t selected = asset == content->selected;
+  card.style.background_color =
+      selected ? vkr_ui_color_alpha(theme->accent, 0.16f) : theme->raised;
+  card.style.border_pt =
+      selected ? (VkrUiEdges){2, 2, 2, 2} : (VkrUiEdges){1, 1, 1, 1};
+  card.style.border_color = selected ? theme->accent : theme->border;
+  card.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
   if (vkr_ui_panel_begin(ui, string8_lit("card"), &card)) {
     ContentPreview *preview = content_preview(content, ui, asset);
     VkrUiWidgetConfig strip = content_widget(0, 0);
     strip.style.background_color = content_type_colors[entry->kind];
     strip.style.padding_pt = (VkrUiEdges){0};
-    strip.style.corner_radius_pt = (Vec4){0};
+    strip.style.corner_radius_pt = (Vec4){5, 5, 0, 0};
     vkr_ui_label(ui, string8_lit("type-color"), (String8){0}, &strip);
     VkrUiWidgetConfig picture = content_widget(0, 1);
     picture.icon = content_icons[entry->kind];
     picture.icon_size_pt = 36;
+    picture.icon_color = content_type_colors[entry->kind];
+    picture.style.hover_background_color = theme->row_hover;
     picture.tooltip = content_string(entry->name);
     if (preview && preview->texture.id) {
       picture.icon = VKR_UI_ICON_NONE;
@@ -1542,7 +1573,9 @@ static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
           &image);
     }
     VkrUiWidgetConfig name = content_widget(0, 2);
-    name.text.font = ui->fonts->default_system_font_handle;
+    vkr_editor_ghost_style(&name);
+    name.style.hover_background_color = VKR_UI_COLOR_NONE;
+    name.style.text_color = theme->text;
     name.tooltip = content_string(entry->name);
     if (vkr_ui_button(ui, string8_lit("name"), content_string(entry->name),
                       &name)) {
@@ -1556,11 +1589,11 @@ static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
                          : preview && preview->queued ? "Building preview"
                                                       : "Current";
     VkrUiWidgetConfig info = content_widget(0, 3);
-    info.style.font_size_pt = 10;
+    info.style.font_size_pt = theme->font_caption;
     info.style.text_color =
         entry->missing || entry->stale || (preview && preview->failed)
-            ? (Vec4){0.94f, 0.62f, 0.37f, 1}
-            : (Vec4){0.55f, 0.68f, 0.72f, 1};
+            ? theme->warning
+            : theme->text_secondary;
     String8 line = string8_create_formatted(ui->frame_allocator, "%s · %s",
                                             content_kinds[entry->kind], status);
     vkr_ui_label(ui, string8_lit("status"), line, &info);
@@ -1626,7 +1659,6 @@ static void content_build_rename(VkrEditorContent *content, VkrUiSystem *ui,
   rename_panel.column_count = ArrayCount(rename_columns);
   if (vkr_ui_panel_begin(ui, string8_lit("rename-panel"), &rename_panel)) {
     VkrUiWidgetConfig name_field = content_widget(0, 0);
-    name_field.text.font = ui->fonts->default_system_font_handle;
     name_field.tooltip = string8_lit(
         "Asset display name; stable ID and references remain unchanged");
     VkrUiTextEditBuffer name_buffer = {.data = content->rename,
@@ -1721,7 +1753,7 @@ static void content_build_inspector(VkrEditorContent *content, VkrUiSystem *ui,
   VkrUiPanelConfig inspector = vkr_ui_panel_config_default();
   inspector.placement.column = 2;
   inspector.placement.row = 0;
-  inspector.style.background_color = (Vec4){0.085f, 0.09f, 0.105f, 1};
+  inspector.style.background_color = vkr_ui_theme()->header;
   inspector.style.padding_pt = (VkrUiEdges){8, 8, 8, 8};
   inspector.clip_children = true_v;
   const VkrUiTrack inspector_rows[] = {{30, VKR_UI_TRACK_PX},
@@ -1733,7 +1765,6 @@ static void content_build_inspector(VkrEditorContent *content, VkrUiSystem *ui,
   if (show_details &&
       vkr_ui_panel_begin(ui, string8_lit("inspect"), &inspector)) {
     VkrUiWidgetConfig text = content_widget(0, 0);
-    text.text.font = ui->fonts->default_system_font_handle;
     if (content->selected < content->count) {
       ContentAsset *entry = &content->entries[content->selected];
       String8 summary =
@@ -1742,7 +1773,6 @@ static void content_build_inspector(VkrEditorContent *content, VkrUiSystem *ui,
       vkr_ui_label(ui, string8_lit("selection"), summary, &text);
       if (inspector_height > 30) {
         VkrUiWidgetConfig provenance = content_widget(0, 1);
-        provenance.text.font = ui->fonts->default_system_font_handle;
         const char *diagnostic = entry->diagnostic;
         for (uint32_t i = 0; i < CONTENT_CACHE_COUNT; ++i) {
           if (content->cache[i].key &&
@@ -1854,6 +1884,8 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
   content->first_row = Min(content->first_row, max_first);
   VkrUiWidgetConfig grid_focus = content_widget(1, 0);
   grid_focus.style.background_color = (Vec4){0};
+  grid_focus.style.hover_background_color = VKR_UI_COLOR_NONE;
+  grid_focus.style.active_background_color = VKR_UI_COLOR_NONE;
   const VkrUiId grid_id = vkr_ui_id_stack_widget_label(
       &ui->id_stack, string8_lit("asset-grid-focus"));
   (void)vkr_ui_button(ui, string8_lit("asset-grid-focus"), (String8){0},
@@ -1871,15 +1903,14 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
   content_build_inspector(content, ui, inspector_height, show_details);
   (void)vkr_ui_panel_end(ui);
   VkrUiWidgetConfig footer = content_widget(0, 2);
-  footer.style.background_color = (Vec4){0.09f, 0.095f, 0.11f, 1};
-  footer.style.text_color = (Vec4){0.55f, 0.59f, 0.65f, 1};
+  footer.style.font_size_pt = vkr_ui_theme()->font_caption;
+  footer.style.text_color = vkr_ui_theme()->text_secondary;
   String8 count = string8_create_formatted(
       ui->frame_allocator, "%u assets%s%s", content->filtered_count,
-      content->selected < content->count ? "  |  Selected: " : "",
+      content->selected < content->count ? "  \xc2\xb7  Selected: " : "",
       content->selected < content->count
           ? content->entries[content->selected].name
           : "");
-  footer.text.font = ui->fonts->default_system_font_handle;
   vkr_ui_label(ui, string8_lit("asset-count"), count, &footer);
   (void)vkr_ui_panel_end(ui);
   content_start_preview(content);

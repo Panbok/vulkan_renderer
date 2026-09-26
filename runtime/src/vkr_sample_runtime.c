@@ -3543,12 +3543,18 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
   VkrSampleViewState next = request->value;
   if ((uint32_t)next.camera_view >= VKR_SAMPLE_CAMERA_VIEW_COUNT ||
       (uint32_t)next.render_mode >= VKR_RENDER_MODE_COUNT ||
-      !isfinite(next.grid_spacing) || next.grid_spacing <= 0.0f) {
+      !isfinite(next.grid_spacing) || next.grid_spacing <= 0.0f ||
+      next.gizmo_tool > VKR_GIZMO_MODE_SCALE || !isfinite(next.camera_speed) ||
+      next.camera_speed <= 0.0f) {
     return;
   }
   next.grid_spacing = vkr_clamp_f32(next.grid_spacing, 0.001f, 10000.0f);
+  next.camera_speed = vkr_clamp_f32(next.camera_speed, 0.05f, 10000.0f);
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
+  application->gizmo_system.tool = (VkrGizmoMode)next.gizmo_tool;
+  if (camera)
+    camera->speed = next.camera_speed;
   if (camera && next.camera_view != state->view_state.camera_view) {
     vkr_standard_scene_runtime_finish_gizmo_edit(application);
     vkr_standard_scene_runtime_cancel_gizmo_pick(application);
@@ -3641,6 +3647,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleSceneRequest scene_request;
   VkrSampleEditorStateRequest editor_state_request;
   VkrSampleCloseResponse close_response;
+  bool8_t quit;
   bool8_t scene_shortcuts_blocked;
 } VkrSampleUiRequests;
 
@@ -3715,6 +3722,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .editor_state_request = &requests->editor_state_request,
       .close_requested = vkr_window_close_requested(&application->host.window),
       .close_response = &requests->close_response,
+      .quit_request = &requests->quit,
       .scene_path = state->scene_path,
       .scene_status = string8_create_from_cstr(
           (const uint8_t *)state->scene_status, strlen(state->scene_status)),
@@ -3816,8 +3824,9 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
                                                scene_edit->physics_batch_count);
       break;
     case VKR_SCENE_EDIT_APPLY:
-      (void)vkr_scene_edit_apply(&state->edits, scene, scene_edit->entity,
-                                 &scene_edit->values);
+      (void)vkr_scene_edit_apply_gesture(
+          &state->edits, scene, scene_edit->entity, &scene_edit->values,
+          scene_edit->gesture);
       break;
     case VKR_SCENE_EDIT_UNDO:
     case VKR_SCENE_EDIT_REDO:
@@ -4075,6 +4084,12 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       .close_response = VKR_SAMPLE_CLOSE_NONE,
   };
   state->view_state.render_mode = application->globals.render_mode;
+  state->view_state.gizmo_tool = (uint32_t)application->gizmo_system.tool;
+  {
+    const VkrCamera *camera = vkr_camera_registry_get_by_handle(
+        &application->camera_system, application->active_camera);
+    state->view_state.camera_speed = camera ? camera->speed : 1.0f;
+  }
   state->modal = false_v;
   application->editor_viewport.scene_backdrop_blur = false_v;
   application->animation_preview = (VkrAnimationPreviewRequest){0};
@@ -4092,6 +4107,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                              requests.close_response ==
                                  VKR_SAMPLE_CLOSE_CONFIRM);
   }
+  if (requests.quit)
+    vkr_standard_scene_runtime_close(application);
   application->ui_capture.mouse |=
       application->editor_viewport.dock_capture.mouse;
   if (application->editor_viewport.enabled && !application->ui_capture.text &&
@@ -4192,18 +4209,11 @@ vkr_sample_runtime_update(void *state_ptr, VkrStandardSceneRuntime *application,
     vkr_standard_scene_runtime_handle_input(application, delta);
   }
 
+  /* Q/W/E/R belong to editor transform tools; the View menu selects render
+   * modes. F6 cycles shadow diagnostics. */
   if (!application->ui_capture.keyboard &&
-      input_is_key_up(state->input_state, KEY_Q) &&
-      input_was_key_down(state->input_state, KEY_Q)) {
-    application->globals.render_mode =
-        (VkrRenderMode)(((uint32_t)application->globals.render_mode + 1) %
-                        VKR_RENDER_MODE_COUNT);
-    log_debug("RENDER MODE: %d", application->globals.render_mode);
-  }
-
-  if (!application->ui_capture.keyboard &&
-      input_is_key_up(state->input_state, KEY_E) &&
-      input_was_key_down(state->input_state, KEY_E)) {
+      input_is_key_up(state->input_state, KEY_F6) &&
+      input_was_key_down(state->input_state, KEY_F6)) {
     application->shadow_debug_mode =
         (application->shadow_debug_mode + 1u) % 14u;
     log_debug("SHADOW DEBUG MODE: %u "
@@ -4273,6 +4283,7 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
       .camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE,
       .render_mode = application->globals.render_mode,
       .grid_spacing = 1.0f,
+      .camera_speed = 1.0f,
   };
   state->app_arena = application->app_arena;
   state->event_arena = application->host.events.arena;

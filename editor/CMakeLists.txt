@@ -10,6 +10,8 @@ add_executable(vkr_editor
     src/editor_ui.c
     src/editor_dock.c
     src/editor_windows.c
+    src/editor_cmd.c
+    src/editor_cmd_eval.c
     src/editor_viewport.c
     src/editor_animation.c
     src/editor_console.c
@@ -53,8 +55,15 @@ set(VKR_EDITOR_BOOTSTRAP_FONTS
     UbuntuMono.fontcfg UbuntuMono-bitmap.fontcfg UbuntuMono21px.fnt
     UbuntuMono-cooked.fontcfg UbuntuMono-cooked.vkfa UbuntuMono-R.ttf
     UbuntuMono-Bold-cooked.fontcfg UbuntuMono-Bold-cooked.vkfa UbuntuMono-Bold.ttf
-    editor-light-labels.fontcfg editor-light-labels.fnt
-    ubuntu-font-licence-1.0.txt UbuntuMono-R.ttf.license.md UbuntuMono-Bold.ttf.license.md)
+    ubuntu-font-licence-1.0.txt UbuntuMono-R.ttf.license.md UbuntuMono-Bold.ttf.license.md
+    Inter-Regular-cooked.fontcfg Inter-Regular-cooked.vkfa Inter-Regular.ttf
+    Inter-Regular-editor.charset
+    Inter-SemiBold-cooked.fontcfg Inter-SemiBold-cooked.vkfa Inter-SemiBold.ttf
+    Inter-OFL.txt
+    Phosphor-cooked.fontcfg Phosphor-cooked.vkfa Phosphor.ttf
+    Phosphor-editor.charset
+    Phosphor-Fill-cooked.fontcfg Phosphor-Fill-cooked.vkfa Phosphor-Fill.ttf
+    Phosphor-Fill-editor.charset Phosphor-LICENSE.txt)
 add_custom_command(TARGET vkr_editor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:vkr_editor>/resources/editor/fonts")
 foreach(resource IN LISTS VKR_EDITOR_BOOTSTRAP_FONTS)
@@ -63,7 +72,7 @@ foreach(resource IN LISTS VKR_EDITOR_BOOTSTRAP_FONTS)
         "${CMAKE_SOURCE_DIR}/assets/fonts/${resource}"
         "$<TARGET_FILE_DIR:vkr_editor>/resources/editor/fonts/${resource}")
 endforeach()
-foreach(resource UbuntuMono21px_0.png editor-light-labels.png)
+foreach(resource UbuntuMono21px_0.png)
     add_custom_command(TARGET vkr_editor POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/assets/textures/${resource}"

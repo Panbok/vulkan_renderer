@@ -16,15 +16,21 @@ static VkrUiWidgetConfig graphics_widget(float32_t x, float32_t y,
   };
   config.style.min_size_pt.y = height;
   config.style.max_size_pt.y = height;
+  /* Rows span the pane, so buttons hover and click across their width. */
+  config.fill = true_v;
   config.style.padding_pt = (VkrUiEdges){3.0f, 6.0f, 3.0f, 6.0f};
-  config.style.corner_radius_pt = (Vec4){3.0f, 3.0f, 3.0f, 3.0f};
+  config.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+  config.style.font_size_pt = vkr_ui_theme()->font_body;
+  config.style.text_color = vkr_ui_theme()->text;
   return config;
 }
 
 static void graphics_heading(VkrUiSystem *ui, String8 id, String8 text,
                              float32_t y, VkrFontHandle font) {
   VkrUiWidgetConfig config = graphics_widget(0.0f, y, 22.0f);
-  config.style.text_color = (Vec4){0.47f, 0.80f, 1.0f, 1.0f};
+  config.style.text_color = vkr_ui_theme()->text;
+  config.style.font_size_pt = vkr_ui_theme()->font_title;
+  config.style.padding_pt = (VkrUiEdges){2.0f, 0.0f, 2.0f, 0.0f};
   config.text.font = font;
   vkr_ui_label(ui, id, text, &config);
 }
@@ -44,12 +50,14 @@ static bool8_t graphics_slider(VkrUiSystem *ui, String8 id, String8 text,
                                float32_t y, String8 tooltip) {
   if (!vkr_ui_push_id_label(ui, id))
     return false_v;
+  /* Name on the left, current value right-aligned in secondary text. */
   VkrUiWidgetConfig label = graphics_widget(0.0f, y, 20.0f);
-  label.style.text_color = (Vec4){0.78f, 0.83f, 0.90f, 1.0f};
-  const String8 content = string8_create_formatted(
-      ui->frame_allocator, "%.*s  %.*s", (int32_t)text.length, text.str,
-      (int32_t)value_text.length, value_text.str);
-  vkr_ui_label(ui, string8_lit("label"), content, &label);
+  label.placement.justify = VKR_UI_ALIGN_START;
+  vkr_ui_label(ui, string8_lit("label"), text, &label);
+  VkrUiWidgetConfig value_label = label;
+  value_label.placement.justify = VKR_UI_ALIGN_END;
+  value_label.style.text_color = vkr_ui_theme()->text_secondary;
+  vkr_ui_label(ui, string8_lit("value.text"), value_text, &value_label);
   VkrUiWidgetConfig slider = graphics_widget(0.0f, y + 20.0f, 20.0f);
   slider.tooltip = tooltip;
   const bool8_t changed = vkr_ui_slider_f32(ui, string8_lit("value"), value,
@@ -64,9 +72,16 @@ static bool8_t graphics_quality_button(VkrUiSystem *ui, String8 id,
                                        bool8_t disabled) {
   VkrUiWidgetConfig config = graphics_widget(0.0f, y, 25.0f);
   config.disabled = disabled;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  config.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  config.style.border_color =
+      *selected == value ? theme->accent : theme->border;
   config.style.background_color = *selected == value
-                                      ? (Vec4){0.16f, 0.36f, 0.52f, 1.0f}
-                                      : (Vec4){0.09f, 0.12f, 0.17f, 1.0f};
+                                      ? vkr_ui_color_alpha(theme->accent, 0.22f)
+                                      : theme->raised;
+  config.icon = *selected == value ? VKR_UI_ICON_CHECK : VKR_UI_ICON_NONE;
+  config.icon_size_pt = 13.0f;
+  config.icon_color = theme->accent_hover;
   if (!vkr_ui_button(ui, id, text, &config))
     return false_v;
   *selected = value;
@@ -335,7 +350,8 @@ void vkr_editor_graphics_build(VkrEditorUi *editor,
   tabs.row_count = 1u;
   tabs.style.padding_pt = (VkrUiEdges){8.0f, 7.0f, 8.0f, 7.0f};
   tabs.style.border_pt = (VkrUiEdges){0.0f, 1.0f, 0.0f, 0.0f};
-  tabs.style.border_color = (Vec4){0.22f, 0.31f, 0.42f, 0.7f};
+  tabs.style.border_color = vkr_ui_theme()->separator;
+  tabs.style.background_color = vkr_ui_theme()->header;
   if (vkr_ui_panel_begin(ui, string8_lit("tabs"), &tabs)) {
     const String8 tab_names[VKR_EDITOR_GRAPHICS_TAB_COUNT] = {
         [VKR_EDITOR_GRAPHICS_TAB_DISPLAY] = string8_lit("Display"),
@@ -344,12 +360,27 @@ void vkr_editor_graphics_build(VkrEditorUi *editor,
         [VKR_EDITOR_GRAPHICS_TAB_EFFECTS] = string8_lit("Effects"),
         [VKR_EDITOR_GRAPHICS_TAB_COLOR] = string8_lit("Color"),
     };
+    static const VkrUiIcon tab_icons[VKR_EDITOR_GRAPHICS_TAB_COUNT] = {
+        [VKR_EDITOR_GRAPHICS_TAB_DISPLAY] = VKR_UI_ICON_GRAPHICS,
+        [VKR_EDITOR_GRAPHICS_TAB_QUALITY] = VKR_UI_ICON_SPARKLE,
+        [VKR_EDITOR_GRAPHICS_TAB_LIGHTING] = VKR_UI_ICON_LIGHT,
+        [VKR_EDITOR_GRAPHICS_TAB_EFFECTS] = VKR_UI_ICON_LIGHTNING,
+        [VKR_EDITOR_GRAPHICS_TAB_COLOR] = VKR_UI_ICON_PALETTE,
+    };
+    const VkrUiTheme *theme = vkr_ui_theme();
     for (uint32_t i = 0u; i < VKR_EDITOR_GRAPHICS_TAB_COUNT; ++i) {
+      const bool8_t selected = editor->graphics_tab == i;
       VkrUiWidgetConfig tab = graphics_widget(0.0f, i * 31.0f, 27.0f);
-      tab.style.text_color = (Vec4){0.78f, 0.83f, 0.90f, 1.0f};
-      tab.style.background_color = editor->graphics_tab == i
-                                       ? (Vec4){0.14f, 0.33f, 0.49f, 1.0f}
-                                       : (Vec4){0.07f, 0.09f, 0.13f, 0.2f};
+      tab.placement.justify = VKR_UI_ALIGN_STRETCH;
+      tab.fill = true_v;
+      vkr_editor_ghost_style(&tab);
+      tab.style.padding_pt = (VkrUiEdges){3.0f, 8.0f, 3.0f, 8.0f};
+      tab.style.text_color = selected ? theme->text : theme->text_secondary;
+      tab.style.background_color =
+          selected ? vkr_ui_color_alpha(theme->accent, 0.22f) : (Vec4){0};
+      tab.icon = tab_icons[i];
+      tab.icon_size_pt = 15.0f;
+      tab.icon_color = selected ? theme->accent_hover : theme->text_secondary;
       if (vkr_ui_button(ui, tab_names[i], tab_names[i], &tab))
         editor->graphics_tab = (VkrEditorGraphicsTab)i;
     }
@@ -404,7 +435,9 @@ void vkr_editor_graphics_build(VkrEditorUi *editor,
     }
     VkrUiWidgetConfig reset = graphics_widget(
         0.0f, graphics_content_height(editor->graphics_tab) - 36.0f, 25.0f);
-    reset.style.background_color = (Vec4){0.16f, 0.22f, 0.29f, 1.0f};
+    vkr_editor_action_style(&reset, editor->heading_font);
+    reset.icon = VKR_UI_ICON_RESET;
+    reset.icon_size_pt = 13.0f;
     if (vkr_ui_button(ui, string8_lit("restore.defaults"),
                       string8_lit("Restore defaults"), &reset)) {
       *frame->graphics_request =
@@ -421,8 +454,15 @@ void vkr_editor_graphics_build(VkrEditorUi *editor,
     VkrUiWidgetConfig notice = graphics_widget(0.0f, 5.0f, 24.0f);
     notice.placement.column = 1u;
     notice.placement.row = 0u;
-    notice.style.background_color = (Vec4){0.25f, 0.18f, 0.07f, 0.92f};
-    notice.style.text_color = (Vec4){1.0f, 0.82f, 0.50f, 1.0f};
+    notice.style.background_color =
+        vkr_ui_color_alpha(vkr_ui_theme()->warning, 0.16f);
+    notice.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+    notice.style.border_color =
+        vkr_ui_color_alpha(vkr_ui_theme()->warning, 0.5f);
+    notice.style.text_color = vkr_ui_theme()->text;
+    notice.icon = VKR_UI_ICON_WARNING_FILL;
+    notice.icon_size_pt = 13.0f;
+    notice.icon_color = vkr_ui_theme()->warning;
     const String8 text =
         frame->graphics->message.length
             ? frame->graphics->message

@@ -653,17 +653,36 @@ static VkrUiWidgetConfig editor_bakery_widget(uint32_t row, uint32_t column) {
   VkrUiWidgetConfig config = vkr_ui_widget_config_default();
   config.placement.row = row;
   config.placement.column = column;
-  config.style.padding_pt = (VkrUiEdges){3.0f, 6.0f, 3.0f, 6.0f};
-  config.style.font_size_pt = 13.0f;
+  config.style.padding_pt = (VkrUiEdges){3.0f, 8.0f, 3.0f, 8.0f};
+  config.style.font_size_pt = vkr_ui_theme()->font_body;
+  config.style.text_color = vkr_ui_theme()->text;
   return config;
 }
+
+static const VkrUiIcon editor_bakery_kind_icons[] = {
+    VKR_UI_ICON_MESH,     VKR_UI_ICON_FONT,         VKR_UI_ICON_TEXTURE,
+    VKR_UI_ICON_FOLDER,   VKR_UI_ICON_GRAPH,        VKR_UI_ICON_SPARKLE,
+    VKR_UI_ICON_WAVES,    VKR_UI_ICON_SUN_DIM,      VKR_UI_ICON_PROBE,
+    VKR_UI_ICON_COLLIDER, VKR_UI_ICON_BOUNDING_BOX, VKR_UI_ICON_PROJECT};
+_Static_assert(ArrayCount(editor_bakery_kind_icons) ==
+                   ArrayCount(editor_bakery_kind_names),
+               "Every bake kind needs an icon");
 
 static void editor_bakery_tab_style(VkrUiWidgetConfig *config,
                                     VkrFontHandle heading, bool8_t selected) {
   vkr_editor_action_style(config, heading);
+  config->fill = true_v;
+  config->text.font = selected ? heading : VKR_FONT_HANDLE_INVALID;
+  config->style.text_color =
+      selected ? vkr_ui_theme()->text : vkr_ui_theme()->text_secondary;
+  config->icon_color =
+      selected ? vkr_ui_theme()->accent_hover : vkr_ui_theme()->text_secondary;
   if (selected) {
-    config->style.background_color = (Vec4){0.30f, 0.23f, 0.15f, 1.0f};
-    config->style.border_color = (Vec4){0.82f, 0.62f, 0.34f, 1.0f};
+    config->style.background_color =
+        vkr_ui_color_alpha(vkr_ui_theme()->accent, 0.2f);
+    config->style.hover_background_color =
+        vkr_ui_color_alpha(vkr_ui_theme()->accent, 0.28f);
+    config->style.border_color = vkr_ui_theme()->accent;
   }
 }
 
@@ -721,6 +740,8 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
                                                       i % recipes.column_count);
       editor_bakery_tab_style(&config, heading,
                               bakery->kind == (EditorBakeKind)i);
+      config.icon = editor_bakery_kind_icons[i];
+      config.icon_size_pt = 14.0f;
       config.tooltip = editor_bakery_string(editor_bakery_kind_names[i]);
       if (vkr_ui_button(
               ui, editor_bakery_string(editor_bakery_kind_names[i]),
@@ -916,9 +937,8 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
   VkrUiWidgetConfig hint = editor_bakery_widget(3u, 0u);
   hint.text.layout.word_wrap = true_v;
   hint.text.layout.max_width = Max(1.0f, width - 12.0f);
-  hint.style.text_color = bakery->message[0]
-                              ? (Vec4){1.0f, 0.65f, 0.48f, 1.0f}
-                              : (Vec4){0.72f, 0.77f, 0.83f, 1.0f};
+  hint.style.text_color = bakery->message[0] ? vkr_ui_theme()->warning
+                                             : vkr_ui_theme()->text_secondary;
   vkr_ui_label(ui, string8_lit("help"),
                editor_bakery_string(bakery->message[0] ? bakery->message
                                                        : help[bakery->kind]),
@@ -975,17 +995,40 @@ static void editor_bakery_jobs(VkrEditorBakery *bakery, VkrUiSystem *ui,
              ((uint8_t)name[shown_length] & 0xc0u) == 0x80u)
         --shown_length;
       const String8 text = string8_create_formatted(
-          ui->frame_allocator, "%s | %s | %.*s%s",
+          ui->frame_allocator, "%s  \xc2\xb7  %s  \xc2\xb7  %.*s%s",
           editor_bakery_status(job->status),
           editor_bakery_kind_names[job->kind], (int)shown_length, name,
-          shown_length < name_length ? "..." : "");
+          shown_length < name_length ? "\xe2\x80\xa6" : "");
       VkrUiWidgetConfig config = editor_bakery_widget(i, 0u);
       editor_bakery_tab_style(&config, heading, i == bakery->selected);
+      config.placement.justify = VKR_UI_ALIGN_STRETCH;
+      config.fill = true_v;
       config.tooltip = editor_bakery_string(job->input);
-      if (job->status == EDITOR_BAKE_FAILED)
-        config.style.text_color = (Vec4){1.0f, 0.57f, 0.49f, 1.0f};
-      else if (job->status == EDITOR_BAKE_SUCCEEDED)
-        config.style.text_color = (Vec4){0.60f, 0.91f, 0.70f, 1.0f};
+      const VkrUiTheme *theme = vkr_ui_theme();
+      config.icon_size_pt = 14.0f;
+      switch (job->status) {
+      case EDITOR_BAKE_SUCCEEDED:
+        config.icon = VKR_UI_ICON_CHECK_CIRCLE;
+        config.icon_color = theme->success;
+        break;
+      case EDITOR_BAKE_FAILED:
+        config.icon = VKR_UI_ICON_LOG_ERROR;
+        config.icon_color = theme->error;
+        config.style.text_color = theme->error;
+        break;
+      case EDITOR_BAKE_RUNNING:
+        config.icon = VKR_UI_ICON_SPINNER;
+        config.icon_color = theme->accent_hover;
+        break;
+      case EDITOR_BAKE_QUEUED:
+        config.icon = VKR_UI_ICON_CLOCK;
+        config.icon_color = theme->text_secondary;
+        break;
+      default:
+        config.icon = VKR_UI_ICON_CLOSE;
+        config.icon_color = theme->text_disabled;
+        break;
+      }
       if (vkr_ui_push_id_u64(ui, i)) {
         if (vkr_ui_button(ui, string8_lit("job"), text, &config)) {
           bakery->selected = i;
@@ -1273,8 +1316,8 @@ void vkr_editor_bakery_build(VkrEditorBakery *bakery, VkrUiSystem *ui,
   root.column_count = 1u;
   root.rows = rows;
   root.row_count = ArrayCount(rows);
-  root.style.padding_pt = (VkrUiEdges){5.0f, 6.0f, 5.0f, 6.0f};
-  root.style.gap_pt = 5.0f;
+  root.style.padding_pt = (VkrUiEdges){8.0f, 8.0f, 6.0f, 8.0f};
+  root.style.gap_pt = 8.0f;
   if (!vkr_ui_panel_begin(ui, string8_lit("bakery"), &root))
     return;
   const VkrUiTrack tabs[] = {column, column, column};
@@ -1299,6 +1342,10 @@ void vkr_editor_bakery_build(VkrEditorBakery *bakery, VkrUiSystem *ui,
         config.style.padding_pt.left = config.style.padding_pt.right = 0.0f;
       editor_bakery_tab_style(&config, heading,
                               bakery->view == (EditorBakeryView)i);
+      static const VkrUiIcon view_icons[] = {
+          VKR_UI_ICON_PLUS_CIRCLE, VKR_UI_ICON_LIST, VKR_UI_ICON_TERMINAL};
+      config.icon = view_icons[i];
+      config.icon_size_pt = 14.0f;
       if (vkr_ui_button(ui, editor_bakery_string(ids[i]),
                         width < 224.0f ? compact[i] : names[i], &config))
         bakery->view = (EditorBakeryView)i;

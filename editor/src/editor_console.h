@@ -25,17 +25,26 @@ typedef struct VkrEditorConsole {
   uint8_t detail[VKR_LOG_MESSAGE_CAPACITY + VKR_LOG_SOURCE_CAPACITY + 96u];
   uint32_t detail_length;
   bool8_t levels[6];
-  VkrUiId filters_button_id;
-  uint32_t filter_focus_index;
-  bool8_t filters_open;
-  bool8_t filter_focus_pending;
+  /* Retained records per severity, independent of the active filters. */
+  uint32_t level_counts[6];
   bool8_t follow_tail;
   bool8_t filter_dirty;
   bool8_t initialized;
+  /* A right click on a record this build; the dock opens the context menu at
+   * this point (in points) after the Console builds. */
+  bool8_t context_requested;
+  Vec2 context_position_pt;
 } VkrEditorConsole;
 
 bool8_t vkr_editor_console_init(VkrEditorConsole *console, VkrAllocator *owner);
 void vkr_editor_console_shutdown(VkrEditorConsole *console);
-/** Called inside the dock's Console content panel. Rect is its pixel bounds. */
+/** Copy the selected records to the clipboard, formatted as in the detail. */
+void vkr_editor_console_copy_selection(VkrEditorConsole *console,
+                                       VkrUiSystem *ui);
+/** Drop every retained record; later log output still arrives. */
+void vkr_editor_console_clear(VkrEditorConsole *console);
+/** Called inside the dock's Console content panel. Rect is its pixel bounds.
+ * Log rows use `mono`; controls use the UI default face. */
 void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
-                              VkrUiRect content_rect_px, VkrFontHandle heading);
+                              VkrUiRect content_rect_px, VkrFontHandle heading,
+                              VkrFontHandle mono);

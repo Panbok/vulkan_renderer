@@ -9,6 +9,10 @@ typedef struct VkrEditorApplication {
   int argc;
   char **argv;
   bool8_t project_managed;
+  /** `--exec` Cmd script from argv; VKR_EDITOR_EXEC runs before it. */
+  const char *exec_script;
+  /** Window shape last requested: the compact launcher or the editor. */
+  bool8_t window_launcher;
 } VkrEditorApplication;
 
 VkrSampleRuntimeConfig

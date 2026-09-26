@@ -202,6 +202,9 @@ typedef struct VkrGizmoSystem {
   VkrGizmoConfig config;
   VkrGizmoMode mode;
   VkrGizmoSpace space;
+  /* Editor tool filter: NONE draws and picks every handle family; another
+   * mode limits handles to that family. */
+  VkrGizmoMode tool;
 
   VkrEntityId selected_entity;
   Vec3 position;

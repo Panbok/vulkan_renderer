@@ -243,7 +243,15 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
            debt);
   VkrUiWidgetConfig label = physics_widget(
       8, Min(56.0f, Max(0.0f, height - 62)), Max(1.0f, width - 16), 22);
-  label.style.background_color = (Vec4){0.025f, 0.035f, 0.05f, 0.85f};
+  const VkrUiTheme *theme = vkr_ui_theme();
+  label.style.background_color = theme->overlay;
+  label.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
+  label.style.padding_pt = (VkrUiEdges){3, 8, 3, 8};
+  label.style.text_color = error && error[0] ? theme->error : theme->text;
+  label.style.font_size_pt = theme->font_caption;
+  label.icon = VKR_UI_ICON_PHYSICS;
+  label.icon_size_pt = 13.0f;
+  label.icon_color = (Vec4){0.45f, 0.84f, 0.56f, 1.0f};
   vkr_ui_label(
       ui, string8_lit("status"),
       string8_create_from_cstr((const uint8_t *)status, strlen(status)),
@@ -264,7 +272,19 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     VkrUiWidgetConfig button =
         physics_widget(8 + i * (button_width + 4),
                        Min(84.0f, Max(0.0f, height - 34)), button_width, 26);
-    button.style.background_color = (Vec4){0.055f, 0.075f, 0.1f, 0.94f};
+    static const VkrUiIcon icons[] = {VKR_UI_ICON_STEP, VKR_UI_ICON_RESET,
+                                      VKR_UI_ICON_BOUNDING_BOX,
+                                      VKR_UI_ICON_PHYSICS};
+    button.style.background_color = theme->overlay;
+    button.style.hover_background_color = theme->popup;
+    button.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+    button.style.border_color = vkr_ui_color_alpha(theme->border_strong, 0.5f);
+    button.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
+    button.style.font_size_pt = theme->font_caption;
+    button.style.text_color = theme->text;
+    button.icon = icons[i];
+    button.icon_size_pt = 13.0f;
+    button.icon_color = theme->text_secondary;
     button.disabled = i == 0 && frame->simulation_running;
     button.tooltip =
         i == 3

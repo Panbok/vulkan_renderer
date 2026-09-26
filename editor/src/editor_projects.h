@@ -12,6 +12,9 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
                                     VkrEditorUi *editor,
                                     const VkrUiDockTree *dock);
 bool8_t vkr_editor_projects_modal(const VkrEditorProjects *projects);
+/** The chooser or create flow runs before any project is open, so the window
+ * shows a compact launcher instead of the editor shell. */
+bool8_t vkr_editor_projects_launcher(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects);
 void vkr_editor_projects_update(VkrEditorProjects *projects,
                                 VkrEditorUi *editor,
@@ -21,9 +24,12 @@ void vkr_editor_projects_build(VkrEditorProjects *projects, VkrEditorUi *editor,
 void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
                                               VkrEditorUi *editor,
                                               const VkrSampleUiFrame *frame);
+/** Projects and Scenes dropdown buttons in top-bar columns `first_column`
+ * and `first_column + 1`. */
 void vkr_editor_projects_navigation(VkrEditorProjects *projects,
                                     VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame);
+                                    const VkrSampleUiFrame *frame,
+                                    uint32_t first_column);
 
 bool8_t vkr_editor_projects_save_scene(VkrEditorProjects *projects,
                                        VkrSceneEditState *edits,

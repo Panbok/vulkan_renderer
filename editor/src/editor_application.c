@@ -9,6 +9,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Launcher and editor client sizes in points. The editor request is clamped
+ * to the screen's work area, so smaller displays open it full-screen. */
+#define EDITOR_LAUNCHER_WIDTH_PT 1000u
+#define EDITOR_LAUNCHER_HEIGHT_PT 640u
+#define EDITOR_WINDOW_WIDTH_PT 1680u
+#define EDITOR_WINDOW_HEIGHT_PT 1050u
+
 static bool8_t editor_env_flag(const char *name, bool8_t default_value) {
   const char *value = getenv(name);
   if (!value || value[0] == '\0')
@@ -44,6 +51,30 @@ static float32_t editor_env_render_scale(void) {
   return vkr_clamp_f32(parsed, 0.25f, 1.0f);
 }
 
+/* Load a bootstrap font configuration and keep one acquired handle. */
+static bool8_t editor_load_font(VkrUiSystem *ui, const char *name,
+                                const char *config, VkrFontHandle *out) {
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const String8 font_name =
+      string8_create_from_cstr((const uint8_t *)name, string_length(name));
+  if (!vkr_font_system_load_from_file(
+          ui->fonts, font_name,
+          vkr_font_system_bootstrap_path(ui->fonts, config,
+                                         &ui->retained_allocator),
+          &error)) {
+    log_error("Failed to load editor font '%s' (%u)", config, (uint32_t)error);
+    return false_v;
+  }
+  *out = vkr_font_system_acquire(ui->fonts, font_name, false_v, &error);
+  return error == VKR_RENDERER_ERROR_NONE;
+}
+
+static void editor_release_font(VkrUiSystem *ui, VkrFontHandle *font) {
+  if (font->id)
+    vkr_font_system_release_by_handle(ui->fonts, *font);
+  *font = VKR_FONT_HANDLE_INVALID;
+}
+
 static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
                                              VkrUiSystem *ui) {
   VkrEditorApplication *editor = state;
@@ -58,6 +89,12 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   if (!editor->ui.bakery || !editor->ui.scene_panels ||
       !editor->ui.physics_settings)
     goto cleanup;
+  /* Startup Cmd scripts: the environment first, then --exec. */
+  const char *env_script = getenv("VKR_EDITOR_EXEC");
+  if (env_script && env_script[0])
+    (void)vkr_editor_cmd_enqueue(&editor->ui, env_script);
+  if (editor->exec_script && editor->exec_script[0])
+    (void)vkr_editor_cmd_enqueue(&editor->ui, editor->exec_script);
   if (editor->project_managed) {
     editor->ui.projects = vkr_editor_projects_create(
         &ui->retained_allocator, editor->argc, editor->argv);
@@ -74,35 +111,23 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
           &error)) {
     goto cleanup;
   }
-  const String8 name = string8_lit("editor-heading");
-  if (!vkr_font_system_load_from_file(
-          ui->fonts, name,
-          vkr_font_system_bootstrap_path(ui->fonts,
-                                         "UbuntuMono-Bold-cooked.fontcfg",
-                                         &ui->retained_allocator),
-          &error)) {
-    log_error("Failed to load the editor heading font (%u)", (uint32_t)error);
-    goto cleanup;
-  }
   // The font system retains storage until UI text borrowers have shut down.
-  editor->ui.heading_font =
-      vkr_font_system_acquire(ui->fonts, name, false_v, &error);
+  if (!editor_load_font(ui, "editor-text", "Inter-Regular-cooked.fontcfg",
+                        &editor->ui.text_font) ||
+      !editor_load_font(ui, "editor-heading", "Inter-SemiBold-cooked.fontcfg",
+                        &editor->ui.heading_font) ||
+      !editor_load_font(ui, "editor-icons", "Phosphor-cooked.fontcfg",
+                        &editor->ui.icon_font) ||
+      !editor_load_font(ui, "editor-icons-fill", "Phosphor-Fill-cooked.fontcfg",
+                        &editor->ui.icon_fill_font))
+    goto cleanup;
+  /* Console and numeric readouts keep the runtime's monospace face. */
+  editor->ui.mono_font = vkr_font_system_acquire(
+      ui->fonts, string8_lit("UbuntuMono-mtsdf"), false_v, &error);
   if (error != VKR_RENDERER_ERROR_NONE)
     goto cleanup;
-  const String8 label_name = string8_lit("editor-light-labels");
-  if (!vkr_font_system_load_from_file(
-          ui->fonts, label_name,
-          vkr_font_system_bootstrap_path(ui->fonts,
-                                         "editor-light-labels.fontcfg",
-                                         &ui->retained_allocator),
-          &error)) {
-    log_error("Failed to load editor light labels (%u)", (uint32_t)error);
-    goto cleanup;
-  }
-  editor->ui.label_font =
-      vkr_font_system_acquire(ui->fonts, label_name, false_v, &error);
-  if (error != VKR_RENDERER_ERROR_NONE)
-    goto cleanup;
+  vkr_ui_system_set_fonts(ui, editor->ui.text_font, editor->ui.icon_font,
+                          editor->ui.icon_fill_font);
   if (!editor->layout_path || editor->layout_path[0] == '\0')
     return true_v;
 
@@ -118,10 +143,13 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
 cleanup:
   (void)vkr_editor_projects_destroy(editor->ui.projects, &editor->ui, dock);
   editor->ui.projects = NULL;
-  if (editor->ui.heading_font.id)
-    vkr_font_system_release_by_handle(ui->fonts, editor->ui.heading_font);
-  if (editor->ui.label_font.id)
-    vkr_font_system_release_by_handle(ui->fonts, editor->ui.label_font);
+  vkr_ui_system_set_fonts(ui, VKR_FONT_HANDLE_INVALID, VKR_FONT_HANDLE_INVALID,
+                          VKR_FONT_HANDLE_INVALID);
+  editor_release_font(ui, &editor->ui.text_font);
+  editor_release_font(ui, &editor->ui.heading_font);
+  editor_release_font(ui, &editor->ui.mono_font);
+  editor_release_font(ui, &editor->ui.icon_font);
+  editor_release_font(ui, &editor->ui.icon_fill_font);
   vkr_editor_bakery_destroy(editor->ui.bakery);
   vkr_editor_animation_shutdown(&editor->ui.animation);
   vkr_editor_physics_settings_destroy(editor->ui.physics_settings);
@@ -152,6 +180,19 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
   }
   vkr_editor_content_update(editor->ui.content);
   vkr_editor_projects_update(editor->ui.projects, &editor->ui, frame);
+  /* Choosing or creating a project happens in a compact launcher; opening
+   * one grows the same window into the editor, like Unity Hub or the UE
+   * project browser. */
+  const bool8_t launcher = editor->project_managed &&
+                           vkr_editor_projects_launcher(editor->ui.projects);
+  if (launcher != editor->window_launcher) {
+    /* One request per transition; a refused frame keeps the current size. */
+    editor->window_launcher = launcher;
+    (void)vkr_window_resize_centered(
+        frame->window,
+        launcher ? EDITOR_LAUNCHER_WIDTH_PT : EDITOR_WINDOW_WIDTH_PT,
+        launcher ? EDITOR_LAUNCHER_HEIGHT_PT : EDITOR_WINDOW_HEIGHT_PT);
+  }
   VkrSampleUiFrame editor_frame = *frame;
   editor_frame.scene_loading |=
       vkr_editor_projects_loading(editor->ui.projects);
@@ -196,8 +237,13 @@ static bool8_t editor_application_shutdown(void *state,
   editor->ui.physics_settings = NULL;
   vkr_editor_scene_panels_destroy(editor->ui.scene_panels);
   vkr_editor_console_shutdown(&editor->ui.console);
-  vkr_font_system_release_by_handle(ui->fonts, editor->ui.heading_font);
-  vkr_font_system_release_by_handle(ui->fonts, editor->ui.label_font);
+  vkr_ui_system_set_fonts(ui, VKR_FONT_HANDLE_INVALID, VKR_FONT_HANDLE_INVALID,
+                          VKR_FONT_HANDLE_INVALID);
+  editor_release_font(ui, &editor->ui.text_font);
+  editor_release_font(ui, &editor->ui.heading_font);
+  editor_release_font(ui, &editor->ui.mono_font);
+  editor_release_font(ui, &editor->ui.icon_font);
+  editor_release_font(ui, &editor->ui.icon_fill_font);
   if (!editor->layout_path || editor->layout_path[0] == '\0')
     return projects_saved;
 
@@ -234,6 +280,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
     if (strcmp(argv[i], "--scene") == 0) {
       editor->project_managed = false_v;
     }
+    if (strcmp(argv[i], "--exec") == 0 && i + 1 < argc)
+      editor->exec_script = argv[i + 1];
     if (strcmp(argv[i], "--scene-only") == 0)
       scene_only = true_v;
     else if (strcmp(argv[i], "--paneled") == 0)
@@ -250,7 +298,12 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .render_scale = editor_env_render_scale(),
       .paneled = true_v,
       .scene_only = scene_only,
+      .window_width_pt =
+          editor->project_managed ? EDITOR_LAUNCHER_WIDTH_PT : 0u,
+      .window_height_pt =
+          editor->project_managed ? EDITOR_LAUNCHER_HEIGHT_PT : 0u,
   };
+  editor->window_launcher = editor->project_managed;
   config.ui = (VkrSampleUiClient){
       .state = editor,
       .initialize = editor_application_initialize,

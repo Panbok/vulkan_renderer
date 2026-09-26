@@ -333,6 +333,7 @@ static void edit_journal_append(VkrSceneEditState *s, VkrSceneEditEntry entry) {
   s->undo[s->undo_count++] = entry;
   s->undo_cursor = s->undo_count;
   s->revision++;
+  s->gesture = 0u;
   snprintf(s->status, sizeof(s->status),
            "Edited. Save writes scene overrides.");
 }
@@ -383,6 +384,43 @@ bool8_t vkr_scene_edit_apply(VkrSceneEditState *s, VkrScene *scene,
                              .kind = VKR_SCENE_EDIT_ENTRY_ENTITY,
                              .payload = payload,
                              .payload_size = 2u * sizeof(*payload)});
+  return true_v;
+}
+
+bool8_t vkr_scene_edit_apply_gesture(VkrSceneEditState *s, VkrScene *scene,
+                                     VkrEntityId entity,
+                                     const VkrSceneEditValues *v,
+                                     uint64_t gesture) {
+  VkrSceneEditValues *last =
+      s->undo_count && s->undo_cursor == s->undo_count &&
+              s->undo[s->undo_count - 1u].kind == VKR_SCENE_EDIT_ENTRY_ENTITY &&
+              s->undo[s->undo_count - 1u].entity.u64 == entity.u64
+          ? (VkrSceneEditValues *)s->undo[s->undo_count - 1u].payload
+          : NULL;
+  const bool8_t coalesce = gesture && s->gesture == gesture && last &&
+                           last[1].fields == v->fields &&
+                           !(v->fields & VKR_SCENE_EDIT_PHYSICS);
+  if (!coalesce) {
+    const bool8_t applied = vkr_scene_edit_apply(s, scene, entity, v);
+    s->gesture = applied ? gesture : 0u;
+    return applied;
+  }
+  EditPrepared prepared;
+  if (!edit_prepare(scene, entity, v, &prepared)) {
+    snprintf(s->status, sizeof(s->status),
+             "Invalid values or stale selection.");
+    return false_v;
+  }
+  if (!edit_prepare_physics(scene, &prepared) ||
+      !vkr_scene_physics_prepare_complete(scene, NULL)) {
+    edit_discard(scene, &prepared);
+    snprintf(s->status, sizeof(s->status), "%s",
+             vkr_scene_physics_error(scene));
+    return false_v;
+  }
+  edit_commit(scene, &prepared);
+  last[1] = *v;
+  s->revision++;
   return true_v;
 }
 
@@ -524,6 +562,7 @@ bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
                             bool8_t redo) {
   if (redo ? s->undo_cursor == s->undo_count : s->undo_cursor == 0u)
     return false_v;
+  s->gesture = 0u;
   VkrSceneEditEntry *entry =
       &s->undo[redo ? s->undo_cursor : s->undo_cursor - 1u];
   if (entry->kind == VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH) {

@@ -59,6 +59,10 @@ typedef struct VkrSampleViewState {
   VkrSampleCameraView camera_view;
   VkrRenderMode render_mode;
   float32_t grid_spacing;
+  /* VkrGizmoMode tool filter; NONE shows every transform handle. */
+  uint32_t gizmo_tool;
+  /* Free-camera flight speed in world units per second. */
+  float32_t camera_speed;
   bool8_t grid_enabled;
 } VkrSampleViewState;
 
@@ -182,6 +186,9 @@ typedef struct VkrSampleUiFrame {
   VkrSampleEditorStateRequest *editor_state_request;
   bool8_t close_requested;
   VkrSampleCloseResponse *close_response;
+  /** Ends the application after this build, as the auto-close timer does; the
+   * client decides whether unsaved work allows it. */
+  bool8_t *quit_request;
   String8 scene_path;
   String8 scene_status;
   bool8_t scene_loading;

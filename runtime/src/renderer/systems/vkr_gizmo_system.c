@@ -45,6 +45,7 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
       system->config.screen_size <= 0.0f)
     return false_v;
   system->mode = VKR_GIZMO_MODE_TRANSLATE;
+  system->tool = VKR_GIZMO_MODE_NONE;
   system->space = VKR_GIZMO_SPACE_WORLD;
   system->selected_entity = VKR_ENTITY_ID_INVALID;
   system->position = vec3_zero();
@@ -190,18 +191,25 @@ uint32_t vkr_gizmo_system_build_draws(
   for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
        ++shape) {
     const VkrGizmoHandle handle = g_gizmo_submesh_handles[shape];
+    if (system->tool != VKR_GIZMO_MODE_NONE &&
+        vkr_gizmo_handle_mode(handle) != system->tool)
+      continue;
     if (handle != system->hot_handle && handle != system->active_handle)
       order[count++] = shape;
   }
   for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
        ++shape) {
     if (g_gizmo_submesh_handles[shape] == system->hot_handle &&
-        system->hot_handle != system->active_handle)
+        system->hot_handle != system->active_handle &&
+        (system->tool == VKR_GIZMO_MODE_NONE ||
+         vkr_gizmo_handle_mode(system->hot_handle) == system->tool))
       order[count++] = shape;
   }
   for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
        ++shape) {
-    if (g_gizmo_submesh_handles[shape] == system->active_handle)
+    if (g_gizmo_submesh_handles[shape] == system->active_handle &&
+        (system->tool == VKR_GIZMO_MODE_NONE ||
+         vkr_gizmo_handle_mode(system->active_handle) == system->tool))
       order[count++] = shape;
   }
   for (uint32_t i = 0; i < count; ++i) {

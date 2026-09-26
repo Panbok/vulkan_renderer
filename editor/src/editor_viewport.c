@@ -1,5 +1,7 @@
 #include "editor_internal.h"
 
+#include "renderer/systems/vkr_gizmo_system.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -11,8 +13,14 @@ enum {
   VIEW_POPUP_CAMERA,
   VIEW_POPUP_RENDER,
   VIEW_POPUP_GRID,
-  VIEW_POPUP_OVERFLOW,
+  VIEW_POPUP_SPEED,
+  VIEW_POPUP_COUNT,
 };
+
+#define VIEW_CHIP_HEIGHT_PT 26.0f
+#define VIEW_POPUP_ROW_PT 26.0f
+#define VIEW_POPUP_WIDTH_PT 220.0f
+#define VIEW_INSET_PT 8.0f
 
 static const char *const view_camera_names[] = {"Perspective", "Top", "Left",
                                                 "Right", "Bottom"};
@@ -26,6 +34,21 @@ static const struct {
     {"Detail lighting", VKR_RENDER_MODE_DETAIL_LIGHTING},
     {"Lighting only", VKR_RENDER_MODE_LIGHTING_ONLY},
     {"Wireframe", VKR_RENDER_MODE_WIREFRAME},
+};
+
+static const float32_t view_camera_speeds[] = {0.25f, 0.5f, 1.0f,  2.0f,
+                                               4.0f,  8.0f, 16.0f, 32.0f};
+
+static const struct {
+  const char *name;
+  const char *key;
+  VkrUiIcon icon;
+  uint32_t mode;
+} view_tools[] = {
+    {"Select", "Q", VKR_UI_ICON_SELECT, VKR_GIZMO_MODE_NONE},
+    {"Move", "W", VKR_UI_ICON_MOVE, VKR_GIZMO_MODE_TRANSLATE},
+    {"Rotate", "E", VKR_UI_ICON_ROTATE, VKR_GIZMO_MODE_ROTATE},
+    {"Scale", "R", VKR_UI_ICON_SCALE, VKR_GIZMO_MODE_SCALE},
 };
 
 static String8 view_string(const char *text) {
@@ -45,6 +68,9 @@ static Vec2 view_text_size(const VkrUiSystem *ui, VkrFontHandle font_handle,
                            const char *text, float32_t size) {
   VkrFont *font = vkr_font_system_get_by_handle(ui->fonts, font_handle);
   if (!font) {
+    font = vkr_font_system_get_by_handle(ui->fonts, ui->default_font);
+  }
+  if (!font) {
     font = vkr_font_system_get_default_mtsdf_font(ui->fonts);
   }
   if (!font) {
@@ -55,12 +81,6 @@ static Vec2 view_text_size(const VkrUiSystem *ui, VkrFontHandle font_handle,
   style.font_data = font;
   const VkrText value = vkr_text_from_view(view_string(text), &style);
   return vkr_text_measure(&value).size;
-}
-
-static Vec2 view_button_size(const VkrEditorUi *editor, const VkrUiSystem *ui,
-                             const char *text) {
-  const Vec2 size = view_text_size(ui, editor->heading_font, text, 11.0f);
-  return (Vec2){ceilf(size.x) + 18.0f, ceilf(size.y) + 12.0f};
 }
 
 static bool8_t view_contains(Vec4 rect, Vec2 point) {
@@ -76,49 +96,85 @@ static Vec4 view_scene_rect(const VkrSampleUiFrame *frame) {
                 Max(0.0f, scene.w / scale - top)};
 }
 
-/* The grid button reports the drawn cell size, which zoom may coarsen above the
- * requested size so every visible cell keeps a readable label. */
-static void view_control_text(const VkrSampleViewState *state,
-                              float32_t drawn_spacing, char text[3][80]) {
+/* Chip labels: camera, view mode, grid spacing, camera speed. */
+static void view_chip_text(const VkrSampleViewState *state,
+                           float32_t drawn_spacing, char text[4][48]) {
   const uint32_t camera = (uint32_t)state->camera_view;
-  snprintf(text[0], 80, "%s v",
+  snprintf(text[0], 48, "%s",
            camera < ArrayCount(view_camera_names) ? view_camera_names[camera]
                                                   : "Perspective");
-  snprintf(text[1], 80, "%s v", view_render_name(state->render_mode));
-  snprintf(text[2], 80, state->grid_enabled ? "Grid %.4g u v" : "Grid off v",
-           (double)(drawn_spacing > 0 ? drawn_spacing : state->grid_spacing));
+  snprintf(text[1], 48, "%s", view_render_name(state->render_mode));
+  if (state->grid_enabled)
+    snprintf(text[2], 48, "%.4g",
+             (double)(drawn_spacing > 0 ? drawn_spacing : state->grid_spacing));
+  else
+    snprintf(text[2], 48, "Off");
+  snprintf(text[3], 48, "%.3g", (double)state->camera_speed);
 }
 
-static uint32_t view_popup_items(uint32_t popup,
-                                 const VkrSampleViewState *state,
-                                 float32_t drawn_spacing, char text[5][80]) {
+/* Label width plus leading icon, caret and padding. */
+static float32_t view_chip_width(const VkrUiSystem *ui, const char *text,
+                                 bool8_t compact) {
+  if (compact)
+    return 40.0f;
+  return ceilf(view_text_size(ui, VKR_FONT_HANDLE_INVALID, text,
+                              vkr_ui_theme()->font_body)
+                   .x) +
+         52.0f;
+}
+
+typedef struct ViewHeaderLayout {
+  Vec4 left;
+  Vec4 right;
+  float32_t chips[4];
+  bool8_t compact;
+  bool8_t show_right;
+} ViewHeaderLayout;
+
+static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame) {
+  ViewHeaderLayout layout = {0};
+  const Vec4 scene = view_scene_rect(frame);
+  char text[4][48];
+  view_chip_text(&frame->view_state, editor->grid_spacing, text);
+  const float32_t available = Max(0.0f, scene.z - VIEW_INSET_PT * 2.0f);
+  const float32_t right_width =
+      VIEW_CHIP_HEIGHT_PT * (float32_t)ArrayCount(view_tools) + 6.0f;
+  for (uint32_t pass = 0; pass < 2; ++pass) {
+    layout.compact = pass == 1;
+    float32_t width = 6.0f;
+    for (uint32_t i = 0; i < 3; ++i) {
+      layout.chips[i] = view_chip_width(frame->ui, text[i], layout.compact);
+      width += layout.chips[i] + 2.0f;
+    }
+    layout.chips[3] = view_chip_width(frame->ui, text[3], layout.compact);
+    const float32_t right = right_width + 10.0f + layout.chips[3] + 6.0f;
+    layout.show_right = width + right + 12.0f <= available;
+    layout.left = (Vec4){scene.x + VIEW_INSET_PT, scene.y + VIEW_INSET_PT,
+                         Min(width, available), VIEW_CHIP_HEIGHT_PT + 6.0f};
+    layout.right =
+        (Vec4){scene.x + scene.z - VIEW_INSET_PT - right,
+               scene.y + VIEW_INSET_PT, right, VIEW_CHIP_HEIGHT_PT + 6.0f};
+    if (layout.show_right || layout.compact)
+      break;
+  }
+  if (!layout.show_right)
+    layout.right = (Vec4){0};
+  if (scene.w < VIEW_CHIP_HEIGHT_PT + 24.0f)
+    layout.left = layout.right = (Vec4){0};
+  return layout;
+}
+
+static uint32_t view_popup_count(uint32_t popup) {
   switch (popup) {
   case VIEW_POPUP_CAMERA:
-    for (uint32_t i = 0; i < ArrayCount(view_camera_names); ++i) {
-      snprintf(text[i], 80, "%s%s", view_camera_names[i],
-               i ? " (orthographic)" : "");
-    }
     return ArrayCount(view_camera_names);
   case VIEW_POPUP_RENDER:
-    for (uint32_t i = 0; i < ArrayCount(view_render_modes); ++i) {
-      snprintf(text[i], 80, "%s", view_render_modes[i].name);
-    }
     return ArrayCount(view_render_modes);
   case VIEW_POPUP_GRID:
-    snprintf(text[0], 80, "Grid %s", state->grid_enabled ? "on" : "off");
-    snprintf(text[1], 80, "Smaller cells (%.4g u)",
-             (double)Max(0.001f, state->grid_spacing * 0.5f));
-    snprintf(text[2], 80, "Larger cells (%.4g u)",
-             (double)Min(10000.0f, state->grid_spacing * 2.0f));
     return 3;
-  case VIEW_POPUP_OVERFLOW: {
-    char controls[3][80];
-    view_control_text(state, drawn_spacing, controls);
-    snprintf(text[0], 80, "Camera: %.68s", controls[0]);
-    snprintf(text[1], 80, "View: %.70s", controls[1]);
-    snprintf(text[2], 80, "%.79s", controls[2]);
-    return 3;
-  }
+  case VIEW_POPUP_SPEED:
+    return ArrayCount(view_camera_speeds);
   default:
     return 0;
   }
@@ -126,35 +182,22 @@ static uint32_t view_popup_items(uint32_t popup,
 
 static void view_popup_layout(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame) {
-  char text[5][80];
-  const uint32_t count = view_popup_items(
-      editor->view_popup, &frame->view_state, editor->grid_spacing, text);
+  const uint32_t count = view_popup_count(editor->view_popup);
   if (!count) {
     editor->view_popup_rect_pt = (Vec4){0};
     return;
   }
-  Vec2 size = {8, 8};
-  for (uint32_t i = 0; i < count; ++i) {
-    const Vec2 button = view_button_size(editor, frame->ui, text[i]);
-    size.x = Max(size.x, button.x + 8);
-    size.y += button.y + (i ? 2 : 0);
-  }
-  /* Dropdowns may extend over docked panels. Clamping to a short Scene would
-   * clip the lower camera/render choices, making them impossible to select. */
   const float32_t scale = frame->ui->content_scale;
-  const Vec4 bounds = {0, VKR_EDITOR_NAVIGATION_HEIGHT_PT,
-                       (float32_t)frame->ui->target_width / scale,
-                       Max(0.0f, (float32_t)frame->ui->target_height / scale -
-                                     VKR_EDITOR_NAVIGATION_HEIGHT_PT)};
-  const Vec4 toolbar = editor->view_toolbar_rect_pt;
-  const float32_t x = vkr_clamp_f32(
-      toolbar.x, bounds.x, Max(bounds.x, bounds.x + bounds.z - size.x));
-  float32_t y = toolbar.y + toolbar.w + 4;
-  if (y + size.y > bounds.y + bounds.w) {
-    y = Max(bounds.y, toolbar.y - size.y - 4);
-  }
-  editor->view_popup_rect_pt =
-      (Vec4){x, y, Min(size.x, bounds.z), Min(size.y, bounds.w)};
+  const float32_t screen_w = (float32_t)frame->ui->target_width / scale;
+  const float32_t screen_h = (float32_t)frame->ui->target_height / scale;
+  const Vec2 size = {VIEW_POPUP_WIDTH_PT,
+                     (float32_t)count * VIEW_POPUP_ROW_PT + 10.0f};
+  const Vec4 anchor = editor->view_popup_anchor_pt;
+  const float32_t x = vkr_clamp_f32(anchor.x, 0, Max(0.0f, screen_w - size.x));
+  float32_t y = anchor.y + anchor.w + 4.0f;
+  if (y + size.y > screen_h)
+    y = Max(VKR_EDITOR_NAVIGATION_HEIGHT_PT, anchor.y - size.y - 4.0f);
+  editor->view_popup_rect_pt = (Vec4){x, y, size.x, size.y};
 }
 
 static void view_register_rect(VkrUiSystem *ui, Vec4 rect) {
@@ -165,44 +208,55 @@ static void view_register_rect(VkrUiSystem *ui, Vec4 rect) {
                                                 rect.w * scale});
 }
 
+static void view_request(const VkrSampleUiFrame *frame,
+                         VkrSampleViewState next) {
+  if (frame->view_request)
+    *frame->view_request =
+        (VkrSampleViewRequest){.value = next, .apply = true_v};
+}
+
+/* Q/W/E/R pick transform tools and F frames the selection while the Scene or
+ * no widget holds the keyboard. Modified presses stay with other shortcuts. */
+static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  const bool8_t scene_focus =
+      frame->scene_keyboard_focus && *frame->scene_keyboard_focus;
+  if (frame->mouse_captured || editor->cmd_active ||
+      editor->menu != VKR_EDITOR_MENU_NONE || frame->scene_rendering_stopped ||
+      (!scene_focus && ui->focused_id != VKR_UI_ID_NONE))
+    return;
+  static const Keys keys[] = {KEY_Q, KEY_W, KEY_E, KEY_R};
+  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
+    if (input_key_just_pressed(frame->input, keys[i]) &&
+        input_key_press_modifiers(frame->input, keys[i]) == 0u) {
+      VkrSampleViewState next = frame->view_state;
+      next.gizmo_tool = view_tools[i].mode;
+      view_request(frame, next);
+      ui->capture.keyboard = true_v;
+    }
+  }
+  if (input_key_just_pressed(frame->input, KEY_F) &&
+      input_key_press_modifiers(frame->input, KEY_F) == 0u && frame->scene &&
+      vkr_scene_entity_alive(frame->scene, frame->selected_entity)) {
+    *frame->scene_edit = (VkrSceneEditRequest){
+        .action = VKR_SCENE_EDIT_FRAME, .entity = frame->selected_entity};
+    ui->capture.keyboard = true_v;
+  }
+}
+
 void vkr_editor_viewport_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   if (!frame->mapping_valid) {
-    editor->view_toolbar_dragging = false_v;
     editor->view_toolbar_rect_pt = (Vec4){0};
     editor->view_popup = VIEW_POPUP_NONE;
     return;
   }
-  const Vec4 scene = view_scene_rect(frame);
-  char text[3][80];
-  view_control_text(&frame->view_state, editor->grid_spacing, text);
-  Vec2 size = {30, 30};
-  for (uint32_t i = 0; i < ArrayCount(text); ++i) {
-    const Vec2 button = view_button_size(editor, ui, text[i]);
-    size.x += button.x + 4;
-    size.y = Max(size.y, button.y + 8);
-  }
-  const float32_t available = Max(0.0f, scene.z - 16);
-  editor->view_toolbar_overflow = size.x > available;
-  if (editor->view_toolbar_overflow) {
-    const Vec2 button = view_button_size(editor, ui, "Viewport v");
-    size.x = 34 + button.x;
-    size.y = Max(30.0f, button.y + 8);
-  }
-  size.x = Min(size.x, available);
-  size.y = Min(size.y, Max(0.0f, scene.w - 16));
-  const Vec2 limit = {Max(0.0f, scene.z - size.x - 16),
-                      Max(0.0f, scene.w - size.y - 16)};
-  if (!editor->view_toolbar_initialized) {
-    editor->view_toolbar_offset_pt = (Vec2){0, 46};
-    editor->view_toolbar_initialized = true_v;
-  }
+  view_shortcuts(editor, frame);
+  const ViewHeaderLayout layout = view_header_layout(editor, frame);
   const float32_t scale = ui->content_scale;
-  bool8_t gesture = editor->view_toolbar_dragging;
-  if (frame->mouse_captured || editor->commands_open ||
+  if (frame->mouse_captured || editor->cmd_active ||
       editor->menu != VKR_EDITOR_MENU_NONE) {
-    editor->view_toolbar_dragging = false_v;
     editor->view_popup = VIEW_POPUP_NONE;
   } else if (ui->mouse_pressed) {
     int32_t press_x = 0;
@@ -210,49 +264,20 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
     input_get_button_press_position(frame->input, BUTTON_LEFT, &press_x,
                                     &press_y);
     const Vec2 press = {(float32_t)press_x / scale, (float32_t)press_y / scale};
-    const Vec4 previous = editor->view_toolbar_rect_pt;
-    const Vec4 grip = {previous.x + 4, previous.y + 4, 22, previous.w - 8};
-    if (ui->mouse_input_layer <= VKR_EDITOR_VIEW_TOOLBAR_LAYER &&
-        view_contains(grip, press) && !editor->toolbar_dragging) {
-      editor->view_toolbar_grab_pt =
-          (Vec2){press.x - previous.x, press.y - previous.y};
-      editor->view_toolbar_dragging = true_v;
-      gesture = true_v;
-      editor->view_popup = VIEW_POPUP_NONE;
-    } else if (!view_contains(previous, press) &&
-               !view_contains(editor->view_popup_rect_pt, press)) {
+    if (!view_contains(layout.left, press) &&
+        !view_contains(layout.right, press) &&
+        !view_contains(editor->view_popup_rect_pt, press)) {
       editor->view_popup = VIEW_POPUP_NONE;
     }
   }
   if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
     editor->view_popup = VIEW_POPUP_NONE;
   }
-  if (editor->view_toolbar_dragging) {
-    editor->view_toolbar_offset_pt =
-        (Vec2){(float32_t)ui->mouse_x / scale - editor->view_toolbar_grab_pt.x -
-                   scene.x - 8,
-               (float32_t)ui->mouse_y / scale - editor->view_toolbar_grab_pt.y -
-                   scene.y - 8};
-    if (!input_is_button_down(frame->input, BUTTON_LEFT)) {
-      editor->view_toolbar_dragging = false_v;
-    }
-  }
-  editor->view_toolbar_offset_pt.x =
-      vkr_clamp_f32(editor->view_toolbar_offset_pt.x, 0, limit.x);
-  editor->view_toolbar_offset_pt.y =
-      vkr_clamp_f32(editor->view_toolbar_offset_pt.y, 0, limit.y);
-  editor->view_toolbar_rect_pt =
-      (Vec4){scene.x + 8 + editor->view_toolbar_offset_pt.x,
-             scene.y + 8 + editor->view_toolbar_offset_pt.y, size.x, size.y};
+  editor->view_toolbar_rect_pt = layout.left;
   view_popup_layout(editor, frame);
-  view_register_rect(ui, editor->view_toolbar_rect_pt);
+  view_register_rect(ui, layout.left);
+  view_register_rect(ui, layout.right);
   view_register_rect(ui, editor->view_popup_rect_pt);
-  if (gesture) {
-    (void)vkr_ui_input_layer_register(
-        ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
-        (VkrUiRect){0, 0, (float32_t)ui->target_width,
-                    (float32_t)ui->target_height});
-  }
 }
 
 static VkrUiPanelConfig view_panel(Vec4 rect) {
@@ -262,143 +287,274 @@ static VkrUiPanelConfig view_panel(Vec4 rect) {
   panel.placement.justify = VKR_UI_ALIGN_START;
   panel.placement.align = VKR_UI_ALIGN_START;
   panel.placement.margin_pt = (VkrUiEdges){rect.y, 0, 0, rect.x};
-  panel.style = vkr_editor_glass_style();
-  panel.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+  panel.style = vkr_editor_overlay_style();
   panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){rect.z, rect.w};
-  panel.style.gap_pt = 0;
-  panel.style.background_color.w = 0.96f;
   panel.clip_children = true_v;
   return panel;
 }
 
-static bool8_t view_button(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
-                           const char *text, Vec2 position, bool8_t active,
-                           bool8_t disabled, const char *tooltip) {
-  VkrUiWidgetConfig button =
-      vkr_editor_menu_button_config(0, active, editor->heading_font);
-  button.placement.justify = VKR_UI_ALIGN_START;
-  button.placement.align = VKR_UI_ALIGN_START;
-  button.placement.margin_pt = (VkrUiEdges){position.y, 0, 0, position.x};
-  button.style.font_size_pt = 11;
-  button.style.padding_pt = (VkrUiEdges){5, 8, 5, 8};
-  button.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-  button.style.border_color =
-      active ? (Vec4){0.30f, 0.55f, 0.72f, 1} : (Vec4){0.19f, 0.23f, 0.29f, 1};
-  button.disabled = disabled;
-  button.tooltip = view_string(tooltip);
-  return vkr_ui_button(ui, view_string(id), view_string(text), &button);
+/* Dropdown chip: icon, value and a trailing caret. */
+static bool8_t view_chip(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
+                         uint32_t column, VkrUiIcon icon, const char *text,
+                         bool8_t open, bool8_t active, bool8_t disabled,
+                         bool8_t compact, const char *tooltip, uint32_t popup) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
+  chip.placement.column = column;
+  chip.placement.row = 0;
+  chip.placement.justify = VKR_UI_ALIGN_STRETCH;
+  chip.placement.align = VKR_UI_ALIGN_STRETCH;
+  chip.fill = true_v;
+  vkr_editor_ghost_style(&chip);
+  chip.style.padding_pt = (VkrUiEdges){3, 20, 3, 8};
+  chip.style.font_size_pt = theme->font_body;
+  chip.style.text_color = theme->text;
+  chip.icon = icon;
+  chip.icon_size_pt = 15.0f;
+  chip.icon_color = active ? theme->accent_hover : theme->text_secondary;
+  if (open)
+    chip.style.background_color = theme->raised_hover;
+  chip.disabled = disabled;
+  chip.tooltip = open ? (String8){0} : view_string(tooltip);
+  (void)vkr_ui_push_id_label(ui, view_string(id));
+  const VkrUiId chip_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("chip"));
+  const bool8_t clicked =
+      vkr_ui_button(ui, string8_lit("chip"),
+                    compact ? (String8){0} : view_string(text), &chip);
+  VkrUiWidgetConfig caret = vkr_ui_widget_config_default();
+  caret.placement.column = column;
+  caret.placement.row = 0;
+  caret.placement.justify = VKR_UI_ALIGN_END;
+  caret.placement.align = VKR_UI_ALIGN_CENTER;
+  caret.placement.margin_pt.right = 5.0f;
+  caret.icon = VKR_UI_ICON_CHEVRON_DOWN;
+  caret.icon_size_pt = 10.0f;
+  caret.icon_color = theme->text_secondary;
+  caret.disabled = disabled;
+  vkr_ui_label(ui, string8_lit("caret"), (String8){0}, &caret);
+  (void)vkr_ui_pop_id(ui);
+  if (clicked) {
+    VkrUiRect rect = {0};
+    if (vkr_ui_widget_rect(ui, chip_id, &rect)) {
+      const float32_t scale = ui->content_scale;
+      editor->view_popup_anchor_pt =
+          (Vec4){rect.x / scale, rect.y / scale, rect.width / scale,
+                 rect.height / scale};
+    }
+    editor->view_popup = editor->view_popup == popup ? VIEW_POPUP_NONE : popup;
+  }
+  return clicked;
+}
+
+static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             bool8_t disabled) {
+  const uint32_t popup = editor->view_popup;
+  const uint32_t count = view_popup_count(popup);
+  if (!count)
+    return;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = frame->ui;
+  view_popup_layout(editor, frame);
+  view_register_rect(ui, editor->view_popup_rect_pt);
+  VkrUiTrack rows[16];
+  for (uint32_t i = 0; i < count; ++i)
+    rows[i] = (VkrUiTrack){.value = VIEW_POPUP_ROW_PT, .unit = VKR_UI_TRACK_PX};
+  VkrUiPanelConfig panel = view_panel(editor->view_popup_rect_pt);
+  panel.style = vkr_editor_glass_style();
+  panel.style.padding_pt = (VkrUiEdges){5, 5, 5, 5};
+  panel.style.gap_pt = 0;
+  panel.style.min_size_pt = panel.style.max_size_pt =
+      (Vec2){editor->view_popup_rect_pt.z, editor->view_popup_rect_pt.w};
+  panel.rows = rows;
+  panel.row_count = count;
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.viewport.options"), &panel))
+    return;
+  VkrSampleViewState next = frame->view_state;
+  for (uint32_t i = 0; i < count; ++i) {
+    char text[64];
+    bool8_t checked = false_v;
+    VkrUiIcon icon = VKR_UI_ICON_NONE;
+    switch (popup) {
+    case VIEW_POPUP_CAMERA:
+      snprintf(text, sizeof(text), "%s%s", view_camera_names[i],
+               i ? "  (orthographic)" : "");
+      checked = (uint32_t)next.camera_view == i;
+      break;
+    case VIEW_POPUP_RENDER:
+      snprintf(text, sizeof(text), "%s", view_render_modes[i].name);
+      checked = next.render_mode == view_render_modes[i].mode;
+      break;
+    case VIEW_POPUP_GRID:
+      if (i == 0) {
+        snprintf(text, sizeof(text), "Show grid");
+        checked = next.grid_enabled;
+      } else {
+        snprintf(
+            text, sizeof(text), "%s cells  (%.4g u)",
+            i == 1 ? "Smaller" : "Larger",
+            (double)vkr_clamp_f32(next.grid_spacing * (i == 1 ? 0.5f : 2.0f),
+                                  0.001f, 10000.0f));
+        icon = i == 1 ? VKR_UI_ICON_ZOOM_OUT : VKR_UI_ICON_ZOOM_IN;
+      }
+      break;
+    case VIEW_POPUP_SPEED:
+      snprintf(text, sizeof(text), "%.3g units / second",
+               (double)view_camera_speeds[i]);
+      checked = fabsf(next.camera_speed - view_camera_speeds[i]) < 0.001f;
+      break;
+    default:
+      break;
+    }
+    VkrUiWidgetConfig item = vkr_ui_widget_config_default();
+    item.placement.column = 0;
+    item.placement.row = i;
+    item.fill = true_v;
+    vkr_editor_ghost_style(&item);
+    item.style.hover_background_color = theme->accent;
+    item.style.padding_pt = (VkrUiEdges){3, 8, 3, 8};
+    item.style.text_color = theme->text;
+    item.style.font_size_pt = theme->font_body;
+    item.icon = checked ? VKR_UI_ICON_CHECK : icon;
+    item.icon_size_pt = 14.0f;
+    item.icon_color = checked ? theme->accent_hover : theme->text_secondary;
+    if (item.icon == VKR_UI_ICON_NONE)
+      item.style.padding_pt.left += 20.0f;
+    item.disabled = disabled;
+    (void)vkr_ui_push_id_u64(ui, (uint64_t)popup * 16 + i);
+    if (vkr_ui_button(ui, string8_lit("option"), view_string(text), &item)) {
+      if (popup == VIEW_POPUP_CAMERA) {
+        next.camera_view = (VkrSampleCameraView)i;
+      } else if (popup == VIEW_POPUP_RENDER) {
+        next.render_mode = view_render_modes[i].mode;
+      } else if (popup == VIEW_POPUP_GRID) {
+        if (i == 0) {
+          next.grid_enabled = !next.grid_enabled;
+        } else {
+          next.grid_spacing = vkr_clamp_f32(
+              next.grid_spacing * (i == 1 ? 0.5f : 2.0f), 0.001f, 10000.0f);
+          next.grid_enabled = true_v;
+        }
+      } else {
+        next.camera_speed = view_camera_speeds[i];
+      }
+      view_request(frame, next);
+      if (popup != VIEW_POPUP_GRID)
+        editor->view_popup = VIEW_POPUP_NONE;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
 }
 
 void vkr_editor_viewport_build(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
-  const Vec4 rect = editor->view_toolbar_rect_pt;
-  if (rect.z <= 0 || rect.w <= 0) {
+  if (!frame->mapping_valid)
     return;
-  }
+  const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = frame->ui;
-  VkrUiPanelConfig panel = view_panel(rect);
-  (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER);
-  if (!vkr_ui_panel_begin(ui, string8_lit("editor.viewport.toolbar"), &panel)) {
-    (void)vkr_ui_input_layer_set(ui, 0);
+  const ViewHeaderLayout layout = view_header_layout(editor, frame);
+  if (layout.left.z <= 0 || layout.left.w <= 0)
     return;
-  }
-  VkrUiWidgetConfig grip = vkr_ui_widget_config_default();
-  grip.placement.column = 0;
-  grip.placement.row = 0;
-  grip.placement.justify = VKR_UI_ALIGN_START;
-  grip.placement.align = VKR_UI_ALIGN_START;
-  grip.style.min_size_pt = grip.style.max_size_pt = (Vec2){22, rect.w - 8};
-  grip.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
-  grip.icon = VKR_UI_ICON_GRIP;
-  grip.icon_size_pt = 16;
-  grip.tooltip = string8_lit("Drag viewport controls");
-  (void)vkr_ui_button(ui, string8_lit("grip"), (String8){0}, &grip);
   const bool8_t disabled =
       !frame->view_request || frame->scene_rendering_stopped;
-  if (editor->view_toolbar_overflow) {
-    /* An open dropdown replaces its button tooltip, which would cover it. */
-    if (view_button(editor, ui, "overflow", "Viewport v", (Vec2){26, 0},
-                    editor->view_popup != VIEW_POPUP_NONE, disabled,
-                    editor->view_popup != VIEW_POPUP_NONE
-                        ? ""
-                        : "Camera, view mode and grid controls")) {
-      editor->view_popup =
-          editor->view_popup ? VIEW_POPUP_NONE : VIEW_POPUP_OVERFLOW;
-    }
-  } else {
-    char text[3][80];
-    view_control_text(&frame->view_state, editor->grid_spacing, text);
-    const char *ids[] = {"camera", "render", "grid"};
-    const char *tips[] = {
-        "Camera projection and orthographic direction",
-        "Viewport rendering mode",
-        "World grid: numbered columns, lettered rows and cell size"};
-    float32_t x = 26;
-    for (uint32_t i = 0; i < ArrayCount(text); ++i) {
-      const uint32_t popup = i + VIEW_POPUP_CAMERA;
-      if (view_button(
-              editor, ui, ids[i], text[i], (Vec2){x, 0},
-              editor->view_popup == popup ||
-                  (popup == VIEW_POPUP_GRID && frame->view_state.grid_enabled),
-              disabled, editor->view_popup == popup ? "" : tips[i])) {
-        editor->view_popup =
-            editor->view_popup == popup ? VIEW_POPUP_NONE : popup;
-      }
-      x += view_button_size(editor, ui, text[i]).x + 4;
-    }
+  char text[4][48];
+  view_chip_text(&frame->view_state, editor->grid_spacing, text);
+  (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER);
+
+  const VkrUiTrack left_columns[] = {
+      {.value = layout.chips[0], .unit = VKR_UI_TRACK_PX},
+      {.value = layout.chips[1], .unit = VKR_UI_TRACK_PX},
+      {.value = layout.chips[2], .unit = VKR_UI_TRACK_PX},
+  };
+  const VkrUiTrack chip_row = {.value = VIEW_CHIP_HEIGHT_PT,
+                               .unit = VKR_UI_TRACK_PX};
+  VkrUiPanelConfig left = view_panel(layout.left);
+  left.columns = left_columns;
+  left.column_count = ArrayCount(left_columns);
+  left.rows = &chip_row;
+  left.row_count = 1u;
+  if (vkr_ui_panel_begin(ui, string8_lit("editor.viewport.toolbar"), &left)) {
+    const bool8_t perspective =
+        frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
+    (void)view_chip(editor, ui, "camera", 0, VKR_UI_ICON_PERSPECTIVE, text[0],
+                    editor->view_popup == VIEW_POPUP_CAMERA, !perspective,
+                    disabled, layout.compact,
+                    "Camera projection and orthographic direction",
+                    VIEW_POPUP_CAMERA);
+    (void)view_chip(editor, ui, "render", 1, VKR_UI_ICON_VIEW_MODE, text[1],
+                    editor->view_popup == VIEW_POPUP_RENDER,
+                    frame->view_state.render_mode != VKR_RENDER_MODE_DEFAULT,
+                    disabled, layout.compact, "Viewport rendering mode",
+                    VIEW_POPUP_RENDER);
+    (void)view_chip(editor, ui, "grid", 2, VKR_UI_ICON_GRID, text[2],
+                    editor->view_popup == VIEW_POPUP_GRID,
+                    frame->view_state.grid_enabled, disabled, layout.compact,
+                    "World grid: numbered columns, lettered rows and cell size",
+                    VIEW_POPUP_GRID);
+    (void)vkr_ui_panel_end(ui);
   }
-  (void)vkr_ui_panel_end(ui);
-  view_popup_layout(editor, frame);
-  const uint32_t popup = editor->view_popup;
-  if (popup) {
-    view_register_rect(ui, editor->view_popup_rect_pt);
-    panel = view_panel(editor->view_popup_rect_pt);
-    if (vkr_ui_panel_begin(ui, string8_lit("editor.viewport.options"),
-                           &panel)) {
-      char text[5][80];
-      const uint32_t count = view_popup_items(popup, &frame->view_state,
-                                              editor->grid_spacing, text);
-      float32_t y = 0;
-      VkrSampleViewState next = frame->view_state;
-      for (uint32_t i = 0; i < count; ++i) {
-        const bool8_t active =
-            popup == VIEW_POPUP_CAMERA ? (uint32_t)next.camera_view == i
-            : popup == VIEW_POPUP_RENDER
-                ? next.render_mode == view_render_modes[i].mode
-            : popup == VIEW_POPUP_GRID && i == 0 ? next.grid_enabled
-                                                 : false_v;
-        (void)vkr_ui_push_id_u64(ui, (uint64_t)popup * 8 + i);
-        if (view_button(editor, ui, "option", text[i], (Vec2){0, y}, active,
-                        disabled, "")) {
-          if (popup == VIEW_POPUP_OVERFLOW) {
-            editor->view_popup = i + VIEW_POPUP_CAMERA;
-          } else {
-            if (popup == VIEW_POPUP_CAMERA) {
-              next.camera_view = (VkrSampleCameraView)i;
-            } else if (popup == VIEW_POPUP_RENDER) {
-              next.render_mode = view_render_modes[i].mode;
-            } else if (i == 0) {
-              next.grid_enabled = !next.grid_enabled;
-            } else {
-              next.grid_spacing = vkr_clamp_f32(
-                  next.grid_spacing * (i == 1 ? 0.5f : 2.0f), 0.001f, 10000.0f);
-              next.grid_enabled = true_v;
-            }
-            if (frame->view_request) {
-              *frame->view_request =
-                  (VkrSampleViewRequest){.value = next, .apply = true_v};
-            }
-            if (popup != VIEW_POPUP_GRID) {
-              editor->view_popup = VIEW_POPUP_NONE;
-            }
-          }
+
+  if (layout.show_right) {
+    const VkrUiTrack right_columns[] = {
+        {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
+        {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
+        {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
+        {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
+        {.value = 10.0f, .unit = VKR_UI_TRACK_PX},
+        {.value = layout.chips[3], .unit = VKR_UI_TRACK_PX},
+    };
+    VkrUiPanelConfig right = view_panel(layout.right);
+    right.columns = right_columns;
+    right.column_count = ArrayCount(right_columns);
+    right.rows = &chip_row;
+    right.row_count = 1u;
+    if (vkr_ui_panel_begin(ui, string8_lit("editor.viewport.tools"), &right)) {
+      for (uint32_t i = 0; i < ArrayCount(view_tools); ++i) {
+        const bool8_t selected =
+            frame->view_state.gizmo_tool == view_tools[i].mode;
+        VkrUiWidgetConfig tool = vkr_editor_icon_button_config(
+            i, 0, view_tools[i].icon,
+            string8_create_formatted(ui->frame_allocator, "%s tool  (%s)",
+                                     view_tools[i].name, view_tools[i].key));
+        tool.style.min_size_pt = tool.style.max_size_pt =
+            (Vec2){VIEW_CHIP_HEIGHT_PT, VIEW_CHIP_HEIGHT_PT};
+        tool.style.text_color = theme->text;
+        tool.icon_color = theme->text_secondary;
+        vkr_editor_toggle_style(&tool, selected);
+        if (selected) {
+          tool.style.background_color = theme->accent;
+          tool.style.hover_background_color = theme->accent_hover;
+          tool.icon_color = theme->text_on_accent;
+        }
+        tool.disabled = disabled;
+        (void)vkr_ui_push_id_u64(ui, i);
+        if (vkr_ui_button(ui, string8_lit("tool"), (String8){0}, &tool)) {
+          VkrSampleViewState next = frame->view_state;
+          next.gizmo_tool = view_tools[i].mode;
+          view_request(frame, next);
         }
         (void)vkr_ui_pop_id(ui);
-        y += view_button_size(editor, ui, text[i]).y + 2;
       }
+      VkrUiPanelConfig divider = vkr_ui_panel_config_default();
+      divider.placement.column = 4;
+      divider.placement.row = 0;
+      divider.placement.justify = VKR_UI_ALIGN_CENTER;
+      divider.placement.margin_pt = (VkrUiEdges){5, 0, 5, 0};
+      divider.style.min_size_pt = divider.style.max_size_pt =
+          (Vec2){1.0f, 16.0f};
+      divider.style.background_color = theme->border_strong;
+      if (vkr_ui_panel_begin(ui, string8_lit("divider"), &divider))
+        (void)vkr_ui_panel_end(ui);
+      (void)view_chip(editor, ui, "speed", 5, VKR_UI_ICON_SPEED, text[3],
+                      editor->view_popup == VIEW_POPUP_SPEED, false_v, disabled,
+                      layout.compact,
+                      "Free-camera flight speed (units per second)",
+                      VIEW_POPUP_SPEED);
       (void)vkr_ui_panel_end(ui);
     }
   }
+  view_popup_build(editor, frame, disabled);
   (void)vkr_ui_input_layer_set(ui, 0);
 }
 
@@ -732,9 +888,10 @@ static void grid_build_line_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
     widget.placement.justify = VKR_UI_ALIGN_START;
     widget.placement.align = VKR_UI_ALIGN_START;
     widget.style.min_size_pt = widget.style.max_size_pt = (Vec2){1, 1};
-    widget.style.text_color = line->world_axis
-                                  ? (Vec4){0.42f, 0.72f, 0.88f, 0.8f}
-                                  : (Vec4){0.59f, 0.67f, 0.74f, 0.32f};
+    widget.style.text_color =
+        line->world_axis
+            ? vkr_ui_color_alpha(vkr_ui_theme()->accent_hover, 0.8f)
+            : (Vec4){0.80f, 0.84f, 0.90f, 0.28f};
     const Vec2 hidden[4] = {{0}, {0}, {0}, {0}};
     vkr_ui_bezier(ui, string8_lit("line"), hidden,
                   line->world_axis ? 1.25f : 0.75f, &widget);
@@ -747,8 +904,9 @@ static void grid_build_line_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
       widget.style.min_size_pt = widget.style.max_size_pt = line->label_size_pt;
       widget.style.padding_pt = (VkrUiEdges){2, 4, 2, 4};
       widget.style.font_size_pt = 10;
-      widget.style.text_color = (Vec4){0.84f, 0.89f, 0.94f, 1};
-      widget.style.background_color = (Vec4){0.035f, 0.045f, 0.06f, 0.86f};
+      widget.style.text_color = vkr_ui_theme()->text;
+      widget.style.background_color = vkr_ui_theme()->overlay;
+      widget.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
       widget.style.corner_radius_pt = (Vec4){2, 2, 2, 2};
       widget.text.font = editor->heading_font;
       widget.placement.margin_pt = (VkrUiEdges){100000, 0, 0, 100000};
@@ -814,6 +972,7 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   panel.style.padding_pt = (VkrUiEdges){0};
   panel.style.border_pt = (VkrUiEdges){0};
   panel.style.background_color = (Vec4){0};
+  panel.style.shadow_color = (Vec4){0};
   editor->grid_panel = vkr_ui_id_stack_widget_label(
       &ui->id_stack, string8_lit("editor.world.grid"));
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.world.grid"), &panel)) {
@@ -913,4 +1072,171 @@ void vkr_editor_grid_project(VkrEditorUi *editor,
     }
     (void)vkr_ui_widget_set_rect(frame->ui, line->label, label);
   }
+}
+
+/* ---- Orientation gizmo ---- */
+
+#define VIEW_GIZMO_SIZE_PT 76.0f
+#define VIEW_GIZMO_AXIS_PT 26.0f
+
+/* Screen-space direction and depth order of each world axis, derived from
+ * the unjittered view-projection around the view center. */
+typedef struct ViewGizmoAxis {
+  Vec2 direction;
+  float32_t depth;
+} ViewGizmoAxis;
+
+static bool8_t view_gizmo_axes(const VkrSampleUiFrame *frame,
+                               ViewGizmoAxis out_axes[3]) {
+  const Mat4 inverse = mat4_inverse(frame->view_projection);
+  Vec4 center = mat4_mul_vec4(inverse, (Vec4){0.0f, 0.0f, 0.5f, 1.0f});
+  if (!isfinite(center.w) || fabsf(center.w) < 1e-6f)
+    return false_v;
+  const Vec3 origin = {center.x / center.w, center.y / center.w,
+                       center.z / center.w};
+  const Vec4 base =
+      mat4_mul_vec4(frame->view_projection, vec3_to_vec4(origin, 1.0f));
+  if (!isfinite(base.w) || fabsf(base.w) < 1e-6f)
+    return false_v;
+  const Vec2 base_ndc = {base.x / base.w, base.y / base.w};
+  /* A step proportional to the view distance keeps the probe near-linear. */
+  const float32_t step = Max(0.01f, fabsf(base.w) * 0.05f);
+  static const Vec3 axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  for (uint32_t i = 0; i < 3; ++i) {
+    const Vec3 tip = vec3_add(origin, vec3_scale(axes[i], step));
+    const Vec4 clip =
+        mat4_mul_vec4(frame->view_projection, vec3_to_vec4(tip, 1.0f));
+    if (!isfinite(clip.w) || fabsf(clip.w) < 1e-6f)
+      return false_v;
+    /* NDC is Y-down in this convention, matching UI space. */
+    Vec2 delta = {clip.x / clip.w - base_ndc.x, clip.y / clip.w - base_ndc.y};
+    const float32_t aspect =
+        frame->mapping.image_rect_px.w > 0.0f
+            ? frame->mapping.image_rect_px.z / frame->mapping.image_rect_px.w
+            : 1.0f;
+    delta.x *= aspect;
+    const float32_t length = sqrtf(delta.x * delta.x + delta.y * delta.y);
+    out_axes[i].direction = length > 1e-6f
+                                ? (Vec2){delta.x / length, delta.y / length}
+                                : (Vec2){0.0f, 0.0f};
+    /* Keep foreshortening: axes pointing at the camera draw shorter. */
+    const float32_t reference = step / Max(fabsf(base.w), 1e-6f);
+    const float32_t scale = Min(1.0f, length / Max(reference, 1e-6f));
+    out_axes[i].direction.x *= scale;
+    out_axes[i].direction.y *= scale;
+    out_axes[i].depth = clip.w - base.w;
+  }
+  return true_v;
+}
+
+void vkr_editor_orientation_gizmo_build(VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame) {
+  if (!frame->mapping_valid || !frame->scene ||
+      frame->scene_rendering_stopped || !frame->view_request)
+    return;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t scale = ui->content_scale;
+  const Vec4 image = frame->mapping.image_rect_px;
+  if (image.z / scale < 240.0f || image.w / scale < 200.0f)
+    return;
+  ViewGizmoAxis axes[3];
+  if (!view_gizmo_axes(frame, axes))
+    return;
+  const float32_t size = VIEW_GIZMO_SIZE_PT;
+  const Vec2 origin_pt = {image.x / scale + 12.0f,
+                          (image.y + image.w) / scale - size - 12.0f};
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement.column = panel.placement.row = 0;
+  panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+  panel.placement.margin_pt = (VkrUiEdges){origin_pt.y, 0, 0, origin_pt.x};
+  panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){size, size};
+  panel.style.corner_radius_pt =
+      (Vec4){size * 0.5f, size * 0.5f, size * 0.5f, size * 0.5f};
+  panel.style.background_color = vkr_ui_color_alpha(theme->overlay, 0.45f);
+  (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER);
+  (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+                                    (VkrUiRect){origin_pt.x * scale,
+                                                origin_pt.y * scale,
+                                                size * scale, size * scale});
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.view.gizmo"), &panel)) {
+    (void)vkr_ui_input_layer_set(ui, 0);
+    return;
+  }
+  const Vec4 colors[3] = {theme->axis_x, theme->axis_y, theme->axis_z};
+  static const char *names[3] = {"X", "Y", "Z"};
+  static const VkrSampleCameraView positive_views[3] = {
+      VKR_SAMPLE_CAMERA_RIGHT, VKR_SAMPLE_CAMERA_TOP,
+      VKR_SAMPLE_CAMERA_PERSPECTIVE};
+  static const VkrSampleCameraView negative_views[3] = {
+      VKR_SAMPLE_CAMERA_LEFT, VKR_SAMPLE_CAMERA_BOTTOM,
+      VKR_SAMPLE_CAMERA_PERSPECTIVE};
+  const Vec2 center = {size * 0.5f, size * 0.5f};
+  /* Draw back-facing ends first so near ends sit on top. */
+  uint32_t order[6];
+  float32_t depth[6];
+  for (uint32_t i = 0; i < 3; ++i) {
+    order[i * 2] = i * 2;
+    order[i * 2 + 1] = i * 2 + 1;
+    depth[i * 2] = axes[i].depth;
+    depth[i * 2 + 1] = -axes[i].depth;
+  }
+  for (uint32_t a = 0; a < 6; ++a)
+    for (uint32_t b = a + 1; b < 6; ++b)
+      if (depth[order[b]] > depth[order[a]]) {
+        const uint32_t swap = order[a];
+        order[a] = order[b];
+        order[b] = swap;
+      }
+  for (uint32_t k = 0; k < 6; ++k) {
+    const uint32_t end = order[k];
+    const uint32_t axis = end / 2;
+    const bool8_t positive = (end % 2) == 0;
+    const float32_t sign = positive ? 1.0f : -1.0f;
+    const Vec2 tip = {
+        center.x + axes[axis].direction.x * VIEW_GIZMO_AXIS_PT * sign,
+        center.y + axes[axis].direction.y * VIEW_GIZMO_AXIS_PT * sign};
+    (void)vkr_ui_push_id_u64(ui, end);
+    if (positive) {
+      VkrUiWidgetConfig line = vkr_ui_widget_config_default();
+      line.placement.column = line.placement.row = 0;
+      line.placement.justify = line.placement.align = VKR_UI_ALIGN_START;
+      line.style.min_size_pt = line.style.max_size_pt = (Vec2){size, size};
+      line.style.text_color = colors[axis];
+      const Vec2 points[4] = {center, center, tip, tip};
+      vkr_ui_bezier(ui, string8_lit("axis"), points, 2.0f, &line);
+    }
+    const float32_t cap = positive ? 16.0f : 11.0f;
+    VkrUiWidgetConfig end_cap = vkr_ui_widget_config_default();
+    end_cap.placement.column = end_cap.placement.row = 0;
+    end_cap.placement.justify = end_cap.placement.align = VKR_UI_ALIGN_START;
+    end_cap.placement.margin_pt =
+        (VkrUiEdges){tip.y - cap * 0.5f, 0, 0, tip.x - cap * 0.5f};
+    end_cap.style.min_size_pt = end_cap.style.max_size_pt = (Vec2){cap, cap};
+    end_cap.style.padding_pt = (VkrUiEdges){0};
+    end_cap.style.corner_radius_pt =
+        (Vec4){cap * 0.5f, cap * 0.5f, cap * 0.5f, cap * 0.5f};
+    end_cap.style.background_color =
+        positive ? colors[axis] : vkr_ui_color_alpha(colors[axis], 0.25f);
+    end_cap.style.border_pt =
+        positive ? (VkrUiEdges){0} : (VkrUiEdges){1.5f, 1.5f, 1.5f, 1.5f};
+    end_cap.style.border_color = colors[axis];
+    end_cap.style.hover_background_color = theme->text;
+    end_cap.style.text_color = theme->text_on_accent;
+    end_cap.style.font_size_pt = 10.0f;
+    end_cap.text.font = editor->heading_font;
+    end_cap.tooltip = string8_create_formatted(
+        ui->frame_allocator, "%s%s view", positive ? "+" : "-", names[axis]);
+    if (vkr_ui_button(ui, string8_lit("cap"),
+                      positive ? string8_create((uint8_t *)names[axis], 1u)
+                               : (String8){0},
+                      &end_cap)) {
+      VkrSampleViewState next = frame->view_state;
+      next.camera_view = positive ? positive_views[axis] : negative_views[axis];
+      view_request(frame, next);
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+  (void)vkr_ui_input_layer_set(ui, 0);
 }

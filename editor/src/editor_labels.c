@@ -1,6 +1,22 @@
 #include "core/logger.h"
 #include "editor_internal.h"
 
+#include <math.h>
+
+#define EDITOR_LABEL_SIZE_PT 26.0f
+
+/* Readable tint from a linear light color: normalized, display-encoded and
+ * lifted toward white so dim or saturated lights stay legible. */
+static Vec4 editor_label_tint(Vec3 linear) {
+  const float32_t peak = Max(linear.x, Max(linear.y, linear.z));
+  if (!(peak > 0.0f))
+    return (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
+  Vec4 tint = {powf(linear.x / peak, 1.0f / 2.2f),
+               powf(linear.y / peak, 1.0f / 2.2f),
+               powf(linear.z / peak, 1.0f / 2.2f), 1.0f};
+  return vkr_ui_color_mix(tint, (Vec4){1.0f, 1.0f, 1.0f, 1.0f}, 0.25f);
+}
+
 typedef struct EditorLabelBuild {
   VkrEditorUi *editor;
   const VkrSampleUiFrame *frame;
@@ -25,7 +41,8 @@ static void editor_light_labels(const VkrArchetype *arch, VkrChunk *chunk,
       build->directional
           ? vkr_entity_chunk_column_const(chunk, scene->comp_directional_light)
           : NULL;
-  const float32_t size = 32.0f;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t size = EDITOR_LABEL_SIZE_PT;
   const uint32_t count = vkr_entity_chunk_count(chunk);
   (void)vkr_ui_push_id_u64(ui, build->directional ? 1u : 2u);
   for (uint32_t i = 0;
@@ -37,32 +54,36 @@ static void editor_light_labels(const VkrArchetype *arch, VkrChunk *chunk,
       continue;
     const bool8_t enabled =
         build->directional ? directions[i].enabled : points[i].enabled;
+    const bool8_t selected = entities[i].u64 == frame->selected_entity.u64;
     VkrUiWidgetConfig label = vkr_ui_widget_config_default();
     label.placement = VKR_UI_PLACEMENT_DEFAULT;
     label.placement.column = label.placement.row = 0;
     label.placement.justify = label.placement.align = VKR_UI_ALIGN_START;
     label.placement.margin_pt = (VkrUiEdges){100000.0f, 0, 0, 100000.0f};
     label.style.min_size_pt = label.style.max_size_pt = (Vec2){size, size};
-    label.style.padding_pt = (VkrUiEdges){2, 2, 2, 2};
-    label.style.font_size_pt = 28;
-    label.text.font = editor->label_font;
-    label.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
-    label.style.background_color = (Vec4){0.025f, 0.035f, 0.05f, 0.86f};
-    label.style.text_color = !enabled ? (Vec4){0.5f, 0.53f, 0.58f, 1}
-                             : build->directional ? (Vec4){1, 0.79f, 0.30f, 1}
-                             : spot               ? (Vec4){0.40f, 0.83f, 1, 1}
-                                                  : (Vec4){0.60f, 1, 0.65f, 1};
-    if (entities[i].u64 == frame->selected_entity.u64) {
-      label.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-      label.style.border_color = (Vec4){1, 0.79f, 0.30f, 1};
-    }
+    label.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
+    label.style.corner_radius_pt =
+        (Vec4){size * 0.5f, size * 0.5f, size * 0.5f, size * 0.5f};
+    label.style.background_color = selected
+                                       ? vkr_ui_color_alpha(theme->accent, 0.9f)
+                                       : (Vec4){0.03f, 0.035f, 0.045f, 0.62f};
+    label.style.hover_background_color =
+        selected ? theme->accent_hover : (Vec4){0.10f, 0.11f, 0.13f, 0.85f};
+    label.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+    label.style.border_color =
+        selected ? theme->text_on_accent : (Vec4){1.0f, 1.0f, 1.0f, 0.14f};
+    label.icon = build->directional ? VKR_UI_ICON_DIRECTIONAL_LIGHT
+                 : spot             ? VKR_UI_ICON_SPOT_LIGHT
+                                    : VKR_UI_ICON_POINT_LIGHT;
+    label.icon_size_pt = 17.0f;
+    label.icon_color =
+        !enabled   ? theme->text_disabled
+        : selected ? theme->text_on_accent
+                   : editor_label_tint(build->directional ? directions[i].color
+                                                          : points[i].color);
     label.tooltip = vkr_scene_get_name(scene, entities[i]);
     (void)vkr_ui_push_id_u64(ui, entities[i].u64);
-    if (vkr_ui_button(ui, string8_lit("light"),
-                      build->directional ? string8_lit("D")
-                      : spot             ? string8_lit("S")
-                                         : string8_lit("P"),
-                      &label))
+    if (vkr_ui_button(ui, string8_lit("light"), (String8){0}, &label))
       *frame->scene_edit = (VkrSceneEditRequest){
           .action = VKR_SCENE_EDIT_SELECT, .entity = entities[i]};
     editor->label_anchors[editor->label_anchor_count++] =
@@ -187,13 +208,18 @@ void vkr_editor_labels_project(VkrEditorUi *editor,
                       vec3_to_vec4(mat4_position(transform->world), 1.0f));
     Vec2 offset = {100000.0f, 100000.0f};
     if (clip.w > 0.0f && clip.z >= 0.0f && clip.z <= clip.w) {
-      offset.x = image.z * (clip.x / clip.w * 0.5f + 0.5f) / scale - 16.0f;
-      offset.y = image.w * (clip.y / clip.w * 0.5f + 0.5f) / scale - 40.0f;
+      offset.x = image.z * (clip.x / clip.w * 0.5f + 0.5f) / scale -
+                 EDITOR_LABEL_SIZE_PT * 0.5f;
+      offset.y = image.w * (clip.y / clip.w * 0.5f + 0.5f) / scale -
+                 EDITOR_LABEL_SIZE_PT - 6.0f;
     }
-    if (offset.x < 0 || offset.y < 0 || offset.x + 32 > image.z / scale ||
-        offset.y + 32 > image.w / scale)
+    if (offset.x < 0 || offset.y < 0 ||
+        offset.x + EDITOR_LABEL_SIZE_PT > image.z / scale ||
+        offset.y + EDITOR_LABEL_SIZE_PT > image.w / scale)
       offset = (Vec2){100000.0f, 100000.0f};
     (void)vkr_ui_widget_set_rect(frame->ui, anchor.widget,
-                                 (VkrUiRect){offset.x, offset.y, 32, 32});
+                                 (VkrUiRect){offset.x, offset.y,
+                                             EDITOR_LABEL_SIZE_PT,
+                                             EDITOR_LABEL_SIZE_PT});
   }
 }

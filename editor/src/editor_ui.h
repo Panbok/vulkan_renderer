@@ -12,9 +12,12 @@ typedef struct VkrEditorProjects VkrEditorProjects;
 
 typedef enum VkrEditorMenu {
   VKR_EDITOR_MENU_NONE = 0,
-  VKR_EDITOR_MENU_SETTINGS,
-  VKR_EDITOR_MENU_METRICS,
-  VKR_EDITOR_MENU_DEBUG,
+  VKR_EDITOR_MENU_FILE,
+  VKR_EDITOR_MENU_EDIT,
+  VKR_EDITOR_MENU_VIEW,
+  VKR_EDITOR_MENU_SCENE,
+  VKR_EDITOR_MENU_HELP,
+  VKR_EDITOR_MENU_COUNT,
 } VkrEditorMenu;
 
 typedef enum VkrEditorWindowKind {
@@ -68,6 +71,40 @@ typedef struct VkrEditorGridLine {
   bool8_t world_axis;
 } VkrEditorGridLine;
 
+/* Cmd evaluator value; objects name editor data roots (view, ui, sim, scene)
+ * and lights address an entity's light component. */
+typedef enum VkrEditorCmdValueKind {
+  VKR_EDITOR_CMD_VALUE_NONE = 0,
+  VKR_EDITOR_CMD_VALUE_NUMBER,
+  VKR_EDITOR_CMD_VALUE_BOOL,
+  VKR_EDITOR_CMD_VALUE_STRING,
+  VKR_EDITOR_CMD_VALUE_VEC3,
+  VKR_EDITOR_CMD_VALUE_ENTITY,
+  VKR_EDITOR_CMD_VALUE_LIGHT,
+  VKR_EDITOR_CMD_VALUE_OBJECT,
+} VkrEditorCmdValueKind;
+
+typedef struct VkrEditorCmdValue {
+  VkrEditorCmdValueKind kind;
+  float64_t number;
+  Vec3 vector;
+  VkrEntityId entity;
+  uint32_t object;
+  char text[96];
+} VkrEditorCmdValue;
+
+typedef struct VkrEditorCmdVariable {
+  char name[32];
+  VkrEditorCmdValue value;
+} VkrEditorCmdVariable;
+
+/* What a right-click menu acts on; each kind has its own item table. */
+typedef enum VkrEditorContextKind {
+  VKR_EDITOR_CONTEXT_ENTITY = 0,
+  VKR_EDITOR_CONTEXT_DOCK_TAB,
+  VKR_EDITOR_CONTEXT_CONSOLE,
+} VkrEditorContextKind;
+
 typedef struct VkrEditorUi {
   VkrEditorPhysicsLine *physics_lines;
   uint32_t physics_line_count;
@@ -81,43 +118,77 @@ typedef struct VkrEditorUi {
   VkrEditorScenePanels *scene_panels;
   VkrEditorPhysicsSettings *physics_settings;
   VkrEditorMenu menu;
-  bool8_t labels_expanded;
+  /* Transient notification shown at the bottom of the window. */
+  char toast_text[160];
+  VkrUiIcon toast_icon;
+  Vec4 toast_color;
+  float64_t toast_seconds;
+  uint64_t toast_saved_revision;
+  bool8_t toast_saved_known;
+  uint64_t toast_scene_generation;
+  bool8_t toast_bakery_busy;
+  /* Right-click menu on a Hierarchy row, anchored at the press in points. */
+  bool8_t context_open;
+  VkrEditorContextKind context_kind;
+  Vec2 context_position_pt;
+  VkrEntityId context_entity;
+  /* VkrUiDockPanelKind of the tab a dock-tab menu acts on. */
+  uint32_t context_panel;
+  /* Mirrors of the UI system's interface zoom and reduced-motion setting,
+   * kept for workspace persistence. */
+  float32_t ui_scale;
+  bool8_t reduce_motion;
+  /* Leading top-bar space reserved for native window controls. */
+  float32_t title_inset_pt;
+  /* Pixel rectangle of the menu-bar button that opened `menu`. */
+  VkrUiRect menu_anchor_px;
   bool8_t labels_enabled;
   bool8_t labels_directional;
   bool8_t labels_spot;
   bool8_t labels_point;
-  VkrFontHandle label_font;
   /* Frame-scratch records, consumed before UI geometry preparation. */
   VkrEditorLabelAnchor *label_anchors;
   uint32_t label_anchor_count;
   uint64_t label_scene_generation;
   VkrUiId label_panel;
   bool8_t label_capacity_warned;
-  bool8_t commands_open;
-  bool8_t commands_focus_search;
-  uint32_t commands_cursor;
-  uint32_t commands_first_row;
-  int32_t commands_repeat_direction;
-  float64_t commands_repeat_remaining;
-  uint8_t commands_query[96];
-  uint32_t commands_query_length;
+  /* Cmd bar. `cmd_active` mirrors field focus for other input owners;
+   * suggestions are recomputed only when the text changes. */
+  uint8_t cmd_text[256];
+  uint32_t cmd_length;
+  VkrUiId cmd_field;
+  bool8_t cmd_active;
+  bool8_t cmd_focus_request;
+  bool8_t cmd_dirty;
+  int32_t cmd_selected;
+  uint32_t cmd_suggestion_count;
+  char cmd_suggestions[8][96];
+  char cmd_suggestion_hints[8][96];
+  VkrUiRect cmd_popup_px;
+  char cmd_history[16][256];
+  uint32_t cmd_history_count;
+  uint32_t cmd_history_cursor;
+  /* Evaluator variables, kept for the editor session. */
+  VkrEditorCmdVariable cmd_variables[32];
+  uint32_t cmd_variable_count;
+  /* Script queue: pending text, read offset and the active wait. */
+  char cmd_queue[4096];
+  uint32_t cmd_queue_length;
+  uint32_t cmd_queue_offset;
+  float64_t cmd_wait_seconds;
+  float64_t cmd_wait_scene_seconds;
   VkrFontHandle heading_font;
-  Vec2 toolbar_offset_pt;
-  Vec2 toolbar_grab_pt;
-  Vec4 toolbar_rect_pt;
-  uint32_t toolbar_columns;
-  int8_t toolbar_anchor_x;
-  int8_t toolbar_anchor_y;
-  bool8_t toolbar_initialized;
-  bool8_t toolbar_dragging;
-  Vec2 view_toolbar_offset_pt;
-  Vec2 view_toolbar_grab_pt;
+  /* Inter body text, Phosphor icon atlases and the monospace Console face. */
+  VkrFontHandle text_font;
+  VkrFontHandle mono_font;
+  VkrFontHandle icon_font;
+  VkrFontHandle icon_fill_font;
+  /* Pinned Scene header: left chip group rectangle, open dropdown, its
+   * anchor chip and popup rectangle, all in points. */
   Vec4 view_toolbar_rect_pt;
+  Vec4 view_popup_anchor_pt;
   Vec4 view_popup_rect_pt;
   uint32_t view_popup;
-  bool8_t view_toolbar_initialized;
-  bool8_t view_toolbar_dragging;
-  bool8_t view_toolbar_overflow;
   VkrUiId grid_panel;
   uint64_t grid_frame;
   VkrSampleCameraView grid_camera_view;
