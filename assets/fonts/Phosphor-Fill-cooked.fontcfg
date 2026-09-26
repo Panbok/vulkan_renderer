@@ -1,0 +1,25 @@
+# Editor icons: Phosphor fill weight (MIT, see Phosphor-LICENSE.txt). The
+# charset lists only the filled glyphs mapped by VkrUiIcon in vkr_ui_system.c.
+type=cooked_mtsdf
+source=Phosphor-Fill.ttf
+file=Phosphor-Fill-cooked.vkfa
+face=Phosphor-Fill/Regular
+face_index=0
+size=32
+charset_file=Phosphor-Fill-editor.charset
+fallback=U+E3D0
+fallback_policy=reject
+atlas_width=512
+atlas_height=512
+atlas_px_per_em=64
+field=mtsdf
+distance_range=16
+inner_padding_px=0
+outer_padding_px=0
+edge_coloring=inktrap
+edge_angle_degrees=3
+edge_seed=1
+pixel_format=rgba8_unorm
+miter_limit=1
+scanline=true
+threads=1

@@ -532,6 +532,9 @@ class Job:
                 if config_type != 'cooked_mtsdf':
                     continue
                 self.validate_bundle_dependencies(staging, config, set())
+                # Phosphor atlases draw editor icons; they are not scene fonts.
+                if config.name.startswith('Phosphor'):
+                    continue
                 asset_id = 'default-scene-font' if config.name == 'UbuntuMono-cooked.fontcfg' else config.stem
                 assets.append({'id': asset_id, 'kind': 'font', 'name': config.stem,
                     'artifacts': [{'role': 'font', 'path': managed_reference(config, staging), 'version': 1}],

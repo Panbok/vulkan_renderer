@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-25
 authority: adr
 ---
 # ADR-034: Cooked MTSDF font artifacts
@@ -28,8 +28,19 @@ float em values. Bitmap and system-font loaders remain separate compatibility
 paths; they do not redefine the cooked MTSDF contract.
 
 The repository ships cooked regular and bold Ubuntu Mono bootstrap atlases, plus
-the small bitmap compatibility atlas required during font-system startup. Normal
-app/editor build wrappers compile cooker binaries without baking these assets.
+the small bitmap compatibility atlas required during font-system startup. The
+editor also ships Inter Regular and SemiBold UI atlases and Phosphor regular and
+fill icon atlases, with their OFL and MIT licenses beside the sources. Inter
+Regular cooks the 896 Inter codepoints listed in `Inter-Regular-editor.charset`
+(Basic Latin through Latin Extended-B, Greek, Cyrillic and editor symbols) into a
+2048 by 2048 atlas (16 MiB) so user-authored names render; SemiBold stays
+Latin-1 at 1024 by 1024. Icon atlases cook only the editor's codepoint lists
+(`Phosphor-editor.charset`, `Phosphor-Fill-editor.charset`); the Fill atlas is
+512 by 512. The editor bundle
+copies the icon atlases but does not register them as scene font assets. Normal app/editor build
+wrappers compile cooker binaries without baking these assets. The cooker falls
+back to a 0.05 em underline when a face declares zero thickness, as icon fonts
+do.
 
 The regular and bold atlases use 64 atlas texels per em and a 16-texel distance
 range. This supplies a screen range of two at 8 physical pixels per em; the old

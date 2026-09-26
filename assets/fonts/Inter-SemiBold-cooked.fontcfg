@@ -1,0 +1,37 @@
+# Editor UI face (SIL OFL 1.1, see Inter-OFL.txt). Reproducible cooked MTSDF
+# configuration; runtime loading consumes only the generated .vkfa artifact.
+type=cooked_mtsdf
+source=Inter-SemiBold.ttf
+file=Inter-SemiBold-cooked.vkfa
+face=Inter/SemiBold
+face_index=0
+size=32
+charset=U+0020-U+007E
+charset=U+00A0-U+00AC
+charset=U+00AE-U+00FF
+charset=U+2013-U+2014
+charset=U+2018-U+201D
+charset=U+2022
+charset=U+2026
+charset=U+2190-U+2193
+charset=U+21E7
+charset=U+2303
+charset=U+2318
+charset=U+2325
+charset=U+232B
+fallback=U+003F
+fallback_policy=reject
+atlas_width=1024
+atlas_height=1024
+atlas_px_per_em=64
+field=mtsdf
+distance_range=16
+inner_padding_px=0
+outer_padding_px=0
+edge_coloring=inktrap
+edge_angle_degrees=3
+edge_seed=1
+pixel_format=rgba8_unorm
+miter_limit=1
+scanline=true
+threads=1

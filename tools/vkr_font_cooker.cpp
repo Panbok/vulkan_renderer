@@ -914,8 +914,12 @@ bool cook(const Config &config, const fs::path &output,
     metrics.ascender = static_cast<float>(font_metrics.ascenderY);
     metrics.descender = static_cast<float>(font_metrics.descenderY);
     metrics.underline_y = static_cast<float>(font_metrics.underlineY);
+    // Icon faces declare no underline; keep a nominal 1/20 em decoration so
+    // the artifact still carries a positive thickness.
     metrics.underline_thickness =
-        static_cast<float>(font_metrics.underlineThickness);
+        font_metrics.underlineThickness > 0.0
+            ? static_cast<float>(font_metrics.underlineThickness)
+            : 0.05f;
     metrics.distance_range = static_cast<float>(config.distance_range);
     metrics.atlas_px_per_em = static_cast<float>(config.atlas_px_per_em);
     metrics.units_per_em = face->units_per_EM;
