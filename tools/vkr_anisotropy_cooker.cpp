@@ -39,7 +39,7 @@ double dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 V3 cross(V3 a, V3 b) {
   return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-V3 normal(V3 a) { return mul(a, 1.0 / std::sqrt(dot(a, a))); }
+V3 normalize_v3(V3 a) { return mul(a, 1.0 / std::sqrt(dot(a, a))); }
 uint32_t reverse_bits(uint32_t v) {
   v = (v << 16u) | (v >> 16u);
   v = ((v & 0x55555555u) << 1u) | ((v & 0xaaaaaaaau) >> 1u);
@@ -67,7 +67,7 @@ struct GGX {
     v = {st * std::cos(phi), st * std::sin(phi), nov};
     ay = rough * rough;
     ax = ay + (1 - ay) * strength * strength;
-    vh = normal({ax * v.x, ay * v.y, v.z});
+    vh = normalize_v3({ax * v.x, ay * v.y, v.z});
     double l2 = vh.x * vh.x + vh.y * vh.y;
     t1 = l2 > 1e-16 ? mul(V3{-vh.y, vh.x, 0}, 1 / std::sqrt(l2)) : V3{1, 0, 0};
     t2 = cross(vh, t1);
@@ -80,7 +80,7 @@ struct GGX {
         (1 - blend) * std::sqrt(std::max(0.0, 1 - d.x * d.x)) + blend * d.y;
     double z = std::sqrt(std::max(0.0, 1 - d.x * d.x - y * y));
     V3 h = add(add(mul(t1, d.x), mul(t2, y)), mul(vh, z));
-    h = normal({ax * h.x, ay * h.y, std::max(0.0, h.z)});
+    h = normalize_v3({ax * h.x, ay * h.y, std::max(0.0, h.z)});
     return add(mul(h, 2 * dot(v, h)), mul(v, -1));
   }
   void evaluate(V3 l, double &f, double &pdf, double &fr) const {
@@ -88,7 +88,7 @@ struct GGX {
       f = pdf = fr = 0;
       return;
     }
-    V3 h = normal(add(v, l));
+    V3 h = normalize_v3(add(v, l));
     double q = h.x * h.x / (ax * ax) + h.y * h.y / (ay * ay) + h.z * h.z;
     double d = 1 / (pi * ax * ay * q * q);
     double rl =
@@ -121,8 +121,8 @@ struct Shape {
   V3 support;
   double mass() const {
     const double a = std::exp2(log_a), b = std::exp2(log_b);
-    return .5 *
-           (1 + dot(normal(support), normal({h * k - j * b, -k * a, a * b})));
+    return .5 * (1 + dot(normalize_v3(support),
+                         normalize_v3({h * k - j * b, -k * a, a * b})));
   }
 };
 Shape encode_inverse(const V3 cols[3]) {
@@ -141,7 +141,7 @@ Shape encode_inverse(const V3 cols[3]) {
           c10 / c22,
           c20 / c22,
           c21 / c22,
-          normal({qx, qy, qz})};
+          normalize_v3({qx, qy, qz})};
 }
 Shape shape_for(const GGX &g, double phi) {
   double pos[4] = {g.ax * 7, g.ay / g.ax * 7, std::acos(g.v.z) * 14 / pi,
@@ -286,7 +286,8 @@ VKR_MAIN(argc, argv) {
     // almost all physical mass between otherwise well-conditioned knots.
     const V3 q = shape.support;
     const double a = std::exp2(shape.log_a), b = std::exp2(shape.log_b);
-    const V3 w = normal({shape.h * shape.k - shape.j * b, -shape.k * a, a * b});
+    const V3 w =
+        normalize_v3({shape.h * shape.k - shape.j * b, -shape.k * a, a * b});
     const double basis_a = -1.0 / (1.0 + w.z);
     const double basis_b = w.x * w.y * basis_a;
     const V3 e1 = {1.0 + w.x * w.x * basis_a, basis_b, -w.x};
