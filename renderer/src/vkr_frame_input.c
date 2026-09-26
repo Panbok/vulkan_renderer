@@ -112,10 +112,24 @@ vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
     const VkrUiVertex *vertex = &list->vertices[i];
     if (!isfinite(vertex->position.x) || !isfinite(vertex->position.y) ||
         !isfinite(vertex->texcoord.x) || !isfinite(vertex->texcoord.y) ||
-        !vkr_renderer_ui_vec4_finite(vertex->color))
+        !vkr_renderer_ui_vec4_finite(vertex->color) ||
+        !vkr_renderer_ui_vec4_finite(vertex->border_color) ||
+        !vkr_renderer_ui_vec4_finite(vertex->corner_radius_px) ||
+        !isfinite(vertex->local_px.x) || !isfinite(vertex->local_px.y) ||
+        !isfinite(vertex->half_extent_px.x) ||
+        !isfinite(vertex->half_extent_px.y) || !isfinite(vertex->border_px) ||
+        !isfinite(vertex->softness_px))
       return vkr_renderer_validation_fail(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.vertices", "contains a non-finite vertex");
+    if (vertex->mode >= VKR_UI_DRAW_MODE_COUNT || vertex->border_px < 0.0f ||
+        vertex->softness_px < 0.0f || vertex->corner_radius_px.x < 0.0f ||
+        vertex->corner_radius_px.y < 0.0f ||
+        vertex->corner_radius_px.z < 0.0f || vertex->corner_radius_px.w < 0.0f)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.vertices",
+          "contains an unknown mode or negative box data");
   }
   for (uint32_t i = 0u; i < list->index_count; ++i) {
     if (list->indices[i] >= list->vertex_count)
@@ -150,45 +164,37 @@ vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.batches.scissor_rect_px",
           "must contain integral bounds within the UI attachment");
-    if (batch->mode >= VKR_UI_DRAW_MODE_COUNT ||
-        !isfinite(batch->screen_px_range) ||
-        !isfinite(batch->sdf_unit_range.x) ||
-        !isfinite(batch->sdf_unit_range.y) ||
-        !isfinite(batch->rect_extent_px.x) ||
-        !isfinite(batch->rect_extent_px.y) ||
-        !vkr_renderer_ui_vec4_finite(batch->corner_radius_px))
+    if (!isfinite(batch->sdf_unit_range.x) ||
+        !isfinite(batch->sdf_unit_range.y))
       return vkr_renderer_validation_fail(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.batches", "contains non-finite root data");
-    if ((batch->mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ||
-         batch->mode == VKR_UI_DRAW_MODE_BITMAP_TEXT) &&
-        batch->texture.id == 0u)
-      return vkr_renderer_validation_fail(
-          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-          "packet.ui.draw_list.batches.texture",
-          "text batches require an atlas texture");
     if (batch->texture.id != 0u && batch->texture.id != UINT32_MAX &&
         batch->texture.generation == VKR_INVALID_ID)
       return vkr_renderer_validation_fail(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.batches.texture",
           "contains an invalid texture generation");
-    if (batch->mode == VKR_UI_DRAW_MODE_MTSDF_TEXT &&
-        (batch->screen_px_range <= 0.0f || batch->sdf_unit_range.x <= 0.0f ||
-         batch->sdf_unit_range.y <= 0.0f))
-      return vkr_renderer_validation_fail(
-          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-          "packet.ui.draw_list.batches.sdf_unit_range",
-          "MTSDF batches require positive range data");
-    if (batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT &&
-        (batch->texture.id != 0u || batch->rect_extent_px.x <= 0.0f ||
-         batch->rect_extent_px.y <= 0.0f || batch->corner_radius_px.x < 0.0f ||
-         batch->corner_radius_px.y < 0.0f || batch->corner_radius_px.z < 0.0f ||
-         batch->corner_radius_px.w < 0.0f))
-      return vkr_renderer_validation_fail(
-          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-          "packet.ui.draw_list.batches",
-          "rounded rectangles require untextured positive root geometry");
+    /* Glyph and image vertices sample the batch texture; untextured modes
+     * may share any batch. */
+    for (uint32_t index = batch->first_index;
+         index < batch->first_index + batch->index_count; ++index) {
+      const uint32_t mode = list->vertices[list->indices[index]].mode;
+      const bool8_t samples = mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ||
+                              mode == VKR_UI_DRAW_MODE_BITMAP_TEXT ||
+                              mode == VKR_UI_DRAW_MODE_IMAGE;
+      if (samples && batch->texture.id == 0u)
+        return vkr_renderer_validation_fail(
+            out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+            "packet.ui.draw_list.batches.texture",
+            "glyph and image vertices require a batch texture");
+      if (mode == VKR_UI_DRAW_MODE_MTSDF_TEXT &&
+          (batch->sdf_unit_range.x <= 0.0f || batch->sdf_unit_range.y <= 0.0f))
+        return vkr_renderer_validation_fail(
+            out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+            "packet.ui.draw_list.batches.sdf_unit_range",
+            "MTSDF vertices require positive range data");
+    }
   }
   if (expected_first_index != list->index_count)
     return vkr_renderer_validation_fail(

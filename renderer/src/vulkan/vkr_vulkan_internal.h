@@ -99,12 +99,6 @@
 #ifndef VKR_VULKAN_PACKET_UI_FRAG_SPV
 #define VKR_VULKAN_PACKET_UI_FRAG_SPV "packet.ui.frag.spv"
 #endif
-#ifndef VKR_VULKAN_PACKET_UI_RECT_VERT_SPV
-#define VKR_VULKAN_PACKET_UI_RECT_VERT_SPV "packet.ui_rect.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV
-#define VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV "packet.ui_rect.frag.spv"
-#endif
 #ifndef VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV "packet.ibl_prefilter.comp.spv"
 #endif
@@ -450,7 +444,6 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_UI,
   VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
   VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
-  VKR_VULKAN_PACKET_PIPELINE_UI_RECT,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW,
@@ -487,8 +480,6 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
   VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT,
-  VKR_VULKAN_PACKET_SHADER_UI_RECT_VERTEX,
-  VKR_VULKAN_PACKET_SHADER_UI_RECT_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
@@ -1587,14 +1578,17 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanUiRoot {
   uint32_t sampler;
   /** target width/height followed by the normalized MTSDF unit range. */
   Vec4 target_unit_range;
-  Vec2 rect_extent;
-  uint32_t mode;
+  /** Bit 0: the batch texture is bound. */
   uint32_t flags;
-  /** top-left, top-right, bottom-right, bottom-left. */
-  Vec4 corner_radii;
+  uint32_t reserved;
   uint64_t display_output;
   uint64_t display_output_reserved;
 } VkrVulkanUiRoot;
+
+_Static_assert(offsetof(VkrVulkanUiRoot, flags) == 32u &&
+                   offsetof(VkrVulkanUiRoot, display_output) == 40u &&
+                   sizeof(VkrVulkanUiRoot) == 64u,
+               "Vulkan UI root ABI drift");
 
 /** Non-world utility shaders retain a single-draw root because their model,
  * text controls, or source texture genuinely vary with that draw. */
@@ -1666,13 +1660,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
 } VkrVulkanPacketUtilityRoot;
 
 _Static_assert(sizeof(VkrVertex3d) == 64u, "Shared vertex ABI drift");
-_Static_assert(sizeof(VkrVulkanUiRoot) == 80u, "Vulkan UI root ABI size drift");
 _Static_assert(offsetof(VkrVulkanUiRoot, target_unit_range) == 16u,
                "Vulkan UI root target offset drift");
-_Static_assert(offsetof(VkrVulkanUiRoot, corner_radii) == 48u,
-               "Vulkan UI root radius offset drift");
-_Static_assert(offsetof(VkrVulkanUiRoot, display_output) == 64u,
-               "Vulkan UI root display-output ABI drift");
 _Static_assert(offsetof(VkrVulkanEditorOverlayRoot, display_output) == 112u,
                "Editor overlay display-output ABI drift");
 _Static_assert(sizeof(VkrVulkanPacketUtilityRoot) == 576u &&

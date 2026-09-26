@@ -472,11 +472,23 @@ vkr_global const VkrMetalPacketAbiField vkr_ui_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketUiRoot, texture_id, "texture", 8),
     VKR_ABI_FIELD(VkrMetalPacketUiRoot, target_unit_range, "target_unit_range",
                   16),
-    VKR_ABI_FIELD(VkrMetalPacketUiRoot, rect_extent, "rect_extent", 32),
-    VKR_ABI_FIELD(VkrMetalPacketUiRoot, mode, "mode", 40),
-    VKR_ABI_FIELD(VkrMetalPacketUiRoot, flags, "flags", 44),
-    VKR_ABI_FIELD(VkrMetalPacketUiRoot, corner_radii, "corner_radii", 48),
-    VKR_ABI_FIELD(VkrMetalPacketUiRoot, display_output, "display_output", 64),
+    VKR_ABI_FIELD(VkrMetalPacketUiRoot, flags, "flags", 32),
+    VKR_ABI_FIELD(VkrMetalPacketUiRoot, reserved, "reserved", 36),
+    VKR_ABI_FIELD(VkrMetalPacketUiRoot, display_output, "display_output", 40),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_ui_vertex_fields[] = {
+    VKR_ABI_FIELD(VkrUiVertex, position, "position", 0),
+    VKR_ABI_FIELD(VkrUiVertex, texcoord, "texcoord", 8),
+    VKR_ABI_FIELD(VkrUiVertex, color, "color", 16),
+    VKR_ABI_FIELD(VkrUiVertex, border_color, "border_color", 32),
+    VKR_ABI_FIELD(VkrUiVertex, corner_radius_px, "corner_radius", 48),
+    VKR_ABI_FIELD(VkrUiVertex, local_px, "local", 64),
+    VKR_ABI_FIELD(VkrUiVertex, half_extent_px, "half_extent", 72),
+    VKR_ABI_FIELD(VkrUiVertex, border_px, "border", 80),
+    VKR_ABI_FIELD(VkrUiVertex, softness_px, "softness", 84),
+    VKR_ABI_FIELD(VkrUiVertex, mode, "mode", 88),
+    VKR_ABI_FIELD(VkrUiVertex, reserved, "reserved", 92),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_view_fields[] = {
@@ -1561,8 +1573,11 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketTextRoot, "VkrMetalPacketTextRoot",
                            176, 16, vkr_text_root_fields),
         [VKR_METAL_PACKET_ABI_UI_ROOT] =
-            VKR_ABI_RECORD(VkrMetalPacketUiRoot, "VkrMetalPacketUiRoot", 80, 16,
+            VKR_ABI_RECORD(VkrMetalPacketUiRoot, "VkrMetalPacketUiRoot", 48, 16,
                            vkr_ui_root_fields),
+        [VKR_METAL_PACKET_ABI_UI_VERTEX] =
+            VKR_ABI_RECORD(VkrUiVertex, "VkrMetalPacketUiVertex", 96, 16,
+                           vkr_ui_vertex_fields),
         [VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketEditorOverlayRoot, "VkrMetalPacketEditorOverlayRoot",
             112, 16, vkr_editor_overlay_root_fields),

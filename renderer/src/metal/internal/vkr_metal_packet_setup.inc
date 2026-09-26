@@ -342,6 +342,11 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
           pipeline_label, root.bufferStructType, "display_output",
           VKR_METAL_PACKET_ABI_DISPLAY_OUTPUT_PARAMS))
     return false_v;
+  if (record_id == VKR_METAL_PACKET_ABI_UI_ROOT &&
+      !vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                            root.bufferStructType, "vertices",
+                                            VKR_METAL_PACKET_ABI_UI_VERTEX))
+    return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_DRAW_ROOT ||
       record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT ||
       record_id == VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT) {
@@ -721,7 +726,6 @@ typedef struct VkrMetalPacketPresentationPipelines {
   id<MTLRenderPipelineState> ui;
   id<MTLRenderPipelineState> editor_overlay;
   id<MTLRenderPipelineState> tonemap;
-  id<MTLRenderPipelineState> ui_rect;
 } VkrMetalPacketPresentationPipelines;
 
 vkr_internal void vkr_metal_packet_release_presentation_pipelines(
@@ -729,7 +733,6 @@ vkr_internal void vkr_metal_packet_release_presentation_pipelines(
   [pipelines->ui release];
   [pipelines->editor_overlay release];
   [pipelines->tonemap release];
-  [pipelines->ui_rect release];
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
 
@@ -754,13 +757,8 @@ vkr_internal bool8_t vkr_metal_packet_create_presentation_pipelines(
       "vkr_metal_packet_tonemap_fragment", target_format, false_v,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
       false_v, @"VKR Metal packet tonemap");
-  out_pipelines->ui_rect = vkr_metal_packet_create_pipeline(
-      renderer, fragment, "vkr_metal_packet_ui_rect_vertex", fragment,
-      "vkr_metal_packet_ui_rect_fragment", target_format, true_v,
-      VKR_METAL_PACKET_ABI_UI_ROOT, VKR_METAL_PACKET_ABI_UI_ROOT, false_v,
-      @"VKR Metal packet rounded UI rectangles");
   if (out_pipelines->ui && out_pipelines->editor_overlay &&
-      out_pipelines->tonemap && out_pipelines->ui_rect)
+      out_pipelines->tonemap)
     return true_v;
   vkr_metal_packet_release_presentation_pipelines(out_pipelines);
   return false_v;
@@ -772,11 +770,9 @@ vkr_internal void vkr_metal_packet_install_presentation_pipelines(
   [renderer->ui_pipeline release];
   [renderer->editor_overlay_pipeline release];
   [renderer->tonemap_pipeline release];
-  [renderer->ui_rect_pipeline release];
   renderer->ui_pipeline = pipelines->ui;
   renderer->editor_overlay_pipeline = pipelines->editor_overlay;
   renderer->tonemap_pipeline = pipelines->tonemap;
-  renderer->ui_rect_pipeline = pipelines->ui_rect;
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
 
@@ -1428,7 +1424,6 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->editor_overlay_picking_pipeline,
        "editor overlay picking pipeline"},
       {renderer->world_text_pipeline, "world text pipeline"},
-      {renderer->ui_rect_pipeline, "UI rounded-rect pipeline"},
       {renderer->picking_text_pipeline, "picking text pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},
       {renderer->ibl_sh_pipeline, "IBL SH projection pipeline"},

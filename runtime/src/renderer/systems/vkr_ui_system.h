@@ -10,6 +10,7 @@
 #include "core/ui/vkr_ui_id.h"
 #include "core/ui/vkr_ui_style.h"
 #include "core/ui/vkr_ui_tile.h"
+#include "core/vkr_window.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
@@ -20,8 +21,8 @@ typedef struct VkrUiRetainedState VkrUiRetainedState;
 typedef struct VkrUiFrameNode VkrUiFrameNode;
 typedef struct VkrPreparedUiDrawList VkrPreparedUiDrawList;
 
-#define VKR_UI_FRAME_NODE_CAPACITY 1024u
-#define VKR_UI_RETAINED_BUCKET_CAPACITY 2048u
+#define VKR_UI_FRAME_NODE_CAPACITY 2048u
+#define VKR_UI_RETAINED_BUCKET_CAPACITY 4096u
 #define VKR_UI_RETAINED_GRACE_FRAMES 120u
 #define VKR_UI_CONTAINER_STACK_CAPACITY 32u
 
@@ -62,7 +63,8 @@ typedef struct VkrUiPanelConfig {
   bool8_t clip_children;
 } VkrUiPanelConfig;
 
-/** CPU vector symbols; independent of the selected font atlas. */
+/** Phosphor icon glyphs (MIT) drawn from the cooked MTSDF icon atlases set by
+ * vkr_ui_system_set_fonts. Without icon fonts, icons draw nothing. */
 typedef enum VkrUiIcon {
   VKR_UI_ICON_NONE = 0,
   VKR_UI_ICON_PLAY,
@@ -97,6 +99,149 @@ typedef enum VkrUiIcon {
   VKR_UI_ICON_REFRESH,
   VKR_UI_ICON_ADD,
   VKR_UI_ICON_SEARCH,
+  VKR_UI_ICON_STOP,
+  VKR_UI_ICON_STEP,
+  VKR_UI_ICON_CHEVRON_DOWN,
+  VKR_UI_ICON_CHEVRON_RIGHT,
+  VKR_UI_ICON_CHEVRON_LEFT,
+  VKR_UI_ICON_CHEVRON_UP,
+  VKR_UI_ICON_DISCLOSURE_OPEN,
+  VKR_UI_ICON_DISCLOSURE_CLOSED,
+  VKR_UI_ICON_CLOSE,
+  VKR_UI_ICON_CHECK,
+  VKR_UI_ICON_MINUS,
+  VKR_UI_ICON_MORE,
+  VKR_UI_ICON_MENU,
+  VKR_UI_ICON_ARROW_LEFT,
+  VKR_UI_ICON_ARROW_RIGHT,
+  VKR_UI_ICON_ARROW_UP,
+  VKR_UI_ICON_SORT_ASCENDING,
+  VKR_UI_ICON_SORT_DESCENDING,
+  VKR_UI_ICON_EYE,
+  VKR_UI_ICON_EYE_SLASH,
+  VKR_UI_ICON_LOCK,
+  VKR_UI_ICON_UNLOCK,
+  VKR_UI_ICON_TRASH,
+  VKR_UI_ICON_COPY,
+  VKR_UI_ICON_PASTE,
+  VKR_UI_ICON_DUPLICATE,
+  VKR_UI_ICON_RENAME,
+  VKR_UI_ICON_SAVE,
+  VKR_UI_ICON_UNDO,
+  VKR_UI_ICON_REDO,
+  VKR_UI_ICON_RESET,
+  VKR_UI_ICON_FRAME,
+  VKR_UI_ICON_SETTINGS,
+  VKR_UI_ICON_GRAPHICS,
+  VKR_UI_ICON_METRICS,
+  VKR_UI_ICON_MEMORY,
+  VKR_UI_ICON_DRAWS,
+  VKR_UI_ICON_HELP,
+  VKR_UI_ICON_COMMAND,
+  VKR_UI_ICON_KEYBOARD,
+  VKR_UI_ICON_ANIMATION,
+  VKR_UI_ICON_PHYSICS,
+  VKR_UI_ICON_COLLIDER,
+  VKR_UI_ICON_RIGID_BODY,
+  VKR_UI_ICON_JOINT,
+  VKR_UI_ICON_BONE,
+  VKR_UI_ICON_SKIN,
+  VKR_UI_ICON_CAMERA_ENTITY,
+  VKR_UI_ICON_DIRECTIONAL_LIGHT,
+  VKR_UI_ICON_SPOT_LIGHT,
+  VKR_UI_ICON_POINT_LIGHT,
+  VKR_UI_ICON_RECT_LIGHT,
+  VKR_UI_ICON_SKY,
+  VKR_UI_ICON_FOG,
+  VKR_UI_ICON_VOLUME,
+  VKR_UI_ICON_EMPTY,
+  VKR_UI_ICON_MOVE,
+  VKR_UI_ICON_ROTATE,
+  VKR_UI_ICON_SCALE,
+  VKR_UI_ICON_SELECT,
+  VKR_UI_ICON_SNAP,
+  VKR_UI_ICON_WORLD,
+  VKR_UI_ICON_LOCAL,
+  VKR_UI_ICON_GRID,
+  VKR_UI_ICON_PERSPECTIVE,
+  VKR_UI_ICON_VIEW_MODE,
+  VKR_UI_ICON_LAYERS,
+  VKR_UI_ICON_IMPORT,
+  VKR_UI_ICON_EXPORT,
+  VKR_UI_ICON_REVEAL,
+  VKR_UI_ICON_SPINNER,
+  VKR_UI_ICON_BELL,
+  VKR_UI_ICON_CPU,
+  VKR_UI_ICON_GPU,
+  VKR_UI_ICON_SPEED,
+  VKR_UI_ICON_FILTER,
+  VKR_UI_ICON_LIST,
+  VKR_UI_ICON_FILE,
+  VKR_UI_ICON_PIN,
+  VKR_UI_ICON_MAXIMIZE,
+  VKR_UI_ICON_MINIMIZE,
+  VKR_UI_ICON_LAYOUT,
+  VKR_UI_ICON_CHECK_CIRCLE,
+  VKR_UI_ICON_PLANET,
+  VKR_UI_ICON_RECORD,
+  VKR_UI_ICON_PLUS_CIRCLE,
+  VKR_UI_ICON_SIDEBAR,
+  VKR_UI_ICON_WINDOW,
+  VKR_UI_ICON_TAG,
+  VKR_UI_ICON_HOME,
+  VKR_UI_ICON_DOT,
+  VKR_UI_ICON_ARROW_DOWN,
+  VKR_UI_ICON_FOLLOW_TAIL,
+  VKR_UI_ICON_BROOM,
+  VKR_UI_ICON_CROSSHAIR,
+  VKR_UI_ICON_HAND,
+  VKR_UI_ICON_WRENCH,
+  VKR_UI_ICON_PALETTE,
+  VKR_UI_ICON_THERMOMETER,
+  VKR_UI_ICON_ANGLE,
+  VKR_UI_ICON_RULER,
+  VKR_UI_ICON_TIMER,
+  VKR_UI_ICON_GRAPH,
+  VKR_UI_ICON_SPARKLE,
+  VKR_UI_ICON_ZOOM_IN,
+  VKR_UI_ICON_ZOOM_OUT,
+  VKR_UI_ICON_CARET_UP_DOWN,
+  VKR_UI_ICON_KEBAB,
+  VKR_UI_ICON_CHART_BAR,
+  VKR_UI_ICON_LIGHTNING,
+  VKR_UI_ICON_GAME_CONTROLLER,
+  VKR_UI_ICON_PERSON_WALK,
+  VKR_UI_ICON_SHAPES,
+  VKR_UI_ICON_DATABASE,
+  VKR_UI_ICON_HARD_DRIVES,
+  VKR_UI_ICON_CLOCK,
+  VKR_UI_ICON_BRAND,
+  VKR_UI_ICON_EYE_FILL,
+  VKR_UI_ICON_LOCK_FILL,
+  VKR_UI_ICON_WARNING_FILL,
+  VKR_UI_ICON_INFO_FILL,
+  VKR_UI_ICON_CHECK_SQUARE,
+  VKR_UI_ICON_SQUARE,
+  VKR_UI_ICON_CIRCLE,
+  VKR_UI_ICON_SUN_DIM,
+  VKR_UI_ICON_MOON,
+  VKR_UI_ICON_CLOUD,
+  VKR_UI_ICON_DROP,
+  VKR_UI_ICON_WAVES,
+  VKR_UI_ICON_TREE,
+  VKR_UI_ICON_BUILDINGS,
+  VKR_UI_ICON_SELECTION,
+  VKR_UI_ICON_TEXT,
+  VKR_UI_ICON_CODE,
+  VKR_UI_ICON_TERMINAL,
+  VKR_UI_ICON_GIT_BRANCH,
+  VKR_UI_ICON_PUZZLE,
+  VKR_UI_ICON_STAR,
+  VKR_UI_ICON_STAR_FILL,
+  VKR_UI_ICON_PENCIL_LINE,
+  VKR_UI_ICON_BOUNDING_BOX,
+  VKR_UI_ICON_VIDEO,
+  VKR_UI_ICON_SPEAKER,
   VKR_UI_ICON_COUNT,
 } VkrUiIcon;
 
@@ -115,9 +260,18 @@ typedef struct VkrUiWidgetConfig {
    */
   VkrUiIcon icon;
   float32_t icon_size_pt;
+  /** Icon tint; zero alpha uses the text color. */
+  Vec4 icon_color;
   bool8_t disabled;
   /** Text fields retain selection and copying while rejecting mutation. */
   bool8_t read_only;
+  /** Keep STRETCH placement for a text widget so it fills its grid cell,
+   * for example a search field spanning a toolbar column. */
+  bool8_t fill;
+  /** Center a label's icon and text horizontally; buttons always center. */
+  bool8_t center;
+  /** Pointer shape while hovered or held; text fields default to an I-beam. */
+  VkrWindowCursor cursor;
   /** Borrowed through vkr_ui_end; shown on hover or keyboard focus. */
   String8 tooltip;
 } VkrUiWidgetConfig;
@@ -142,6 +296,10 @@ typedef struct VkrUiSystem {
 
   VkrAllocator *frame_allocator;
   VkrFontSystem *fonts;
+  /** Optional overrides: text without an explicit font uses default_font. */
+  VkrFontHandle default_font;
+  VkrFontHandle icon_font;
+  VkrFontHandle icon_fill_font;
   InputState *input;
   VkrUiFrameNode *frame_nodes;
   uint32_t frame_node_count;
@@ -195,6 +353,24 @@ typedef struct VkrUiSystem {
   Keys repeat_key;
   float64_t repeat_elapsed;
   float64_t repeat_next;
+  /** Tooltip hover timing: a tooltip appears after the theme delay, and
+   * stays warm briefly so neighbouring controls show theirs at once. */
+  VkrUiId tooltip_owner;
+  float64_t tooltip_hover_seconds;
+  float64_t tooltip_warm_seconds;
+  float32_t tooltip_opacity;
+  /** Animations still in flight; the caller keeps redrawing while true. */
+  bool8_t animating;
+  /** Accessibility: snap every transition instead of easing it. */
+  bool8_t reduce_motion;
+  /** Accessibility: interface zoom multiplied into the window content scale
+   * (1 = native). Offscreen targets keep their explicit scale. */
+  float32_t user_scale;
+  uint32_t user_scale_revision;
+  /** Pointer shape requested by this frame's hovered or held widget. */
+  VkrWindowCursor cursor;
+  /** Accumulated UI time, used for the caret blink. */
+  float64_t time_seconds;
 
   uint32_t offscreen_width;
   uint32_t offscreen_height;
@@ -220,6 +396,16 @@ void vkr_ui_system_set_offscreen_size(VkrUiSystem *system, bool8_t enabled,
                                       uint32_t width, uint32_t height);
 void vkr_ui_system_set_offscreen_content_scale(VkrUiSystem *system,
                                                float32_t content_scale);
+#define VKR_UI_USER_SCALE_MIN 0.75f
+#define VKR_UI_USER_SCALE_MAX 2.0f
+
+/** Set the interface zoom; the next frame re-lays out every widget. */
+void vkr_ui_system_set_user_scale(VkrUiSystem *system, float32_t scale);
+
+/** Borrow the default text font and the regular/fill icon fonts. The owner
+ * keeps them acquired until after vkr_ui_system_shutdown. */
+void vkr_ui_system_set_fonts(VkrUiSystem *system, VkrFontHandle text,
+                             VkrFontHandle icons, VkrFontHandle icons_fill);
 
 /** Begin one immediate UI frame. The root itself is a grid container. */
 bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
@@ -296,6 +482,16 @@ bool8_t vkr_ui_bezier_set_points(VkrUiSystem *system, VkrUiId id,
                                  const Vec2 points[4]);
 
 VkrUiInputCapture vkr_ui_system_capture(const VkrUiSystem *system);
+
+/** Last presented pixel rectangle of a widget; false before its first layout.
+ * Popups use it to anchor beneath the control that opened them. */
+bool8_t vkr_ui_widget_rect(const VkrUiSystem *system, VkrUiId id,
+                           VkrUiRect *out_rect);
+
+/** Place a text field's caret (collapsing its selection) at a byte offset,
+ * for callers that replace the buffer, such as autocomplete. */
+void vkr_ui_text_field_set_cursor(VkrUiSystem *system, VkrUiId id,
+                                  uint32_t offset);
 
 /** Most recent CPU damage result; 1 means every tile needs redraw. */
 float32_t vkr_ui_system_dirty_tile_ratio(const VkrUiSystem *system);

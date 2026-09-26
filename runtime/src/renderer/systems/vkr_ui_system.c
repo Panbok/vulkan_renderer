@@ -34,11 +34,19 @@ struct VkrUiRetainedState {
   VkrUiRect last_draw_aabb;
   VkrUiText text;
   Vec2 scroll_offset;
+  /* Scroll areas: resolved content height for the scrollbar thumb. */
+  float32_t content_extent;
   uint32_t text_cursor;
   uint32_t text_selection;
-  float32_t animation_phase;
+  /* Eased 0..1 interaction states; see vkr_ui_animate. */
+  float32_t hover_t;
+  float32_t active_t;
+  float32_t focus_t;
   bool8_t text_live;
   bool8_t text_dragging;
+  /* Scroll areas: the thumb is held, grabbed this far below its top edge. */
+  bool8_t scroll_dragging;
+  float32_t scroll_grab_offset;
 };
 
 struct VkrUiFrameNode {
@@ -58,6 +66,7 @@ struct VkrUiFrameNode {
   String8 content;
   String8 tooltip;
   VkrUiIcon icon;
+  Vec4 icon_color;
   VkrUiTextureRef image;
   Vec2 image_size;
   Vec2 bezier_points[4];
@@ -65,6 +74,9 @@ struct VkrUiFrameNode {
   float32_t icon_size_px;
   bool8_t disabled;
   bool8_t focusable;
+  bool8_t fill;
+  bool8_t center;
+  VkrWindowCursor cursor;
   uint32_t input_layer;
   VkrUiRect rect;
   VkrUiRect clip;
@@ -196,9 +208,23 @@ vkr_ui_system_content_scale(VkrWindow *window, const VkrUiSystem *system) {
         .value = system->offscreen_content_scale,
         .revision = system->offscreen_content_scale_revision,
     };
+  VkrWindowContentScale scale = {.value = 1.0f, .revision = 1u};
   if (window)
-    return vkr_window_get_content_scale(window);
-  return (VkrWindowContentScale){.value = 1.0f, .revision = 1u};
+    scale = vkr_window_get_content_scale(window);
+  const float32_t user = system->user_scale > 0.0f ? system->user_scale : 1.0f;
+  scale.value *= user;
+  scale.revision += system->user_scale_revision << 16u;
+  return scale;
+}
+
+void vkr_ui_system_set_user_scale(VkrUiSystem *system, float32_t scale) {
+  if (!system || !isfinite(scale))
+    return;
+  scale = vkr_clamp_f32(scale, VKR_UI_USER_SCALE_MIN, VKR_UI_USER_SCALE_MAX);
+  if (scale == system->user_scale)
+    return;
+  system->user_scale = scale;
+  system->user_scale_revision++;
 }
 
 vkr_internal uint32_t vkr_ui_retained_bucket(const VkrUiSystem *system,
@@ -301,6 +327,7 @@ bool8_t vkr_ui_system_init(VkrUiSystem *system, VkrFontSystem *fonts) {
   if (!fonts || !system)
     return false_v;
   MemZero(system, sizeof(*system));
+  system->user_scale = 1.0f;
   if (!vkr_dmemory_create(MB(2), MB(64), &system->retained_memory))
     return false_v;
   system->retained_allocator.ctx = &system->retained_memory;
@@ -516,6 +543,8 @@ vkr_internal bool8_t vkr_ui_text_prepare(VkrUiSystem *system,
   config.color = node->style.text_color;
   if (config.font_size <= 0.0f && node->style.font_size_px > 0.0f)
     config.font_size = node->style.font_size_px / system->content_scale;
+  if (config.font.id == 0u && system->default_font.id != 0u)
+    config.font = system->default_font;
   if (!retained->text_live) {
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
     if (!vkr_ui_text_create(&system->retained_allocator, system->fonts, content,
@@ -556,6 +585,9 @@ vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
                                            const VkrUiWidgetConfig *config) {
   node->disabled = config->disabled;
   node->tooltip = config->tooltip;
+  node->fill = config->fill;
+  node->center = config->center;
+  node->cursor = config->cursor;
   if (node->disabled)
     node->style.text_color.w *= 0.45f;
   if (!vkr_ui_text_prepare(system, node, content, &config->text))
@@ -563,6 +595,10 @@ vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
   if ((node->kind == VKR_UI_NODE_LABEL || node->kind == VKR_UI_NODE_BUTTON) &&
       config->icon > VKR_UI_ICON_NONE && config->icon < VKR_UI_ICON_COUNT) {
     node->icon = config->icon;
+    node->icon_color = config->icon_color.w > 0.0f ? config->icon_color
+                                                   : node->style.text_color;
+    if (node->disabled && config->icon_color.w > 0.0f)
+      node->icon_color.w *= 0.45f;
     node->icon_size_px =
         (isfinite(config->icon_size_pt) && config->icon_size_pt > 0.0f
              ? config->icon_size_pt
@@ -601,8 +637,9 @@ vkr_internal bool8_t vkr_ui_keyboard_eligible(const VkrUiSystem *system,
                                                     node->retained->last_clip));
 }
 
-vkr_internal bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
-                                     bool8_t focusable) {
+vkr_internal bool8_t vkr_ui_interact_input(VkrUiSystem *system,
+                                           VkrUiFrameNode *node,
+                                           bool8_t focusable) {
   VkrUiRetainedState *retained = node->retained;
   node->focusable = focusable && !node->disabled;
   node->input_layer = system->input_layer;
@@ -617,7 +654,10 @@ vkr_internal bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
   if (hovered) {
     system->hot_id = node->id;
     system->capture.mouse = true_v;
+    system->cursor = node->disabled ? VKR_WINDOW_CURSOR_ARROW : node->cursor;
   }
+  if (system->active_id == node->id && !node->disabled)
+    system->cursor = node->cursor;
   // Scroll containers own hover/wheel handling; descendants own click/drag
   // gestures. Claiming active_id here would starve every child on mouse-down.
   if (node->kind == VKR_UI_NODE_SCROLL)
@@ -667,6 +707,52 @@ vkr_internal bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
   return false_v;
 }
 
+/* Exponential approach toward `target`; snaps when close or when motion is
+ * reduced, and reports ongoing motion so the caller keeps redrawing. */
+vkr_internal float32_t vkr_ui_animate(VkrUiSystem *system, float32_t value,
+                                      float32_t target) {
+  if (system->reduce_motion)
+    return target;
+  const float32_t step =
+      1.0f - expf(-vkr_ui_theme()->motion_rate * (float32_t)system->delta_time);
+  value += (target - value) * vkr_clamp_f32(step, 0.0f, 1.0f);
+  if (fabsf(target - value) < 0.004f)
+    return target;
+  system->animating = true_v;
+  return value;
+}
+
+vkr_internal void vkr_ui_animate_states(VkrUiSystem *system,
+                                        VkrUiFrameNode *node) {
+  VkrUiRetainedState *retained = node->retained;
+  const bool8_t active = !node->disabled && system->active_id == node->id;
+  const bool8_t focused = system->focused_id == node->id;
+  retained->hover_t =
+      vkr_ui_animate(system, retained->hover_t,
+                     node->hovered && !node->disabled ? 1.0f : 0.0f);
+  retained->active_t =
+      vkr_ui_animate(system, retained->active_t, active ? 1.0f : 0.0f);
+  retained->focus_t =
+      vkr_ui_animate(system, retained->focus_t, focused ? 1.0f : 0.0f);
+}
+
+vkr_internal bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
+                                     bool8_t focusable) {
+  const bool8_t activated = vkr_ui_interact_input(system, node, focusable);
+  vkr_ui_animate_states(system, node);
+  return activated;
+}
+
+void vkr_ui_system_set_fonts(VkrUiSystem *system, VkrFontHandle text,
+                             VkrFontHandle icons, VkrFontHandle icons_fill) {
+  if (!system)
+    return;
+  system->default_font = text;
+  system->icon_font = icons;
+  system->icon_fill_font = icons_fill;
+  vkr_ui_system_invalidate_layout(system);
+}
+
 bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
                      VkrWindow *window, uint32_t target_width,
                      uint32_t target_height, InputState *input,
@@ -694,6 +780,9 @@ bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
   system->content_scale = scale.value;
   system->content_scale_revision = scale.revision;
   system->delta_time = delta_time;
+  system->time_seconds += delta_time;
+  system->animating = false_v;
+  system->cursor = VKR_WINDOW_CURSOR_ARROW;
   if (system->repeat_key != KEY_MAX_KEYS) {
     if (input_is_key_up(input, system->repeat_key)) {
       system->repeat_key = KEY_MAX_KEYS;
@@ -993,6 +1082,9 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
       vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
   node->disabled = config->disabled;
   node->tooltip = config->tooltip;
+  node->cursor = config->cursor != VKR_WINDOW_CURSOR_ARROW
+                     ? config->cursor
+                     : VKR_WINDOW_CURSOR_HAND;
   const bool8_t was_active = system->active_id == id;
   const bool8_t released_here = vkr_ui_interact(system, node, true_v);
   bool8_t changed = false_v;
@@ -1025,6 +1117,77 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
   return changed;
 }
 
+/* Scrollbar geometry shared by drawing and dragging: the thumb and a gutter
+ * wider than it for grabbing. False when the content fits. */
+vkr_internal bool8_t vkr_ui_scroll_thumb(const VkrUiRetainedState *retained,
+                                         const VkrUiResolvedStyle *style,
+                                         float32_t scale, VkrUiRect *out_gutter,
+                                         VkrUiRect *out_thumb) {
+  const VkrUiRect content =
+      vkr_ui_style_content_rect(retained->last_rect, style);
+  const float32_t viewport = content.height;
+  const float32_t extent = retained->content_extent;
+  if (viewport <= 0.0f || extent <= viewport + 0.5f)
+    return false_v;
+  const bool8_t wide = retained->hover_t > 0.0f || retained->scroll_dragging;
+  const float32_t thickness = (wide ? 6.0f : 4.0f) * scale;
+  const float32_t thumb = Max(24.0f * scale, viewport * viewport / extent);
+  const float32_t travel = Max(0.0f, viewport - thumb);
+  const float32_t fraction = vkr_clamp_f32(
+      retained->scroll_offset.y / Max(1.0f, extent - viewport), 0.0f, 1.0f);
+  const float32_t x = retained->last_rect.x + retained->last_rect.width -
+                      thickness - 2.0f * scale;
+  *out_gutter = (VkrUiRect){x - 4.0f * scale, content.y,
+                            thickness + 6.0f * scale, viewport};
+  *out_thumb = (VkrUiRect){x, content.y + travel * fraction, thickness, thumb};
+  return true_v;
+}
+
+/* A press in the gutter pages toward it; a press on the thumb drags it. The
+ * gutter consumes that press so rows beneath it do not also activate. */
+vkr_internal void vkr_ui_scroll_drag(VkrUiSystem *system,
+                                     VkrUiFrameNode *node) {
+  VkrUiRetainedState *retained = node->retained;
+  VkrUiRect gutter;
+  VkrUiRect thumb;
+  if (!vkr_ui_scroll_thumb(retained, &node->style, system->content_scale,
+                           &gutter, &thumb)) {
+    retained->scroll_dragging = false_v;
+    return;
+  }
+  const float32_t viewport = gutter.height;
+  const float32_t range = retained->content_extent - viewport;
+  if (system->mouse_pressed && !system->mouse_captured &&
+      node->input_layer == system->mouse_input_layer &&
+      vkr_ui_point_in_rect(system->mouse_x, system->mouse_y, gutter) &&
+      vkr_ui_point_in_rect(system->mouse_x, system->mouse_y,
+                           retained->last_clip)) {
+    if (vkr_ui_point_in_rect(system->mouse_x, system->mouse_y, thumb)) {
+      retained->scroll_dragging = true_v;
+      retained->scroll_grab_offset = (float32_t)system->mouse_y - thumb.y;
+    } else {
+      const float32_t direction =
+          (float32_t)system->mouse_y < thumb.y ? -1.0f : 1.0f;
+      retained->scroll_offset.y = vkr_clamp_f32(
+          retained->scroll_offset.y + direction * viewport, 0.0f, range);
+    }
+    system->mouse_pressed = false_v;
+    system->capture.mouse = true_v;
+  }
+  if (!retained->scroll_dragging)
+    return;
+  if (system->mouse_released ||
+      !input_is_button_down(system->input, BUTTON_LEFT)) {
+    retained->scroll_dragging = false_v;
+    return;
+  }
+  const float32_t travel = Max(1.0f, viewport - thumb.height);
+  const float32_t top =
+      (float32_t)system->mouse_y - retained->scroll_grab_offset - gutter.y;
+  retained->scroll_offset.y = vkr_clamp_f32(top / travel, 0.0f, 1.0f) * range;
+  system->capture.mouse = true_v;
+}
+
 bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
                                  const VkrUiPanelConfig *source_config) {
   if (!system || !system->frame_open ||
@@ -1053,6 +1216,7 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
   node->row_count = config->row_count ? config->row_count : 1u;
   node->clip_children = true_v;
   (void)vkr_ui_interact(system, node, true_v);
+  vkr_ui_scroll_drag(system, node);
   if (node->hovered && system->mouse_wheel != 0)
     node->retained->scroll_offset.y =
         Max(0.0f,
@@ -1253,6 +1417,10 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
   VkrUiFrameNode *node = &system->frame_nodes[index];
   node->disabled = config->disabled;
   node->tooltip = config->tooltip;
+  node->fill = config->fill;
+  node->cursor = config->cursor != VKR_WINDOW_CURSOR_ARROW
+                     ? config->cursor
+                     : VKR_WINDOW_CURSOR_IBEAM;
   if (node->disabled)
     node->style.text_color.w *= 0.45f;
   const String8 incoming_content = {.str = buffer->data,
@@ -1496,6 +1664,11 @@ vkr_internal VkrUiTrack vkr_ui_track_resolve_points(VkrUiTrack track,
   return track;
 }
 
+/* The caret blinks at about 1 Hz while its field keeps focus. */
+vkr_internal bool8_t vkr_ui_caret_visible(const VkrUiSystem *system) {
+  return system->reduce_motion || fmod(system->time_seconds, 1.06) < 0.62;
+}
+
 vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
                                        uint32_t node_index) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
@@ -1561,8 +1734,21 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
   hash = vkr_ui_hash_bytes(hash, &node->icon, sizeof(node->icon));
   hash =
       vkr_ui_hash_bytes(hash, &node->icon_size_px, sizeof(node->icon_size_px));
+  hash = vkr_ui_hash_bytes(hash, &node->icon_color, sizeof(node->icon_color));
   hash = vkr_ui_hash_bytes(hash, &node->disabled, sizeof(node->disabled));
+  hash = vkr_ui_hash_bytes(hash, &node->fill, sizeof(node->fill));
+  hash = vkr_ui_hash_bytes(hash, &node->center, sizeof(node->center));
   hash = vkr_ui_hash_bytes(hash, &node->hovered, sizeof(node->hovered));
+  hash = vkr_ui_hash_bytes(hash, &node->retained->hover_t,
+                           sizeof(node->retained->hover_t));
+  hash = vkr_ui_hash_bytes(hash, &node->retained->active_t,
+                           sizeof(node->retained->active_t));
+  hash = vkr_ui_hash_bytes(hash, &node->retained->focus_t,
+                           sizeof(node->retained->focus_t));
+  if (node->kind == VKR_UI_NODE_TEXT_FIELD && system->focused_id == node->id) {
+    const bool8_t caret_on = vkr_ui_caret_visible(system);
+    hash = vkr_ui_hash_bytes(hash, &caret_on, sizeof(caret_on));
+  }
   hash = vkr_ui_hash_bytes(hash, &node->active, sizeof(node->active));
   hash = vkr_ui_hash_bytes(hash, &node->clip_children,
                            sizeof(node->clip_children));
@@ -1593,10 +1779,11 @@ vkr_internal VkrUiGridItem vkr_ui_grid_item_from_node(VkrUiSystem *system,
       .bottom = placement.margin_pt.bottom * system->content_scale,
       .left = placement.margin_pt.left * system->content_scale,
   };
-  const bool8_t text_widget = child->kind == VKR_UI_NODE_LABEL ||
-                              child->kind == VKR_UI_NODE_BUTTON ||
-                              child->kind == VKR_UI_NODE_CHECKBOX ||
-                              child->kind == VKR_UI_NODE_TEXT_FIELD;
+  const bool8_t text_widget =
+      !child->fill &&
+      (child->kind == VKR_UI_NODE_LABEL || child->kind == VKR_UI_NODE_BUTTON ||
+       child->kind == VKR_UI_NODE_CHECKBOX ||
+       child->kind == VKR_UI_NODE_TEXT_FIELD);
   return (VkrUiGridItem){
       .column = placement.column,
       .row = placement.row,
@@ -1626,11 +1813,14 @@ static bool8_t vkr_ui_grid_failure(VkrUiSystem *system,
          child = system->frame_nodes[child].next_sibling) {
       const VkrUiFrameNode *item = &system->frame_nodes[child];
       log_error("UI child=%llu kind=%u cell=%u,%u span=%u,%u "
-                "intrinsic=%.1fx%.1f text='%.*s'",
+                "intrinsic=%.1fx%.1f margin=%.1f,%.1f,%.1f,%.1f text='%.*s'",
                 (unsigned long long)item->id, (uint32_t)item->kind,
                 item->placement.column, item->placement.row,
                 item->placement.column_span, item->placement.row_span,
                 item->intrinsic_size.x, item->intrinsic_size.y,
+                item->placement.margin_pt.top, item->placement.margin_pt.right,
+                item->placement.margin_pt.bottom,
+                item->placement.margin_pt.left,
                 (int)Min(item->content.length, 80u),
                 item->content.str ? item->content.str : (uint8_t *)"");
     }
@@ -1864,6 +2054,7 @@ vkr_internal bool8_t vkr_ui_layout_node(VkrUiSystem *system,
         Max(0.0f, row_output.resolved_extent_px - content_rect.height);
     node->retained->scroll_offset.y =
         Min(node->retained->scroll_offset.y, max_scroll);
+    node->retained->content_extent = row_output.resolved_extent_px;
   }
   if (!vkr_ui_grid_arrange_items(
           content_rect,
@@ -1910,290 +2101,297 @@ vkr_internal void vkr_ui_emit_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect,
   const bool8_t rounded =
       radii.x > 0.0f || radii.y > 0.0f || radii.z > 0.0f || radii.w > 0.0f;
   if (rounded)
-    (void)vkr_ui_draw_buffer_rounded_rect(buffer, rect,
-                                          vkr_ui_linear_color(color), radii);
+    (void)vkr_ui_draw_buffer_box(buffer, rect, vkr_ui_linear_color(color),
+                                 radii, (Vec4){0}, 0.0f, 0.0f);
   else
     (void)vkr_ui_draw_buffer_solid(buffer, rect, vkr_ui_linear_color(color));
 }
 
-typedef struct VkrUiIconLine {
-  float32_t x0, y0, x1, y1;
-} VkrUiIconLine;
-
-static void vkr_ui_icon_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect,
-                             Vec4 color) {
-  const Vec2 corners[] = {{rect.x, rect.y},
-                          {rect.x + rect.width, rect.y},
-                          {rect.x + rect.width, rect.y + rect.height},
-                          {rect.x, rect.y + rect.height}};
-  (void)vkr_ui_draw_buffer_polygon(buffer, corners, color);
+/* One box with an inner border. A transparent fill still draws the border. */
+vkr_internal void vkr_ui_emit_box(VkrUiDrawBuffer *buffer, VkrUiRect rect,
+                                  Vec4 fill, Vec4 radii, Vec4 border_color,
+                                  float32_t border_px) {
+  if (!vkr_ui_rect_has_area(rect))
+    return;
+  const bool8_t border = border_px > 0.0f && vkr_ui_color_visible(border_color);
+  if (!border && !vkr_ui_color_visible(fill))
+    return;
+  if (!border) {
+    vkr_ui_emit_rect(buffer, rect, fill, radii);
+    return;
+  }
+  /* A transparent fill keeps the border hue so the edge blend never darkens
+   * toward black. */
+  Vec4 linear_fill = vkr_ui_linear_color(fill);
+  const Vec4 linear_border = vkr_ui_linear_color(border_color);
+  if (!vkr_ui_color_visible(fill))
+    linear_fill =
+        (Vec4){linear_border.x, linear_border.y, linear_border.z, 0.0f};
+  (void)vkr_ui_draw_buffer_box(buffer, rect, linear_fill, radii, linear_border,
+                               border_px, 0.0f);
 }
 
-vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
-                                   VkrUiRect rect, Vec4 color) {
-  static const VkrUiIconLine monitor[] = {{1, 2, 15, 2},   {15, 2, 15, 12},
-                                          {15, 12, 1, 12}, {1, 12, 1, 2},
-                                          {8, 12, 8, 15},  {5, 15, 11, 15}};
-  static const VkrUiIconLine hierarchy[] = {{3, 3, 3, 13},  {3, 8, 8, 8},
-                                            {3, 13, 8, 13}, {1, 2, 5, 2},
-                                            {9, 7, 14, 7},  {9, 12, 14, 12}};
-  static const VkrUiIconLine inspector[] = {{2, 3, 14, 3},   {2, 8, 14, 8},
-                                            {2, 13, 14, 13}, {6, 1, 6, 5},
-                                            {11, 6, 11, 10}, {5, 11, 5, 15}};
-  static const VkrUiIconLine console[] = {
-      {2, 4, 6, 8}, {6, 8, 2, 12}, {8, 12, 14, 12}};
-  static const VkrUiIconLine scene[] = {
-      {8, 1, 14, 4},  {14, 4, 14, 12}, {14, 12, 8, 15},
-      {8, 15, 2, 12}, {2, 12, 2, 4},   {2, 4, 8, 1},
-      {2, 4, 8, 7},   {8, 7, 14, 4},   {8, 7, 8, 15}};
-  static const VkrUiIconLine bakery[] = {
-      {2, 3, 14, 3}, {14, 3, 14, 14}, {14, 14, 2, 14}, {2, 14, 2, 3},
-      {2, 6, 14, 6}, {5, 9, 11, 9},   {5, 11, 11, 11}};
-  static const VkrUiIconLine scene_load[] = {{2, 9, 2, 14},   {2, 14, 14, 14},
-                                             {14, 14, 14, 9}, {8, 1, 8, 10},
-                                             {4, 6, 8, 10},   {8, 10, 12, 6}};
-  static const VkrUiIconLine scene_unload[] = {{2, 9, 2, 14},   {2, 14, 14, 14},
-                                               {14, 14, 14, 9}, {8, 10, 8, 1},
-                                               {4, 5, 8, 1},    {8, 1, 12, 5}};
-  static const VkrUiIconLine camera[] = {
-      {1, 4, 10, 4},  {10, 4, 10, 12}, {10, 12, 1, 12}, {1, 12, 1, 4},
-      {10, 6, 15, 3}, {15, 3, 15, 13}, {15, 13, 10, 10}};
-  static const VkrUiIconLine log_fatal[] = {
-      {5, 1, 11, 1},   {11, 1, 15, 5}, {15, 5, 15, 11}, {15, 11, 11, 15},
-      {11, 15, 5, 15}, {5, 15, 1, 11}, {1, 11, 1, 5},   {1, 5, 5, 1},
-      {8, 4, 8, 10},   {6, 12, 10, 12}};
-  static const VkrUiIconLine log_error[] = {{8, 1, 15, 8},  {15, 8, 8, 15},
-                                            {8, 15, 1, 8},  {1, 8, 8, 1},
-                                            {5, 5, 11, 11}, {11, 5, 5, 11}};
-  static const VkrUiIconLine log_warning[] = {{8, 1, 15, 15},
-                                              {15, 15, 1, 15},
-                                              {1, 15, 8, 1},
-                                              {8, 5, 8, 10},
-                                              {6, 12, 10, 12}};
-  static const VkrUiIconLine log_info[] = {
-      {5, 1, 11, 1},   {11, 1, 15, 5}, {15, 5, 15, 11}, {15, 11, 11, 15},
-      {11, 15, 5, 15}, {5, 15, 1, 11}, {1, 11, 1, 5},   {1, 5, 5, 1},
-      {8, 6, 8, 12},   {7, 4, 9, 4}};
-  static const VkrUiIconLine log_debug[] = {{6, 2, 2, 8},   {2, 8, 6, 14},
-                                            {10, 2, 14, 8}, {14, 8, 10, 14},
-                                            {7, 5, 9, 5},   {7, 11, 9, 11}};
-  static const VkrUiIconLine log_trace[] = {{2, 3, 7, 3},    {7, 3, 7, 13},
-                                            {7, 13, 14, 13}, {7, 8, 14, 8},
-                                            {11, 5, 14, 8},  {14, 8, 11, 11}};
-  static const VkrUiIconLine folder[] = {{1, 4, 6, 4},    {6, 4, 8, 6},
-                                         {8, 6, 15, 6},   {15, 6, 14, 14},
-                                         {14, 14, 1, 14}, {1, 14, 1, 4}};
-  static const VkrUiIconLine project[] = {
-      {1, 3, 7, 3},    {7, 3, 9, 5},  {9, 5, 15, 5}, {15, 5, 15, 14},
-      {15, 14, 1, 14}, {1, 14, 1, 3}, {5, 9, 11, 9}, {8, 6, 8, 12}};
-  static const VkrUiIconLine content[] = {
-      {1, 1, 6, 1},     {6, 1, 6, 6},     {6, 6, 1, 6},     {1, 6, 1, 1},
-      {10, 1, 15, 1},   {15, 1, 15, 6},   {15, 6, 10, 6},   {10, 6, 10, 1},
-      {1, 10, 6, 10},   {6, 10, 6, 15},   {6, 15, 1, 15},   {1, 15, 1, 10},
-      {10, 10, 15, 10}, {15, 10, 15, 15}, {15, 15, 10, 15}, {10, 15, 10, 10}};
-  static const VkrUiIconLine texture[] = {
-      {1, 2, 15, 2},  {15, 2, 15, 14}, {15, 14, 1, 14},
-      {1, 14, 1, 2},  {2, 12, 6, 7},   {6, 7, 10, 12},
-      {8, 10, 12, 6}, {12, 6, 14, 9},  {4, 5, 5, 5}};
-  static const VkrUiIconLine material[] = {
-      {8, 1, 13, 3},  {13, 3, 15, 8}, {15, 8, 13, 13}, {13, 13, 8, 15},
-      {8, 15, 3, 13}, {3, 13, 1, 8},  {1, 8, 3, 3},    {3, 3, 8, 1},
-      {8, 1, 5, 5},   {5, 5, 5, 11},  {5, 11, 8, 15},  {1, 8, 15, 8}};
-  static const VkrUiIconLine font[] = {{2, 3, 14, 3},
-                                       {2, 3, 2, 6},
-                                       {14, 3, 14, 6},
-                                       {8, 3, 8, 14},
-                                       {5, 14, 11, 14}};
-  static const VkrUiIconLine light[] = {
-      {5, 10, 3, 6},   {3, 6, 5, 2},    {5, 2, 11, 2},   {11, 2, 13, 6},
-      {13, 6, 11, 10}, {11, 10, 5, 10}, {6, 13, 10, 13}, {7, 15, 9, 15},
-      {1, 1, 2, 2},    {14, 2, 15, 1}};
-  static const VkrUiIconLine environment[] = {
-      {1, 12, 15, 12}, {3, 10, 4, 7},   {4, 7, 7, 5}, {7, 5, 10, 5},
-      {10, 5, 13, 8},  {13, 8, 13, 10}, {8, 1, 8, 3}, {1, 5, 3, 6},
-      {13, 4, 15, 3},  {2, 15, 14, 15}};
-  static const VkrUiIconLine probe[] = {
-      {8, 1, 15, 8}, {15, 8, 8, 15},  {8, 15, 1, 8},   {1, 8, 8, 1},
-      {5, 5, 11, 5}, {11, 5, 11, 11}, {11, 11, 5, 11}, {5, 11, 5, 5},
-      {8, 3, 8, 13}, {3, 8, 13, 8}};
-  static const VkrUiIconLine refresh[] = {
-      {13, 6, 11, 3},  {11, 3, 5, 3},  {5, 3, 2, 7},
-      {2, 7, 3, 12},   {3, 12, 8, 14}, {8, 14, 13, 11},
-      {13, 11, 14, 9}, {10, 6, 14, 6}, {14, 6, 14, 2}};
-  static const VkrUiIconLine add[] = {{2, 8, 14, 8}, {8, 2, 8, 14}};
-  static const VkrUiIconLine search[] = {
-      {6, 1, 10, 3}, {10, 3, 11, 7}, {11, 7, 8, 10}, {8, 10, 4, 10},
-      {4, 10, 1, 7}, {1, 7, 2, 3},   {2, 3, 6, 1},   {10, 10, 15, 15}};
-  const VkrUiIconLine *lines = NULL;
-  uint32_t count = 0u;
-  switch (icon) {
-  case VKR_UI_ICON_FOLDER:
-    lines = folder;
-    count = ArrayCount(folder);
-    break;
-  case VKR_UI_ICON_PROJECT:
-    lines = project;
-    count = ArrayCount(project);
-    break;
-  case VKR_UI_ICON_CONTENT:
-    lines = content;
-    count = ArrayCount(content);
-    break;
-  case VKR_UI_ICON_TEXTURE:
-    lines = texture;
-    count = ArrayCount(texture);
-    break;
-  case VKR_UI_ICON_MATERIAL:
-    lines = material;
-    count = ArrayCount(material);
-    break;
-  case VKR_UI_ICON_FONT:
-    lines = font;
-    count = ArrayCount(font);
-    break;
-  case VKR_UI_ICON_LIGHT:
-    lines = light;
-    count = ArrayCount(light);
-    break;
-  case VKR_UI_ICON_ENVIRONMENT:
-    lines = environment;
-    count = ArrayCount(environment);
-    break;
-  case VKR_UI_ICON_PROBE:
-    lines = probe;
-    count = ArrayCount(probe);
-    break;
-  case VKR_UI_ICON_REFRESH:
-    lines = refresh;
-    count = ArrayCount(refresh);
-    break;
-  case VKR_UI_ICON_ADD:
-    lines = add;
-    count = ArrayCount(add);
-    break;
-  case VKR_UI_ICON_SEARCH:
-    lines = search;
-    count = ArrayCount(search);
-    break;
-  case VKR_UI_ICON_MESH:
-    lines = scene;
-    count = ArrayCount(scene);
-    break;
+/* Feathered box beneath a surface. */
+vkr_internal void vkr_ui_emit_shadow(VkrUiDrawBuffer *buffer, VkrUiRect rect,
+                                     Vec4 radii, Vec4 color, Vec2 offset_px,
+                                     float32_t blur_px) {
+  if (!vkr_ui_rect_has_area(rect) || !vkr_ui_color_visible(color) ||
+      blur_px <= 0.0f)
+    return;
+  rect.x += offset_px.x;
+  rect.y += offset_px.y;
+  const float32_t spread = blur_px * 0.5f;
+  const float32_t limit = Min(rect.width, rect.height) * 0.5f;
+  const Vec4 shadow_radii = {
+      Min(radii.x + spread, limit), Min(radii.y + spread, limit),
+      Min(radii.z + spread, limit), Min(radii.w + spread, limit)};
+  (void)vkr_ui_draw_buffer_box(buffer, rect, vkr_ui_linear_color(color),
+                               shadow_radii, (Vec4){0}, 0.0f, blur_px);
+}
 
-  case VKR_UI_ICON_MONITOR_PLAY:
-  case VKR_UI_ICON_MONITOR_STOP:
-    lines = monitor;
-    count = ArrayCount(monitor);
-    break;
-  case VKR_UI_ICON_HIERARCHY:
-    lines = hierarchy;
-    count = ArrayCount(hierarchy);
-    break;
-  case VKR_UI_ICON_INSPECTOR:
-    lines = inspector;
-    count = ArrayCount(inspector);
-    break;
-  case VKR_UI_ICON_CONSOLE:
-    lines = console;
-    count = ArrayCount(console);
-    break;
-  case VKR_UI_ICON_SCENE:
-    lines = scene;
-    count = ArrayCount(scene);
-    break;
-  case VKR_UI_ICON_SCENE_LOAD:
-    lines = scene_load;
-    count = ArrayCount(scene_load);
-    break;
-  case VKR_UI_ICON_SCENE_UNLOAD:
-    lines = scene_unload;
-    count = ArrayCount(scene_unload);
-    break;
-  case VKR_UI_ICON_CAMERA:
-    lines = camera;
-    count = ArrayCount(camera);
-    break;
-  case VKR_UI_ICON_BAKERY:
-    lines = bakery;
-    count = ArrayCount(bakery);
-    break;
-  case VKR_UI_ICON_LOG_FATAL:
-    lines = log_fatal;
-    count = ArrayCount(log_fatal);
-    break;
-  case VKR_UI_ICON_LOG_ERROR:
-    lines = log_error;
-    count = ArrayCount(log_error);
-    break;
-  case VKR_UI_ICON_LOG_WARNING:
-    lines = log_warning;
-    count = ArrayCount(log_warning);
-    break;
-  case VKR_UI_ICON_LOG_INFO:
-    lines = log_info;
-    count = ArrayCount(log_info);
-    break;
-  case VKR_UI_ICON_LOG_DEBUG:
-    lines = log_debug;
-    count = ArrayCount(log_debug);
-    break;
-  case VKR_UI_ICON_LOG_TRACE:
-    lines = log_trace;
-    count = ArrayCount(log_trace);
-    break;
-  default:
-    break;
+typedef struct VkrUiIconGlyph {
+  uint32_t codepoint;
+  bool8_t fill;
+} VkrUiIconGlyph;
+
+/* Phosphor codepoints; the cooked charsets list exactly these glyphs. */
+vkr_global const VkrUiIconGlyph vkr_ui_icon_glyphs[VKR_UI_ICON_COUNT] = {
+    [VKR_UI_ICON_PLAY] = {0xE3D0, true_v},              /* play */
+    [VKR_UI_ICON_PAUSE] = {0xE39E, true_v},             /* pause */
+    [VKR_UI_ICON_MONITOR_PLAY] = {0xE58C, false_v},     /* monitor-play */
+    [VKR_UI_ICON_MONITOR_STOP] = {0xE32E, false_v},     /* monitor */
+    [VKR_UI_ICON_HIERARCHY] = {0xE67C, false_v},        /* tree-structure */
+    [VKR_UI_ICON_INSPECTOR] = {0xE434, false_v},        /* sliders-horizontal */
+    [VKR_UI_ICON_CONSOLE] = {0xEAE8, false_v},          /* terminal-window */
+    [VKR_UI_ICON_SCENE] = {0xE1DA, false_v},            /* cube */
+    [VKR_UI_ICON_BAKERY] = {0xE764, false_v},           /* cooking-pot */
+    [VKR_UI_ICON_SCENE_LOAD] = {0xE20C, false_v},       /* download-simple */
+    [VKR_UI_ICON_SCENE_UNLOAD] = {0xE4C0, false_v},     /* upload-simple */
+    [VKR_UI_ICON_CAMERA] = {0xE4DA, false_v},           /* video-camera */
+    [VKR_UI_ICON_GRIP] = {0xEAE2, false_v},             /* dots-six-vertical */
+    [VKR_UI_ICON_LOG_FATAL] = {0xE916, true_v},         /* skull */
+    [VKR_UI_ICON_LOG_ERROR] = {0xE4F8, true_v},         /* x-circle */
+    [VKR_UI_ICON_LOG_WARNING] = {0xE4E0, true_v},       /* warning */
+    [VKR_UI_ICON_LOG_INFO] = {0xE2CE, true_v},          /* info */
+    [VKR_UI_ICON_LOG_DEBUG] = {0xE5F4, false_v},        /* bug */
+    [VKR_UI_ICON_LOG_TRACE] = {0xE39C, false_v},        /* path */
+    [VKR_UI_ICON_PROJECT] = {0xE24A, false_v},          /* folder-notch */
+    [VKR_UI_ICON_FOLDER] = {0xE24A, true_v},            /* folder */
+    [VKR_UI_ICON_CONTENT] = {0xE464, false_v},          /* squares-four */
+    [VKR_UI_ICON_TEXTURE] = {0xE2CA, false_v},          /* image */
+    [VKR_UI_ICON_MATERIAL] = {0xEE66, false_v},         /* sphere */
+    [VKR_UI_ICON_MESH] = {0xE6D0, false_v},             /* polygon */
+    [VKR_UI_ICON_FONT] = {0xE6EE, false_v},             /* text-aa */
+    [VKR_UI_ICON_LIGHT] = {0xE2DC, false_v},            /* lightbulb */
+    [VKR_UI_ICON_ENVIRONMENT] = {0xE7AE, false_v},      /* mountains */
+    [VKR_UI_ICON_PROBE] = {0xE28E, false_v},            /* globe-simple */
+    [VKR_UI_ICON_REFRESH] = {0xE094, false_v},          /* arrows-clockwise */
+    [VKR_UI_ICON_ADD] = {0xE3D4, false_v},              /* plus */
+    [VKR_UI_ICON_SEARCH] = {0xE30C, false_v},           /* magnifying-glass */
+    [VKR_UI_ICON_STOP] = {0xE46C, true_v},              /* stop */
+    [VKR_UI_ICON_STEP] = {0xE5A6, true_v},              /* skip-forward */
+    [VKR_UI_ICON_CHEVRON_DOWN] = {0xE136, false_v},     /* caret-down */
+    [VKR_UI_ICON_CHEVRON_RIGHT] = {0xE13A, false_v},    /* caret-right */
+    [VKR_UI_ICON_CHEVRON_LEFT] = {0xE138, false_v},     /* caret-left */
+    [VKR_UI_ICON_CHEVRON_UP] = {0xE13C, false_v},       /* caret-up */
+    [VKR_UI_ICON_DISCLOSURE_OPEN] = {0xE136, true_v},   /* caret-down */
+    [VKR_UI_ICON_DISCLOSURE_CLOSED] = {0xE13A, true_v}, /* caret-right */
+    [VKR_UI_ICON_CLOSE] = {0xE4F6, false_v},            /* x */
+    [VKR_UI_ICON_CHECK] = {0xE182, false_v},            /* check */
+    [VKR_UI_ICON_MINUS] = {0xE32A, false_v},            /* minus */
+    [VKR_UI_ICON_MORE] = {0xE1FE, false_v},             /* dots-three */
+    [VKR_UI_ICON_MENU] = {0xE2F0, false_v},             /* list */
+    [VKR_UI_ICON_ARROW_LEFT] = {0xE058, false_v},       /* arrow-left */
+    [VKR_UI_ICON_ARROW_RIGHT] = {0xE06C, false_v},      /* arrow-right */
+    [VKR_UI_ICON_ARROW_UP] = {0xE08E, false_v},         /* arrow-up */
+    [VKR_UI_ICON_SORT_ASCENDING] = {0xE444, false_v},   /* sort-ascending */
+    [VKR_UI_ICON_SORT_DESCENDING] = {0xE446, false_v},  /* sort-descending */
+    [VKR_UI_ICON_EYE] = {0xE220, false_v},              /* eye */
+    [VKR_UI_ICON_EYE_SLASH] = {0xE224, false_v},        /* eye-slash */
+    [VKR_UI_ICON_LOCK] = {0xE2FA, false_v},             /* lock */
+    [VKR_UI_ICON_UNLOCK] = {0xE306, false_v},           /* lock-open */
+    [VKR_UI_ICON_TRASH] = {0xE4A6, false_v},            /* trash */
+    [VKR_UI_ICON_COPY] = {0xE1CA, false_v},             /* copy */
+    [VKR_UI_ICON_PASTE] = {0xE196, false_v},            /* clipboard */
+    [VKR_UI_ICON_DUPLICATE] = {0xE1CC, false_v},        /* copy-simple */
+    [VKR_UI_ICON_RENAME] = {0xE3B4, false_v},           /* pencil-simple */
+    [VKR_UI_ICON_SAVE] = {0xE248, false_v},             /* floppy-disk */
+    [VKR_UI_ICON_UNDO] = {0xE038, false_v},       /* arrow-counter-clockwise */
+    [VKR_UI_ICON_REDO] = {0xE036, false_v},       /* arrow-clockwise */
+    [VKR_UI_ICON_RESET] = {0xE08A, false_v},      /* arrow-u-up-left */
+    [VKR_UI_ICON_FRAME] = {0xE626, false_v},      /* frame-corners */
+    [VKR_UI_ICON_SETTINGS] = {0xE270, false_v},   /* gear */
+    [VKR_UI_ICON_GRAPHICS] = {0xE32E, false_v},   /* monitor */
+    [VKR_UI_ICON_METRICS] = {0xE154, false_v},    /* chart-line */
+    [VKR_UI_ICON_MEMORY] = {0xE9C4, false_v},     /* memory */
+    [VKR_UI_ICON_DRAWS] = {0xE466, false_v},      /* stack */
+    [VKR_UI_ICON_HELP] = {0xE3E8, false_v},       /* question */
+    [VKR_UI_ICON_COMMAND] = {0xE1C4, false_v},    /* command */
+    [VKR_UI_ICON_KEYBOARD] = {0xE2D8, false_v},   /* keyboard */
+    [VKR_UI_ICON_ANIMATION] = {0xE792, false_v},  /* film-strip */
+    [VKR_UI_ICON_PHYSICS] = {0xE5E4, false_v},    /* atom */
+    [VKR_UI_ICON_COLLIDER] = {0xE6CE, false_v},   /* bounding-box */
+    [VKR_UI_ICON_RIGID_BODY] = {0xED0A, false_v}, /* cube-focus */
+    [VKR_UI_ICON_JOINT] = {0xE2E2, false_v},      /* link */
+    [VKR_UI_ICON_BONE] = {0xE7F2, false_v},       /* bone */
+    [VKR_UI_ICON_SKIN] = {0xE72E, false_v},       /* person-simple */
+    [VKR_UI_ICON_CAMERA_ENTITY] = {0xE10E, false_v},     /* camera */
+    [VKR_UI_ICON_DIRECTIONAL_LIGHT] = {0xE472, false_v}, /* sun */
+    [VKR_UI_ICON_SPOT_LIGHT] = {0xE246, false_v},        /* flashlight */
+    [VKR_UI_ICON_POINT_LIGHT] = {0xE63C, false_v}, /* lightbulb-filament */
+    [VKR_UI_ICON_RECT_LIGHT] = {0xE462, false_v},  /* square-half */
+    [VKR_UI_ICON_SKY] = {0xE540, false_v},         /* cloud-sun */
+    [VKR_UI_ICON_FOG] = {0xE53C, false_v},         /* cloud-fog */
+    [VKR_UI_ICON_VOLUME] = {0xEC7C, false_v},      /* cube-transparent */
+    [VKR_UI_ICON_EMPTY] = {0xE602, false_v},       /* circle-dashed */
+    [VKR_UI_ICON_MOVE] = {0xE0A4, false_v},        /* arrows-out-cardinal */
+    [VKR_UI_ICON_ROTATE] = {0xE016, false_v},      /* arrow-arc-right */
+    [VKR_UI_ICON_SCALE] = {0xE0A2, false_v},       /* arrows-out */
+    [VKR_UI_ICON_SELECT] = {0xE1DC, false_v},      /* cursor */
+    [VKR_UI_ICON_SNAP] = {0xE680, false_v},        /* magnet */
+    [VKR_UI_ICON_WORLD] = {0xE288, false_v},       /* globe */
+    [VKR_UI_ICON_LOCAL] = {0xED0A, false_v},       /* cube-focus */
+    [VKR_UI_ICON_GRID] = {0xE296, false_v},        /* grid-four */
+    [VKR_UI_ICON_PERSPECTIVE] = {0xEBE6, false_v}, /* perspective */
+    [VKR_UI_ICON_VIEW_MODE] = {0xE18C, false_v},   /* circle-half */
+    [VKR_UI_ICON_LAYERS] = {0xE468, false_v},      /* stack-simple */
+    [VKR_UI_ICON_IMPORT] = {0xE20A, false_v},      /* download */
+    [VKR_UI_ICON_EXPORT] = {0xEAF0, false_v},      /* export */
+    [VKR_UI_ICON_REVEAL] = {0xE256, false_v},      /* folder-open */
+    [VKR_UI_ICON_SPINNER] = {0xEB44, false_v},     /* circle-notch */
+    [VKR_UI_ICON_BELL] = {0xE0CE, false_v},        /* bell */
+    [VKR_UI_ICON_CPU] = {0xE610, false_v},         /* cpu */
+    [VKR_UI_ICON_GPU] = {0xE612, false_v},         /* graphics-card */
+    [VKR_UI_ICON_SPEED] = {0xE628, false_v},       /* gauge */
+    [VKR_UI_ICON_FILTER] = {0xE266, false_v},      /* funnel */
+    [VKR_UI_ICON_LIST] = {0xE2F2, false_v},        /* list-bullets */
+    [VKR_UI_ICON_FILE] = {0xE230, false_v},        /* file */
+    [VKR_UI_ICON_PIN] = {0xE3E2, false_v},         /* push-pin */
+    [VKR_UI_ICON_MAXIMIZE] = {0xE0A6, false_v},    /* arrows-out-simple */
+    [VKR_UI_ICON_MINIMIZE] = {0xE09E, false_v},    /* arrows-in-simple */
+    [VKR_UI_ICON_LAYOUT] = {0xE6D6, false_v},      /* layout */
+    [VKR_UI_ICON_CHECK_CIRCLE] = {0xE184, true_v}, /* check-circle */
+    [VKR_UI_ICON_PLANET] = {0xE652, false_v},      /* planet */
+    [VKR_UI_ICON_RECORD] = {0xE3EE, true_v},       /* record */
+    [VKR_UI_ICON_PLUS_CIRCLE] = {0xE3D6, false_v}, /* plus-circle */
+    [VKR_UI_ICON_SIDEBAR] = {0xEC24, false_v},     /* sidebar-simple */
+    [VKR_UI_ICON_WINDOW] = {0xE5DA, false_v},      /* app-window */
+    [VKR_UI_ICON_TAG] = {0xE478, false_v},         /* tag */
+    [VKR_UI_ICON_HOME] = {0xE2C2, false_v},        /* house */
+    [VKR_UI_ICON_DOT] = {0xE18A, true_v},          /* circle */
+    [VKR_UI_ICON_ARROW_DOWN] = {0xE03E, false_v},  /* arrow-down */
+    [VKR_UI_ICON_FOLLOW_TAIL] = {0xE05C, false_v}, /* arrow-line-down */
+    [VKR_UI_ICON_BROOM] = {0xEC54, false_v},       /* broom */
+    [VKR_UI_ICON_CROSSHAIR] = {0xE1D6, false_v},   /* crosshair */
+    [VKR_UI_ICON_HAND] = {0xE298, false_v},        /* hand */
+    [VKR_UI_ICON_WRENCH] = {0xE5D4, false_v},      /* wrench */
+    [VKR_UI_ICON_PALETTE] = {0xE6C8, false_v},     /* palette */
+    [VKR_UI_ICON_THERMOMETER] = {0xE5C6, false_v}, /* thermometer */
+    [VKR_UI_ICON_ANGLE] = {0xE7BC, false_v},       /* angle */
+    [VKR_UI_ICON_RULER] = {0xE6B8, false_v},       /* ruler */
+    [VKR_UI_ICON_TIMER] = {0xE492, false_v},       /* timer */
+    [VKR_UI_ICON_GRAPH] = {0xEB58, false_v},       /* graph */
+    [VKR_UI_ICON_SPARKLE] = {0xE6A2, false_v},     /* sparkle */
+    [VKR_UI_ICON_ZOOM_IN] = {0xE310, false_v},     /* magnifying-glass-plus */
+    [VKR_UI_ICON_ZOOM_OUT] = {0xE30E, false_v},    /* magnifying-glass-minus */
+    [VKR_UI_ICON_CARET_UP_DOWN] = {0xE140, false_v},   /* caret-up-down */
+    [VKR_UI_ICON_KEBAB] = {0xE208, false_v},           /* dots-three-vertical */
+    [VKR_UI_ICON_CHART_BAR] = {0xE150, false_v},       /* chart-bar */
+    [VKR_UI_ICON_LIGHTNING] = {0xE2DE, false_v},       /* lightning */
+    [VKR_UI_ICON_GAME_CONTROLLER] = {0xE26E, false_v}, /* game-controller */
+    [VKR_UI_ICON_PERSON_WALK] = {0xE73A, false_v},     /* person-simple-walk */
+    [VKR_UI_ICON_SHAPES] = {0xEC5E, false_v},          /* shapes */
+    [VKR_UI_ICON_DATABASE] = {0xE1DE, false_v},        /* database */
+    [VKR_UI_ICON_HARD_DRIVES] = {0xE2A0, false_v},     /* hard-drives */
+    [VKR_UI_ICON_CLOCK] = {0xE19A, false_v},           /* clock */
+    [VKR_UI_ICON_BRAND] = {0xE1DA, true_v},            /* cube */
+    [VKR_UI_ICON_EYE_FILL] = {0xE220, true_v},         /* eye */
+    [VKR_UI_ICON_LOCK_FILL] = {0xE2FA, true_v},        /* lock */
+    [VKR_UI_ICON_WARNING_FILL] = {0xE4E2, true_v},     /* warning-circle */
+    [VKR_UI_ICON_INFO_FILL] = {0xE2CE, true_v},        /* info */
+    [VKR_UI_ICON_CHECK_SQUARE] = {0xE186, false_v},    /* check-square */
+    [VKR_UI_ICON_SQUARE] = {0xE45E, false_v},          /* square */
+    [VKR_UI_ICON_CIRCLE] = {0xE18A, false_v},          /* circle */
+    [VKR_UI_ICON_SUN_DIM] = {0xE474, false_v},         /* sun-dim */
+    [VKR_UI_ICON_MOON] = {0xE330, false_v},            /* moon */
+    [VKR_UI_ICON_CLOUD] = {0xE1AA, false_v},           /* cloud */
+    [VKR_UI_ICON_DROP] = {0xE210, false_v},            /* drop */
+    [VKR_UI_ICON_WAVES] = {0xE6DE, false_v},           /* waves */
+    [VKR_UI_ICON_TREE] = {0xE6DA, false_v},            /* tree */
+    [VKR_UI_ICON_BUILDINGS] = {0xE102, false_v},       /* buildings */
+    [VKR_UI_ICON_SELECTION] = {0xE69A, false_v},       /* selection */
+    [VKR_UI_ICON_TEXT] = {0xE48A, false_v},            /* text-t */
+    [VKR_UI_ICON_CODE] = {0xE1BC, false_v},            /* code */
+    [VKR_UI_ICON_TERMINAL] = {0xE47E, false_v},        /* terminal */
+    [VKR_UI_ICON_GIT_BRANCH] = {0xE278, false_v},      /* git-branch */
+    [VKR_UI_ICON_PUZZLE] = {0xE596, false_v},          /* puzzle-piece */
+    [VKR_UI_ICON_STAR] = {0xE46A, false_v},            /* star */
+    [VKR_UI_ICON_STAR_FILL] = {0xE46A, true_v},        /* star */
+    [VKR_UI_ICON_PENCIL_LINE] = {0xE3B2, false_v},     /* pencil-line */
+    [VKR_UI_ICON_BOUNDING_BOX] = {0xE6CE, false_v},    /* bounding-box */
+    [VKR_UI_ICON_VIDEO] = {0xE740, false_v},           /* video */
+    [VKR_UI_ICON_SPEAKER] = {0xE44A, false_v},         /* speaker-high */
+};
+
+vkr_internal const VkrFontGlyphId *vkr_ui_font_glyph(const VkrFont *font,
+                                                     uint32_t codepoint) {
+  if (!font || !font->codepoint_map.data || !font->glyphs_by_id.data)
+    return NULL;
+  uint64_t first = 0u;
+  uint64_t count = font->codepoint_map.length;
+  while (count != 0u) {
+    const uint64_t step = count / 2u;
+    const VkrFontCodepointMapEntry *entry =
+        &font->codepoint_map.data[first + step];
+    if (entry->codepoint < codepoint) {
+      first += step + 1u;
+      count -= step + 1u;
+    } else if (entry->codepoint > codepoint) {
+      count = step;
+    } else {
+      return entry->glyph_index < font->glyphs_by_id.length
+                 ? &font->glyphs_by_id.data[entry->glyph_index]
+                 : NULL;
+    }
   }
-  const Vec4 linear = vkr_ui_linear_color(color);
-  const float32_t scale = rect.width / 16.0f;
-  const float32_t half_stroke = Max(0.75f * scale, 0.5f);
-  for (uint32_t i = 0u; i < count; ++i) {
-    const VkrUiIconLine line = lines[i];
-    const Vec2 start = {rect.x + line.x0 * scale, rect.y + line.y0 * scale};
-    const Vec2 end = {rect.x + line.x1 * scale, rect.y + line.y1 * scale};
-    const float32_t dx = end.x - start.x, dy = end.y - start.y;
-    const float32_t length = sqrtf(dx * dx + dy * dy);
-    const Vec2 normal = {-dy * half_stroke / length, dx * half_stroke / length};
-    const Vec2 corners[4] = {{start.x + normal.x, start.y + normal.y},
-                             {end.x + normal.x, end.y + normal.y},
-                             {end.x - normal.x, end.y - normal.y},
-                             {start.x - normal.x, start.y - normal.y}};
-    (void)vkr_ui_draw_buffer_polygon(buffer, corners, linear);
-  }
-  if (icon == VKR_UI_ICON_GRIP) {
-    for (uint32_t row = 0u; row < 3u; ++row)
-      for (uint32_t column = 0u; column < 2u; ++column)
-        vkr_ui_icon_rect(buffer,
-                         (VkrUiRect){rect.x + (5.0f + 4.0f * column) * scale,
-                                     rect.y + (3.0f + 4.0f * row) * scale,
-                                     2.0f * scale, 2.0f * scale},
-                         linear);
-  } else if (icon == VKR_UI_ICON_PLAY || icon == VKR_UI_ICON_MONITOR_PLAY) {
-    const float32_t left = icon == VKR_UI_ICON_PLAY ? 4.0f : 6.0f;
-    const float32_t top = icon == VKR_UI_ICON_PLAY ? 2.0f : 4.0f;
-    const float32_t bottom = icon == VKR_UI_ICON_PLAY ? 14.0f : 10.0f;
-    const float32_t right = icon == VKR_UI_ICON_PLAY ? 14.0f : 11.0f;
-    const Vec2 corners[4] = {
-        {rect.x + left * scale, rect.y + top * scale},
-        {rect.x + left * scale, rect.y + bottom * scale},
-        {rect.x + right * scale, rect.y + (top + bottom) * 0.5f * scale},
-        {rect.x + right * scale, rect.y + (top + bottom) * 0.5f * scale}};
-    (void)vkr_ui_draw_buffer_polygon(buffer, corners, linear);
-  } else if (icon == VKR_UI_ICON_PAUSE) {
-    vkr_ui_icon_rect(buffer,
-                     (VkrUiRect){rect.x + 3 * scale, rect.y + 2 * scale,
-                                 3 * scale, 12 * scale},
-                     linear);
-    vkr_ui_icon_rect(buffer,
-                     (VkrUiRect){rect.x + 10 * scale, rect.y + 2 * scale,
-                                 3 * scale, 12 * scale},
-                     linear);
-  } else if (icon == VKR_UI_ICON_MONITOR_STOP) {
-    vkr_ui_icon_rect(buffer,
-                     (VkrUiRect){rect.x + 6 * scale, rect.y + 5 * scale,
-                                 4 * scale, 4 * scale},
-                     linear);
-  }
+  return NULL;
+}
+
+/* Fits the glyph's em box (advance by ascender-descender) into `rect`. */
+vkr_internal void vkr_ui_emit_icon(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
+                                   VkrUiIcon icon, VkrUiRect rect, Vec4 color) {
+  if (icon <= VKR_UI_ICON_NONE || icon >= VKR_UI_ICON_COUNT ||
+      !vkr_ui_rect_has_area(rect) || !vkr_ui_color_visible(color))
+    return;
+  const VkrUiIconGlyph glyph_ref = vkr_ui_icon_glyphs[icon];
+  VkrFont *font = vkr_font_system_get_by_handle(
+      system->fonts,
+      glyph_ref.fill ? system->icon_fill_font : system->icon_font);
+  const VkrFontGlyphId *glyph = vkr_ui_font_glyph(font, glyph_ref.codepoint);
+  if (!font || !glyph || !glyph->has_geometry || font->atlas.id == 0u)
+    return;
+  const float32_t em_height = font->em_ascender - font->em_descender > 0.0f
+                                  ? font->em_ascender - font->em_descender
+                                  : 1.0f;
+  const float32_t size = Min(rect.width, rect.height);
+  const float32_t scale = size / em_height;
+  const float32_t advance = glyph->advance > 0.0f ? glyph->advance : 1.0f;
+  const float32_t origin_x = rect.x + (rect.width - advance * scale) * 0.5f;
+  const float32_t origin_y = rect.y + (rect.height - size) * 0.5f;
+  const VkrUiRect quad = {
+      origin_x + glyph->plane_left * scale,
+      origin_y + (font->em_ascender - glyph->plane_top) * scale,
+      (glyph->plane_right - glyph->plane_left) * scale,
+      (glyph->plane_top - glyph->plane_bottom) * scale,
+  };
+  /* Icon atlases cook a 16 px distance range at 64 px per em. */
+  const float32_t screen_range = Max(size * 0.25f, 1.0f);
+  (void)vkr_ui_draw_buffer_text_quad(
+      buffer, quad,
+      (Vec4){glyph->uv_left, glyph->uv_top, glyph->uv_right, glyph->uv_bottom},
+      vkr_ui_linear_color(color),
+      (VkrUiTextureRef){font->atlas.id, font->atlas.generation},
+      VKR_UI_DRAW_MODE_MTSDF_TEXT, screen_range, font->mtsdf_unit_range);
 }
 
 vkr_internal float32_t vkr_ui_text_screen_range(const VkrUiText *text,
@@ -2206,9 +2404,13 @@ vkr_internal float32_t vkr_ui_text_screen_range(const VkrUiText *text,
          em_size;
 }
 
+/* `ellipsis_right`, when positive, is the pixel edge a single-line text must
+ * end before: glyphs past it are dropped at a glyph boundary and an ellipsis
+ * (or three periods when the font lacks U+2026) marks the cut. */
 vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
                                    VkrUiFrameNode *node, VkrUiRect content_rect,
-                                   bool8_t centered, float32_t x_offset) {
+                                   bool8_t centered, float32_t x_offset,
+                                   float32_t ellipsis_right) {
   VkrUiText *text = &node->retained->text;
   VkrFont *font = text->resolved_font;
   if (!node->retained->text_live || !font || font->atlas.id == 0u ||
@@ -2243,6 +2445,36 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
   const Vec2 unit_range =
       mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ? font->mtsdf_unit_range : (Vec2){0};
   const VkrUiTextureRef atlas = {font->atlas.id, font->atlas.generation};
+  float32_t cut = FLT_MAX;
+  const VkrFontGlyphId *ellipsis = NULL;
+  uint32_t ellipsis_count = 0u;
+  float32_t em = 0.0f;
+  if (ellipsis_right > 0.0f && text->layout.line_count == 1u &&
+      mode == VKR_UI_DRAW_MODE_MTSDF_TEXT &&
+      bounds.size.x > ellipsis_right - origin_x + 0.5f) {
+    ellipsis = vkr_ui_font_glyph(font, 0x2026u);
+    ellipsis_count = 1u;
+    if (!ellipsis || !ellipsis->has_geometry) {
+      ellipsis = vkr_ui_font_glyph(font, '.');
+      ellipsis_count = 3u;
+    }
+    if (ellipsis && ellipsis->has_geometry) {
+      em = vkr_ui_text_device_font_size(text);
+      const float32_t limit =
+          ellipsis_right - origin_x -
+          ellipsis->advance * em * (float32_t)ellipsis_count;
+      cut = 0.0f;
+      for (uint32_t g = 0u; g < text->layout.glyphs.length; ++g) {
+        const VkrTextGlyph *glyph = &text->layout.glyphs.data[g];
+        const float32_t end = glyph->position.x + glyph->advance;
+        if (end > limit)
+          break;
+        cut = end;
+      }
+    } else {
+      ellipsis = NULL;
+    }
+  }
   for (uint32_t vertex = 0u; vertex + 3u < text->geometry.vertex_count;
        vertex += 4u) {
     const VkrTextVertex *quad = &text->geometry.vertices[vertex];
@@ -2256,6 +2488,8 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
       min_y = Min(min_y, quad[i].position.y);
       max_y = Max(max_y, quad[i].position.y);
     }
+    if ((min_x + max_x) * 0.5f >= cut)
+      continue;
     const VkrUiRect rect = {
         .x = origin_x + min_x,
         .y = top + geometry_max_y - max_y,
@@ -2268,6 +2502,23 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
                      quad[0].texcoord.y};
     (void)vkr_ui_draw_buffer_text_quad(buffer, rect, uv, quad[0].color, atlas,
                                        mode, screen_range, unit_range);
+  }
+  const float32_t baseline = top + bounds.ascent;
+  for (uint32_t i = 0u; ellipsis && i < ellipsis_count; ++i) {
+    const float32_t pen =
+        origin_x + cut + ellipsis->advance * em * (float32_t)i;
+    const VkrUiRect rect = {
+        pen + ellipsis->plane_left * em,
+        baseline - ellipsis->plane_top * em,
+        (ellipsis->plane_right - ellipsis->plane_left) * em,
+        (ellipsis->plane_top - ellipsis->plane_bottom) * em,
+    };
+    (void)vkr_ui_draw_buffer_text_quad(
+        buffer, rect,
+        (Vec4){ellipsis->uv_left, ellipsis->uv_top, ellipsis->uv_right,
+               ellipsis->uv_bottom},
+        text->geometry.vertices[0].color, atlas, mode, screen_range,
+        unit_range);
   }
 }
 
@@ -2284,37 +2535,115 @@ vkr_internal uint32_t vkr_ui_bezier_segments(const VkrUiFrameNode *node) {
   return straight ? 1u : 24u;
 }
 
+/* Hue-preserving brightness change for derived hover and press states. */
+vkr_internal Vec4 vkr_ui_color_scale(Vec4 color, float32_t factor) {
+  return (Vec4){vkr_clamp_f32(color.x * factor, 0.0f, 1.0f),
+                vkr_clamp_f32(color.y * factor, 0.0f, 1.0f),
+                vkr_clamp_f32(color.z * factor, 0.0f, 1.0f), color.w};
+}
+
+/* Eases a widget's fill and border toward its hover, pressed, and focus
+ * colors. Derived states apply only when the style leaves them unset. */
+vkr_internal void vkr_ui_node_state_colors(const VkrUiFrameNode *node,
+                                           Vec4 *background,
+                                           Vec4 *border_color) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiRetainedState *retained = node->retained;
+  if (node->kind == VKR_UI_NODE_BUTTON) {
+    /* Transparent "ghost" buttons, such as list rows, gain a subtle fill. */
+    const bool8_t ghost = background->w <= 0.0f;
+    Vec4 hover = node->style.hover_background_color;
+    if (hover.w == 0.0f)
+      hover = ghost ? theme->row_hover : vkr_ui_color_scale(*background, 1.15f);
+    Vec4 active = node->style.active_background_color;
+    if (active.w == 0.0f)
+      active = ghost ? vkr_ui_color_alpha(theme->row_hover,
+                                          theme->row_hover.w * 0.6f)
+                     : vkr_ui_color_scale(*background, 0.8f);
+    if (hover.w < 0.0f)
+      hover = *background;
+    if (active.w < 0.0f)
+      active = hover;
+    if (ghost) {
+      *background = hover;
+      background->w *= retained->hover_t;
+      if (retained->active_t > 0.0f)
+        *background = vkr_ui_color_mix(*background, active, retained->active_t);
+    } else if (node->disabled) {
+      background->w *= 0.55f;
+      border_color->w *= 0.55f;
+    } else {
+      *background = vkr_ui_color_mix(*background, hover, retained->hover_t);
+      *background = vkr_ui_color_mix(*background, active, retained->active_t);
+    }
+  } else if (node->kind == VKR_UI_NODE_TEXT_FIELD && !node->disabled) {
+    *border_color = vkr_ui_color_mix(*border_color, theme->border_strong,
+                                     retained->hover_t);
+    *border_color =
+        vkr_ui_color_mix(*border_color, theme->focus_ring, retained->focus_t);
+  }
+}
+
+/* Overflowing scroll areas show a thin thumb over their right edge. */
+vkr_internal void vkr_ui_emit_scrollbar(const VkrUiSystem *system,
+                                        const VkrUiFrameNode *node,
+                                        VkrUiDrawBuffer *buffer) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiRetainedState *retained = node->retained;
+  VkrUiRect gutter;
+  VkrUiRect bar;
+  if (!vkr_ui_scroll_thumb(retained, &node->style, system->content_scale,
+                           &gutter, &bar))
+    return;
+  const float32_t radius = bar.width * 0.5f;
+  const Vec4 radii = {radius, radius, radius, radius};
+  const float32_t emphasis =
+      retained->scroll_dragging ? 1.0f : retained->hover_t;
+  vkr_ui_emit_rect(
+      buffer, bar,
+      vkr_ui_color_mix(vkr_ui_color_alpha(theme->border_strong, 0.7f),
+                       theme->text_secondary, emphasis),
+      radii);
+}
+
 vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
                                    VkrUiDrawBuffer *buffer) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
   if (!vkr_ui_draw_buffer_push_clip(buffer, node->clip))
     return;
   node->draw_first_command = buffer->command_count;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiRetainedState *retained = node->retained;
+  const float32_t scale = system->content_scale;
   Vec4 background = node->style.background_color;
-  if (node->kind == VKR_UI_NODE_BUTTON) {
-    const float32_t factor = node->disabled  ? 0.65f
-                             : node->active  ? 0.68f
-                             : node->hovered ? 1.18f
-                                             : 1.0f;
-    background.x = vkr_clamp_f32(background.x * factor, 0.0f, 1.0f);
-    background.y = vkr_clamp_f32(background.y * factor, 0.0f, 1.0f);
-    background.z = vkr_clamp_f32(background.z * factor, 0.0f, 1.0f);
-  }
-  VkrUiRect background_rect = node->rect;
-  Vec4 background_radii = node->style.corner_radius_px;
-  if (vkr_ui_edges_have_extent(node->style.border_px)) {
-    vkr_ui_emit_rect(buffer, node->rect, node->style.border_color,
+  Vec4 border_color = node->style.border_color;
+  vkr_ui_node_state_colors(node, &background, &border_color);
+  if (vkr_ui_color_visible(node->style.shadow_color))
+    vkr_ui_emit_shadow(buffer, node->rect, node->style.corner_radius_px,
+                       node->style.shadow_color, node->style.shadow_offset_px,
+                       node->style.shadow_blur_px);
+  const VkrUiEdges edges = node->style.border_px;
+  const bool8_t uniform_border = edges.top == edges.right &&
+                                 edges.top == edges.bottom &&
+                                 edges.top == edges.left;
+  if (!vkr_ui_edges_have_extent(edges)) {
+    vkr_ui_emit_rect(buffer, node->rect, background,
                      node->style.corner_radius_px);
-    background_rect = vkr_ui_rect_inset(node->rect, node->style.border_px);
-    background_radii =
-        vkr_ui_inner_radii(node->style.corner_radius_px, node->style.border_px);
+  } else if (uniform_border) {
+    vkr_ui_emit_box(buffer, node->rect, background,
+                    node->style.corner_radius_px, border_color, edges.top);
+  } else {
+    /* Uneven edges, such as a tab's accent top, paint the border color and
+     * inset the fill. */
+    vkr_ui_emit_rect(buffer, node->rect, border_color,
+                     node->style.corner_radius_px);
+    vkr_ui_emit_rect(buffer, vkr_ui_rect_inset(node->rect, edges), background,
+                     vkr_ui_inner_radii(node->style.corner_radius_px, edges));
   }
-  vkr_ui_emit_rect(buffer, background_rect, background, background_radii);
   const VkrUiRect content = vkr_ui_style_content_rect(node->rect, &node->style);
   switch (node->kind) {
   case VKR_UI_NODE_BEZIER: {
     Vec2 previous = node->bezier_points[0];
-    const float32_t scale = system->content_scale;
     const float32_t half_width = node->bezier_width * scale * 0.5f;
     const Vec4 color = vkr_ui_linear_color(node->style.text_color);
     const uint32_t segments = vkr_ui_bezier_segments(node);
@@ -2348,12 +2677,12 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
     break;
   }
   case VKR_UI_NODE_IMAGE: {
-    const float32_t scale = Min(content.width / node->image_size.x,
-                                content.height / node->image_size.y);
+    const float32_t fit = Min(content.width / node->image_size.x,
+                              content.height / node->image_size.y);
     VkrUiRect image = {
-        content.x + (content.width - node->image_size.x * scale) * 0.5f,
-        content.y + (content.height - node->image_size.y * scale) * 0.5f,
-        node->image_size.x * scale, node->image_size.y * scale};
+        content.x + (content.width - node->image_size.x * fit) * 0.5f,
+        content.y + (content.height - node->image_size.y * fit) * 0.5f,
+        node->image_size.x * fit, node->image_size.y * fit};
     for (uint32_t y = 0; y < 4; ++y) {
       for (uint32_t x = 0; x < 4; ++x) {
         float32_t shade = (x + y) % 2 ? 0.28f : 0.18f;
@@ -2370,15 +2699,35 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   }
   case VKR_UI_NODE_LABEL:
   case VKR_UI_NODE_BUTTON: {
-    const bool8_t centered = node->kind == VKR_UI_NODE_BUTTON;
+    const bool8_t centered = node->kind == VKR_UI_NODE_BUTTON || node->center;
+    /* Text never spills past its own box into neighbouring widgets. Wrapped
+     * or unconstrained text keeps the parent clip. */
+    const float32_t text_width =
+        node->retained->text_live
+            ? vkr_ui_text_get_bounds(&node->retained->text).size.x
+            : 0.0f;
+    const float32_t icon_extent =
+        node->icon != VKR_UI_ICON_NONE
+            ? node->icon_size_px + 6.0f * system->content_scale
+            : 0.0f;
+    const bool8_t clip_text =
+        text_width + icon_extent > content.width + 0.5f && content.width > 0.0f;
+    /* Overflowing text may use the padding, as the clip below allows; the
+     * ellipsis marks what still does not fit. */
+    const float32_t ellipsis_right =
+        clip_text ? node->rect.x + node->rect.width - 1.0f : 0.0f;
+    if (clip_text && !vkr_ui_draw_buffer_push_clip(
+                         buffer, vkr_ui_uniform_inset(node->rect, 1.0f)))
+      break;
     if (node->icon == VKR_UI_ICON_NONE) {
-      vkr_ui_emit_text(system, buffer, node, content, centered, 0.0f);
+      vkr_ui_emit_text(system, buffer, node, content, centered, 0.0f,
+                       ellipsis_right);
+      if (clip_text)
+        (void)vkr_ui_draw_buffer_pop_clip(buffer);
       break;
     }
     const float32_t size =
         Min(node->icon_size_px, Min(content.width, content.height));
-    const float32_t text_width =
-        vkr_ui_text_get_bounds(&node->retained->text).size.x;
     const float32_t gap =
         node->content.length ? 6.0f * system->content_scale : 0.0f;
     const float32_t offset =
@@ -2388,46 +2737,73 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
                                  content.y + (content.height - size) * 0.5f,
                                  size, size};
     if (size > 0.0f)
-      vkr_ui_emit_icon(buffer, node->icon, icon_rect, node->style.text_color);
+      vkr_ui_emit_icon(system, buffer, node->icon, icon_rect, node->icon_color);
     vkr_ui_emit_text(system, buffer, node, content, false_v,
-                     offset + size + gap);
+                     offset + size + gap, ellipsis_right);
+    if (clip_text)
+      (void)vkr_ui_draw_buffer_pop_clip(buffer);
     break;
   }
   case VKR_UI_NODE_CHECKBOX: {
-    const float32_t size = Min(content.height, 16.0f * system->content_scale);
+    const float32_t size = Min(content.height, 15.0f * scale);
     const VkrUiRect box = {
         content.x, content.y + (content.height - size) * 0.5f, size, size};
-    vkr_ui_emit_rect(buffer, box, (Vec4){0.22f, 0.24f, 0.28f, 1.0f},
-                     (Vec4){2.0f, 2.0f, 2.0f, 2.0f});
-    if (node->checked)
-      vkr_ui_emit_rect(buffer, vkr_ui_uniform_inset(box, size * 0.22f),
-                       (Vec4){0.20f, 0.65f, 1.0f, 1.0f},
-                       (Vec4){1.0f, 1.0f, 1.0f, 1.0f});
+    const float32_t radius = 3.0f * scale;
+    const Vec4 radii = {radius, radius, radius, radius};
+    Vec4 fill = node->checked
+                    ? vkr_ui_color_mix(theme->accent, theme->accent_hover,
+                                       retained->hover_t)
+                    : theme->field;
+    Vec4 edge = node->checked ? fill
+                              : vkr_ui_color_mix(theme->border_strong,
+                                                 theme->text_secondary,
+                                                 retained->hover_t);
+    if (node->disabled) {
+      fill.w *= 0.45f;
+      edge.w *= 0.45f;
+    }
+    vkr_ui_emit_box(buffer, box, fill, radii, edge, Max(1.0f, scale));
+    if (node->checked) {
+      Vec4 mark = theme->text_on_accent;
+      mark.w *= node->disabled ? 0.6f : 1.0f;
+      vkr_ui_emit_icon(system, buffer, VKR_UI_ICON_CHECK,
+                       vkr_ui_uniform_inset(box, size * 0.12f), mark);
+    }
     vkr_ui_emit_text(system, buffer, node, content, false_v,
-                     size + 6.0f * system->content_scale);
+                     size + 7.0f * scale, 0.0f);
     break;
   }
   case VKR_UI_NODE_SLIDER: {
-    const float32_t track_height = Max(2.0f, 4.0f * system->content_scale);
-    const VkrUiRect track = {
-        content.x,
-        content.y + (content.height - track_height) * 0.5f,
-        content.width,
-        track_height,
-    };
-    vkr_ui_emit_rect(buffer, track, (Vec4){0.18f, 0.20f, 0.24f, 1.0f},
-                     (Vec4){track_height * 0.5f, track_height * 0.5f,
-                            track_height * 0.5f, track_height * 0.5f});
-    const float32_t knob = Min(content.height, 14.0f * system->content_scale);
-    const VkrUiRect knob_rect = {
-        content.x + node->slider_fraction * Max(0.0f, content.width - knob),
-        content.y + (content.height - knob) * 0.5f,
-        knob,
-        knob,
-    };
+    const float32_t track_height = Max(2.0f, 4.0f * scale);
+    const float32_t knob =
+        Min(content.height, (12.0f + 2.0f * retained->hover_t) * scale);
+    const float32_t travel = Max(0.0f, content.width - knob);
+    const float32_t knob_x = content.x + node->slider_fraction * travel;
+    const float32_t track_y =
+        content.y + (content.height - track_height) * 0.5f;
+    const Vec4 track_radii = {track_height * 0.5f, track_height * 0.5f,
+                              track_height * 0.5f, track_height * 0.5f};
     vkr_ui_emit_rect(
-        buffer, knob_rect, (Vec4){0.20f, 0.65f, 1.0f, 1.0f},
-        (Vec4){knob * 0.5f, knob * 0.5f, knob * 0.5f, knob * 0.5f});
+        buffer, (VkrUiRect){content.x, track_y, content.width, track_height},
+        theme->border, track_radii);
+    Vec4 accent =
+        vkr_ui_color_mix(theme->accent, theme->accent_hover, retained->hover_t);
+    if (node->disabled)
+      accent = theme->text_disabled;
+    const float32_t filled = knob_x + knob * 0.5f - content.x;
+    if (filled > 0.0f)
+      vkr_ui_emit_rect(buffer,
+                       (VkrUiRect){content.x, track_y, filled, track_height},
+                       accent, track_radii);
+    const VkrUiRect knob_rect = {
+        knob_x, content.y + (content.height - knob) * 0.5f, knob, knob};
+    const Vec4 knob_radii = {knob * 0.5f, knob * 0.5f, knob * 0.5f,
+                             knob * 0.5f};
+    vkr_ui_emit_shadow(buffer, knob_rect, knob_radii, theme->shadow,
+                       (Vec2){0.0f, 1.0f * scale}, 3.0f * scale);
+    vkr_ui_emit_box(buffer, knob_rect,
+                    node->disabled ? theme->text_disabled : theme->text,
+                    knob_radii, accent, Max(1.0f, 2.0f * scale));
     break;
   }
   case VKR_UI_NODE_TEXT_FIELD: {
@@ -2456,13 +2832,13 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
                 (VkrUiRect){origin.x + item->position.x,
                             origin.y + item->position.y - text->bounds.ascent,
                             item->advance, height},
-                (Vec4){0.24f, 0.40f, 0.58f, 0.85f}, (Vec4){0});
+                vkr_ui_color_alpha(theme->selection, 0.9f), (Vec4){0});
         }
         offset += cp.byte_length;
       }
     }
-    vkr_ui_emit_text(system, buffer, node, content, false_v, 0.0f);
-    if (system->focused_id == node->id) {
+    vkr_ui_emit_text(system, buffer, node, content, false_v, 0.0f, 0.0f);
+    if (system->focused_id == node->id && vkr_ui_caret_visible(system)) {
       const Vec2 caret =
           vkr_ui_text_cursor_position(text, node->retained->text_cursor);
       vkr_ui_emit_rect(buffer,
@@ -2476,28 +2852,21 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   default:
     break;
   }
-  if (node->focusable && system->focused_id == node->id) {
-    const float32_t stroke = Max(1.0f, system->content_scale);
-    const VkrUiRect focus = vkr_ui_uniform_inset(node->rect, stroke);
-    const Vec4 color = {0.96f, 0.71f, 0.34f, 1.0f};
-    vkr_ui_emit_rect(buffer, (VkrUiRect){focus.x, focus.y, focus.width, stroke},
-                     color, (Vec4){0});
-    vkr_ui_emit_rect(buffer,
-                     (VkrUiRect){focus.x, focus.y + focus.height - stroke,
-                                 focus.width, stroke},
-                     color, (Vec4){0});
-    vkr_ui_emit_rect(buffer,
-                     (VkrUiRect){focus.x, focus.y, stroke, focus.height}, color,
-                     (Vec4){0});
-    vkr_ui_emit_rect(buffer,
-                     (VkrUiRect){focus.x + focus.width - stroke, focus.y,
-                                 stroke, focus.height},
-                     color, (Vec4){0});
+  /* Keyboard focus ring follows the widget's radii. Fields show focus through
+   * their border instead. */
+  if (node->focusable && node->kind != VKR_UI_NODE_TEXT_FIELD &&
+      retained->focus_t > 0.0f && system->focused_id == node->id) {
+    const float32_t stroke = Max(1.0f, 1.5f * scale);
+    vkr_ui_emit_box(buffer, node->rect, (Vec4){0}, node->style.corner_radius_px,
+                    vkr_ui_color_alpha(theme->focus_ring, retained->focus_t),
+                    stroke);
   }
   node->draw_command_count = buffer->command_count - node->draw_first_command;
   for (uint32_t child = node->first_child; child != VKR_UI_NODE_NONE;
        child = system->frame_nodes[child].next_sibling)
     vkr_ui_emit_node(system, child, buffer);
+  if (node->kind == VKR_UI_NODE_SCROLL)
+    vkr_ui_emit_scrollbar(system, node, buffer);
   (void)vkr_ui_draw_buffer_pop_clip(buffer);
 }
 
@@ -2660,16 +3029,50 @@ vkr_internal uint32_t vkr_ui_tooltip_prepare(VkrUiSystem *system,
         node->input_layer == system->keyboard_input_layer)
       source = i;
   }
-  if (source == VKR_UI_NODE_NONE || system->active_id != VKR_UI_ID_NONE)
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float64_t dt = system->delta_time;
+  if (source == VKR_UI_NODE_NONE || system->active_id != VKR_UI_ID_NONE) {
+    /* Keep the tooltip warm briefly so the next control shows at once. */
+    system->tooltip_owner = VKR_UI_ID_NONE;
+    system->tooltip_hover_seconds = 0.0;
+    system->tooltip_warm_seconds = Max(0.0, system->tooltip_warm_seconds - dt);
+    system->tooltip_opacity = 0.0f;
     return VKR_UI_NODE_NONE;
+  }
+  const VkrUiId owner = system->frame_nodes[source].id;
+  if (owner != system->tooltip_owner) {
+    system->tooltip_owner = owner;
+    system->tooltip_hover_seconds =
+        system->tooltip_warm_seconds > 0.0 ? theme->tooltip_delay_seconds : 0.0;
+    system->tooltip_opacity =
+        system->tooltip_warm_seconds > 0.0 ? system->tooltip_opacity : 0.0f;
+  } else {
+    system->tooltip_hover_seconds += dt;
+  }
+  if (!system->reduce_motion &&
+      system->tooltip_hover_seconds < theme->tooltip_delay_seconds) {
+    system->animating = true_v;
+    return VKR_UI_NODE_NONE;
+  }
+  system->tooltip_warm_seconds = 0.4;
+  system->tooltip_opacity =
+      vkr_ui_animate(system, system->tooltip_opacity, 1.0f);
+  const float32_t opacity = system->tooltip_opacity;
   const String8 text = system->frame_nodes[source].tooltip;
   VkrUiWidgetConfig config = vkr_ui_widget_config_default();
-  config.style.padding_pt = (VkrUiEdges){6, 9, 6, 9};
+  config.style.padding_pt = (VkrUiEdges){5, 8, 5, 8};
   config.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-  config.style.background_color = (Vec4){0.12f, 0.14f, 0.17f, 1.0f};
-  config.style.border_color = (Vec4){0.58f, 0.46f, 0.30f, 1.0f};
-  config.style.text_color = (Vec4){0.96f, 0.96f, 0.96f, 1.0f};
-  config.style.font_size_pt = 12.0f;
+  config.style.corner_radius_pt = (Vec4){5, 5, 5, 5};
+  config.style.background_color = vkr_ui_color_alpha(theme->popup, opacity);
+  config.style.border_color = vkr_ui_color_alpha(theme->border_strong, opacity);
+  config.style.text_color = vkr_ui_color_alpha(theme->text, opacity);
+  config.style.shadow_color =
+      vkr_ui_color_alpha(theme->shadow, theme->shadow.w * opacity);
+  config.style.shadow_offset_pt = (Vec2){0.0f, 2.0f};
+  config.style.shadow_blur_pt = 8.0f;
+  config.style.font_size_pt = theme->font_caption + 0.5f;
+  config.text.layout.word_wrap = true_v;
+  config.text.layout.max_width = 360.0f;
   const uint32_t containers = system->container_count;
   system->container_count = 0u;
   const uint32_t index = vkr_ui_add_node(
@@ -2861,6 +3264,29 @@ vkr_internal bool8_t vkr_ui_resolve_draw_commands(VkrUiSystem *system) {
 
   vkr_ui_retained_reclaim(system);
   return system->frame_draw_ready;
+}
+
+bool8_t vkr_ui_widget_rect(const VkrUiSystem *system, VkrUiId id,
+                           VkrUiRect *out_rect) {
+  if (!system || !out_rect || id == VKR_UI_ID_NONE)
+    return false_v;
+  const VkrUiRetainedState *retained = vkr_ui_retained_find(system, id);
+  if (!retained || !vkr_ui_rect_has_area(retained->last_rect))
+    return false_v;
+  *out_rect = retained->last_rect;
+  return true_v;
+}
+
+void vkr_ui_text_field_set_cursor(VkrUiSystem *system, VkrUiId id,
+                                  uint32_t offset) {
+  if (!system || id == VKR_UI_ID_NONE)
+    return;
+  VkrUiRetainedState *retained = vkr_ui_retained_find(system, id);
+  if (!retained)
+    return;
+  /* The next text_field call clamps both to its buffer and a UTF-8 boundary. */
+  retained->text_cursor = offset;
+  retained->text_selection = offset;
 }
 
 VkrUiInputCapture vkr_ui_system_capture(const VkrUiSystem *system) {

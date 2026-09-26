@@ -655,7 +655,6 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> tonemap_pipeline;
   id<MTLRenderPipelineState> display_linear_pipeline;
   id<MTLRenderPipelineState> world_text_pipeline;
-  id<MTLRenderPipelineState> ui_rect_pipeline;
   id<MTLRenderPipelineState> picking_text_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;
   id<MTLComputePipelineState> ibl_sh_pipeline;

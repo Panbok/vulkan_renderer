@@ -1935,17 +1935,11 @@ vkr_internal bool8_t vkr_vk_validate_ui_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, sampler),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, target_unit_range),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, rect_extent),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, mode),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, flags),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, corner_radii),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanUiRoot, display_output),
   };
   return vkr_vk_validate_root_abi(renderer, VKR_VULKAN_PACKET_UI_VERT_SPV,
                                   "ui_vertex", fields, ArrayCount(fields),
-                                  sizeof(VkrVulkanUiRoot)) &&
-         vkr_vk_validate_root_abi(renderer, VKR_VULKAN_PACKET_UI_RECT_VERT_SPV,
-                                  "ui_rect_vertex", fields, ArrayCount(fields),
                                   sizeof(VkrVulkanUiRoot));
 }
 
@@ -2054,8 +2048,6 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "text_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_UI_VERTEX
                   ? "ui_vertex"
-              : vertex_shader == VKR_VULKAN_PACKET_SHADER_UI_RECT_VERTEX
-                  ? "ui_rect_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX
                   ? "vk_visibility_vertex"
               : vertex_shader ==
@@ -2093,8 +2085,6 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "text_picking_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT
                   ? "ui_fragment"
-              : fragment_shader == VKR_VULKAN_PACKET_SHADER_UI_RECT_FRAGMENT
-                  ? "ui_rect_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT
                   ? "vk_visibility_fragment"
               : fragment_shader ==
@@ -2259,21 +2249,18 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
       VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
       VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
       VKR_VULKAN_PACKET_PIPELINE_UI,
-      VKR_VULKAN_PACKET_PIPELINE_UI_RECT,
   };
   const VkrVulkanPacketShader vertex_shaders[] = {
       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
       VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
       VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
-      VKR_VULKAN_PACKET_SHADER_UI_RECT_VERTEX,
   };
   const VkrVulkanPacketShader fragment_shaders[] = {
       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT,
-      VKR_VULKAN_PACKET_SHADER_UI_RECT_FRAGMENT,
   };
-  const bool8_t blends[] = {false_v, false_v, true_v, true_v};
+  const bool8_t blends[] = {false_v, false_v, true_v};
   VkPipeline replacements[ArrayCount(pipelines)] = {0};
   for (uint32_t i = 0u; i < ArrayCount(pipelines); ++i) {
     if (vkr_vk_create_presentation_pipeline(
@@ -2309,8 +2296,6 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV,
       VKR_VULKAN_PACKET_UI_VERT_SPV,
       VKR_VULKAN_PACKET_UI_FRAG_SPV,
-      VKR_VULKAN_PACKET_UI_RECT_VERT_SPV,
-      VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV,
@@ -2389,11 +2374,6 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
              VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT, VK_FORMAT_R32_UINT,
              VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, false_v) &&
-         vkr_vk_create_packet_pipeline(
-             renderer, VKR_VULKAN_PACKET_PIPELINE_UI_RECT,
-             VKR_VULKAN_PACKET_SHADER_UI_RECT_VERTEX,
-             VKR_VULKAN_PACKET_SHADER_UI_RECT_FRAGMENT, presentation_format,
-             VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,
              VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,

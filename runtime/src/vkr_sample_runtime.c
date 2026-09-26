@@ -4078,6 +4078,9 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   application->editor_viewport.dock_capture =
       vkr_standard_scene_runtime_build_ui_frame(application, &requests);
   application->ui_capture = vkr_ui_end(&application->ui_system);
+  if (vkr_application_host_is_windowed(&application->host))
+    vkr_window_set_cursor(&application->host.window,
+                          application->ui_system.cursor);
   sample_graphics_request(application, &requests.graphics_request);
   sample_editor_state_apply(application, &requests.editor_state_request);
   sample_view_apply(application, &requests.view_request);

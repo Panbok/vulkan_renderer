@@ -128,7 +128,7 @@ bool8_t vkr_ui_draw_buffer_image(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                              .uv_rect = uv_rect,
                                              .color = color,
                                              .texture = texture,
-                                             .mode = VKR_UI_DRAW_MODE_QUAD,
+                                             .mode = VKR_UI_DRAW_MODE_IMAGE,
                                          });
 }
 
@@ -152,16 +152,20 @@ bool8_t vkr_ui_draw_buffer_text_quad(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                          });
 }
 
-bool8_t vkr_ui_draw_buffer_rounded_rect(VkrUiDrawBuffer *buffer,
-                                        VkrUiRect rect_px, Vec4 color,
-                                        Vec4 corner_radius_px) {
+bool8_t vkr_ui_draw_buffer_box(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
+                               Vec4 color, Vec4 corner_radius_px,
+                               Vec4 border_color, float32_t border_px,
+                               float32_t softness_px) {
   return vkr_ui_draw_buffer_push(buffer,
                                  (VkrUiDrawCommand){
                                      .rect_px = rect_px,
                                      .uv_rect = {0.0f, 0.0f, 1.0f, 1.0f},
                                      .color = color,
                                      .corner_radius_px = corner_radius_px,
-                                     .mode = VKR_UI_DRAW_MODE_ROUNDED_RECT,
+                                     .border_color = border_color,
+                                     .border_px = border_px,
+                                     .softness_px = softness_px,
+                                     .mode = VKR_UI_DRAW_MODE_BOX,
                                  });
 }
 
@@ -171,6 +175,9 @@ static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
       !vkr_ui_draw_vec4_finite(command.uv_rect) ||
       !vkr_ui_draw_vec4_finite(command.color) ||
       !vkr_ui_draw_vec4_finite(command.corner_radius_px) ||
+      !vkr_ui_draw_vec4_finite(command.border_color) ||
+      !isfinite(command.border_px) || command.border_px < 0.0f ||
+      !isfinite(command.softness_px) || command.softness_px < 0.0f ||
       command.mode >= VKR_UI_DRAW_MODE_COUNT ||
       !isfinite(command.screen_px_range) || command.screen_px_range < 0.0f)
     return false_v;
@@ -184,18 +191,22 @@ static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
         return false_v;
   }
   if ((command.mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ||
-       command.mode == VKR_UI_DRAW_MODE_BITMAP_TEXT) &&
+       command.mode == VKR_UI_DRAW_MODE_BITMAP_TEXT ||
+       command.mode == VKR_UI_DRAW_MODE_IMAGE) &&
       command.texture.id == 0u)
+    return false_v;
+  if ((command.mode == VKR_UI_DRAW_MODE_QUAD ||
+       command.mode == VKR_UI_DRAW_MODE_BOX) &&
+      command.texture.id != 0u)
     return false_v;
   if (command.mode == VKR_UI_DRAW_MODE_MTSDF_TEXT &&
       (command.screen_px_range <= 0.0f || !isfinite(command.sdf_unit_range.x) ||
        !isfinite(command.sdf_unit_range.y) ||
        command.sdf_unit_range.x <= 0.0f || command.sdf_unit_range.y <= 0.0f))
     return false_v;
-  if (command.mode == VKR_UI_DRAW_MODE_ROUNDED_RECT &&
-      (command.texture.id != 0u || command.corner_radius_px.x < 0.0f ||
-       command.corner_radius_px.y < 0.0f || command.corner_radius_px.z < 0.0f ||
-       command.corner_radius_px.w < 0.0f))
+  if (command.mode == VKR_UI_DRAW_MODE_BOX &&
+      (command.corner_radius_px.x < 0.0f || command.corner_radius_px.y < 0.0f ||
+       command.corner_radius_px.z < 0.0f || command.corner_radius_px.w < 0.0f))
     return false_v;
   return true_v;
 }
@@ -223,45 +234,81 @@ static Vec4 vkr_ui_draw_clamp_radii(Vec4 radii, VkrUiRect rect) {
                 Min(radii.w, limit)};
 }
 
-static bool8_t vkr_ui_draw_batch_matches(const VkrUiDrawBatch *batch,
+/* Untextured primitives ignore the batch texture, so they extend any batch
+ * with the same scissor. A textured command may also adopt an untextured
+ * batch's texture before anything in it samples. */
+static bool8_t vkr_ui_draw_batch_accepts(VkrUiDrawBatch *batch,
                                          const VkrUiDrawCommand *command,
-                                         VkrUiRect scissor, Vec4 radii) {
-  if (!batch || batch->mode != command->mode ||
-      !vkr_ui_draw_texture_equal(batch->texture, command->texture) ||
-      batch->screen_px_range != command->screen_px_range ||
-      batch->sdf_unit_range.x != command->sdf_unit_range.x ||
-      batch->sdf_unit_range.y != command->sdf_unit_range.y ||
+                                         VkrUiRect scissor) {
+  if (!batch ||
       MemCompare(&batch->scissor_rect_px, &scissor, sizeof(scissor)) != 0)
     return false_v;
-  if (command->mode != VKR_UI_DRAW_MODE_ROUNDED_RECT)
+  if (command->texture.id == 0u)
     return true_v;
-  return batch->rect_extent_px.x == command->rect_px.width &&
-         batch->rect_extent_px.y == command->rect_px.height &&
-         MemCompare(&batch->corner_radius_px, &radii, sizeof(radii)) == 0;
+  if (batch->texture.id == 0u) {
+    batch->texture = command->texture;
+    batch->sdf_unit_range = command->sdf_unit_range;
+    return true_v;
+  }
+  return vkr_ui_draw_texture_equal(batch->texture, command->texture) &&
+         batch->sdf_unit_range.x == command->sdf_unit_range.x &&
+         batch->sdf_unit_range.y == command->sdf_unit_range.y;
+}
+
+/* Outer edge of the emitted quad. A feathered box extends past its rectangle;
+ * a crisp box keeps its antialiased edge inside the rectangle, so widget
+ * geometry matches the laid-out bounds. */
+static float32_t vkr_ui_draw_box_margin(const VkrUiDrawCommand *command) {
+  return command->mode == VKR_UI_DRAW_MODE_BOX && command->softness_px > 0.0f
+             ? command->softness_px + 1.0f
+             : 0.0f;
 }
 
 static void vkr_ui_draw_write_quad(const VkrUiDrawCommand *command,
                                    uint32_t target_height,
                                    VkrUiDrawOutput *out_draws) {
   const uint32_t base = out_draws->vertex_count;
-  const float32_t left = command->rect_px.x;
-  const float32_t right = command->rect_px.x + command->rect_px.width;
-  const float32_t bottom =
-      (float32_t)target_height - command->rect_px.y - command->rect_px.height;
-  const float32_t top = (float32_t)target_height - command->rect_px.y;
+  const float32_t margin = vkr_ui_draw_box_margin(command);
+  const VkrUiRect rect = {
+      command->rect_px.x - margin,
+      command->rect_px.y - margin,
+      command->rect_px.width + margin * 2.0f,
+      command->rect_px.height + margin * 2.0f,
+  };
+  const float32_t left = rect.x;
+  const float32_t right = rect.x + rect.width;
+  const float32_t bottom = (float32_t)target_height - rect.y - rect.height;
+  const float32_t top = (float32_t)target_height - rect.y;
   const Vec4 uv = command->uv_rect;
-  out_draws->vertices[base + 0u] = (VkrUiVertex){.position = {left, bottom},
-                                                 .texcoord = {uv.x, uv.w},
-                                                 .color = command->color};
-  out_draws->vertices[base + 1u] = (VkrUiVertex){.position = {right, bottom},
-                                                 .texcoord = {uv.z, uv.w},
-                                                 .color = command->color};
-  out_draws->vertices[base + 2u] = (VkrUiVertex){.position = {right, top},
-                                                 .texcoord = {uv.z, uv.y},
-                                                 .color = command->color};
-  out_draws->vertices[base + 3u] = (VkrUiVertex){.position = {left, top},
-                                                 .texcoord = {uv.x, uv.y},
-                                                 .color = command->color};
+  const Vec2 half = {command->rect_px.width * 0.5f,
+                     command->rect_px.height * 0.5f};
+  const Vec2 outer = {half.x + margin, half.y + margin};
+  const VkrUiVertex shared = {
+      .color = command->color,
+      .border_color = command->border_color,
+      .corner_radius_px =
+          vkr_ui_draw_clamp_radii(command->corner_radius_px, command->rect_px),
+      .half_extent_px = half,
+      .border_px = command->border_px,
+      .softness_px = command->softness_px,
+      .mode = (uint32_t)command->mode,
+  };
+  /* Local offsets are Y-down like the authored rectangle. */
+  const Vec2 positions[4] = {
+      {left, bottom}, {right, bottom}, {right, top}, {left, top}};
+  const Vec2 texcoords[4] = {
+      {uv.x, uv.w}, {uv.z, uv.w}, {uv.z, uv.y}, {uv.x, uv.y}};
+  const Vec2 locals[4] = {{-outer.x, outer.y},
+                          {outer.x, outer.y},
+                          {outer.x, -outer.y},
+                          {-outer.x, -outer.y}};
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    VkrUiVertex vertex = shared;
+    vertex.position = positions[i];
+    vertex.texcoord = texcoords[i];
+    vertex.local_px = locals[i];
+    out_draws->vertices[base + i] = vertex;
+  }
 
   const uint32_t indices[] = {base + 0u, base + 1u, base + 2u,
                               base + 2u, base + 3u, base + 0u};
@@ -326,13 +373,12 @@ VkrUiDrawBuildResult vkr_ui_draw_build(const VkrUiDrawBuffer *buffer,
         command->clip_rect_px, target_width, target_height);
     if (!vkr_ui_rect_has_area(scissor))
       continue;
-    const Vec4 radii =
-        vkr_ui_draw_clamp_radii(command->corner_radius_px, command->rect_px);
+    VkrUiDrawBatch *current =
+        out_draws->batch_count
+            ? &out_draws->batches[out_draws->batch_count - 1u]
+            : NULL;
     const bool8_t starts_batch =
-        out_draws->batch_count == 0u ||
-        !vkr_ui_draw_batch_matches(
-            &out_draws->batches[out_draws->batch_count - 1u], command, scissor,
-            radii);
+        !current || !vkr_ui_draw_batch_accepts(current, command, scissor);
     const uint32_t vertices =
         command->corner_count ? command->corner_count * 2u : 4u;
     const uint32_t indices =
@@ -349,11 +395,7 @@ VkrUiDrawBuildResult vkr_ui_draw_build(const VkrUiDrawBuffer *buffer,
           .first_index = out_draws->index_count,
           .texture = command->texture,
           .scissor_rect_px = scissor,
-          .mode = command->mode,
-          .screen_px_range = command->screen_px_range,
           .sdf_unit_range = command->sdf_unit_range,
-          .rect_extent_px = {command->rect_px.width, command->rect_px.height},
-          .corner_radius_px = radii,
       };
     }
     if (command->corner_count)

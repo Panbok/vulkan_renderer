@@ -1230,17 +1230,15 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketUiRoot {
   uint64_t texture_id;
   /** target width/height followed by the normalized MTSDF unit range. */
   Vec4 target_unit_range;
-  Vec2 rect_extent;
-  uint32_t mode;
+  /** Bit 0: the batch texture is bound. */
   uint32_t flags;
-  /** top-left, top-right, bottom-right, bottom-left. */
-  Vec4 corner_radii;
+  uint32_t reserved;
   uint64_t display_output;
 } VkrMetalPacketUiRoot;
 
-_Static_assert(offsetof(VkrMetalPacketUiRoot, display_output) == 64u,
+_Static_assert(offsetof(VkrMetalPacketUiRoot, display_output) == 40u,
                "Metal UI display-output ABI offset drift");
-_Static_assert(sizeof(VkrMetalPacketUiRoot) == 80u,
+_Static_assert(sizeof(VkrMetalPacketUiRoot) == 48u,
                "Metal UI root ABI size drift");
 
 typedef enum VkrMetalPacketAbiRecordId {
@@ -1268,6 +1266,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
   VKR_METAL_PACKET_ABI_UI_ROOT,
+  VKR_METAL_PACKET_ABI_UI_VERTEX,
   VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_VIEW,

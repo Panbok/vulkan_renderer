@@ -4,8 +4,16 @@
 #include "math/mat.h"
 #include "vkr_ui_draw_types.h"
 
-/** Shared UI/world-text vertex record consumed by both native backends. */
-typedef VkrUiVertex VkrTextVertex;
+/** World-text vertex record consumed by both native backends. The UI stream
+ * uses the wider VkrUiVertex. */
+typedef struct VkrTextVertex {
+  Vec2 position;
+  Vec2 texcoord;
+  Vec4 color;
+} VkrTextVertex;
+
+_Static_assert(sizeof(VkrTextVertex) == 32u,
+               "VkrTextVertex must remain a 32-byte GPU record");
 
 /** Maximum packet instance records accepted per frame. */
 #define VKR_INSTANCE_BUFFER_MAX_INSTANCES 65536

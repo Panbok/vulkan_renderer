@@ -274,9 +274,10 @@ static void test_ui_draw_build(void) {
       (Vec4){0.0f, 0.0f, 1.0f, 1.0f}, (Vec4){1.0f, 1.0f, 1.0f, 1.0f},
       (VkrUiTextureRef){3u, 7u}));
   assert(vkr_ui_draw_buffer_pop_clip(&buffer));
-  assert(vkr_ui_draw_buffer_rounded_rect(
+  assert(vkr_ui_draw_buffer_box(
       &buffer, (VkrUiRect){70.0f, 60.0f, 20.0f, 10.0f},
-      (Vec4){0.2f, 0.2f, 0.2f, 1.0f}, (Vec4){20.0f, 4.0f, 3.0f, 2.0f}));
+      (Vec4){0.2f, 0.2f, 0.2f, 1.0f}, (Vec4){20.0f, 4.0f, 3.0f, 2.0f},
+      (Vec4){0}, 0.0f, 0.0f));
 
   VkrUiVertex vertices[16] = {0};
   uint32_t indices[24] = {0};
@@ -300,7 +301,12 @@ static void test_ui_draw_build(void) {
   assert(batches[1].scissor_rect_px.y == 10.0f);
   assert(batches[1].scissor_rect_px.width == 31.0f);
   assert(batches[1].scissor_rect_px.height == 21.0f);
-  assert(batches[2].corner_radius_px.x == 5.0f);
+  /* Box radii clamp to half the short side and travel per vertex; a crisp
+   * box keeps its quad on the laid-out rectangle. */
+  assert(vertices[12].mode == VKR_UI_DRAW_MODE_BOX);
+  assert(vertices[12].corner_radius_px.x == 5.0f);
+  assert(vertices[12].half_extent_px.x == 10.0f);
+  assert(vertices[12].position.x == 70.0f);
 
   output.vertex_capacity = 4u;
   output.index_capacity = 6u;
@@ -485,7 +491,7 @@ static void test_ui_dock_layout_drag_and_json_round_trip(void) {
   assert(vkr_ui_dock_validate(&tree));
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
                             8.0f, 28.0f));
-  assert(ui_near(tree.nodes[1u].rect_px.height, 35.0f));
+  assert(ui_near(tree.nodes[1u].rect_px.height, VKR_UI_DOCK_TOOLBAR_PT));
   assert(!vkr_ui_dock_set_split_ratio(&tree, 0u, 0.25f));
   uint32_t scene_leaf = VKR_UI_DOCK_NODE_NONE;
   VkrUiRect scene = {0};
@@ -565,7 +571,7 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   /* The new default Content tab must have a visible, clickable rectangle. */
   assert(tree.nodes[4u].as.leaf.tabs[0u].panel_kind ==
          VKR_UI_DOCK_PANEL_CONTENT);
-  assert(ui_near(vkr_ui_dock_tab_rect(&tree, 4u, 0u).width, 102.0f));
+  assert(ui_near(vkr_ui_dock_tab_rect(&tree, 4u, 0u).width, 116.0f));
   /* Keep the following reorder oracle on its explicit three-panel fixture. */
   assert(vkr_ui_dock_close_tab(&tree, 4u, 0u));
   assert(vkr_ui_dock_move_tab(&tree, 5u, 0u, 4u, 0u, VKR_UI_DOCK_DROP_CENTER));
@@ -575,8 +581,8 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   /* A wide stack has compact tabs, followed by noninteractive empty strip. */
   VkrUiRect first = vkr_ui_dock_tab_rect(&tree, 4u, 0u);
   VkrUiRect third = vkr_ui_dock_tab_rect(&tree, 4u, 2u);
-  assert(ui_near(first.width, 116.0f));
-  assert(ui_near(third.x, 232.0f) && ui_near(third.width, 102.0f));
+  assert(ui_near(first.width, 128.0f));
+  assert(ui_near(third.x, 254.0f) && ui_near(third.width, 114.0f));
   InputState input = {0};
   input.current_buttons = (ButtonsState){.x = 260, .y = (int32_t)third.y + 12};
   input.current_buttons.buttons[BUTTON_LEFT] = true_v;
@@ -662,7 +668,7 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
                                 &scene_content));
   assert(ui_near(scene_content.height, 64.0f));
-  assert(ui_near(tree.nodes[1u].rect_px.height, 35.0f));
+  assert(ui_near(tree.nodes[1u].rect_px.height, VKR_UI_DOCK_TOOLBAR_PT));
   assert(vkr_ui_dock_set_split_ratio(&tree, 3u, 1.0f));
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 800.0f, 600.0f},
                             3.0f, 28.0f));

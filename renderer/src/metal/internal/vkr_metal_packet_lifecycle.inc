@@ -722,7 +722,6 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->gpu_draw_icb_argument_encoder release];
   [renderer->depth_read_state release];
   [renderer->depth_write_state release];
-  [renderer->ui_rect_pipeline release];
   [renderer->world_text_pipeline release];
   [renderer->picking_text_pipeline release];
   [renderer->tonemap_pipeline release];

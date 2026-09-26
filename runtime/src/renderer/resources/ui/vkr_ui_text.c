@@ -36,7 +36,7 @@ vkr_internal VkrFont *vkr_ui_text_resolve_font(VkrFontSystem *font_system,
   return font;
 }
 
-vkr_internal float32_t vkr_ui_text_device_font_size(const VkrUiText *text) {
+float32_t vkr_ui_text_device_font_size(const VkrUiText *text) {
   float32_t authored_size = text->config.font_size;
   if (authored_size <= 0.0f) {
     authored_size = (float32_t)text->resolved_font->size;

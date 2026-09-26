@@ -41,6 +41,9 @@ vkr_ui_tile_command_fingerprint(const VkrUiDrawCommand *command) {
   VKR_UI_TILE_HASH_FIELD(uv_rect);
   VKR_UI_TILE_HASH_FIELD(color);
   VKR_UI_TILE_HASH_FIELD(corner_radius_px);
+  VKR_UI_TILE_HASH_FIELD(border_color);
+  VKR_UI_TILE_HASH_FIELD(border_px);
+  VKR_UI_TILE_HASH_FIELD(softness_px);
   VKR_UI_TILE_HASH_FIELD(texture);
   VKR_UI_TILE_HASH_FIELD(screen_px_range);
   VKR_UI_TILE_HASH_FIELD(sdf_unit_range);
@@ -80,8 +83,10 @@ VkrUiRect vkr_ui_tile_command_aabb(const VkrUiDrawCommand *command,
                                    uint32_t target_height) {
   if (!command || target_width == 0u || target_height == 0u)
     return (VkrUiRect){0};
-  VkrUiRect aabb =
-      vkr_ui_rect_intersect(command->rect_px, command->clip_rect_px);
+  VkrUiRect rect = command->rect_px;
+  if (command->mode == VKR_UI_DRAW_MODE_BOX && command->softness_px > 0.0f)
+    rect = vkr_ui_tile_rect_dilate(rect, command->softness_px + 1.0f);
+  VkrUiRect aabb = vkr_ui_rect_intersect(rect, command->clip_rect_px);
   if (command->mode == VKR_UI_DRAW_MODE_MTSDF_TEXT)
     aabb = vkr_ui_tile_rect_dilate(aabb, command->screen_px_range);
   return vkr_ui_rect_intersect(aabb,

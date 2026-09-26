@@ -1662,10 +1662,7 @@ bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
                                       (float32_t)target_height,
                                       batch->sdf_unit_range.x,
                                       batch->sdf_unit_range.y},
-                .rect_extent = batch->rect_extent_px,
-                .mode = batch->mode,
                 .flags = textured ? 1u : 0u,
-                .corner_radii = batch->corner_radius_px,
                 .display_output = slot->display_output,
             },
         .scissor =
@@ -1675,9 +1672,7 @@ bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
                 .extent = {(uint32_t)batch->scissor_rect_px.width,
                            (uint32_t)batch->scissor_rect_px.height},
             },
-        .pipeline = batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT
-                        ? VKR_VULKAN_PACKET_PIPELINE_UI_RECT
-                        : VKR_VULKAN_PACKET_PIPELINE_UI,
+        .pipeline = VKR_VULKAN_PACKET_PIPELINE_UI,
         .first_index = batch->first_index,
         .index_count = batch->index_count,
     };

@@ -449,6 +449,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_editor_viewport_panel_rect(
       if (isfinite(scale.value) && scale.value > 0.0f)
         content_scale = scale.value;
     }
+    /* Dock geometry follows the UI's interface zoom. */
+    if (application->ui_system.user_scale > 0.0f)
+      content_scale *= application->ui_system.user_scale;
     VkrUiDockTree *dock = &application->editor_viewport.dock;
     if (!vkr_ui_dock_layout(dock, panel,
                             VKR_UI_DOCK_SPLITTER_PT * content_scale,

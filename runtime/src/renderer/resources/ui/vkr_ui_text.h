@@ -138,5 +138,9 @@ void vkr_ui_text_set_color(VkrUiText *text, Vec4 color);
  */
 VkrTextBounds vkr_ui_text_get_bounds(VkrUiText *text);
 
+/** Font size in device pixels: the authored size, or the font's own, times
+ * the content scale. Cooked glyph metrics are em units scaled by it. */
+float32_t vkr_ui_text_device_font_size(const VkrUiText *text);
+
 /** Prepares shaped CPU geometry without issuing renderer API calls. */
 bool8_t vkr_ui_text_prepare_geometry(VkrUiText *text);

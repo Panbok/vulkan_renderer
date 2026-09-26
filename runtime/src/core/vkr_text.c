@@ -622,6 +622,59 @@ void vkr_text_destroy(VkrAllocator *allocator, VkrText *text) {
 // Measurement helpers
 /////////////////////
 
+vkr_internal bool8_t vkr_text_is_wrap_space(uint32_t codepoint) {
+  return codepoint == ' ' || codepoint == '\t';
+}
+
+/* Width of the word that starts with a glyph of `first_advance` and continues
+ * through `iter` until a space or newline. Kerning inside the word is ignored;
+ * it only moves the break decision, never glyph placement. */
+vkr_internal float64_t vkr_text_word_advance(VkrCodepointIter iter,
+                                             const VkrTextStyle *style,
+                                             float32_t font_size,
+                                             float32_t font_scale,
+                                             float64_t first_advance) {
+  float64_t width = first_advance;
+  while (vkr_codepoint_iter_has_next(&iter)) {
+    VkrCodepoint cp = vkr_codepoint_iter_next(&iter);
+    if (cp.byte_length == 0) {
+      continue;
+    }
+
+    if (cp.value == '\n' || vkr_text_is_wrap_space(cp.value)) {
+      break;
+    }
+
+    const VkrTextResolvedGlyph glyph = vkr_text_font_resolve_glyph(
+        style->font_data, font_size, font_scale, cp.value);
+    width += (float64_t)glyph.advance + style->letter_spacing;
+  }
+  return width;
+}
+
+/* Decides whether the glyph about to be placed opens a wrapped line. A word
+ * that would overflow moves whole to the next line; a word wider than the
+ * line still breaks per glyph. Spaces never open a line, and `trailing_space`
+ * lets the caller drop them from the finished line width. */
+vkr_internal bool8_t vkr_text_wrap_before(
+    VkrCodepointIter iter, const VkrTextStyle *style, float32_t font_size,
+    float32_t font_scale, uint32_t codepoint, float64_t glyph_width,
+    float64_t total_advance, float64_t current_width, float64_t trailing_space,
+    float32_t max_width) {
+  if (current_width <= 0.0 || vkr_text_is_wrap_space(codepoint)) {
+    return false_v;
+  }
+
+  if (trailing_space > 0.0) {
+    const float64_t kern = total_advance - glyph_width;
+    const float64_t word =
+        vkr_text_word_advance(iter, style, font_size, font_scale, glyph_width);
+    return current_width + kern + word > (float64_t)max_width;
+  }
+
+  return current_width + total_advance > (float64_t)max_width;
+}
+
 vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
                                                      float32_t max_width,
                                                      bool8_t word_wrap) {
@@ -646,6 +699,7 @@ vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
 
   float64_t current_width = 0.0;
   float64_t max_line_width = 0.0;
+  float64_t trailing_space = 0.0;
   uint32_t line_count = 1;
   bool8_t has_prev = false_v;
   uint32_t prev_codepoint = 0;
@@ -661,6 +715,7 @@ vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
     if (cp.value == '\n') {
       max_line_width = Max(max_line_width, current_width);
       current_width = 0.0;
+      trailing_space = 0.0;
       line_count++;
       has_prev = false_v;
       previous = (VkrTextResolvedGlyph){0};
@@ -681,14 +736,18 @@ vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
     }
     float64_t total_advance = glyph_width + kern;
 
-    if (word_wrap && max_width > 0.0f && current_width > 0.0 &&
-        current_width + total_advance > (float64_t)max_width) {
-      max_line_width = Max(max_line_width, current_width);
+    if (word_wrap && max_width > 0.0f &&
+        vkr_text_wrap_before(iter, &style, font_size, font_scale, cp.value,
+                             glyph_width, total_advance, current_width,
+                             trailing_space, max_width)) {
+      max_line_width = Max(max_line_width, current_width - trailing_space);
       current_width = 0.0;
       line_count++;
       total_advance = glyph_width;
     }
 
+    trailing_space =
+        vkr_text_is_wrap_space(cp.value) ? trailing_space + total_advance : 0.0;
     current_width += total_advance;
     prev_codepoint = cp.value;
     previous = current;
@@ -783,6 +842,7 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
   uint32_t line_count = 1;
   float64_t max_line_width = 0.0;
   float64_t current_width = 0.0;
+  float64_t trailing_space = 0.0;
   uint32_t line_index = 0;
   bool8_t has_prev = false_v;
   uint32_t prev_codepoint = 0;
@@ -814,6 +874,7 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
       }
       max_line_width = Max(max_line_width, current_width);
       current_width = 0.0;
+      trailing_space = 0.0;
       line_index++;
       line_count++;
       has_prev = false_v;
@@ -840,12 +901,15 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
     }
     float64_t total_advance = glyph_width + kern;
 
-    if (opts.word_wrap && opts.max_width > 0.0f && current_width > 0.0 &&
-        current_width + total_advance > (float64_t)opts.max_width) {
+    if (opts.word_wrap && opts.max_width > 0.0f &&
+        vkr_text_wrap_before(iter, &style, font_size, font_scale, cp.value,
+                             glyph_width, total_advance, current_width,
+                             trailing_space, opts.max_width)) {
+      const float64_t line_width = current_width - trailing_space;
       if (collect_positions) {
-        line_widths.data[line_widths.length++] = current_width;
+        line_widths.data[line_widths.length++] = line_width;
       }
-      max_line_width = Max(max_line_width, current_width);
+      max_line_width = Max(max_line_width, line_width);
       current_width = 0.0;
       line_index++;
       line_count++;
@@ -870,6 +934,8 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
       };
     }
 
+    trailing_space =
+        vkr_text_is_wrap_space(cp.value) ? trailing_space + total_advance : 0.0;
     current_width += total_advance;
     prev_codepoint = cp.value;
     previous = current;

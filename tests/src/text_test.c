@@ -144,6 +144,13 @@ vkr_internal void test_text_measurement(void) {
   assert_f32_eq(wrapped.size.x, 12.0f, 0.001f, "wrapped width");
   assert_f32_eq(wrapped.size.y, 20.0f, 0.001f, "wrapped height");
 
+  // "ab c" fits 24 units, but word wrap moves the whole word "cd" and drops
+  // the trailing space from the first line's width.
+  VkrText words = vkr_text_from_cstr("ab cd", &style);
+  VkrTextBounds word_bounds = vkr_text_measure_wrapped(&words, 24.0f);
+  assert_f32_eq(word_bounds.size.x, 12.0f, 0.001f, "word wrapped width");
+  assert_f32_eq(word_bounds.size.y, 20.0f, 0.001f, "word wrapped height");
+
   printf("  test_text_measurement PASSED\n");
 }
 
@@ -173,6 +180,20 @@ vkr_internal void test_text_layout(void) {
                 "glyph 1 x position");
 
   vkr_text_layout_destroy(&layout);
+
+  VkrText words = vkr_text_from_cstr("ab cd", &style);
+  opts.word_wrap = true_v;
+  opts.max_width = 24.0f;
+  layout = vkr_text_layout_compute(&allocator, &words, &opts);
+  assert(layout.glyphs.length == 5);
+  assert(layout.line_count == 2);
+  assert_f32_eq(layout.bounds.x, 12.0f, 0.001f, "word wrapped layout width");
+  assert_f32_eq(layout.glyphs.data[3].position.x, 0.0f, 0.001f,
+                "wrapped word starts its line");
+  assert(layout.glyphs.data[3].position.y > layout.glyphs.data[2].position.y);
+
+  vkr_text_layout_destroy(&layout);
+  vkr_text_destroy(&allocator, &words);
   vkr_text_destroy(&allocator, &text);
   teardown_suite();
   printf("  test_text_layout PASSED\n");
@@ -1344,6 +1365,81 @@ vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
   printf("  test_ui_scroll_keyboard_navigation_and_child_click PASSED\n");
 }
 
+/* The scrollbar thumb drags content, and the gutter owns its press: a
+ * full-width row beneath it must not activate. */
+vkr_internal void test_ui_scroll_thumb_drag(void) {
+  printf("  Running test_ui_scroll_thumb_drag...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 60u);
+  EventManager event_manager = {0};
+  assert(event_manager_create(&event_manager));
+  InputState input = input_init(&event_manager);
+  const VkrUiTrack rows[] = {
+      {.unit = VKR_UI_TRACK_PX, .value = 40.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 40.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 40.0f},
+  };
+  /* 60px of viewport over 120px of rows: a 30px thumb with 30px of travel,
+   * 4px wide and 2px from the right edge (x 194..198). */
+  for (uint32_t frame = 0u; frame < 4u; ++frame) {
+    input_update(&input);
+    if (frame == 1u) {
+      input_process_mouse_move(&input, 196, 4);
+      input_process_button(&input, BUTTON_LEFT, true_v);
+    } else if (frame == 2u) {
+      input_process_mouse_move(&input, 196, 34);
+    } else if (frame == 3u) {
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    }
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 60u, &input, false_v,
+                        1.0 / 60.0, NULL));
+    VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+    panel.rows = rows;
+    panel.row_count = ArrayCount(rows);
+    assert(vkr_ui_scroll_area_begin(&system, string8_lit("scroll"), &panel));
+    VkrUiId last_row = VKR_UI_ID_NONE;
+    for (uint32_t row = 0u; row < ArrayCount(rows); ++row) {
+      VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+      button.placement.row = row;
+      button.placement.column = 0u;
+      button.fill = true_v;
+      assert(vkr_ui_push_id_u64(&system, row));
+      last_row =
+          vkr_ui_id_stack_widget_label(&system.id_stack, string8_lit("row"));
+      assert(!vkr_ui_button(&system, string8_lit("row"), string8_lit("A"),
+                            &button));
+      assert(vkr_ui_pop_id(&system));
+    }
+    assert(vkr_ui_scroll_area_end(&system));
+    (void)vkr_ui_end(&system);
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 60u,
+                                           &draw_list));
+    VkrUiRect rect = {0};
+    assert(vkr_ui_widget_rect(&system, last_row, &rect));
+    /* Before the drag the last row starts at 80; dragging the thumb through
+     * its full travel scrolls the full 60px range. */
+    assert_f32_eq(rect.y, frame < 2u ? 80.0f : 20.0f, 0.0f,
+                  "thumb drag maps travel to the scroll range");
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  input_shutdown(&input);
+  event_manager_destroy(&event_manager);
+  vkr_ui_system_shutdown(&system);
+  teardown_suite();
+  printf("  test_ui_scroll_thumb_drag PASSED\n");
+}
+
 vkr_internal void *text_test_alloc_aligned(void *ctx, uint64_t size,
                                            uint64_t alignment,
                                            VkrAllocatorMemoryTag tag) {
@@ -1410,6 +1506,7 @@ bool32_t run_text_tests(void) {
   test_ui_input_layer_blocks_click_through();
   test_ui_slider_final_pointer_position();
   test_ui_scroll_keyboard_navigation_and_child_click();
+  test_ui_scroll_thumb_drag();
 
   return true_v;
 }

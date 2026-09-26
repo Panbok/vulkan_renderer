@@ -13,7 +13,7 @@
 #define VKR_UI_DOCK_NODE_NONE UINT32_MAX
 #define VKR_UI_DOCK_JSON_CAPACITY KB(16)
 #define VKR_UI_DOCK_TAB_BAR_PT 28.0f
-#define VKR_UI_DOCK_TOOLBAR_PT 35.0f
+#define VKR_UI_DOCK_TOOLBAR_PT 38.0f
 #define VKR_UI_DOCK_SPLITTER_PT 3.0f
 /* A dock leaf keeps usable content below its tab bar at normal window sizes. */
 #define VKR_UI_DOCK_PANEL_MIN_WIDTH_PT 96.0f

@@ -20,7 +20,11 @@ typedef struct VkrUiDrawCommand {
   /** Top-left texture coordinates: u0, v0, u1, v1. */
   Vec4 uv_rect;
   Vec4 color;
+  /** SDF box data; see VKR_UI_DRAW_MODE_BOX. */
   Vec4 corner_radius_px;
+  Vec4 border_color;
+  float32_t border_px;
+  float32_t softness_px;
   VkrUiTextureRef texture;
   VkrUiDrawMode mode;
   float32_t screen_px_range;
@@ -74,9 +78,13 @@ bool8_t vkr_ui_draw_buffer_text_quad(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                      VkrUiDrawMode text_mode,
                                      float32_t screen_px_range,
                                      Vec2 sdf_unit_range);
-bool8_t vkr_ui_draw_buffer_rounded_rect(VkrUiDrawBuffer *buffer,
-                                        VkrUiRect rect_px, Vec4 color,
-                                        Vec4 corner_radius_px);
+/** Rounded box with an optional inner border. A positive softness feathers
+ * the edge over that many pixels on each side for shadows and glows; the
+ * emitted quad grows to cover the feather. Colors are linear. */
+bool8_t vkr_ui_draw_buffer_box(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
+                               Vec4 color, Vec4 corner_radius_px,
+                               Vec4 border_color, float32_t border_px,
+                               float32_t softness_px);
 
 VkrUiDrawBuildResult vkr_ui_draw_build(const VkrUiDrawBuffer *buffer,
                                        uint32_t target_width,

@@ -207,7 +207,6 @@ vkr_internal void test_packet_ui_stream_validation(void) {
   VkrUiDrawBatch batch = {
       .index_count = ArrayCount(indices),
       .scissor_rect_px = {0.0f, 0.0f, 100.0f, 50.0f},
-      .mode = VKR_UI_DRAW_MODE_QUAD,
   };
   VkrUiPassPayload ui = {
       .draw_list =
@@ -245,7 +244,9 @@ vkr_internal void test_packet_ui_stream_validation(void) {
                 "packet.ui.draw_list.batches.scissor_rect_px") == 0);
   batch.scissor_rect_px.width = 100.0f;
 
-  batch.mode = VKR_UI_DRAW_MODE_MTSDF_TEXT;
+  /* Glyph vertices sample the batch texture, so an untextured batch fails. */
+  for (uint32_t i = 0u; i < ArrayCount(vertices); ++i)
+    vertices[i].mode = VKR_UI_DRAW_MODE_MTSDF_TEXT;
   assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.ui.draw_list.batches.texture") ==

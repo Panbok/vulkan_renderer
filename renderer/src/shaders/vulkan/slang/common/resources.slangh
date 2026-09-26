@@ -425,16 +425,33 @@ struct VkrVulkanTextOutput
     nointerpolation uint object_id : TEXCOORD1;
 };
 
+// One UI stream record. The mode selects vertex color, MTSDF or bitmap glyph
+// coverage, a signed-distance box, or a textured image.
+struct VkrVulkanUiVertex
+{
+    float2 position;
+    float2 texcoord;
+    float4 color;
+    float4 border_color;
+    // top-left, top-right, bottom-right, bottom-left
+    float4 corner_radius;
+    // Y-down pixel offset from the box center
+    float2 local;
+    float2 half_extent;
+    float border;
+    float softness;
+    uint mode;
+    uint reserved;
+};
+
 struct VkrVulkanUiRoot
 {
     uint64_t vertices;
     uint texture;
     uint sampler;
     float4 target_unit_range;
-    float2 rect_extent;
-    uint mode;
     uint flags;
-    float4 corner_radii;
+    uint reserved;
     VkrDisplayOutputParams* display_output;
     uint64_t display_output_reserved;
 };
@@ -444,6 +461,13 @@ struct VkrVulkanUiOutput
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
     float4 color : COLOR0;
+    float4 border_color : COLOR1;
+    nointerpolation float4 corner_radius : TEXCOORD1;
+    float2 local : TEXCOORD2;
+    nointerpolation float2 half_extent : TEXCOORD3;
+    nointerpolation float border : TEXCOORD4;
+    nointerpolation float softness : TEXCOORD5;
+    nointerpolation uint mode : TEXCOORD6;
 };
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];

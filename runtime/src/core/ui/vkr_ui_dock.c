@@ -517,14 +517,14 @@ VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
      divides available width proportionally; its clipped labels retain tooltips.
    */
   static const float32_t widths_pt[VKR_UI_DOCK_PANEL_COUNT] = {
-      [VKR_UI_DOCK_PANEL_SCENE_VIEWPORT] = 88.0f,
-      [VKR_UI_DOCK_PANEL_HIERARCHY] = 116.0f,
-      [VKR_UI_DOCK_PANEL_INSPECTOR] = 116.0f,
-      [VKR_UI_DOCK_PANEL_CONSOLE] = 102.0f,
+      [VKR_UI_DOCK_PANEL_SCENE_VIEWPORT] = 92.0f,
+      [VKR_UI_DOCK_PANEL_HIERARCHY] = 128.0f,
+      [VKR_UI_DOCK_PANEL_INSPECTOR] = 126.0f,
+      [VKR_UI_DOCK_PANEL_CONSOLE] = 114.0f,
       [VKR_UI_DOCK_PANEL_TOOLBAR] = 98.0f,
-      [VKR_UI_DOCK_PANEL_CUSTOM] = 88.0f,
-      [VKR_UI_DOCK_PANEL_BAKERY] = 104.0f,
-      [VKR_UI_DOCK_PANEL_CONTENT] = 102.0f,
+      [VKR_UI_DOCK_PANEL_CUSTOM] = 104.0f,
+      [VKR_UI_DOCK_PANEL_BAKERY] = 112.0f,
+      [VKR_UI_DOCK_PANEL_CONTENT] = 116.0f,
   };
   float32_t total = 0.0f;
   float32_t preceding = 0.0f;
