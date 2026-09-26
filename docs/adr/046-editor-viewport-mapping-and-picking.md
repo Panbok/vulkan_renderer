@@ -42,8 +42,10 @@ writes encoded handle IDs before readback. Both overlay passes disable depth
 testing and culling and consume the same ordered handles: hovered and active
 handles draw last. Visible handles therefore take priority over scene surfaces
 and overlapping handles use the same order for color and picking. This requires
-no extra scene-sized image. Translation arrows, rotation rings and scale cubes
-are shown together; all scale cubes perform uniform scaling.
+no extra scene-sized image. The active transform tool selects the handle family
+([ADR-027](027-immediate-mode-grid-ui.md)): Move shows translation arrows,
+Rotate shows rotation rings, Scale shows scale cubes, and Select shows all
+three. All scale cubes perform uniform scaling.
 
 ### Selection outline
 

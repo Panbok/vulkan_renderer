@@ -241,8 +241,8 @@ The right Details panel contains selection actions; narrow docks hide side panel
 This follows Epic's [Content Browser organization](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine)
 without exposing generated build directories as content folders.
 Texture previews run in a CPU tool; material spheres run through a separate
-harness job. Meshes and fonts use vector icons. `Commands > Show Content` adds the
-panel to older saved layouts; Ctrl+Space toggles it, and new layouts place it
+harness job. Meshes and fonts use vector icons. `View > Content browser` or the Cmd
+line `panel content` adds the panel to older saved layouts; Ctrl+Space toggles it, and new layouts place it
 beside Console. Native
 macOS/Windows dialogs use UI-thread calls and owned UTF-8 result paths. Windows
 filesystem, startup arguments, importer reads, settings and logs share UTF-8
@@ -261,8 +261,10 @@ scene's immutable inventory revision holds its asset records within 16 MiB. The
 from input bytes rather than imposing a smaller asset-count ceiling. Settings
 updates merge owned fields into prior objects, retaining unknown nested fields;
 arrays remain whole values owned by their serializer. UTF-8 names persist
-independently of font coverage. Managed UI uses the Ubuntu Mono system face with
-available glyphs from U+0020 through U+052F (Latin, Greek and Cyrillic); other
+independently of font coverage. Editor UI text uses the cooked Inter Regular
+atlas, which holds every Inter glyph in Basic Latin, Latin-1, Latin Extended-A/B,
+Greek and Cyrillic; user-authored names render in that face. Inter SemiBold
+headings, the Console's Ubuntu Mono and authored labels cover Latin-1. Other
 characters retain the existing missing-glyph fallback. This is fixed atlas
 coverage, not an on-demand Unicode glyph service or an IME implementation.
 

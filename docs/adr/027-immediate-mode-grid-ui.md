@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-23
+updated: 2026-09-25
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -67,22 +67,69 @@ line bounds, row gaps, padding and borders determine their size. The performance
 block receives its wrapping width before measurement, capped by the panel's
 380-point maximum and the available window width.
 
-Editor tabs use category-colored vector icons and an amber focused border. Real
-Ubuntu Mono Bold supplies headings; vector controls keep the existing UI vertex
-ABI. Icon strokes and fills use inner/outer convex polygon rings with a
-one-physical-pixel alpha transition centered on each edge. Shared CPU lowering
-emits opaque inner and transparent outer vertices; both backends interpolate
-coverage through their existing linear-alpha blending. Capacity checks admit
-complete polygons, including their fringe, and tile bounds include the outer ring.
-Scene load/unload, simulation, rendering and camera controls are icon-only
-with tooltips in a floating Scene toolbar. Its grip supports dragging; releasing
-near a viewport edge anchors that edge, and resize clamps the toolbar inside the
-Scene. Narrow panes wrap the controls. Floating windows and popups have input
-priority above both toolbars.
+`VkrUiTheme` owns the editor's color, spacing, radius, type-size and motion
+tokens; widgets derive hover and pressed colors from them unless a style sets
+its own (`VKR_UI_COLOR_NONE` disables a derived state). Inter Regular and
+SemiBold (SIL OFL 1.1) supply UI text and headings; Ubuntu Mono remains for the
+Console and numeric readouts. Icons are glyphs from Phosphor regular and fill
+(MIT), cooked to MTSDF atlases like other bootstrap fonts and emitted as text
+quads; `VkrUiIcon` maps each editor icon to one codepoint.
 
-A separate draggable viewport bar groups the current camera view, rendering mode
-and grid controls in dropdowns. Narrow Scene panes replace these groups with a
-Viewport overflow menu. This grouping follows the user-requested
+The UI vertex is 96 bytes with a per-vertex mode: flat quad, MTSDF text, bitmap
+text, SDF box or image. The box mode evaluates a rounded-rectangle distance
+with per-corner radii, an inner border and an optional feather, which also
+draws soft shadows. One UI pipeline serves every mode on Metal and Vulkan;
+batches split only on texture and scissor. Polygon lowering remains for the
+animation graph's bezier ribbons.
+
+Hover, press and keyboard focus ease exponentially through retained per-widget
+factors. Tooltips appear after 0.45 seconds and fade in. Checkboxes, sliders,
+text fields (border and blinking caret), focus rings and scroll thumbs use the
+same tokens. Labels may center their icon and text. A label or button whose
+text overflows its box clips to that box. Word wrap breaks between words; a word
+wider than the line breaks per glyph, and trailing spaces do not count toward a
+line's width. Widgets request pointer shapes (I-beam for fields, hand for
+sliders, resize and grab cursors for splitters and tab drags) through
+`vkr_window_set_cursor`.
+
+The top bar hosts the brand, File/Edit/View/Scene/Help menus, save/undo/redo,
+Projects/Scenes, a play-state pill with unsaved-edit state, the Cmd field, and
+a centered transport group (play/pause, step, stop, Scene rendering, camera
+capture). Menus are anchored popups that switch on hover while one is open, and
+their items share the command table's names, icons and shortcuts. The paneled
+editor merges this bar with the title bar, and the UI publishes the bar's empty
+space as the drag region each frame so controls keep their clicks. On macOS the
+window draws under a transparent native title and keeps the system window
+buttons. On Windows `WM_NCCALCSIZE` removes the caption row but keeps the side
+and bottom resize borders, and insets a maximized window by its frame.
+`WM_NCHITTEST` answers `HTTOP` in the top resize band and `HTCAPTION` inside the
+published region. `WM_NCMOUSEMOVE` is forwarded to input, so hovering a control
+still withdraws the region. Because `vkr_window_draws_caption_buttons` is true
+only on Windows, the bar draws minimize, maximize/restore and close buttons
+there. Floating windows, menus and popups have input priority above
+the Scene header.
+
+In project-managed mode the editor starts as a compact, centered 1000 x 640
+point launcher. With no project open, the Projects view fills that window: its
+heading shares the title row with the window controls, search and workspace
+actions form a toolbar, and an empty workspace offers one Create action. Opening
+or creating a project grows the same window to 1680 x 1050 points, clamped to
+the screen work area and centered; returning to the launcher state shrinks it.
+`vkr_window_resize_centered` takes points on both platforms, and Windows scales
+them by the window DPI. A running project shows Projects as a dialog over the
+editor instead.
+
+View > Zoom interface (Cmd/Ctrl with =, - or 0) scales all UI, including dock
+geometry, and Reduce motion disables eased transitions; both persist with the
+project settings. Toasts announce saved scene edits and finished Bakery work.
+
+A header pinned to the Scene groups the current camera view, rendering mode and
+grid controls in dropdowns, with the Select/Move/Rotate/Scale tools (Q/W/E/R) and
+a camera-speed popup on its right. The gizmo shows only the active tool's
+handle family; Select shows all of them. F frames the selection. An orientation
+gizmo in the Scene's lower-left corner draws the camera's axes and requests the
+matching view when an axis cap is clicked. Narrow Scene panes replace the view
+groups with a Viewport overflow menu. This grouping follows the user-requested
 [Unreal Engine 5.6 viewport toolbar](https://dev.epicgames.com/documentation/en-us/unreal-engine/viewport-toolbar?application_version=5.6)
 as design inspiration. Controls use the existing retained input rectangles and
 submit `VkrSampleViewRequest`; the runtime owns validated state. The view bar
@@ -108,9 +155,10 @@ numbering. The editor numbers labels with the UI-time camera and projects at
 most 96 lines through the final unjittered camera, clipped to the Scene image.
 The grid is a UI overlay and has no depth-occlusion or scene-picking ownership.
 
-Inspector, Console and Bakery use bordered field surfaces and bold action
-buttons; read-only fields, disabled actions, severity and follow-tail states
-retain distinct styling.
+Panels use the shared field, action, primary, ghost and toggle styles; read-only
+fields, disabled actions, severity and follow-tail states retain distinct
+styling. Dock tabs show a category icon, an accent top edge when focused and a
+close button; splitters highlight on hover.
 
 Enabled visible controls support Tab/Shift-Tab focus and Enter/Space activation.
 An unobstructed Scene click clears widget focus and gives Tab to free-camera
@@ -141,37 +189,43 @@ VoiceOver or Windows UI Automation tree.
 
 Hierarchy caches scene structure and expanded/search-matching rows when their
 inputs change, then emits only its visible window. Display slots are bounded;
-selection uses generation-bearing entity IDs rather than row positions. Inspector
+selection uses generation-bearing entity IDs rather than row positions. Rows
+show a caret, a type icon and a visibility toggle; right-click opens Frame,
+Hide/Show and Copy name. One context-menu table serves every opener:
+right-clicking a dock tab offers Close and Reset layout, and right-clicking the
+Console offers Copy selected and Clear. Inspector
 borrows selected component values and sends a typed edit request after validation.
-It edits name, visibility, local TRS and light values. Apply commits a transaction;
-Revert/Escape discards the field draft. Authored shear matrices remain read-only.
+It edits name, visibility, local TRS and light values in collapsible sections;
+X/Y/Z and R/G/B tags and scalar labels scrub their values by dragging. Edits
+apply live. One gesture (a drag, or typing until Enter or blur) coalesces into
+a single undo entry for the same entity and fields, and Escape restores the
+value from before the gesture. Physics edits keep their own entries. Authored
+shear matrices remain read-only.
 Runtime selection is shared with viewport picking, and frame selection fits the
 selected subtree's mesh bounds.
 
 Debug > Labels expands a master visibility checkbox and directional, spot and
 point light checkboxes. Type choices survive the master switch. Actual ECS
 components determine the label type, including imported glTF light nodes;
-Bistro's punctual lights are points. The editor loads a three-symbol bitmap
-font atlas once and releases its font reference at shutdown. The existing font
-system retains atlas storage until UI text borrowers are destroyed. No new
-shader, UI vertex contract or Scene render target is required.
+Bistro's punctual lights are points.
 
-Light labels are 32-point texture buttons above the entity origin, composited
+Light labels are 26-point round chips above the entity origin, drawing the
+sun, flashlight or bulb icon in the light's own color, composited
 at native UI resolution, outside lighting and temporal history. They are visible
 through scene geometry, clipped to the displayed Scene image, hidden behind the
 camera and while Scene rendering is stopped. Disabled lights remain selectable
 with gray icons. Clicking an icon selects its entity in Hierarchy and Inspector;
-selected icons have an amber border. Frame-scratch anchor records retain entity
+selected icons use the accent color. Frame-scratch anchor records retain entity
 IDs, never component pointers, and are discarded on the next UI build. A scene
 generation change prevents their use after unload/reload. Labels reserve 96
-nodes for subsequent editor controls within the shared 1024-node UI capacity;
+nodes for subsequent editor controls within the shared 2048-node UI capacity;
 capacity exhaustion emits a Console warning and keeps those controls reachable.
 Overlapping button presses give ownership to the last drawn button. Slider
 release consumes its final pointer position, including a click whose press and
 release arrive together.
 
 Inspector distinguishes directional, spot and point lights. Light enabled,
-linear RGB, intensity and punctual range use the existing Apply/Revert journal.
+linear RGB, intensity and punctual range use the live-edit journal.
 Directional and spot directions have local yaw/elevation fields and sliders;
 node rotation still transforms that local direction. Spots add inner/outer
 half-angle fields and sliders in degrees. Edited cones require an ordered,
@@ -214,14 +268,32 @@ run passes against the current source; its evidence log is
 `.scratch/renderer-delivery-release-final-build.log`. The four shared-table
 hashes remain unchanged after these checks.
 
-Commands (Cmd/Ctrl+P) searches scene, layout, panel and transport actions.
-Pointer hover selects a visibly highlighted result; click or Enter runs it.
-Held Up/Down repeats after 350 ms at 55 ms intervals, keeping the selected
-result visible; the wheel scrolls the list independently. Hover takes precedence
-over focus when choosing a tooltip, and the search field has no obscuring hint.
-Navbar buttons toggle their open dropdown, window or active Bakery tab closed;
-an inactive Bakery tab is selected. The navbar remains reachable while Commands
-owns input below it.
+The top bar's Cmd field (Cmd/Ctrl+P) replaces the Commands palette; its
+commands, expression evaluator and scripting belong to
+[ADR-075](075-editor-cmd-bar-and-evaluator.md). Navbar buttons toggle their
+open dropdown, window or active Bakery tab closed; an inactive Bakery tab is
+selected. The Projects and Scenes switchers open beneath their buttons, size to
+their rows and offer New project or Add scene directly.
+
+Row-style buttons (menu, context-menu and dropdown items, dock tabs, Console
+rows) set `fill`, because text-bearing widgets otherwise size to their content
+and would hover and click only over their label. macOS precise scroll deltas
+(trackpads, Magic Mouse) are points, so the window converts them to wheel lines
+of 32 points with a carried remainder; notched wheels already report lines.
+
+Clipped single-line labels that overflow end in an ellipsis. The text is cut at
+a glyph boundary using layout advances so the ellipsis fits inside the outer
+clip edge, and `...` replaces U+2026 when the font lacks it. Scroll thumbs can
+be dragged: the retained state keeps the grab offset, and a press in the gutter
+pages one viewport toward the pointer.
+
+The Add scene page uses the Projects page layout: a Create new/Import JSON
+switch above cards for environment, probe, models, lights, font and build
+options. The cards form two columns at 760 points or wider. The measured form
+height sizes the scroll content, so the page ends after its last card. The
+Scenes view lists scenes as cards with an Open badge and rename and delete
+actions, and shows an empty state when the project has no scenes. The
+Animation window's timeline has a ruler that scrubs the playhead.
 
 The Scene resolution badge also shows the runtime's averaged frame cadence
 (FPS and wall-clock frametime, including the editor loop), replacing timing with
@@ -252,11 +324,10 @@ mutex; the UI copies at most 256 new records per build. Each history ring uses
 4,653,056 bytes, with one logger ring and one editor snapshot ring. Eviction,
 truncation and lag remain visible. Text/source search, severity filters, follow-tail,
 record/range copying and read-only detail selection operate on copied data.
-Rows pair distinct CPU vector severity icons with red/coral, amber, blue, violet
-and green text; text labels preserve severity without relying on color.
-Severity filters live in one dropdown with independent colored checkboxes and an
-enabled-count label. Its keyboard navigation and pointer handling do not activate
-the covered log rows.
+Rows pair distinct severity icons with red/coral, amber, blue, violet and green
+text in the monospace face; text labels preserve severity without relying on
+color. Errors, Warnings, Info and Verbose are toggle chips that show each
+level's record count.
 Editor builds compile all log levels; capture defaults to INFO, and Verbose capture
 enables DEBUG/TRACE before formatting. App builds retain their existing compile
 policy and do not allocate the editor logger ring.
@@ -313,9 +384,35 @@ Changes save after 0.25 seconds without another edit and flush during shutdown.
 Saving uses a temporary file and atomic rename. The persisted record is versioned
 JSON and validates every field and cross-field constraint before publication.
 
+The 2026-09-25 visual overhaul (theme, fonts, icons, box primitive, top bar,
+launcher and panel restyle) passes `./build_test.sh`, `./build_release.sh` and
+`./build_editor.sh Release` on macOS. CPU oracles cover the box vertex data and
+radius, relaxed batching, glyph vertices rejected from untextured batches, dock
+toolbar height and tab widths, and word wrap. Isolated Release Metal captures on
+Bistro cover the top bar, menus, selection and Inspector, the orientation gizmo,
+light chips and the Console. Separate captures on a fresh workspace cover the
+launcher and its growth into the editor after creating an empty project. Native
+Vulkan execution, Windows compilation and the Windows caption are unverified,
+and no performance comparison is claimed.
+
+The 2026-09-26 follow-up (full-row hover, Cmd field, Add scene cards, scroll
+conversion, context menus, ellipsis, scrollbar drag and the selection outline)
+passes `./build_test.sh`, including word-wrap and scroll-thumb drag oracles, and
+`./build_editor.sh Release` on macOS. Isolated Release Metal captures on Bistro
+cover pointer glides over menu and dropdown rows, typing and completion in the
+Cmd field, the Add scene cards, the Projects dropdown, the empty Scenes view,
+label ellipsis and the selection outline. The Windows caption has not been
+compiled because no Windows toolchain is available. The dock-tab and Console
+context menus were not opened natively. The timeline ruler was not exercised
+because Bistro has no animation, and the Scenes cards were not captured with
+real scenes. The controls still expose no
+VoiceOver or UI Automation tree.
+
 ## Consequences
 
-Widget IDs must be stable across frames. New geometry may have one-frame input
+Widget IDs must be stable across frames. The macOS title bar drags only where
+the UI publishes a region, so the top bar must publish it every frame, including
+in the launcher. New geometry may have one-frame input
 latency because hit tests use prior rectangles. Retained storage survives frame
 scratch resets; changed-frame nodes and commands use frame scratch. The UI
 direct path owns no persistent render target.
@@ -335,6 +432,8 @@ layout behavior grids cannot express.
 
 ![Editor UI](../../assets/editor/editor-ui.png)
 
+![Project launcher](../../assets/editor/project-launcher.png)
+
 ![Windows UI at 100% scale with icon edge coverage](../../assets/editor/ui-antialiasing-windows.png)
 
 ![Graphics Settings](../../assets/editor/graphics-settings.png)
@@ -345,6 +444,10 @@ layout behavior grids cannot express.
 - [grid solver](../../runtime/src/core/ui/vkr_ui_grid.c)
 - [dock tree](../../runtime/src/core/ui/vkr_ui_dock.c)
 - [editor UI caller](../../editor/src/editor_ui.c)
+- [theme tokens](../../runtime/src/core/ui/vkr_ui_style.c)
+- [UI vertex and batches](../../renderer/src/vkr_ui_draw_types.h)
+- [editor commands, menus and top bar](../../editor/src/editor_windows.c)
+- [project launcher](../../editor/src/editor_projects.c)
 - [viewport controls and world grid](../../editor/src/editor_viewport.c)
 
 - [editor scene panels](../../editor/src/editor_scene_panels.c)

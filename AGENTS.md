@@ -80,6 +80,7 @@ conditional references needed for the current step:
 - `vkr-renderer-design` for architecture, graph, backend, and hot-path changes.
 - `vkr-shaders` for shaders and shader-visible host contracts.
 - `vkr-memory` for allocation, ownership, lifetime, reload, and growth.
+- `vkr-editor-cmd` to drive the editor by text or scripted `--exec` runs.
 - `vkr-harness` for cases, profiles, captures, reports, and baselines; add
   `vkr-performance` for timing claims or `vkr-validation` for native diagnostics.
 - `compress-codebase` for broad simplification, `vkr-docs` for authoritative

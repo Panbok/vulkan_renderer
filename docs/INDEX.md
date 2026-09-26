@@ -170,7 +170,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation, color transfer and image sharpness | implemented |
 | [044](adr/044-shader-cross-backend-contract.md) | Portable shader semantics, editor inspection modes and native ABI validation | implemented |
 | [045](adr/045-resource-prepare-and-render-thread-finalize.md) | Worker preparation and render-thread resource finalization | implemented |
-| [046](adr/046-editor-viewport-mapping-and-picking.md) | Perspective/orthographic viewport mapping, gizmos, picking and retained Scene presentation | implemented |
+| [046](adr/046-editor-viewport-mapping-and-picking.md) | Perspective/orthographic viewport mapping, gizmos, selection outline, picking and retained Scene presentation | implemented |
 | [047](adr/047-event-payload-and-resize-mailbox-lifetimes.md) | Event callback payload lifetime and coalesced resize handoff | implemented |
 | [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs, reconstructed HDR diagnostics and reviewed capture baselines | implemented |
 | [052](adr/052-vulkan-fsr31-upscaling.md) | Vulkan FSR 3.1 temporal upscaling | implemented |
@@ -198,6 +198,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 
 | [073](adr/073-native-gameplay-foundation.md) | Shared scene ticks independent of input focus, ordered input, C player/weapon client, persisted editor player bindings, action animation, native character stance and camera rigs; general visual/prefab authoring pending | partial |
 | [074](adr/074-volumetric-cloud-layer.md) | One volumetric cloud layer: runtime-generated noise, half-resolution traced history, sun-projected shadows and aerial perspective at cloud depth | implemented |
+| [075](adr/075-editor-cmd-bar-and-evaluator.md) | Editor Cmd bar: typed commands with completion, an expression evaluator over scene and editor data, and `--exec` scripts with `[cmd]` stdout results | implemented |
 
 ## Proposals
 
