@@ -162,7 +162,13 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     }
 
     uint32_t close_tab = UINT32_MAX;
-    for (uint32_t tab = 0u; tab < node->as.leaf.tab_count; ++tab) {
+    /* A Scene panel alone in its stack shows its viewport documents instead
+       of a panel tab. */
+    const bool8_t documents =
+        node->as.leaf.tab_count == 1u &&
+        node->as.leaf.tabs[0].panel_kind == VKR_UI_DOCK_PANEL_SCENE_VIEWPORT;
+    for (uint32_t tab = 0u; !documents && tab < node->as.leaf.tab_count;
+         ++tab) {
       const VkrUiDockTab dock_tab = node->as.leaf.tabs[tab];
       const bool8_t selected = tab == node->as.leaf.active_tab;
       const bool8_t focused = selected && dock->focused_tab_id == dock_tab.id;
@@ -240,6 +246,14 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       (void)vkr_ui_pop_id(ui);
     }
 
+    if (documents) {
+      const float32_t start = bar_rect.x + 4.0f * ui->content_scale;
+      vkr_editor_viewport_tabs_build(
+          editor, frame,
+          (VkrUiRect){start, bar_rect.y,
+                      Max(0.0f, bar_rect.x + bar_rect.width - start),
+                      bar_rect.height});
+    }
     const VkrUiDockTab content_tab =
         node->as.leaf.tabs[node->as.leaf.active_tab];
     VkrUiRect rect = node->rect_px;
@@ -256,8 +270,7 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
         vkr_editor_hierarchy_build(editor, frame, rect, heading_font);
         break;
       case VKR_UI_DOCK_PANEL_INSPECTOR:
-        vkr_editor_inspector_build(editor->scene_panels, frame, rect,
-                                   heading_font);
+        vkr_editor_inspector_build(editor, frame, rect, heading_font);
         break;
       case VKR_UI_DOCK_PANEL_CONSOLE:
         vkr_editor_console_build(&editor->console, ui, rect, heading_font,

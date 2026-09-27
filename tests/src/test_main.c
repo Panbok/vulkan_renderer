@@ -18,6 +18,7 @@
 #include "scene_animation_tests.h"
 #include "scene_physics_test.h"
 #include "scene_simulation_test.h"
+#include "type_desc_test.h"
 #include "weapon_test.h"
 
 bool32_t run_path_io_tests(void);
@@ -61,6 +62,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_debug_overlay_tests),
     VKR_TEST_SUITE(run_json_tests),
     VKR_TEST_SUITE(run_json_writer_tests),
+    VKR_TEST_SUITE(run_type_desc_tests),
     VKR_TEST_SUITE(run_harness_tests),
     VKR_TEST_SUITE(run_event_tests),
     VKR_TEST_SUITE(run_math_tests),

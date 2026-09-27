@@ -198,12 +198,17 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
       vkr_editor_projects_loading(editor->ui.projects);
   frame = &editor_frame;
   VkrUiDockInputCapture capture = {0};
+  /* Only the launcher replaces the editor; an open project's dialogs float
+     over it and hold the pointer only where they are. */
   if (!vkr_editor_projects_modal(editor->ui.projects)) {
     capture = vkr_editor_ui_build(&editor->ui, frame);
   }
   vkr_editor_projects_scene_action(editor->ui.projects, &editor->ui, frame);
   vkr_editor_projects_build(editor->ui.projects, &editor->ui, frame);
-  if (vkr_editor_projects_modal(editor->ui.projects)) {
+  if (vkr_editor_projects_modal(editor->ui.projects) ||
+      vkr_editor_projects_dialog_contains(editor->ui.projects,
+                                          (float32_t)frame->ui->mouse_x,
+                                          (float32_t)frame->ui->mouse_y)) {
     capture.mouse = true_v;
   }
   return capture;
@@ -275,6 +280,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
   };
   if (!editor->layout_path)
     editor->layout_path = ".vkr-editor-layout.json";
+  /* The Console lists this session's records from the first one. */
+  log_capture_request(LOG_LEVEL_INFO);
   bool8_t scene_only = editor_env_flag("VKR_EDITOR_SCENE_ONLY", false_v);
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--scene") == 0) {

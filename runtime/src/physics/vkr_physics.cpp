@@ -422,8 +422,9 @@ vkr_physics_character_create(VkrPhysicsWorld *world,
         static_cast<uint32_t>(next_character_generation);
     JPH::CharacterVirtualSettings settings;
     settings.mID = JPH::CharacterID(generation - 1);
-    // Both shapes belong to this character slot and are released on destruction.
-    // Stance transitions reuse them; only the capsule center offset changes.
+    // Both shapes belong to this character slot and are released on
+    // destruction. Stance transitions reuse them; only the capsule center
+    // offset changes.
     JPH::RefConst<JPH::Shape> standing_shape =
         new JPH::CapsuleShape(desc->half_height, desc->radius);
     JPH::RefConst<JPH::Shape> crouched_shape =
@@ -514,8 +515,8 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
           slot->desc.half_height * (crouch ? 0.4f : 1.0f);
       slot->character->SetShapeOffset(
           JPH::Vec3(0, half_height + slot->desc.radius, 0));
-      const JPH::Shape *shape =
-          crouch ? slot->crouched_shape.GetPtr() : slot->standing_shape.GetPtr();
+      const JPH::Shape *shape = crouch ? slot->crouched_shape.GetPtr()
+                                       : slot->standing_shape.GetPtr();
       const float32_t penetration =
           1.5f * world->system.GetPhysicsSettings().mPenetrationSlop;
       if (slot->character->SetShape(shape, penetration, {}, filter, filter, {},
@@ -1004,6 +1005,33 @@ extern "C" bool8_t vkr_physics_body_get_pose(VkrPhysicsWorld *world,
   store_vec(angular, out_pose->angular_velocity);
   out_pose->active = bodies.IsActive(slot->id);
   return true_v;
+}
+
+extern "C" bool8_t vkr_physics_world_set_gravity(VkrPhysicsWorld *world,
+                                                 const float32_t gravity[3]) {
+  if (world && world->dispatching) {
+    return fail(world, "Physics mutation or drain during event dispatch");
+  }
+  if (!world || !gravity || !finite_vector(gravity, 3) ||
+      std::abs(gravity[0]) > 1000.0f || std::abs(gravity[1]) > 1000.0f ||
+      std::abs(gravity[2]) > 1000.0f) {
+    return fail(world, "Gravity must be finite and within 1000 m/s^2");
+  }
+  try {
+    const JPH::Vec3 value(gravity[0], gravity[1], gravity[2]);
+    if (world->system.GetGravity() == value) {
+      return true_v;
+    }
+    world->system.SetGravity(value);
+    /* A resting body keeps sleeping under a new gravity unless woken. */
+    JPH::BodyIDVector bodies;
+    world->system.GetBodies(bodies);
+    world->system.GetBodyInterface().ActivateBodies(bodies.data(),
+                                                    (int)bodies.size());
+    return true_v;
+  } catch (...) {
+    return fail(world, "Setting physics gravity failed");
+  }
 }
 
 extern "C" bool8_t vkr_physics_step(VkrPhysicsWorld *world, float32_t dt) {

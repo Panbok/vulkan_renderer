@@ -7,6 +7,7 @@
 
 #include "containers/array.h"
 #include "containers/str.h"
+#include "core/vkr_entity.h"
 #include "defines.h"
 #include "math/vkr_transform.h"
 #include "renderer/resources/world/vkr_text_3d.h"
@@ -18,6 +19,8 @@ typedef struct VkrWorldTextCreateData {
   String8 content;
   const VkrText3DConfig *config; // Optional; NULL uses defaults
   VkrTransform transform;
+  /* The entity the text belongs to; picking resolves the slot to it. */
+  VkrEntityId owner;
 } VkrWorldTextCreateData;
 
 typedef struct VkrScene VkrScene;
@@ -30,8 +33,9 @@ typedef struct VkrPreparedTextDraw VkrPreparedTextDraw;
  * may be reused for new text.
  */
 typedef struct VkrWorldTextSlot {
-  VkrText3D text; /**< 3D text resource and GPU state */
-  bool8_t active; /**< Slot is in use and should be rendered */
+  VkrText3D text;    /**< 3D text resource and GPU state */
+  VkrEntityId owner; /**< Entity the text belongs to, in any container */
+  bool8_t active;    /**< Slot is in use and should be rendered */
 } VkrWorldTextSlot;
 Array(VkrWorldTextSlot);
 
@@ -115,6 +119,10 @@ void vkr_world_resources_bake_scene_reflection_probes_if_pending(
  * @param payload Create data (content, config, transform)
  * @return true on success, false on failure
  */
+/** A free text slot for a new text, or UINT32_MAX when all are in use. The
+ * slots are shared by every loaded container. */
+uint32_t vkr_world_resources_text_reserve(const VkrWorldResources *resources);
+
 bool8_t vkr_world_resources_text_create(struct VkrRenderAssets *assets,
                                         VkrWorldResources *resources,
                                         const VkrWorldTextCreateData *payload);

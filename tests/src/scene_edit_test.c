@@ -6,6 +6,7 @@
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -48,6 +49,254 @@ static VkrEntityId edit_test_entity(VkrScene *scene, uint32_t node,
                                   .source_fingerprint = 0x1122334455667788ull};
   assert(vkr_scene_set_source_identity(scene, entity, &identity));
   return entity;
+}
+
+static uint32_t edit_test_alive_named(const VkrScene *scene, const char *name,
+                                      VkrEntityId *out) {
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const String8 entity_name = vkr_scene_get_name(scene, entity);
+    if (vkr_scene_entity_alive(scene, entity) &&
+        entity_name.length == strlen(name) &&
+        MemCompare(entity_name.str, name, entity_name.length) == 0) {
+      *out = entity;
+      count++;
+    }
+  }
+  return count;
+}
+
+/* A document entity with source identity `index` and document id `id`. */
+static VkrEntityId edit_test_document_entity(VkrScene *scene, uint32_t index,
+                                             const char *name) {
+  VkrEntityId entity = edit_test_entity(scene, UINT32_MAX, name);
+  SceneSourceIdentity identity = {.scene_entity_index = index,
+                                  .gltf_node_index = UINT32_MAX,
+                                  .source_fingerprint = 0x1122334455667788ull};
+  assert(vkr_scene_set_source_identity(scene, entity, &identity));
+  return entity;
+}
+
+static void edit_test_document_ids_set(VkrScene *scene, const char *first,
+                                       const char *second) {
+  VkrSceneDocumentId *ids = vkr_scene_document_ids_reserve(scene, 2u);
+  assert(ids);
+  assert(vkr_scene_document_id_parse(
+      string8_create((uint8_t *)first, strlen(first)), &ids[0]));
+  assert(vkr_scene_document_id_parse(
+      string8_create((uint8_t *)second, strlen(second)), &ids[1]));
+}
+
+/* Document-stable ids (ADR-076). The oracle is which entity an overlay edit
+   lands on after the document swaps its two entities: binding by saved index
+   would rename the wrong one; an id the document lost fails the load. */
+static void edit_test_document_ids(VkrAllocator *allocator, String8 path) {
+  static const char first[] = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+  static const char second[] = "6FA459EA-EE8A-3CA4-894E-DB77E160355E";
+  static const char other[] = "00000000-0000-4000-8000-000000000001";
+  VkrScene saved;
+  assert(vkr_scene_init(&saved, allocator, 21, 8, NULL));
+  (void)edit_test_document_entity(&saved, 0u, "first");
+  VkrEntityId renamed = edit_test_document_entity(&saved, 1u, "second");
+  edit_test_document_ids_set(&saved, first, second);
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, allocator, 1);
+  VkrSceneEditValues values;
+  assert(vkr_scene_edit_read(&saved, renamed, &values));
+  snprintf(values.name, sizeof(values.name), "edited");
+  assert(vkr_scene_edit_apply(&state, &saved, renamed, &values));
+  assert(vkr_scene_edit_save(&state, &saved, path));
+  vkr_scene_shutdown(&saved, NULL);
+
+  VkrScene swapped;
+  assert(vkr_scene_init(&swapped, allocator, 21, 8, NULL));
+  VkrEntityId moved = edit_test_document_entity(&swapped, 0u, "second");
+  VkrEntityId kept = edit_test_document_entity(&swapped, 1u, "first");
+  edit_test_document_ids_set(&swapped, second, first);
+  vkr_scene_edit_reset(&state, allocator, 1);
+  assert(vkr_scene_edit_load(&state, &swapped, path));
+  const String8 moved_name = vkr_scene_get_name(&swapped, moved);
+  const String8 kept_name = vkr_scene_get_name(&swapped, kept);
+  assert(moved_name.length == 6 &&
+         MemCompare(moved_name.str, "edited", 6) == 0);
+  assert(kept_name.length == 5 && MemCompare(kept_name.str, "first", 5) == 0);
+  vkr_scene_shutdown(&swapped, NULL);
+
+  VkrScene lost;
+  assert(vkr_scene_init(&lost, allocator, 21, 8, NULL));
+  (void)edit_test_document_entity(&lost, 0u, "first");
+  (void)edit_test_document_entity(&lost, 1u, "other");
+  edit_test_document_ids_set(&lost, first, other);
+  vkr_scene_edit_reset(&state, allocator, 1);
+  assert(!vkr_scene_edit_load(&state, &lost, path));
+  vkr_scene_shutdown(&lost, NULL);
+  vkr_scene_edit_reset(&state, allocator, 0);
+}
+
+/* Structural journal (ADR-076). Independent oracles: component bytes, entity
+   liveness, parent links and world positions, checked after undo and redo and
+   after an overlay save and reload into a freshly built document scene. A
+   missing id remap shows as a redo that edits a destroyed entity. */
+static void edit_test_structure(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(8), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 8, &error));
+  VkrEntityId parent = edit_test_entity(&scene, 0, "parent");
+  VkrEntityId child = edit_test_entity(&scene, 1, "child");
+  VkrEntityId lamp = edit_test_entity(&scene, 2, "lamp");
+  vkr_scene_set_position(&scene, parent, vec3_new(10, 0, 0));
+  vkr_scene_set_position(&scene, child, vec3_new(2, 3, 4));
+  vkr_scene_set_parent(&scene, child, parent);
+  assert(vkr_scene_set_point_light(&scene, lamp,
+                                   &(ScenePointLight){.color = vec3_one(),
+                                                      .intensity = 4.0f,
+                                                      .constant = 1.0f,
+                                                      .range = 6.0f,
+                                                      .inner_cone_angle = 0.35f,
+                                                      .outer_cone_angle = 0.6f,
+                                                      .enabled = true_v}));
+  vkr_scene_update(&scene, 0.0);
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, &allocator, 1);
+
+  /* Add and remove a component; undo restores the removed bytes exactly. */
+  VkrFogSettings fog;
+  vkr_type_defaults(&vkr_scene_fog_type, &fog);
+  fog.density = 0.25f;
+  assert(vkr_scene_edit_add_component(&state, &scene, child,
+                                      &vkr_scene_fog_type, &fog));
+  assert(!vkr_scene_edit_add_component(&state, &scene, child,
+                                       &vkr_scene_fog_type, NULL));
+  assert(!vkr_scene_edit_add_component(&state, &scene, child,
+                                       &vkr_scene_environment_type, NULL));
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(!vkr_scene_get_typed(&scene, child, &vkr_scene_fog_type));
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  const VkrFogSettings *stored =
+      vkr_scene_get_typed(&scene, child, &vkr_scene_fog_type);
+  assert(stored && stored->density == 0.25f);
+  assert(vkr_scene_edit_remove_component(&state, &scene, child,
+                                         &vkr_scene_fog_type));
+  assert(!vkr_scene_get_typed(&scene, child, &vkr_scene_fog_type));
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  stored = vkr_scene_get_typed(&scene, child, &vkr_scene_fog_type);
+  assert(stored && stored->density == 0.25f);
+
+  /* Create under a parent, edit, undo both, redo both: the recreated entity
+     receives the later edit. */
+  VkrSceneEditValues values = {.fields = VKR_SCENE_EDIT_NAME |
+                                         VKR_SCENE_EDIT_TRANSFORM |
+                                         VKR_SCENE_EDIT_POINT_LIGHT};
+  snprintf(values.name, sizeof(values.name), "created lamp");
+  values.position = vec3_new(0, 1, 0);
+  values.rotation = vkr_quat_identity();
+  values.scale = vec3_one();
+  values.point_light = *vkr_scene_get_point_light(&scene, lamp);
+  VkrEntityId created = vkr_scene_edit_create(&state, &scene, parent, &values);
+  if (!created.u64)
+    printf("create failed: %s\n", state.status);
+  assert(created.u64 && state.created_count == 1u);
+  assert(vkr_scene_get_transform(&scene, created)->parent.u64 == parent.u64);
+  VkrSceneEditValues rename;
+  assert(vkr_scene_edit_read(&scene, created, &rename));
+  rename.fields = VKR_SCENE_EDIT_NAME;
+  snprintf(rename.name, sizeof(rename.name), "renamed lamp");
+  assert(vkr_scene_edit_apply(&state, &scene, created, &rename));
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(!vkr_scene_entity_alive(&scene, created));
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  VkrEntityId found = VKR_ENTITY_ID_INVALID;
+  assert(edit_test_alive_named(&scene, "renamed lamp", &found) == 1u);
+  assert(found.u64 != created.u64 && state.created[0].entity.u64 == found.u64);
+  assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
+  assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
+  created = found;
+
+  /* Delete refuses a parent, then deletes and restores a document light. */
+  const char *reason = NULL;
+  assert(!vkr_scene_edit_can_delete(&scene, parent, &reason) && reason);
+  assert(!vkr_scene_edit_delete(&state, &scene, parent));
+  assert(vkr_scene_edit_delete(&state, &scene, lamp));
+  assert(!vkr_scene_entity_alive(&scene, lamp) && state.deleted_count == 1u);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(edit_test_alive_named(&scene, "lamp", &found) == 1u);
+  assert(state.deleted_count == 0u);
+  assert(vkr_scene_get_point_light(&scene, found)->range == 6.0f);
+  const SceneSourceIdentity *identity =
+      vkr_entity_get_component(scene.world, found, scene.comp_source_identity);
+  assert(identity && identity->gltf_node_index == 2u);
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(!vkr_scene_entity_alive(&scene, found) && state.deleted_count == 1u);
+
+  /* Reparent to the root keeps the world position; undo restores the link
+     and the local position. Cycles are refused. */
+  assert(!vkr_scene_edit_reparent(&state, &scene, parent, child));
+  assert(vkr_scene_edit_reparent(&state, &scene, child, VKR_ENTITY_ID_INVALID));
+  SceneTransform *transform = vkr_scene_get_transform(&scene, child);
+  assert(!transform->parent.u64 &&
+         fabsf(transform->position.x - 12.0f) < 1e-4f);
+  vkr_scene_update(&scene, 0.0);
+  assert(fabsf(transform->world.elements[12] - 12.0f) < 1e-4f);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  transform = vkr_scene_get_transform(&scene, child);
+  assert(transform->parent.u64 == parent.u64 && transform->position.x == 2.0f);
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+
+  /* Save, rebuild the document scene and reload: the created entity, the
+     added component, the deletion and the new root all return. */
+  FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&directory));
+  char path[1024];
+  snprintf(path, sizeof(path),
+           PROJECT_SOURCE_DIR "tests/tmp/scene_structure_%u.json",
+           vkr_platform_get_process_id());
+  const String8 file_path = string8_create((uint8_t *)path, strlen(path));
+  assert(vkr_scene_edit_save(&state, &scene, file_path));
+  vkr_scene_edit_reset(&state, &allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+
+  assert(vkr_scene_init(&scene, &allocator, 0, 8, &error));
+  parent = edit_test_entity(&scene, 0, "parent");
+  child = edit_test_entity(&scene, 1, "child");
+  lamp = edit_test_entity(&scene, 2, "lamp");
+  vkr_scene_set_parent(&scene, child, parent);
+  vkr_scene_edit_reset(&state, &allocator, 1);
+  assert(vkr_scene_edit_load(&state, &scene, file_path));
+  assert(!vkr_scene_entity_alive(&scene, lamp) && state.deleted_count == 1u);
+  stored = vkr_scene_get_typed(&scene, child, &vkr_scene_fog_type);
+  assert(stored && stored->density == 0.25f);
+  transform = vkr_scene_get_transform(&scene, child);
+  assert(!transform->parent.u64 &&
+         fabsf(transform->position.x - 12.0f) < 1e-4f);
+  assert(edit_test_alive_named(&scene, "renamed lamp", &found) == 1u);
+  assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
+  assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
+  assert(state.created_count == 1u && state.created[0].entity.u64 == found.u64);
+
+  /* Version 3 files cannot carry version 4 structure. */
+  const char old_delete[] =
+      "{\"version\":3,\"overrides\":[{\"scene_entity\":7,\"gltf_node\":1,"
+      "\"source_fingerprint\":\"1122334455667788\",\"deleted\":true}],"
+      "\"collision_settings\":{}}";
+  edit_test_write(path, old_delete, sizeof(old_delete) - 1);
+  assert(!vkr_scene_edit_load(&state, &scene, file_path));
+  assert(vkr_scene_entity_alive(&scene, child));
+
+  edit_test_document_ids(&allocator, file_path);
+
+  FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&saved_path) == FILE_ERROR_NONE);
+  vkr_scene_edit_reset(&state, &allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
 }
 
 /* A build cannot detect partial file acceptance or mutations before a later
@@ -195,7 +444,7 @@ bool32_t run_scene_edit_tests(void) {
   VkrSceneEditValues physics = {.fields = VKR_SCENE_EDIT_PHYSICS};
   physics.physics = vkr_scene_physics_default();
   physics.physics.present = true_v;
-  physics.physics.motion = VKR_PHYSICS_DYNAMIC;
+  physics.physics.body.motion = VKR_PHYSICS_DYNAMIC;
   physics.physics.collider_count = 2;
   physics.physics.colliders[0] =
       (VkrSceneColliderConfig){.authored_id = UINT64_C(0xfedcba9876543210),
@@ -253,7 +502,7 @@ bool32_t run_scene_edit_tests(void) {
   assert(vkr_scene_edit_load(&state, &scene, file_path));
   assert(vkr_scene_edit_read(&scene, parent, &read));
   assert(read.physics.collider_count == 2 &&
-         read.physics.motion == VKR_PHYSICS_DYNAMIC);
+         read.physics.body.motion == VKR_PHYSICS_DYNAMIC);
   assert(read.physics.colliders[0].half_extent.y == 2);
   assert(read.physics.colliders[0].authored_id == UINT64_C(0xfedcba9876543210));
   assert(read.physics.colliders[1].position.x == 4);
@@ -372,7 +621,7 @@ bool32_t run_scene_edit_tests(void) {
          feof(file));
   fclose(file);
   advanced_saved[advanced_size] = 0;
-  assert(strstr(advanced_saved, "\"version\":3"));
+  assert(strstr(advanced_saved, "{\"version\":5,"));
   assert(vkr_scene_edit_load(&state, &scene, file_path));
   vkr_scene_collision_layers_read(&scene, &settings_read);
   assert(!strcmp(settings_read.names[1], "Actors"));
@@ -451,6 +700,7 @@ bool32_t run_scene_edit_tests(void) {
   vkr_scene_edit_reset(&state, &allocator, 0);
   vkr_scene_shutdown(&scene, NULL);
   vkr_dmemory_destroy(&memory);
+  edit_test_structure();
   printf("--- Scene Edit Tests Completed ---\n");
   return true_v;
 }

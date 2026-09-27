@@ -17,6 +17,7 @@ add_executable(vkr_editor
     src/editor_console.c
     src/editor_bakery.c
     src/editor_scene_panels.c
+    src/editor_details.c
     src/editor_labels.c
     src/editor_physics.c
     src/editor_physics_settings.c

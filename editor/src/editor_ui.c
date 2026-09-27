@@ -1,6 +1,7 @@
 #include "editor_internal.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
+#include "editor_scene_panels.h"
 
 #include "renderer/systems/vkr_editor_viewport.h"
 
@@ -192,6 +193,13 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                       .z_order = 3u,
                       .visible = false_v,
                   },
+              [VKR_EDITOR_WINDOW_CREATE] =
+                  {
+                      .position_pt = {360.0f, 150.0f},
+                      .size_pt = {520.0f, 350.0f},
+                      .z_order = 7u,
+                      .visible = false_v,
+                  },
           },
   };
 }
@@ -290,8 +298,47 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   }
 
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
+  /* Files dropped from the OS (ADR-076): Content's folders claim the drop
+     point while building, then the import window opens for that folder. */
+  VkrWindowFileDrop *file_drop = NULL;
+  if (editor->projects && editor->content && frame->window &&
+      vkr_atomic_bool_load(&frame->window->file_drop_pending,
+                           VKR_MEMORY_ORDER_ACQUIRE)) {
+    file_drop =
+        vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*file_drop),
+                            VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    if (file_drop && vkr_window_take_file_drop(frame->window, file_drop)) {
+      vkr_editor_content_arm_file_drop(
+          editor->content,
+          (Vec2){(float32_t)file_drop->x, (float32_t)file_drop->y});
+    } else {
+      file_drop = NULL;
+    }
+  }
+  /* Content lists the loaded containers' objects (ADR-076). */
+  if (editor->content) {
+    const char *scene_ids[1 + VKR_SCENE_ADDITIVE_MAX] = {0};
+    const String8 primary = vkr_editor_projects_scene_id(editor->projects);
+    char primary_id[37] = {0};
+    snprintf(primary_id, sizeof(primary_id), "%.*s", (int)primary.length,
+             (const char *)primary.str);
+    scene_ids[0] = primary_id;
+    for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+      scene_ids[1 + i] = frame->additive[i]
+                             ? vkr_editor_projects_added_id(
+                                   editor->projects, frame->additive_names[i])
+                             : "";
+    }
+    vkr_editor_content_sync_objects(editor->content, frame, scene_ids);
+  }
   if (!frame->scene_only)
     vkr_editor_dock_build(editor, frame);
+  if (file_drop) {
+    char folder[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+    vkr_editor_content_file_drop_folder(editor->content, folder);
+    (void)vkr_editor_projects_import_files(editor->projects, editor, file_drop,
+                                           folder);
+  }
   vkr_editor_projects_build_scene_progress(editor->projects, editor, frame);
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
   const bool8_t preparing_scene =
@@ -313,7 +360,38 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                &frame->text);
   vkr_editor_windows_build_floating(editor, frame->ui, frame->input, frame);
   vkr_editor_windows_build_menu(editor, frame->ui, frame);
+  /* A right click on a Content item opens its menu. */
+  Vec2 content_menu_pt;
+  if (editor->content &&
+      vkr_editor_content_take_menu(editor->content, &content_menu_pt)) {
+    editor->context_open = true_v;
+    editor->context_kind = VKR_EDITOR_CONTEXT_CONTENT;
+    editor->context_count = 0u;
+    editor->context_position_pt = content_menu_pt;
+    editor->menu = VKR_EDITOR_MENU_NONE;
+  }
   vkr_editor_context_menu_build(editor, frame);
+  /* A dragged Content item draws above every panel and drops on the Scene. */
+  vkr_editor_content_set_drop_target(
+      editor->content, frame->mapping_valid
+                           ? (VkrUiRect){frame->mapping.panel_rect_px.x,
+                                         frame->mapping.panel_rect_px.y,
+                                         frame->mapping.panel_rect_px.z,
+                                         frame->mapping.panel_rect_px.w}
+                           : (VkrUiRect){0});
+  vkr_editor_content_build_drag(editor->content, frame->ui);
+  /* Loaded objects act here in any mode. Without a project only object
+     types act too; Projects owns the rest. */
+  VkrEditorContentAction content_action;
+  if (editor->content &&
+      vkr_editor_content_take_object_action(editor->content, &content_action))
+    vkr_editor_apply_content_object(frame, &content_action);
+  if (!frame->world && editor->content &&
+      vkr_editor_content_take_action(editor->content, &content_action) &&
+      content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT)
+    vkr_editor_request_create(
+        frame, content_action.object, vkr_editor_create_container(frame),
+        content_action.dropped ? &content_action.drop_px : NULL);
   vkr_editor_toasts_build(editor, frame);
   vkr_editor_cmd_suggestions_build(editor, frame);
   if (frame->scene_keyboard_focus) {
@@ -435,4 +513,44 @@ bool8_t vkr_editor_search_field(VkrUiSystem *ui, String8 id,
   }
   (void)vkr_ui_pop_id(ui);
   return changed;
+}
+
+/* Additive slot owning an entity, or VKR_SCENE_ADDITIVE_MAX. */
+static uint32_t editor_additive_slot(const VkrSampleUiFrame *frame,
+                                     VkrEntityId entity) {
+  const uint32_t world = entity.parts.world;
+  if (!entity.u64 || world == 0u || world > VKR_SCENE_ADDITIVE_MAX ||
+      !frame->additive[world - 1u]) {
+    return VKR_SCENE_ADDITIVE_MAX;
+  }
+  return world - 1u;
+}
+
+const VkrScene *vkr_editor_entity_scene(const VkrSampleUiFrame *frame,
+                                        VkrEntityId entity) {
+  if (frame->world && entity.u64 &&
+      entity.parts.world == VKR_SCENE_WORLD_ROOT_ID) {
+    return frame->world;
+  }
+  const uint32_t slot = editor_additive_slot(frame, entity);
+  if (slot < VKR_SCENE_ADDITIVE_MAX) {
+    return frame->additive[slot];
+  }
+  return frame->scene;
+}
+
+VkrSampleUiFrame vkr_editor_entity_frame(const VkrSampleUiFrame *frame,
+                                         VkrEntityId entity) {
+  VkrSampleUiFrame view = *frame;
+  if (frame->world && entity.u64 &&
+      entity.parts.world == VKR_SCENE_WORLD_ROOT_ID) {
+    view.scene = frame->world;
+    view.edits = frame->world_edits;
+  }
+  const uint32_t slot = editor_additive_slot(frame, entity);
+  if (slot < VKR_SCENE_ADDITIVE_MAX) {
+    view.scene = frame->additive[slot];
+    view.edits = frame->additive_edits[slot];
+  }
+  return view;
 }

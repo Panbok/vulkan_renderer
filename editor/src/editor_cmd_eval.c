@@ -34,6 +34,7 @@ enum {
   EVAL_OBJECT_UI,
   EVAL_OBJECT_SIM,
   EVAL_OBJECT_SCENE,
+  EVAL_OBJECT_WORLD,
 };
 
 typedef enum TokenKind {
@@ -86,19 +87,20 @@ typedef struct Eval {
 /* Member names by value kind, for errors and completion. */
 static const char *const eval_entity_members[] = {
     "name", "position", "rotation", "scale", "visible", "light", "id", NULL};
-static const char *const eval_light_members[] = {
-    "kind", "color", "intensity", "range", "enabled", "inner", "outer", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
 static const char *const eval_view_members[] = {
-    "camera", "mode", "grid", "grid_spacing", "camera_speed", "tool", NULL};
+    "camera",       "mode", "grid",        "grid_spacing",
+    "camera_speed", "tool", "grid_labels", NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
-static const char *const eval_scene_members[] = {"loaded", "entities", NULL};
+static const char *const eval_scene_members[] = {"loaded", "entities", "added",
+                                                 NULL};
+static const char *const eval_world_members[] = {"loaded", "entities", NULL};
 static const char *const eval_roots[] = {
-    "sel",  "view",  "ui",    "sim",  "scene", "entity", "vec3",  "len",
-    "sqrt", "sin",   "cos",   "tan",  "abs",   "min",    "max",   "clamp",
-    "lerp", "round", "floor", "ceil", "pow",   "dot",    "cross", "normalize",
-    "deg",  "rad",   "str",   "pi",   "true",  "false",  NULL};
+    "sel",       "view", "ui",    "sim",   "scene", "world", "entity", "vec3",
+    "len",       "sqrt", "sin",   "cos",   "tan",   "abs",   "min",    "max",
+    "clamp",     "lerp", "round", "floor", "ceil",  "pow",   "dot",    "cross",
+    "normalize", "deg",  "rad",   "str",   "pi",    "true",  "false",  NULL};
 
 /* ---- Small helpers ---- */
 
@@ -150,8 +152,9 @@ static Value eval_string(const char *format, ...) {
 }
 
 static const char *eval_kind_name(VkrEditorCmdValueKind kind) {
-  static const char *const names[] = {"nothing", "number", "bool",  "string",
-                                      "vec3",    "entity", "light", "object"};
+  static const char *const names[] = {"nothing",   "number", "bool",
+                                      "string",    "vec3",   "entity",
+                                      "component", "object"};
   return names[kind];
 }
 
@@ -163,7 +166,7 @@ static bool8_t eval_truthy(const Value *value) {
   case VKR_EDITOR_CMD_VALUE_STRING:
     return value->text[0] != '\0';
   case VKR_EDITOR_CMD_VALUE_ENTITY:
-  case VKR_EDITOR_CMD_VALUE_LIGHT:
+  case VKR_EDITOR_CMD_VALUE_COMPONENT:
     return value->entity.u64 != 0u;
   default:
     return value->kind != VKR_EDITOR_CMD_VALUE_NONE;
@@ -418,21 +421,109 @@ static VkrEntityId eval_find_entity(const VkrScene *scene, String8 name) {
 
 static bool8_t eval_read_entity(Eval *eval, VkrEntityId entity,
                                 VkrSceneEditValues *values) {
-  if (!eval->frame->scene)
+  const VkrScene *scene = vkr_editor_entity_scene(eval->frame, entity);
+  if (!scene)
     return eval_fail(eval, "No scene is loaded");
-  if (!entity.u64 || !vkr_scene_entity_alive(eval->frame->scene, entity))
+  if (!entity.u64 || !vkr_scene_entity_alive(scene, entity))
     return eval_fail(eval, "Nothing is selected");
-  if (!vkr_scene_edit_read(eval->frame->scene, entity, values))
+  if (!vkr_scene_edit_read(scene, entity, values))
     return eval_fail(eval, "That entity cannot be read");
   return true_v;
 }
 
-/* Which light component the entity carries; 0 when none. */
-static uint32_t eval_light_field(const VkrSceneEditValues *values) {
-  return values->fields &
-         (VKR_SCENE_EDIT_POINT_LIGHT | VKR_SCENE_EDIT_DIRECTIONAL_LIGHT |
-          VKR_SCENE_EDIT_RECTANGLE_LIGHT);
+/* The light component the entity carries, or NULL. */
+static const VkrTypeDesc *eval_light_type(const VkrSceneEditValues *values) {
+  if (values->fields & VKR_SCENE_EDIT_POINT_LIGHT)
+    return &vkr_scene_point_light_type;
+  if (values->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
+    return &vkr_scene_directional_light_type;
+  if (values->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
+    return &vkr_scene_rectangle_light_type;
+  return NULL;
 }
+
+/* Component type named `name` that the entity carries, or NULL: the edit
+   components, then world components (ADR-076). */
+static const VkrTypeDesc *eval_component_named(const Eval *eval,
+                                               VkrEntityId entity,
+                                               const VkrSceneEditValues *values,
+                                               String8 name) {
+  const VkrTypeDesc *type = NULL;
+  uint8_t component[VKR_TYPE_VALUE_MAX];
+  for (uint32_t i = 0; (type = vkr_scene_edit_component_type(i)); ++i) {
+    if (eval_is(name, type->name) &&
+        vkr_scene_edit_component_get(values, type, component))
+      return type;
+  }
+  type = vkr_scene_world_type_named(name);
+  const VkrScene *scene = vkr_editor_entity_scene(eval->frame, entity);
+  return type && scene && vkr_scene_get_typed(scene, entity, type) ? type
+                                                                   : NULL;
+}
+
+/* Current bytes of a component value; false when the entity lost it. */
+static bool8_t eval_component_get(const Eval *eval, const Value *base,
+                                  VkrSceneEditValues *values, void *out) {
+  if (vkr_scene_edit_component_field(base->type))
+    return vkr_scene_edit_component_get(values, base->type, out);
+  const void *current =
+      vkr_scene_get_typed(vkr_editor_entity_scene(eval->frame, base->entity),
+                          base->entity, base->type);
+  if (!current)
+    return false_v;
+  MemCopy(out, current, base->type->size);
+  return true_v;
+}
+
+/* Cmd values use stored units, except angles and rotations in degrees. */
+static bool8_t eval_property_read(const VkrPropertyDesc *property,
+                                  const void *component, Value *out) {
+  float32_t floats[4] = {0};
+  float64_t number = 0.0;
+  switch (property->kind) {
+  case VKR_PROPERTY_BOOL:
+    (void)vkr_property_get_number(property, component, &number);
+    *out = eval_bool(number != 0.0);
+    return true_v;
+  case VKR_PROPERTY_ENUM:
+    (void)vkr_property_get_number(property, component, &number);
+    *out = eval_string("%s", property->names[(uint32_t)number]);
+    return true_v;
+  case VKR_PROPERTY_ANGLE:
+    (void)vkr_property_get_number(property, component, &number);
+    *out = eval_number(number * EVAL_DEGREES);
+    return true_v;
+  case VKR_PROPERTY_STRING:
+    *out = eval_string("%s", (const char *)component + property->offset);
+    return true_v;
+  case VKR_PROPERTY_QUAT: {
+    float32_t degrees[3];
+    (void)vkr_property_get_floats(property, component, floats);
+    vkr_property_quat_euler((Vec4){floats[0], floats[1], floats[2], floats[3]},
+                            degrees);
+    *out = eval_vec((Vec3){degrees[0], degrees[1], degrees[2], 0.0f});
+    return true_v;
+  }
+  case VKR_PROPERTY_VEC2:
+  case VKR_PROPERTY_VEC3:
+  case VKR_PROPERTY_VEC4:
+  case VKR_PROPERTY_COLOR:
+  case VKR_PROPERTY_DIRECTION:
+    (void)vkr_property_get_floats(property, component, floats);
+    *out = eval_vec(
+        (Vec3){floats[0], floats[1],
+               property->kind == VKR_PROPERTY_VEC2 ? 0.0f : floats[2], 0.0f});
+    return true_v;
+  default:
+    (void)vkr_property_get_number(property, component, &number);
+    *out = eval_number(number);
+    return true_v;
+  }
+}
+
+static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
+                                   void *component, const Value *value,
+                                   String8 member);
 
 static Vec3 eval_euler_degrees(VkrQuat rotation) {
   float32_t roll = 0, pitch = 0, yaw = 0;
@@ -475,69 +566,45 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       *out = eval_bool(values.visibility.visible);
       return true_v;
     case 5:
-      if (!eval_light_field(&values))
+      if (!eval_light_type(&values))
         return eval_fail(eval, "'%s' has no light", values.name);
       *out = *base;
-      out->kind = VKR_EDITOR_CMD_VALUE_LIGHT;
+      out->kind = VKR_EDITOR_CMD_VALUE_COMPONENT;
+      out->type = eval_light_type(&values);
       return true_v;
     case 6:
       *out = eval_number(base->entity.parts.index);
       return true_v;
-    default:
-      break;
+    default: {
+      const VkrTypeDesc *type =
+          eval_component_named(eval, base->entity, &values, name);
+      if (!type)
+        break;
+      *out = *base;
+      out->kind = VKR_EDITOR_CMD_VALUE_COMPONENT;
+      out->type = type;
+      return true_v;
+    }
     }
     break;
   }
-  case VKR_EDITOR_CMD_VALUE_LIGHT: {
+  case VKR_EDITOR_CMD_VALUE_COMPONENT: {
     VkrSceneEditValues values;
+    uint8_t component[VKR_TYPE_VALUE_MAX];
     if (!eval_read_entity(eval, base->entity, &values))
       return false_v;
-    const uint32_t light = eval_light_field(&values);
-    const ScenePointLight *point = &values.point_light;
-    const SceneDirectionalLight *sun = &values.directional_light;
-    const SceneRectangleLight *rect = &values.rectangle_light;
-    switch (eval_word_index(eval_light_members, name)) {
-    case 0:
-      *out = eval_string(
-          "%s", light == VKR_SCENE_EDIT_DIRECTIONAL_LIGHT       ? "directional"
-                : light == VKR_SCENE_EDIT_RECTANGLE_LIGHT       ? "rectangle"
-                : point->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? "spot"
-                                                                : "point");
+    if (!eval_component_get(eval, base, &values, component))
+      return eval_fail(eval, "'%s' no longer has a %s", values.name,
+                       base->type->label);
+    if (eval_is(name, "type")) {
+      *out = eval_string("%s", base->type->name);
       return true_v;
-    case 1:
-      *out = eval_vec(light == VKR_SCENE_EDIT_DIRECTIONAL_LIGHT ? sun->color
-                      : light == VKR_SCENE_EDIT_RECTANGLE_LIGHT ? rect->color
-                                                                : point->color);
-      return true_v;
-    case 2:
-      *out = eval_number(
-          light == VKR_SCENE_EDIT_DIRECTIONAL_LIGHT ? sun->intensity
-          : light == VKR_SCENE_EDIT_RECTANGLE_LIGHT ? rect->radiance
-                                                    : point->intensity);
-      return true_v;
-    case 3:
-      if (light != VKR_SCENE_EDIT_POINT_LIGHT)
-        break;
-      *out = eval_number(point->range);
-      return true_v;
-    case 4:
-      *out =
-          eval_bool(light == VKR_SCENE_EDIT_DIRECTIONAL_LIGHT ? sun->enabled
-                    : light == VKR_SCENE_EDIT_RECTANGLE_LIGHT ? rect->enabled
-                                                              : point->enabled);
-      return true_v;
-    case 5:
-    case 6:
-      if (light != VKR_SCENE_EDIT_POINT_LIGHT)
-        break;
-      *out = eval_number((eval_is(name, "inner") ? point->inner_cone_angle
-                                                 : point->outer_cone_angle) *
-                         EVAL_DEGREES);
-      return true_v;
-    default:
-      break;
     }
-    break;
+    const uint32_t index = vkr_type_find_property(base->type, name);
+    if (index == UINT32_MAX ||
+        (base->type->properties[index].flags & VKR_PROPERTY_FLAG_TRANSIENT))
+      break;
+    return eval_property_read(&base->type->properties[index], component, out);
   }
   case VKR_EDITOR_CMD_VALUE_OBJECT: {
     const VkrSampleViewState *view = &frame->view_state;
@@ -566,6 +633,9 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         return true_v;
       case 4:
         *out = eval_number(view->camera_speed);
+        return true_v;
+      case 6:
+        *out = eval_bool(view->grid_labels);
         return true_v;
       case 5:
         for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
@@ -598,18 +668,29 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         *out = eval_number(frame->simulation_time);
         return true_v;
       }
-    } else if (base->object == EVAL_OBJECT_SCENE) {
-      const int32_t index = eval_word_index(eval_scene_members, name);
+    } else if (base->object == EVAL_OBJECT_SCENE ||
+               base->object == EVAL_OBJECT_WORLD) {
+      /* The active scene, or the root World container (ADR-076). */
+      const bool8_t world = base->object == EVAL_OBJECT_WORLD;
+      const VkrScene *scene = world ? frame->world : frame->scene;
+      const int32_t index = eval_word_index(
+          world ? eval_world_members : eval_scene_members, name);
       if (index == 0) {
-        *out = eval_bool(frame->scene != NULL);
+        *out = eval_bool(scene != NULL);
         return true_v;
       }
       if (index == 1) {
         uint32_t count = 0;
-        for (uint32_t i = 0;
-             frame->scene && i < frame->scene->world->dir.capacity; ++i)
-          count += frame->scene->world->dir.records[i].chunk != NULL;
+        for (uint32_t i = 0; scene && i < scene->world->dir.capacity; ++i)
+          count += scene->world->dir.records[i].chunk != NULL;
         *out = eval_number(count);
+        return true_v;
+      }
+      if (index == 2) {
+        uint32_t added = 0;
+        for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i)
+          added += frame->additive[i] != NULL;
+        *out = eval_number(added);
         return true_v;
       }
     }
@@ -743,11 +824,20 @@ static bool8_t eval_call(Eval *eval, const Node *node, Value *out) {
       return false_v;
     if (v[0].kind != VKR_EDITOR_CMD_VALUE_STRING)
       return eval_fail(eval, "entity(\"name\") needs a name");
-    if (!eval->frame->scene)
+    if (!eval->frame->scene && !eval->frame->world && !eval->frame->additive[0])
       return eval_fail(eval, "No scene is loaded");
-    const VkrEntityId entity = eval_find_entity(
-        eval->frame->scene,
-        (String8){.str = (uint8_t *)v[0].text, .length = strlen(v[0].text)});
+    const String8 wanted = {.str = (uint8_t *)v[0].text,
+                            .length = strlen(v[0].text)};
+    /* The scene's entities first, then the root World's. */
+    VkrEntityId entity = eval->frame->scene
+                             ? eval_find_entity(eval->frame->scene, wanted)
+                             : VKR_ENTITY_ID_INVALID;
+    for (uint32_t i = 0; !entity.u64 && i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+      if (eval->frame->additive[i])
+        entity = eval_find_entity(eval->frame->additive[i], wanted);
+    }
+    if (!entity.u64 && eval->frame->world)
+      entity = eval_find_entity(eval->frame->world, wanted);
     if (!entity.u64)
       return eval_fail(eval, "No entity named '%s'", v[0].text);
     *out = (Value){.kind = VKR_EDITOR_CMD_VALUE_ENTITY, .entity = entity};
@@ -783,7 +873,8 @@ static bool8_t eval_ident(Eval *eval, String8 name, Value *out) {
                    .entity = eval->frame->selected_entity};
     return true_v;
   }
-  static const char *const objects[] = {"view", "ui", "sim", "scene", NULL};
+  static const char *const objects[] = {"view",  "ui",    "sim",
+                                        "scene", "world", NULL};
   const int32_t object = eval_word_index(objects, name);
   if (object >= 0) {
     *out = (Value){.kind = VKR_EDITOR_CMD_VALUE_OBJECT,
@@ -816,9 +907,10 @@ static bool8_t eval_binary(Eval *eval, String8 op, const Value *a,
       equal = strcmp(a->text, b->text) == 0;
     else if (equal && a->kind == VKR_EDITOR_CMD_VALUE_VEC3)
       equal = MemCompare(&a->vector, &b->vector, sizeof(a->vector)) == 0;
-    else if (equal && (a->kind == VKR_EDITOR_CMD_VALUE_ENTITY ||
-                       a->kind == VKR_EDITOR_CMD_VALUE_LIGHT))
+    else if (equal && a->kind == VKR_EDITOR_CMD_VALUE_ENTITY)
       equal = a->entity.u64 == b->entity.u64;
+    else if (equal && a->kind == VKR_EDITOR_CMD_VALUE_COMPONENT)
+      equal = a->entity.u64 == b->entity.u64 && a->type == b->type;
     else if (equal)
       equal = a->number == b->number && a->object == b->object;
     *out = eval_bool(eval_is(op, "==") ? equal : !equal);
@@ -1035,55 +1127,104 @@ static bool8_t eval_assign_entity(Eval *eval, VkrEntityId entity,
   return eval_submit_edit(eval, entity, &values);
 }
 
-static bool8_t eval_assign_light(Eval *eval, VkrEntityId entity, String8 member,
-                                 const Value *value) {
-  VkrSceneEditValues values;
-  if (!eval_read_entity(eval, entity, &values))
-    return false_v;
-  const uint32_t light = eval_light_field(&values);
-  ScenePointLight *point = &values.point_light;
-  SceneDirectionalLight *sun = &values.directional_light;
-  SceneRectangleLight *rect = &values.rectangle_light;
-  const int32_t index = eval_word_index(eval_light_members, member);
-  if (index == 1) {
-    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_VEC3, member))
-      return false_v;
-    *(light == VKR_SCENE_EDIT_DIRECTIONAL_LIGHT ? &sun->color
-      : light == VKR_SCENE_EDIT_RECTANGLE_LIGHT ? &rect->color
-                                                : &point->color) =
-        value->vector;
-  } else if (index == 2 || index == 3 || index == 5 || index == 6) {
-    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
-      return false_v;
-    const float32_t number = (float32_t)value->number;
-    if (index == 2 && light == VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
-      sun->intensity = number;
-    else if (index == 2 && light == VKR_SCENE_EDIT_RECTANGLE_LIGHT)
-      rect->radiance = number;
-    else if (index == 2)
-      point->intensity = number;
-    else if (light != VKR_SCENE_EDIT_POINT_LIGHT)
-      return eval_fail(eval, "Only point and spot lights have '%.*s'",
-                       (int)member.length, member.str);
-    else if (index == 3)
-      point->range = number;
-    else if (index == 5)
-      point->inner_cone_angle = (float32_t)(number * EVAL_RADIANS);
-    else
-      point->outer_cone_angle = (float32_t)(number * EVAL_RADIANS);
-  } else if (index == 4) {
+static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
+                                   void *component, const Value *value,
+                                   String8 member) {
+  if (property->flags &
+      (VKR_PROPERTY_FLAG_READ_ONLY | VKR_PROPERTY_FLAG_TRANSIENT))
+    return eval_fail(eval, "'%.*s' is read-only", (int)member.length,
+                     member.str);
+  switch (property->kind) {
+  case VKR_PROPERTY_BOOL:
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))
       return false_v;
-    *(light == VKR_SCENE_EDIT_DIRECTIONAL_LIGHT ? &sun->enabled
-      : light == VKR_SCENE_EDIT_RECTANGLE_LIGHT ? &rect->enabled
-                                                : &point->enabled) =
-        value->number != 0.0;
-  } else {
-    return eval_fail(eval, "Cannot assign light member '%.*s'",
-                     (int)member.length, member.str);
+    return vkr_property_set_number(property, component, value->number);
+  case VKR_PROPERTY_ENUM: {
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
+      return false_v;
+    const String8 word = {.str = (uint8_t *)value->text,
+                          .length = strlen(value->text)};
+    const int32_t choice = eval_word_index(property->names, word);
+    if (choice < 0)
+      return eval_fail(eval, "Unknown %.*s '%s'", (int)member.length,
+                       member.str, value->text);
+    return vkr_property_set_number(property, component, choice);
   }
-  values.fields = light;
-  return eval_submit_edit(eval, entity, &values);
+  case VKR_PROPERTY_STRING: {
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
+      return false_v;
+    const uint64_t length = strlen(value->text);
+    if (length >= property->capacity)
+      return eval_fail(eval, "'%.*s' is limited to %u bytes",
+                       (int)member.length, member.str, property->capacity - 1u);
+    MemCopy((uint8_t *)component + property->offset, value->text, length + 1u);
+    return true_v;
+  }
+  case VKR_PROPERTY_QUAT: {
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_VEC3, member))
+      return false_v;
+    const float32_t degrees[3] = {value->vector.x, value->vector.y,
+                                  value->vector.z};
+    const Vec4 rotation = vkr_property_quat_from_euler(degrees);
+    return vkr_property_set_floats(property, component, rotation.elements);
+  }
+  case VKR_PROPERTY_VEC2:
+  case VKR_PROPERTY_VEC3:
+  case VKR_PROPERTY_VEC4:
+  case VKR_PROPERTY_COLOR:
+  case VKR_PROPERTY_DIRECTION: {
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_VEC3, member))
+      return false_v;
+    float32_t floats[4] = {0};
+    (void)vkr_property_get_floats(property, component, floats);
+    floats[0] = value->vector.x;
+    floats[1] = value->vector.y;
+    if (property->kind != VKR_PROPERTY_VEC2)
+      floats[2] = value->vector.z;
+    return vkr_property_set_floats(property, component, floats);
+  }
+  case VKR_PROPERTY_ANGLE:
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
+      return false_v;
+    return vkr_property_set_number(property, component,
+                                   value->number * EVAL_RADIANS);
+  default:
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
+      return false_v;
+    return vkr_property_set_number(property, component, value->number);
+  }
+}
+
+static bool8_t eval_assign_component(Eval *eval, const Value *base,
+                                     String8 member, const Value *value) {
+  VkrSceneEditValues values;
+  uint8_t component[VKR_TYPE_VALUE_MAX];
+  if (!eval_read_entity(eval, base->entity, &values))
+    return false_v;
+  if (!eval_component_get(eval, base, &values, component))
+    return eval_fail(eval, "'%s' no longer has a %s", values.name,
+                     base->type->label);
+  const uint32_t index = vkr_type_find_property(base->type, member);
+  if (index == UINT32_MAX)
+    return eval_fail(eval, "No member '%.*s' on %s", (int)member.length,
+                     member.str, base->type->name);
+  if (!eval_property_write(eval, &base->type->properties[index], component,
+                           value, member))
+    return eval->error[0] ? false_v
+                          : eval_fail(eval, "'%.*s' cannot hold that value",
+                                      (int)member.length, member.str);
+  char error[128] = {0};
+  if (!vkr_type_validate(base->type, component, error, sizeof(error)))
+    return eval_fail(eval, "%s", error);
+  if (vkr_scene_edit_component_field(base->type)) {
+    (void)vkr_scene_edit_component_set(&values, base->type, component);
+    values.fields = vkr_scene_edit_component_field(base->type);
+  } else {
+    values.fields = VKR_SCENE_EDIT_COMPONENT;
+    values.component_type = base->type;
+    MemCopy(values.component, component, base->type->size);
+  }
+  return eval_submit_edit(eval, base->entity, &values);
 }
 
 static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
@@ -1139,10 +1280,13 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
       next.render_mode = vkr_editor_cmd_render_mode_values[choice];
     else
       next.gizmo_tool = vkr_editor_cmd_tool_modes[choice];
-  } else if (index == 2) {
+  } else if (index == 2 || index == 6) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))
       return false_v;
-    next.grid_enabled = value->number != 0.0;
+    if (index == 2)
+      next.grid_enabled = value->number != 0.0;
+    else
+      next.grid_labels = value->number != 0.0;
   } else if (index == 3 || index == 4) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
       return false_v;
@@ -1206,8 +1350,8 @@ static bool8_t eval_assign(Eval *eval, int32_t target, const Value *value) {
   }
   case VKR_EDITOR_CMD_VALUE_ENTITY:
     return eval_assign_entity(eval, base.entity, node->text, value);
-  case VKR_EDITOR_CMD_VALUE_LIGHT:
-    return eval_assign_light(eval, base.entity, node->text, value);
+  case VKR_EDITOR_CMD_VALUE_COMPONENT:
+    return eval_assign_component(eval, &base, node->text, value);
   case VKR_EDITOR_CMD_VALUE_OBJECT:
     return eval_assign_object(eval, base.object, node->text, value);
   default:
@@ -1237,17 +1381,18 @@ static uint32_t eval_format(const VkrEditorCmdValue *value, char *out,
                  (double)value->vector.y, (double)value->vector.z);
     break;
   case VKR_EDITOR_CMD_VALUE_ENTITY:
-  case VKR_EDITOR_CMD_VALUE_LIGHT:
-    written =
-        snprintf(out, capacity, "%s #%u",
-                 value->kind == VKR_EDITOR_CMD_VALUE_LIGHT ? "light" : "entity",
-                 value->entity.parts.index);
+    written = snprintf(out, capacity, "entity #%u", value->entity.parts.index);
+    break;
+  case VKR_EDITOR_CMD_VALUE_COMPONENT:
+    written = snprintf(out, capacity, "%s of entity #%u", value->type->name,
+                       value->entity.parts.index);
     break;
   case VKR_EDITOR_CMD_VALUE_OBJECT: {
-    static const char *const names[] = {"", "view", "ui", "sim", "scene"};
+    static const char *const names[] = {"",    "view",  "ui",
+                                        "sim", "scene", "world"};
     written =
         snprintf(out, capacity, "%s (type %s. for members)",
-                 names[Min(value->object, 4u)], names[Min(value->object, 4u)]);
+                 names[Min(value->object, 5u)], names[Min(value->object, 5u)]);
     break;
   }
   default:
@@ -1294,6 +1439,48 @@ bool8_t vkr_editor_cmd_eval(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   return true_v;
 }
 
+/* Completion name lists built from descriptors; valid until the next call. */
+static const char *s_complete_names[VKR_TYPE_PROPERTY_MAX + 16u];
+
+static const char *const *
+eval_component_complete_names(const VkrTypeDesc *type) {
+  uint32_t count = 0;
+  s_complete_names[count++] = "type";
+  for (uint32_t i = 0; i < type->property_count; ++i) {
+    if (!(type->properties[i].flags & VKR_PROPERTY_FLAG_TRANSIENT))
+      s_complete_names[count++] = type->properties[i].name;
+  }
+  s_complete_names[count] = NULL;
+  return s_complete_names;
+}
+
+static const char *const *eval_entity_complete_names(Eval *eval,
+                                                     const Value *base) {
+  uint32_t count = 0;
+  for (uint32_t i = 0; eval_entity_members[i]; ++i)
+    s_complete_names[count++] = eval_entity_members[i];
+  VkrSceneEditValues values;
+  const VkrScene *scene = vkr_editor_entity_scene(eval->frame, base->entity);
+  if (scene && base->entity.u64 &&
+      vkr_scene_entity_alive(scene, base->entity) &&
+      vkr_scene_edit_read(scene, base->entity, &values)) {
+    const VkrTypeDesc *type = NULL;
+    uint8_t component[VKR_TYPE_VALUE_MAX];
+    for (uint32_t i = 0; (type = vkr_scene_edit_component_type(i)); ++i) {
+      if (vkr_scene_edit_component_get(&values, type, component))
+        s_complete_names[count++] = type->name;
+    }
+    for (uint32_t i = 0; (type = vkr_scene_world_type(i)) &&
+                         count + 1u < ArrayCount(s_complete_names);
+         ++i) {
+      if (vkr_scene_get_typed(scene, base->entity, type))
+        s_complete_names[count++] = type->name;
+    }
+  }
+  s_complete_names[count] = NULL;
+  return s_complete_names;
+}
+
 uint32_t vkr_editor_cmd_eval_complete(VkrEditorUi *editor,
                                       const VkrSampleUiFrame *frame,
                                       String8 text, char (*lines)[96],
@@ -1322,18 +1509,21 @@ uint32_t vkr_editor_cmd_eval_complete(VkrEditorUi *editor,
     const int32_t node = eval_parse_expression(&eval, 0);
     if (eval.error[0] || !eval_node_value(&eval, node, &base))
       return 0;
-    names = base.kind == VKR_EDITOR_CMD_VALUE_VEC3     ? eval_vec_members
-            : base.kind == VKR_EDITOR_CMD_VALUE_ENTITY ? eval_entity_members
-            : base.kind == VKR_EDITOR_CMD_VALUE_LIGHT  ? eval_light_members
-            : base.object == EVAL_OBJECT_VIEW          ? eval_view_members
-            : base.object == EVAL_OBJECT_UI            ? eval_ui_members
-            : base.object == EVAL_OBJECT_SIM           ? eval_sim_members
-            : base.object == EVAL_OBJECT_SCENE         ? eval_scene_members
-                                                       : NULL;
+    names = base.kind == VKR_EDITOR_CMD_VALUE_VEC3 ? eval_vec_members
+            : base.kind == VKR_EDITOR_CMD_VALUE_ENTITY
+                ? eval_entity_complete_names(&eval, &base)
+            : base.kind == VKR_EDITOR_CMD_VALUE_COMPONENT
+                ? eval_component_complete_names(base.type)
+            : base.object == EVAL_OBJECT_VIEW  ? eval_view_members
+            : base.object == EVAL_OBJECT_UI    ? eval_ui_members
+            : base.object == EVAL_OBJECT_SIM   ? eval_sim_members
+            : base.object == EVAL_OBJECT_SCENE ? eval_scene_members
+            : base.object == EVAL_OBJECT_WORLD ? eval_world_members
+                                               : NULL;
     if (base.kind != VKR_EDITOR_CMD_VALUE_OBJECT &&
         base.kind != VKR_EDITOR_CMD_VALUE_VEC3 &&
         base.kind != VKR_EDITOR_CMD_VALUE_ENTITY &&
-        base.kind != VKR_EDITOR_CMD_VALUE_LIGHT)
+        base.kind != VKR_EDITOR_CMD_VALUE_COMPONENT)
       names = NULL;
   }
   uint32_t count = 0;

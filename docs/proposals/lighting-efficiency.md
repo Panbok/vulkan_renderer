@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-26
+updated: 2026-09-27
 authority: proposal
 ---
 # Lighting efficiency
@@ -70,6 +70,13 @@ In order of measured payoff:
    case fell from 16.54 ms to 15.31 ms per frame without timestamps. Chains
    such as the HZB mips and per-layer transmission compaction still pay a
    barrier and a dispatch per step and are candidates for single-pass kernels.
+   Measured on 2026-09-27 (Metal Release, M1 Pro, `bistro_native_perf_audit_steady`,
+   `local-offscreen-perf-audit-gpu`, report
+   `20260926T225225.918Z-005ae6`, GPU pass sum 14.81 ms p50): the eleven HZB
+   passes take 0.15 ms together, the largest 0.05 ms, so a single-pass HZB
+   kernel cannot repay a two-backend rewrite and is not pursued. The four
+   transmission compaction passes take about 0.65 ms and remain the chain
+   candidate.
 1. **Cheaper local-shadow sampling**, from the 3.7 ms pool. Two steps have
    shipped. Taps that stay in the centre face skip reprojection, which lowered
    `Lighting.Deferred` from 7.11 ms to 6.71 ms in a shorter steady case. The

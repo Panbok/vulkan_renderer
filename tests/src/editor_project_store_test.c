@@ -4,6 +4,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_edit.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include "vkr_sample_runtime.h"
 
 #include <assert.h>
@@ -267,8 +268,144 @@ static void project_test_runtime_settings(void) {
   assert(!vkr_sample_scene_recall_write_json(&recall, &writer));
 }
 
+// Independent fixture: labels keep bundle and UUID ids, strip JSON delimiters
+// that would corrupt the next save, skip unusable ids, and a version 1 file
+// gains the folders its labels name. A version 2 save reloads unchanged, and
+// folder moves carry their items without escaping the capacity.
+static void project_test_asset_labels(void) {
+  String8 fixture = string8_lit(
+      "{\"version\":1,\"labels\":["
+      "{\"id\":\"Inter-Regular-cooked\",\"folder\":\" /UI//Fonts/ \","
+      "\"tags\":\"editor, text\"},"
+      "{\"id\":\"00000000-0000-4000-8000-000000000002\","
+      "\"folder\":\"Props\\\"\\\\\",\"tags\":\"\"},"
+      "{\"id\":\"\",\"folder\":\"Lost\"},"
+      "{\"id\":\"0123456789012345678901234567890123456789\"}]}");
+  VkrEditorAssetLabel labels[4] = {0};
+  VkrEditorFolder folders[8] = {0};
+  VkrEditorContentLabels doc = {.labels = labels,
+                                .label_capacity = ArrayCount(labels),
+                                .folders = folders,
+                                .folder_capacity = ArrayCount(folders)};
+  VkrEditorProjectError error = {0};
+  assert(vkr_editor_labels_parse(fixture, &doc, &error));
+  assert(doc.label_count == 2u);
+  assert(strcmp(labels[0].id, "Inter-Regular-cooked") == 0);
+  assert(strcmp(labels[0].folder, "UI/Fonts") == 0);
+  assert(strcmp(labels[0].tags, "editor, text") == 0);
+  assert(strcmp(labels[1].folder, "Props") == 0 && !labels[1].tags[0]);
+  assert(doc.folder_count == 3u && strcmp(folders[0].path, "UI") == 0 &&
+         strcmp(folders[1].path, "UI/Fonts") == 0);
+  assert(vkr_editor_folders_add(&doc, "Props/Bistro/Chairs"));
+  assert(doc.folder_count == 5u);
+
+  ProjectSettingsBuffer buffer = {0};
+  VkrJsonWriter writer;
+  vkr_json_writer_init(&writer, project_settings_sink, &buffer);
+  assert(vkr_editor_labels_write(&writer, &doc));
+  assert(vkr_json_writer_complete(&writer));
+  VkrEditorAssetLabel restored_labels[4] = {0};
+  VkrEditorFolder restored_folders[8] = {0};
+  VkrEditorContentLabels restored = {
+      .labels = restored_labels,
+      .label_capacity = ArrayCount(restored_labels),
+      .folders = restored_folders,
+      .folder_capacity = ArrayCount(restored_folders)};
+  assert(vkr_editor_labels_parse(
+      (String8){.str = buffer.data, .length = buffer.length}, &restored,
+      &error));
+  assert(restored.label_count == doc.label_count &&
+         restored.folder_count == doc.folder_count);
+  assert(MemCompare(restored_labels, labels,
+                    sizeof(labels[0]) * doc.label_count) == 0);
+  assert(MemCompare(restored_folders, folders,
+                    sizeof(folders[0]) * doc.folder_count) == 0);
+
+  /* Moving a folder carries its subfolders and items; moving it into itself,
+     onto an existing folder or removing a non-empty one changes nothing. */
+  assert(!vkr_editor_folders_rename(&doc, "Props", "Props/Inner"));
+  assert(!vkr_editor_folders_rename(&doc, "Props", "UI"));
+  assert(!vkr_editor_folders_remove(&doc, "Props"));
+  assert(vkr_editor_folders_rename(&doc, "Props", "World/Props"));
+  assert(strcmp(labels[1].folder, "World/Props") == 0);
+  bool8_t moved = false_v;
+  for (uint32_t i = 0; i < doc.folder_count; ++i) {
+    assert(!vkr_editor_folder_within(folders[i].path, "Props"));
+    moved |= strcmp(folders[i].path, "World/Props/Bistro/Chairs") == 0;
+  }
+  assert(moved);
+  assert(vkr_editor_folders_remove(&doc, "World/Props/Bistro/Chairs"));
+  assert(strcmp(vkr_editor_folder_name("World/Props"), "Props") == 0);
+
+  restored.label_count = 1u;
+  assert(!vkr_editor_labels_parse(string8_lit("{\"version\":3,\"labels\":[]}"),
+                                  &restored, &error));
+  assert(restored.label_count == 0u && restored.folder_count == 0u);
+}
+
+/* Presets keep typed values: a written document reads back byte-equal, and
+   records of unknown types or with values their type rejects are skipped. */
+static void project_test_presets(void) {
+  VkrEditorPreset presets[4];
+  MemZero(presets, sizeof(presets));
+  VkrEditorPresets doc = {.presets = presets, .capacity = ArrayCount(presets)};
+  presets[0].type = vkr_editor_preset_type(string8_lit("post_process"));
+  presets[1].type = vkr_editor_preset_type(string8_lit("point_light"));
+  assert(presets[0].type == &vkr_scene_post_process_type);
+  assert(presets[1].type == &vkr_scene_point_light_type);
+  assert(!vkr_editor_preset_type(string8_lit("transform")));
+  vkr_type_defaults(presets[0].type, presets[0].value);
+  ((ScenePostProcess *)presets[0].value)->exposure_compensation_ev = 1.5f;
+  vkr_type_defaults(presets[1].type, presets[1].value);
+  ((ScenePointLight *)presets[1].value)->intensity = 12.0f;
+  snprintf(presets[0].id, sizeof(presets[0].id), "p-grade");
+  snprintf(presets[0].name, sizeof(presets[0].name), "Warm grade");
+  snprintf(presets[1].id, sizeof(presets[1].id), "p-lamp");
+  snprintf(presets[1].name, sizeof(presets[1].name), "Street lamp");
+  doc.count = 2u;
+
+  static ProjectSettingsBuffer buffer;
+  buffer.length = 0u;
+  VkrJsonWriter writer;
+  vkr_json_writer_init(&writer, project_settings_sink, &buffer);
+  assert(vkr_editor_presets_write(&writer, &doc));
+  assert(vkr_json_writer_complete(&writer));
+  VkrEditorPreset restored_presets[4];
+  MemZero(restored_presets, sizeof(restored_presets));
+  VkrEditorPresets restored = {.presets = restored_presets,
+                               .capacity = ArrayCount(restored_presets)};
+  VkrEditorProjectError error = {0};
+  assert(vkr_editor_presets_parse(
+      (String8){.str = buffer.data, .length = buffer.length}, &restored, NULL,
+      &error));
+  assert(restored.count == 2u);
+  for (uint32_t i = 0; i < 2u; ++i) {
+    assert(restored_presets[i].type == presets[i].type);
+    assert(strcmp(restored_presets[i].name, presets[i].name) == 0);
+    assert(MemCompare(restored_presets[i].value, presets[i].value,
+                      presets[i].type->size) == 0);
+  }
+
+  assert(vkr_editor_presets_parse(
+      string8_lit("{\"version\":1,\"presets\":["
+                  "{\"id\":\"a\",\"name\":\"Gone\",\"type\":\"teapot\","
+                  "\"values\":{}},"
+                  "{\"id\":\"b\",\"name\":\"Bad\",\"type\":\"point_light\","
+                  "\"values\":{\"intensity\":-5}},"
+                  "{\"id\":\"c\",\"name\":\"Dim\",\"type\":\"point_light\","
+                  "\"values\":{\"intensity\":2}}]}"),
+      &restored, NULL, &error));
+  assert(restored.count == 1u && strcmp(restored_presets[0].id, "c") == 0);
+  assert(((ScenePointLight *)restored_presets[0].value)->intensity == 2.0f);
+  assert(!vkr_editor_presets_parse(
+      string8_lit("{\"version\":2,\"presets\":[]}"), &restored, NULL, &error));
+  assert(restored.count == 0u);
+}
+
 bool32_t run_editor_project_store_tests(void) {
   project_test_runtime_settings();
+  project_test_asset_labels();
+  project_test_presets();
   printf("Running editor project store tests...\n");
   VkrEditorProjectError error = {0};
   assert(vkr_editor_project_name_valid("Освітлення 日光", &error));

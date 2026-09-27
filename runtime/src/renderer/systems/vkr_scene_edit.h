@@ -3,6 +3,7 @@
 #include "renderer/systems/vkr_scene_collision_layers.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "renderer/systems/vkr_scene_types.h"
 
 #define VKR_SCENE_EDIT_NAME_CAPACITY 512u
 #define VKR_SCENE_EDIT_UNDO_CAPACITY 128u
@@ -20,6 +21,16 @@ typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_LOAD,
   VKR_SCENE_EDIT_UNLOAD,
   VKR_SCENE_EDIT_RELOAD,
+  /* Structure (ADR-076): values.component_type names the component. */
+  VKR_SCENE_EDIT_ADD_COMPONENT,
+  VKR_SCENE_EDIT_REMOVE_COMPONENT,
+  /* Create under `parent`, or at the root of `container`, from `values`. */
+  VKR_SCENE_EDIT_CREATE,
+  VKR_SCENE_EDIT_DELETE,
+  /* Move `entity` under `parent`; an invalid parent makes it a root. */
+  VKR_SCENE_EDIT_REPARENT,
+  /* Scene-level settings of `container` from `scene_settings`. */
+  VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS,
 } VkrSceneEditAction;
 
 typedef enum VkrSceneEditField {
@@ -30,6 +41,8 @@ typedef enum VkrSceneEditField {
   VKR_SCENE_EDIT_DIRECTIONAL_LIGHT = 1u << 4,
   VKR_SCENE_EDIT_RECTANGLE_LIGHT = 1u << 5,
   VKR_SCENE_EDIT_PHYSICS = 1u << 6,
+  /* One descriptor-typed world component (ADR-076). */
+  VKR_SCENE_EDIT_COMPONENT = 1u << 7,
 } VkrSceneEditField;
 
 typedef struct VkrSceneEditValues {
@@ -43,6 +56,9 @@ typedef struct VkrSceneEditValues {
   SceneDirectionalLight directional_light;
   SceneRectangleLight rectangle_light;
   VkrScenePhysicsSnapshot physics;
+  /* VKR_SCENE_EDIT_COMPONENT: a registered world type and its bytes. */
+  const VkrTypeDesc *component_type;
+  _Alignas(16) uint8_t component[VKR_TYPE_VALUE_MAX];
 } VkrSceneEditValues;
 
 typedef struct VkrSceneEditRequest {
@@ -56,20 +72,40 @@ typedef struct VkrSceneEditRequest {
   /* Nonzero groups consecutive APPLY requests of one continuous gesture, such
    * as a slider or value scrub, into a single undo entry. */
   uint64_t gesture;
+  /* CREATE and REPARENT: the new parent, or invalid for a root. */
+  VkrEntityId parent;
+  /* CREATE without a parent: 0 for the primary scene, 1 to
+   * VKR_SCENE_ADDITIVE_MAX for an added scene, VKR_SCENE_WORLD_ROOT_ID for the
+   * World. */
+  uint16_t container;
+  VkrSceneSettings scene_settings;
 } VkrSceneEditRequest;
 
 typedef enum VkrSceneEditEntryKind {
   VKR_SCENE_EDIT_ENTRY_ENTITY,
   VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS,
   VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH,
+  /* Component added or removed, entity created or deleted, parent changed. */
+  VKR_SCENE_EDIT_ENTRY_STRUCTURE,
+  VKR_SCENE_EDIT_ENTRY_SCENE_SETTINGS,
 } VkrSceneEditEntryKind;
 
 typedef struct VkrSceneEditEntry {
   VkrEntityId entity;
+  /* Process-wide edit order; containers keep separate journals and undo
+     picks the one holding the most recent entry. */
+  uint64_t sequence;
   VkrSceneEditEntryKind kind;
   void *payload;
   uint64_t payload_size;
 } VkrSceneEditEntry;
+
+/* An entity the editor created, keyed in the overlay by an id that stays
+   stable across saves; its ECS id changes when undo or redo recreates it. */
+typedef struct VkrSceneEditCreated {
+  VkrEntityId entity;
+  uint32_t id;
+} VkrSceneEditCreated;
 
 /* Runtime owns the journal; UI borrows snapshots only for its current build.
    Journal storage is bounded and released when the scene is replaced. */
@@ -86,6 +122,15 @@ typedef struct VkrSceneEditState {
   uint64_t saved_revision;
   /* Gesture that produced the newest undo entry; zero after any other edit. */
   uint64_t gesture;
+  /* Structure the overlay persists: created entities (dead ones are skipped
+     on save) and deleted document entities by source identity. */
+  VkrSceneEditCreated *created;
+  uint32_t created_count;
+  uint32_t created_capacity;
+  uint32_t next_created_id;
+  SceneSourceIdentity *deleted;
+  uint32_t deleted_count;
+  uint32_t deleted_capacity;
   bool8_t sidecar_conflict;
   char status[192];
 } VkrSceneEditState;
@@ -93,6 +138,26 @@ typedef struct VkrSceneEditState {
 bool8_t vkr_scene_edit_read(const VkrScene *scene, VkrEntityId entity,
                             VkrSceneEditValues *out);
 bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *values);
+
+/** Add the entity's world component of `type` to edit values read by
+ * vkr_scene_edit_read; false when the entity lacks it. */
+bool8_t vkr_scene_edit_read_component(const VkrScene *scene, VkrEntityId entity,
+                                      const VkrTypeDesc *type,
+                                      VkrSceneEditValues *values);
+
+/** Descriptor-typed view of the components VkrSceneEditValues carries:
+ * transform, visibility, the three light types and the physics body settings.
+ * Index iteration returns NULL past the end. */
+const VkrTypeDesc *vkr_scene_edit_component_type(uint32_t index);
+/** Edit field of a component type, or zero when edit values do not carry it. */
+uint32_t vkr_scene_edit_component_field(const VkrTypeDesc *type);
+/** Copy one component out of edit values; false when the entity lacks it.
+ * `out` holds `type->size` bytes. */
+bool8_t vkr_scene_edit_component_get(const VkrSceneEditValues *values,
+                                     const VkrTypeDesc *type, void *out);
+/** Copy one component into edit values without changing `fields`. */
+bool8_t vkr_scene_edit_component_set(VkrSceneEditValues *values,
+                                     const VkrTypeDesc *type, const void *in);
 void vkr_scene_edit_reset(VkrSceneEditState *state, VkrAllocator *allocator,
                           uint64_t generation);
 bool8_t vkr_scene_edit_apply(VkrSceneEditState *state, VkrScene *scene,
@@ -113,10 +178,44 @@ bool8_t vkr_scene_edit_record_external(VkrSceneEditState *state,
                                        const VkrSceneEditValues *after);
 bool8_t vkr_scene_edit_undo(VkrSceneEditState *state, VkrScene *scene,
                             bool8_t redo);
+/** Sequence of the entry undo (or redo) would apply next, or zero. */
+uint64_t vkr_scene_edit_next_sequence(const VkrSceneEditState *state,
+                                      bool8_t redo);
 bool8_t vkr_scene_edit_save(VkrSceneEditState *state, const VkrScene *scene,
                             String8 path);
 bool8_t vkr_scene_edit_load(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
+
+/** Add a world component with `value`, or the type's defaults when NULL. */
+bool8_t vkr_scene_edit_add_component(VkrSceneEditState *state, VkrScene *scene,
+                                     VkrEntityId entity,
+                                     const VkrTypeDesc *type,
+                                     const void *value);
+bool8_t vkr_scene_edit_remove_component(VkrSceneEditState *state,
+                                        VkrScene *scene, VkrEntityId entity,
+                                        const VkrTypeDesc *type);
+/** Create an entity with a transform, visibility and the name, transform,
+ * visibility, light and world component fields of `values`, under `parent`
+ * or at the root. Returns the entity, or invalid with a status message. */
+VkrEntityId vkr_scene_edit_create(VkrSceneEditState *state, VkrScene *scene,
+                                  VkrEntityId parent,
+                                  const VkrSceneEditValues *values);
+/** Whether delete can snapshot and restore the entity exactly: it has no
+ * children and only identity, name, transform, visibility, light and world
+ * components. `reason` receives a static message when it cannot. */
+bool8_t vkr_scene_edit_can_delete(const VkrScene *scene, VkrEntityId entity,
+                                  const char **reason);
+bool8_t vkr_scene_edit_delete(VkrSceneEditState *state, VkrScene *scene,
+                              VkrEntityId entity);
+/** Move `entity` under `parent` (invalid: root) keeping its world transform.
+ * Rejects cycles and parents in another container. */
+bool8_t vkr_scene_edit_reparent(VkrSceneEditState *state, VkrScene *scene,
+                                VkrEntityId entity, VkrEntityId parent);
+
+/** Replace the scene's settings through the journal. */
+bool8_t vkr_scene_edit_apply_scene_settings(VkrSceneEditState *state,
+                                            VkrScene *scene,
+                                            const VkrSceneSettings *settings);
 
 bool8_t
 vkr_scene_edit_apply_collision_layers(VkrSceneEditState *state, VkrScene *scene,

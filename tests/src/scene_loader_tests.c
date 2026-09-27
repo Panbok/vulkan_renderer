@@ -1,4 +1,5 @@
 #include "scene_loader_tests.h"
+#include "renderer/systems/vkr_scene_types.h"
 
 #include "assets/vkr_mesh_cook_source.h"
 #include "containers/str.h"
@@ -285,6 +286,61 @@ test_scene_loader_atmosphere_applies_sky_light_controls(void) {
   printf("  test_scene_loader_atmosphere_applies_sky_light_controls PASSED\n");
 }
 
+/* Only a directional light is a sun (ADR-058). A legacy atmosphere block
+   that authors its sun gets an equivalent Sun light when the document has no
+   sun light; a document with one gains nothing. The oracle is the generated
+   light's direction and colour times intensity. */
+static uint32_t scene_loader_test_sun_lights(const VkrScene *scene,
+                                             SceneDirectionalLight *out) {
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < scene->world->dir.capacity; ++i) {
+    if (!scene->world->dir.records[i].chunk) {
+      continue;
+    }
+    const SceneDirectionalLight *light = vkr_entity_get_component(
+        scene->world, vkr_entity_id_from_index(scene->world, i),
+        scene->comp_directional_light);
+    if (light) {
+      *out = *light;
+      count++;
+    }
+  }
+  return count;
+}
+
+vkr_internal void test_scene_loader_legacy_atmosphere_sun(void) {
+  printf("  Running test_scene_loader_legacy_atmosphere_sun...\n");
+  SceneLoaderTestContext ctx;
+  SceneDirectionalLight light;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                               "true,\"sun_direction\":[0,2,0],"
+                               "\"solar_irradiance\":[1,2,4]},"
+                               "\"entities\":[]}")) == true_v);
+  assert(scene_loader_test_sun_lights(&ctx.scene, &light) == 1u);
+  assert(light.enabled && light.atmosphere_sun);
+  assert(fabsf(light.direction_local.y + 1.0f) < 1e-6f);
+  const Vec3 irradiance = vec3_scale(light.color, light.intensity);
+  assert(fabsf(irradiance.x - 1.0f) < 1e-5f &&
+         fabsf(irradiance.y - 2.0f) < 1e-5f &&
+         fabsf(irradiance.z - 4.0f) < 1e-5f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(
+      scene_loader_test_load(
+          &ctx, string8_lit("{\"version\":2,\"atmosphere\":{\"enabled\":"
+                            "true,\"sun_direction\":[0,1,0]},\"entities\":"
+                            "[{\"name\":\"Sun\",\"components\":{"
+                            "\"directional_light\":{\"intensity\":5}}}]}")) ==
+      true_v);
+  assert(scene_loader_test_sun_lights(&ctx.scene, &light) == 1u);
+  assert(light.intensity == 5.0f);
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_legacy_atmosphere_sun PASSED\n");
+}
+
 vkr_internal void test_scene_loader_atmosphere_sky_light_defaults(void) {
   printf("  Running test_scene_loader_atmosphere_sky_light_defaults...\n");
 
@@ -509,10 +565,10 @@ vkr_internal void test_scene_loader_fog_sky_lighting(void) {
              &ctx, string8_lit("{\"version\":2,\"fog\":{\"enabled\":true},"
                                "\"volumetric_fog\":{\"enabled\":true},"
                                "\"entities\":[]}")) == true_v);
-  assert(ctx.scene.fog.sky_lighting == 0.0f);
-  assert(ctx.scene.fog.anisotropy == 0.0f);
-  assert(ctx.scene.froxel_fog.sky_lighting == 0.0f);
-  assert(ctx.scene.froxel_fog.anisotropy == 0.0f);
+  assert(ctx.scene.world_state.fog.sky_lighting == 0.0f);
+  assert(ctx.scene.world_state.fog.anisotropy == 0.0f);
+  assert(ctx.scene.world_state.froxel_fog.sky_lighting == 0.0f);
+  assert(ctx.scene.world_state.froxel_fog.anisotropy == 0.0f);
   scene_loader_test_context_shutdown(&ctx);
 
   assert(scene_loader_test_context_init(&ctx) == true_v);
@@ -522,10 +578,10 @@ vkr_internal void test_scene_loader_fog_sky_lighting(void) {
                                "\"volumetric_fog\":{\"enabled\":true,"
                                "\"sky_lighting\":1,\"anisotropy\":0.8},"
                                "\"entities\":[]}")) == true_v);
-  assert(ctx.scene.fog.sky_lighting == 0.5f);
-  assert(fabsf(ctx.scene.fog.anisotropy + 0.3f) < 1e-6f);
-  assert(ctx.scene.froxel_fog.sky_lighting == 1.0f);
-  assert(fabsf(ctx.scene.froxel_fog.anisotropy - 0.8f) < 1e-6f);
+  assert(ctx.scene.world_state.fog.sky_lighting == 0.5f);
+  assert(fabsf(ctx.scene.world_state.fog.anisotropy + 0.3f) < 1e-6f);
+  assert(ctx.scene.world_state.froxel_fog.sky_lighting == 1.0f);
+  assert(fabsf(ctx.scene.world_state.froxel_fog.anisotropy - 0.8f) < 1e-6f);
   scene_loader_test_context_shutdown(&ctx);
 
   const String8 rejected[] = {
@@ -1057,10 +1113,284 @@ static void test_scene_derived_matrix_is_lossless_and_exclusive(void) {
   scene_loader_test_context_shutdown(&ctx);
 }
 
+/* World components (ADR-076). Oracles are the literal documents: a legacy
+   block and a component map must resolve to the same effective values, and
+   the world entity must carry the authored component. */
+vkr_internal void test_scene_loader_world_components(void) {
+  printf("  Running test_scene_loader_world_components...\n");
+
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit(
+                       "{\"version\":2,\"entities\":["
+                       "{\"name\":\"Mist\",\"components\":{"
+                       "\"fog\":{\"enabled\":true,\"density\":0.04,"
+                       "\"max_distance\":500,\"sky_distance\":400},"
+                       "\"post_process\":{\"exposure_mode\":\"manual\","
+                       "\"manual_exposure\":2}}},"
+                       "{\"name\":\"Box\",\"components\":{"
+                       "\"fog_density_box\":{\"minimum\":[0,0,0],"
+                       "\"maximum\":[1,2,3],\"density_multiplier\":4}}},"
+                       "{\"name\":\"Veil\",\"components\":{"
+                       "\"volumetric_fog\":{\"enabled\":true}}}]}")) == true_v);
+  /* Nested component names are not top-level world blocks: only the three
+     document entities exist. */
+  assert(ctx.scene.world->dir.living == 3u);
+  const VkrSceneWorldState *world = &ctx.scene.world_state;
+  assert(world->fog.enabled && fabsf(world->fog.density - 0.04f) < 1e-7f);
+  assert(world->fog.max_distance == 500.0f &&
+         world->fog.sky_distance == 400.0f);
+  assert(world->has_post_process &&
+         world->post_process.exposure_mode == VKR_EXPOSURE_MODE_MANUAL &&
+         world->post_process.manual_exposure == 2.0f);
+  /* Unauthored post-process members keep their defaults. */
+  assert(world->post_process.contrast == 1.0f);
+  assert(world->froxel_fog.enabled && world->froxel_fog.box_count == 1u);
+  assert(world->froxel_fog.boxes[0].maximum.z == 3.0f &&
+         world->froxel_fog.boxes[0].density_multiplier == 4.0f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  /* A legacy block becomes an editable entity with the same values. */
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"fog\":{\"enabled\":true,"
+                               "\"density\":0.04,\"max_distance\":500,"
+                               "\"sky_distance\":400},\"entities\":[]}")) ==
+         true_v);
+  assert(ctx.scene.world_state.fog_entity.u64 != 0u);
+  const VkrFogSettings *fog = vkr_scene_get_typed(
+      &ctx.scene, ctx.scene.world_state.fog_entity, &vkr_scene_fog_type);
+  assert(fog && fabsf(fog->density - 0.04f) < 1e-7f);
+  assert(
+      vkr_scene_get_name(&ctx.scene, ctx.scene.world_state.fog_entity).length ==
+      strlen("Height Fog"));
+
+  /* Editing the component changes the resolved state once resolved. */
+  VkrFogSettings edited = *fog;
+  edited.density = 0.08f;
+  assert(vkr_scene_set_typed(&ctx.scene, ctx.scene.world_state.fog_entity,
+                             &vkr_scene_fog_type, &edited));
+  assert(vkr_scene_resolve_world(&ctx.scene));
+  assert(fabsf(ctx.scene.world_state.fog.density - 0.08f) < 1e-7f);
+  assert(!vkr_scene_resolve_world(&ctx.scene));
+  /* Removing the only instance falls back to the disabled default. */
+  vkr_scene_destroy_entity(&ctx.scene, ctx.scene.world_state.fog_entity);
+  assert(vkr_scene_resolve_world(&ctx.scene));
+  assert(!ctx.scene.world_state.fog.enabled &&
+         ctx.scene.world_state.fog_entity.u64 == 0u);
+  scene_loader_test_context_shutdown(&ctx);
+
+  /* Two instances: the enabled one wins regardless of document order. */
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"entities\":["
+                               "{\"name\":\"Off\",\"components\":{\"fog\":{"
+                               "\"enabled\":false,\"density\":0.5}}},"
+                               "{\"name\":\"On\",\"components\":{\"fog\":{"
+                               "\"enabled\":true,\"density\":0.25}}}]}")) ==
+         true_v);
+  assert(ctx.scene.world_state.fog.enabled &&
+         ctx.scene.world_state.fog.density == 0.25f);
+  scene_loader_test_context_shutdown(&ctx);
+
+  /* The document the editor writes for a new project's root World. */
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx,
+             string8_lit(
+                 "{\"version\":2,\"entities\":[{\"name\":\"Post "
+                 "Process\",\"components\":{\"post_process\":{\"exposure_"
+                 "mode\":\"automatic\",\"manual_exposure\":0.30000001192092896,"
+                 "\"exposure_compensation_ev\":0,\"white_balance_temperature\":"
+                 "0,\"white_balance_tint\":0,\"contrast\":1,\"saturation\":1,"
+                 "\"sharpness\":0.25,\"bloom_threshold\":1,\"bloom_knee\":0.5,"
+                 "\"bloom_intensity\":0.05000000074505806,\"dof_focus_"
+                 "distance\":5,\"dof_f_stop\":2.7999999523162842,\"motion_blur_"
+                 "shutter_angle\":180,\"gtao_radius\":0.5,\"gtao_power\":2."
+                 "2000000476837158}}}]}")) == true_v);
+  {
+    const VkrEntityId post = vkr_entity_id_from_index(ctx.scene.world, 0u);
+    assert(vkr_scene_get_typed(&ctx.scene, post, &vkr_scene_post_process_type));
+    assert(ctx.scene.world_state.has_post_process);
+  }
+  scene_loader_test_context_shutdown(&ctx);
+
+  const String8 rejected[] = {
+      /* Unknown type. */
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"components\":{\"weather\":{}}}]}"),
+      /* Load-baked types keep their top-level blocks. */
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"components\":{\"reflection_probe\":{}}}]}"),
+      /* Unknown property and out-of-range value. */
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"components\":{\"fog\":{\"thickness\":1}}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"components\":{\"fog\":{\"anisotropy\":2}}}]}"),
+      /* Repeated type. */
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"components\":{\"fog\":{},\"fog\":{}}}]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+  printf("  test_scene_loader_world_components PASSED\n");
+}
+
+/* A module-registered descriptor (ADR-076 registration boundary) loads from
+   the components map and is stored generically like a world type. */
+typedef struct SceneTestMarker {
+  float32_t strength;
+} SceneTestMarker;
+
+static const VkrPropertyDesc s_test_marker_properties[] = {
+    {.name = "strength",
+     .label = "Strength",
+     .offset = (uint32_t)offsetof(SceneTestMarker, strength),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 10.0f},
+};
+
+static const VkrTypeDesc s_test_marker_type = {
+    .name = "test_marker",
+    .label = "Test marker",
+    .properties = s_test_marker_properties,
+    .property_count = ArrayCount(s_test_marker_properties),
+    .size = sizeof(SceneTestMarker),
+    .align = _Alignof(SceneTestMarker),
+};
+
+static const VkrTypeDesc s_test_fog_clash_type = {
+    .name = "fog",
+    .label = "Fog clash",
+    .size = sizeof(SceneTestMarker),
+    .align = _Alignof(SceneTestMarker),
+};
+
+vkr_internal void test_scene_loader_registered_type(void) {
+  printf("  Running test_scene_loader_registered_type...\n");
+  assert(vkr_scene_register_world_type(&s_test_marker_type));
+  assert(!vkr_scene_register_world_type(&s_test_marker_type));
+  assert(!vkr_scene_register_world_type(&s_test_fog_clash_type));
+  assert(vkr_scene_world_type_named(string8_lit("test_marker")) ==
+         &s_test_marker_type);
+  assert(vkr_scene_world_type_live(&s_test_marker_type));
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"entities\":[{\"name\":"
+                               "\"Marker\",\"components\":{\"test_marker\":{"
+                               "\"strength\":3}}}]}")) == true_v);
+  const VkrEntityId marker = vkr_entity_id_from_index(ctx.scene.world, 0u);
+  const SceneTestMarker *value =
+      vkr_scene_get_typed(&ctx.scene, marker, &s_test_marker_type);
+  assert(value && value->strength == 3.0f);
+  scene_loader_test_context_shutdown(&ctx);
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"entities\":[{\"name\":"
+                               "\"Marker\",\"components\":{\"test_marker\":{"
+                               "\"strength\":30}}}]}")) == false_v);
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_registered_type PASSED\n");
+}
+
+/* Document ids (ADR-076) reach the scene in document order; a document
+   gives every entity a unique id or none. */
+vkr_internal void test_scene_loader_document_ids(void) {
+  printf("  Running test_scene_loader_document_ids...\n");
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(
+      scene_loader_test_load(
+          &ctx, string8_lit("{\"version\":2,\"entities\":["
+                            "{\"id\":\"1b4e28ba-2fa1-11d2-883f-0016d3cca427\","
+                            "\"name\":\"A\"},"
+                            "{\"id\":\"6fa459ea-ee8a-3ca4-894e-db77e160355e\","
+                            "\"name\":\"B\"}]}")) == true_v);
+  assert(ctx.scene.document_id_count == 2u);
+  char text[37];
+  vkr_scene_document_id_format(&ctx.scene.document_ids[1], text);
+  assert(strcmp(text, "6fa459ea-ee8a-3ca4-894e-db77e160355e") == 0);
+  scene_loader_test_context_shutdown(&ctx);
+
+  const String8 rejected[] = {
+      /* Only some entities have ids. */
+      string8_lit("{\"version\":2,\"entities\":[{\"id\":"
+                  "\"1b4e28ba-2fa1-11d2-883f-0016d3cca427\",\"name\":\"A\"},"
+                  "{\"name\":\"B\"}]}"),
+      /* Two entities share an id, in different case. */
+      string8_lit("{\"version\":2,\"entities\":[{\"id\":"
+                  "\"1b4e28ba-2fa1-11d2-883f-0016d3cca427\",\"name\":\"A\"},"
+                  "{\"id\":\"1B4E28BA-2FA1-11D2-883F-0016D3CCA427\","
+                  "\"name\":\"B\"}]}"),
+      /* Not a UUID. */
+      string8_lit("{\"version\":2,\"entities\":[{\"id\":\"7\","
+                  "\"name\":\"A\"}]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+  printf("  test_scene_loader_document_ids PASSED\n");
+}
+
+/* Lights and visibility authored in the components map load through their
+   descriptors like the legacy blocks; authoring a light both ways fails. */
+vkr_internal void test_scene_loader_entity_components(void) {
+  printf("  Running test_scene_loader_entity_components...\n");
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx,
+             string8_lit("{\"version\":2,\"entities\":[{\"name\":\"Lamp\","
+                         "\"transform\":{\"pos\":[0,2,0]},\"components\":{"
+                         "\"point_light\":{\"kind\":\"point\",\"intensity\":7,"
+                         "\"range\":12},\"visibility\":{\"visible\":false,"
+                         "\"inherit_parent\":true}}}]}")) == true_v);
+  const VkrEntityId lamp = vkr_entity_id_from_index(ctx.scene.world, 0u);
+  const ScenePointLight *light = vkr_entity_get_component(
+      ctx.scene.world, lamp, ctx.scene.comp_point_light);
+  assert(light && light->intensity == 7.0f && light->range == 12.0f &&
+         light->kind == VKR_POINT_LIGHT_KIND_GLTF_POINT);
+  const SceneVisibility *visibility = vkr_entity_get_component(
+      ctx.scene.world, lamp, ctx.scene.comp_visibility);
+  assert(visibility && !visibility->visible && visibility->inherit_parent);
+  scene_loader_test_context_shutdown(&ctx);
+
+  const String8 rejected[] = {
+      /* A light as both a block and a component. */
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"point_light\":{\"intensity\":1},\"components\":{"
+                  "\"point_light\":{\"intensity\":2}}}]}"),
+      /* Descriptor bounds apply. */
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"components\":{\"point_light\":{\"intensity\":-1}}}]}"),
+      /* Transforms stay in the transform block. */
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"components\":{\"transform\":{}}}]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+  printf("  test_scene_loader_entity_components PASSED\n");
+}
+
 bool32_t run_scene_loader_tests(void) {
   printf("--- Starting Scene Loader Tests ---\n");
 
   test_scene_derived_matrix_is_lossless_and_exclusive();
+  test_scene_loader_entity_components();
+  test_scene_loader_registered_type();
+  test_scene_loader_document_ids();
+  test_scene_loader_legacy_atmosphere_sun();
   test_scene_source_nodes_preserve_hierarchy_and_exact_matrix();
   test_scene_source_fingerprint_detects_entity_reordering();
   test_scene_loader_missing_environment_succeeds();
@@ -1078,6 +1408,7 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_clouds();
   test_scene_loader_directional_light_temperature();
   test_scene_loader_fog_sky_lighting();
+  test_scene_loader_world_components();
   test_scene_loader_missing_reflection_probes_succeeds();
   test_scene_loader_reflection_probes_parse_valid_block();
   test_scene_loader_reflection_probe_invalid_entries_skipped();

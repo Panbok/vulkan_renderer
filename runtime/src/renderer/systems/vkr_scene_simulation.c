@@ -66,7 +66,8 @@ bool8_t vkr_scene_simulation_tick(VkrScene *scene, const char **error) {
     return false_v;
   }
   if (scene->physics_disabled ||
-      (!simulation->enabled && !vkr_scene_physics_body_count(scene))) {
+      (!simulation->enabled &&
+       !vkr_scene_physics_simulated_body_count(scene))) {
     return true_v;
   }
   if (simulation->completed_ticks == UINT64_MAX) {
@@ -120,7 +121,8 @@ void vkr_scene_simulation_update(VkrScene *scene, float64_t dt) {
   VkrSceneSimulation *simulation = &scene->simulation;
   if (simulation->active || simulation->faulted || scene->physics_paused ||
       scene->physics_disabled || !isfinite(dt) || dt < 0.0 ||
-      (!simulation->enabled && !vkr_scene_physics_body_count(scene))) {
+      (!simulation->enabled &&
+       !vkr_scene_physics_simulated_body_count(scene))) {
     return;
   }
   const float64_t elapsed = simulation->accumulator + dt;

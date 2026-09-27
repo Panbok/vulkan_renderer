@@ -1,5 +1,5 @@
-#include "filesystem/vkr_filesystem_cpp.h"
 #include "bake/vkr_bake_scene.h"
+#include "filesystem/vkr_filesystem_cpp.h"
 
 #include "bake/vkr_bake_mesh_decode.h"
 
@@ -90,7 +90,8 @@ bool append_unique_path(std::vector<std::string> *paths,
 }
 
 bool read_file(const char *path, std::vector<uint8_t> *out_bytes) {
-  std::ifstream file(vkr_filesystem_native_utf8_path(path), std::ios::binary | std::ios::ate);
+  std::ifstream file(vkr_filesystem_native_utf8_path(path),
+                     std::ios::binary | std::ios::ate);
   if (!file)
     return false;
   const std::streamsize size = file.tellg();
@@ -589,20 +590,28 @@ bool parse_environment(const std::vector<uint8_t> &bytes,
 
 bool parse_subsurface(const std::vector<uint8_t> &bytes, VkrBakeScene *scene) {
   VkrJsonReader reader = vkr_json_reader_create(bytes.data(), bytes.size());
-  if (!vkr_json_find_field(&reader, "subsurface") || parse_null(&reader)) return true;
+  if (!vkr_json_find_field(&reader, "subsurface") || parse_null(&reader))
+    return true;
   VkrJsonReader object = {};
-  if (!vkr_json_enter_object(&reader, &object)) return false;
+  if (!vkr_json_enter_object(&reader, &object))
+    return false;
   bool8_t enabled = false_v;
   VkrJsonReader field = object;
-  if (vkr_json_find_field(&field, "enabled") && !vkr_json_parse_bool(&field, &enabled)) return false;
-  if (!enabled) return true;
+  if (vkr_json_find_field(&field, "enabled") &&
+      !vkr_json_parse_bool(&field, &enabled))
+    return false;
+  if (!enabled)
+    return true;
   VkrJsonReader profiles = object;
-  if (!vkr_json_find_array(&profiles, "profiles")) return false;
+  if (!vkr_json_find_array(&profiles, "profiles"))
+    return false;
   uint32_t count = 0u;
   while (vkr_json_next_array_element(&profiles)) {
     if (count == VKR_SUBSURFACE_PROFILE_COUNT ||
-        !parse_vec3(&profiles, &scene->subsurface_profiles[count].diffusion_distance) ||
-        !vkr_subsurface_profile_valid(scene->subsurface_profiles[count])) return false;
+        !parse_vec3(&profiles,
+                    &scene->subsurface_profiles[count].diffusion_distance) ||
+        !vkr_subsurface_profile_valid(scene->subsurface_profiles[count]))
+      return false;
     ++count;
   }
   scene->subsurface_profile_count = count;
@@ -610,7 +619,8 @@ bool parse_subsurface(const std::vector<uint8_t> &bytes, VkrBakeScene *scene) {
 }
 
 bool parse_atmosphere(const std::vector<uint8_t> &bytes,
-                      VkrAtmosphereSettings *out) {
+                      VkrAtmosphereSettings *out, bool *authored_sun) {
+  *authored_sun = false;
   *out = vkr_atmosphere_settings_defaults();
   out->enabled = false_v;
   VkrJsonReader root = vkr_json_reader_create(bytes.data(), bytes.size());
@@ -671,6 +681,10 @@ bool parse_atmosphere(const std::vector<uint8_t> &bytes,
   if (!vkr_atmosphere_apply_sun_authoring(out, &sun)) {
     return false;
   }
+  VkrJsonReader direction = object;
+  *authored_sun = vkr_json_find_field(&direction, "sun_direction") ||
+                  has_solar_irradiance || sun.has_temperature ||
+                  sun.has_illuminance;
   VkrAtmosphereSettings validation = *out;
   validation.enabled = true_v;
   return vkr_atmosphere_settings_valid(&validation);
@@ -678,9 +692,11 @@ bool parse_atmosphere(const std::vector<uint8_t> &bytes,
 
 /* Mirrors vkr_scene_sync_sun for a scene with one atmosphere sun light: the
    first enabled one drives an enabled atmosphere's sun through its local
-   rotation. An unusable light keeps the authored sun. */
+   rotation, and an unusable light keeps the authored sun. Only a light is a
+   sun (ADR-058): without one the sky has none, unless a legacy atmosphere
+   block authors it, for which the runtime loader generates that light. */
 void apply_sun_light(const std::vector<EntityImport> &entities,
-                     VkrAtmosphereSettings *settings) {
+                     bool authored_sun, VkrAtmosphereSettings *settings) {
   if (!settings->enabled)
     return;
   for (const EntityImport &entity : entities) {
@@ -693,6 +709,9 @@ void apply_sun_light(const std::vector<EntityImport> &entities,
         vec3_scale(light.color, light.intensity),
         entity.directional_sun_angular_diameter_degrees);
     return;
+  }
+  if (!authored_sun) {
+    settings->solar_irradiance = vec3_zero();
   }
 }
 
@@ -897,7 +916,8 @@ bool append_mesh(VkrBakeScene *scene, const std::string &path,
     return false;
   const std::string sidecar = path + ".remap.json";
   std::error_code sidecar_error;
-  if (std::filesystem::is_regular_file(vkr_filesystem_native_utf8_path(sidecar), sidecar_error) &&
+  if (std::filesystem::is_regular_file(vkr_filesystem_native_utf8_path(sidecar),
+                                       sidecar_error) &&
       !append_unique_path(&scene->dependency_paths, sidecar)) {
     return false;
   }
@@ -1042,14 +1062,15 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       return false;
     }
     VkrAtmosphereSettings atmosphere_settings = {};
+    bool authored_sun = false;
     if (!append_unique_path(&scene->dependency_paths, scene_path) ||
         !parse_subsurface(json, scene) ||
-        !parse_atmosphere(json, &atmosphere_settings)) {
+        !parse_atmosphere(json, &atmosphere_settings, &authored_sun)) {
       set_error(VkrBakeSceneError::Parse, out_error);
       reset_scene(scene);
       return false;
     }
-    apply_sun_light(entities, &atmosphere_settings);
+    apply_sun_light(entities, authored_sun, &atmosphere_settings);
     if (!vkr_bake_atmosphere_build(&scene->atmosphere, &atmosphere_settings) ||
         !parse_environment(json, scene->atmosphere.enabled,
                            &scene->environment)) {

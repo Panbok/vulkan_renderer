@@ -57,19 +57,21 @@ void vkr_ui_dock_default_editor_layout(VkrUiDockTree *tree) {
       .resize_split = VKR_UI_DOCK_NODE_NONE,
       .drop_leaf = VKR_UI_DOCK_NODE_NONE,
   };
+  /* ADR-076: the viewport keeps the full width left of one right-hand stack,
+     the Outliner above Details, with Content and Console below. */
   vkr_ui_dock_split(tree, 0u, VKR_UI_DOCK_NODE_NONE, VKR_UI_DOCK_SPLIT_Y, 0.06f,
                     1u, 2u);
   vkr_ui_dock_leaf(tree, 1u, 0u, VKR_UI_DOCK_PANEL_TOOLBAR);
   vkr_ui_dock_split(tree, 2u, 0u, VKR_UI_DOCK_SPLIT_Y, 0.74468085f, 3u, 4u);
-  vkr_ui_dock_split(tree, 3u, 2u, VKR_UI_DOCK_SPLIT_X, 0.18f, 5u, 6u);
+  vkr_ui_dock_split(tree, 3u, 2u, VKR_UI_DOCK_SPLIT_X, 0.76f, 5u, 6u);
   vkr_ui_dock_leaf(tree, 4u, 2u, VKR_UI_DOCK_PANEL_CONTENT);
   tree->nodes[4u].as.leaf.tabs[1u] =
       (VkrUiDockTab){.id = (uint64_t)VKR_UI_DOCK_PANEL_CONSOLE + 1u,
                      .panel_kind = VKR_UI_DOCK_PANEL_CONSOLE};
   tree->nodes[4u].as.leaf.tab_count = 2u;
-  vkr_ui_dock_leaf(tree, 5u, 3u, VKR_UI_DOCK_PANEL_HIERARCHY);
-  vkr_ui_dock_split(tree, 6u, 3u, VKR_UI_DOCK_SPLIT_X, 0.7317073f, 7u, 8u);
-  vkr_ui_dock_leaf(tree, 7u, 6u, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT);
+  vkr_ui_dock_leaf(tree, 5u, 3u, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT);
+  vkr_ui_dock_split(tree, 6u, 3u, VKR_UI_DOCK_SPLIT_Y, 0.42f, 7u, 8u);
+  vkr_ui_dock_leaf(tree, 7u, 6u, VKR_UI_DOCK_PANEL_HIERARCHY);
   vkr_ui_dock_leaf(tree, 8u, 6u, VKR_UI_DOCK_PANEL_INSPECTOR);
 }
 
@@ -275,9 +277,9 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
   case VKR_UI_DOCK_PANEL_SCENE_VIEWPORT:
     return string8_lit("Scene");
   case VKR_UI_DOCK_PANEL_HIERARCHY:
-    return string8_lit("Hierarchy");
+    return string8_lit("Outliner");
   case VKR_UI_DOCK_PANEL_INSPECTOR:
-    return string8_lit("Inspector");
+    return string8_lit("Details");
   case VKR_UI_DOCK_PANEL_CONSOLE:
     return string8_lit("Console");
   case VKR_UI_DOCK_PANEL_TOOLBAR:

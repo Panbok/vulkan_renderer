@@ -1,5 +1,6 @@
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_types.h"
 
 #include "core/logger.h"
 #include "memory/arena.h"
@@ -539,11 +540,22 @@ bool8_t vkr_scene_animation_attach(VkrScene *scene, VkrEntityId wrapper,
     }
     animation->controller_enabled = true_v;
   }
+  animation->next = scene->animations;
+  scene->animations = animation;
+  /* The authored playback becomes the wrapper's typed component. */
+  SceneAnimationSettings settings = {.clip = config->clip,
+                                     .rate = (float32_t)config->rate,
+                                     .loop = config->loop,
+                                     .playing = config->playing};
+  if (!vkr_scene_set_typed(scene, wrapper, &vkr_scene_animation_type,
+                           &settings)) {
+    scene->animations = animation->next;
+    scene_animation_destroy(animation);
+    return scene_animation_fail(error, "Animation settings are invalid");
+  }
   animation->mesh_request = *mesh_request;
   animation->bank_request = *animation_request;
   animation->owns_requests = true_v;
-  animation->next = scene->animations;
-  scene->animations = animation;
   *mesh_request = (VkrResourceHandleInfo){.loader_id = VKR_INVALID_ID};
   *animation_request = (VkrResourceHandleInfo){.loader_id = VKR_INVALID_ID};
   return true_v;
@@ -562,10 +574,55 @@ void vkr_scene_animation_detach(VkrScene *scene, VkrEntityId wrapper) {
     if (animation->wrapper.u64 == wrapper.u64) {
       *cursor = animation->next;
       scene_animation_destroy(animation);
+      (void)vkr_scene_remove_typed(scene, wrapper, &vkr_scene_animation_type);
       return;
     }
     cursor = &animation->next;
   }
+}
+
+bool8_t
+vkr_scene_animation_settings_valid(const VkrScene *scene, VkrEntityId wrapper,
+                                   const SceneAnimationSettings *value) {
+  const VkrAnimationPlayer *player =
+      vkr_scene_animation_get_player(scene, wrapper);
+  return player && value &&
+         value->clip < vkr_animation_player_asset(player)->clip_count &&
+         isfinite(value->rate);
+}
+
+void vkr_scene_animation_settings_changed(VkrScene *scene,
+                                          VkrEntityId wrapper) {
+  VkrAnimationPlayer *player = vkr_scene_animation_get_player(scene, wrapper);
+  const VkrComponentTypeId id =
+      vkr_scene_type_id(scene, &vkr_scene_animation_type);
+  SceneAnimationSettings *settings =
+      player && id != VKR_COMPONENT_TYPE_INVALID
+          ? vkr_entity_get_component_mut(scene->world, wrapper, id)
+          : NULL;
+  if (!settings) {
+    return;
+  }
+
+  /* Selecting a clip restarts it, so only a changed clip or loop selects. */
+  if (settings->clip != vkr_animation_player_clip(player) ||
+      settings->loop != vkr_animation_player_loop(player)) {
+    (void)vkr_animation_player_select_clip(player, settings->clip,
+                                           settings->loop);
+  }
+  if ((float64_t)settings->rate != vkr_animation_player_rate(player)) {
+    (void)vkr_animation_player_set_rate(player, settings->rate);
+  }
+  if (settings->playing != vkr_animation_player_playing(player)) {
+    vkr_animation_player_set_playing(player, settings->playing);
+  }
+
+  const VkrAnimationClip *clip =
+      &vkr_animation_player_asset(player)->clips[settings->clip];
+  const uint64_t length =
+      Min(clip->name.length, (uint64_t)sizeof(settings->clip_name) - 1u);
+  MemCopy(settings->clip_name, clip->name.str, length);
+  settings->clip_name[length] = '\0';
 }
 
 VkrAnimationPlayer *vkr_scene_animation_get_player(const VkrScene *scene,
@@ -709,6 +766,8 @@ void vkr_scene_animation_update(VkrScene *scene, float64_t dt) {
   if (!scene || !isfinite(dt) || dt < 0.0) {
     return;
   }
+  /* The World's animation settings scale every player's clock. */
+  dt *= vkr_scene_animation_time_scale(scene);
   VkrSceneAnimation **cursor = &scene->animations;
   while (*cursor) {
     VkrSceneAnimation *animation = *cursor;
@@ -773,8 +832,12 @@ void vkr_scene_animation_entity_destroying(VkrScene *scene,
       matched = animation->nodes[i].u64 == entity.u64;
     }
     if (matched) {
+      const VkrEntityId wrapper = animation->wrapper;
       *cursor = animation->next;
       scene_animation_destroy(animation);
+      if (wrapper.u64 != entity.u64) {
+        (void)vkr_scene_remove_typed(scene, wrapper, &vkr_scene_animation_type);
+      }
     } else {
       cursor = &animation->next;
     }

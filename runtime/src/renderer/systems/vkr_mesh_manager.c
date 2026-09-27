@@ -1362,6 +1362,7 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   new_mesh.render_id = 0;
   new_mesh.temporal_generation = manager->mesh_temporal_generation_counter++;
   new_mesh.visible = true_v;
+  new_mesh.shadow_mobility = desc->shadow_mobility;
   new_mesh.loading_state = VKR_MESH_LOADING_STATE_LOADED;
 
   vkr_mesh_compute_local_bounds(&new_mesh);

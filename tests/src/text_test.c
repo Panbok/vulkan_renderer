@@ -1366,7 +1366,8 @@ vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
 }
 
 /* The scrollbar thumb drags content, and the gutter owns its press: a
- * full-width row beneath it must not activate. */
+ * full-width row beneath it must not activate. A caller-owned offset
+ * receives the drag instead of resetting it. */
 vkr_internal void test_ui_scroll_thumb_drag(void) {
   printf("  Running test_ui_scroll_thumb_drag...\n");
   setup_suite();
@@ -1389,7 +1390,8 @@ vkr_internal void test_ui_scroll_thumb_drag(void) {
   };
   /* 60px of viewport over 120px of rows: a 30px thumb with 30px of travel,
    * 4px wide and 2px from the right edge (x 194..198). */
-  for (uint32_t frame = 0u; frame < 4u; ++frame) {
+  float32_t owned_offset = 0.0f;
+  for (uint32_t frame = 0u; frame < 5u; ++frame) {
     input_update(&input);
     if (frame == 1u) {
       input_process_mouse_move(&input, 196, 4);
@@ -1407,6 +1409,7 @@ vkr_internal void test_ui_scroll_thumb_drag(void) {
     panel.rows = rows;
     panel.row_count = ArrayCount(rows);
     assert(vkr_ui_scroll_area_begin(&system, string8_lit("scroll"), &panel));
+    assert(vkr_ui_scroll_area_offset(&system, &owned_offset));
     VkrUiId last_row = VKR_UI_ID_NONE;
     for (uint32_t row = 0u; row < ArrayCount(rows); ++row) {
       VkrUiWidgetConfig button = vkr_ui_widget_config_default();
@@ -1431,6 +1434,8 @@ vkr_internal void test_ui_scroll_thumb_drag(void) {
      * its full travel scrolls the full 60px range. */
     assert_f32_eq(rect.y, frame < 2u ? 80.0f : 20.0f, 0.0f,
                   "thumb drag maps travel to the scroll range");
+    assert_f32_eq(owned_offset, frame < 2u ? 0.0f : 60.0f, 0.0f,
+                  "the caller's offset keeps the dragged position");
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   input_shutdown(&input);

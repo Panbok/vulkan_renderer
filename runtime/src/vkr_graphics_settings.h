@@ -2,10 +2,12 @@
 
 #include "containers/str.h"
 #include "core/vkr_json_writer.h"
+#include "core/vkr_type_desc.h"
 #include "vkr_renderer.h"
 
-/* Player preferences. Scene and material authoring values remain scene-owned.
- */
+/* Machine-local quality gates and presentation preferences. Art direction
+ * (exposure, grading, bloom and motion blur strength) is the scene's
+ * post_process component (ADR-076). */
 typedef struct VkrGraphicsSettings {
   bool8_t vsync, hdr, temporal_upscaling, dynamic_resolution, anti_aliasing;
   float32_t render_scale;
@@ -15,8 +17,6 @@ typedef struct VkrGraphicsSettings {
   bool8_t screen_space_reflections, screen_space_gi, reflection_probes;
   bool8_t subsurface_scattering, fog, volumetric_fog;
   bool8_t bloom, depth_of_field, motion_blur;
-  float32_t brightness, contrast, saturation, temperature, tint, sharpness;
-  float32_t bloom_intensity, motion_blur_amount;
 } VkrGraphicsSettings;
 
 typedef struct VkrGraphicsSettingsState {
@@ -34,6 +34,10 @@ typedef struct VkrGraphicsSettingsRequest {
   bool8_t apply;
   bool8_t reset_defaults;
 } VkrGraphicsSettingsRequest;
+
+/** Machine-local graphics preferences. The state hook's context is a
+ * `const VkrGraphicsSettingsState *` or NULL. */
+extern const VkrTypeDesc vkr_graphics_settings_type;
 
 VkrGraphicsSettings
 vkr_graphics_settings_defaults(VkrRendererBackendType backend);

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-09-27
 authority: adr
 ---
 
@@ -199,7 +199,9 @@ type-color strips, names and textual state. A right Details panel contains
 selection actions. Sources hide below 620 points; Details hide below 1040 points
 or 240 points of height and can be toggled independently. Search, type/scope,
 sort, card size and Details visibility persist in project preferences.
-Sources and asset cards have draggable vertical scrollbars. When the asset grid
+Sources and asset cards scroll in shared UI scroll areas, so their scrollbars
+drag and page like every other panel's (ADR-027); the asset grid snaps to card
+rows. When the asset grid
 has keyboard focus, arrow keys select adjacent cards; Home/End and Page Up/Down
 move through the list while keeping the selected card visible.
 `Commands > Show Content` adds the panel to retained layouts, and Ctrl+Space
@@ -246,6 +248,25 @@ removes nothing, the unreadable-manifest guard, and cleanup after a real
 project and a link, erases an unpublished project, and frees its cache entries.
 The CPU store suite checks unpublishing. Native clicks through the deletion
 dialog were not exercised. Existing job checks pass with cleanup active.
+
+Scene import runs a read-only `inspect_scene` preflight before creation. It
+reports the detected version, entity, mesh and material counts, dependencies
+that do not resolve (including glTF buffers and images), whether a saved-edits
+sidecar exists, and what the import will drop. Create stays disabled while a
+dependency is missing; **Locate folder** re-inspects against a chosen legacy
+root, and **Include saved scene edits** controls the sidecar. The jobs check
+covers counts, missing glTF and mesh files, a located root and an unchanged
+workspace. On 2026-09-27 `scene.import` inspected Bistro natively (version 2,
+three entities, one mesh, nothing missing) and a synthetic scene with a
+missing glTF (Create disabled, Locate folder shown). Job warnings, such as an
+OBJ channel the renderer does not use, now reach a toast and the Console
+instead of being dropped; a native import of such an OBJ showed the toast.
+When images are the only missing dependencies, **Use placeholders for missing
+images** lets the import replace each with a gray placeholder and record a
+warning; the jobs check covers failure without the choice and success with it.
+Content details show an asset's build recipe, dependency count and texture
+size, and a cooked-only import states that its source is unavailable for
+reimport.
 
 Entity addition passes the Release editor build and
 `tools/checks/check_editor_add_entities.py --mesh-cooker <built cooker>`.
@@ -349,3 +370,6 @@ Packaging introduces binary asset bundles, concurrent project writers require
 finer leases, or cache/revision retention needs an explicit user-facing cleanup
 policy. Remaining feature and acceptance scope stays in the
 [Projects proposal](../proposals/editor-projects.md).
+[ADR-076](076-project-object-model.md) supersedes the single active world
+scene and the Hierarchy, Inspector and Settings ownership described here once
+its container and browser phases ship.

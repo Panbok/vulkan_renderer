@@ -20,7 +20,7 @@
 #include "vkr_frame_input.h"
 #include "vkr_ibl_math.h"
 
-#define VKR_WORLD_RESOURCES_MAX_TEXTS 16
+#define VKR_WORLD_RESOURCES_MAX_TEXTS 64
 
 vkr_internal bool8_t vkr_world_resources_ensure_text_slot(
     VkrWorldResources *resources, uint32_t text_id,
@@ -700,8 +700,18 @@ bool8_t vkr_world_resources_text_create(VkrRenderAssets *assets,
   }
 
   vkr_text_3d_set_transform(&slot->text, payload->transform);
+  slot->owner = payload->owner;
   slot->active = true_v;
   return true_v;
+}
+
+uint32_t vkr_world_resources_text_reserve(const VkrWorldResources *resources) {
+  for (uint64_t i = 0; resources && i < resources->text_slots.length; ++i) {
+    if (!resources->text_slots.data[i].active) {
+      return (uint32_t)i;
+    }
+  }
+  return UINT32_MAX;
 }
 
 bool8_t vkr_world_resources_text_update(VkrWorldResources *resources,

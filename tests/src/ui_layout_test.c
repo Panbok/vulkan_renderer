@@ -497,17 +497,17 @@ static void test_ui_dock_layout_drag_and_json_round_trip(void) {
   VkrUiRect scene = {0};
   assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT,
                                 &scene_leaf, &scene));
-  assert(scene_leaf == 7u && vkr_ui_rect_has_area(scene));
+  assert(scene_leaf == 5u && vkr_ui_rect_has_area(scene));
   assert(scene.y > tree.nodes[scene_leaf].rect_px.y);
 
   assert(vkr_ui_dock_set_split_ratio(&tree, 3u, 0.25f));
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
                             8.0f, 28.0f));
-  const float32_t moved_scene_x = tree.nodes[scene_leaf].rect_px.x;
+  const float32_t moved_scene_width = tree.nodes[scene_leaf].rect_px.width;
 
   assert(vkr_ui_dock_move_tab(&tree, 1u, 0u, 8u, 1u, VKR_UI_DOCK_DROP_CENTER));
   assert(tree.root == 2u);
-  assert(vkr_ui_dock_move_tab(&tree, 8u, 1u, 5u, 0u, VKR_UI_DOCK_DROP_LEFT));
+  assert(vkr_ui_dock_move_tab(&tree, 8u, 1u, 7u, 0u, VKR_UI_DOCK_DROP_LEFT));
   assert(vkr_ui_dock_validate(&tree));
 
   UiJsonSink sink = {0};
@@ -523,7 +523,7 @@ static void test_ui_dock_layout_drag_and_json_round_trip(void) {
                             8.0f, 28.0f));
   assert(vkr_ui_dock_find_panel(&restored, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT,
                                 &scene_leaf, &scene));
-  assert(ui_near(restored.nodes[scene_leaf].rect_px.x, moved_scene_x));
+  assert(ui_near(restored.nodes[scene_leaf].rect_px.width, moved_scene_width));
 
   restored.interaction.tab_leaf = scene_leaf;
   restored.interaction.resize_split = 3u;
@@ -574,7 +574,7 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   assert(ui_near(vkr_ui_dock_tab_rect(&tree, 4u, 0u).width, 116.0f));
   /* Keep the following reorder oracle on its explicit three-panel fixture. */
   assert(vkr_ui_dock_close_tab(&tree, 4u, 0u));
-  assert(vkr_ui_dock_move_tab(&tree, 5u, 0u, 4u, 0u, VKR_UI_DOCK_DROP_CENTER));
+  assert(vkr_ui_dock_move_tab(&tree, 7u, 0u, 4u, 0u, VKR_UI_DOCK_DROP_CENTER));
   assert(vkr_ui_dock_move_tab(&tree, 8u, 0u, 4u, 1u, VKR_UI_DOCK_DROP_CENTER));
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
                             3.0f, 28.0f));
@@ -617,7 +617,7 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
 
   /* Removing an earlier inactive tab must keep Console selected. */
   const uint64_t console_id = tree.nodes[4u].as.leaf.tabs[1u].id;
-  assert(vkr_ui_dock_move_tab(&tree, 4u, 0u, 7u, 1u, VKR_UI_DOCK_DROP_CENTER));
+  assert(vkr_ui_dock_move_tab(&tree, 4u, 0u, 5u, 1u, VKR_UI_DOCK_DROP_CENTER));
   assert(tree.nodes[4u].as.leaf.tabs[tree.nodes[4u].as.leaf.active_tab].id ==
          console_id);
 
@@ -648,7 +648,7 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   (void)vkr_ui_dock_update_input(&tree, &input, false_v);
   assert(ui_near(tree.nodes[5u].rect_px.width, split_x + 40.0f));
   /* An extreme top/bottom drag preserves 64pt of content below the 28pt tab
-     bar. Nested horizontal splits must reserve 96pt for each descendant. */
+     bar. Horizontal splits must reserve 96pt for each descendant. */
   vkr_ui_dock_default_editor_layout(&tree);
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 800.0f, 600.0f},
                             3.0f, 28.0f));
@@ -667,7 +667,11 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   VkrUiRect scene_content;
   assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
                                 &scene_content));
-  assert(ui_near(scene_content.height, 64.0f));
+  /* The right stack keeps 64pt of content in both the Outliner and Details,
+     so the Scene beside it stays at least as tall. */
+  assert(ui_near(tree.nodes[7u].rect_px.height, 28.0f + 64.0f));
+  assert(ui_near(tree.nodes[8u].rect_px.height, 28.0f + 64.0f));
+  assert(scene_content.height >= 64.0f);
   assert(ui_near(tree.nodes[1u].rect_px.height, VKR_UI_DOCK_TOOLBAR_PT));
   assert(vkr_ui_dock_set_split_ratio(&tree, 3u, 1.0f));
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 800.0f, 600.0f},

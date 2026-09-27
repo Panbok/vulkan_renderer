@@ -3,6 +3,7 @@
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -60,7 +61,7 @@ static void physics_test_hierarchy_contacts(VkrScene *scene) {
   assert(error != NULL);
   config.colliders[0].rotation = vkr_quat_identity();
   VkrEntityId floor = physics_test_entity(scene, vec3_new(100, 0, 0));
-  config.motion = VKR_PHYSICS_STATIC;
+  config.body.motion = VKR_PHYSICS_STATIC;
   config.colliders[0].half_extent = vec3_new(8, 0.5f, 8);
   assert(vkr_scene_physics_apply(scene, floor, &config, &error));
   PhysicsContactTest contacts = {.scene = scene, .body = child};
@@ -95,7 +96,7 @@ static void physics_test_hierarchy_contacts(VkrScene *scene) {
   assert(vkr_scene_physics_get_pose(scene, child, &pose));
   assert(fabsf(pose.position[0] - 110) < 0.01f);
   config = vkr_scene_physics_default();
-  config.motion = VKR_PHYSICS_KINEMATIC;
+  config.body.motion = VKR_PHYSICS_KINEMATIC;
   assert(vkr_scene_physics_apply(scene, child, &config, &error));
   vkr_scene_physics_set_paused(scene, false_v);
   vkr_scene_set_position(scene, parent, vec3_new(112, 0, 0));
@@ -108,15 +109,177 @@ static void physics_test_hierarchy_contacts(VkrScene *scene) {
   vkr_scene_destroy_entity(scene, floor);
 }
 
+/* Physics set (ADR-076). A dynamic box in one scene rests on a static floor
+ * in another only when both bodies share the set's native world; alone it
+ * would fall without bound. The member follows the driver's pause state and
+ * cannot step or reset, the driver's reset rebuilds both scenes, and a
+ * member's shutdown leaves the driver simulating its own floor. */
+static void physics_test_shared_set(VkrAllocator *allocator) {
+  VkrScene floor_scene;
+  VkrScene box_scene;
+  assert(vkr_scene_init(&floor_scene, allocator, 0, 16, NULL));
+  assert(vkr_scene_init(&box_scene, allocator, 1, 16, NULL));
+  VkrScenePhysicsSet *set = vkr_scene_physics_set_create(allocator);
+  assert(set);
+  const char *error = NULL;
+  assert(vkr_scene_physics_attach(&floor_scene, set, true_v, &error));
+  assert(vkr_scene_physics_attach(&box_scene, set, false_v, &error));
+  assert(!vkr_scene_physics_attach(&box_scene, set, false_v, &error));
+
+  VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  config.body.motion = VKR_PHYSICS_STATIC;
+  config.colliders[0].half_extent = vec3_new(8, 0.5f, 8);
+  const VkrEntityId floor = physics_test_entity(&floor_scene, vec3_zero());
+  assert(vkr_scene_physics_apply(&floor_scene, floor, &config, &error));
+  config = vkr_scene_physics_default();
+  const VkrEntityId box = physics_test_entity(&box_scene, vec3_new(0, 3, 0));
+  assert(vkr_scene_physics_apply(&box_scene, box, &config, &error));
+  assert(vkr_scene_physics_simulated_body_count(&floor_scene) == 2u);
+  assert(vkr_scene_physics_simulated_body_count(&box_scene) == 0u);
+
+  vkr_scene_physics_set_paused(&floor_scene, false_v);
+  assert(!vkr_scene_physics_is_paused(&box_scene));
+  assert(!vkr_scene_physics_apply(&box_scene, box, &config, &error));
+  assert(!vkr_scene_physics_step(&box_scene, &error));
+  for (uint32_t tick = 0; tick < 180; ++tick) {
+    vkr_scene_update(&floor_scene, VKR_SCENE_PHYSICS_FIXED_DT);
+    vkr_scene_update(&box_scene, VKR_SCENE_PHYSICS_FIXED_DT);
+  }
+  VkrPhysicsPose pose;
+  assert(vkr_scene_physics_get_pose(&box_scene, box, &pose));
+  assert(fabsf(pose.position[1] - 1.0f) < 0.05f);
+  VkrPhysicsQueryFilter filter = {.mask = UINT16_MAX};
+  VkrPhysicsRayHit hit;
+  assert(vkr_scene_physics_raycast_query(&floor_scene, vec3_new(0, 5, 0),
+                                         vec3_new(0, -10, 0), &filter, &hit));
+  assert(hit.entity_id == box.u64);
+
+  vkr_scene_physics_set_paused(&floor_scene, true_v);
+  assert(!vkr_scene_physics_reset(&box_scene, &error));
+  assert(vkr_scene_physics_reset(&floor_scene, &error));
+  assert(vkr_scene_physics_get_pose(&box_scene, box, &pose));
+  assert(fabsf(pose.position[1] - 3.0f) < 1e-4f);
+
+  vkr_scene_shutdown(&box_scene, NULL);
+  assert(vkr_scene_physics_simulated_body_count(&floor_scene) == 1u);
+  assert(!vkr_scene_physics_raycast_query(&floor_scene, vec3_new(20, 5, 0),
+                                          vec3_new(0, -10, 0), &filter, &hit));
+  vkr_scene_physics_set_paused(&floor_scene, false_v);
+  for (uint32_t tick = 0; tick < 10; ++tick) {
+    vkr_scene_update(&floor_scene, VKR_SCENE_PHYSICS_FIXED_DT);
+  }
+  assert(vkr_scene_physics_raycast_query(&floor_scene, vec3_new(0, 5, 0),
+                                         vec3_new(0, -10, 0), &filter, &hit));
+  assert(hit.entity_id == floor.u64);
+  vkr_scene_physics_set_paused(&floor_scene, true_v);
+  vkr_scene_shutdown(&floor_scene, NULL);
+  vkr_scene_physics_set_destroy(set);
+}
+
 /* Gravity/impulse have analytic oracles independent of contact generation.
  * Real ECS create/remove and evaluated hierarchy detect stale references and
  * accidental publication of simulated poses into authored save state. */
+/* The body and collider descriptors carry the rules snapshot validation
+   applies, and hide dimensions a collider shape does not use. */
+static void physics_test_descriptors(void) {
+  VkrScenePhysicsSnapshot snapshot = vkr_scene_physics_default();
+  const char *error = NULL;
+  assert(vkr_type_validate(&vkr_scene_physics_body_type, &snapshot.body, NULL,
+                           0u));
+  assert(vkr_scene_physics_snapshot_validate(&snapshot, &error));
+  snapshot.body.mass = 0.0f;
+  assert(!vkr_type_validate(&vkr_scene_physics_body_type, &snapshot.body, NULL,
+                            0u));
+  assert(!vkr_scene_physics_snapshot_validate(&snapshot, &error));
+  snapshot = vkr_scene_physics_default();
+  snapshot.body.friction = 1.5f;
+  assert(!vkr_scene_physics_snapshot_validate(&snapshot, &error));
+
+  snapshot = vkr_scene_physics_default();
+  VkrSceneColliderConfig *collider = &snapshot.colliders[0];
+  collider->scale = vec3_new(1.0f, 0.0f, 1.0f);
+  assert(
+      !vkr_type_validate(&vkr_scene_physics_collider_type, collider, NULL, 0u));
+  assert(!vkr_scene_physics_snapshot_validate(&snapshot, &error));
+  snapshot = vkr_scene_physics_default();
+  collider->radius = 0.0f;
+  assert(!vkr_scene_physics_snapshot_validate(&snapshot, &error));
+  snapshot = vkr_scene_physics_default();
+  collider->shape = VKR_PHYSICS_CONVEX_HULL;
+  assert(!vkr_scene_physics_snapshot_validate(&snapshot, &error));
+  snprintf(collider->asset_path, sizeof(collider->asset_path),
+           "collision/rock.vkc");
+  assert(vkr_scene_physics_snapshot_validate(&snapshot, &error));
+
+  const VkrTypeDesc *type = &vkr_scene_physics_collider_type;
+  const uint32_t radius = vkr_type_find_property(type, string8_lit("radius"));
+  const uint32_t extent =
+      vkr_type_find_property(type, string8_lit("half_extent"));
+  collider->shape = VKR_PHYSICS_BOX;
+  assert(vkr_type_property_state(type, collider, radius, NULL).flags &
+         VKR_PROPERTY_STATE_HIDDEN);
+  assert(!(vkr_type_property_state(type, collider, extent, NULL).flags &
+           VKR_PROPERTY_STATE_HIDDEN));
+  collider->shape = VKR_PHYSICS_SPHERE;
+  assert(!(vkr_type_property_state(type, collider, radius, NULL).flags &
+           VKR_PROPERTY_STATE_HIDDEN));
+  assert(vkr_type_property_state(type, collider, extent, NULL).flags &
+         VKR_PROPERTY_STATE_HIDDEN);
+}
+
+/* The World's physics settings set the gravity a scene's bodies fall with.
+   They are World-only: a scene cannot hold them and resolves the World's
+   even when it does not inherit the World. */
+static void physics_test_world_gravity(VkrAllocator *allocator) {
+  VkrScene root;
+  assert(vkr_scene_init(&root, allocator, VKR_SCENE_WORLD_ROOT_ID, 16, NULL));
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 29, 16, NULL));
+  VkrEntityId body = physics_test_entity(&scene, vec3_new(0, 10, 0));
+  ScenePhysicsSettings settings = {.gravity = vec3_new(0.0f, -1.0f, 0.0f)};
+  assert(!vkr_scene_set_typed(&scene, vkr_scene_create_entity(&scene, NULL),
+                              &vkr_scene_physics_settings_type, &settings));
+  VkrEntityId settings_entity = vkr_scene_create_entity(&root, NULL);
+  assert(vkr_scene_set_typed(&root, settings_entity,
+                             &vkr_scene_physics_settings_type, &settings));
+  scene.settings.inherit_world = false_v;
+  vkr_scene_set_world_fallback(&scene, &root);
+  (void)vkr_scene_resolve_world(&scene);
+  assert(vkr_scene_gravity(&scene).y == -1.0f);
+
+  /* An edit to the World re-resolves the scene. */
+  const SceneAnimationWorldSettings animation = {.time_scale = 0.5f};
+  assert(vkr_scene_animation_time_scale(&scene) == 1.0f);
+  assert(vkr_scene_set_typed(&root, settings_entity,
+                             &vkr_scene_animation_settings_type, &animation));
+  assert(vkr_scene_resolve_world(&scene));
+  assert(vkr_scene_animation_time_scale(&scene) == 0.5f);
+  vkr_scene_update(&scene, 0.0);
+  const char *error = NULL;
+  VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  config.body.linear_damping = 0;
+  assert(vkr_scene_physics_apply(&scene, body, &config, &error));
+  for (uint32_t i = 0; i < 60; ++i) {
+    assert(vkr_scene_physics_step(&scene, &error));
+  }
+  VkrPhysicsPose pose;
+  assert(vkr_scene_physics_get_pose(&scene, body, &pose));
+  assert(fabsf(pose.linear_velocity[1] + 1.0f) < 0.01f);
+  settings.gravity = vec3_new(0.0f, 2000.0f, 0.0f);
+  assert(!vkr_type_validate(&vkr_scene_physics_settings_type, &settings, NULL,
+                            0u));
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_scene_shutdown(&root, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
+  physics_test_descriptors();
   VkrDMemory memory;
   assert(vkr_dmemory_create(MB(4), MB(32), &memory));
   VkrAllocator allocator = {.ctx = &memory};
   vkr_dmemory_allocator_create(&allocator);
+  physics_test_world_gravity(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));
   VkrEntityId owner = physics_test_entity(&scene, vec3_new(0, 10, 0));
@@ -128,9 +291,9 @@ bool32_t run_scene_physics_tests(void) {
 
   const char *error = NULL;
   VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
-  config.mass = 2;
-  config.linear_damping = 0;
-  config.angular_damping = 0;
+  config.body.mass = 2;
+  config.body.linear_damping = 0;
+  config.body.angular_damping = 0;
   assert(vkr_scene_physics_apply(&scene, owner, &config, &error));
   VkrEntityId collider = vkr_scene_physics_collider_entity(&scene, owner, 1);
   assert(vkr_scene_entity_alive(&scene, collider));
@@ -163,7 +326,7 @@ bool32_t run_scene_physics_tests(void) {
                pose.position[1] - 2) < 0.001f);
   VkrScenePhysicsSnapshot read;
   assert(vkr_scene_physics_read(&scene, owner, &read));
-  assert(read.mass == 2 && read.colliders[0].position.y == 0);
+  assert(read.body.mass == 2 && read.colliders[0].position.y == 0);
 
   assert(vkr_scene_physics_reset(&scene, &error));
   assert(vkr_scene_physics_get_pose(&scene, owner, &pose));
@@ -191,7 +354,7 @@ bool32_t run_scene_physics_tests(void) {
   assert(vkr_scene_physics_reset(&scene, &error));
   assert(!vkr_scene_physics_is_disabled(&scene));
   assert(!vkr_scene_physics_body_is_disabled(&scene, owner));
-  assert(vkr_scene_physics_read(&scene, owner, &read) && read.enabled);
+  assert(vkr_scene_physics_read(&scene, owner, &read) && read.body.enabled);
   assert(vkr_scene_physics_step(&scene, &error));
   assert(vkr_scene_physics_get_pose(&scene, owner, &pose));
   assert(pose.linear_velocity[1] < 0);
@@ -279,7 +442,7 @@ bool32_t run_scene_physics_tests(void) {
   assert(vkr_scene_physics_body_count(&scene) == 0);
 
   config = vkr_scene_physics_default();
-  config.motion = VKR_PHYSICS_KINEMATIC;
+  config.body.motion = VKR_PHYSICS_KINEMATIC;
   assert(vkr_scene_physics_apply(&scene, owner, &config, &error));
   assert(vkr_scene_physics_set_kinematic_target(
       &scene, owner, vec3_new(2, 10, 0), vkr_quat_identity(), &error));
@@ -296,6 +459,7 @@ bool32_t run_scene_physics_tests(void) {
   assert(!vkr_scene_physics_read(&scene, owner, &read));
   physics_test_hierarchy_contacts(&scene);
   vkr_scene_shutdown(&scene, NULL);
+  physics_test_shared_set(&allocator);
   vkr_dmemory_allocator_destroy(&allocator);
   printf("--- Scene Physics Tests Passed ---\n");
   return true_v;

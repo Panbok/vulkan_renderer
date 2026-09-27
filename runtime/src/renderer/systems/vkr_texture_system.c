@@ -1823,6 +1823,18 @@ VkrRendererError vkr_texture_system_update_sampler(
     return VKR_RENDERER_ERROR_INVALID_HANDLE;
   }
 
+  /* The sampler it already has, such as a restored filter mode at startup,
+     needs no publication. */
+  const VkrTextureDescription *current = &texture->description;
+  if (current->min_filter == min_filter && current->mag_filter == mag_filter &&
+      current->mip_filter == mip_filter &&
+      current->anisotropy_enable == anisotropy_enable &&
+      current->u_repeat_mode == u_repeat_mode &&
+      current->v_repeat_mode == v_repeat_mode &&
+      current->w_repeat_mode == w_repeat_mode) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
   VkrTextureDescription updated_desc = texture->description;
   updated_desc.min_filter = min_filter;
   updated_desc.mag_filter = mag_filter;

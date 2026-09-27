@@ -34,6 +34,14 @@ bool8_t vkr_scene_animation_attach(VkrScene *scene, VkrEntityId wrapper,
                                    VkrAllocator *scratch, const char **error);
 void vkr_scene_animation_detach(VkrScene *scene, VkrEntityId wrapper);
 
+/* The wrapper's typed `animation` component (ADR-076). Valid settings name a
+ * clip of the bound bank; a change reconciles the player, restarting only when
+ * the clip or loop changes, and refreshes the mirrored clip name. */
+bool8_t vkr_scene_animation_settings_valid(const VkrScene *scene,
+                                           VkrEntityId wrapper,
+                                           const SceneAnimationSettings *value);
+void vkr_scene_animation_settings_changed(VkrScene *scene, VkrEntityId wrapper);
+
 /* Borrowed until detach, wrapper/target deletion or invalidating hierarchy/rest
  * edits, including edits detected by the next scene update. Do not destroy a
  * scene-owned player directly. */

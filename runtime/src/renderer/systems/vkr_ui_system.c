@@ -47,6 +47,9 @@ struct VkrUiRetainedState {
   /* Scroll areas: the thumb is held, grabbed this far below its top edge. */
   bool8_t scroll_dragging;
   float32_t scroll_grab_offset;
+  /* Scroll areas: the scrollbar or a scroll key moved the offset this frame,
+   * so it outranks a caller-owned offset; see vkr_ui_scroll_area_offset. */
+  bool8_t scroll_moved;
 };
 
 struct VkrUiFrameNode {
@@ -1144,17 +1147,19 @@ vkr_internal bool8_t vkr_ui_scroll_thumb(const VkrUiRetainedState *retained,
 }
 
 /* A press in the gutter pages toward it; a press on the thumb drags it. The
- * gutter consumes that press so rows beneath it do not also activate. */
-vkr_internal void vkr_ui_scroll_drag(VkrUiSystem *system,
-                                     VkrUiFrameNode *node) {
+ * gutter consumes that press so rows beneath it do not also activate.
+ * Returns whether the scrollbar moved the offset. */
+vkr_internal bool8_t vkr_ui_scroll_drag(VkrUiSystem *system,
+                                        VkrUiFrameNode *node) {
   VkrUiRetainedState *retained = node->retained;
   VkrUiRect gutter;
   VkrUiRect thumb;
   if (!vkr_ui_scroll_thumb(retained, &node->style, system->content_scale,
                            &gutter, &thumb)) {
     retained->scroll_dragging = false_v;
-    return;
+    return false_v;
   }
+  bool8_t paged = false_v;
   const float32_t viewport = gutter.height;
   const float32_t range = retained->content_extent - viewport;
   if (system->mouse_pressed && !system->mouse_captured &&
@@ -1170,22 +1175,24 @@ vkr_internal void vkr_ui_scroll_drag(VkrUiSystem *system,
           (float32_t)system->mouse_y < thumb.y ? -1.0f : 1.0f;
       retained->scroll_offset.y = vkr_clamp_f32(
           retained->scroll_offset.y + direction * viewport, 0.0f, range);
+      paged = true_v;
     }
     system->mouse_pressed = false_v;
     system->capture.mouse = true_v;
   }
   if (!retained->scroll_dragging)
-    return;
+    return paged;
   if (system->mouse_released ||
       !input_is_button_down(system->input, BUTTON_LEFT)) {
     retained->scroll_dragging = false_v;
-    return;
+    return paged;
   }
   const float32_t travel = Max(1.0f, viewport - thumb.height);
   const float32_t top =
       (float32_t)system->mouse_y - retained->scroll_grab_offset - gutter.y;
   retained->scroll_offset.y = vkr_clamp_f32(top / travel, 0.0f, 1.0f) * range;
   system->capture.mouse = true_v;
+  return true_v;
 }
 
 bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
@@ -1216,7 +1223,7 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
   node->row_count = config->row_count ? config->row_count : 1u;
   node->clip_children = true_v;
   (void)vkr_ui_interact(system, node, true_v);
-  vkr_ui_scroll_drag(system, node);
+  node->retained->scroll_moved = vkr_ui_scroll_drag(system, node);
   if (node->hovered && system->mouse_wheel != 0)
     node->retained->scroll_offset.y =
         Max(0.0f,
@@ -1226,33 +1233,47 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
     const float32_t page =
         vkr_ui_style_content_rect(node->retained->last_rect, &node->style)
             .height;
-    if (vkr_ui_key_pressed(system, KEY_HOME))
+    if (vkr_ui_key_pressed(system, KEY_HOME)) {
       node->retained->scroll_offset.y = 0.0f;
-    else if (vkr_ui_key_pressed(system, KEY_END))
+      node->retained->scroll_moved = true_v;
+    } else if (vkr_ui_key_pressed(system, KEY_END)) {
       // Layout clamps this request to the current declared row extent.
       node->retained->scroll_offset.y = FLT_MAX;
-    else {
+      node->retained->scroll_moved = true_v;
+    } else {
       const int32_t direction = (int32_t)vkr_ui_key_pressed(system, KEY_NEXT) -
                                 (int32_t)vkr_ui_key_pressed(system, KEY_PRIOR);
       node->retained->scroll_offset.y =
           Max(0.0f, node->retained->scroll_offset.y + direction * page);
+      node->retained->scroll_moved |= direction != 0;
     }
   }
   system->container_stack[system->container_count++] = index;
   return vkr_ui_id_stack_push_label(&system->id_stack, id_label);
 }
 
-bool8_t vkr_ui_scroll_area_offset_set(VkrUiSystem *system,
-                                      float32_t offset_pt) {
+bool8_t vkr_ui_scroll_area_offset(VkrUiSystem *system, float32_t *offset_pt) {
   if (!system || !system->frame_open || !system->container_count ||
-      !isfinite(offset_pt) || offset_pt < 0)
+      !offset_pt || !isfinite(*offset_pt) || *offset_pt < 0)
     return false_v;
   VkrUiFrameNode *node =
       &system
            ->frame_nodes[system->container_stack[system->container_count - 1u]];
   if (node->kind != VKR_UI_NODE_SCROLL)
     return false_v;
-  node->retained->scroll_offset.y = offset_pt * system->content_scale;
+  VkrUiRetainedState *retained = node->retained;
+  if (!retained->scroll_moved) {
+    retained->scroll_offset.y = *offset_pt * system->content_scale;
+    return true_v;
+  }
+  /* The caller virtualizes with this offset before layout clamps it. */
+  const float32_t viewport =
+      vkr_ui_style_content_rect(retained->last_rect, &node->style).height;
+  retained->scroll_offset.y =
+      Min(retained->scroll_offset.y,
+          Max(0.0f, retained->content_extent - viewport));
+  *offset_pt = retained->scroll_offset.y / system->content_scale;
+  retained->scroll_moved = false_v;
   return true_v;
 }
 

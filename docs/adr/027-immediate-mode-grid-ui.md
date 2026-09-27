@@ -285,7 +285,13 @@ Clipped single-line labels that overflow end in an ellipsis. The text is cut at
 a glyph boundary using layout advances so the ellipsis fits inside the outer
 clip edge, and `...` replaces U+2026 when the font lacks it. Scroll thumbs can
 be dragged: the retained state keeps the grab offset, and a press in the gutter
-pages one viewport toward the pointer.
+pages one viewport toward the pointer. Panels that own their offset for
+virtualization or reveal (Outliner, Details, Console, Content, Preferences,
+collision layers) exchange it with `vkr_ui_scroll_area_offset`: a thumb drag,
+gutter page or scroll key that frame writes the area's offset back to the
+caller, and otherwise the caller's offset applies. Row-virtualized lists lay
+out the visible rows at the first row's offset inside an area as tall as every
+row and snap by exchanging the rounded offset again.
 
 The Add scene page uses the Projects page layout: a Create new/Import JSON
 switch above cards for environment, probe, models, lights, font and build
@@ -328,9 +334,16 @@ Rows pair distinct severity icons with red/coral, amber, blue, violet and green
 text in the monospace face; text labels preserve severity without relying on
 color. Errors, Warnings, Info and Verbose are toggle chips that show each
 level's record count.
-Editor builds compile all log levels; capture defaults to INFO, and Verbose capture
-enables DEBUG/TRACE before formatting. App builds retain their existing compile
-policy and do not allocate the editor logger ring.
+The editor requests capture before logging starts (`log_capture_request`),
+so the ring holds the session from its first record at an INFO threshold.
+Release compiles INFO and above in; Debug and `VKR_EDITOR_LOGGING` builds also
+compile DEBUG/TRACE, which Verbose capture enables before formatting. A
+process that does not request capture, such as the app, allocates no ring and
+keeps its threshold at ERROR in Release, so its output is unchanged. Each
+session also appends every record to
+`<workspace>/logs/<UTC start>-<pid>.log`, starting with the ring's backlog;
+each line is flushed as it is logged so the file survives a crash, and
+opening another workspace continues in a file there.
 
 Bakery queues nine recipes—mesh, font, single texture, texture directory, GGX
 DFG, Charlie, anisotropy, diffuse volume, and reflection probe—on one worker.

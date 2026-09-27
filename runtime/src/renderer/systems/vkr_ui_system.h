@@ -464,9 +464,13 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
                           float32_t maximum, const VkrUiWidgetConfig *config);
 bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
                                  const VkrUiPanelConfig *config);
-/** Set the open scroll area's vertical offset in points. The caller owns
- * virtualization/reveal policy; layout clamps to its declared row extent. */
-bool8_t vkr_ui_scroll_area_offset_set(VkrUiSystem *system, float32_t offset_pt);
+/** Exchange the open scroll area's vertical offset with a caller-owned one in
+ * points. When its scrollbar or a scroll key moved it this frame, the area's
+ * offset is written to *offset_pt and the move is consumed, so a caller may
+ * snap the value and exchange it again; otherwise *offset_pt applies. The
+ * caller owns wheel, virtualization and reveal policy, and virtualizes with
+ * the exchanged value; layout clamps to the declared row extent. */
+bool8_t vkr_ui_scroll_area_offset(VkrUiSystem *system, float32_t *offset_pt);
 bool8_t vkr_ui_scroll_area_end(VkrUiSystem *system);
 bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
                           VkrUiTextEditBuffer *buffer,

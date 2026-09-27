@@ -67,9 +67,11 @@ For Windows wrappers, set the environment in PowerShell, for example
 `$env:VKR_DEBUG_SANITIZER = 'none'; .\build.bat Debug`. Windows wrappers
 normalize profile case; shell wrappers require the lowercase values above.
 
-Release logging is stripped to its configured level for both app and editor.
-Set `VKR_EDITOR_LOGGING=ON` in the environment before a build, or set the CMake
-option explicitly, to compile detailed editor logging. This changes shared
+Release compiles INFO, WARN and ERROR logging for both app and editor and
+strips DEBUG/TRACE; the app prints errors only unless it raises its threshold,
+and the editor captures INFO for its Console and session log. Set
+`VKR_EDITOR_LOGGING=ON` in the environment before a build, or set the CMake
+option explicitly, to compile DEBUG/TRACE as well. This changes shared
 library compilation and remains in the cache until explicitly set to `OFF`.
 Selecting app versus editor does not change it. The
 [build policy](ARCHITECTURE.md#build-policy) defines optimization and dependency
@@ -199,6 +201,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [073](adr/073-native-gameplay-foundation.md) | Shared scene ticks independent of input focus, ordered input, C player/weapon client, persisted editor player bindings, action animation, native character stance and camera rigs; general visual/prefab authoring pending | partial |
 | [074](adr/074-volumetric-cloud-layer.md) | One volumetric cloud layer: runtime-generated noise, half-resolution traced history, sun-projected shadows and aerial perspective at cloud depth | implemented |
 | [075](adr/075-editor-cmd-bar-and-evaluator.md) | Editor Cmd bar: typed commands with completion, an expression evaluator over scene and editor data, and `--exec` scripts with `[cmd]` stdout results | implemented |
+| [076](adr/076-project-object-model.md) | Typed descriptors, entities as ID plus components, the World beside primary and additive scenes with inherit-World singleton resolution and Set primary, World-only physics and animation settings, shared physics, structural undo, presets, registered component types, document-stable entity IDs, version 5 scene documents, prefab instances, Content folder browser, Outliner above Details, viewport documents | implemented |
 
 ## Proposals
 
@@ -208,7 +211,7 @@ decisions before dependent implementation.
 
 | Proposal | Scope |
 |---|---|
-| [Codebase audit remediation](proposals/codebase-audit-remediation.md) | Applied owner decisions and what remains after the 2026-09-23 audit: the Vulkan text baseline, unversioned capture-summary records, the Bistro re-cook, deferred items and host-unavailable checks. |
+| [Codebase audit remediation](proposals/codebase-audit-remediation.md) | Applied owner decisions and what remains after the 2026-09-23 audit: re-checking the Vulkan text baseline on a Vulkan machine, the Bistro re-cook, deferred items and host-unavailable checks. |
 | [Renderer features and performance audit](proposals/renderer-features-perf/renderer-features-perf.md) | Normal/fog corrections, optional material storage, screen-space and post-processing costs, and remaining native acceptance. |
 | [Conditional D3D12 backend evaluation](proposals/d3d12-backend-evaluation.md) | Conditions for considering a third backend. |
 | [Dedicated transfer queue](proposals/dedicated-transfer-queue.md) | Independent upload submission and completion-safe publication. |

@@ -107,9 +107,12 @@ Basis vectors are explicit, avoiding yaw/pitch singularities in vertical views:
 
 Holding RMB pans in the image plane; W/A/S/D translate along that plane while
 captured. Wheel input changes the orthographic span. Scene aspect changes update
-horizontal bounds while preserving vertical span. Picking and grid projection
-use the same unjittered matrix; projection changes finish the current gizmo edit
-and invalidate pending picks. General matrix inversion uses a relative
+horizontal bounds while preserving vertical span. The Perspective grid is fixed
+in the world, as in UE5: it is centered on the origin, 40 cells to each side, at
+the grid spacing, with a major line every ten cells. Minor lines fade out as the
+camera rises. Orthographic views fit the grid to the visible plane. Picking and
+grid projection use the same unjittered matrix; projection changes finish the
+current gizmo edit and invalidate pending picks. General matrix inversion uses a relative
 singularity criterion so a valid wide orthographic projection does not silently
 become identity because its absolute determinant is small.
 

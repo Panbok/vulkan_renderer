@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-24
+updated: 2026-09-27
 authority: context
 ---
 # Project vocabulary
@@ -122,5 +122,31 @@ Editor workflow terms:
 | Derived texture cache | Workspace `cache/generated` directory of cooker-derived textures named by source content and parameters; managed bundles hold clones of the variants their materials use. | [Mesh cooker](../tools/assets/vkr_mesh_cook_source.c) |
 | Source identity | Stable managed-scene or cooked source-node identity used to bind authored edits independently of imported file location. | [Scene loader](../runtime/src/renderer/resources/loaders/scene_loader.c) |
 | Bakery | Editor queue for cooker, renderer-table and scene-bake processes; managed project jobs publish into an explicit workspace. | [Bakery](../editor/src/editor_bakery.c) |
-| Content | Manifest-indexed asset browser with virtualized cards, texture/material previews and icons for other asset types. | [Content browser](../editor/src/editor_content.c) |
+| Content | Folder browser over project, scene and editor assets, scenes, presets, the World and built-in objects, with tile and list views and texture/material previews. | [Content browser](../editor/src/editor_content.c) |
 | Scene edit overlay | Authored overrides validated against source identities. Legacy saves use `<scene>.editor.json`; managed saves publish immutable overlay revisions referenced by the scene manifest. | [Scene edit owner](../runtime/src/renderer/systems/vkr_scene_edit.c), [project store](../editor/src/editor_project_store.c) |
+
+Object model terms ([ADR-076](adr/076-project-object-model.md)):
+
+| Term | Meaning in VKR | Owner |
+|---|---|---|
+| Object | Anything the editor can select, inspect and search: an asset or an entity. | [ADR-076](adr/076-project-object-model.md) |
+| Type descriptor / property table | Static description of a component type / its ordered property list driving Details, JSON, validation, the journal, presets and Cmd paths. | [vkr_type_desc.h](../runtime/src/core/vkr_type_desc.h) |
+| Component / entity | Typed plain data stored in ECS chunks / an ID plus its components, the UE5-style actor. | [vkr_entity.h](../runtime/src/core/vkr_entity.h), [scene types](../runtime/src/renderer/systems/vkr_scene_types.h) |
+| Object kind | A creatable object: empty, cube, text, a light kind or one live world component type; Content lists each in Objects. | [scene panels](../editor/src/editor_scene_panels.h) |
+| Singleton component | World component type with at most one effective instance per frame: the primary scene's enabled, visible instance, else the World's while the scene inherits it. | [ADR-076](adr/076-project-object-model.md) |
+| Container | One loaded `VkrScene`: the World, the primary scene or an additive scene, each with its own ECS world, document, overlay and journal; the entity ID world field names it. | [vkr_scene_system.h](../runtime/src/renderer/systems/vkr_scene_system.h) |
+| World | The project's root container (`VKR_SCENE_WORLD_ROOT_ID`), loaded from `world.scene.json` while a project is open; holds the sun, sky, fog and post process every scene can inherit. | [ADR-076](adr/076-project-object-model.md) |
+| Content / System | Content browser roots: the World with its objects, a folder per scene, project assets and folders / what the editor ships: Assets, Objects (object kinds) and Editor. | [editor content](../editor/src/editor_content.c) |
+| Primary / additive scene | The scene of the active viewport document (world 0) / scenes loaded beside it with `scene.add` (worlds 1 to 6), whose singletons have no effect. | [ADR-076](adr/076-project-object-model.md) |
+| Inherit World | Per-scene undoable setting; off makes the scene use only its own objects, except World-only types. |
+| World-only type | A type only the World holds, which every scene resolves from it: physics settings (gravity, collision layers) and animation settings (clock scale). | [vkr_type_desc.h](../runtime/src/core/vkr_type_desc.h) |
+| Set primary | Makes an added project scene the primary scene and adds the previous primary back beside it. | [editor projects](../editor/src/editor_projects.h) | [vkr_scene_edit.h](../runtime/src/renderer/systems/vkr_scene_edit.h) |
+| Physics set | One Jolt world shared by every loaded container; the primary scene drives its clock and the World's physics settings set gravity. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h) |
+| Registered type | A component descriptor a module outside the renderer registers before scenes initialize; it is stored and edited like a world type. | [scene types](../runtime/src/renderer/systems/vkr_scene_types.h) |
+| Viewport document | A viewport tab showing the World or one project scene; only the active tab renders. | [editor viewport](../editor/src/editor_viewport.c) |
+| Preset | Named typed value of one world component or light type in the project's `presets.json`, applied as an undoable edit. | [project store](../editor/src/editor_project_store.h) |
+| Prefab instance | A copy of another project scene placed under one new root entity, with new ids and no link to its source; linked prefabs belong to the behavior proposal. | [ADR-076](adr/076-project-object-model.md) |
+| Document id | An entity's UUID in its scene document; overlays bind document entities through it. | [vkr_scene_system.h](../runtime/src/renderer/systems/vkr_scene_system.h) |
+| Content folder / tag | Virtual folder path or comma-separated label over an item ID in `content.labels.json`; files never move. System folders (Objects, Editor, Scene assets, Presets) are fixed. | [project store](../editor/src/editor_project_store.h) |
+| Outliner / Details | The World's entity tree with loaded scenes nested under it / the descriptor-generated property editor below it. | [scene panels](../editor/src/editor_scene_panels.c), [Details](../editor/src/editor_details.h) |
+| Preferences | Machine-local graphics gates edited through descriptors; never project content. | [vkr_graphics_settings.h](../runtime/src/vkr_graphics_settings.h) |

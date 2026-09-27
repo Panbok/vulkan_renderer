@@ -7,6 +7,7 @@
 #define COBJMACROS
 #endif
 #include <dxgi1_6.h>
+#include <shellapi.h>
 
 #include <math.h>
 #include <wchar.h>
@@ -437,6 +438,8 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     return false_v;
   }
   vkr_window_content_scale_publish(window, (float32_t)initial_dpi / 96.0f);
+  // Files dragged from Explorer arrive as WM_DROPFILES.
+  DragAcceptFiles(state->window, TRUE);
   if (!vkr_window_resize(window, width, height)) {
     DestroyWindow(state->window);
     free(state);
@@ -1052,6 +1055,31 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     return DefWindowProc(hwnd, msg, wparam, lparam);
 
+  case WM_DROPFILES: {
+    // Client pixels, the same space as WM_MOUSEMOVE.
+    HDROP drop = (HDROP)wparam;
+    POINT point = {0};
+    (void)DragQueryPoint(drop, &point);
+    if (vkr_window_file_drop_begin(state->owner, point.x, point.y)) {
+      const UINT count = DragQueryFileW(drop, 0xFFFFFFFFu, NULL, 0u);
+      for (UINT i = 0; i < count; ++i) {
+        wchar_t wide[VKR_WINDOW_DROP_PATH_CAPACITY];
+        char path[VKR_WINDOW_DROP_PATH_CAPACITY];
+        if (!DragQueryFileW(drop, i, wide, VKR_WINDOW_DROP_PATH_CAPACITY)) {
+          continue;
+        }
+        const int32_t length = WideCharToMultiByte(
+            CP_UTF8, 0, wide, -1, path, (int32_t)sizeof(path), NULL, NULL);
+        if (length > 1) {
+          vkr_window_file_drop_add(state->owner, path, (uint64_t)length - 1u);
+        }
+      }
+      vkr_window_file_drop_publish(state->owner);
+      input_process_mouse_move(state->input_state, point.x, point.y);
+    }
+    DragFinish(drop);
+    return 0;
+  }
   case WM_MOUSEWHEEL: {
     int16_t delta = GET_WHEEL_DELTA_WPARAM(wparam);
     int8_t wheel_delta = (int8_t)(delta / WHEEL_DELTA);

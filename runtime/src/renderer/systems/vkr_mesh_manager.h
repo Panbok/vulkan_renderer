@@ -92,6 +92,8 @@ typedef struct VkrMeshDesc {
   VkrTransform transform;
   const VkrSubMeshDesc *submeshes;
   uint32_t submesh_count;
+  /** Caster contract from creation; zero is DYNAMIC. */
+  VkrShadowCasterMobility shadow_mobility;
 } VkrMeshDesc;
 
 // Forward declaration

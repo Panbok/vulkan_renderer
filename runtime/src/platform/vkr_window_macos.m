@@ -110,8 +110,8 @@ static float32_t vkr_window_display_output_bits_float(uint32_t bits) {
 static uint64_t vkr_window_display_output_pack(uint32_t revision,
                                                bool8_t available,
                                                float32_t headroom) {
-  const uint32_t state = (revision & 0x7fffffffu) |
-                         (available ? 0x80000000u : 0u);
+  const uint32_t state =
+      (revision & 0x7fffffffu) | (available ? 0x80000000u : 0u);
   return ((uint64_t)state << 32u) |
          (uint64_t)vkr_window_display_output_float_bits(headroom);
 }
@@ -121,8 +121,7 @@ static void vkr_window_publish_display_output(PlatformState *state,
                                               bool8_t available) {
   if (!isfinite(current_headroom) || current_headroom < 1.0f)
     current_headroom = 1.0f;
-  const uint32_t bits =
-      vkr_window_display_output_float_bits(current_headroom);
+  const uint32_t bits = vkr_window_display_output_float_bits(current_headroom);
   uint64_t expected = vkr_atomic_uint64_load(&state->display_output_state,
                                              VKR_MEMORY_ORDER_ACQUIRE);
   for (;;) {
@@ -151,14 +150,16 @@ static void vkr_window_refresh_display_output(PlatformState *state) {
   if (!screen)
     screen = [NSScreen mainScreen];
   const float32_t potential_headroom =
-      screen ? (float32_t)screen.maximumPotentialExtendedDynamicRangeColorComponentValue
-             : 1.0f;
+      screen
+          ? (float32_t)
+                screen.maximumPotentialExtendedDynamicRangeColorComponentValue
+          : 1.0f;
   const float32_t current_headroom =
       screen ? (float32_t)screen.maximumExtendedDynamicRangeColorComponentValue
              : 1.0f;
-  vkr_window_publish_display_output(
-      state, current_headroom,
-      isfinite(potential_headroom) && potential_headroom > 1.0f);
+  vkr_window_publish_display_output(state, current_headroom,
+                                    isfinite(potential_headroom) &&
+                                        potential_headroom > 1.0f);
 }
 
 static void vkr_window_dispatch_resize(PlatformState *state, uint32_t width,
@@ -394,9 +395,62 @@ static void center_cursor_in_window(PlatformState *state);
     markedText = [[NSMutableAttributedString alloc] init];
 
     [self updateTrackingAreas];
+    [self registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
   }
 
   return self;
+}
+
+// ---- Files dragged from Finder ----
+
+- (NSArray<NSURL *> *)draggedFileURLs:(id<NSDraggingInfo>)sender {
+  return [[sender draggingPasteboard]
+      readObjectsForClasses:@[ [NSURL class] ]
+                    options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+}
+
+// Window pixels of a drag location, in the mouse position's convention.
+- (void)dragPixel:(id<NSDraggingInfo>)sender x:(int32_t *)x y:(int32_t *)y {
+  const NSPoint pos = [sender draggingLocation];
+  const NSSize window_size = platform_state->layer.drawableSize;
+  *x = (int32_t)(pos.x * platform_state->layer.contentsScale);
+  *y = (int32_t)(window_size.height -
+                 pos.y * platform_state->layer.contentsScale);
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  return [self draggingUpdated:sender];
+}
+
+// The pointer follows the drag so panels can highlight their drop target.
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+  if (![self draggedFileURLs:sender].count) {
+    return NSDragOperationNone;
+  }
+  int32_t x = 0;
+  int32_t y = 0;
+  [self dragPixel:sender x:&x y:&y];
+  input_process_mouse_move(platform_state->input_state, x, y);
+  return NSDragOperationCopy;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+  NSArray<NSURL *> *urls = [self draggedFileURLs:sender];
+  int32_t x = 0;
+  int32_t y = 0;
+  [self dragPixel:sender x:&x y:&y];
+  if (!urls.count || !vkr_window_file_drop_begin(platform_state->owner, x, y)) {
+    return NO;
+  }
+  for (NSURL *url in urls) {
+    const char *path = url.fileSystemRepresentation;
+    if (path) {
+      vkr_window_file_drop_add(platform_state->owner, path, strlen(path));
+    }
+  }
+  vkr_window_file_drop_publish(platform_state->owner);
+  input_process_mouse_move(platform_state->input_state, x, y);
+  return YES;
 }
 
 - (BOOL)canBecomeKeyView {
@@ -718,7 +772,8 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 @implementation ApplicationDelegate
 
-- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+- (NSApplicationTerminateReply)applicationShouldTerminate:
+    (NSApplication *)sender {
   if (state && state->owner->defer_close) {
     state->close_requested = true_v;
     return NSTerminateCancel;
@@ -912,10 +967,13 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
       if (getenv("VKR_WINDOW_DIAGNOSTICS")) {
         // Requested explicitly, so it bypasses the Release-compiled-out logger.
         NSRect frame = [state->window frame];
-        fprintf(stderr, "VKR window pid=%d visible=%d key=%d miniaturized=%d policy=%ld frame=%.0f,%.0f %.0fx%.0f screen=%p\n",
-                getpid(), [state->window isVisible], [state->window isKeyWindow],
-                [state->window isMiniaturized], (long)[NSApp activationPolicy],
-                frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
+        fprintf(stderr,
+                "VKR window pid=%d visible=%d key=%d miniaturized=%d "
+                "policy=%ld frame=%.0f,%.0f %.0fx%.0f screen=%p\n",
+                getpid(), [state->window isVisible],
+                [state->window isKeyWindow], [state->window isMiniaturized],
+                (long)[NSApp activationPolicy], frame.origin.x, frame.origin.y,
+                frame.size.width, frame.size.height,
                 (void *)[state->window screen]);
       }
     }
@@ -1396,112 +1454,46 @@ void center_cursor_in_window(PlatformState *state) {
  * has no zero value, so zero marks an unlisted code.
  */
 static const Keys s_macos_keys[128] = {
-    [0x1D] = KEY_NUMPAD0,
-    [0x12] = KEY_NUMPAD1,
-    [0x13] = KEY_NUMPAD2,
-    [0x14] = KEY_NUMPAD3,
-    [0x15] = KEY_NUMPAD4,
-    [0x17] = KEY_NUMPAD5,
-    [0x16] = KEY_NUMPAD6,
-    [0x1A] = KEY_NUMPAD7,
-    [0x1C] = KEY_NUMPAD8,
+    [0x1D] = KEY_NUMPAD0,   [0x12] = KEY_NUMPAD1,   [0x13] = KEY_NUMPAD2,
+    [0x14] = KEY_NUMPAD3,   [0x15] = KEY_NUMPAD4,   [0x17] = KEY_NUMPAD5,
+    [0x16] = KEY_NUMPAD6,   [0x1A] = KEY_NUMPAD7,   [0x1C] = KEY_NUMPAD8,
     [0x19] = KEY_NUMPAD9,
 
-    [0x00] = KEY_A,
-    [0x0B] = KEY_B,
-    [0x08] = KEY_C,
-    [0x02] = KEY_D,
-    [0x0E] = KEY_E,
-    [0x03] = KEY_F,
-    [0x05] = KEY_G,
-    [0x04] = KEY_H,
-    [0x22] = KEY_I,
-    [0x26] = KEY_J,
-    [0x28] = KEY_K,
-    [0x25] = KEY_L,
-    [0x2E] = KEY_M,
-    [0x2D] = KEY_N,
-    [0x1F] = KEY_O,
-    [0x23] = KEY_P,
-    [0x0C] = KEY_Q,
-    [0x0F] = KEY_R,
-    [0x01] = KEY_S,
-    [0x11] = KEY_T,
-    [0x20] = KEY_U,
-    [0x09] = KEY_V,
-    [0x0D] = KEY_W,
-    [0x07] = KEY_X,
-    [0x10] = KEY_Y,
-    [0x06] = KEY_Z,
+    [0x00] = KEY_A,         [0x0B] = KEY_B,         [0x08] = KEY_C,
+    [0x02] = KEY_D,         [0x0E] = KEY_E,         [0x03] = KEY_F,
+    [0x05] = KEY_G,         [0x04] = KEY_H,         [0x22] = KEY_I,
+    [0x26] = KEY_J,         [0x28] = KEY_K,         [0x25] = KEY_L,
+    [0x2E] = KEY_M,         [0x2D] = KEY_N,         [0x1F] = KEY_O,
+    [0x23] = KEY_P,         [0x0C] = KEY_Q,         [0x0F] = KEY_R,
+    [0x01] = KEY_S,         [0x11] = KEY_T,         [0x20] = KEY_U,
+    [0x09] = KEY_V,         [0x0D] = KEY_W,         [0x07] = KEY_X,
+    [0x10] = KEY_Y,         [0x06] = KEY_Z,
 
-    [0x2B] = KEY_COMMA,
-    [0x32] = KEY_GRAVE,
-    [0x1B] = KEY_MINUS,
-    [0x2F] = KEY_PERIOD,
-    [0x29] = KEY_SEMICOLON,
-    [0x2C] = KEY_SLASH,
+    [0x2B] = KEY_COMMA,     [0x32] = KEY_GRAVE,     [0x1B] = KEY_MINUS,
+    [0x2F] = KEY_PERIOD,    [0x29] = KEY_SEMICOLON, [0x2C] = KEY_SLASH,
 
-    [0x33] = KEY_BACKSPACE,
-    [0x39] = KEY_CAPITAL,
-    [0x75] = KEY_DELETE,
-    [0x7D] = KEY_DOWN,
-    [0x77] = KEY_END,
-    [0x24] = KEY_ENTER,
-    [0x35] = KEY_ESCAPE,
-    [0x7A] = KEY_F1,
-    [0x78] = KEY_F2,
-    [0x63] = KEY_F3,
-    [0x76] = KEY_F4,
-    [0x60] = KEY_F5,
-    [0x61] = KEY_F6,
-    [0x62] = KEY_F7,
-    [0x64] = KEY_F8,
-    [0x65] = KEY_F9,
-    [0x6D] = KEY_F10,
-    [0x67] = KEY_F11,
-    [0x6F] = KEY_F12,
-    [0x69] = KEY_PRINT,
-    [0x6B] = KEY_F14,
-    [0x71] = KEY_F15,
-    [0x6A] = KEY_F16,
-    [0x40] = KEY_F17,
-    [0x4F] = KEY_F18,
-    [0x50] = KEY_F19,
-    [0x5A] = KEY_F20,
-    [0x73] = KEY_HOME,
-    [0x72] = KEY_INSERT,
-    [0x7B] = KEY_LEFT,
-    [0x3A] = KEY_LMENU,
-    [0x3B] = KEY_LCONTROL,
-    [0x38] = KEY_LSHIFT,
-    [0x37] = KEY_LWIN,
-    [0x47] = KEY_NUMLOCK,
-    [0x7C] = KEY_RIGHT,
-    [0x3D] = KEY_RMENU,
-    [0x3E] = KEY_RCONTROL,
-    [0x3C] = KEY_RSHIFT,
-    [0x36] = KEY_RWIN,
-    [0x31] = KEY_SPACE,
-    [0x30] = KEY_TAB,
+    [0x33] = KEY_BACKSPACE, [0x39] = KEY_CAPITAL,   [0x75] = KEY_DELETE,
+    [0x7D] = KEY_DOWN,      [0x77] = KEY_END,       [0x24] = KEY_ENTER,
+    [0x35] = KEY_ESCAPE,    [0x7A] = KEY_F1,        [0x78] = KEY_F2,
+    [0x63] = KEY_F3,        [0x76] = KEY_F4,        [0x60] = KEY_F5,
+    [0x61] = KEY_F6,        [0x62] = KEY_F7,        [0x64] = KEY_F8,
+    [0x65] = KEY_F9,        [0x6D] = KEY_F10,       [0x67] = KEY_F11,
+    [0x6F] = KEY_F12,       [0x69] = KEY_PRINT,     [0x6B] = KEY_F14,
+    [0x71] = KEY_F15,       [0x6A] = KEY_F16,       [0x40] = KEY_F17,
+    [0x4F] = KEY_F18,       [0x50] = KEY_F19,       [0x5A] = KEY_F20,
+    [0x73] = KEY_HOME,      [0x72] = KEY_INSERT,    [0x7B] = KEY_LEFT,
+    [0x3A] = KEY_LMENU,     [0x3B] = KEY_LCONTROL,  [0x38] = KEY_LSHIFT,
+    [0x37] = KEY_LWIN,      [0x47] = KEY_NUMLOCK,   [0x7C] = KEY_RIGHT,
+    [0x3D] = KEY_RMENU,     [0x3E] = KEY_RCONTROL,  [0x3C] = KEY_RSHIFT,
+    [0x36] = KEY_RWIN,      [0x31] = KEY_SPACE,     [0x30] = KEY_TAB,
     [0x7E] = KEY_UP,
 
-    [0x52] = KEY_NUMPAD0,
-    [0x53] = KEY_NUMPAD1,
-    [0x54] = KEY_NUMPAD2,
-    [0x55] = KEY_NUMPAD3,
-    [0x56] = KEY_NUMPAD4,
-    [0x57] = KEY_NUMPAD5,
-    [0x58] = KEY_NUMPAD6,
-    [0x59] = KEY_NUMPAD7,
-    [0x5B] = KEY_NUMPAD8,
-    [0x5C] = KEY_NUMPAD9,
-    [0x45] = KEY_ADD,
-    [0x41] = KEY_DECIMAL,
-    [0x4B] = KEY_DIVIDE,
-    [0x4C] = KEY_ENTER,
-    [0x51] = KEY_NUMPAD_EQUAL,
-    [0x43] = KEY_MULTIPLY,
-    [0x4E] = KEY_SUBTRACT,
+    [0x52] = KEY_NUMPAD0,   [0x53] = KEY_NUMPAD1,   [0x54] = KEY_NUMPAD2,
+    [0x55] = KEY_NUMPAD3,   [0x56] = KEY_NUMPAD4,   [0x57] = KEY_NUMPAD5,
+    [0x58] = KEY_NUMPAD6,   [0x59] = KEY_NUMPAD7,   [0x5B] = KEY_NUMPAD8,
+    [0x5C] = KEY_NUMPAD9,   [0x45] = KEY_ADD,       [0x41] = KEY_DECIMAL,
+    [0x4B] = KEY_DIVIDE,    [0x4C] = KEY_ENTER,     [0x51] = KEY_NUMPAD_EQUAL,
+    [0x43] = KEY_MULTIPLY,  [0x4E] = KEY_SUBTRACT,
 };
 
 static Keys translate_keycode(uint32_t ns_keycode) {

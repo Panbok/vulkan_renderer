@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-26
+updated: 2026-09-27
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -34,9 +34,8 @@ each kind per UI build; `wait` and `wait.scene` pause it.
 
 Every result goes three ways: a `[cmd]` line on stdout, flushed per line
 (`[cmd] > <statement>`, then `[cmd] <result>` or `[cmd] error: <message>`); the
-Console, when the build keeps info and warning logs; and a toast. Release
-builds without `VKR_EDITOR_LOGGING` compile those log levels out, so stdout is
-the dependable channel for scripts.
+Console and the session log as info records; and a toast. stdout remains the
+dependable channel for scripts.
 
 ### Commands
 
@@ -59,7 +58,27 @@ the dependable channel for scripts.
 | `tool` | `<select\|move\|rotate\|scale>` | Transform tool |
 | `grid` | `[on\|off\|toggle]` | World grid |
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |
+| `grid.labels` | `[on\|off\|toggle]` | Grid cell numbers and letters |
 | `labels`, `labels.directional`, `labels.spot`, `labels.point` | `[on\|off\|toggle]` | Light icons |
+| `create` | `<object>` | Create an object kind (`empty`, `cube`, `text`, a light kind or a world component type) in the selection's container, else the primary scene, else the World; World-only settings always go to the World |
+| `delete` | `[name]` | Delete the named object or the selection (undoable) |
+| `component.add`, `component.remove` | `<type>` | Add or remove a live world component, or `physics_body`, on the selection (undoable); World-only types only on World objects |
+| `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |
+| `scene.open`, `scene.create` | `<name>` | Open a project scene (the scene already loading or open stays as it is), or create an empty one and open it |
+| `scene.add`, `scene.remove` | `<name\|path>`, `<slot\|name> [discard]` | Load a project scene or scene file beside the primary one, or unload it |
+| `scene.primary` | `<slot\|name>` | Make an added project scene the primary scene, adding the previous primary back beside it |
+| `scene.instantiate` | `<name>` | Copy another project scene into the open one under a new root at the origin, as an unlinked prefab instance |
+| `scene.inherit` | `[on\|off\|toggle]` | Whether the open scene uses the World's objects |
+| `tab.new`, `tab.show` | `<n>` for `tab.show` | New World document, or switch viewport documents |
+| `content.search` | `[text]` | Search below the current Content folder |
+| `content.open`, `content.mkdir` | `<folder>` | Show a Content folder by path, shown name or shown path (`Level One`, `Level One/Textures`, `System/Objects`), or create a project folder with its parents |
+| `content.command` | `<load\|open\|place\|rename\|delete> <item>` | Run an item's or folder's context menu command, as a right-click would |
+| `content.move` | `<item\|folder> <folder>` | Move an item (id or name, quoted when it has spaces) or folder |
+| `content.view` | `<list\|tiles>` | Content view |
+| `content.import` | `<path>` | Import a file into the project, filed in the current folder |
+| `content.drop` | `<path>` | Act as an OS file drop on the current folder: opens the import step |
+| `content.place` | `<item>` | Act as a drop of an item at the viewport centre: places a mesh or adds an object kind |
+| `preset.save`, `preset.apply` | `<component>`, `<name>` | Save the selection's component as a preset, or apply one |
 | `ui.zoom` | `<scale\|in\|out\|reset>` | Interface zoom |
 | `ui.reduce_motion` | `[on\|off\|toggle]` | Eased motion |
 | `help` | `[command]` | List commands or describe one |
@@ -83,20 +102,24 @@ concatenates. `(x, y, z)` is a vector literal. Functions: `vec3`, `len`,
 
 `name = expr` stores a session variable (32 slots). Assigning a member writes
 editor or scene data, and assigning `x`, `y` or `z` of a vector member writes
-the vector back through its path (`sel.position.y = 2`).
+the vector back through its path (`sel.position.y = 2`). Descriptor vector
+and color properties read and assign as vec3: a two-component property ignores
+`z`, and a four-component property such as a shape or text color keeps its
+fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 
 | Root | Members (read) | Writable |
 | --- | --- | --- |
 | `sel`, `entity("name")` | `name`, `position`, `rotation` (degrees, XYZ), `scale`, `visible`, `light`, `id` | all but `light`, `id` |
 | `.light` | `kind`, `color`, `intensity` (radiance for rectangles), `range`, `enabled`, `inner`, `outer` (degrees) | all but `kind` |
-| `view` | `camera`, `mode`, `grid`, `grid_spacing`, `camera_speed`, `tool` | all |
+| `.<component>` | Descriptor properties of a component the entity carries, by type name (`sel.post_process.exposure_compensation_ev`, `sel.point_light.intensity`) | visible, non-read-only properties |
+| `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `camera_speed`, `tool` | all |
 | `ui` | `zoom`, `reduce_motion` | all |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
 
 Scene writes read the entity with `vkr_scene_edit_read`, change one component,
 validate it and submit an `APPLY` edit, so they undo, save and reject invalid
-values like Inspector edits. View writes submit a `VkrSampleViewRequest`. One
+values like Details edits. View writes submit a `VkrSampleViewRequest`. One
 statement makes at most one scene edit and one view change; a second request
 in the same frame fails instead of overwriting the first. Completion after a
 dot lists members with their current values.
@@ -106,7 +129,7 @@ dot lists members with their current values.
 Typed and scripted editor control share one validated path with the panels.
 Statements apply one per frame, so a script's reads see the previous
 statement's result. The evaluator has no loops, user functions or file access,
-and it cannot create entities or edit physics bodies. The field accepts at most
+and it cannot create entities; `create` and `component.add` do. The field accepts at most
 255 bytes; the queue holds 4 KiB.
 
 ## Alternatives considered

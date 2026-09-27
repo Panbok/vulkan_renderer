@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/vkr_collision_cooked.h"
+#include "core/vkr_type_desc.h"
 #include "physics/vkr_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
 
@@ -9,6 +10,30 @@
 #define VKR_SCENE_PHYSICS_MAX_JOINTS 16u
 #define VKR_SCENE_COLLISION_ASSET_PATH_MAX 256u
 #define VKR_SCENE_PHYSICS_FIXED_DT VKR_SCENE_SIMULATION_FIXED_DT
+/* Scenes one physics set holds: the World, the primary scene and the added
+   scenes. */
+#define VKR_SCENE_PHYSICS_SET_MAX 8u
+/* Two full scenes of bodies plus edit staging share the native world. */
+#define VKR_SCENE_PHYSICS_SET_BODIES (VKR_SCENE_PHYSICS_MAX_BODIES * 4u)
+
+/* Physics set (ADR-076): the root-owned native world that every loaded scene
+ * shares, so bodies in different scenes collide. The driver (the primary
+ * scene) steps the world once per fixed tick for every member and owns reset
+ * and contact dispatch; other members follow its clock and pause state. The
+ * World, when a member, owns the collision layers; otherwise the driver does.
+ * Attach a scene before it creates physics state. Scene shutdown removes its
+ * bodies and detaches it; destroy the set after every member shut down. */
+VkrScenePhysicsSet *vkr_scene_physics_set_create(VkrAllocator *allocator);
+void vkr_scene_physics_set_destroy(VkrScenePhysicsSet *set);
+bool8_t vkr_scene_physics_attach(VkrScene *scene, VkrScenePhysicsSet *set,
+                                 bool8_t driver, const char **error);
+/* Members of the scene's set, or the scene alone; returns the count. */
+uint32_t vkr_scene_physics_set_members(const VkrScene *scene,
+                                       VkrScene **members, uint32_t capacity);
+/* Whether the scene's collision layers are the set's source of truth. */
+bool8_t vkr_scene_physics_layers_owner(const VkrScene *scene);
+/* Bodies the scene's fixed step simulates: every member's for a driver. */
+uint32_t vkr_scene_physics_simulated_body_count(const VkrScene *scene);
 
 /* One character per root entity with unit scale and no rigid body. Creation
  * copies settings but takes foot_position/entity_id from the authored entity.
@@ -74,11 +99,9 @@ typedef struct VkrSceneJointConfig {
   bool8_t enabled;
 } VkrSceneJointConfig;
 
-typedef struct VkrScenePhysicsSnapshot {
-  bool8_t present;
+/* Authored body settings; `vkr_scene_physics_body_type` describes them. */
+typedef struct VkrScenePhysicsBody {
   VkrPhysicsMotion motion;
-  uint16_t collision_layer;
-  uint16_t collision_mask;
   float32_t mass;
   float32_t friction;
   float32_t restitution;
@@ -89,12 +112,24 @@ typedef struct VkrScenePhysicsSnapshot {
   bool8_t allow_sleep;
   bool8_t continuous;
   bool8_t sensor;
+} VkrScenePhysicsBody;
+
+typedef struct VkrScenePhysicsSnapshot {
+  bool8_t present;
+  VkrScenePhysicsBody body;
+  uint16_t collision_layer;
+  uint16_t collision_mask;
   VkrScenePhysicsAttachment attachment;
   uint32_t joint_count;
   VkrSceneJointConfig joints[VKR_SCENE_PHYSICS_MAX_JOINTS];
   uint32_t collider_count;
   VkrSceneColliderConfig colliders[VKR_SCENE_PHYSICS_MAX_COLLIDERS];
 } VkrScenePhysicsSnapshot;
+
+/* Descriptors of the authored body settings and of one collider (ADR-076);
+   Details, Cmd paths and validation use them. */
+extern const VkrTypeDesc vkr_scene_physics_body_type;
+extern const VkrTypeDesc vkr_scene_physics_collider_type;
 
 typedef struct VkrScenePhysicsChange {
   VkrEntityId entity;

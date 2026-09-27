@@ -13,9 +13,11 @@
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 static const char *s_mesh_path = "build/vkr_scene_animation.vkb";
 static const char *s_bank_path = "build/vkr_scene_animation.vka";
@@ -440,7 +442,24 @@ bool32_t run_scene_animation_tests(void) {
   assert(a && b && a != b);
   Mat4 local = vkr_scene_get_transform(&scene, nodes[0])->local;
   Mat4 world = vkr_scene_get_transform(&scene, nodes[0])->world;
-  vkr_animation_player_set_playing(b, false_v);
+  /* Authored playback is the wrapper's typed component: setting it pauses
+   * the player, and a clip outside the bound bank is rejected unchanged. */
+  const SceneAnimationSettings *settings =
+      vkr_scene_get_typed(&scene, wrappers[1], &vkr_scene_animation_type);
+  assert(settings && settings->playing && settings->loop &&
+         settings->rate == 1.0f);
+  const String8 clip_name = vkr_animation_player_asset(b)->clips[0].name;
+  assert(strlen(settings->clip_name) == clip_name.length &&
+         MemCompare(settings->clip_name, clip_name.str, clip_name.length) == 0);
+  SceneAnimationSettings paused = *settings;
+  paused.playing = false_v;
+  assert(vkr_scene_set_typed(&scene, wrappers[1], &vkr_scene_animation_type,
+                             &paused));
+  assert(!vkr_animation_player_playing(b));
+  paused.clip = vkr_animation_player_asset(b)->clip_count;
+  assert(!vkr_scene_set_typed(&scene, wrappers[1], &vkr_scene_animation_type,
+                              &paused));
+  assert(vkr_animation_player_clip(b) == 0);
   vkr_scene_update(&scene, 0.5);
   assert(vkr_animation_player_time(a) == 0.5);
   assert(vkr_animation_player_time(b) == 0);

@@ -4,6 +4,7 @@
 #include "editor_bakery.h"
 #include "editor_console.h"
 #include "editor_content.h"
+#include "editor_details.h"
 #include "editor_physics_settings.h"
 #include "editor_scene_panels.h"
 #include "vkr_sample_runtime.h"
@@ -27,17 +28,10 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_HELP,
   VKR_EDITOR_WINDOW_ANIMATION,
   VKR_EDITOR_WINDOW_PHYSICS,
+  /* Create a scene or import an asset (ADR-076). */
+  VKR_EDITOR_WINDOW_CREATE,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
-
-typedef enum VkrEditorGraphicsTab {
-  VKR_EDITOR_GRAPHICS_TAB_DISPLAY = 0,
-  VKR_EDITOR_GRAPHICS_TAB_QUALITY,
-  VKR_EDITOR_GRAPHICS_TAB_LIGHTING,
-  VKR_EDITOR_GRAPHICS_TAB_EFFECTS,
-  VKR_EDITOR_GRAPHICS_TAB_COLOR,
-  VKR_EDITOR_GRAPHICS_TAB_COUNT,
-} VkrEditorGraphicsTab;
 
 typedef struct VkrEditorWindowState {
   Vec2 position_pt;
@@ -51,11 +45,16 @@ typedef struct VkrEditorWindowState {
 typedef struct VkrEditorLabelAnchor {
   VkrUiId widget;
   VkrEntityId entity;
+  /* Container that owns the entity, valid for the UI frame. */
+  const struct VkrScene *scene;
+  /* Place in the column of abstract objects at the world origin, or
+     UINT32_MAX to follow the entity's position. */
+  uint32_t stack;
 } VkrEditorLabelAnchor;
 
 typedef struct VkrEditorPhysicsLine VkrEditorPhysicsLine;
 
-#define VKR_EDITOR_GRID_LINE_CAPACITY 96u
+#define VKR_EDITOR_GRID_LINE_CAPACITY 192u
 
 typedef struct VkrEditorGridLine {
   VkrUiId widget;
@@ -69,6 +68,10 @@ typedef struct VkrEditorGridLine {
   uint32_t ordinal;
   bool8_t top_label;
   bool8_t world_axis;
+  /* Line opacity: minor perspective lines fade as the camera rises. */
+  float32_t alpha;
+  /* Minor perspective lines are never labelled. */
+  bool8_t unlabelled;
 } VkrEditorGridLine;
 
 /* Cmd evaluator value; objects name editor data roots (view, ui, sim, scene)
@@ -80,7 +83,8 @@ typedef enum VkrEditorCmdValueKind {
   VKR_EDITOR_CMD_VALUE_STRING,
   VKR_EDITOR_CMD_VALUE_VEC3,
   VKR_EDITOR_CMD_VALUE_ENTITY,
-  VKR_EDITOR_CMD_VALUE_LIGHT,
+  /* One descriptor-typed component of an entity. */
+  VKR_EDITOR_CMD_VALUE_COMPONENT,
   VKR_EDITOR_CMD_VALUE_OBJECT,
 } VkrEditorCmdValueKind;
 
@@ -89,6 +93,7 @@ typedef struct VkrEditorCmdValue {
   float64_t number;
   Vec3 vector;
   VkrEntityId entity;
+  const VkrTypeDesc *type; /* COMPONENT only. */
   uint32_t object;
   char text[96];
 } VkrEditorCmdValue;
@@ -98,11 +103,30 @@ typedef struct VkrEditorCmdVariable {
   VkrEditorCmdValue value;
 } VkrEditorCmdVariable;
 
+/* Viewport documents (ADR-076): tabs beside the Scene panel's tab, each
+   showing the World alone or one project scene. Switching loads the tab's
+   scene; only the active document is loaded and rendered. */
+#define VKR_EDITOR_VIEWPORT_TAB_MAX 6u
+
+typedef struct VkrEditorViewportTab {
+  char scene_id[37];
+  char label[64];
+} VkrEditorViewportTab;
+
 /* What a right-click menu acts on; each kind has its own item table. */
 typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_ENTITY = 0,
   VKR_EDITOR_CONTEXT_DOCK_TAB,
   VKR_EDITOR_CONTEXT_CONSOLE,
+  /* Object creation from the Outliner's add button (ADR-076). */
+  VKR_EDITOR_CONTEXT_CREATE,
+  /* Component types the Details panel can add to the context entity. */
+  VKR_EDITOR_CONTEXT_ADD_COMPONENT,
+  /* Save the context entity's `context_type` component as a preset, or apply
+     one of that type (ADR-076). */
+  VKR_EDITOR_CONTEXT_PRESET,
+  /* Open, Put into viewport, Rename and Delete for a Content item. */
+  VKR_EDITOR_CONTEXT_CONTENT,
 } VkrEditorContextKind;
 
 typedef struct VkrEditorUi {
@@ -134,6 +158,15 @@ typedef struct VkrEditorUi {
   VkrEntityId context_entity;
   /* VkrUiDockPanelKind of the tab a dock-tab menu acts on. */
   uint32_t context_panel;
+  /* World id a creation menu adds to. */
+  uint16_t context_container;
+  /* Component type a preset menu acts on. */
+  const VkrTypeDesc *context_type;
+  VkrEditorViewportTab viewport_tabs[VKR_EDITOR_VIEWPORT_TAB_MAX];
+  uint32_t viewport_tab_count;
+  uint32_t viewport_tab_active;
+  /* Rows the open menu showed last build; sizes its input region. */
+  uint32_t context_count;
   /* Mirrors of the UI system's interface zoom and reduced-motion setting,
    * kept for workspace persistence. */
   float32_t ui_scale;
@@ -198,8 +231,15 @@ typedef struct VkrEditorUi {
   float32_t grid_spacing; /* Drawn world cell size; zero without a grid. */
   uint32_t grid_line_count;
   VkrEditorGridLine grid_lines[VKR_EDITOR_GRID_LINE_CAPACITY];
-  VkrEditorGraphicsTab graphics_tab;
+  /* Preferences window rows and scroll offset. */
+  VkrEditorDetails preferences_details;
+  float32_t preferences_scroll;
+  float32_t preferences_height;
   VkrEditorAnimation animation;
+  /* Additive scene path and sidecar a Cmd request borrows until the
+     runtime consumes it (ADR-076). */
+  char cmd_scene_path[1024];
+  char cmd_scene_sidecar[1024];
 
   VkrEditorWindowState windows[VKR_EDITOR_WINDOW_COUNT];
 } VkrEditorUi;

@@ -169,10 +169,10 @@ void vkr_scene_collision_layers_discard(
   vkr_allocator_free(scene->alloc, prepared, sizeof(*prepared), LAYERS_TAG);
 }
 
-bool8_t
-vkr_scene_collision_layers_apply(VkrScene *scene,
-                                 const VkrSceneCollisionLayers *settings,
-                                 const char **error) {
+/* One scene's settings and the bodies whose masks they change. */
+static bool8_t layers_apply_scene(VkrScene *scene,
+                                  const VkrSceneCollisionLayers *settings,
+                                  const char **error) {
   VkrSceneCollisionLayersPrepared *pending = NULL;
   if (!vkr_scene_collision_layers_prepare(scene, settings, &pending, error)) {
     return false_v;
@@ -208,6 +208,70 @@ failed:
   }
   vkr_scene_collision_layers_discard(pending);
   return false_v;
+}
+
+bool8_t
+vkr_scene_collision_layers_apply(VkrScene *scene,
+                                 const VkrSceneCollisionLayers *settings,
+                                 const char **error) {
+  VkrScene *members[VKR_SCENE_PHYSICS_SET_MAX];
+  const uint32_t count =
+      vkr_scene_physics_layers_owner(scene)
+          ? vkr_scene_physics_set_members(scene, members, ArrayCount(members))
+          : 0u;
+  if (count <= 1u) {
+    return layers_apply_scene(scene, settings, error);
+  }
+  VkrSceneCollisionLayers before[VKR_SCENE_PHYSICS_SET_MAX];
+  for (uint32_t i = 0; i < count; ++i) {
+    vkr_scene_collision_layers_read(members[i], &before[i]);
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!layers_apply_scene(members[i], settings, error)) {
+      for (uint32_t j = 0; j < i; ++j) {
+        (void)layers_apply_scene(members[j], &before[j], NULL);
+      }
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+bool8_t
+vkr_scene_collision_layers_adopt(VkrScene *scene,
+                                 const VkrSceneCollisionLayers *settings) {
+  if (!scene || scene->collision_layers_pending ||
+      vkr_scene_physics_body_count(scene)) {
+    return false_v;
+  }
+  VkrSceneCollisionLayers *copy =
+      vkr_allocator_alloc(scene->alloc, sizeof(*copy), LAYERS_TAG);
+  if (!copy) {
+    return false_v;
+  }
+  *copy = *settings;
+  if (scene->collision_layers) {
+    vkr_allocator_free(scene->alloc, scene->collision_layers,
+                       sizeof(*scene->collision_layers), LAYERS_TAG);
+  }
+  scene->collision_layers = copy;
+  scene->collision_layers_revision++;
+  return true_v;
+}
+
+bool8_t vkr_scene_collision_layers_share(VkrScene *owner, const char **error) {
+  VkrScene *members[VKR_SCENE_PHYSICS_SET_MAX];
+  const uint32_t count =
+      vkr_scene_physics_set_members(owner, members, ArrayCount(members));
+  VkrSceneCollisionLayers settings;
+  vkr_scene_collision_layers_read(owner, &settings);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (members[i] != owner &&
+        !layers_apply_scene(members[i], &settings, error)) {
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 void vkr_scene_collision_layers_shutdown(VkrScene *scene) {

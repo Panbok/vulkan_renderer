@@ -289,7 +289,7 @@ static bool32_t test_atmosphere_replaces_direct_sun_light(void) {
  * against the light's rotated direction with its tinted colour times
  * intensity. Other directional lights are ignored, an unchanged light queues
  * no revision, a hard-edged light keeps the authored disc, and without an
- * enabled sun light the authored sun returns. */
+ * enabled sun light the sky has no sun (ADR-058). */
 static bool32_t test_sun_light_drives_atmosphere_sun(void) {
   printf("  Running test_sun_light_drives_atmosphere_sun...\n");
   VkrDMemory memory;
@@ -322,7 +322,9 @@ static bool32_t test_sun_light_drives_atmosphere_sun(void) {
       }));
   vkr_scene_sync_sun(&scene, 0.0);
   assert(scene.sun.found == false_v);
-  assert(atmosphere->requested_revision == revision);
+  assert(atmosphere->requested_revision == ++revision);
+  assert(lighting_test_vec3_near(
+      atmosphere->requested_settings.solar_irradiance, vec3_zero()));
 
   // A quarter turn about +Y carries the local ray (0, -0.6, -0.8) to
   // (-0.8, -0.6, 0), so the sun sits toward +X at elevation asin(0.6).
@@ -374,15 +376,73 @@ static bool32_t test_sun_light_drives_atmosphere_sun(void) {
   vkr_scene_sync_sun(&scene, 0.0);
   assert(scene.sun.found == false_v);
   assert(atmosphere->requested_revision == ++revision);
-  assert(lighting_test_vec3_near(requested->sun_direction,
-                                 vec3_new(0.0f, 1.0f, 0.0f)));
-  assert(lighting_test_vec3_near(requested->solar_irradiance,
-                                 authored.solar_irradiance));
+  assert(lighting_test_vec3_near(requested->solar_irradiance, vec3_zero()));
   assert(requested->sun_angular_diameter_degrees == 0.75f);
 
   vkr_scene_shutdown(&scene, NULL);
   vkr_dmemory_destroy(&memory);
   printf("  test_sun_light_drives_atmosphere_sun PASSED\n");
+  return true_v;
+}
+
+/* A scene without a sun light takes the World's while it inherits the
+ * World (ADR-076); hiding the World's light, or not inheriting, leaves the
+ * sky without a sun. The oracle is the requested sun, not the light list. */
+static bool32_t test_world_sun_light_is_fallback(void) {
+  printf("  Running test_world_sun_light_is_fallback...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(4), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene root;
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(
+      vkr_scene_init(&root, &allocator, VKR_SCENE_WORLD_ROOT_ID, 8u, &error));
+  assert(vkr_scene_init(&scene, &allocator, 0u, 8u, &error));
+  VkrAtmosphereSettings authored = vkr_atmosphere_settings_defaults();
+  authored.enabled = true_v;
+  const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
+  assert(vkr_scene_request_atmosphere(&scene, &authored, &clouds, 0.0f));
+
+  VkrEntityId sun = vkr_scene_create_entity(&root, &error);
+  assert(sun.u64 != VKR_ENTITY_ID_INVALID.u64);
+  vkr_scene_set_visibility(&root, sun, true_v, true_v);
+  assert(vkr_scene_set_directional_light(
+      &root, sun,
+      &(SceneDirectionalLight){
+          .color = vec3_one(),
+          .intensity = 3.0f,
+          .direction_local = vec3_new(0.0f, -1.0f, 0.0f),
+          .enabled = true_v,
+          .atmosphere_sun = true_v,
+      }));
+  vkr_scene_set_world_fallback(&scene, &root);
+  vkr_scene_update(&scene, 0.0);
+  vkr_scene_sync_sun(&scene, 0.0);
+  const VkrAtmosphereSettings *requested = &scene.atmosphere.requested_settings;
+  assert(scene.sun.found);
+  assert(lighting_test_vec3_near(requested->sun_direction,
+                                 vec3_new(0.0f, 1.0f, 0.0f)));
+  assert(lighting_test_vec3_near(requested->solar_irradiance,
+                                 vec3_new(3.0f, 3.0f, 3.0f)));
+
+  vkr_scene_set_visibility(&root, sun, false_v, true_v);
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(!scene.sun.found);
+  assert(lighting_test_vec3_near(requested->solar_irradiance, vec3_zero()));
+
+  vkr_scene_set_visibility(&root, sun, true_v, true_v);
+  scene.settings.inherit_world = false_v;
+  vkr_scene_set_world_fallback(&scene, &root);
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(!scene.sun.found);
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_scene_shutdown(&root, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_world_sun_light_is_fallback PASSED\n");
   return true_v;
 }
 
@@ -475,6 +535,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_unbounded_point_lights_are_global();
   passed &= test_atmosphere_replaces_direct_sun_light();
   passed &= test_sun_light_drives_atmosphere_sun();
+  passed &= test_world_sun_light_is_fallback();
   passed &= test_sun_refresh_follows_moving_light();
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_gpu_row_packing();

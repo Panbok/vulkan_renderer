@@ -1,6 +1,7 @@
 #pragma once
 
 #include "containers/str.h"
+#include "core/vkr_type_desc.h"
 #include "memory/vkr_allocator.h"
 #include "platform/vkr_platform.h"
 
@@ -157,6 +158,103 @@ bool8_t vkr_editor_project_json_merge_objects(VkrAllocator *allocator,
                                               String8 previous, String8 owned,
                                               String8 *out,
                                               VkrEditorProjectError *error);
+
+// Content labels (ADR-076): the project's virtual folder tree and each item's
+// folder and tags, stored beside project.json as content.labels.json. Files
+// never move. Items are named by id: a UUID for managed assets and scenes, a
+// short name for editor bundle assets and built-in objects. Folder paths are
+// '/'-separated names below the Content root, which is the empty path.
+#define VKR_EDITOR_LABELS_VERSION 2u
+#define VKR_EDITOR_FOLDER_PATH_CAPACITY 64u
+
+typedef struct VkrEditorAssetLabel {
+  char id[37];
+  char folder[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+  char tags[128]; // Comma-separated.
+} VkrEditorAssetLabel;
+
+typedef struct VkrEditorFolder {
+  char path[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+} VkrEditorFolder;
+
+// Caller-owned arrays of one labels document. Folders list every virtual
+// folder, including empty ones and each labelled folder's ancestors.
+typedef struct VkrEditorContentLabels {
+  VkrEditorAssetLabel *labels;
+  uint32_t label_count;
+  uint32_t label_capacity;
+  VkrEditorFolder *folders;
+  uint32_t folder_count;
+  uint32_t folder_capacity;
+} VkrEditorContentLabels;
+
+// Keeps printable text without JSON delimiters and trims outer spaces.
+void vkr_editor_label_clean(char *out, uint32_t capacity, const uint8_t *text,
+                            uint64_t length);
+
+// Rewrites `path` as clean '/'-separated names: no empty names or outer
+// slashes. Returns false for a path too long to hold.
+bool8_t vkr_editor_folder_normalize(char path[VKR_EDITOR_FOLDER_PATH_CAPACITY]);
+// Whether `path` equals `ancestor` or lies below it; every path lies within
+// the root.
+bool8_t vkr_editor_folder_within(const char *path, const char *ancestor);
+void vkr_editor_folder_parent(const char *path,
+                              char out[VKR_EDITOR_FOLDER_PATH_CAPACITY]);
+// The last name of a path; the root has none.
+const char *vkr_editor_folder_name(const char *path);
+
+// Adds a folder and its ancestors; false when capacity runs out.
+bool8_t vkr_editor_folders_add(VkrEditorContentLabels *doc, const char *path);
+// Moves or renames a folder with its subfolders and items. Fails without
+// change when `to` is inside `from`, already exists, or is the root.
+bool8_t vkr_editor_folders_rename(VkrEditorContentLabels *doc, const char *from,
+                                  const char *to);
+// Removes an empty folder: no subfolders and no items.
+bool8_t vkr_editor_folders_remove(VkrEditorContentLabels *doc,
+                                  const char *path);
+
+// Reads version 1 (labels only) or 2. Entries without a usable id are
+// skipped and labelled folders join the folder list. Any other version fails
+// with an empty document.
+bool8_t vkr_editor_labels_parse(String8 bytes, VkrEditorContentLabels *doc,
+                                VkrEditorProjectError *error);
+
+struct VkrJsonWriter;
+bool8_t vkr_editor_labels_write(struct VkrJsonWriter *writer,
+                                const VkrEditorContentLabels *doc);
+
+// Presets (ADR-076): named values of one component type, stored beside
+// project.json as presets.json. Applying a preset copies its values through
+// the edit journal. Preset types are the live world component types, the
+// three light types and the physics body settings.
+#define VKR_EDITOR_PRESETS_VERSION 1u
+#define VKR_EDITOR_PRESET_MAX 64u
+
+typedef struct VkrEditorPreset {
+  _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+  const VkrTypeDesc *type;
+  char id[37];
+  char name[64];
+} VkrEditorPreset;
+
+// Caller-owned array of one presets document.
+typedef struct VkrEditorPresets {
+  VkrEditorPreset *presets;
+  uint32_t count;
+  uint32_t capacity;
+} VkrEditorPresets;
+
+// The preset type named `name`, or NULL when presets cannot hold it.
+const VkrTypeDesc *vkr_editor_preset_type(String8 name);
+
+// Reads version 1. A record without an id or name, of an unknown type, or
+// whose values fail the type's validation is skipped. Any other version
+// fails with an empty document. `scratch` decodes string properties.
+bool8_t vkr_editor_presets_parse(String8 bytes, VkrEditorPresets *doc,
+                                 VkrAllocator *scratch,
+                                 VkrEditorProjectError *error);
+bool8_t vkr_editor_presets_write(struct VkrJsonWriter *writer,
+                                 const VkrEditorPresets *doc);
 
 /** OS-local jobs directory for read-only workspace runtime projections. */
 bool8_t vkr_editor_project_local_jobs_directory(

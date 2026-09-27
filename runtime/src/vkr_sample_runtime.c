@@ -1,7 +1,9 @@
 #include "vkr_sample_runtime.h"
 #include "core/vkr_json.h"
 #include "core/vkr_subsystem_plan.h"
+#include "filesystem/filesystem.h"
 #include "gameplay/vkr_gameplay_player.h"
+#include "renderer/resources/loaders/scene_loader.h"
 #include "vkr_sample_runtime_config.h"
 
 #include "application/vkr_standard_scene_runtime.h"
@@ -151,6 +153,24 @@ typedef struct State {
   bool8_t graphics_dirty;
   float64_t graphics_changed_at;
   VkrSceneEditState edits;
+  /* Root physics world every loaded scene shares (ADR-076); created with the
+     first attached scene and destroyed after the last one unloads. */
+  VkrScenePhysicsSet *physics_set;
+  /* Root World container (ADR-076): its document, sidecar and journal. */
+  VkrSceneHandle world_handle;
+  VkrSceneEditState world_edits;
+  char world_path[1024];
+  char world_sidecar[1024];
+  char world_status[192];
+  /* Additive scene containers (ADR-076): slot i owns world id i + 1 and
+     picking range i + 1. */
+  VkrSceneHandle additive_handles[VKR_SCENE_ADDITIVE_MAX];
+  /* Resource loads backing additive slots; pending until they resolve. */
+  VkrResourceHandleInfo additive_resources[VKR_SCENE_ADDITIVE_MAX];
+  bool8_t additive_pending[VKR_SCENE_ADDITIVE_MAX];
+  VkrSceneEditState additive_edits[VKR_SCENE_ADDITIVE_MAX];
+  char additive_paths[VKR_SCENE_ADDITIVE_MAX][1024];
+  char additive_sidecars[VKR_SCENE_ADDITIVE_MAX][1024];
   String8 scene_path;
   char scene_path_storage[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   char sidecar_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
@@ -236,23 +256,25 @@ typedef struct State {
 
 vkr_global State *state = NULL;
 
+static uint32_t sample_additive_slot(VkrEntityId entity);
+static void sample_physics_attach(VkrStandardSceneRuntime *application,
+                                  VkrScene *scene, bool8_t driver);
+vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application);
+static bool8_t sample_additive_dirty(uint32_t slot);
+vkr_internal void sample_additive_remove(VkrStandardSceneRuntime *application,
+                                         uint32_t slot);
+
 static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
                                        const VkrGraphicsSettings *settings) {
+  /* Quality gates only; the scene's post_process component owns grading and
+     effect strengths (ADR-076). */
   VkrFrameGlobals *globals = &application->globals;
-  globals->exposure_compensation_ev = settings->brightness;
-  globals->white_balance_temperature = settings->temperature;
-  globals->white_balance_tint = settings->tint;
-  globals->color_contrast = settings->contrast;
-  globals->color_saturation = settings->saturation;
-  globals->image_sharpness = settings->sharpness;
   globals->bloom_enabled = settings->bloom;
-  globals->bloom_intensity = settings->bloom_intensity;
   globals->gtao_enabled = settings->ambient_occlusion;
   globals->ssr_enabled = settings->screen_space_reflections;
   globals->ssgi_enabled = settings->screen_space_gi;
   globals->dof_enabled = settings->depth_of_field;
   globals->motion_blur_enabled = settings->motion_blur;
-  globals->motion_blur_shutter_angle = settings->motion_blur_amount * 360.0f;
   application->disable_directional_shadows = settings->shadow_quality == 0;
   application->disable_local_shadows =
       settings->shadow_quality == 0 || !settings->local_shadows;
@@ -1033,37 +1055,25 @@ vkr_internal void vkr_standard_scene_runtime_clear_gizmo_selection(
   state->gizmo_drag.uses_text_pivot = false_v;
 }
 
+/* The entity a picked world text slot belongs to, when it lives in
+   `scene`. */
 vkr_internal bool8_t vkr_standard_scene_runtime_world_text_entity_from_id(
-    VkrScene *scene, uint32_t text_id, VkrEntityId *out_entity) {
-  if (!scene || !scene->world || !out_entity) {
+    VkrStandardSceneRuntime *application, VkrScene *scene, uint32_t text_id,
+    VkrEntityId *out_entity) {
+  const VkrWorldResources *resources = &application->assets.world_resources;
+  if (!scene || !scene->world || !out_entity ||
+      text_id >= resources->text_slots.length ||
+      !resources->text_slots.data[text_id].active) {
     return false_v;
   }
-
-  VkrWorld *world = scene->world;
-  if (text_id >= world->dir.capacity) {
-    return false_v;
-  }
-
-  uint16_t generation = world->dir.generations[text_id];
-  if (generation == 0) {
-    return false_v;
-  }
-
-  VkrEntityId candidate = {
-      .parts = {.index = text_id,
-                .generation = generation,
-                .world = world->world_id},
-  };
-  if (!vkr_entity_is_alive(world, candidate)) {
-    return false_v;
-  }
-
-  SceneText3D *text = vkr_scene_get_text3d(scene, candidate);
+  const VkrEntityId owner = resources->text_slots.data[text_id].owner;
+  const SceneText3D *text = vkr_entity_is_alive(scene->world, owner)
+                                ? vkr_scene_get_text3d(scene, owner)
+                                : NULL;
   if (!text || text->text_index != text_id) {
     return false_v;
   }
-
-  *out_entity = candidate;
+  *out_entity = owner;
   return true_v;
 }
 
@@ -1737,6 +1747,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     vkr_scene_edit_reset(&state->edits,
                          &application->ui_system.retained_allocator,
                          application->scene_generation);
+    sample_physics_attach(application, scene, true_v);
     const char *physics_root_error = NULL;
     if (!vkr_scene_physics_set_asset_root(
             scene,
@@ -2876,7 +2887,8 @@ static bool8_t sample_gameplay_start(VkrStandardSceneRuntime *application) {
       vkr_scene_set_visibility(scene, entity, false_v, false_v);
     } else {
       VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
-      body.motion = i == 1 || i == 5 ? VKR_PHYSICS_STATIC : VKR_PHYSICS_DYNAMIC;
+      body.body.motion =
+          i == 1 || i == 5 ? VKR_PHYSICS_STATIC : VKR_PHYSICS_DYNAMIC;
       body.colliders[0].half_extent = vec3_scale(shape.dimensions, .5f);
       if (!vkr_scene_physics_apply(scene, entity, &body, &error)) {
         goto fail;
@@ -3061,6 +3073,21 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     vkr_scene_handle_update_and_sync(state->scene_resource.as.scene,
                                      &application->assets, delta_time);
   }
+  /* The World's transforms and render products follow its edits; it has no
+     simulation of its own (ADR-076). */
+  if (state->world_handle) {
+    vkr_scene_handle_update_and_sync(state->world_handle, &application->assets,
+                                     0.0);
+  }
+  /* Additive scenes render beside the active scene; their simulation and
+     physics stay paused (ADR-076). */
+  sample_additive_poll(application);
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (state->additive_handles[i]) {
+      vkr_scene_handle_update_and_sync(state->additive_handles[i],
+                                       &application->assets, 0.0);
+    }
+  }
   if (!vkr_scene_physics_sensor_events(application->active_scene,
                                        state->physics_sensor_events,
                                        ArrayCount(state->physics_sensor_events),
@@ -3084,7 +3111,23 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     SceneTransform *transform =
         scene ? vkr_scene_get_transform(scene, state->selected_entity) : NULL;
     if (!transform) {
-      vkr_standard_scene_runtime_clear_gizmo_selection(application);
+      /* Unplaced entities such as fog or the sky stay selected for Details;
+         only a destroyed entity loses the selection. */
+      const uint32_t additive = sample_additive_slot(state->selected_entity);
+      const bool8_t alive =
+          (scene && vkr_scene_entity_alive(scene, state->selected_entity)) ||
+          (application->world_scene &&
+           vkr_scene_entity_alive(application->world_scene,
+                                  state->selected_entity)) ||
+          (additive < VKR_SCENE_ADDITIVE_MAX &&
+           vkr_scene_entity_alive(
+               vkr_scene_handle_get_scene(state->additive_handles[additive]),
+               state->selected_entity));
+      if (!alive) {
+        vkr_standard_scene_runtime_clear_gizmo_selection(application);
+      } else {
+        vkr_gizmo_system_clear_target(&application->gizmo_system);
+      }
       return;
     }
 
@@ -3265,14 +3308,22 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
         picked_text = string8_lit("Picked: unknown");
       } else if (decoded.kind == VKR_PICKING_ID_KIND_SCENE) {
         VkrEntityId entity = VKR_ENTITY_ID_INVALID;
-        entity = vkr_scene_handle_entity_from_picking_id(
-            state->scene_resource.as.scene, result.object_id);
+        VkrSceneHandle picked_handle = state->scene_resource.as.scene;
+        entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
+                                                         result.object_id);
+        /* Each additive container owns its own picking range. */
+        for (uint32_t i = 0; !entity.u64 && i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+          if (state->additive_handles[i]) {
+            picked_handle = state->additive_handles[i];
+            entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
+                                                             result.object_id);
+          }
+        }
 
         if (entity.u64 != VKR_ENTITY_ID_INVALID.u64) {
           picked_entity = entity;
           picked_entity_valid = true_v;
-          VkrScene *scene =
-              vkr_scene_handle_get_scene(state->scene_resource.as.scene);
+          VkrScene *scene = vkr_scene_handle_get_scene(picked_handle);
           String8 name =
               scene ? vkr_scene_get_name(scene, entity) : (String8){0};
           if (name.length > 0) {
@@ -3294,7 +3345,7 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
             vkr_scene_handle_get_scene(state->scene_resource.as.scene);
         VkrEntityId text_entity = VKR_ENTITY_ID_INVALID;
         if (scene && vkr_standard_scene_runtime_world_text_entity_from_id(
-                         scene, decoded.value, &text_entity)) {
+                         application, scene, decoded.value, &text_entity)) {
           picked_entity = text_entity;
           picked_entity_valid = true_v;
           String8 name =
@@ -3645,6 +3696,7 @@ typedef struct VkrSampleUiRequests {
   VkrSamplePhysicsRequest physics_request;
   VkrSceneEditRequest scene_edit;
   VkrSampleSceneRequest scene_request;
+  VkrSampleWorldRequest world_request;
   VkrSampleEditorStateRequest editor_state_request;
   VkrSampleCloseResponse close_response;
   bool8_t quit;
@@ -3717,6 +3769,11 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .edits = &state->edits,
       .scene_edit = &requests->scene_edit,
       .scene_request = &requests->scene_request,
+      .world = application->world_scene,
+      .world_edits = &state->world_edits,
+      .world_request = &requests->world_request,
+      .world_status = string8_create_from_cstr(
+          (const uint8_t *)state->world_status, strlen(state->world_status)),
       .runtime_preferences = sample_preferences_snapshot(application),
       .scene_recall = sample_recall_snapshot(application),
       .editor_state_request = &requests->editor_state_request,
@@ -3732,6 +3789,16 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scene_only = application->editor_viewport.scene_only,
       .mouse_captured = vkr_window_is_mouse_captured(&application->host.window),
   };
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (state->additive_handles[i]) {
+      frame.additive[i] =
+          vkr_scene_handle_get_scene(state->additive_handles[i]);
+      frame.additive_edits[i] = &state->additive_edits[i];
+      frame.additive_names[i] =
+          string8_create_from_cstr((const uint8_t *)state->additive_paths[i],
+                                   strlen(state->additive_paths[i]));
+    }
+  }
   if (application->editor_viewport.enabled) {
     frame.mapping_valid = vkr_standard_scene_runtime_editor_viewport_mapping(
         application, application->ui_system.target_width,
@@ -3740,12 +3807,367 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
   return state->ui.build(state->ui.state, &frame);
 }
 
+/* ---- Root World container (ADR-076) ---- */
+
+/* Joins a newly published scene to the shared physics world before its
+   sidecar can create bodies. A failure leaves the scene on a private world. */
+static void sample_physics_attach(VkrStandardSceneRuntime *application,
+                                  VkrScene *scene, bool8_t driver) {
+  if (!state->physics_set) {
+    state->physics_set =
+        vkr_scene_physics_set_create(&application->assets.allocator);
+  }
+  const char *error = NULL;
+  if (!state->physics_set ||
+      !vkr_scene_physics_attach(scene, state->physics_set, driver, &error)) {
+    log_warn("Scene keeps a private physics world: %s",
+             error ? error : "the physics set could not be created");
+  }
+}
+
+static bool8_t sample_world_dirty(void) {
+  return state->world_handle &&
+         state->world_edits.revision != state->world_edits.saved_revision;
+}
+
+/* Waits for GPU work before release: with no scene loaded the World renders
+   alone and owns the published sky products. */
+vkr_internal void sample_world_unload(VkrStandardSceneRuntime *application) {
+  if (!state->world_handle) {
+    return;
+  }
+  if (state->has_selection &&
+      state->selected_entity.parts.world == VKR_SCENE_WORLD_ROOT_ID) {
+    vkr_standard_scene_runtime_clear_gizmo_selection(application);
+  }
+  if (application->active_scene) {
+    vkr_scene_set_world_fallback(application->active_scene, NULL);
+  }
+  if (vkr_renderer_wait_idle(&application->renderer) !=
+      VKR_RENDERER_ERROR_NONE) {
+    application->last_renderer_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+  application->world_scene = NULL;
+  vkr_scene_handle_destroy(state->world_handle, &application->assets);
+  state->world_handle = NULL;
+  vkr_scene_edit_reset(&state->world_edits,
+                       &application->ui_system.retained_allocator, 0u);
+}
+
+vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
+                                       String8 path, String8 sidecar) {
+  if (path.length >= sizeof(state->world_path) ||
+      sidecar.length >= sizeof(state->world_sidecar)) {
+    snprintf(state->world_status, sizeof(state->world_status),
+             "World path is too long.");
+    return false_v;
+  }
+  sample_world_unload(application);
+  MemZero(state->world_path, sizeof(state->world_path));
+  MemZero(state->world_sidecar, sizeof(state->world_sidecar));
+  MemCopy(state->world_path, path.str, path.length);
+  MemCopy(state->world_sidecar, sidecar.str, sidecar.length);
+
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  VkrSceneHandle handle =
+      vkr_scene_handle_create(&application->assets.allocator,
+                              VKR_SCENE_WORLD_ROOT_ID, 64u, 64u, &error);
+  if (!handle) {
+    snprintf(state->world_status, sizeof(state->world_status),
+             "World could not be created (%d).", (int)error);
+    return false_v;
+  }
+  VkrScene *world = vkr_scene_handle_get_scene(handle);
+  const FilePath document = {
+      .path = string8_create_from_cstr((const uint8_t *)state->world_path,
+                                       strlen(state->world_path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (state->world_path[0] && file_exists(&document) &&
+      !vkr_scene_load_from_file(world, &application->assets, document.path,
+                                &application->assets.scratch_allocator, NULL,
+                                &error)) {
+    vkr_scene_handle_destroy(handle, &application->assets);
+    snprintf(state->world_status, sizeof(state->world_status),
+             "World document could not be loaded (%d).", (int)error);
+    return false_v;
+  }
+  (void)vkr_scene_resolve_world(world);
+  state->world_handle = handle;
+  application->world_scene = world;
+  sample_physics_attach(application, world, false_v);
+  vkr_scene_edit_reset(&state->world_edits,
+                       &application->ui_system.retained_allocator, 1u);
+  if (state->world_sidecar[0]) {
+    (void)vkr_scene_edit_load(
+        &state->world_edits, world,
+        string8_create_from_cstr((const uint8_t *)state->world_sidecar,
+                                 strlen(state->world_sidecar)));
+  }
+  /* The World owns collision layers: loaded scenes take its settings. */
+  (void)vkr_scene_collision_layers_share(world, NULL);
+  /* Opened alone, the World is framed like a blank level: standing above the
+     ground grid, looking slightly down toward -Z. */
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (!application->active_scene && camera) {
+    vkr_camera_set_pose(camera, vec3_new(0.0f, 2.5f, 8.0f), -90.0f, -15.0f);
+    vkr_camera_system_update(camera);
+  }
+  state->world_status[0] = '\0';
+  return true_v;
+}
+
+vkr_internal void sample_world_save(void) {
+  if (!state->world_handle || !state->world_sidecar[0] ||
+      !sample_world_dirty()) {
+    return;
+  }
+  if (!vkr_scene_edit_save(
+          &state->world_edits, vkr_scene_handle_get_scene(state->world_handle),
+          string8_create_from_cstr((const uint8_t *)state->world_sidecar,
+                                   strlen(state->world_sidecar)))) {
+    snprintf(state->world_status, sizeof(state->world_status), "%s",
+             state->world_edits.status);
+  }
+}
+
+vkr_internal void sample_world_request(VkrStandardSceneRuntime *application,
+                                       const VkrSampleWorldRequest *request) {
+  if (request->save) {
+    sample_world_save();
+  }
+  if ((request->load || request->unload) && sample_world_dirty() &&
+      !request->discard_edits) {
+    snprintf(state->world_status, sizeof(state->world_status),
+             "Save or discard World edits first.");
+    return;
+  }
+  /* Closing a project closes every container: added scenes go with the
+     World they belong to. */
+  if (request->unload || request->load) {
+    for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+      if (sample_additive_dirty(i) && !request->discard_edits) {
+        snprintf(state->world_status, sizeof(state->world_status),
+                 "Save or discard added scene edits first.");
+        return;
+      }
+    }
+    for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+      sample_additive_remove(application, i);
+    }
+  }
+  if (request->unload) {
+    sample_world_unload(application);
+  } else if (request->load) {
+    (void)sample_world_load(application, request->path, request->sidecar_path);
+  }
+}
+
+/* ---- Additive scene containers (ADR-076) ---- */
+
+static bool8_t sample_additive_dirty(uint32_t slot) {
+  return state->additive_handles[slot] &&
+         state->additive_edits[slot].revision !=
+             state->additive_edits[slot].saved_revision;
+}
+
+/* Rebuilds the runtime's list of rendered additive scenes. */
+vkr_internal void
+sample_additive_publish(VkrStandardSceneRuntime *application) {
+  application->additive_count = 0u;
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (state->additive_handles[i]) {
+      application->additive_scenes[application->additive_count++] =
+          vkr_scene_handle_get_scene(state->additive_handles[i]);
+    }
+  }
+}
+
+/* Slot of an entity's additive container, or VKR_SCENE_ADDITIVE_MAX. */
+static uint32_t sample_additive_slot(VkrEntityId entity) {
+  const uint32_t world = entity.parts.world;
+  if (!entity.u64 || world == 0u || world > VKR_SCENE_ADDITIVE_MAX ||
+      !state->additive_handles[world - 1u]) {
+    return VKR_SCENE_ADDITIVE_MAX;
+  }
+  return world - 1u;
+}
+
+static String8 sample_additive_path(uint32_t slot) {
+  return string8_create_from_cstr((const uint8_t *)state->additive_paths[slot],
+                                  strlen(state->additive_paths[slot]));
+}
+
+/* Releases a slot's scene and resource after GPU work that may use its
+   instances completes. */
+vkr_internal void sample_additive_remove(VkrStandardSceneRuntime *application,
+                                         uint32_t slot) {
+  if (slot >= VKR_SCENE_ADDITIVE_MAX ||
+      (!state->additive_handles[slot] && !state->additive_pending[slot])) {
+    return;
+  }
+  if (state->has_selection && state->selected_entity.parts.world == slot + 1u) {
+    vkr_standard_scene_runtime_clear_gizmo_selection(application);
+  }
+  if (vkr_renderer_wait_idle(&application->renderer) !=
+      VKR_RENDERER_ERROR_NONE) {
+    application->last_renderer_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+  const String8 path = sample_additive_path(slot);
+  vkr_resource_system_unload(&state->additive_resources[slot], path);
+  (void)vkr_scene_loader_request_container(&application->assets, path, 0u);
+  state->additive_resources[slot] = (VkrResourceHandleInfo){0};
+  state->additive_handles[slot] = NULL;
+  state->additive_pending[slot] = false_v;
+  state->additive_paths[slot][0] = '\0';
+  state->additive_sidecars[slot][0] = '\0';
+  vkr_scene_edit_reset(&state->additive_edits[slot],
+                       &application->ui_system.retained_allocator, 0u);
+  sample_additive_publish(application);
+}
+
+/* Starts loading a scene beside the active one through the resource system;
+   the loader creates it with the slot's world id and picking range. */
+vkr_internal bool8_t sample_additive_add(VkrStandardSceneRuntime *application,
+                                         String8 path, String8 sidecar) {
+  uint32_t slot = VKR_SCENE_ADDITIVE_MAX;
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    const bool8_t used =
+        state->additive_handles[i] || state->additive_pending[i];
+    if (used && strlen(state->additive_paths[i]) == path.length &&
+        MemCompare(state->additive_paths[i], path.str, path.length) == 0) {
+      snprintf(state->scene_status, sizeof(state->scene_status),
+               "That scene is already added.");
+      return false_v;
+    }
+    if (!used && slot == VKR_SCENE_ADDITIVE_MAX) {
+      slot = i;
+    }
+  }
+  if (slot == VKR_SCENE_ADDITIVE_MAX) {
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "At most %u scenes can be added.", VKR_SCENE_ADDITIVE_MAX);
+    return false_v;
+  }
+  /* A path is one resource: the active scene cannot also be added. */
+  if (!path.length || path.length >= sizeof(state->additive_paths[slot]) ||
+      sidecar.length >= sizeof(state->additive_sidecars[slot]) ||
+      (state->scene_path.length == path.length &&
+       MemCompare(state->scene_path.str, path.str, path.length) == 0)) {
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "Invalid additive scene path, or it is the active scene.");
+    return false_v;
+  }
+  MemZero(state->additive_paths[slot], sizeof(state->additive_paths[slot]));
+  MemZero(state->additive_sidecars[slot],
+          sizeof(state->additive_sidecars[slot]));
+  MemCopy(state->additive_paths[slot], path.str, path.length);
+  MemCopy(state->additive_sidecars[slot], sidecar.str, sidecar.length);
+  const String8 stored = sample_additive_path(slot);
+  if (!vkr_scene_loader_request_container(&application->assets, stored,
+                                          (uint16_t)(slot + 1u))) {
+    state->additive_paths[slot][0] = '\0';
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "Too many additive scene requests.");
+    return false_v;
+  }
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, stored,
+                                &application->frame_allocator,
+                                &state->additive_resources[slot], &error)) {
+    (void)vkr_scene_loader_request_container(&application->assets, stored, 0u);
+    state->additive_paths[slot][0] = '\0';
+    const String8 message = vkr_renderer_get_error_string(error);
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "Additive scene load failed: %.*s", (int)message.length,
+             message.str);
+    return false_v;
+  }
+  state->additive_pending[slot] = true_v;
+  return true_v;
+}
+
+/* Activates additive loads that resolved and reports ones that failed. */
+vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application) {
+  for (uint32_t slot = 0; slot < VKR_SCENE_ADDITIVE_MAX; ++slot) {
+    if (!state->additive_pending[slot]) {
+      continue;
+    }
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    const VkrResourceLoadState load =
+        vkr_resource_system_get_state(&state->additive_resources[slot], &error);
+    if (load == VKR_RESOURCE_LOAD_STATE_FAILED ||
+        load == VKR_RESOURCE_LOAD_STATE_CANCELED) {
+      const String8 message = vkr_renderer_get_error_string(error);
+      snprintf(state->scene_status, sizeof(state->scene_status),
+               "Additive scene load failed: %.*s", (int)message.length,
+               message.str);
+      sample_additive_remove(application, slot);
+      continue;
+    }
+    VkrResourceHandleInfo resolved = {0};
+    if (load != VKR_RESOURCE_LOAD_STATE_READY ||
+        !vkr_resource_system_try_get_resolved(&state->additive_resources[slot],
+                                              &resolved) ||
+        !resolved.as.scene) {
+      continue;
+    }
+    state->additive_resources[slot] = resolved;
+    state->additive_handles[slot] = resolved.as.scene;
+    state->additive_pending[slot] = false_v;
+    VkrScene *scene = vkr_scene_handle_get_scene(resolved.as.scene);
+    vkr_scene_physics_set_paused(scene, true_v);
+    sample_physics_attach(application, scene, false_v);
+    (void)vkr_scene_resolve_world(scene);
+    vkr_scene_edit_reset(&state->additive_edits[slot],
+                         &application->ui_system.retained_allocator, 1u);
+    if (state->additive_sidecars[slot][0]) {
+      (void)vkr_scene_edit_load(
+          &state->additive_edits[slot], scene,
+          string8_create_from_cstr(
+              (const uint8_t *)state->additive_sidecars[slot],
+              strlen(state->additive_sidecars[slot])));
+    }
+    sample_additive_publish(application);
+  }
+}
+
+vkr_internal void sample_additive_save(void) {
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (sample_additive_dirty(i) && state->additive_sidecars[i][0]) {
+      (void)vkr_scene_edit_save(
+          &state->additive_edits[i],
+          vkr_scene_handle_get_scene(state->additive_handles[i]),
+          string8_create_from_cstr((const uint8_t *)state->additive_sidecars[i],
+                                   strlen(state->additive_sidecars[i])));
+    }
+  }
+}
+
 /* Switches or unloads the scene the UI selected, unless unsaved edits or an
    invalid path block it. */
 vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
     VkrStandardSceneRuntime *application,
     const VkrSampleSceneRequest *scene_request,
     VkrSceneEditRequest *scene_edit) {
+  if (scene_request->add) {
+    (void)sample_additive_add(application, scene_request->path,
+                              scene_request->sidecar_path);
+    return;
+  }
+  if (scene_request->remove) {
+    const uint32_t slot = scene_request->container - 1u;
+    if (slot >= VKR_SCENE_ADDITIVE_MAX) {
+      return;
+    }
+    if (sample_additive_dirty(slot) && !scene_request->discard_edits) {
+      snprintf(state->scene_status, sizeof(state->scene_status),
+               "Save or discard that scene's edits before removing it.");
+      return;
+    }
+    sample_additive_remove(application, slot);
+    return;
+  }
   if (scene_request->select || scene_request->unload) {
     vkr_standard_scene_runtime_finish_gizmo_edit(application);
     if (!scene_request->discard_edits &&
@@ -3799,10 +4221,186 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
   }
 }
 
+/* Structure requests (ADR-076) go to the container their entity or parent
+   lives in; a root creation names its container. Returns false for other
+   actions. */
+static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
+                                     const VkrSceneEditRequest *request) {
+  const VkrSceneEditAction action = request->action;
+  if (action != VKR_SCENE_EDIT_ADD_COMPONENT &&
+      action != VKR_SCENE_EDIT_REMOVE_COMPONENT &&
+      action != VKR_SCENE_EDIT_CREATE && action != VKR_SCENE_EDIT_DELETE &&
+      action != VKR_SCENE_EDIT_REPARENT &&
+      action != VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS) {
+    return false_v;
+  }
+  const VkrEntityId anchor =
+      action == VKR_SCENE_EDIT_CREATE ? request->parent : request->entity;
+  const uint32_t world = anchor.u64 ? anchor.parts.world : request->container;
+  VkrScene *scene = NULL;
+  VkrSceneEditState *edits = NULL;
+  if (world == VKR_SCENE_WORLD_ROOT_ID) {
+    scene = application->world_scene;
+    edits = &state->world_edits;
+  } else if (world == 0u) {
+    scene = application->active_scene;
+    edits = &state->edits;
+  } else if (world <= VKR_SCENE_ADDITIVE_MAX &&
+             state->additive_handles[world - 1u]) {
+    scene = vkr_scene_handle_get_scene(state->additive_handles[world - 1u]);
+    edits = &state->additive_edits[world - 1u];
+  }
+  if (!scene) {
+    return true_v;
+  }
+  switch (action) {
+  case VKR_SCENE_EDIT_ADD_COMPONENT:
+    (void)vkr_scene_edit_add_component(edits, scene, request->entity,
+                                       request->values.component_type,
+                                       request->values.component);
+    break;
+  case VKR_SCENE_EDIT_REMOVE_COMPONENT:
+    (void)vkr_scene_edit_remove_component(edits, scene, request->entity,
+                                          request->values.component_type);
+    break;
+  case VKR_SCENE_EDIT_CREATE: {
+    /* A root object without a placement appears in front of the camera. */
+    VkrSceneEditValues values = request->values;
+    const VkrCamera *camera = vkr_camera_registry_get_by_handle(
+        &application->camera_system, application->active_camera);
+    if (!(values.fields & VKR_SCENE_EDIT_TRANSFORM) && !request->parent.u64 &&
+        camera) {
+      values.fields |= VKR_SCENE_EDIT_TRANSFORM;
+      values.position =
+          vec3_add(camera->position, vec3_scale(camera->forward, 5.0f));
+      values.rotation = vkr_quat_identity();
+      values.scale = vec3_one();
+    }
+    const VkrEntityId entity =
+        vkr_scene_edit_create(edits, scene, request->parent, &values);
+    if (entity.u64) {
+      vkr_standard_scene_runtime_cancel_gizmo_pick(application);
+      vkr_standard_scene_runtime_clear_gizmo_handles(application);
+      state->gizmo_drag.active = false_v;
+      state->selected_entity = entity;
+      state->has_selection = true_v;
+    }
+    break;
+  }
+  case VKR_SCENE_EDIT_DELETE:
+    if (vkr_scene_edit_delete(edits, scene, request->entity) &&
+        state->selected_entity.u64 == request->entity.u64) {
+      vkr_standard_scene_runtime_clear_gizmo_handles(application);
+      state->gizmo_drag.active = false_v;
+      state->selected_entity = VKR_ENTITY_ID_INVALID;
+      state->has_selection = false_v;
+    }
+    break;
+  case VKR_SCENE_EDIT_REPARENT:
+    (void)vkr_scene_edit_reparent(edits, scene, request->entity,
+                                  request->parent);
+    break;
+  case VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS:
+    (void)vkr_scene_edit_apply_scene_settings(edits, scene,
+                                              &request->scene_settings);
+    break;
+  default:
+    break;
+  }
+  return true_v;
+}
+
 vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
     VkrStandardSceneRuntime *application,
     const VkrSceneEditRequest *scene_edit) {
+  if (sample_structure_edit(application, scene_edit)) {
+    return;
+  }
+  /* The World owns the shared collision layers when loaded (ADR-076). */
+  if (scene_edit->action == VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS &&
+      application->world_scene) {
+    (void)vkr_scene_edit_apply_collision_layers(&state->world_edits,
+                                                application->world_scene,
+                                                scene_edit->collision_layers);
+    return;
+  }
+  /* Root World and additive entities carry their container's world id;
+     their edits use that container's journal (ADR-076). */
+  VkrScene *world = application->world_scene;
+  VkrScene *container = NULL;
+  VkrSceneEditState *container_edits = NULL;
+  const uint32_t additive = sample_additive_slot(scene_edit->entity);
+  if (world && scene_edit->entity.u64 &&
+      scene_edit->entity.parts.world == VKR_SCENE_WORLD_ROOT_ID) {
+    container = world;
+    container_edits = &state->world_edits;
+  } else if (additive < VKR_SCENE_ADDITIVE_MAX) {
+    container = vkr_scene_handle_get_scene(state->additive_handles[additive]);
+    container_edits = &state->additive_edits[additive];
+  }
+  if (container && (scene_edit->action == VKR_SCENE_EDIT_SELECT ||
+                    scene_edit->action == VKR_SCENE_EDIT_APPLY)) {
+    if (scene_edit->action == VKR_SCENE_EDIT_SELECT &&
+        vkr_scene_entity_alive(container, scene_edit->entity)) {
+      vkr_standard_scene_runtime_cancel_gizmo_pick(application);
+      vkr_standard_scene_runtime_clear_gizmo_handles(application);
+      state->gizmo_drag.active = false_v;
+      state->selected_entity = scene_edit->entity;
+      state->has_selection = true_v;
+    } else if (scene_edit->action == VKR_SCENE_EDIT_APPLY) {
+      (void)vkr_scene_edit_apply_gesture(
+          container_edits, container, scene_edit->entity, &scene_edit->values,
+          scene_edit->gesture);
+    }
+    return;
+  }
+  /* Undo and redo follow the most recent edit across every journal. */
+  if (scene_edit->action == VKR_SCENE_EDIT_UNDO ||
+      scene_edit->action == VKR_SCENE_EDIT_REDO) {
+    const bool8_t redo = scene_edit->action == VKR_SCENE_EDIT_REDO;
+    VkrSceneEditState *best_edits =
+        application->active_scene ? &state->edits : NULL;
+    VkrScene *best_scene = application->active_scene;
+    uint64_t best =
+        best_edits ? vkr_scene_edit_next_sequence(best_edits, redo) : 0u;
+    VkrSceneEditState *candidates[VKR_SCENE_ADDITIVE_MAX + 1u];
+    VkrScene *candidate_scenes[VKR_SCENE_ADDITIVE_MAX + 1u];
+    uint32_t candidate_count = 0u;
+    if (world) {
+      candidates[candidate_count] = &state->world_edits;
+      candidate_scenes[candidate_count++] = world;
+    }
+    for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+      if (state->additive_handles[i]) {
+        candidates[candidate_count] = &state->additive_edits[i];
+        candidate_scenes[candidate_count++] =
+            vkr_scene_handle_get_scene(state->additive_handles[i]);
+      }
+    }
+    for (uint32_t i = 0; i < candidate_count; ++i) {
+      const uint64_t next = vkr_scene_edit_next_sequence(candidates[i], redo);
+      if (next && (!best || (redo ? next < best : next > best))) {
+        best = next;
+        best_edits = candidates[i];
+        best_scene = candidate_scenes[i];
+      }
+    }
+    if (best_edits != &state->edits) {
+      if (best_edits) {
+        (void)vkr_scene_edit_undo(best_edits, best_scene, redo);
+      }
+      return;
+    }
+  }
+  if (scene_edit->action == VKR_SCENE_EDIT_SAVE) {
+    sample_world_save();
+    sample_additive_save();
+  }
   VkrScene *scene = application->active_scene;
+  /* Framing measures the entity in its own container. */
+  if (container && scene_edit->action == VKR_SCENE_EDIT_FRAME) {
+    scene = container;
+  }
   if (scene) {
     switch (scene_edit->action) {
     case VKR_SCENE_EDIT_SELECT:
@@ -4132,6 +4730,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   }
   vkr_standard_scene_runtime_apply_scene_request(
       application, &requests.scene_request, &requests.scene_edit);
+  sample_world_request(application, &requests.world_request);
   if (state->gizmo_drag.active &&
       (requests.scene_edit.action != VKR_SCENE_EDIT_NONE ||
        requests.transport_action == VKR_SAMPLE_TRANSPORT_STOP_RENDERING))
@@ -4184,7 +4783,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
 static void
 vkr_standard_scene_runtime_project_ui(VkrStandardSceneRuntime *application,
                                       const VkrViewportMapping *mapping) {
-  const VkrSampleUiFrame frame = {
+  VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
       .view_state = state->view_state,
       .mapping = *mapping,
@@ -4192,11 +4791,20 @@ vkr_standard_scene_runtime_project_ui(VkrStandardSceneRuntime *application,
       .view_projection =
           mat4_mul(application->globals.projection, application->globals.view),
       .scene = application->active_scene,
+      .world = application->world_scene,
       .scene_generation = application->scene_generation,
       .scene_rendering_stopped =
           vkr_standard_scene_runtime_editor_scene_rendering_stopped(
               application),
   };
+  /* Containers still loaded after this frame's edits; projection must not
+     touch one removed since the UI build. */
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (state->additive_handles[i]) {
+      frame.additive[i] =
+          vkr_scene_handle_get_scene(state->additive_handles[i]);
+    }
+  }
   state->ui.project_scene(state->ui.state, &frame);
 }
 
@@ -4284,6 +4892,8 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
       .render_mode = application->globals.render_mode,
       .grid_spacing = 1.0f,
       .camera_speed = 1.0f,
+      /* A blank level shows its ground grid (ADR-076). */
+      .grid_enabled = true_v,
   };
   state->app_arena = application->app_arena;
   state->event_arena = application->host.events.arena;
@@ -4317,6 +4927,12 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
   }
   state->edits = (VkrSceneEditState){
       .allocator = &application->ui_system.retained_allocator};
+  state->world_edits = (VkrSceneEditState){
+      .allocator = &application->ui_system.retained_allocator};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    state->additive_edits[i] = (VkrSceneEditState){
+        .allocator = &application->ui_system.retained_allocator};
+  }
   state->gizmo_edit_pending = false_v;
   application->editor_viewport.simulation_running =
       !runtime_config->presentation.paneled;
@@ -4575,6 +5191,12 @@ int vkr_sample_runtime_run(int argc, char **argv,
   }
 
   vkr_standard_scene_runtime_unload_scene_system(&application);
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    sample_additive_remove(&application, i);
+  }
+  sample_world_unload(&application);
+  vkr_scene_physics_set_destroy(state->physics_set);
+  state->physics_set = NULL;
   if (application.last_renderer_error == VKR_RENDERER_ERROR_DEVICE_ERROR)
     exit_code = 5;
 

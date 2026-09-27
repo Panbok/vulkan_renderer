@@ -116,7 +116,7 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
   assert(vkr_scene_set_transform(&scene, floor, vec3_new(0, -.5f, 0),
                                  vkr_quat_identity(), vec3_one()));
   VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
-  body.motion = VKR_PHYSICS_STATIC;
+  body.body.motion = VKR_PHYSICS_STATIC;
   body.colliders[0].half_extent = vec3_new(20, .5f, 20);
   assert(vkr_scene_physics_apply(&scene, floor, &body, NULL));
   // A target on yaw .32 radians; the final yaw zero ray cannot hit this box.
@@ -315,7 +315,7 @@ bool32_t run_gameplay_player_tests(void) {
   assert(vkr_scene_set_transform(&scene, floor, vec3_new(0, -.5f, 0),
                                  vkr_quat_identity(), vec3_one()));
   VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
-  body.motion = VKR_PHYSICS_STATIC;
+  body.body.motion = VKR_PHYSICS_STATIC;
   body.colliders[0].half_extent = vec3_new(20, .5f, 20);
   assert(vkr_scene_physics_apply(&scene, floor, &body, NULL));
   VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);

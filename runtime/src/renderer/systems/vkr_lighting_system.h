@@ -58,6 +58,11 @@ void vkr_lighting_system_shutdown(VkrLightingSystem *system);
 void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
                                          const VkrScene *scene);
 
+/** Append an additive scene's point and rectangle lights after a sync; its
+ * directional light and sun do not replace the rendered scene's (ADR-076). */
+void vkr_lighting_system_append_scene(VkrLightingSystem *system,
+                                      const VkrScene *scene);
+
 /** Lights with the frame's atmosphere sun: `settings` pairs the published
  * medium with the scene's current sun, and `irradiance` is that sun
  * attenuated to the observer. */

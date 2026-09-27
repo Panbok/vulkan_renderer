@@ -43,9 +43,18 @@ void vkr_scene_collision_layers_commit(
 void vkr_scene_collision_layers_discard(
     VkrSceneCollisionLayersPrepared *prepared);
 /* Paused, transactional settings + all affected bodies; no partial publication.
- */
+   The layers owner of a physics set also applies them to every member, and
+   restores every member when one fails. */
 bool8_t
 vkr_scene_collision_layers_apply(VkrScene *scene,
                                  const VkrSceneCollisionLayers *settings,
                                  const char **error);
+/* Take `settings` as the scene's layers without rebuilding bodies; for a
+   scene joining a physics set before it has any. */
+bool8_t
+vkr_scene_collision_layers_adopt(VkrScene *scene,
+                                 const VkrSceneCollisionLayers *settings);
+/* Apply the layers owner's settings to every other member of its physics set
+   (ADR-076); a no-op outside a set. */
+bool8_t vkr_scene_collision_layers_share(VkrScene *owner, const char **error);
 void vkr_scene_collision_layers_shutdown(VkrScene *scene);

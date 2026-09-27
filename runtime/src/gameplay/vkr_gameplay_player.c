@@ -172,13 +172,14 @@ static bool8_t player_before(VkrScene *scene, uint64_t tick, void *context) {
       (state->held & (1u << VKR_GAMEPLAY_CROUCH)) != 0;
   const float32_t move_speed = motor.crouched || crouch_requested ? .6f : 5.0f;
   const float32_t speed = length > 0 ? move_speed / length : 0;
+  const Vec3 gravity = vkr_scene_gravity(scene);
   VkrPhysicsCharacterInput input = {
       .velocity = {(cosf(state->yaw) * forward - sinf(state->yaw) * right) *
                        speed,
                    motor.velocity[1],
                    (sinf(state->yaw) * forward + cosf(state->yaw) * right) *
                        speed},
-      .gravity = {0, -9.81f, 0},
+      .gravity = {gravity.x, gravity.y, gravity.z},
       .crouch = crouch_requested,
       .dt = (float32_t)VKR_SCENE_SIMULATION_FIXED_DT};
   if (motor.ground == VKR_PHYSICS_CHARACTER_ON_GROUND) {

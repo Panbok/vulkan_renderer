@@ -53,7 +53,14 @@ task asks for it.
 ## Limits
 
 The evaluator has no loops, user functions or file access, and cannot create
-entities or edit physics bodies. It does not capture images; use the harness
-(`vkr-harness`) for pixel evidence. Release builds without
-`VKR_EDITOR_LOGGING` do not show these results in the Console; stdout is the
-record.
+entities; `create`, `delete` and `component.*` make structural edits. Vector
+literals have three components: a four-component color keeps its alpha.
+Project scene jobs (`scene.open`, `scene.add <name>`, `scene.primary`,
+`scene.instantiate`) run through Bakery; give each a generous `wait` before
+reading the result.
+Mouse gestures such as dragging or right-clicking a Content item have no
+statement: use `content.place`, `content.drop`, `content.move` and
+`content.command`, which run the same actions, and report the gesture itself
+as unverified. It does not capture images; use the harness (`vkr-harness`)
+for pixel evidence. Results also reach the Console and the session log in
+`<workspace>/logs/`; stdout is the record for scripts.

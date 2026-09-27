@@ -1196,8 +1196,9 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
   const char *font_key = (const char *)name.str;
   VkrFontSystemEntry *existing =
       vkr_hash_table_get_VkrFontSystemEntry(&system->font_map, font_key);
+  /* Scene jobs register their fonts on every open; a loaded one stays. */
   if (existing) {
-    log_warn("Font '%s' already loaded", font_key);
+    log_debug("Font '%s' already loaded", font_key);
     *out_error = VKR_RENDERER_ERROR_NONE;
     return true_v;
   }

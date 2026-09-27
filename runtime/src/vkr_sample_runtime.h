@@ -64,6 +64,8 @@ typedef struct VkrSampleViewState {
   /* Free-camera flight speed in world units per second. */
   float32_t camera_speed;
   bool8_t grid_enabled;
+  /* Screen-order cell numbers and letters along the grid's edges. */
+  bool8_t grid_labels;
 } VkrSampleViewState;
 
 typedef struct VkrSampleViewRequest {
@@ -81,6 +83,11 @@ typedef struct VkrSampleSceneRequest {
   bool8_t select;
   bool8_t unload;
   bool8_t discard_edits;
+  /** Load `path` beside the active scene as an additive container, or remove
+   * the additive container whose world id is `container` (ADR-076). */
+  bool8_t add;
+  bool8_t remove;
+  uint16_t container;
 } VkrSampleSceneRequest;
 
 typedef struct VkrSampleEntityIdentity {
@@ -159,6 +166,21 @@ typedef struct VkrAnimationPreviewRequest {
   float32_t distance;
 } VkrAnimationPreviewRequest;
 
+/** Root World container request (ADR-076), consumed after the UI build. The
+ * root World is always loaded while a project is open: its entities carry
+ * project-wide world components the rendered scene falls back to. */
+typedef struct VkrSampleWorldRequest {
+  /** Runtime world document; a missing file starts an empty World. */
+  String8 path;
+  /** Edit overlay beside the document; empty disables saving. */
+  String8 sidecar_path;
+  bool8_t load;
+  bool8_t unload;
+  bool8_t save;
+  /** With load: drop unsaved World edits instead of refusing. */
+  bool8_t discard_edits;
+} VkrSampleWorldRequest;
+
 typedef struct VkrSampleUiFrame {
   VkrUiSystem *ui;
   VkrWindow *window;
@@ -181,6 +203,18 @@ typedef struct VkrSampleUiFrame {
   const VkrSceneEditState *edits;
   VkrSceneEditRequest *scene_edit;
   VkrSampleSceneRequest *scene_request;
+  /** Root World container and its journal, or NULL; entities carry
+   * VKR_SCENE_WORLD_ROOT_ID in their world field. Edits of its entities use
+   * the same scene_edit request and route by that field. */
+  const VkrScene *world;
+  const VkrSceneEditState *world_edits;
+  VkrSampleWorldRequest *world_request;
+  String8 world_status;
+  /** Additive scene containers by slot, NULL when empty; slot i owns world id
+   * i + 1. `additive_names` borrow the document paths. */
+  const VkrScene *additive[VKR_SCENE_ADDITIVE_MAX];
+  const VkrSceneEditState *additive_edits[VKR_SCENE_ADDITIVE_MAX];
+  String8 additive_names[VKR_SCENE_ADDITIVE_MAX];
   VkrSampleRuntimePreferences runtime_preferences;
   VkrSampleSceneRecall scene_recall;
   VkrSampleEditorStateRequest *editor_state_request;

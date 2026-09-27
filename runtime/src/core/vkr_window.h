@@ -65,6 +65,19 @@ typedef enum VkrWindowCursor {
   VKR_WINDOW_CURSOR_COUNT,
 } VkrWindowCursor;
 
+#define VKR_WINDOW_DROP_PATH_MAX 16u
+#define VKR_WINDOW_DROP_PATH_CAPACITY 1024u
+
+/** Files dropped onto the window from the OS file manager. `x` and `y` are
+ * window pixels, like the mouse position. Paths are UTF-8 and absolute;
+ * paths that do not fit are skipped. */
+typedef struct VkrWindowFileDrop {
+  char paths[VKR_WINDOW_DROP_PATH_MAX][VKR_WINDOW_DROP_PATH_CAPACITY];
+  uint32_t count;
+  int32_t x;
+  int32_t y;
+} VkrWindowFileDrop;
+
 typedef struct VkrWindow {
   void *platform_state;        /**< Opaque pointer to platform-specific window
                                   state. Managed internally. */
@@ -88,6 +101,11 @@ typedef struct VkrWindow {
   /** Create-time opt-in: draw content beneath a transparent title bar so the
    * application's top bar hosts the native window controls (macOS). */
   bool8_t unified_title_bar;
+  /** One pending file drop: the platform fills it and sets the flag with
+   * release order; vkr_window_take_file_drop copies it and clears the flag.
+   * Drops arriving while one is pending are ignored. */
+  VkrWindowFileDrop file_drop;
+  VkrAtomicBool file_drop_pending;
 } VkrWindow;
 
 typedef struct VkrWindowPixelSize {
@@ -193,6 +211,9 @@ VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window);
  * when the value changes, including a display transition without a resize.
  */
 VkrWindowContentScale vkr_window_get_content_scale(const VkrWindow *window);
+
+/** Takes the pending OS file drop into `out`; false when there is none. */
+bool8_t vkr_window_take_file_drop(VkrWindow *window, VkrWindowFileDrop *out);
 
 /**
  * @brief Resizes the native window's client area.

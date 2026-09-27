@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "editor_projects.h"
 
 #include "renderer/systems/vkr_gizmo_system.h"
 
@@ -172,7 +173,7 @@ static uint32_t view_popup_count(uint32_t popup) {
   case VIEW_POPUP_RENDER:
     return ArrayCount(view_render_modes);
   case VIEW_POPUP_GRID:
-    return 3;
+    return 4;
   case VIEW_POPUP_SPEED:
     return ArrayCount(view_camera_speeds);
   default:
@@ -235,11 +236,25 @@ static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       ui->capture.keyboard = true_v;
     }
   }
+  /* The selection may live in the World or an added scene. */
+  const VkrScene *scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
+  const bool8_t selected =
+      scene && vkr_scene_entity_alive(scene, frame->selected_entity);
   if (input_key_just_pressed(frame->input, KEY_F) &&
-      input_key_press_modifiers(frame->input, KEY_F) == 0u && frame->scene &&
-      vkr_scene_entity_alive(frame->scene, frame->selected_entity)) {
+      input_key_press_modifiers(frame->input, KEY_F) == 0u && selected) {
     *frame->scene_edit = (VkrSceneEditRequest){
         .action = VKR_SCENE_EDIT_FRAME, .entity = frame->selected_entity};
+    ui->capture.keyboard = true_v;
+  }
+  /* Delete, or Backspace on a Mac keyboard, deletes the selected object. */
+  const Keys delete_key = input_key_just_pressed(frame->input, KEY_DELETE)
+                              ? KEY_DELETE
+                              : KEY_BACKSPACE;
+  if (input_key_just_pressed(frame->input, delete_key) &&
+      input_key_press_modifiers(frame->input, delete_key) == 0u && selected) {
+    *frame->scene_edit = (VkrSceneEditRequest){
+        .action = VKR_SCENE_EDIT_DELETE, .entity = frame->selected_entity};
     ui->capture.keyboard = true_v;
   }
 }
@@ -389,6 +404,9 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       if (i == 0) {
         snprintf(text, sizeof(text), "Show grid");
         checked = next.grid_enabled;
+      } else if (i == 3) {
+        snprintf(text, sizeof(text), "Cell numbers and letters");
+        checked = next.grid_labels;
       } else {
         snprintf(
             text, sizeof(text), "%s cells  (%.4g u)",
@@ -430,6 +448,8 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       } else if (popup == VIEW_POPUP_GRID) {
         if (i == 0) {
           next.grid_enabled = !next.grid_enabled;
+        } else if (i == 3) {
+          next.grid_labels = !next.grid_labels;
         } else {
           next.grid_spacing = vkr_clamp_f32(
               next.grid_spacing * (i == 1 ? 0.5f : 2.0f), 0.001f, 10000.0f);
@@ -736,34 +756,137 @@ static bool8_t grid_label_rect(const VkrEditorUi *editor,
 }
 
 /* Returns false when no grid center projects in front of the camera. */
-static bool8_t grid_fit_perspective(const VkrSampleUiFrame *frame, bool8_t side,
-                                    Vec3 *center, float32_t *spacing,
-                                    Vec2 *minimum, Vec2 *maximum) {
-  Vec2 center_plane;
-  Vec2 projected;
-  if (!grid_screen(frame, *center, &projected)) {
-    if (!grid_plane_point(frame, (Vec2){0, 0.75f}, side, &center_plane)) {
-      return false_v;
-    }
-    *center = grid_world(center_plane, side);
-    if (!grid_screen(frame, *center, &projected)) {
-      return false_v;
-    }
+/* The perspective eye: the point the view-projection maps to clip x = y =
+   w = 0. */
+static bool8_t grid_eye(const VkrSampleUiFrame *frame, Vec3 *eye) {
+  const Mat4 m = frame->view_projection;
+  const float64_t a[3][3] = {
+      {m.m00, m.m01, m.m02}, {m.m10, m.m11, m.m12}, {m.m30, m.m31, m.m32}};
+  const float64_t b[3] = {-m.m03, -m.m13, -m.m33};
+  const float64_t det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+                        a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+                        a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+  if (!isfinite(det) || fabs(det) < 1e-12) {
+    return false_v;
   }
-  Vec2 a;
-  Vec2 b;
-  if (grid_screen(frame, *center, &a) &&
-      grid_screen(frame, vec3_add(*center, (Vec3){*spacing, 0, *spacing}),
-                  &b)) {
-    const float32_t pixels = hypotf(b.x - a.x, b.y - a.y);
-    if (pixels > 0.0001f && pixels < 20) {
-      *spacing *= powf(2, ceilf(log2f(20 / pixels)));
+  float64_t solution[3];
+  for (uint32_t column = 0; column < 3; ++column) {
+    float64_t replaced[3][3];
+    for (uint32_t r = 0; r < 3; ++r) {
+      for (uint32_t c = 0; c < 3; ++c) {
+        replaced[r][c] = c == column ? b[r] : a[r][c];
+      }
     }
+    solution[column] = (replaced[0][0] * (replaced[1][1] * replaced[2][2] -
+                                          replaced[1][2] * replaced[2][1]) -
+                        replaced[0][1] * (replaced[1][0] * replaced[2][2] -
+                                          replaced[1][2] * replaced[2][0]) +
+                        replaced[0][2] * (replaced[1][0] * replaced[2][1] -
+                                          replaced[1][1] * replaced[2][0])) /
+                       det;
   }
-  const float32_t radius = *spacing * 22;
-  *minimum = (Vec2){center->x - radius, center->z - radius};
-  *maximum = (Vec2){center->x + radius, center->z + radius};
+  *eye = vec3_new((float32_t)solution[0], (float32_t)solution[1],
+                  (float32_t)solution[2]);
+  return isfinite(eye->x) && isfinite(eye->y) && isfinite(eye->z);
+}
+
+/* The world point under a viewport pixel at clip depth `depth`. */
+static bool8_t viewport_unproject(const VkrSampleUiFrame *frame, Vec2 pixel,
+                                  float32_t depth, Vec3 *out) {
+  const Vec4 image = frame->mapping.image_rect_px;
+  if (image.z <= 0.0f || image.w <= 0.0f) {
+    return false_v;
+  }
+  /* NDC is Y-down in this convention, matching UI space. */
+  const Vec4 ndc = {(pixel.x - image.x) / image.z * 2.0f - 1.0f,
+                    (pixel.y - image.y) / image.w * 2.0f - 1.0f, depth, 1.0f};
+  const Vec4 world = mat4_mul_vec4(mat4_inverse(frame->view_projection), ndc);
+  if (!isfinite(world.w) || fabsf(world.w) < 1e-9f) {
+    return false_v;
+  }
+  *out = vec3_new(world.x / world.w, world.y / world.w, world.z / world.w);
+  return isfinite(out->x) && isfinite(out->y) && isfinite(out->z);
+}
+
+bool8_t vkr_editor_viewport_drop_point(const VkrSampleUiFrame *frame,
+                                       Vec2 pixel, Vec3 *out) {
+  Vec3 origin = {0};
+  Vec3 target = {0};
+  if (!frame->mapping_valid ||
+      !viewport_unproject(frame, pixel, 0.5f, &target)) {
+    return false_v;
+  }
+  /* Perspective rays leave the eye; orthographic rays run through two
+     depths of the pixel. */
+  if (!grid_eye(frame, &origin) &&
+      !viewport_unproject(frame, pixel, 0.25f, &origin)) {
+    return false_v;
+  }
+  const Vec3 ray = vec3_sub(target, origin);
+  const float32_t length = vec3_length(ray);
+  if (!isfinite(length) || length < 1e-6f) {
+    return false_v;
+  }
+  const Vec3 direction = vec3_scale(ray, 1.0f / length);
+  const float32_t t =
+      fabsf(direction.y) > 1e-4f ? -origin.y / direction.y : -1.0f;
+  const bool8_t ground = t > 0.0f && t < 500.0f;
+  *out = vec3_add(origin, vec3_scale(direction, ground ? t : 8.0f));
+  if (ground) {
+    out->y = 0.0f;
+  }
   return true_v;
+}
+
+/* Cells from the world origin to each edge of the perspective grid. */
+#define GRID_PERSPECTIVE_CELLS 40
+/* Every tenth line is a major line. */
+#define GRID_MAJOR_CELLS 10
+
+/* A fixed world grid, as in UE5: centered on the world origin with a
+   constant extent, one line per grid spacing and a major line every ten.
+   It never follows or rescales with the camera. Minor lines fade out as the
+   camera rises, so distant views keep only the major lines. */
+static bool8_t grid_perspective_lines(VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      uint32_t capacity) {
+  Vec3 eye;
+  const float32_t spacing = frame->view_state.grid_spacing;
+  if (!grid_eye(frame, &eye) || !isfinite(spacing) || spacing <= 0.0f) {
+    return false_v;
+  }
+  const float32_t rise = fabsf(eye.y) / (spacing * 40.0f);
+  const float32_t minor_alpha =
+      vkr_clamp_f32((1.0f - rise) / 0.75f, 0.0f, 1.0f);
+  const float32_t extent = spacing * GRID_PERSPECTIVE_CELLS;
+  editor->grid_spacing = spacing;
+  for (uint32_t axis = 0; axis < 2; ++axis) {
+    for (int32_t cell = -GRID_PERSPECTIVE_CELLS;
+         cell <= GRID_PERSPECTIVE_CELLS && editor->grid_line_count < capacity;
+         ++cell) {
+      const bool8_t major = cell % GRID_MAJOR_CELLS == 0;
+      if (!major && minor_alpha <= 0.0f) {
+        continue;
+      }
+      const float32_t coordinate = (float32_t)cell * spacing;
+      const Vec3 from = axis ? vec3_new(-extent, 0, coordinate)
+                             : vec3_new(coordinate, 0, -extent);
+      const Vec3 to = axis ? vec3_new(extent, 0, coordinate)
+                           : vec3_new(coordinate, 0, extent);
+      const float32_t half_major = spacing * GRID_MAJOR_CELLS * 0.5f;
+      editor->grid_lines[editor->grid_line_count++] = (VkrEditorGridLine){
+          .from = from,
+          .to = to,
+          .label_offset =
+              axis ? vec3_new(0, 0, half_major) : vec3_new(half_major, 0, 0),
+          .top_label = axis == 0,
+          .world_axis = cell == 0,
+          .alpha = major ? 1.0f : 0.55f * minor_alpha,
+          .unlabelled = !major,
+      };
+    }
+  }
+  return editor->grid_line_count > 0u;
 }
 
 /* Returns false when an image corner misses the grid plane or the visible
@@ -847,7 +970,7 @@ static void grid_number_labels(VkrEditorUi *editor,
       const VkrEditorGridLine *line = &editor->grid_lines[i];
       float32_t order = 0;
       VkrUiRect rect;
-      if (line->top_label != top_edge ||
+      if (line->top_label != top_edge || line->unlabelled ||
           !grid_label_rect(editor, frame, line, &rect, &order)) {
         continue;
       }
@@ -891,7 +1014,7 @@ static void grid_build_line_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
     widget.style.text_color =
         line->world_axis
             ? vkr_ui_color_alpha(vkr_ui_theme()->accent_hover, 0.8f)
-            : (Vec4){0.80f, 0.84f, 0.90f, 0.28f};
+            : (Vec4){0.80f, 0.84f, 0.90f, 0.28f * line->alpha};
     const Vec2 hidden[4] = {{0}, {0}, {0}, {0}};
     vkr_ui_bezier(ui, string8_lit("line"), hidden,
                   line->world_axis ? 1.25f : 0.75f, &widget);
@@ -918,13 +1041,45 @@ static void grid_build_line_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
   }
 }
 
+/* Orthographic lines fill the visible plane at the fitted spacing. */
+static void grid_orthographic_lines(VkrEditorUi *editor, bool8_t side,
+                                    float32_t spacing, Vec2 minimum,
+                                    Vec2 maximum, bool8_t first_axis_top,
+                                    uint32_t capacity) {
+  for (uint32_t axis = 0; axis < 2; ++axis) {
+    const float32_t low = axis ? minimum.y : minimum.x;
+    const float32_t high = axis ? maximum.y : maximum.x;
+    const int64_t first = (int64_t)floorf(low / spacing);
+    const int64_t last = (int64_t)ceilf(high / spacing);
+    for (int64_t cell = first;
+         cell <= last && editor->grid_line_count < capacity; ++cell) {
+      const float32_t coordinate = (float32_t)cell * spacing;
+      const Vec2 from =
+          axis ? (Vec2){minimum.x, coordinate} : (Vec2){coordinate, minimum.y};
+      const Vec2 to =
+          axis ? (Vec2){maximum.x, coordinate} : (Vec2){coordinate, maximum.y};
+      editor->grid_lines[editor->grid_line_count++] = (VkrEditorGridLine){
+          .from = grid_world(from, side),
+          .to = grid_world(to, side),
+          .label_offset = grid_world(axis ? (Vec2){0, spacing * 0.5f}
+                                          : (Vec2){spacing * 0.5f, 0},
+                                     side),
+          .top_label = axis == 0 ? first_axis_top : !first_axis_top,
+          .world_axis = cell == 0,
+          .alpha = 1.0f,
+      };
+    }
+  }
+}
+
 void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   editor->grid_line_count = 0;
   editor->grid_spacing = 0;
   editor->grid_frame = frame->ui->frame_index;
   editor->grid_camera_view = frame->view_state.camera_view;
+  /* A project's World renders alone before any scene opens. */
   if (!frame->mapping_valid || !frame->view_state.grid_enabled ||
-      !frame->scene || frame->scene_rendering_stopped ||
+      (!frame->scene && !frame->world) || frame->scene_rendering_stopped ||
       (frame->scene_backdrop_blur && *frame->scene_backdrop_blur)) {
     return;
   }
@@ -934,36 +1089,28 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       frame->view_state.camera_view == VKR_SAMPLE_CAMERA_RIGHT;
   const bool8_t perspective =
       frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
-  const float32_t base_spacing = frame->view_state.grid_spacing;
-  float32_t spacing = base_spacing;
+  float32_t spacing = frame->view_state.grid_spacing;
   if (!isfinite(spacing) || spacing <= 0) {
     return;
   }
   Vec2 minimum = {INFINITY, INFINITY};
   Vec2 maximum = {-INFINITY, -INFINITY};
-  Vec2 center_plane;
-  if (!grid_plane_point(frame, (Vec2){0, 0}, side, &center_plane)) {
-    if (!perspective ||
-        !grid_plane_point(frame, (Vec2){0, 0.75f}, side, &center_plane)) {
+  Vec3 center = vec3_zero();
+  if (!perspective) {
+    Vec2 center_plane;
+    if (!grid_plane_point(frame, (Vec2){0, 0}, side, &center_plane)) {
       return;
     }
-  }
-  Vec3 center = grid_world(center_plane, side);
-  if (perspective) {
-    if (!grid_fit_perspective(frame, side, &center, &spacing, &minimum,
-                              &maximum)) {
+    center = grid_world(center_plane, side);
+    if (!grid_fit_orthographic(editor, frame, side, &spacing, &minimum,
+                               &maximum) ||
+        !isfinite(spacing) || spacing <= 0 ||
+        fabsf(minimum.x / spacing) > 1000000000 ||
+        fabsf(minimum.y / spacing) > 1000000000 ||
+        fabsf(maximum.x / spacing) > 1000000000 ||
+        fabsf(maximum.y / spacing) > 1000000000) {
       return;
     }
-  } else if (!grid_fit_orthographic(editor, frame, side, &spacing, &minimum,
-                                    &maximum)) {
-    return;
-  }
-  if (!isfinite(spacing) || spacing <= 0 ||
-      fabsf(minimum.x / spacing) > 1000000000 ||
-      fabsf(minimum.y / spacing) > 1000000000 ||
-      fabsf(maximum.x / spacing) > 1000000000 ||
-      fabsf(maximum.y / spacing) > 1000000000) {
-    return;
   }
   const Vec4 image = frame->mapping.image_rect_px;
   VkrUiPanelConfig panel = view_panel(
@@ -985,48 +1132,43 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
           ? (ui->frame_node_capacity - ui->frame_node_count - 320) / 2
           : 0;
   const uint32_t capacity = Min(VKR_EDITOR_GRID_LINE_CAPACITY, available);
-  const bool8_t first_axis_top =
-      grid_first_axis_top(frame, perspective, center, spacing);
-  editor->grid_spacing = spacing;
-  uint32_t axis_lines[2] = {0, 0};
-  for (uint32_t axis = 0; axis < 2; ++axis) {
-    const float32_t low = axis ? minimum.y : minimum.x;
-    const float32_t high = axis ? maximum.y : maximum.x;
-    const int64_t first = (int64_t)floorf(low / spacing);
-    const int64_t last = (int64_t)ceilf(high / spacing);
-    for (int64_t cell = first;
-         cell <= last && editor->grid_line_count < capacity; ++cell) {
-      const float32_t coordinate = (float32_t)cell * spacing;
-      const Vec2 from =
-          axis ? (Vec2){minimum.x, coordinate} : (Vec2){coordinate, minimum.y};
-      const Vec2 to =
-          axis ? (Vec2){maximum.x, coordinate} : (Vec2){coordinate, maximum.y};
-      editor->grid_lines[editor->grid_line_count++] = (VkrEditorGridLine){
-          .from = grid_world(from, side),
-          .to = grid_world(to, side),
-          .label_offset = grid_world(axis ? (Vec2){0, spacing * 0.5f}
-                                          : (Vec2){spacing * 0.5f, 0},
-                                     side),
-          .top_label = axis == 0 ? first_axis_top : !first_axis_top,
-          .world_axis = cell == 0,
-      };
-      ++axis_lines[axis];
+  bool8_t first_axis_top = true_v;
+  if (perspective) {
+    if (!grid_perspective_lines(editor, frame, capacity)) {
+      (void)vkr_ui_panel_end(ui);
+      return;
     }
+  } else {
+    first_axis_top = grid_first_axis_top(frame, perspective, center, spacing);
+    editor->grid_spacing = spacing;
+    grid_orthographic_lines(editor, side, spacing, minimum, maximum,
+                            first_axis_top, capacity);
   }
 
-  /* Labels are uniform per edge, sized for the largest possible ordinal. */
-  const uint32_t top_axis = first_axis_top ? 0 : 1;
-  const Vec2 top_size =
-      grid_label_size(editor, ui, axis_lines[top_axis], true_v);
-  const Vec2 right_size =
-      grid_label_size(editor, ui, axis_lines[1 - top_axis], false_v);
-  editor->grid_reserved_pt = (Vec2){right_size.x, top_size.y};
-  for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
-    VkrEditorGridLine *line = &editor->grid_lines[i];
-    line->label_size_pt = line->top_label ? top_size : right_size;
+  /* Cell labels are optional; they read 1..N across the top and A.. down the
+     right, sized for the largest possible ordinal. */
+  if (frame->view_state.grid_labels) {
+    uint32_t axis_lines[2] = {0, 0};
+    for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
+      const VkrEditorGridLine *line = &editor->grid_lines[i];
+      if (!line->unlabelled) {
+        ++axis_lines[line->top_label == first_axis_top ? 0 : 1];
+      }
+    }
+    const uint32_t top_axis = first_axis_top ? 0 : 1;
+    const Vec2 top_size =
+        grid_label_size(editor, ui, axis_lines[top_axis], true_v);
+    const Vec2 right_size =
+        grid_label_size(editor, ui, axis_lines[1 - top_axis], false_v);
+    editor->grid_reserved_pt = (Vec2){right_size.x, top_size.y};
+    for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
+      VkrEditorGridLine *line = &editor->grid_lines[i];
+      line->label_size_pt = line->top_label ? top_size : right_size;
+    }
+    grid_number_labels(editor, frame);
+  } else {
+    editor->grid_reserved_pt = (Vec2){0};
   }
-
-  grid_number_labels(editor, frame);
 
   grid_build_line_widgets(editor, ui);
   (void)vkr_ui_panel_end(ui);
@@ -1239,4 +1381,203 @@ void vkr_editor_orientation_gizmo_build(VkrEditorUi *editor,
   }
   (void)vkr_ui_panel_end(ui);
   (void)vkr_ui_input_layer_set(ui, 0);
+}
+
+/* ---- Viewport documents (ADR-076) ---- */
+
+/* The active document follows whatever the project has open, so opening a
+   scene from Content retargets the current tab, as in a level editor. */
+static void viewport_tabs_sync(VkrEditorUi *editor) {
+  if (!editor->viewport_tab_count) {
+    editor->viewport_tab_count = 1u;
+    editor->viewport_tab_active = 0u;
+  }
+  if (!vkr_editor_projects_switch_ready(editor->projects)) {
+    return;
+  }
+  VkrEditorViewportTab *tab =
+      &editor->viewport_tabs[editor->viewport_tab_active];
+  const String8 id = vkr_editor_projects_scene_id(editor->projects);
+  const String8 name = vkr_editor_projects_scene_name(editor->projects);
+  snprintf(tab->scene_id, sizeof(tab->scene_id), "%.*s", (int)id.length,
+           id.str);
+  snprintf(tab->label, sizeof(tab->label), "%.*s",
+           (int)(name.length ? name.length : 5u),
+           name.length ? (const char *)name.str : "World");
+}
+
+static void viewport_tabs_show(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame, uint32_t tab) {
+  if (vkr_editor_projects_show_scene(editor->projects, editor, frame,
+                                     editor->viewport_tabs[tab].scene_id)) {
+    editor->viewport_tab_active = tab;
+  }
+}
+
+static void viewport_tabs_remove(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame, uint32_t tab) {
+  if (editor->viewport_tab_count <= 1u) {
+    return;
+  }
+  if (tab == editor->viewport_tab_active) {
+    const uint32_t next =
+        tab + 1u < editor->viewport_tab_count ? tab + 1u : tab - 1u;
+    if (!vkr_editor_projects_show_scene(editor->projects, editor, frame,
+                                        editor->viewport_tabs[next].scene_id)) {
+      return;
+    }
+    editor->viewport_tab_active = next;
+  }
+  MemCopy(&editor->viewport_tabs[tab], &editor->viewport_tabs[tab + 1u],
+          (editor->viewport_tab_count - tab - 1u) *
+              sizeof(editor->viewport_tabs[0]));
+  editor->viewport_tab_count--;
+  if (editor->viewport_tab_active > tab) {
+    editor->viewport_tab_active--;
+  }
+}
+
+bool8_t vkr_editor_viewport_tab_new(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame) {
+  viewport_tabs_sync(editor);
+  if (editor->viewport_tab_count >= VKR_EDITOR_VIEWPORT_TAB_MAX ||
+      !vkr_editor_projects_switch_ready(editor->projects)) {
+    return false_v;
+  }
+  editor->viewport_tabs[editor->viewport_tab_count] =
+      (VkrEditorViewportTab){.label = "World"};
+  editor->viewport_tab_count++;
+  const uint32_t previous = editor->viewport_tab_active;
+  viewport_tabs_show(editor, frame, editor->viewport_tab_count - 1u);
+  if (editor->viewport_tab_active == previous) {
+    editor->viewport_tab_count--;
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_editor_viewport_tab_show(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     uint32_t tab) {
+  viewport_tabs_sync(editor);
+  if (tab >= editor->viewport_tab_count ||
+      !vkr_editor_projects_switch_ready(editor->projects)) {
+    return false_v;
+  }
+  viewport_tabs_show(editor, frame, tab);
+  return editor->viewport_tab_active == tab;
+}
+
+void vkr_editor_viewport_tabs_build(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    VkrUiRect strip) {
+  VkrUiSystem *ui = frame->ui;
+  /* Documents exist in project mode, where the World is always open;
+     otherwise one tab names the loaded scene. */
+  const bool8_t project = frame->world && editor->projects;
+  if (!project) {
+    editor->viewport_tab_count = 1u;
+    editor->viewport_tab_active = 0u;
+    const String8 path = frame->scene_path;
+    uint64_t start = path.length;
+    while (start && path.str[start - 1u] != '/' && path.str[start - 1u] != '\\')
+      --start;
+    uint64_t length = path.length - start;
+    const String8 suffix = string8_lit(".scene.json");
+    if (length > suffix.length &&
+        MemCompare(path.str + path.length - suffix.length, suffix.str,
+                   suffix.length) == 0)
+      length -= suffix.length;
+    snprintf(editor->viewport_tabs[0].label,
+             sizeof(editor->viewport_tabs[0].label), "%.*s",
+             (int)(length ? length : 5u),
+             length ? (const char *)path.str + start : "Scene");
+    editor->viewport_tabs[0].scene_id[0] = '\0';
+  } else {
+    viewport_tabs_sync(editor);
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t scale = ui->content_scale;
+  const float32_t tab_width = 150.0f * scale;
+  const bool8_t ready =
+      project && vkr_editor_projects_switch_ready(editor->projects);
+  float32_t x = strip.x;
+  uint32_t close = UINT32_MAX;
+  uint32_t show = UINT32_MAX;
+  for (uint32_t i = 0; i < editor->viewport_tab_count; ++i) {
+    if (x + tab_width > strip.x + strip.width) {
+      break;
+    }
+    const bool8_t active = i == editor->viewport_tab_active;
+    const VkrEditorViewportTab *tab = &editor->viewport_tabs[i];
+    const VkrUiTrack columns[] = {{1, VKR_UI_TRACK_FR}, {20, VKR_UI_TRACK_PX}};
+    VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+    panel.placement.column = panel.placement.row = 0u;
+    panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+    panel.placement.margin_pt =
+        (VkrUiEdges){strip.y / scale + 3.0f, 0, 0, x / scale};
+    panel.columns = columns;
+    panel.column_count = ArrayCount(columns);
+    panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){
+        tab_width / scale - 4.0f, Max(1.0f, strip.height / scale - 3.0f)};
+    panel.style.background_color = active ? theme->panel : (Vec4){0};
+    panel.style.corner_radius_pt = (Vec4){5, 5, 0, 0};
+    panel.style.border_pt = (VkrUiEdges){0, 1, 0, 1};
+    panel.style.border_color = theme->separator;
+    (void)vkr_ui_push_id_u64(ui, 0x7ab5000u + i);
+    if (vkr_ui_panel_begin(ui, string8_lit("viewport.tab"), &panel)) {
+      VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+      button.placement.column = button.placement.row = 0u;
+      button.fill = true_v;
+      vkr_editor_ghost_style(&button);
+      button.style.padding_pt = (VkrUiEdges){3, 6, 3, 8};
+      button.style.text_color = active ? theme->text : theme->text_secondary;
+      button.icon =
+          tab->scene_id[0] || !project ? VKR_UI_ICON_SCENE : VKR_UI_ICON_WORLD;
+      button.icon_size_pt = 13.0f;
+      button.icon_color = active ? theme->accent_hover : theme->text_secondary;
+      button.disabled = !ready && !active;
+      button.tooltip = string8_lit("Open this document in the Scene");
+      if (vkr_ui_button(ui, string8_lit("select"),
+                        string8_create_from_cstr((const uint8_t *)tab->label,
+                                                 strlen(tab->label)),
+                        &button) &&
+          !active) {
+        show = i;
+      }
+      if (editor->viewport_tab_count > 1u) {
+        VkrUiWidgetConfig shut = vkr_editor_icon_button_config(
+            1u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close document"));
+        shut.style.min_size_pt = shut.style.max_size_pt = (Vec2){18, 18};
+        shut.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+        shut.icon_size_pt = 11.0f;
+        shut.disabled = !ready;
+        if (vkr_ui_button(ui, string8_lit("close"), (String8){0}, &shut)) {
+          close = i;
+        }
+      }
+      (void)vkr_ui_panel_end(ui);
+    }
+    (void)vkr_ui_pop_id(ui);
+    x += tab_width;
+  }
+  if (project && editor->viewport_tab_count < VKR_EDITOR_VIEWPORT_TAB_MAX &&
+      x + 26.0f * scale <= strip.x + strip.width) {
+    VkrUiWidgetConfig add = vkr_editor_icon_button_config(
+        0u, 0u, VKR_UI_ICON_ADD, string8_lit("New document showing the World"));
+    add.placement.justify = add.placement.align = VKR_UI_ALIGN_START;
+    add.placement.margin_pt =
+        (VkrUiEdges){strip.y / scale + 4.0f, 0, 0, x / scale + 2.0f};
+    add.style.min_size_pt = add.style.max_size_pt = (Vec2){22, 22};
+    add.disabled = !ready;
+    if (vkr_ui_button(ui, string8_lit("viewport.tab.add"), (String8){0},
+                      &add)) {
+      (void)vkr_editor_viewport_tab_new(editor, frame);
+    }
+  }
+  if (show != UINT32_MAX) {
+    viewport_tabs_show(editor, frame, show);
+  } else if (close != UINT32_MAX) {
+    viewport_tabs_remove(editor, frame, close);
+  }
 }

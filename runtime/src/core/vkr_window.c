@@ -96,3 +96,45 @@ VkrNativeSurface vkr_window_get_render_surface(VkrWindow *window) {
 #endif
   return surface;
 }
+
+bool8_t vkr_window_file_drop_begin(VkrWindow *window, int32_t x, int32_t y) {
+  if (!window || vkr_atomic_bool_load(&window->file_drop_pending,
+                                      VKR_MEMORY_ORDER_ACQUIRE)) {
+    return false_v;
+  }
+  window->file_drop.count = 0u;
+  window->file_drop.x = x;
+  window->file_drop.y = y;
+  return true_v;
+}
+
+void vkr_window_file_drop_add(VkrWindow *window, const char *path,
+                              uint64_t length) {
+  VkrWindowFileDrop *drop = &window->file_drop;
+  if (!path || !length || length >= VKR_WINDOW_DROP_PATH_CAPACITY ||
+      drop->count == VKR_WINDOW_DROP_PATH_MAX) {
+    return;
+  }
+  MemCopy(drop->paths[drop->count], path, length);
+  drop->paths[drop->count][length] = '\0';
+  ++drop->count;
+}
+
+void vkr_window_file_drop_publish(VkrWindow *window) {
+  if (window->file_drop.count) {
+    vkr_atomic_bool_store(&window->file_drop_pending, true_v,
+                          VKR_MEMORY_ORDER_RELEASE);
+  }
+}
+
+bool8_t vkr_window_take_file_drop(VkrWindow *window, VkrWindowFileDrop *out) {
+  if (!window || !out ||
+      !vkr_atomic_bool_load(&window->file_drop_pending,
+                            VKR_MEMORY_ORDER_ACQUIRE)) {
+    return false_v;
+  }
+  MemCopy(out, &window->file_drop, sizeof(*out));
+  vkr_atomic_bool_store(&window->file_drop_pending, false_v,
+                        VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}

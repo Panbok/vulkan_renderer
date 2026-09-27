@@ -995,7 +995,7 @@ vkr_internal void vkr_standard_scene_runtime_scale_picking_payload(
    period, where the cloud noise tiles without a seam. */
 vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
     VkrStandardSceneRuntime *application, float64_t delta) {
-  const VkrScene *scene = application->active_scene;
+  const VkrScene *scene = vkr_standard_scene_runtime_render_scene(application);
   if (!scene || !scene->atmosphere.active_revision ||
       !scene->atmosphere.active_clouds.enabled || !isfinite(delta) ||
       delta <= 0.0)
@@ -1046,6 +1046,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_environment(
      is the scene's current one. */
   if (application->skybox_system.initialized && environment) {
     if (environment->source_kind == VKR_SCENE_ENV_SOURCE_ATMOSPHERE &&
+        active_scene->world_state.atmosphere.enabled &&
         active_scene->atmosphere.active_revision &&
         active_scene->atmosphere.active_settings.enabled) {
       draw->sky_payload.atmosphere =
@@ -1285,12 +1286,15 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
       .subsurface = active_scene &&
+                            active_scene->world_state.subsurface.enabled &&
                             !application->disable_subsurface_scattering &&
                             application->globals.projection.m33 == 0.0f
                         ? active_scene->subsurface
                         : (VkrSubsurfaceBinding){0},
-      .diffuse_volume = active_scene ? active_scene->diffuse_volume
-                                     : (VkrDiffuseVolumeBinding){0},
+      .diffuse_volume =
+          active_scene && active_scene->world_state.diffuse_volume.enabled
+              ? active_scene->diffuse_volume
+              : (VkrDiffuseVolumeBinding){0},
   };
 }
 
@@ -1301,6 +1305,30 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
     VkrStandardSceneRuntimeDrawContext *draw, float64_t delta) {
   const VkrFrame *setup = draw->setup;
   const VkrScene *active_scene = draw->active_scene;
+  /* A resolved post_process component overrides the runtime's base
+     post-processing; without one the base (defaults or a harness case)
+     applies (ADR-076). */
+  VkrFrameGlobals base = application->globals;
+  if (active_scene && active_scene->world_state.has_post_process) {
+    const ScenePostProcess *post = &active_scene->world_state.post_process;
+    base.exposure_mode = (VkrExposureMode)post->exposure_mode;
+    base.manual_exposure = post->manual_exposure;
+    base.exposure_compensation_ev = post->exposure_compensation_ev;
+    base.white_balance_temperature = post->white_balance_temperature;
+    base.white_balance_tint = post->white_balance_tint;
+    base.color_contrast = post->contrast;
+    base.color_saturation = post->saturation;
+    base.image_sharpness = post->sharpness;
+    base.bloom_threshold = post->bloom_threshold;
+    base.bloom_knee = post->bloom_knee;
+    base.bloom_intensity = post->bloom_intensity;
+    base.dof_focus_distance = post->dof_focus_distance;
+    base.dof_f_stop = post->dof_f_stop;
+    base.motion_blur_shutter_angle = post->motion_blur_shutter_angle;
+    base.gtao_radius = post->gtao_radius;
+    base.gtao_power = post->gtao_power;
+  }
+  const VkrFrameGlobals *globals = &base;
   VkrFrameInput packet = {
       .animation_preview =
           draw->has_animation_preview ? &draw->animation_preview : NULL,
@@ -1318,44 +1346,39 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
           },
       .globals =
           {
-              .view = application->globals.view,
-              .projection = application->globals.projection,
-              .view_position = application->globals.view_position,
-              .ambient_color = application->globals.ambient_color,
-              .exposure_mode = (uint32_t)application->globals.exposure_mode,
-              .manual_exposure = application->globals.manual_exposure,
-              .exposure_compensation_ev =
-                  application->globals.exposure_compensation_ev,
-              .display_transform =
-                  (uint32_t)application->globals.display_transform,
-              .white_balance_temperature =
-                  application->globals.white_balance_temperature,
-              .white_balance_tint = application->globals.white_balance_tint,
-              .color_contrast = application->globals.color_contrast,
-              .color_saturation = application->globals.color_saturation,
-              .bloom_enabled = application->globals.bloom_enabled,
-              .bloom_threshold = application->globals.bloom_threshold,
-              .bloom_knee = application->globals.bloom_knee,
-              .bloom_intensity = application->globals.bloom_intensity,
-              .dof_enabled = application->globals.dof_enabled &&
-                             application->globals.projection.m33 == 0.0f,
-              .dof_focus_distance = application->globals.dof_focus_distance,
-              .dof_f_stop = application->globals.dof_f_stop,
-              .motion_blur_enabled =
-                  application->globals.motion_blur_enabled &&
-                  application->globals.projection.m33 == 0.0f,
-              .motion_blur_shutter_angle =
-                  application->globals.motion_blur_shutter_angle,
-              .ssr_enabled = application->globals.ssr_enabled,
-              .ssgi_enabled = application->globals.ssgi_enabled,
-              .gtao_enabled = application->globals.gtao_enabled,
-              .gtao_radius = application->globals.gtao_radius,
-              .gtao_power = application->globals.gtao_power,
-              .image_sharpness = application->globals.image_sharpness,
-              .render_mode = (uint32_t)application->globals.render_mode,
-              .fog = active_scene ? active_scene->fog
+              .view = globals->view,
+              .projection = globals->projection,
+              .view_position = globals->view_position,
+              .ambient_color = globals->ambient_color,
+              .exposure_mode = (uint32_t)globals->exposure_mode,
+              .manual_exposure = globals->manual_exposure,
+              .exposure_compensation_ev = globals->exposure_compensation_ev,
+              .display_transform = (uint32_t)globals->display_transform,
+              .white_balance_temperature = globals->white_balance_temperature,
+              .white_balance_tint = globals->white_balance_tint,
+              .color_contrast = globals->color_contrast,
+              .color_saturation = globals->color_saturation,
+              .bloom_enabled = globals->bloom_enabled,
+              .bloom_threshold = globals->bloom_threshold,
+              .bloom_knee = globals->bloom_knee,
+              .bloom_intensity = globals->bloom_intensity,
+              .dof_enabled =
+                  globals->dof_enabled && globals->projection.m33 == 0.0f,
+              .dof_focus_distance = globals->dof_focus_distance,
+              .dof_f_stop = globals->dof_f_stop,
+              .motion_blur_enabled = globals->motion_blur_enabled &&
+                                     globals->projection.m33 == 0.0f,
+              .motion_blur_shutter_angle = globals->motion_blur_shutter_angle,
+              .ssr_enabled = globals->ssr_enabled,
+              .ssgi_enabled = globals->ssgi_enabled,
+              .gtao_enabled = globals->gtao_enabled,
+              .gtao_radius = globals->gtao_radius,
+              .gtao_power = globals->gtao_power,
+              .image_sharpness = globals->image_sharpness,
+              .render_mode = (uint32_t)globals->render_mode,
+              .fog = active_scene ? active_scene->world_state.fog
                                   : vkr_fog_settings_defaults(),
-              .froxel_fog = active_scene ? active_scene->froxel_fog
+              .froxel_fog = active_scene ? active_scene->world_state.froxel_fog
                                          : vkr_froxel_fog_settings_defaults(),
           },
       .lighting = draw->scene_stopped ? NULL : &draw->frame_lighting,
@@ -1564,7 +1587,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   vkr_standard_scene_runtime_prepare_picking_payload(application, &draw);
   vkr_standard_scene_runtime_prepare_editor_viewport(application, &draw);
   vkr_standard_scene_runtime_scale_picking_payload(application, &draw);
-  draw.active_scene = application->active_scene;
+  draw.active_scene = vkr_standard_scene_runtime_render_scene(application);
   vkr_standard_scene_runtime_prepare_environment(application, &draw);
 
   const VkrRendererError text_error =
@@ -1689,23 +1712,36 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
 
   vkr_camera_registry_update_all(camera_system);
 
+  /* The active scene resolves its world with the root World as fallback;
+     with no scene loaded the World renders alone and owns the sky products
+     (ADR-076). */
+  VkrScene *render_scene = vkr_standard_scene_runtime_render_scene(application);
   if (application->active_scene) {
-    vkr_scene_sync_sun(application->active_scene, delta);
+    vkr_scene_set_world_fallback(application->active_scene,
+                                 application->world_scene);
+  }
+  if (render_scene) {
+    (void)vkr_scene_resolve_world(render_scene);
+    vkr_scene_sync_sun(render_scene, delta);
     (void)vkr_world_resources_prepare_scene_atmosphere(
         &application->assets, &application->assets.world_resources,
-        application->active_scene);
+        render_scene);
     vkr_world_resources_poll_scene_atmosphere(&application->assets,
-                                              application->active_scene);
+                                              render_scene);
     vkr_standard_scene_runtime_advance_cloud_wind(application, delta);
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
-                                        application->active_scene);
-    if (application->active_scene->atmosphere.active_revision &&
-        application->active_scene->atmosphere.active_settings.enabled) {
+                                        render_scene);
+    for (uint32_t i = 0; i < application->additive_count; ++i) {
+      vkr_lighting_system_append_scene(&application->lighting_system,
+                                       application->additive_scenes[i]);
+    }
+    if (render_scene->atmosphere.active_revision &&
+        render_scene->atmosphere.active_settings.enabled) {
       const VkrAtmosphereSettings frame =
-          vkr_scene_atmosphere_frame_settings(application->active_scene);
+          vkr_scene_atmosphere_frame_settings(render_scene);
       vkr_lighting_system_apply_atmosphere_sun(
           &application->lighting_system, &frame,
-          vkr_scene_atmosphere_frame_irradiance(application->active_scene));
+          vkr_scene_atmosphere_frame_irradiance(render_scene));
     }
   }
 

@@ -28,14 +28,15 @@ bool32_t run_path_io_tests(void) {
 
   VkrGraphicsSettings written =
       vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_VULKAN);
-  written.brightness = 0.25f;
+  written.render_scale = 0.5f;
   written.frame_limit = 73u;
   assert(vkr_graphics_settings_save(name, &written));
   assert(file_exists(&path));
   VkrGraphicsSettings loaded =
       vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_VULKAN);
   assert(vkr_graphics_settings_load(name, &loaded));
-  assert(loaded.brightness == written.brightness && loaded.frame_limit == 73u);
+  assert(loaded.render_scale == written.render_scale &&
+         loaded.frame_limit == 73u);
 
   VkrUiDockTree tree = {0};
   VkrUiDockTree restored = {0};

@@ -183,6 +183,13 @@ typedef struct VkrStandardSceneRuntime {
                      const VkrViewportMapping *);
   VkrSkyboxSystem skybox_system;
   VkrScene *active_scene;
+  /* Root World container (ADR-076), or NULL: world components the active
+     scene falls back to, rendered alone when no scene is loaded. */
+  VkrScene *world_scene;
+  /* Additive scene containers rendered beside the active scene (ADR-076):
+     meshes through their render bridges, local lights appended. */
+  VkrScene *additive_scenes[VKR_SCENE_ADDITIVE_MAX];
+  uint32_t additive_count;
   uint64_t scene_generation;
   /** Cloud wind offset in world X and Z metres, wrapped at
       VKR_CLOUD_WIND_PERIOD_M. Float64 keeps metre precision over a session. */
@@ -231,6 +238,12 @@ typedef struct VkrStandardSceneRuntime {
  * An offscreen application creates no window, so it has no surface, input
  * state, or gamepads to poll, update, or destroy.
  */
+/** The scene a frame renders: the active scene, else the root World. */
+vkr_internal INLINE VkrScene *
+vkr_standard_scene_runtime_render_scene(VkrStandardSceneRuntime *runtime) {
+  return runtime->active_scene ? runtime->active_scene : runtime->world_scene;
+}
+
 vkr_internal INLINE bool8_t vkr_standard_scene_runtime_is_windowed(
     const VkrStandardSceneRuntime *application) {
   return vkr_application_host_is_windowed(&application->host);

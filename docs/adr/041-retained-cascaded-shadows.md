@@ -32,7 +32,12 @@ fit containing the current cascade supplies that projection. Other physical
 images render into their own depth storage using the same descriptor when next
 acquired; selecting its CPU metadata never borrows another image's depth.
 Dynamic overlap, generation drift,
-invalid contents or incomplete publication forces rendering. Pending fits and
+invalid contents or incomplete publication forces rendering. Scene-authored
+meshes and editor shapes are static casters, because their transforms and
+geometry change only through mesh-manager calls that bump the static
+generation; an edit therefore redraws once. Runtime-created instances and
+skinned meshes stay dynamic, and a dynamic caster that overlaps a cascade or
+local light redraws it every frame. Pending fits and
 content validity commit only after successful submit. Reused cascades publish
 the fit that actually produced their depth.
 

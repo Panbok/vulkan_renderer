@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-25
+updated: 2026-09-27
 authority: architecture
 ---
 
@@ -101,9 +101,10 @@ lower x86 baselines, including AVX without FMA, compile its scalar fallback.
 RelWithDebInfo and MinSizeRel dependencies to Release. Windows uses the Release
 CRT and `_ITERATOR_DEBUG_LEVEL=0` across configurations to match those libraries;
 the selected triplet determines static versus DLL CRT linkage. VKR Debug retains
-its own assertions and symbols. Release logging defaults to stripped levels for
-both application and editor; `VKR_EDITOR_LOGGING` is an explicit shared build
-option, so selecting a different executable leaves library compile settings
+its own assertions and symbols. Release compiles INFO and above for both
+application and editor; the application keeps an ERROR threshold and the
+editor captures INFO. `VKR_EDITOR_LOGGING` is an explicit shared build option
+that also compiles DEBUG/TRACE, so selecting a different executable leaves library compile settings
 unchanged. [Build wrappers](INDEX.md#build-and-run) reuse one dependency graph per
 configuration and request only each consumer's target closure.
 
@@ -171,13 +172,14 @@ its display contract. Orthographic frames use spatial reconstruction and bypass
 perspective-only effects while preserving the user's perspective settings; see
 [ADR-046](adr/046-editor-viewport-mapping-and-picking.md).
 Scene focus routes Tab to camera capture; panel
-focus routes it to widgets. Hierarchy reads the authoritative scene
-through a virtualized tree; Inspector sends typed selection and edit requests to
-the runtime. Debug > Labels controls selectable directional, spot and point
-light texture icons. The editor identifies ECS light components and projects
-32-point labels above their origins using the packet's unjittered camera and
-Scene mapping. Inspector exposes light enable, color/intensity, local direction
-angles, punctual range and spotlight cone controls through the edit journal.
+focus routes it to widgets. The Outliner reads the World and loaded scenes
+through a virtualized tree, and double-clicking a row frames its object;
+Details sends typed selection and edit requests to the runtime. Debug > Labels
+controls object icons: lights and placed objects draw above their origins,
+and abstract World objects (sun, sky, fog, post process) stack above the world
+origin, projected with the packet's unjittered camera and Scene mapping.
+Details rows come from each component's type descriptor and apply through the
+edit journal.
 RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
 Console snapshots bounded structured logger history with a checkbox filter dropdown. In
 legacy scene mode, Bakery runs nine recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
@@ -212,9 +214,11 @@ Explicit saves and project transitions drain that worker before publication or
 workspace release, preserving durable writes and manifest conflict detection.
 Authored environment, lights, probes and overrides
 remain scene data. Explicit `--scene` retains legacy startup.
-Creating or opening a project with no scenes enters the editor with no world
-scene. Project resource preparation does not mark a scene as loading, and scene
-selection remains an explicit action. Creation publishes the project manifest
+Creating a project publishes no scene. Opening a project loads its World
+(`world.scene.json`, created as a blank level of sun, sky atmosphere, clouds,
+height fog and post process when missing) with a grid and the camera above the
+origin. Project resource preparation does not mark a scene as loading, and
+scene selection remains an explicit action. Creation publishes the project manifest
 before its first job, so a failed first scene leaves the project listed.
 Successful write jobs remove unused cache entries, stale revisions, abandoned
 directories and old job logs; ADR-069 defines what stays reachable.
@@ -231,23 +235,35 @@ and lowers inventory references to explicit runtime paths. Imports preserve cook
 identity, copy material/texture dependencies and publish fresh artifact revisions
 before changing manifest references. Scene saves use immutable overlay revisions
 and manifest fingerprint checks. Workspace writer leases cover asynchronous
-writers through shutdown. The runtime keeps one world scene resident and retains
-its existing GPU-completion-based resource retirement.
+writers through shutdown. In a project the runtime keeps the World resident
+beside the primary scene and up to six additive scenes, all sharing one physics
+world, and retains its GPU-completion-based resource retirement.
+[ADR-076](adr/076-project-object-model.md) records this object model:
+descriptor-generated Details, structural undo, singleton resolution with a
+per-scene inherit-World setting, World-only physics and animation settings,
+presets, viewport documents, Set primary and the Outliner with scenes nested
+under the World.
 
-Hierarchy's Add entity form appends a model or directional, point, spot or
+The Outliner's Add entity form appends a model or directional, point, spot or
 rectangle light to the loaded writable managed scene. Model sources use the
 existing import/cooking job. Add publishes the scene and reloads it, preserving
 existing entity indices and saved overlays, then selects the added entity.
 Unsaved edits use Save/Discard/Cancel before the job starts. Creation is a
-manifest publication rather than an undo-journal entry; later Inspector edits
+manifest publication rather than an undo-journal entry; later Details edits
 use the normal journal. Failed additions return to the form for correction.
 
 The dockable [Content browser](../editor/src/editor_content.c) refreshes managed
-inventories and owns a bounded thumbnail cache. A left source tree groups Scene,
-Project and Editor assets by type; breadcrumbs navigate upward above the search
-and filter controls. Virtualized cards show names, states and type-color strips.
-The right Details panel contains selection actions; narrow docks hide side panels.
-This follows Epic's [Content Browser organization](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine)
+inventories and owns a bounded thumbnail cache. It is a virtual file system:
+the project's `content.labels.json` holds a folder tree plus each item's folder
+and tags, and files never move. A left folder tree with tags, a clickable
+breadcrumb and back/forward/up navigate folders. Virtualized tiles or a sortable
+Name/Type/Location/Tags list show subfolders, then items: assets, scenes,
+presets, the World and one built-in item per creatable object. Dragging onto a
+folder moves an item; dropping on the viewport opens a scene, adds an object or
+places a mesh; OS files dropped on the window open the import window for the
+folder under the pointer. The right Details panel contains selection and folder
+actions; narrow docks hide side panels. This follows Epic's
+[Content Browser organization](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine)
 without exposing generated build directories as content folders.
 Texture previews run in a CPU tool; material spheres run through a separate
 harness job. Meshes and fonts use vector icons. `View > Content browser` or the Cmd
@@ -283,7 +299,7 @@ workspace scene paths separate from the installation's bootstrap working
 directory. A focused Metal material-preview run produced and validated a 256×256
 sphere PNG; this establishes that preview path, not Vulkan pixel parity.
 
-Transform editing is available through Inspector and world-axis gizmos. Gizmo
+Transform editing is available through Details and world-axis gizmos. Gizmo
 gestures use normalized displayed-image coordinates so internal resolution
 changes preserve active edits and delayed releases. The application submits a
 bounded geometry overlay to both backends after tonemapping;
@@ -387,7 +403,7 @@ one scene-owned baked diffuse-volume binding, analytic fog, text and render IDs.
 glTF nodes retain local matrices, names and source identities; source geometry is
 shared across node instances, with decal variants where world-offset corrections
 differ. Cooked mesh v17 and v18 retain the same source hierarchy. Source fingerprints
-protect editor sidecar overrides against reimport conflicts. Inspector supports
+protect editor sidecar overrides against reimport conflicts. Details supports
 TRS where the authored matrix is decomposable; sheared matrices remain exact and
 read-only. The runtime owns selection and a bounded undo journal. UI borrows
 scene data for its current build and never keeps ECS component pointers.
@@ -1133,11 +1149,14 @@ See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-
 
 These are limits of current code or retained acceptance, not scheduled promises:
 
-- The editor still owns one active scene that carries world singletons, a
-  hand-written Inspector, Hierarchy and Settings, and per-scene render ids,
-  physics world and collision matrix. [ADR-076](adr/076-project-object-model.md)
-  decides the replacement object model; the
-  [object model proposal](proposals/project-object-model.md) owns its phases.
+- Object model limits ([ADR-076](adr/076-project-object-model.md)): mesh
+  Details are read-only, and physics attachments and joints keep hand-written
+  Details rows. Prefab instances are unlinked copies. No Bistro case carries
+  an animated mesh, so the animation component and World clock scale have
+  CPU evidence only.
+  The Windows `WM_DROPFILES` path has not been built or run. ASan/LSan
+  evidence for unloading an additive Bistro scene is unavailable on this
+  16 GiB host, and Apple ASan does not support leak detection.
 
 - New viewport camera/grid controls, text sizing and inspection modes pass the
   Release editor build with both production shader compilers. Focused CPU/native

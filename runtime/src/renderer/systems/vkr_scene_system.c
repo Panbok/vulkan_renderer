@@ -4,6 +4,7 @@
  */
 
 #include "vkr_scene_system.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
 #include <math.h>
 
@@ -82,7 +83,7 @@ vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
                                                 struct VkrRenderAssets *assets,
                                                 VkrScene *scene);
 vkr_internal VkrEntityId scene_render_bridge_entity_from_picking_id(
-    const VkrSceneRenderBridge *bridge, uint32_t object_id);
+    const VkrSceneRenderBridge *bridge, uint32_t base, uint32_t object_id);
 
 // ============================================================================
 // Internal Helpers
@@ -222,6 +223,459 @@ bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
   scene->atmosphere.sun_refresh_elapsed = 0.0;
   scene_queue_atmosphere_revision(scene, &normalized);
   return true_v;
+}
+
+// ============================================================================
+// Typed Components (ADR-076)
+// ============================================================================
+
+vkr_internal void scene_invalidate_queries(VkrScene *scene);
+vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
+                                      const VkrTypeDesc *type);
+vkr_internal void scene_shape_release(VkrScene *scene, VkrEntityId entity);
+vkr_internal void scene_text_release(VkrScene *scene, VkrEntityId entity);
+
+VkrComponentTypeId vkr_scene_type_id(const VkrScene *scene,
+                                     const VkrTypeDesc *type) {
+  if (!scene || !type) {
+    return VKR_COMPONENT_TYPE_INVALID;
+  }
+  for (uint32_t i = 0; i < scene->type_count; ++i) {
+    if (scene->types[i].type == type) {
+      return scene->types[i].id;
+    }
+  }
+  return VKR_COMPONENT_TYPE_INVALID;
+}
+
+const void *vkr_scene_get_typed(const VkrScene *scene, VkrEntityId entity,
+                                const VkrTypeDesc *type) {
+  const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
+  if (id == VKR_COMPONENT_TYPE_INVALID ||
+      !vkr_entity_is_alive(scene->world, entity)) {
+    return NULL;
+  }
+  return vkr_entity_get_component(scene->world, entity, id);
+}
+
+bool8_t vkr_scene_set_typed(VkrScene *scene, VkrEntityId entity,
+                            const VkrTypeDesc *type, const void *value) {
+  const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
+  if (id == VKR_COMPONENT_TYPE_INVALID || !value ||
+      !vkr_entity_is_alive(scene->world, entity) ||
+      !vkr_type_validate(type, value, NULL, 0u)) {
+    return false_v;
+  }
+  if (!vkr_scene_type_allowed(scene, type) ||
+      (type == &vkr_scene_animation_type &&
+       !vkr_scene_animation_settings_valid(scene, entity, value))) {
+    return false_v;
+  }
+  void *existing = vkr_entity_get_component_mut(scene->world, entity, id);
+  if (existing) {
+    MemCopy(existing, value, type->size);
+  } else {
+    if (!vkr_entity_add_component(scene->world, entity, id, value)) {
+      return false_v;
+    }
+    scene_invalidate_queries(scene);
+    scene->structure_revision++;
+  }
+  scene->world_revision++;
+  scene_typed_changed(scene, entity, type);
+  return true_v;
+}
+
+bool8_t vkr_scene_remove_typed(VkrScene *scene, VkrEntityId entity,
+                               const VkrTypeDesc *type) {
+  const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
+  if (id == VKR_COMPONENT_TYPE_INVALID ||
+      !vkr_entity_is_alive(scene->world, entity) ||
+      !vkr_entity_has_component(scene->world, entity, id) ||
+      !vkr_entity_remove_component(scene->world, entity, id)) {
+    return false_v;
+  }
+  scene_invalidate_queries(scene);
+  scene->structure_revision++;
+  scene->world_revision++;
+  scene_typed_changed(scene, entity, type);
+  return true_v;
+}
+
+VkrEntityId vkr_scene_create_typed_entity(VkrScene *scene, String8 name,
+                                          const VkrTypeDesc *type,
+                                          const void *value) {
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  const VkrEntityId entity = vkr_scene_create_entity(scene, &error);
+  if (!entity.u64) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  if ((name.length && !vkr_scene_set_name(scene, entity, name)) ||
+      !vkr_scene_set_typed(scene, entity, type, value)) {
+    vkr_scene_destroy_entity(scene, entity);
+    return VKR_ENTITY_ID_INVALID;
+  }
+  scene->structure_revision++;
+  return entity;
+}
+
+/* One resolution pass over a type's instances. Singletons keep the enabled
+ * instance with the lowest entity index, else the lowest index; collections
+ * keep every instance in index order up to their capacity. */
+typedef struct SceneWorldGather {
+  const VkrTypeDesc *type;
+  uint32_t enabled_property;
+  VkrEntityId best;
+  bool8_t best_enabled;
+  uint8_t *best_value;
+  /* Collections: entity indices and values in index order. */
+  uint32_t *indices;
+  uint8_t *values;
+  uint32_t count;
+  uint32_t capacity;
+} SceneWorldGather;
+
+static uint32_t scene_world_enabled_property(const VkrTypeDesc *type) {
+  const uint32_t index = vkr_type_find_property(type, string8_lit("enabled"));
+  return index != UINT32_MAX &&
+                 type->properties[index].kind == VKR_PROPERTY_BOOL
+             ? index
+             : UINT32_MAX;
+}
+
+static bool8_t scene_world_value_enabled(const SceneWorldGather *gather,
+                                         const void *value) {
+  if (gather->enabled_property == UINT32_MAX) {
+    return true_v;
+  }
+  float64_t enabled = 0.0;
+  (void)vkr_property_get_number(
+      &gather->type->properties[gather->enabled_property], value, &enabled);
+  return enabled != 0.0;
+}
+
+/* Walk the entity directory in index order so ties resolve by creation
+ * order, independent of archetype and chunk layout. */
+static void scene_world_gather(const VkrScene *scene,
+                               SceneWorldGather *gather) {
+  const VkrComponentTypeId id = vkr_scene_type_id(scene, gather->type);
+  gather->enabled_property = scene_world_enabled_property(gather->type);
+  gather->best = VKR_ENTITY_ID_INVALID;
+  gather->best_enabled = false_v;
+  gather->count = 0u;
+  if (id == VKR_COMPONENT_TYPE_INVALID) {
+    return;
+  }
+  const VkrWorld *world = scene->world;
+  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
+    if (!world->dir.records[i].chunk) {
+      continue;
+    }
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    const void *value = vkr_entity_get_component(world, entity, id);
+    /* A hidden object takes no effect, like a hidden light. */
+    if (!value || !vkr_scene_entity_visible(scene, entity)) {
+      continue;
+    }
+    if (gather->values) {
+      if (gather->count < gather->capacity) {
+        MemCopy(gather->values + (uint64_t)gather->count * gather->type->size,
+                value, gather->type->size);
+        gather->indices[gather->count] = i;
+        gather->count++;
+      }
+      continue;
+    }
+    const bool8_t enabled = scene_world_value_enabled(gather, value);
+    if (!gather->best.u64 || (enabled && !gather->best_enabled)) {
+      gather->best = entity;
+      gather->best_enabled = enabled;
+      MemCopy(gather->best_value, value, gather->type->size);
+    }
+  }
+}
+
+/* Resolve one singleton into `out`, or its default; returns presence. The
+   scene's own instances win; the root World's apply when it has none. A
+   World-only type resolves from the root World alone. */
+static bool8_t scene_world_singleton(const VkrScene *scene,
+                                     const VkrTypeDesc *type, void *out,
+                                     VkrEntityId *out_entity) {
+  SceneWorldGather gather = {.type = type, .best_value = out};
+  vkr_type_defaults(type, out);
+  if (type->flags & VKR_TYPE_FLAG_WORLD_ONLY) {
+    const VkrScene *root =
+        scene->world_id == VKR_SCENE_WORLD_ROOT_ID ? scene : scene->world_root;
+    if (root) {
+      scene_world_gather(root, &gather);
+    }
+    *out_entity = gather.best;
+    return gather.best.u64 != 0u;
+  }
+  scene_world_gather(scene, &gather);
+  if (!gather.best.u64 && scene->world_fallback) {
+    scene_world_gather(scene->world_fallback, &gather);
+  }
+  *out_entity = gather.best;
+  return gather.best.u64 != 0u;
+}
+
+/* Lower the resolved state into the runtime products. Comparisons run
+ * against the runtime's current inputs, so a state that already matches, as
+ * after loading, queues no work. */
+static void scene_world_lower(VkrScene *scene, bool8_t had_atmosphere) {
+  const VkrSceneWorldState *state = &scene->world_state;
+
+  VkrSceneEnvironment *environment = &scene->environment;
+  if (state->has_environment) {
+    environment->enabled = state->environment.enabled;
+    environment->intensity = state->environment.intensity;
+    environment->diffuse_intensity = state->environment.diffuse_intensity;
+    environment->specular_intensity = state->environment.specular_intensity;
+  } else {
+    environment->enabled = false_v;
+  }
+
+  /* Disabling, hiding or removing the resolved atmosphere turns the sky off;
+     a sky the scene never resolved, such as a load-time block without an
+     editable entity, is left alone. */
+  if (had_atmosphere && !(state->has_atmosphere && state->atmosphere.enabled) &&
+      scene->atmosphere.authored_settings.enabled) {
+    VkrAtmosphereSettings off = scene->atmosphere.authored_settings;
+    off.enabled = false_v;
+    VkrCloudSettings clouds = scene->atmosphere.requested_clouds;
+    clouds.enabled = false_v;
+    if (!vkr_scene_request_atmosphere(scene, &off, &clouds,
+                                      environment->sh_deringing)) {
+      log_warn("Scene: the sky could not be turned off");
+    }
+  }
+  if (state->has_atmosphere && state->atmosphere.enabled) {
+    VkrCloudSettings clouds = state->clouds;
+    clouds.enabled = state->has_clouds && state->clouds.enabled;
+    if (MemCompare(&state->atmosphere, &scene->atmosphere.authored_settings,
+                   sizeof(state->atmosphere)) != 0 ||
+        MemCompare(&clouds, &scene->atmosphere.requested_clouds,
+                   sizeof(clouds)) != 0) {
+      if (!vkr_scene_request_atmosphere(scene, &state->atmosphere, &clouds,
+                                        environment->sh_deringing)) {
+        log_warn("Scene: the resolved atmosphere was rejected");
+      }
+    }
+  }
+
+  for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
+    scene->reflection_probes[i].enabled = false_v;
+  }
+  for (uint32_t i = 0; i < state->probe_count; ++i) {
+    const SceneReflectionProbeSettings *probe = &state->probes[i];
+    if (probe->slot >= scene->reflection_probe_count) {
+      continue;
+    }
+    VkrSceneReflectionProbe *runtime = &scene->reflection_probes[probe->slot];
+    runtime->enabled = probe->enabled;
+    runtime->center = probe->center;
+    runtime->extents = probe->extents;
+    runtime->blend_distance = probe->blend_distance;
+    runtime->intensity = probe->intensity;
+    runtime->diffuse_intensity = probe->diffuse_intensity;
+    runtime->specular_intensity = probe->specular_intensity;
+  }
+}
+
+void vkr_scene_set_world_fallback(VkrScene *scene, const VkrScene *root) {
+  if (scene && root != scene && scene->world_root != root) {
+    scene->world_root = root;
+    scene->world_fallback_revision = 0u;
+    scene->world_revision++;
+  }
+  if (!scene || root == scene || !scene->settings.inherit_world) {
+    root = NULL;
+  }
+  if (scene && scene->world_fallback != root) {
+    scene->world_fallback = root;
+    scene->world_fallback_revision = 0u;
+    scene->world_revision++;
+  }
+}
+
+bool8_t vkr_scene_resolve_world(VkrScene *scene) {
+  if (!scene || !scene->world) {
+    return false_v;
+  }
+  /* World-only types follow the root even when the scene does not inherit. */
+  const VkrScene *root = scene->world_root;
+  if (root && root->world_revision != scene->world_fallback_revision) {
+    scene->world_fallback_revision = root->world_revision;
+    scene->world_revision++;
+  }
+  if (scene->world_state.revision == scene->world_revision) {
+    return false_v;
+  }
+  VkrSceneWorldState *state = &scene->world_state;
+  const uint64_t revision = scene->world_revision;
+  const bool8_t had_atmosphere =
+      state->has_atmosphere && state->atmosphere.enabled;
+  MemZero(state, sizeof(*state));
+  state->revision = revision;
+
+  state->has_environment =
+      scene_world_singleton(scene, &vkr_scene_environment_type,
+                            &state->environment, &state->environment_entity);
+  state->has_atmosphere =
+      scene_world_singleton(scene, &vkr_scene_atmosphere_type,
+                            &state->atmosphere, &state->atmosphere_entity);
+  state->has_clouds = scene_world_singleton(
+      scene, &vkr_scene_clouds_type, &state->clouds, &state->clouds_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_fog_type, &state->fog,
+                              &state->fog_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_froxel_fog_type,
+                              &state->froxel_fog, &state->froxel_fog_entity);
+  state->has_post_process =
+      scene_world_singleton(scene, &vkr_scene_post_process_type,
+                            &state->post_process, &state->post_process_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_diffuse_volume_type,
+                              &state->diffuse_volume,
+                              &state->diffuse_volume_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_subsurface_type,
+                              &state->subsurface, &state->subsurface_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_physics_settings_type,
+                              &state->physics_settings,
+                              &state->physics_settings_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_animation_settings_type,
+                              &state->animation_settings,
+                              &state->animation_settings_entity);
+
+  uint32_t indices[VKR_SCENE_REFLECTION_PROBE_MAX];
+  SceneWorldGather probes = {.type = &vkr_scene_reflection_probe_type,
+                             .indices = indices,
+                             .values = (uint8_t *)state->probes,
+                             .capacity = VKR_SCENE_REFLECTION_PROBE_MAX};
+  scene_world_gather(scene, &probes);
+  state->probe_count = probes.count;
+
+  uint32_t box_indices[VKR_FROXEL_FOG_BOX_COUNT_MAX];
+  SceneWorldGather boxes = {.type = &vkr_scene_fog_box_type,
+                            .indices = box_indices,
+                            .values = (uint8_t *)state->froxel_fog.boxes,
+                            .capacity = VKR_FROXEL_FOG_BOX_COUNT_MAX};
+  scene_world_gather(scene, &boxes);
+  uint32_t box_count = boxes.count;
+  if (scene->world_fallback && box_count < VKR_FROXEL_FOG_BOX_COUNT_MAX) {
+    /* Root boxes follow the scene's own in the same array. */
+    SceneWorldGather root_boxes = {
+        .type = &vkr_scene_fog_box_type,
+        .indices = box_indices + box_count,
+        .values = (uint8_t *)(state->froxel_fog.boxes + box_count),
+        .capacity = VKR_FROXEL_FOG_BOX_COUNT_MAX - box_count};
+    scene_world_gather(scene->world_fallback, &root_boxes);
+    box_count += root_boxes.count;
+  }
+  state->froxel_fog.box_count = box_count;
+
+  scene_world_lower(scene, had_atmosphere);
+  return true_v;
+}
+
+bool8_t vkr_scene_mesh_info(const VkrScene *scene, VkrEntityId entity,
+                            SceneMeshInfo *out) {
+  const SceneMeshRenderer *renderer =
+      scene && scene->assets && vkr_entity_is_alive(scene->world, entity)
+          ? vkr_entity_get_component(scene->world, entity,
+                                     scene->comp_mesh_renderer)
+          : NULL;
+  VkrMeshManager *manager = renderer ? &scene->assets->mesh_manager : NULL;
+  const VkrMeshInstance *instance =
+      manager ? vkr_mesh_manager_get_instance(manager, renderer->instance)
+              : NULL;
+  const VkrMeshAsset *asset =
+      instance ? vkr_mesh_manager_get_live_asset(manager, instance->asset)
+               : NULL;
+  if (!asset) {
+    return false_v;
+  }
+
+  MemZero(out, sizeof(*out));
+  const uint64_t path_length =
+      Min(asset->mesh_path.length, (uint64_t)sizeof(out->asset) - 1u);
+  MemCopy(out->asset, asset->mesh_path.str, path_length);
+  out->submeshes = (uint32_t)asset->submeshes.length;
+  out->vertices = asset->load_metrics.vertex_count;
+  out->triangles = asset->load_metrics.index_count / 3u;
+  out->radius = asset->bounds_valid ? asset->bounds_local_radius : 0.0f;
+  out->state = (uint32_t)instance->loading_state;
+  out->mobility = (uint32_t)instance->shadow_mobility;
+
+  /* Distinct materials in submesh order; the first names the row. */
+  VkrMaterialSystem *materials = &scene->assets->material_system;
+  const VkrMaterial *first = NULL;
+  uint32_t others = 0;
+  for (uint64_t i = 0; i < asset->submeshes.length; ++i) {
+    const VkrMaterialHandle handle = asset->submeshes.data[i].material;
+    bool8_t seen = false_v;
+    for (uint64_t j = 0; j < i && !seen; ++j) {
+      seen = MemCompare(&asset->submeshes.data[j].material, &handle,
+                        sizeof(handle)) == 0;
+    }
+    if (seen) {
+      continue;
+    }
+    const VkrMaterial *material =
+        vkr_material_system_get_live(materials, handle);
+    if (!first && material && material->name) {
+      first = material;
+    } else {
+      ++others;
+    }
+  }
+  if (first && others) {
+    snprintf(out->material, sizeof(out->material), "%s (+%u)", first->name,
+             others);
+  } else if (first) {
+    snprintf(out->material, sizeof(out->material), "%s", first->name);
+  }
+  return true_v;
+}
+
+Vec3 vkr_scene_gravity(const VkrScene *scene) {
+  if (!scene || !scene->world_state.revision) {
+    ScenePhysicsSettings settings;
+    vkr_type_defaults(&vkr_scene_physics_settings_type, &settings);
+    return settings.gravity;
+  }
+  return scene->world_state.physics_settings.gravity;
+}
+
+float32_t vkr_scene_animation_time_scale(const VkrScene *scene) {
+  return scene && scene->world_state.revision
+             ? scene->world_state.animation_settings.time_scale
+             : 1.0f;
+}
+
+bool8_t vkr_scene_type_allowed(const VkrScene *scene, const VkrTypeDesc *type) {
+  return scene && type &&
+         (!(type->flags & VKR_TYPE_FLAG_WORLD_ONLY) ||
+          scene->world_id == VKR_SCENE_WORLD_ROOT_ID);
+}
+
+bool8_t vkr_scene_singleton_active(const VkrScene *scene, VkrEntityId entity,
+                                   const VkrTypeDesc *type) {
+  const VkrSceneWorldState *state = &scene->world_state;
+  const VkrEntityId winner =
+      type == &vkr_scene_environment_type    ? state->environment_entity
+      : type == &vkr_scene_atmosphere_type   ? state->atmosphere_entity
+      : type == &vkr_scene_clouds_type       ? state->clouds_entity
+      : type == &vkr_scene_fog_type          ? state->fog_entity
+      : type == &vkr_scene_froxel_fog_type   ? state->froxel_fog_entity
+      : type == &vkr_scene_post_process_type ? state->post_process_entity
+      : type == &vkr_scene_physics_settings_type
+          ? state->physics_settings_entity
+      : type == &vkr_scene_animation_settings_type
+          ? state->animation_settings_entity
+      : type == &vkr_scene_diffuse_volume_type ? state->diffuse_volume_entity
+      : type == &vkr_scene_subsurface_type     ? state->subsurface_entity
+                                               : entity;
+  return winner.u64 == entity.u64;
 }
 
 vkr_internal void
@@ -1028,6 +1482,7 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   }
 
   MemZero(scene, sizeof(VkrScene));
+  scene->settings.inherit_world = true_v;
   scene->alloc = alloc;
   scene->world_id = world_id;
 
@@ -1088,7 +1543,21 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       scene->world, "SceneRectangleLight", sizeof(SceneRectangleLight),
       AlignOf(SceneRectangleLight));
 
-  if (!vkr_scene_physics_register(scene) ||
+  bool8_t world_types_registered = true_v;
+  const VkrTypeDesc *world_type = NULL;
+  for (uint32_t i = 0; (world_type = vkr_scene_world_type(i)); ++i) {
+    const VkrComponentTypeId id = vkr_entity_register_component_once(
+        scene->world, world_type->name, world_type->size, world_type->align);
+    if (id == VKR_COMPONENT_TYPE_INVALID ||
+        scene->type_count == VKR_SCENE_TYPE_MAX) {
+      world_types_registered = false_v;
+      break;
+    }
+    scene->types[scene->type_count++] =
+        (VkrSceneComponentType){.type = world_type, .id = id};
+  }
+
+  if (!world_types_registered || !vkr_scene_physics_register(scene) ||
       scene->comp_source_identity == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_name == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_transform == VKR_COMPONENT_TYPE_INVALID ||
@@ -1164,8 +1633,8 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   scene->atmosphere.requested_settings.enabled = false_v;
   scene->atmosphere.candidate_settings.enabled = false_v;
   scene->atmosphere.active_settings.enabled = false_v;
-  scene->fog = vkr_fog_settings_defaults();
-  scene->froxel_fog = vkr_froxel_fog_settings_defaults();
+  /* The first resolution computes defaults for every absent singleton. */
+  scene->world_revision = 1u;
   vkr_scene_reset_diffuse_volume(scene, NULL);
   scene->subsurface = (VkrSubsurfaceBinding){
       .texture = VKR_TEXTURE_HANDLE_INVALID,
@@ -1351,6 +1820,13 @@ vkr_internal void scene_queries_shutdown(VkrScene *scene) {
 }
 
 vkr_internal void scene_arrays_shutdown(VkrScene *scene) {
+  if (scene->document_ids) {
+    vkr_allocator_free(scene->alloc, scene->document_ids,
+                       scene->document_id_count * sizeof(VkrSceneDocumentId),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    scene->document_ids = NULL;
+    scene->document_id_count = 0u;
+  }
   if (scene->topo_order) {
     vkr_allocator_free_aligned(scene->alloc, scene->topo_order,
                                scene->topo_capacity * sizeof(VkrEntityId),
@@ -1426,7 +1902,8 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
   }
 
   vkr_scene_update_transforms(scene);
-  if (!vkr_scene_physics_body_count(scene) && !scene->simulation.enabled) {
+  if (!vkr_scene_physics_simulated_body_count(scene) &&
+      !scene->simulation.enabled) {
     vkr_scene_animation_update(scene, dt);
   } else {
     vkr_scene_physics_animation_delta(scene, 0.0);
@@ -1444,40 +1921,65 @@ typedef struct SceneSunLightSearch {
   bool8_t atmosphere_sun_only;
 } SceneSunLightSearch;
 
+/* Keep `light` when it is an enabled, visible candidate that beats the
+   current one: the lowest render id, else the first found. */
+vkr_internal void scene_sun_consider(SceneSunLightSearch *search,
+                                     VkrEntityId entity,
+                                     const SceneDirectionalLight *light) {
+  if (!light->enabled ||
+      (search->atmosphere_sun_only && !light->atmosphere_sun) ||
+      !vkr_scene_entity_visible(search->scene, entity)) {
+    return;
+  }
+
+  const uint32_t render_id = vkr_scene_get_render_id(search->scene, entity);
+  const bool8_t has_render_id = render_id != 0;
+  if (search->found &&
+      (search->best_has_render_id
+           ? !has_render_id || render_id >= search->best_render_id
+           : !has_render_id)) {
+    return;
+  }
+
+  search->light = *light;
+  search->entity = entity;
+  search->best_render_id = render_id;
+  search->best_has_render_id = has_render_id;
+  search->found = true_v;
+}
+
 vkr_internal void scene_find_sun_light_cb(const VkrArchetype *arch,
                                           VkrChunk *chunk, void *user) {
   (void)arch;
   SceneSunLightSearch *search = user;
-  const VkrScene *scene = search->scene;
   const uint32_t count = vkr_entity_chunk_count(chunk);
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
   const SceneDirectionalLight *lights =
       (const SceneDirectionalLight *)vkr_entity_chunk_column(
-          chunk, scene->comp_directional_light);
+          chunk, search->scene->comp_directional_light);
   if (!entities || !lights) {
     return;
   }
 
   for (uint32_t i = 0; i < count; i++) {
-    if (!lights[i].enabled ||
-        (search->atmosphere_sun_only && !lights[i].atmosphere_sun)) {
+    scene_sun_consider(search, entities[i], &lights[i]);
+  }
+}
+
+/* The inherited World's lights, scanned directly: another container's
+   compiled queries belong to its own update. The World holds few entities. */
+vkr_internal void scene_find_world_sun(SceneSunLightSearch *search) {
+  const VkrWorld *world = search->scene->world;
+  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
+    if (!world->dir.records[i].chunk) {
       continue;
     }
-
-    const uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
-    const bool8_t has_render_id = render_id != 0;
-    if (search->found &&
-        (search->best_has_render_id
-             ? !has_render_id || render_id >= search->best_render_id
-             : !has_render_id)) {
-      continue;
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    const SceneDirectionalLight *light = vkr_entity_get_component(
+        world, entity, search->scene->comp_directional_light);
+    if (light) {
+      scene_sun_consider(search, entity, light);
     }
-
-    search->light = lights[i];
-    search->entity = entities[i];
-    search->best_render_id = render_id;
-    search->best_has_render_id = has_render_id;
-    search->found = true_v;
   }
 }
 
@@ -1490,7 +1992,14 @@ vkr_internal void scene_resolve_sun(VkrScene *scene) {
   };
   vkr_entity_query_compiled_each_chunk(&scene->query_directional_light,
                                        scene_find_sun_light_cb, &search);
+  /* A scene without its own sun uses the World's while it inherits it. */
+  if (!search.found && scene->world_fallback) {
+    search.scene = scene->world_fallback;
+    scene_find_world_sun(&search);
+  }
   sun->found = search.found;
+  sun->entity = search.found ? search.entity : VKR_ENTITY_ID_INVALID;
+  sun->owner = search.found ? search.scene : NULL;
   if (!sun->found) {
     return;
   }
@@ -1508,7 +2017,7 @@ vkr_internal void scene_resolve_sun(VkrScene *scene) {
   // A directional light turns with its own rotation.
   const SceneTransform *transform =
       (const SceneTransform *)vkr_entity_get_component(
-          scene->world, search.entity, scene->comp_transform);
+          search.scene->world, search.entity, search.scene->comp_transform);
   sun->light = (VkrSceneSunLight){
       .direction = transform ? vkr_quat_rotate_vec3(transform->rotation,
                                                     light->direction_local)
@@ -1546,13 +2055,17 @@ void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
     return;
   }
 
-  // An unusable light, such as one pointing nowhere, keeps the current sun.
+  /* Only a directional light is a sun (ADR-058): without one the sky has
+     no sun. An unusable light, such as one pointing nowhere, keeps the
+     current sun. */
   VkrAtmosphereSettings effective = atmosphere->authored_settings;
   const VkrSceneSunLight *light = &scene->sun.light;
-  if (scene->sun.found && !vkr_atmosphere_apply_sun_light(
-                              &effective, light->direction,
-                              vec3_scale(light->color, light->intensity),
-                              light->sun_angular_diameter_degrees)) {
+  if (!scene->sun.found) {
+    effective.solar_irradiance = vec3_zero();
+  } else if (!vkr_atmosphere_apply_sun_light(
+                 &effective, light->direction,
+                 vec3_scale(light->color, light->intensity),
+                 light->sun_angular_diameter_degrees)) {
     return;
   }
 
@@ -1734,6 +2247,15 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
     return;
   }
   vkr_scene_animation_entity_destroying(scene, entity);
+  /* Generated shape meshes and text slots belong to the entity. */
+  scene_shape_release(scene, entity);
+  scene_text_release(scene, entity);
+  for (uint32_t i = 0; i < scene->type_count; ++i) {
+    if (vkr_entity_has_component(scene->world, entity, scene->types[i].id)) {
+      scene->world_revision++;
+      break;
+    }
+  }
   if (scene->player_entity.u64 == entity.u64) {
     scene->player_entity = VKR_ENTITY_ID_INVALID;
   }
@@ -2119,6 +2641,8 @@ void vkr_scene_set_visibility(VkrScene *scene, VkrEntityId entity,
   }
 
   scene->render_full_sync_needed = true;
+  /* Hidden world objects stop taking effect; resolution runs again. */
+  scene->world_revision++;
 }
 
 // ============================================================================
@@ -2405,9 +2929,8 @@ scene_render_bridge_clear_mapping(VkrSceneRenderBridge *bridge) {
                                bridge->render_id_capacity);
 }
 
-vkr_internal bool8_t scene_entity_is_visible(VkrScene *scene,
-                                             VkrEntityId entity) {
-  VkrWorld *world = scene->world;
+bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity) {
+  const VkrWorld *world = scene->world;
   VkrComponentTypeId comp_visibility = scene->comp_visibility;
   VkrComponentTypeId comp_transform = scene->comp_transform;
   uint32_t max_depth = world->dir.capacity;
@@ -2449,6 +2972,13 @@ vkr_internal bool8_t scene_entity_is_visible(VkrScene *scene,
   return true_v;
 }
 
+/* Scene-local render id offset into its container's picking range; zero
+   stays zero (no render id). */
+vkr_internal INLINE uint32_t scene_picking_render_id(const VkrScene *scene,
+                                                     uint32_t render_id) {
+  return render_id ? scene->render_id_base + render_id : 0u;
+}
+
 /**
  * @brief Sync context for render bridge.
  */
@@ -2476,7 +3006,8 @@ vkr_internal void scene_sync_renderable(RenderSyncContext *ctx,
                                         Mat4 world, uint32_t render_id,
                                         bool8_t is_visible) {
   vkr_mesh_manager_instance_sync_render_state(
-      &ctx->assets->mesh_manager, instance, world, render_id, is_visible);
+      &ctx->assets->mesh_manager, instance, world,
+      scene_picking_render_id(ctx->scene, render_id), is_visible);
   scene_render_bridge_update_mapping(ctx->bridge, render_id, entity,
                                      is_visible);
 }
@@ -2502,7 +3033,7 @@ vkr_internal void render_sync_chunk_cb(const VkrArchetype *arch,
 
   for (uint32_t i = 0; i < count; i++) {
     VkrMeshInstanceHandle instance = mesh_renderers[i].instance;
-    bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
+    bool8_t is_visible = vkr_scene_entity_visible(scene, entities[i]);
     uint32_t render_id = render_ids[i].id;
     scene_sync_renderable(ctx, entities[i], instance, transforms[i].world,
                           render_id, is_visible);
@@ -2531,7 +3062,7 @@ vkr_internal void render_sync_point_light_cb(const VkrArchetype *arch,
     if (render_id == 0)
       continue;
 
-    bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
+    bool8_t is_visible = vkr_scene_entity_visible(scene, entities[i]);
     scene_render_bridge_update_mapping(ctx->bridge, render_id, entities[i],
                                        is_visible);
   }
@@ -2562,14 +3093,14 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
       continue;
 
     uint32_t render_id = render_ids[i].id;
-    bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
+    bool8_t is_visible = vkr_scene_entity_visible(scene, entities[i]);
 
     // Sync mesh-slot state for shapes
     vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index,
                                transforms[i].world);
     vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
     vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index,
-                                   render_id);
+                                   scene_picking_render_id(scene, render_id));
 
     // Update picking mapping
     scene_render_bridge_update_mapping(ctx->bridge, render_id, entities[i],
@@ -2612,7 +3143,7 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
     if (!render_id_comp)
       continue;
 
-    bool8_t is_visible = scene_entity_is_visible(scene, entity);
+    bool8_t is_visible = vkr_scene_entity_visible(scene, entity);
     uint32_t render_id = render_id_comp->id;
 
     // Try mesh renderer (instance) first - entity validated, component optional
@@ -2636,7 +3167,7 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
       vkr_mesh_manager_set_visible(&assets->mesh_manager, shape->mesh_index,
                                    is_visible);
       vkr_mesh_manager_set_render_id(&assets->mesh_manager, shape->mesh_index,
-                                     render_id);
+                                     scene_picking_render_id(scene, render_id));
       scene_render_bridge_update_mapping(ctx.bridge, render_id, entity,
                                          is_visible);
     }
@@ -2681,7 +3212,7 @@ vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
 }
 
 vkr_internal VkrEntityId scene_render_bridge_entity_from_picking_id(
-    const VkrSceneRenderBridge *bridge, uint32_t object_id) {
+    const VkrSceneRenderBridge *bridge, uint32_t base, uint32_t object_id) {
   if (!bridge || object_id == 0)
     return VKR_ENTITY_ID_INVALID;
 
@@ -2690,7 +3221,11 @@ vkr_internal VkrEntityId scene_render_bridge_entity_from_picking_id(
     return VKR_ENTITY_ID_INVALID;
   }
 
-  uint32_t render_id = decoded.value;
+  /* Each container owns one render-id range; ids outside it belong to
+     another container. */
+  if (decoded.value < base || decoded.value - base >= VKR_SCENE_RENDER_ID_RANGE)
+    return VKR_ENTITY_ID_INVALID;
+  uint32_t render_id = decoded.value - base;
   if (render_id >= bridge->render_id_capacity)
     return VKR_ENTITY_ID_INVALID;
 
@@ -2844,8 +3379,8 @@ VkrEntityId vkr_scene_handle_entity_from_picking_id(VkrSceneHandle handle,
   if (!handle)
     return VKR_ENTITY_ID_INVALID;
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
-  return scene_render_bridge_entity_from_picking_id(&runtime->bridge,
-                                                    object_id);
+  return scene_render_bridge_entity_from_picking_id(
+      &runtime->bridge, runtime->scene.render_id_base, object_id);
 }
 
 // ============================================================================
@@ -2874,8 +3409,15 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
     return true_v;
   }
 
-  // Allocate world-resources text slot ID (use entity index as text_id)
-  uint32_t text_id = entity.parts.index;
+  /* A free slot of the text pool every loaded container shares. */
+  const uint32_t text_id =
+      vkr_world_resources_text_reserve(&assets->world_resources);
+  if (assets->world_resources.initialized && text_id == UINT32_MAX) {
+    log_warn("Scene: every 3D text slot is in use; the text is not shown");
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
+    return false_v;
+  }
 
   // Get transform for text positioning
   const SceneTransform *transform =
@@ -2901,6 +3443,7 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
       .content = config->text,
       .config = &text_config,
       .transform = text_transform,
+      .owner = entity,
   };
 
   if (assets->world_resources.initialized) {
@@ -2977,6 +3520,121 @@ bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
 // ============================================================================
 // Shape Implementation
 // ============================================================================
+
+/* Release an entity's generated shape mesh and its runtime component. */
+vkr_internal void scene_shape_release(VkrScene *scene, VkrEntityId entity) {
+  const SceneShape *shape = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->comp_shape);
+  if (!shape) {
+    return;
+  }
+  const uint32_t mesh_index = shape->mesh_index;
+  if (mesh_index != VKR_INVALID_ID && scene->assets) {
+    vkr_scene_release_mesh(scene, mesh_index);
+    /* Geometry and material release through their publishers' retirement. */
+    (void)vkr_mesh_manager_remove(&scene->assets->mesh_manager, mesh_index);
+  }
+  (void)vkr_entity_remove_component(scene->world, entity, scene->comp_shape);
+  scene_invalidate_queries(scene);
+}
+
+/* Build the runtime shape from the entity's authored settings. */
+vkr_internal void scene_shape_rebuild(VkrScene *scene, VkrEntityId entity) {
+  scene_shape_release(scene, entity);
+  const SceneShapeSettings *settings =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_shape_type);
+  if (!settings || !scene->assets) {
+    return;
+  }
+  VkrSceneShapeConfig config = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
+  config.type = settings->type;
+  config.dimensions = settings->dimensions;
+  config.color = settings->color;
+  config.material_name =
+      string8_create_from_cstr((const uint8_t *)settings->material_name,
+                               strlen(settings->material_name));
+  config.material_path =
+      string8_create_from_cstr((const uint8_t *)settings->material_path,
+                               strlen(settings->material_path));
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  if (!vkr_scene_set_shape(scene, scene->assets, entity, &config, &error)) {
+    log_warn("Scene: shape rebuild failed (%d)", (int)error);
+  }
+}
+
+/* Destroy an entity's world text slot and its runtime component. */
+vkr_internal void scene_text_release(VkrScene *scene, VkrEntityId entity) {
+  const SceneText3D *text = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->comp_text3d);
+  if (!text) {
+    return;
+  }
+  if (scene->assets && scene->assets->world_resources.initialized) {
+    (void)vkr_world_resources_text_destroy(&scene->assets->world_resources,
+                                           text->text_index);
+  }
+  (void)vkr_entity_remove_component(scene->world, entity, scene->comp_text3d);
+  scene_invalidate_queries(scene);
+}
+
+/* Apply the entity's authored text: replace its slot's content, size and
+   color, keeping the font and texture size, or create the text. */
+vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
+  const SceneTextSettings *settings =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_text_type);
+  if (!settings) {
+    scene_text_release(scene, entity);
+    return;
+  }
+  if (!scene->assets) {
+    return;
+  }
+  const String8 content = string8_create_from_cstr(
+      (const uint8_t *)settings->content, strlen(settings->content));
+  const SceneText3D *text = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->comp_text3d);
+  VkrWorldResources *resources = &scene->assets->world_resources;
+  if (!text) {
+    VkrSceneText3DConfig config = VKR_SCENE_TEXT3D_CONFIG_DEFAULT;
+    config.text = content;
+    config.font_size = settings->font_size;
+    config.color = settings->color;
+    VkrSceneError error = VKR_SCENE_ERROR_NONE;
+    (void)vkr_scene_set_text3d(scene, entity, &config, &error);
+    return;
+  }
+  if (!resources->initialized ||
+      text->text_index >= resources->text_slots.length) {
+    return;
+  }
+  const VkrText3D *slot = &resources->text_slots.data[text->text_index].text;
+  VkrText3DConfig config = {
+      .font = slot->font,
+      .font_size = settings->font_size,
+      .color = settings->color,
+      .texture_width = slot->texture_width,
+      .texture_height = slot->texture_height,
+      .uv_inset_px = slot->uv_inset_px,
+  };
+  VkrWorldTextCreateData payload = {.text_id = text->text_index,
+                                    .content = content,
+                                    .config = &config,
+                                    .transform = slot->transform,
+                                    .owner = entity};
+  (void)vkr_world_resources_text_create(scene->assets, resources, &payload);
+}
+
+/* Typed components whose authored values drive generated runtime state. */
+vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
+                                      const VkrTypeDesc *type) {
+  if (type == &vkr_scene_shape_type) {
+    scene_shape_rebuild(scene, entity);
+  } else if (type == &vkr_scene_text_type) {
+    scene_text_rebuild(scene, entity);
+  } else if (type == &vkr_scene_animation_type) {
+    vkr_scene_animation_settings_changed(scene, entity);
+  }
+}
 
 bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
                             VkrEntityId entity,
@@ -3106,11 +3764,15 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
       .owns_material = owns_material,
   };
 
-  // Add to mesh manager
+  /* A shape is authored scene content like a loaded mesh: its
+     transform and geometry change only through mesh-manager calls that bump
+     the static generation, so retained shadows stay reusable while it
+     rests. */
   VkrMeshDesc mesh_desc = {
       .transform = mesh_transform,
       .submeshes = &submesh_desc,
       .submesh_count = 1,
+      .shadow_mobility = VKR_SHADOW_CASTER_MOBILITY_STATIC,
   };
 
   uint32_t mesh_index = VKR_INVALID_ID;
@@ -3169,8 +3831,9 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
   }
 
   // Set up mesh for picking and visibility
-  bool8_t is_visible = scene_entity_is_visible(scene, entity);
-  vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index, render_id);
+  bool8_t is_visible = vkr_scene_entity_visible(scene, entity);
+  vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index,
+                                 scene_picking_render_id(scene, render_id));
   vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
 
   // Set model matrix from transform
@@ -3264,6 +3927,66 @@ bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
     return false_v;
   scene_invalidate_queries(scene);
   return true_v;
+}
+
+bool8_t vkr_scene_document_id_parse(String8 text, VkrSceneDocumentId *out) {
+  if (!out || text.length != 36u) {
+    return false_v;
+  }
+  uint32_t byte = 0u;
+  for (uint32_t i = 0; i < 36u; i += 2u) {
+    if (i == 8u || i == 13u || i == 18u || i == 23u) {
+      if (text.str[i] != '-') {
+        return false_v;
+      }
+      ++i;
+    }
+    int32_t digits[2];
+    for (uint32_t d = 0; d < 2u; ++d) {
+      const uint8_t c = text.str[i + d];
+      digits[d] = c >= '0' && c <= '9'   ? c - '0'
+                  : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                  : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                         : -1;
+      if (digits[d] < 0) {
+        return false_v;
+      }
+    }
+    out->bytes[byte++] = (uint8_t)(digits[0] * 16 + digits[1]);
+  }
+  return byte == 16u;
+}
+
+void vkr_scene_document_id_format(const VkrSceneDocumentId *id, char out[37]) {
+  static const char hex[] = "0123456789abcdef";
+  uint32_t at = 0u;
+  for (uint32_t i = 0; i < 16u; ++i) {
+    if (i == 4u || i == 6u || i == 8u || i == 10u) {
+      out[at++] = '-';
+    }
+    out[at++] = hex[id->bytes[i] >> 4u];
+    out[at++] = hex[id->bytes[i] & 15u];
+  }
+  out[at] = '\0';
+}
+
+VkrSceneDocumentId *vkr_scene_document_ids_reserve(VkrScene *scene,
+                                                   uint32_t count) {
+  if (!scene || !count) {
+    return NULL;
+  }
+  if (scene->document_ids) {
+    vkr_allocator_free(scene->alloc, scene->document_ids,
+                       scene->document_id_count * sizeof(VkrSceneDocumentId),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    scene->document_ids = NULL;
+    scene->document_id_count = 0u;
+  }
+  scene->document_ids =
+      vkr_allocator_alloc(scene->alloc, count * sizeof(VkrSceneDocumentId),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  scene->document_id_count = scene->document_ids ? count : 0u;
+  return scene->document_ids;
 }
 
 bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,

@@ -62,11 +62,18 @@ void vkr_editor_physics_settings_destroy(VkrEditorPhysicsSettings *settings) {
   }
 }
 
+/* The collision layers' owner (ADR-076): the World when loaded, which shares
+   them with every scene, else the scene. */
+static const VkrScene *settings_scene(const VkrSampleUiFrame *frame) {
+  return frame->world ? frame->world : frame->scene;
+}
+
 static void settings_read(VkrEditorPhysicsSettings *settings,
                           const VkrSampleUiFrame *frame) {
-  vkr_scene_collision_layers_read(frame->scene, &settings->draft);
+  const VkrScene *scene = settings_scene(frame);
+  vkr_scene_collision_layers_read(scene, &settings->draft);
   settings->generation = frame->scene_generation;
-  settings->revision = frame->scene->collision_layers_revision;
+  settings->revision = scene->collision_layers_revision;
   settings->changed = false_v;
   settings->error[0] = 0;
   settings->preset = Min(
@@ -77,7 +84,8 @@ static void settings_read(VkrEditorPhysicsSettings *settings,
 void vkr_editor_physics_settings_build(VkrEditorPhysicsSettings *p,
                                        const VkrSampleUiFrame *f,
                                        VkrUiRect rect, VkrFontHandle heading) {
-  if (!p || !f->scene || !f->scene_edit) {
+  const VkrScene *scene = settings_scene(f);
+  if (!p || !scene || !f->scene_edit) {
     return;
   }
   VkrUiSystem *ui = f->ui;
@@ -87,10 +95,10 @@ void vkr_editor_physics_settings_build(VkrEditorPhysicsSettings *p,
     return;
   }
   if (p->generation != f->scene_generation ||
-      p->revision != f->scene->collision_layers_revision) {
+      p->revision != scene->collision_layers_revision) {
     settings_read(p, f);
   }
-  const bool8_t paused = vkr_scene_physics_is_paused(f->scene);
+  const bool8_t paused = vkr_scene_physics_is_paused(scene);
   float32_t content_height = p->tab == 0 ? 90 + 16 * 28
                              : p->tab == 1
                                  ? 90 + 18 * 24
@@ -110,7 +118,7 @@ void vkr_editor_physics_settings_build(VkrEditorPhysicsSettings *p,
                                 &scroll)) {
     return;
   }
-  (void)vkr_ui_scroll_area_offset_set(ui, p->scroll);
+  (void)vkr_ui_scroll_area_offset(ui, &p->scroll);
   const VkrUiTheme *theme = vkr_ui_theme();
   float32_t y = 10;
   /* Segmented tabs on the left, Revert/Apply on the right. */

@@ -112,6 +112,15 @@ typedef struct SceneSourceIdentity {
 } SceneSourceIdentity;
 
 /**
+ * Document-stable entity id (ADR-076): the entity's UUID in its scene
+ * document, as 16 bytes in text order. Overlays bind document entities
+ * through it, so reordering a document keeps its edits attached.
+ */
+typedef struct VkrSceneDocumentId {
+  uint8_t bytes[16];
+} VkrSceneDocumentId;
+
+/**
  * @brief Mesh renderer component linking entity to mesh manager slot.
  */
 typedef struct SceneMeshRenderer {
@@ -176,6 +185,57 @@ typedef struct SceneShape {
   uint32_t mesh_index; // Index into mesh manager (generated geometry)
 } SceneShape;
 
+/**
+ * Authored shape values (ADR-076), a typed component. Setting it rebuilds
+ * the entity's generated geometry and mesh; removing it releases them.
+ */
+typedef struct SceneShapeSettings {
+  SceneShapeType type;
+  Vec3 dimensions;
+  Vec4 color; /* RGBA; used when no material is named. */
+  char material_name[64];
+  char material_path[256];
+} SceneShapeSettings;
+
+/**
+ * Authored 3D text values (ADR-076), a typed component. Setting it replaces
+ * the entity's world text slot, keeping its font and texture size.
+ */
+typedef struct SceneTextSettings {
+  char content[256];
+  float32_t font_size;
+  Vec4 color;
+} SceneTextSettings;
+
+/**
+ * Authored playback of an animated mesh (ADR-076), a typed component the
+ * animation binding owns. Setting it reconciles the entity's player; the clip
+ * must exist in the bound bank. `clip_name` mirrors the selected clip.
+ */
+typedef struct SceneAnimationSettings {
+  uint32_t clip;
+  float32_t rate;
+  bool8_t loop;
+  bool8_t playing;
+  char clip_name[64];
+} SceneAnimationSettings;
+
+/**
+ * Read-only facts about an entity's mesh renderer for Details (ADR-076),
+ * described by `vkr_scene_mesh_info_type` and filled from the live instance
+ * and its shared asset. Not a component; nothing stores or edits it.
+ */
+typedef struct SceneMeshInfo {
+  char asset[256];
+  char material[128]; /* First submesh's material, then "(+N)" others. */
+  uint32_t submeshes;
+  uint32_t vertices;
+  uint32_t triangles;
+  float32_t radius;  /* Local bounding sphere. */
+  uint32_t state;    /* VkrMeshLoadingState. */
+  uint32_t mobility; /* VkrShadowCasterMobility. */
+} SceneMeshInfo;
+
 // ============================================================================
 // Light Components
 // ============================================================================
@@ -218,6 +278,10 @@ typedef struct VkrSceneSunLight {
  * blackbody spectrum. */
 typedef struct VkrSceneSun {
   VkrSceneSunLight light;
+  /* The light that is the sun and its container: this scene or the World it
+   * falls back to. Other directional lights are inactive. */
+  VkrEntityId entity;
+  const struct VkrScene *owner;
   bool8_t found;
   float32_t tint_kelvin;
   Vec3 tint;
@@ -415,6 +479,139 @@ typedef struct VkrSceneAtmosphere {
 } VkrSceneAtmosphere;
 
 // ============================================================================
+// World Components (ADR-076)
+// ============================================================================
+
+/* Authored world settings live on entities as components. Runtime products
+ * (cubemaps, lookup textures, bake state, texture bindings) stay in the scene
+ * fields above and are derived from the resolved component. */
+
+/** Authored global environment controls. `source_kind`, `constant_radiance`
+ * and `sh_deringing` select baked products and apply on the next load. */
+typedef struct SceneEnvironmentSettings {
+  bool8_t enabled;
+  VkrSceneEnvironmentSourceKind source_kind;
+  Vec3 constant_radiance;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+  float32_t sh_deringing;
+} SceneEnvironmentSettings;
+
+/** Authored post-processing: exposure, white balance, grading, bloom, depth
+ * of field, motion blur and ambient occlusion shape. Machine quality gates
+ * (whether bloom or AO run at all) stay in the graphics preferences. */
+typedef struct ScenePostProcess {
+  uint32_t exposure_mode; /* VkrExposureMode. */
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  float32_t white_balance_temperature;
+  float32_t white_balance_tint;
+  float32_t contrast;
+  float32_t saturation;
+  float32_t sharpness;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  float32_t dof_focus_distance;
+  float32_t dof_f_stop;
+  float32_t motion_blur_shutter_angle;
+  float32_t gtao_radius;
+  float32_t gtao_power;
+} ScenePostProcess;
+
+/** Authored local reflection probe. `slot` indexes the runtime products in
+ * `VkrScene.reflection_probes`, assigned at load; the cubemap reference
+ * applies on the next load. */
+typedef struct SceneReflectionProbeSettings {
+  bool8_t enabled;
+  Vec3 center;
+  Vec3 extents;
+  float32_t blend_distance;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+  float32_t sh_deringing;
+  char cubemap[256];
+  uint32_t slot;
+} SceneReflectionProbeSettings;
+
+/** Baked diffuse irradiance volume; `path` applies on the next load. */
+typedef struct SceneDiffuseVolumeSettings {
+  bool8_t enabled;
+  char path[256];
+} SceneDiffuseVolumeSettings;
+
+/** Subsurface scattering profiles loaded with the scene. */
+typedef struct SceneSubsurfaceSettings {
+  bool8_t enabled;
+  uint32_t profile_count;
+} SceneSubsurfaceSettings;
+
+/** Resolved world state, recomputed when world components change: each
+ * singleton's effective value, or its default when no instance exists. */
+/** World physics settings (ADR-076): gravity for every body and character
+ * in the physics set, in m/s^2. */
+typedef struct ScenePhysicsSettings {
+  Vec3 gravity;
+} ScenePhysicsSettings;
+
+/** World animation settings (ADR-076): scales the clock of every animation
+ * player in the active scene. */
+typedef struct SceneAnimationWorldSettings {
+  float32_t time_scale;
+} SceneAnimationWorldSettings;
+
+typedef struct VkrSceneWorldState {
+  uint64_t revision;
+  SceneEnvironmentSettings environment;
+  VkrAtmosphereSettings atmosphere;
+  VkrCloudSettings clouds;
+  VkrFogSettings fog;
+  /** Includes the density boxes gathered from their components. */
+  VkrFroxelFogSettings froxel_fog;
+  ScenePostProcess post_process;
+  SceneDiffuseVolumeSettings diffuse_volume;
+  SceneSubsurfaceSettings subsurface;
+  ScenePhysicsSettings physics_settings;
+  SceneAnimationWorldSettings animation_settings;
+  bool8_t has_environment;
+  bool8_t has_atmosphere;
+  bool8_t has_clouds;
+  bool8_t has_post_process;
+  /** Entities whose singletons won resolution; invalid when none. */
+  VkrEntityId environment_entity;
+  VkrEntityId atmosphere_entity;
+  VkrEntityId clouds_entity;
+  VkrEntityId fog_entity;
+  VkrEntityId froxel_fog_entity;
+  VkrEntityId post_process_entity;
+  VkrEntityId diffuse_volume_entity;
+  VkrEntityId subsurface_entity;
+  VkrEntityId physics_settings_entity;
+  VkrEntityId animation_settings_entity;
+  uint32_t probe_count;
+  SceneReflectionProbeSettings probes[VKR_SCENE_REFLECTION_PROBE_MAX];
+} VkrSceneWorldState;
+
+/** Entity-id world field of the root World container (ADR-076). Scenes the
+ * resource system loads use world 0; additive scenes use small ids. */
+#define VKR_SCENE_WORLD_ROOT_ID 0x7FFFu
+/** Additive scene containers use world ids 1..VKR_SCENE_ADDITIVE_MAX. */
+#define VKR_SCENE_ADDITIVE_MAX 6u
+/** Picking render ids per container: container c owns
+ * [c * RANGE, (c + 1) * RANGE); the primary scene keeps range 0. */
+#define VKR_SCENE_RENDER_ID_RANGE (1u << 22)
+
+/** Largest number of descriptor-typed component types a scene registers. */
+#define VKR_SCENE_TYPE_MAX 32u
+
+typedef struct VkrSceneComponentType {
+  const struct VkrTypeDesc *type;
+  VkrComponentTypeId id;
+} VkrSceneComponentType;
+
+// ============================================================================
 // Scene Type
 // ============================================================================
 
@@ -423,10 +620,21 @@ typedef struct VkrSceneAtmosphere {
  */
 typedef struct s_VkrSceneAnimation VkrSceneAnimation;
 typedef struct s_VkrScenePhysics VkrScenePhysics;
+typedef struct s_VkrScenePhysicsSet VkrScenePhysicsSet;
 typedef struct VkrSceneCollisionLayers VkrSceneCollisionLayers;
+
+/** Scene-level settings (ADR-076), saved in the scene's edit overlay. */
+typedef struct VkrSceneSettings {
+  /** The root World's objects apply where the scene has none of its own;
+      off scopes the scene to its own objects. */
+  bool8_t inherit_world;
+} VkrSceneSettings;
 
 typedef struct VkrScene {
   VkrScenePhysics *physics;
+  /** Scenes sharing one native physics world (ADR-076), or NULL for a
+      private world. */
+  VkrScenePhysicsSet *physics_set;
   VkrSceneSimulation simulation;
   VkrSceneCollisionLayers *collision_layers;
   VkrSceneCollisionLayers *collision_layers_pending;
@@ -450,6 +658,10 @@ typedef struct VkrScene {
   uint32_t player_weapon_bone; // Source node in the player animation skeleton.
 
   // Component type IDs (cached after registration)
+  /** Document ids by document entity index, or NULL when the document has
+      none. Scene-owned and freed at shutdown; the loader fills them. */
+  VkrSceneDocumentId *document_ids;
+  uint32_t document_id_count;
   VkrComponentTypeId comp_source_identity;
   VkrComponentTypeId comp_name;
   VkrComponentTypeId comp_transform;
@@ -506,13 +718,31 @@ typedef struct VkrScene {
   bool8_t render_full_sync_needed; // Set on scene load or dirty overflow
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
+  /** Offset of this container's picking range; local render ids stay small
+      and index the render bridge (ADR-076). */
+  uint32_t render_id_base;
 
-  VkrSceneEnvironment environment; // Scene environment and bake state
+  /** Runtime products of the resolved world components: published sky/IBL
+      tuple and bake state, with its live controls lowered from the resolved
+      environment component. */
+  VkrSceneEnvironment environment;
   VkrSceneAtmosphere atmosphere;
   VkrSceneSun sun;
-  /** Scene-authored analytic fog, copied into each frame by the runtime. */
-  VkrFogSettings fog;
-  VkrFroxelFogSettings froxel_fog;
+  /** Descriptor-typed component types registered with the ECS (ADR-076). */
+  VkrSceneComponentType types[VKR_SCENE_TYPE_MAX];
+  uint32_t type_count;
+  /** Bumped by every world component change; resolution compares it. */
+  uint64_t world_revision;
+  /** Root World consulted after this scene's own singletons, or NULL; the
+      runtime sets it each frame. Resolution notices its revision. */
+  const struct VkrScene *world_fallback;
+  /** Root World that owns World-only types whether or not the scene
+      inherits it, or NULL. */
+  const struct VkrScene *world_root;
+  uint64_t world_fallback_revision;
+  /** Effective world settings, resolved from components once per change. */
+  VkrSceneWorldState world_state;
+  VkrSceneSettings settings;
   /** Scene-owned baked diffuse-volume texture and lattice mapping. */
   VkrDiffuseVolumeBinding diffuse_volume;
   VkrSubsurfaceBinding subsurface;
@@ -544,6 +774,52 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
  * GPU idle at the caller before teardown; drain retirement before another load.
  */
 void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets);
+
+// ============================================================================
+// Typed Components (ADR-076)
+// ============================================================================
+
+/** ECS component id of a registered type, or VKR_COMPONENT_TYPE_INVALID. */
+VkrComponentTypeId vkr_scene_type_id(const VkrScene *scene,
+                                     const struct VkrTypeDesc *type);
+/** The entity's component of `type`, or NULL. Valid until a structural
+    change to the world. */
+const void *vkr_scene_get_typed(const VkrScene *scene, VkrEntityId entity,
+                                const struct VkrTypeDesc *type);
+/** Validate and store a component, adding it when absent. World component
+    changes bump `world_revision`. */
+bool8_t vkr_scene_set_typed(VkrScene *scene, VkrEntityId entity,
+                            const struct VkrTypeDesc *type, const void *value);
+bool8_t vkr_scene_remove_typed(VkrScene *scene, VkrEntityId entity,
+                               const struct VkrTypeDesc *type);
+/** Create a named root entity carrying one component; used for world
+    components that have no placed transform. Returns invalid on failure. */
+VkrEntityId vkr_scene_create_typed_entity(VkrScene *scene, String8 name,
+                                          const struct VkrTypeDesc *type,
+                                          const void *value);
+/** Recompute `world_state` when world components changed and lower it into
+    the runtime products: environment controls, atmosphere revision requests
+    and reflection probe controls. Cheap when nothing changed; call once per
+    frame and after loading. Returns true when the state changed. */
+bool8_t vkr_scene_resolve_world(VkrScene *scene);
+/** Gravity of the resolved physics settings, or the default before the
+ * scene's first resolution. */
+Vec3 vkr_scene_gravity(const VkrScene *scene);
+/** Animation clock scale of the resolved World animation settings. */
+float32_t vkr_scene_animation_time_scale(const VkrScene *scene);
+/** Whether the scene may hold the type: World-only types need the root. */
+bool8_t vkr_scene_type_allowed(const VkrScene *scene,
+                               const struct VkrTypeDesc *type);
+/** Mesh renderer facts of an entity; false when it has no live instance. */
+bool8_t vkr_scene_mesh_info(const VkrScene *scene, VkrEntityId entity,
+                            SceneMeshInfo *out);
+/** Set the root World consulted after this scene's own singletons; ignored
+    while the scene's settings do not inherit the World, except for World-only
+    types, which always resolve from it. */
+void vkr_scene_set_world_fallback(VkrScene *scene, const VkrScene *root);
+/** True when `entity`'s singleton of `type` is the one resolution selected. */
+bool8_t vkr_scene_singleton_active(const VkrScene *scene, VkrEntityId entity,
+                                   const struct VkrTypeDesc *type);
 
 /** Releases the scene's diffuse-volume texture and disables volume sampling. */
 void vkr_scene_reset_diffuse_volume(VkrScene *scene,
@@ -815,6 +1091,10 @@ uint32_t vkr_scene_get_render_id(const VkrScene *scene, VkrEntityId entity);
 void vkr_scene_set_visibility(VkrScene *scene, VkrEntityId entity,
                               bool8_t visible, bool8_t inherit_parent);
 
+/** Effective visibility through inheriting parents. Hidden entities do not
+    render, and hidden lights and world objects take no effect. */
+bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity);
+
 // ============================================================================
 // Light Components
 // ============================================================================
@@ -1002,3 +1282,12 @@ bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,
                                           const Mat4 *world);
 bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
                                       const SceneSourceIdentity *identity);
+
+/** Parse a canonical 36-character UUID in either case. */
+bool8_t vkr_scene_document_id_parse(String8 text, VkrSceneDocumentId *out);
+/** Lowercase canonical text with a terminator. */
+void vkr_scene_document_id_format(const VkrSceneDocumentId *id, char out[37]);
+/** Scene-owned storage for `count` document ids, replacing any previous
+    ids; NULL on allocation failure. */
+VkrSceneDocumentId *vkr_scene_document_ids_reserve(VkrScene *scene,
+                                                   uint32_t count);

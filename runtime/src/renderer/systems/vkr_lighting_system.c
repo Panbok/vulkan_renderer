@@ -193,7 +193,7 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     return;
 
   for (uint32_t i = 0; i < count; i++) {
-    if (!lights[i].enabled)
+    if (!lights[i].enabled || !vkr_scene_entity_visible(scene, entities[i]))
       continue;
 
     // Get world position from transform
@@ -235,7 +235,7 @@ vkr_internal void sync_rectangle_lights_cb(const VkrArchetype *arch,
     return;
 
   for (uint32_t i = 0u; i < count; ++i) {
-    if (!lights[i].enabled)
+    if (!lights[i].enabled || !vkr_scene_entity_visible(scene, entities[i]))
       continue;
     VkrQuat world_rotation;
     if (!rectangle_light_world_rotation(scene, &transforms[i], &world_rotation))
@@ -340,6 +340,33 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
   system->dirty = true_v;
 }
 
+void vkr_lighting_system_append_scene(VkrLightingSystem *system,
+                                      const VkrScene *scene) {
+  if (!system || !scene || !scene->world || !scene->queries_valid)
+    return;
+  const uint32_t before = system->point_light_count;
+  PointLightSyncContext point_ctx = {
+      .system = system,
+      .scene = scene,
+  };
+  vkr_entity_query_compiled_each_chunk(
+      (VkrQueryCompiled *)&scene->query_point_lights, sync_point_lights_cb,
+      &point_ctx);
+  const uint32_t kept = system->point_light_count - before;
+  system->point_light_dropped_count += point_ctx.total_considered > kept
+                                           ? point_ctx.total_considered - kept
+                                           : 0u;
+  RectangleLightSyncContext rectangle_ctx = {
+      .system = system,
+      .scene = scene,
+  };
+  vkr_entity_query_compiled_each_chunk(
+      (VkrQueryCompiled *)&scene->query_rectangle_lights,
+      sync_rectangle_lights_cb, &rectangle_ctx);
+  vkr_lighting_system_build_point_light_grid(system);
+  system->dirty = true_v;
+}
+
 void vkr_lighting_system_apply_atmosphere_sun(
     VkrLightingSystem *system, const VkrAtmosphereSettings *settings,
     Vec3 irradiance) {
@@ -349,7 +376,9 @@ void vkr_lighting_system_apply_atmosphere_sun(
   /* Atmosphere sun_direction points from the observer toward the sun. The
      directional-light record points along incoming light, which shaders negate
      when forming their surface-to-light vector. */
-  system->directional.enabled = true_v;
+  /* A sky without a sun light has no sun to light with. */
+  system->directional.enabled =
+      irradiance.x > 0.0f || irradiance.y > 0.0f || irradiance.z > 0.0f;
   system->directional.direction =
       vec3_new(-settings->sun_direction.x, -settings->sun_direction.y,
                -settings->sun_direction.z);

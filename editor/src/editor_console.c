@@ -381,11 +381,43 @@ static void console_scroll_records(VkrEditorConsole *console, VkrUiSystem *ui,
     console->first_row = Min(console->first_row, max_first);
 }
 
-/* Returns true when a visible record row holds keyboard focus. */
+/* Returns true when a visible record row holds keyboard focus. The rows from
+ * first_row sit in a scroll area as tall as every record, so the shared
+ * scrollbar drags, pages and shows the position; scrolling snaps to rows. */
 static bool8_t console_build_records(VkrEditorConsole *console, VkrUiSystem *ui,
                                      uint32_t visible_rows, float32_t available,
+                                     float32_t list_height,
                                      VkrFontHandle mono) {
   const VkrUiTheme *theme = vkr_ui_theme();
+  const uint32_t max_first = console->filtered_count > visible_rows
+                                 ? console->filtered_count - visible_rows
+                                 : 0u;
+  const VkrUiTrack extent = {
+      .value = Max(console->filtered_count * VKR_CONSOLE_ROW_HEIGHT,
+                   max_first * VKR_CONSOLE_ROW_HEIGHT + list_height - 2.0f),
+      .unit = VKR_UI_TRACK_PX};
+  VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
+  scroll.placement.column = 0u;
+  scroll.placement.row = 1u;
+  scroll.rows = &extent;
+  scroll.row_count = 1u;
+  scroll.clip_children = true_v;
+  scroll.style.background_color = theme->field;
+  scroll.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  scroll.style.border_color = theme->separator;
+  scroll.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  if (!vkr_ui_scroll_area_begin(ui, string8_lit("records.scroll"), &scroll))
+    return false_v;
+  float32_t offset = console->first_row * VKR_CONSOLE_ROW_HEIGHT;
+  (void)vkr_ui_scroll_area_offset(ui, &offset);
+  if (offset != console->first_row * VKR_CONSOLE_ROW_HEIGHT) {
+    console->first_row =
+        Min(max_first, (uint32_t)roundf(offset / VKR_CONSOLE_ROW_HEIGHT));
+    console->follow_tail = console->first_row == max_first;
+    offset = console->first_row * VKR_CONSOLE_ROW_HEIGHT;
+    (void)vkr_ui_scroll_area_offset(ui, &offset);
+  }
   const VkrUiTrack list_row = {.value = VKR_CONSOLE_ROW_HEIGHT,
                                .unit = VKR_UI_TRACK_PX};
   VkrUiTrack list_rows[VKR_CONSOLE_VISIBLE_ROWS];
@@ -393,15 +425,11 @@ static bool8_t console_build_records(VkrEditorConsole *console, VkrUiSystem *ui,
     list_rows[i] = list_row;
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
   list.placement.column = 0u;
-  list.placement.row = 1u;
+  list.placement.row = 0u;
+  list.placement.margin_pt.top = offset;
   list.rows = list_rows;
   list.row_count = visible_rows;
   list.clip_children = true_v;
-  list.style.background_color = theme->field;
-  list.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-  list.style.border_color = theme->separator;
-  list.style.corner_radius_pt =
-      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
   bool8_t list_focused = false_v;
   if (vkr_ui_panel_begin(ui, string8_lit("records"), &list)) {
     const uint32_t end =
@@ -519,6 +547,7 @@ static bool8_t console_build_records(VkrEditorConsole *console, VkrUiSystem *ui,
     }
     (void)vkr_ui_panel_end(ui);
   }
+  (void)vkr_ui_scroll_area_end(ui);
   return list_focused;
 }
 
@@ -577,8 +606,8 @@ void vkr_editor_console_build(VkrEditorConsole *console, VkrUiSystem *ui,
   console_scroll_records(console, ui, list_origin, tools_height, list_height,
                          visible_rows);
 
-  const bool8_t list_focused =
-      console_build_records(console, ui, visible_rows, available, mono);
+  const bool8_t list_focused = console_build_records(
+      console, ui, visible_rows, available, list_height, mono);
   if (list_focused && !ui->mouse_captured &&
       ui->input_layer == ui->keyboard_input_layer) {
     if (input_key_shortcut_modifier(ui->input, KEY_A) &&

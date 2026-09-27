@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-25
+updated: 2026-09-27
 authority: proposal
 ---
 # Editor Projects
@@ -40,6 +40,13 @@ revisions and Content are integrated. [ADR-069](../adr/069-editor-projects-and-w
 owns the current contract and selected Metal evidence; the historical fixed-scene
 baseline is no longer the production managed-editor behavior.
 
+Implemented since the first acceptance pass (ADR-069): the scene import
+preflight with missing-dependency location, placeholders for missing images
+and the saved-edits choice, job warnings in the editor, and recipe, dependency
+and size details in Content. Still open in this proposal: per-asset counts in
+the creation progress view, and the native click-through, Windows, DPI,
+long-session retirement and frame-budget gates in the acceptance inventory.
+
 The remaining requirements below retain the original acceptance target where
 coverage or implementation detail remains incomplete. They do not supersede the
 current architecture. Native Windows/Vulkan execution, broad DPI/keyboard/modal
@@ -52,6 +59,9 @@ unbuilt inputs; its native interaction check remains separate.
 
 1. A workspace contains zero or more projects. A project contains zero or more
    scenes. Exactly one project and at most one world scene are active per editor.
+   [ADR-076](../adr/076-project-object-model.md) replaces the single-scene
+   rule with a root World plus loaded scene containers when its container
+   phase ships; until then this item describes production behavior.
 2. Project creation offers an initial scene but permits **Create empty project**.
    An empty project's Scene area explains how to create or import its first scene.
    It must not repeatedly force a wizard that the user cannot dismiss.
@@ -654,9 +664,9 @@ not typed by users. Bakery's general file selectors should use the same facility
 
 The implemented dockable **Content** panel follows the sources/navigation/search/
 asset-view organization in Epic's [Content Browser interface](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine).
-It has a left Scene / Project / Editor sources tree with logical type folders,
-upward breadcrumbs, compact Import/refresh controls, search/type/sort controls,
-virtualized cards with type-color strips, and optional right Details actions.
+Its folder structure, views and item kinds are owned by
+[ADR-076](../adr/076-project-object-model.md): a virtual folder tree over
+managed items, tile and list views, and whole-item selection and dragging.
 Side panels hide at narrow sizes. Ctrl+Space toggles Content; the command palette
 can add it to older layouts. Presentation preferences persist in the project.
 Cards come from managed inventories refreshed explicitly, with immediate icons
@@ -668,9 +678,10 @@ Cards show type, display name and Current/Stale/Missing/Building/Error status in
 text and icon form. Selection shows source provenance, artifact role, dimensions
 where relevant, dependencies, recipe and diagnostics. Initial actions are Import,
 Inspect, Reveal in file manager, Reimport, Rebuild and Retry preview. Project/scene
-rename is supported independently of filesystem names. Deletion, drag-and-drop
-placement, arbitrary material authoring and dependency promotion UI are later
-extensions; the storage contract already supports project-owned shared assets.
+rename is supported independently of filesystem names. Drag-and-drop placement
+has shipped (ADR-076). Asset deletion, arbitrary material authoring and
+dependency promotion UI are later extensions; the storage contract already
+supports project-owned shared assets.
 
 | Asset | Preview |
 |---|---|

@@ -643,8 +643,8 @@ vkr_harness_child_create_physics_fixture(VkrStandardSceneRuntime *application) {
     visual.dimensions = dimensions;
     visual.color = colors[i];
     VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
-    body.motion = i == 0 ? VKR_PHYSICS_STATIC : VKR_PHYSICS_DYNAMIC;
-    body.friction = 0.7f;
+    body.body.motion = i == 0 ? VKR_PHYSICS_STATIC : VKR_PHYSICS_DYNAMIC;
+    body.body.friction = 0.7f;
     body.colliders[0].shape =
         i == 0 ? VKR_PHYSICS_TRIANGLE_MESH : VKR_PHYSICS_CONVEX_HULL;
     body.colliders[0].scale = dimensions;

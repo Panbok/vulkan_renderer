@@ -1,9 +1,11 @@
 #include "core/logger.h"
 #include "editor_internal.h"
+#include "renderer/systems/vkr_scene_types.h"
 
 #include <math.h>
 
 #define EDITOR_LABEL_SIZE_PT 26.0f
+#define EDITOR_LABEL_GAP_PT 4.0f
 
 /* Readable tint from a linear light color: normalized, display-encoded and
  * lifted toward white so dim or saturated lights stay legible. */
@@ -17,88 +19,190 @@ static Vec4 editor_label_tint(Vec3 linear) {
   return vkr_ui_color_mix(tint, (Vec4){1.0f, 1.0f, 1.0f, 1.0f}, 0.25f);
 }
 
+/* One icon's presentation. Abstract objects (the sun, sky and fog layers,
+ * post process) have no meaningful place, so they stack at the world origin;
+ * local lights, fog boxes and probes follow their transforms. */
+typedef struct EditorLabelKind {
+  VkrUiIcon icon;
+  Vec4 tint;
+  bool8_t enabled;
+  bool8_t abstract;
+} EditorLabelKind;
+
 typedef struct EditorLabelBuild {
   VkrEditorUi *editor;
   const VkrSampleUiFrame *frame;
-  bool8_t directional;
+  const VkrScene *scene;
+  /* Component whose query is being visited. */
+  VkrComponentTypeId component;
   uint32_t capacity;
+  uint32_t stacked;
 } EditorLabelBuild;
 
-static void editor_light_labels(const VkrArchetype *arch, VkrChunk *chunk,
-                                void *user) {
-  (void)arch;
-  EditorLabelBuild *build = user;
-  const VkrSampleUiFrame *frame = build->frame;
+/* Iconic components in icon priority order: lights, then world types. */
+static uint32_t editor_label_components(const VkrScene *scene,
+                                        VkrComponentTypeId *ids) {
+  uint32_t count = 0u;
+  ids[count++] = scene->comp_directional_light;
+  ids[count++] = scene->comp_point_light;
+  ids[count++] = scene->comp_rectangle_light;
+  for (uint32_t i = 0; i < scene->type_count; ++i) {
+    ids[count++] = scene->types[i].id;
+  }
+  return count;
+}
+
+/* What the entity shows as, or false when it has no icon or its kind is
+ * filtered out. */
+static bool8_t editor_label_kind(const VkrEditorUi *editor,
+                                 const VkrScene *scene, VkrEntityId entity,
+                                 EditorLabelKind *out) {
+  const VkrWorld *world = scene->world;
+  const SceneDirectionalLight *directional =
+      vkr_entity_get_component(world, entity, scene->comp_directional_light);
+  if (directional) {
+    *out = (EditorLabelKind){VKR_UI_ICON_DIRECTIONAL_LIGHT,
+                             editor_label_tint(directional->color),
+                             directional->enabled, true_v};
+    return editor->labels_directional;
+  }
+  const ScenePointLight *point =
+      vkr_entity_get_component(world, entity, scene->comp_point_light);
+  if (point) {
+    const bool8_t spot = point->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
+    *out = (EditorLabelKind){
+        spot ? VKR_UI_ICON_SPOT_LIGHT : VKR_UI_ICON_POINT_LIGHT,
+        editor_label_tint(point->color), point->enabled, false_v};
+    return spot ? editor->labels_spot : editor->labels_point;
+  }
+  const SceneRectangleLight *rectangle =
+      vkr_entity_get_component(world, entity, scene->comp_rectangle_light);
+  if (rectangle) {
+    *out = (EditorLabelKind){VKR_UI_ICON_RECT_LIGHT,
+                             editor_label_tint(rectangle->color),
+                             rectangle->enabled, false_v};
+    return editor->labels_point;
+  }
+  const VkrTypeDesc *type = NULL;
+  for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
+    /* Shapes, text and animated meshes are visible geometry and need no
+       icon. */
+    if (type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
+        type == &vkr_scene_animation_type ||
+        !vkr_scene_get_typed(scene, entity, type)) {
+      continue;
+    }
+    const bool8_t placed = type == &vkr_scene_fog_box_type ||
+                           type == &vkr_scene_reflection_probe_type;
+    *out =
+        (EditorLabelKind){vkr_editor_world_type_icon(type),
+                          (Vec4){0.62f, 0.78f, 0.98f, 1.0f}, true_v, !placed};
+    return true_v;
+  }
+  return false_v;
+}
+
+static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
   VkrEditorUi *editor = build->editor;
+  const VkrSampleUiFrame *frame = build->frame;
+  const VkrScene *scene = build->scene;
   VkrUiSystem *ui = frame->ui;
-  const VkrScene *scene = frame->scene;
-  const VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
-  const ScenePointLight *points =
-      build->directional
-          ? NULL
-          : vkr_entity_chunk_column_const(chunk, scene->comp_point_light);
-  const SceneDirectionalLight *directions =
-      build->directional
-          ? vkr_entity_chunk_column_const(chunk, scene->comp_directional_light)
-          : NULL;
+  EditorLabelKind kind;
+  if (editor->label_anchor_count >= build->capacity ||
+      !editor_label_kind(editor, scene, entity, &kind)) {
+    return;
+  }
+  const bool8_t placed =
+      !kind.abstract &&
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
   const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t size = EDITOR_LABEL_SIZE_PT;
-  const uint32_t count = vkr_entity_chunk_count(chunk);
-  (void)vkr_ui_push_id_u64(ui, build->directional ? 1u : 2u);
-  for (uint32_t i = 0;
-       i < count && editor->label_anchor_count < build->capacity; ++i) {
-    const bool8_t spot =
-        !build->directional && points[i].kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
-    if (!build->directional &&
-        !(spot ? editor->labels_spot : editor->labels_point))
-      continue;
-    const bool8_t enabled =
-        build->directional ? directions[i].enabled : points[i].enabled;
-    const bool8_t selected = entities[i].u64 == frame->selected_entity.u64;
-    VkrUiWidgetConfig label = vkr_ui_widget_config_default();
-    label.placement = VKR_UI_PLACEMENT_DEFAULT;
-    label.placement.column = label.placement.row = 0;
-    label.placement.justify = label.placement.align = VKR_UI_ALIGN_START;
-    label.placement.margin_pt = (VkrUiEdges){100000.0f, 0, 0, 100000.0f};
-    label.style.min_size_pt = label.style.max_size_pt = (Vec2){size, size};
-    label.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
-    label.style.corner_radius_pt =
-        (Vec4){size * 0.5f, size * 0.5f, size * 0.5f, size * 0.5f};
-    label.style.background_color = selected
-                                       ? vkr_ui_color_alpha(theme->accent, 0.9f)
-                                       : (Vec4){0.03f, 0.035f, 0.045f, 0.62f};
-    label.style.hover_background_color =
-        selected ? theme->accent_hover : (Vec4){0.10f, 0.11f, 0.13f, 0.85f};
-    label.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-    label.style.border_color =
-        selected ? theme->text_on_accent : (Vec4){1.0f, 1.0f, 1.0f, 0.14f};
-    label.icon = build->directional ? VKR_UI_ICON_DIRECTIONAL_LIGHT
-                 : spot             ? VKR_UI_ICON_SPOT_LIGHT
-                                    : VKR_UI_ICON_POINT_LIGHT;
-    label.icon_size_pt = 17.0f;
-    label.icon_color =
-        !enabled   ? theme->text_disabled
-        : selected ? theme->text_on_accent
-                   : editor_label_tint(build->directional ? directions[i].color
-                                                          : points[i].color);
-    label.tooltip = vkr_scene_get_name(scene, entities[i]);
-    (void)vkr_ui_push_id_u64(ui, entities[i].u64);
-    if (vkr_ui_button(ui, string8_lit("light"), (String8){0}, &label))
-      *frame->scene_edit = (VkrSceneEditRequest){
-          .action = VKR_SCENE_EDIT_SELECT, .entity = entities[i]};
-    editor->label_anchors[editor->label_anchor_count++] =
-        (VkrEditorLabelAnchor){.widget = vkr_ui_id_stack_widget_label(
-                                   &ui->id_stack, string8_lit("light")),
-                               .entity = entities[i]};
-    (void)vkr_ui_pop_id(ui);
-  }
+  const bool8_t selected = entity.u64 == frame->selected_entity.u64;
+  const bool8_t hidden = !vkr_scene_entity_visible(scene, entity);
+  VkrUiWidgetConfig label = vkr_ui_widget_config_default();
+  label.placement = VKR_UI_PLACEMENT_DEFAULT;
+  label.placement.column = label.placement.row = 0;
+  label.placement.justify = label.placement.align = VKR_UI_ALIGN_START;
+  label.placement.margin_pt = (VkrUiEdges){100000.0f, 0, 0, 100000.0f};
+  label.style.min_size_pt = label.style.max_size_pt = (Vec2){size, size};
+  label.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
+  label.style.corner_radius_pt =
+      (Vec4){size * 0.5f, size * 0.5f, size * 0.5f, size * 0.5f};
+  label.style.background_color = selected
+                                     ? vkr_ui_color_alpha(theme->accent, 0.9f)
+                                     : (Vec4){0.03f, 0.035f, 0.045f, 0.62f};
+  label.style.hover_background_color =
+      selected ? theme->accent_hover : (Vec4){0.10f, 0.11f, 0.13f, 0.85f};
+  label.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  label.style.border_color =
+      selected ? theme->text_on_accent : (Vec4){1.0f, 1.0f, 1.0f, 0.14f};
+  label.icon = kind.icon;
+  label.icon_size_pt = 17.0f;
+  label.icon_color = !kind.enabled || hidden ? theme->text_disabled
+                     : selected              ? theme->text_on_accent
+                                             : kind.tint;
+  label.tooltip = vkr_scene_get_name(scene, entity);
+  (void)vkr_ui_push_id_u64(ui, entity.u64);
+  if (vkr_ui_button(ui, string8_lit("object"), (String8){0}, &label))
+    *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT,
+                                               .entity = entity};
+  editor->label_anchors[editor->label_anchor_count++] = (VkrEditorLabelAnchor){
+      .widget =
+          vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("object")),
+      .entity = entity,
+      .scene = scene,
+      .stack = placed ? UINT32_MAX : build->stacked++,
+  };
   (void)vkr_ui_pop_id(ui);
 }
 
-static void editor_count_lights(const VkrArchetype *arch, VkrChunk *chunk,
-                                void *user) {
+/* An entity with several iconic components shows once, from the query of
+   its first one. */
+static bool8_t editor_label_owned(const EditorLabelBuild *build,
+                                  VkrEntityId entity) {
+  VkrComponentTypeId ids[3 + VKR_SCENE_TYPE_MAX];
+  const uint32_t count = editor_label_components(build->scene, ids);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (vkr_entity_has_component(build->scene->world, entity, ids[i])) {
+      return ids[i] == build->component;
+    }
+  }
+  return false_v;
+}
+
+static void editor_label_chunk(const VkrArchetype *arch, VkrChunk *chunk,
+                               void *user) {
+  (void)arch;
+  EditorLabelBuild *build = user;
+  const VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
+  const uint32_t count = vkr_entity_chunk_count(chunk);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (editor_label_owned(build, entities[i])) {
+      editor_label_build(build, entities[i]);
+    }
+  }
+}
+
+static void editor_count_chunk(const VkrArchetype *arch, VkrChunk *chunk,
+                               void *user) {
   (void)arch;
   *(uint32_t *)user += vkr_entity_chunk_count(chunk);
+}
+
+/* Visit each iconic component's query; `build` notes the component. */
+static void editor_label_visit(const VkrScene *scene, VkrChunkFn visit,
+                               void *user, EditorLabelBuild *build) {
+  VkrWorld *world = scene->world;
+  VkrComponentTypeId ids[3 + VKR_SCENE_TYPE_MAX];
+  const uint32_t count = editor_label_components(scene, ids);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (build) {
+      build->component = ids[i];
+    }
+    VkrQuery query;
+    vkr_entity_query_build(world, &ids[i], 1, NULL, 0, &query);
+    vkr_entity_query_each_chunk(world, &query, visit, user);
+  }
 }
 
 void vkr_editor_labels_build(VkrEditorUi *editor,
@@ -106,38 +210,20 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
   editor->label_anchor_count = 0;
   editor->label_anchors = NULL;
   editor->label_scene_generation = frame->scene_generation;
-  if (!editor->labels_enabled || !frame->scene || !frame->mapping_valid ||
-      frame->scene_rendering_stopped ||
-      !(editor->labels_directional || editor->labels_spot ||
-        editor->labels_point))
+  const VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {frame->scene,
+                                                         frame->world};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    scenes[2u + i] = frame->additive[i];
+  }
+  if (!editor->labels_enabled || !frame->mapping_valid ||
+      frame->scene_rendering_stopped || (!frame->scene && !frame->world))
     return;
   VkrUiSystem *ui = frame->ui;
-  const Vec4 image = frame->mapping.image_rect_px;
-  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
-  panel.placement = VKR_UI_PLACEMENT_DEFAULT;
-  panel.placement.column = panel.placement.row = 0;
-  panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
-  panel.placement.margin_pt = (VkrUiEdges){image.y / ui->content_scale, 0, 0,
-                                           image.x / ui->content_scale};
-  panel.style.min_size_pt = panel.style.max_size_pt =
-      (Vec2){image.z / ui->content_scale, image.w / ui->content_scale};
-  panel.clip_children = true_v;
   uint32_t capacity = 0;
-  VkrQuery count_query;
-  VkrComponentTypeId count_types[] = {frame->scene->comp_transform,
-                                      frame->scene->comp_directional_light};
-  if (editor->labels_directional) {
-    vkr_entity_query_build(frame->scene->world, count_types, 2, NULL, 0,
-                           &count_query);
-    vkr_entity_query_each_chunk(frame->scene->world, &count_query,
-                                editor_count_lights, &capacity);
-  }
-  if (editor->labels_spot || editor->labels_point) {
-    count_types[1] = frame->scene->comp_point_light;
-    vkr_entity_query_build(frame->scene->world, count_types, 2, NULL, 0,
-                           &count_query);
-    vkr_entity_query_each_chunk(frame->scene->world, &count_query,
-                                editor_count_lights, &capacity);
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    if (scenes[i]) {
+      editor_label_visit(scenes[i], editor_count_chunk, &capacity, NULL);
+    }
   }
   if (!capacity)
     return;
@@ -150,8 +236,8 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
           ? ui->frame_node_capacity - ui->frame_node_count - reserved
           : 0u;
   if (capacity > available && !editor->label_capacity_warned) {
-    log_warn("Light labels exceed UI capacity; filter label types to show "
-             "remaining lights");
+    log_warn("Object icons exceed UI capacity; filter icon types to show the "
+             "rest");
     editor->label_capacity_warned = true_v;
   }
   capacity = Min(capacity, available);
@@ -162,64 +248,83 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!editor->label_anchors)
     return;
+  const Vec4 image = frame->mapping.image_rect_px;
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = VKR_UI_PLACEMENT_DEFAULT;
+  panel.placement.column = panel.placement.row = 0;
+  panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+  panel.placement.margin_pt = (VkrUiEdges){image.y / ui->content_scale, 0, 0,
+                                           image.x / ui->content_scale};
+  panel.style.min_size_pt = panel.style.max_size_pt =
+      (Vec2){image.z / ui->content_scale, image.w / ui->content_scale};
+  panel.clip_children = true_v;
   editor->label_panel = vkr_ui_id_stack_widget_label(
-      &ui->id_stack, string8_lit("editor.light.labels"));
-  if (!vkr_ui_panel_begin(ui, string8_lit("editor.light.labels"), &panel))
+      &ui->id_stack, string8_lit("editor.object.icons"));
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.object.icons"), &panel))
     return;
   EditorLabelBuild build = {
       .editor = editor, .frame = frame, .capacity = capacity};
-  VkrQuery query;
-  VkrComponentTypeId types[] = {frame->scene->comp_transform,
-                                frame->scene->comp_directional_light};
-  if (editor->labels_directional) {
-    build.directional = true_v;
-    vkr_entity_query_build(frame->scene->world, types, 2, NULL, 0, &query);
-    vkr_entity_query_each_chunk(frame->scene->world, &query,
-                                editor_light_labels, &build);
-  }
-  if (editor->labels_spot || editor->labels_point) {
-    build.directional = false_v;
-    types[1] = frame->scene->comp_point_light;
-    vkr_entity_query_build(frame->scene->world, types, 2, NULL, 0, &query);
-    vkr_entity_query_each_chunk(frame->scene->world, &query,
-                                editor_light_labels, &build);
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    if (scenes[i]) {
+      build.scene = scenes[i];
+      (void)vkr_ui_push_id_u64(ui, 0x1ab0u + i);
+      editor_label_visit(scenes[i], editor_label_chunk, &build, &build);
+      (void)vkr_ui_pop_id(ui);
+    }
   }
   (void)vkr_ui_panel_end(ui);
 }
 
 void vkr_editor_labels_project(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
-  if (!frame->scene || frame->scene_rendering_stopped ||
-      editor->label_scene_generation != frame->scene_generation)
+  if ((!frame->scene && !frame->world) || frame->scene_rendering_stopped ||
+      editor->label_scene_generation != frame->scene_generation ||
+      !editor->label_anchor_count)
     return;
   const Vec4 image = frame->mapping.image_rect_px;
   const float32_t scale = frame->ui->content_scale;
-  if (!editor->label_anchor_count)
-    return;
+  const float32_t size = EDITOR_LABEL_SIZE_PT;
   (void)vkr_ui_widget_set_rect(frame->ui, editor->label_panel,
                                (VkrUiRect){image.x / scale, image.y / scale,
                                            image.z / scale, image.w / scale});
   for (uint32_t i = 0; i < editor->label_anchor_count; ++i) {
     const VkrEditorLabelAnchor anchor = editor->label_anchors[i];
-    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
-        frame->scene->world, anchor.entity, frame->scene->comp_transform);
-    const Vec4 clip =
-        mat4_mul_vec4(frame->view_projection,
-                      vec3_to_vec4(mat4_position(transform->world), 1.0f));
+    /* Edits applied after the build can delete an object or unload its
+       container; either hides the icon. A removed container is never
+       dereferenced. */
+    bool8_t loaded =
+        anchor.scene == frame->scene || anchor.scene == frame->world;
+    for (uint32_t c = 0; !loaded && c < VKR_SCENE_ADDITIVE_MAX; ++c) {
+      loaded = frame->additive[c] && anchor.scene == frame->additive[c];
+    }
+    const SceneTransform *transform =
+        anchor.stack == UINT32_MAX && anchor.scene && loaded
+            ? vkr_entity_get_component_if_alive_const(
+                  anchor.scene->world, anchor.entity,
+                  anchor.scene->comp_transform)
+            : NULL;
+    const bool8_t anchored =
+        loaded && (anchor.stack != UINT32_MAX || transform);
+    const Vec3 position =
+        transform ? mat4_position(transform->world) : vec3_zero();
+    const Vec4 clip = anchored ? mat4_mul_vec4(frame->view_projection,
+                                               vec3_to_vec4(position, 1.0f))
+                               : (Vec4){0};
     Vec2 offset = {100000.0f, 100000.0f};
     if (clip.w > 0.0f && clip.z >= 0.0f && clip.z <= clip.w) {
-      offset.x = image.z * (clip.x / clip.w * 0.5f + 0.5f) / scale -
-                 EDITOR_LABEL_SIZE_PT * 0.5f;
-      offset.y = image.w * (clip.y / clip.w * 0.5f + 0.5f) / scale -
-                 EDITOR_LABEL_SIZE_PT - 6.0f;
+      offset.x =
+          image.z * (clip.x / clip.w * 0.5f + 0.5f) / scale - size * 0.5f;
+      offset.y =
+          image.w * (clip.y / clip.w * 0.5f + 0.5f) / scale - size - 6.0f;
+      /* Abstract objects rise in a column above the origin. */
+      if (anchor.stack != UINT32_MAX) {
+        offset.y -= (float32_t)anchor.stack * (size + EDITOR_LABEL_GAP_PT);
+      }
     }
-    if (offset.x < 0 || offset.y < 0 ||
-        offset.x + EDITOR_LABEL_SIZE_PT > image.z / scale ||
-        offset.y + EDITOR_LABEL_SIZE_PT > image.w / scale)
+    if (offset.x < 0 || offset.y < 0 || offset.x + size > image.z / scale ||
+        offset.y + size > image.w / scale)
       offset = (Vec2){100000.0f, 100000.0f};
     (void)vkr_ui_widget_set_rect(frame->ui, anchor.widget,
-                                 (VkrUiRect){offset.x, offset.y,
-                                             EDITOR_LABEL_SIZE_PT,
-                                             EDITOR_LABEL_SIZE_PT});
+                                 (VkrUiRect){offset.x, offset.y, size, size});
   }
 }

@@ -6,6 +6,8 @@
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_edit.h"
+#include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_types.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -2066,4 +2068,393 @@ bool8_t vkr_editor_project_local_jobs_directory(
     return project_error(error, "Cannot resolve local job directory");
   }
   return true_v;
+}
+
+// ---- Asset labels (ADR-076) ----
+
+void vkr_editor_label_clean(char *out, uint32_t capacity, const uint8_t *text,
+                            uint64_t length) {
+  uint64_t start = 0u;
+  while (start < length && text[start] == ' ') {
+    ++start;
+  }
+  while (length > start && text[length - 1u] == ' ') {
+    --length;
+  }
+  uint32_t written = 0u;
+  for (uint64_t i = start; i < length && written + 1u < capacity; ++i) {
+    const uint8_t c = text[i];
+    if (c >= 0x20u && c != '"' && c != '\\') {
+      out[written++] = (char)c;
+    }
+  }
+  out[written] = '\0';
+}
+
+bool8_t
+vkr_editor_folder_normalize(char path[VKR_EDITOR_FOLDER_PATH_CAPACITY]) {
+  char clean[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+  uint32_t written = 0u;
+  for (uint32_t i = 0u; path[i]; ++i) {
+    if (path[i] == '/' && (!written || clean[written - 1u] == '/')) {
+      continue;
+    }
+    if (written + 1u >= sizeof(clean)) {
+      return false_v;
+    }
+    clean[written++] = path[i];
+  }
+  while (written && clean[written - 1u] == '/') {
+    --written;
+  }
+  /* Zero the tail too, so equal paths compare equal byte for byte. */
+  MemZero(path, VKR_EDITOR_FOLDER_PATH_CAPACITY);
+  MemCopy(path, clean, written);
+  return true_v;
+}
+
+bool8_t vkr_editor_folder_within(const char *path, const char *ancestor) {
+  const uint64_t length = strlen(ancestor);
+  return !length || (!strncmp(path, ancestor, length) &&
+                     (path[length] == '\0' || path[length] == '/'));
+}
+
+/* Length of a virtual folder path's parent: its text before the last
+   separator. These are not filesystem paths. */
+static uint64_t folder_parent_length(const char *path) {
+  uint64_t parent = 0u;
+  for (uint64_t i = 0u; path[i]; ++i) {
+    if (path[i] == '/') {
+      parent = i;
+    }
+  }
+  return parent;
+}
+
+void vkr_editor_folder_parent(const char *path,
+                              char out[VKR_EDITOR_FOLDER_PATH_CAPACITY]) {
+  const uint64_t length = folder_parent_length(path);
+  MemCopy(out, path, length);
+  out[length] = '\0';
+}
+
+const char *vkr_editor_folder_name(const char *path) {
+  const uint64_t parent = folder_parent_length(path);
+  return path[parent] == '/' ? path + parent + 1u : path;
+}
+
+static uint32_t folders_find(const VkrEditorContentLabels *doc,
+                             const char *path) {
+  for (uint32_t i = 0u; i < doc->folder_count; ++i) {
+    if (!strcmp(doc->folders[i].path, path)) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
+bool8_t vkr_editor_folders_add(VkrEditorContentLabels *doc, const char *path) {
+  char current[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+  if (strlen(path) >= sizeof(current)) {
+    return false_v;
+  }
+  MemCopy(current, path, strlen(path) + 1u);
+  if (!vkr_editor_folder_normalize(current)) {
+    return false_v;
+  }
+  /* Ancestors first, so the list reads as a tree. */
+  for (uint64_t end = 0u; current[end];) {
+    while (current[end] && current[end] != '/') {
+      ++end;
+    }
+    char prefix[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+    MemCopy(prefix, current, end);
+    prefix[end] = '\0';
+    if (folders_find(doc, prefix) == UINT32_MAX) {
+      if (doc->folder_count == doc->folder_capacity) {
+        return false_v;
+      }
+      MemCopy(doc->folders[doc->folder_count++].path, prefix, end + 1u);
+    }
+    if (current[end] == '/') {
+      ++end;
+    }
+  }
+  return true_v;
+}
+
+/* `path` with its `from` prefix replaced by `to`; false when too long. */
+static bool8_t folders_rebase(char path[VKR_EDITOR_FOLDER_PATH_CAPACITY],
+                              const char *from, const char *to) {
+  char moved[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+  const int length =
+      snprintf(moved, sizeof(moved), "%s%s", to, path + strlen(from));
+  if (length < 0 || length >= (int)sizeof(moved)) {
+    return false_v;
+  }
+  MemCopy(path, moved, (uint64_t)length + 1u);
+  return true_v;
+}
+
+bool8_t vkr_editor_folders_rename(VkrEditorContentLabels *doc, const char *from,
+                                  const char *to) {
+  char target[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+  if (!from[0] || strlen(to) >= sizeof(target)) {
+    return false_v;
+  }
+  MemCopy(target, to, strlen(to) + 1u);
+  if (!vkr_editor_folder_normalize(target) || !target[0] ||
+      vkr_editor_folder_within(target, from) ||
+      folders_find(doc, target) != UINT32_MAX ||
+      folders_find(doc, from) == UINT32_MAX) {
+    return false_v;
+  }
+  /* Prove every moved path fits before changing any. */
+  for (uint32_t i = 0u; i < doc->folder_count; ++i) {
+    if (vkr_editor_folder_within(doc->folders[i].path, from) &&
+        strlen(target) + strlen(doc->folders[i].path) - strlen(from) >=
+            VKR_EDITOR_FOLDER_PATH_CAPACITY) {
+      return false_v;
+    }
+  }
+  for (uint32_t i = 0u; i < doc->label_count; ++i) {
+    if (doc->labels[i].folder[0] &&
+        vkr_editor_folder_within(doc->labels[i].folder, from) &&
+        strlen(target) + strlen(doc->labels[i].folder) - strlen(from) >=
+            VKR_EDITOR_FOLDER_PATH_CAPACITY) {
+      return false_v;
+    }
+  }
+  for (uint32_t i = 0u; i < doc->folder_count; ++i) {
+    if (vkr_editor_folder_within(doc->folders[i].path, from)) {
+      (void)folders_rebase(doc->folders[i].path, from, target);
+    }
+  }
+  for (uint32_t i = 0u; i < doc->label_count; ++i) {
+    if (doc->labels[i].folder[0] &&
+        vkr_editor_folder_within(doc->labels[i].folder, from)) {
+      (void)folders_rebase(doc->labels[i].folder, from, target);
+    }
+  }
+  char parent[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+  vkr_editor_folder_parent(target, parent);
+  return vkr_editor_folders_add(doc, parent);
+}
+
+bool8_t vkr_editor_folders_remove(VkrEditorContentLabels *doc,
+                                  const char *path) {
+  const uint32_t index = folders_find(doc, path);
+  if (!path[0] || index == UINT32_MAX) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < doc->folder_count; ++i) {
+    if (i != index && vkr_editor_folder_within(doc->folders[i].path, path)) {
+      return false_v;
+    }
+  }
+  for (uint32_t i = 0u; i < doc->label_count; ++i) {
+    if (!strcmp(doc->labels[i].folder, path)) {
+      return false_v;
+    }
+  }
+  doc->folders[index] = doc->folders[--doc->folder_count];
+  return true_v;
+}
+
+bool8_t vkr_editor_labels_parse(String8 bytes, VkrEditorContentLabels *doc,
+                                VkrEditorProjectError *error) {
+  doc->label_count = 0u;
+  doc->folder_count = 0u;
+  VkrJsonReader reader = vkr_json_reader_create(bytes.str, bytes.length);
+  int32_t version = 0;
+  if (!vkr_json_get_int(&reader, "version", &version) || version < 1 ||
+      version > (int32_t)VKR_EDITOR_LABELS_VERSION) {
+    project_error(error, "Content labels need version 1 or %u",
+                  VKR_EDITOR_LABELS_VERSION);
+    return false_v;
+  }
+  reader.pos = 0;
+  if (version >= 2 && vkr_json_find_array(&reader, "folders")) {
+    do {
+      String8 value = {0};
+      char path[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+      if (!vkr_json_parse_string(&reader, &value)) {
+        break;
+      }
+      vkr_editor_label_clean(path, sizeof(path), value.str, value.length);
+      if (vkr_editor_folder_normalize(path) && path[0]) {
+        (void)vkr_editor_folders_add(doc, path);
+      }
+    } while (vkr_json_next_array_element(&reader));
+  }
+  reader.pos = 0;
+  if (!vkr_json_find_array(&reader, "labels")) {
+    return true_v;
+  }
+  do {
+    VkrJsonReader object;
+    if (doc->label_count == doc->label_capacity ||
+        !vkr_json_enter_object(&reader, &object)) {
+      break;
+    }
+    String8 id = {0};
+    String8 folder = {0};
+    String8 tags = {0};
+    VkrJsonReader field = object;
+    (void)vkr_json_get_string(&field, "id", &id);
+    field = object;
+    (void)vkr_json_get_string(&field, "folder", &folder);
+    field = object;
+    (void)vkr_json_get_string(&field, "tags", &tags);
+    if (!id.length || id.length >= sizeof(doc->labels[0].id)) {
+      continue;
+    }
+    VkrEditorAssetLabel *label = &doc->labels[doc->label_count++];
+    MemCopy(label->id, id.str, id.length);
+    label->id[id.length] = '\0';
+    vkr_editor_label_clean(label->folder, sizeof(label->folder), folder.str,
+                           folder.length);
+    if (!vkr_editor_folder_normalize(label->folder)) {
+      label->folder[0] = '\0';
+    }
+    vkr_editor_label_clean(label->tags, sizeof(label->tags), tags.str,
+                           tags.length);
+    if (label->folder[0]) {
+      (void)vkr_editor_folders_add(doc, label->folder);
+    }
+  } while (vkr_json_next_array_element(&reader));
+  return true_v;
+}
+
+static String8 labels_text(const char *text) {
+  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+}
+
+bool8_t vkr_editor_labels_write(VkrJsonWriter *writer,
+                                const VkrEditorContentLabels *doc) {
+  bool8_t ok = vkr_json_writer_begin_object(writer) &&
+               vkr_json_writer_name(writer, string8_lit("version")) &&
+               vkr_json_writer_u64(writer, VKR_EDITOR_LABELS_VERSION) &&
+               vkr_json_writer_name(writer, string8_lit("folders")) &&
+               vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < doc->folder_count; ++i) {
+    ok = vkr_json_writer_string(writer, labels_text(doc->folders[i].path));
+  }
+  ok = ok && vkr_json_writer_end_array(writer) &&
+       vkr_json_writer_name(writer, string8_lit("labels")) &&
+       vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < doc->label_count; ++i) {
+    const VkrEditorAssetLabel *label = &doc->labels[i];
+    ok = vkr_json_writer_begin_object(writer) &&
+         vkr_json_writer_name(writer, string8_lit("id")) &&
+         vkr_json_writer_string(writer, labels_text(label->id)) &&
+         vkr_json_writer_name(writer, string8_lit("folder")) &&
+         vkr_json_writer_string(writer, labels_text(label->folder)) &&
+         vkr_json_writer_name(writer, string8_lit("tags")) &&
+         vkr_json_writer_string(writer, labels_text(label->tags)) &&
+         vkr_json_writer_end_object(writer);
+  }
+  return ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_end_object(writer);
+}
+
+// ---- Presets ----
+
+const VkrTypeDesc *vkr_editor_preset_type(String8 name) {
+  const VkrTypeDesc *world = vkr_scene_world_type_named(name);
+  if (world && vkr_scene_world_type_live(world)) {
+    return world;
+  }
+  const VkrTypeDesc *const others[] = {
+      &vkr_scene_point_light_type, &vkr_scene_directional_light_type,
+      &vkr_scene_rectangle_light_type, &vkr_scene_physics_body_type};
+  for (uint32_t i = 0; i < ArrayCount(others); ++i) {
+    if (name.length == strlen(others[i]->name) &&
+        !MemCompare(name.str, others[i]->name, name.length)) {
+      return others[i];
+    }
+  }
+  return NULL;
+}
+
+/* One preset record into `preset`; false leaves the record skipped. */
+static bool8_t presets_parse_record(String8 record, VkrEditorPreset *preset,
+                                    VkrAllocator *scratch) {
+  VkrEditorProjectError error = {0};
+  char type_name[64];
+  String8 values = {0};
+  if (!vkr_editor_project_json_string(record, "id", preset->id,
+                                      sizeof(preset->id), &error) ||
+      !preset->id[0] ||
+      !vkr_editor_project_json_string(record, "name", preset->name,
+                                      sizeof(preset->name), &error) ||
+      !preset->name[0] ||
+      !vkr_editor_project_json_string(record, "type", type_name,
+                                      sizeof(type_name), &error) ||
+      !vkr_editor_project_json_member(record, "values", &values, &error)) {
+    return false_v;
+  }
+  preset->type = vkr_editor_preset_type(
+      string8_create((uint8_t *)type_name, strlen(type_name)));
+  if (!preset->type) {
+    return false_v;
+  }
+  vkr_type_defaults(preset->type, preset->value);
+  char message[128];
+  return vkr_type_read_json_document(values, preset->type, preset->value,
+                                     scratch, message, sizeof(message));
+}
+
+bool8_t vkr_editor_presets_parse(String8 bytes, VkrEditorPresets *doc,
+                                 VkrAllocator *scratch,
+                                 VkrEditorProjectError *error) {
+  doc->count = 0u;
+  VkrJsonReader reader = vkr_json_reader_create(bytes.str, bytes.length);
+  int32_t version = 0;
+  if (!vkr_json_get_int(&reader, "version", &version) ||
+      version != (int32_t)VKR_EDITOR_PRESETS_VERSION) {
+    project_error(error, "Presets need version %u", VKR_EDITOR_PRESETS_VERSION);
+    return false_v;
+  }
+  reader.pos = 0;
+  if (!vkr_json_find_array(&reader, "presets")) {
+    return true_v;
+  }
+  do {
+    VkrJsonReader object;
+    if (doc->count == doc->capacity ||
+        !vkr_json_enter_object(&reader, &object)) {
+      break;
+    }
+    const String8 record = {.str = (uint8_t *)object.data,
+                            .length = object.length};
+    if (presets_parse_record(record, &doc->presets[doc->count], scratch)) {
+      ++doc->count;
+    }
+  } while (vkr_json_next_array_element(&reader));
+  return true_v;
+}
+
+bool8_t vkr_editor_presets_write(VkrJsonWriter *writer,
+                                 const VkrEditorPresets *doc) {
+  bool8_t ok = vkr_json_writer_begin_object(writer) &&
+               vkr_json_writer_name(writer, string8_lit("version")) &&
+               vkr_json_writer_u64(writer, VKR_EDITOR_PRESETS_VERSION) &&
+               vkr_json_writer_name(writer, string8_lit("presets")) &&
+               vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < doc->count; ++i) {
+    const VkrEditorPreset *preset = &doc->presets[i];
+    ok = vkr_json_writer_begin_object(writer) &&
+         vkr_json_writer_name(writer, string8_lit("id")) &&
+         vkr_json_writer_string(writer, labels_text(preset->id)) &&
+         vkr_json_writer_name(writer, string8_lit("name")) &&
+         vkr_json_writer_string(writer, labels_text(preset->name)) &&
+         vkr_json_writer_name(writer, string8_lit("type")) &&
+         vkr_json_writer_string(writer, labels_text(preset->type->name)) &&
+         vkr_json_writer_name(writer, string8_lit("values")) &&
+         vkr_type_write_json(writer, preset->type, preset->value) &&
+         vkr_json_writer_end_object(writer);
+  }
+  return ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_end_object(writer);
 }

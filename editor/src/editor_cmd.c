@@ -1,6 +1,8 @@
 #include "editor_internal.h"
 
 #include "core/logger.h"
+#include "editor_project_store.h"
+#include "editor_projects.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 #include <math.h>
 #include <stdio.h>
@@ -39,23 +41,28 @@ typedef enum CmdArg {
   CMD_ARG_ENTITY,
   CMD_ARG_COMMAND,
   CMD_ARG_TEXT,
+  /* Object kinds and live world component types (ADR-076). */
+  CMD_ARG_OBJECT,
+  CMD_ARG_COMPONENT,
 } CmdArg;
 
 /* Enumerated argument words, in completion order and matching the value
  * tables below index for index. */
-static const char *const cmd_panels[] = {"hierarchy", "inspector", "console",
-                                         "bakery",    "content",   NULL};
+static const char *const cmd_panels[] = {"outliner", "details", "console",
+                                         "bakery",   "content", NULL};
 static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_HIERARCHY, VKR_UI_DOCK_PANEL_INSPECTOR,
     VKR_UI_DOCK_PANEL_CONSOLE, VKR_UI_DOCK_PANEL_BAKERY,
     VKR_UI_DOCK_PANEL_CONTENT};
 
-static const char *const cmd_windows[] = {
-    "animation", "physics", "graphics", "draws", "memory", "help", NULL};
+static const char *const cmd_windows[] = {"animation", "physics", "preferences",
+                                          "draws",     "memory",  "help",
+                                          "create",    NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION, VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,  VKR_EDITOR_WINDOW_DRAWS,
-    VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP};
+    VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP,
+    VKR_EDITOR_WINDOW_CREATE};
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -77,8 +84,37 @@ const uint32_t vkr_editor_cmd_tool_modes[] = {
 static const char *const cmd_switches[] = {"on", "off", "toggle", NULL};
 static const char *const cmd_zoom_words[] = {"in", "out", "reset", NULL};
 
+/* Filled once from the object kinds and world types, NULL-terminated. */
+static const char *cmd_object_words[32];
+static const char *cmd_component_words[VKR_SCENE_TYPE_MAX + 1u];
+
+static void cmd_structure_words(void) {
+  if (cmd_object_words[0]) {
+    return;
+  }
+  for (uint32_t i = 0; i < vkr_editor_object_kind_count() &&
+                       i + 1u < ArrayCount(cmd_object_words);
+       ++i) {
+    cmd_object_words[i] = vkr_editor_object_kind_word(i);
+  }
+  uint32_t count = 0u;
+  const VkrTypeDesc *type = NULL;
+  for (uint32_t i = 0; (type = vkr_scene_world_type(i)) &&
+                       count + 1u < ArrayCount(cmd_component_words);
+       ++i) {
+    if (vkr_scene_world_type_live(type)) {
+      cmd_component_words[count++] = type->name;
+    }
+  }
+}
+
 static const char *const *cmd_arg_words(CmdArg arg) {
+  cmd_structure_words();
   switch (arg) {
+  case CMD_ARG_OBJECT:
+    return cmd_object_words;
+  case CMD_ARG_COMPONENT:
+    return cmd_component_words;
   case CMD_ARG_PANEL:
     return cmd_panels;
   case CMD_ARG_WINDOW:
@@ -260,7 +296,7 @@ static bool8_t cmd_run_command(CmdContext *ctx, const CmdDef *def,
 }
 
 static bool8_t cmd_require_scene(CmdContext *ctx) {
-  if (ctx->frame->scene)
+  if (ctx->frame->scene || ctx->frame->world)
     return true_v;
   snprintf(ctx->message, sizeof(ctx->message), "No scene is loaded");
   return false_v;
@@ -270,6 +306,8 @@ static bool8_t cmd_require_scene(CmdContext *ctx) {
  * text, in entity order. */
 static VkrEntityId cmd_find_entity(const VkrScene *scene, String8 name) {
   VkrEntityId partial = VKR_ENTITY_ID_INVALID;
+  if (!scene)
+    return partial;
   const uint32_t capacity = scene->world->dir.capacity;
   for (uint32_t i = 0; i < capacity; ++i) {
     if (!scene->world->dir.records[i].chunk)
@@ -284,12 +322,22 @@ static VkrEntityId cmd_find_entity(const VkrScene *scene, String8 name) {
   return partial;
 }
 
+/* The scene's entities first, then added scenes', then the root World's. */
+static VkrEntityId cmd_find_any(const VkrSampleUiFrame *frame, String8 name) {
+  VkrEntityId entity = cmd_find_entity(frame->scene, name);
+  for (uint32_t i = 0; !entity.u64 && i < VKR_SCENE_ADDITIVE_MAX; ++i)
+    entity = cmd_find_entity(frame->additive[i], name);
+  if (!entity.u64)
+    entity = cmd_find_entity(frame->world, name);
+  return entity;
+}
+
 static bool8_t cmd_run_select(CmdContext *ctx, const CmdDef *def, String8 arg) {
   (void)def;
   if (!cmd_require_scene(ctx))
     return false_v;
   const String8 name = cmd_unquote(arg);
-  const VkrEntityId entity = cmd_find_entity(ctx->frame->scene, name);
+  const VkrEntityId entity = cmd_find_any(ctx->frame, name);
   if (!entity.u64) {
     snprintf(ctx->message, sizeof(ctx->message), "No entity named '%.*s'",
              (int)name.length, name.str);
@@ -297,7 +345,8 @@ static bool8_t cmd_run_select(CmdContext *ctx, const CmdDef *def, String8 arg) {
   }
   *ctx->frame->scene_edit =
       (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT, .entity = entity};
-  const String8 selected = vkr_scene_get_name(ctx->frame->scene, entity);
+  const String8 selected =
+      vkr_scene_get_name(vkr_editor_entity_scene(ctx->frame, entity), entity);
   snprintf(ctx->message, sizeof(ctx->message), "Selected %.*s",
            (int)selected.length, selected.str);
   return true_v;
@@ -309,7 +358,9 @@ static bool8_t cmd_run_visibility(CmdContext *ctx, const CmdDef *def,
   (void)arg;
   if (!cmd_require_scene(ctx))
     return false_v;
-  if (!vkr_scene_entity_alive(ctx->frame->scene, ctx->frame->selected_entity)) {
+  if (!vkr_scene_entity_alive(
+          vkr_editor_entity_scene(ctx->frame, ctx->frame->selected_entity),
+          ctx->frame->selected_entity)) {
     snprintf(ctx->message, sizeof(ctx->message), "Nothing is selected");
     return false_v;
   }
@@ -378,7 +429,10 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
       next.render_mode = vkr_editor_cmd_render_mode_values[index];
     else if (def->arg == CMD_ARG_TOOL)
       next.gizmo_tool = vkr_editor_cmd_tool_modes[index];
-    else if (!cmd_switch(ctx, word, next.grid_enabled, &next.grid_enabled))
+    else if (def->value == 2u) {
+      if (!cmd_switch(ctx, word, next.grid_labels, &next.grid_labels))
+        return false_v;
+    } else if (!cmd_switch(ctx, word, next.grid_enabled, &next.grid_enabled))
       return false_v;
   } else {
     if (!cmd_number(word, &number) || number <= 0.0) {
@@ -441,6 +495,505 @@ static bool8_t cmd_run_echo(CmdContext *ctx, const CmdDef *def, String8 arg) {
   (void)def;
   snprintf(ctx->message, sizeof(ctx->message), "%.*s", (int)arg.length,
            arg.str);
+  return true_v;
+}
+
+/* Loads a project scene by name, or a scene document by path, beside the
+ * active scene (ADR-076). Legacy scenes keep their edits in
+ * `<path>.editor.json`, as the primary scene does. */
+static bool8_t cmd_run_scene_add(CmdContext *ctx, const CmdDef *def,
+                                 String8 arg) {
+  (void)def;
+  const String8 path = cmd_unquote(arg);
+  VkrEditorUi *editor = ctx->editor;
+  if (vkr_editor_projects_add_scene(editor->projects, editor, ctx->frame,
+                                    path)) {
+    snprintf(ctx->message, sizeof(ctx->message), "Adding %.*s",
+             (int)path.length, path.str);
+    return true_v;
+  }
+  if (!path.length || path.length >= sizeof(editor->cmd_scene_path) ||
+      path.length + 13u >= sizeof(editor->cmd_scene_sidecar)) {
+    snprintf(ctx->message, sizeof(ctx->message), "scene.add needs a path");
+    return false_v;
+  }
+  snprintf(editor->cmd_scene_path, sizeof(editor->cmd_scene_path), "%.*s",
+           (int)path.length, path.str);
+  snprintf(editor->cmd_scene_sidecar, sizeof(editor->cmd_scene_sidecar),
+           "%.*s.editor.json", (int)path.length, path.str);
+  *ctx->frame->scene_request = (VkrSampleSceneRequest){
+      .add = true_v,
+      .path = cmd_cstr(editor->cmd_scene_path),
+      .sidecar_path = cmd_cstr(editor->cmd_scene_sidecar)};
+  snprintf(ctx->message, sizeof(ctx->message), "Adding %.*s", (int)path.length,
+           path.str);
+  return true_v;
+}
+
+/* The added scene with slot number `word` or whose path or project name
+   contains it, as a container id; 0 when none matches. */
+static uint16_t cmd_added_container(const CmdContext *ctx, String8 word) {
+  const VkrSampleUiFrame *frame = ctx->frame;
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (!frame->additive[i])
+      continue;
+    char slot[8];
+    snprintf(slot, sizeof(slot), "%u", i + 1u);
+    const String8 name = vkr_editor_projects_added_name(
+        ctx->editor->projects, frame->additive_names[i]);
+    if (cmd_equals(word, cmd_cstr(slot)) ||
+        (word.length && (cmd_contains(frame->additive_names[i], word) ||
+                         cmd_contains(name, word))))
+      return (uint16_t)(i + 1u);
+  }
+  return 0u;
+}
+
+/* Instantiates a project scene as a prefab in the open scene, at the origin
+   (ADR-076). */
+static bool8_t cmd_run_scene_instantiate(CmdContext *ctx, const CmdDef *def,
+                                         String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  if (!vkr_editor_projects_instantiate_scene(ctx->editor->projects, ctx->editor,
+                                             ctx->frame, name, vec3_zero())) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "No other project scene '%.*s', or no scene can change now",
+             (int)name.length, name.str);
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Instantiating %.*s",
+           (int)name.length, name.str);
+  return true_v;
+}
+
+/* Makes an added scene the primary scene; the previous primary is added
+   back beside it (ADR-076). */
+static bool8_t cmd_run_scene_primary(CmdContext *ctx, const CmdDef *def,
+                                     String8 arg) {
+  (void)def;
+  const String8 word = cmd_unquote(arg);
+  const uint16_t container = cmd_added_container(ctx, word);
+  if (!container) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "No added scene matches '%.*s'", (int)word.length, word.str);
+    return false_v;
+  }
+  if (!vkr_editor_projects_set_primary(ctx->editor->projects, ctx->editor,
+                                       ctx->frame, container)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Only an added project scene can become primary, once no job "
+             "is running");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Making scene %u primary",
+           container);
+  return true_v;
+}
+
+/* Removes an additive scene by its slot number or a part of its path. */
+static bool8_t cmd_run_scene_remove(CmdContext *ctx, const CmdDef *def,
+                                    String8 arg) {
+  (void)def;
+  const String8 word = cmd_split(cmd_unquote(arg), NULL);
+  const bool8_t discard = cmd_contains(arg, cmd_cstr(" discard")) != 0;
+  const uint16_t container = cmd_added_container(ctx, word);
+  if (!container) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "No added scene matches '%.*s'", (int)word.length, word.str);
+    return false_v;
+  }
+  *ctx->frame->scene_request = (VkrSampleSceneRequest){
+      .remove = true_v, .container = container, .discard_edits = discard};
+  snprintf(ctx->message, sizeof(ctx->message), "Removing scene %u", container);
+  return true_v;
+}
+
+/* Creates an empty scene in the open project and opens it (ADR-076). */
+static bool8_t cmd_run_scene_create(CmdContext *ctx, const CmdDef *def,
+                                    String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  char text[VKR_EDITOR_PROJECT_NAME_CAPACITY];
+  if (!name.length || name.length >= sizeof(text)) {
+    snprintf(ctx->message, sizeof(ctx->message), "scene.create needs a name");
+    return false_v;
+  }
+  MemCopy(text, name.str, name.length);
+  text[name.length] = '\0';
+  if (!vkr_editor_projects_create_scene(ctx->editor->projects, ctx->editor,
+                                        ctx->frame, text)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "No writable project can create a scene now");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Creating scene %s", text);
+  return true_v;
+}
+
+/* Opens a project scene by name, as double-clicking it in Content does. */
+static bool8_t cmd_run_scene_open(CmdContext *ctx, const CmdDef *def,
+                                  String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  bool8_t current = false_v;
+  if (!vkr_editor_projects_open_scene(ctx->editor->projects, ctx->editor,
+                                      ctx->frame, name, &current)) {
+    snprintf(ctx->message, sizeof(ctx->message), "No project scene '%.*s'",
+             (int)name.length, name.str);
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message),
+           current ? "%.*s is already open or loading" : "Opening %.*s",
+           (int)name.length, name.str);
+  return true_v;
+}
+
+/* Viewport documents: tab.new adds one showing the World; tab.show N opens
+ * document N (from 1). */
+static bool8_t cmd_run_tab(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  const bool8_t add = strcmp(def->name, "tab.new") == 0;
+  float64_t number = 0.0;
+  const bool8_t ok =
+      add ? vkr_editor_viewport_tab_new(ctx->editor, ctx->frame)
+          : cmd_number(cmd_split(arg, NULL), &number) && number >= 1.0 &&
+                vkr_editor_viewport_tab_show(ctx->editor, ctx->frame,
+                                             (uint32_t)number - 1u);
+  snprintf(ctx->message, sizeof(ctx->message), "%s",
+           ok ? "Switching document" : "No document switch is possible now");
+  return ok;
+}
+
+/* Opens the Create window importing a scene JSON; its preflight runs. */
+static bool8_t cmd_run_scene_import(CmdContext *ctx, const CmdDef *def,
+                                    String8 arg) {
+  (void)def;
+  const String8 path = cmd_unquote(arg);
+  char text[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!path.length || path.length >= sizeof(text)) {
+    snprintf(ctx->message, sizeof(ctx->message), "scene.import needs a path");
+    return false_v;
+  }
+  MemCopy(text, path.str, path.length);
+  text[path.length] = '\0';
+  if (!vkr_editor_projects_import_scene_form(ctx->editor->projects, ctx->editor,
+                                             text)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Importing a scene needs a writable project");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Inspecting %s", text);
+  return true_v;
+}
+
+/* Imports one file into the project's shared assets (ADR-076). */
+static bool8_t cmd_run_content_import(CmdContext *ctx, const CmdDef *def,
+                                      String8 arg) {
+  (void)def;
+  const String8 path = cmd_unquote(arg);
+  char text[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!path.length || path.length >= sizeof(text)) {
+    snprintf(ctx->message, sizeof(ctx->message), "content.import needs a path");
+    return false_v;
+  }
+  MemCopy(text, path.str, path.length);
+  text[path.length] = '\0';
+  if (!vkr_editor_projects_import_asset(ctx->editor->projects, ctx->editor,
+                                        ctx->frame, text)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "No writable, idle project can import now");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Importing %s", text);
+  return true_v;
+}
+
+/* Whether the open scene inherits the World's objects (ADR-076). */
+static bool8_t cmd_run_scene_inherit(CmdContext *ctx, const CmdDef *def,
+                                     String8 arg) {
+  (void)def;
+  const VkrScene *scene = ctx->frame->scene;
+  bool8_t inherit = false_v;
+  if (!scene || !ctx->frame->world) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Open a project scene beside its World");
+    return false_v;
+  }
+  if (!cmd_switch(ctx, cmd_split(arg, NULL), scene->settings.inherit_world,
+                  &inherit)) {
+    return false_v;
+  }
+  VkrSceneEditRequest request = {.action = VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS};
+  request.scene_settings = scene->settings;
+  request.scene_settings.inherit_world = inherit;
+  *ctx->frame->scene_edit = request;
+  snprintf(ctx->message, sizeof(ctx->message), "Scene %s the World",
+           inherit ? "inherits" : "no longer inherits");
+  return true_v;
+}
+
+/* Filters the Content browser; an empty query shows every asset. */
+static bool8_t cmd_run_content_search(CmdContext *ctx, const CmdDef *def,
+                                      String8 arg) {
+  (void)def;
+  const String8 query = cmd_unquote(arg);
+  if (!ctx->editor->content) {
+    snprintf(ctx->message, sizeof(ctx->message), "Content is unavailable");
+    return false_v;
+  }
+  vkr_editor_content_search(ctx->editor->content, query);
+  snprintf(ctx->message, sizeof(ctx->message), "Content search '%.*s'",
+           (int)query.length, query.str);
+  return true_v;
+}
+
+/* Content folders (ADR-076): show, create, move into, and list or tiles. */
+static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
+                                      String8 arg) {
+  VkrEditorContent *content = ctx->editor->content;
+  if (!content) {
+    snprintf(ctx->message, sizeof(ctx->message), "Content is unavailable");
+    return false_v;
+  }
+  /* The first argument may be quoted to hold spaces, as in "Level One". */
+  String8 rest = {0};
+  String8 first = cmd_trim(arg);
+  if (first.length > 1u && first.str[0] == '"') {
+    uint64_t end = 1u;
+    while (end < first.length && first.str[end] != '"')
+      ++end;
+    rest = cmd_trim(
+        (String8){.str = first.str + Min(end + 1u, first.length),
+                  .length = first.length - Min(end + 1u, first.length)});
+    first = (String8){.str = first.str + 1, .length = end - 1u};
+  } else {
+    first = cmd_split(first, &rest);
+  }
+  const String8 second = cmd_unquote(rest);
+  bool8_t ok = false_v;
+  if (!strcmp(def->name, "content.open")) {
+    ok = vkr_editor_content_open_folder(content, cmd_unquote(arg));
+  } else if (!strcmp(def->name, "content.mkdir")) {
+    ok = vkr_editor_content_new_folder(content, cmd_unquote(arg));
+  } else if (!strcmp(def->name, "content.move")) {
+    ok = vkr_editor_content_move(content, first, second);
+  } else if (!strcmp(def->name, "content.drop")) {
+    /* As if the file were dropped from the OS on the current folder. */
+    VkrWindowFileDrop *drop =
+        vkr_allocator_alloc(ctx->frame->ui->frame_allocator, sizeof(*drop),
+                            VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    const String8 path = cmd_unquote(arg);
+    ok = drop && path.length && path.length < sizeof(drop->paths[0]);
+    if (ok) {
+      MemZero(drop, sizeof(*drop));
+      MemCopy(drop->paths[0], path.str, path.length);
+      drop->count = 1u;
+      ok = vkr_editor_projects_import_files(ctx->editor->projects, ctx->editor,
+                                            drop,
+                                            vkr_editor_content_folder(content));
+    }
+  } else if (!strcmp(def->name, "content.command")) {
+    static const char *const commands[] = {"load", "open", "place", "rename",
+                                           "delete"};
+    ok = false_v;
+    for (uint32_t i = 0; i < ArrayCount(commands); ++i) {
+      if (cmd_equals(first, cmd_cstr(commands[i]))) {
+        ok = vkr_editor_content_command(content, second,
+                                        (VkrEditorContentCommand)i);
+      }
+    }
+  } else if (!strcmp(def->name, "content.place")) {
+    /* The drop lands at the viewport's centre. */
+    const Vec4 image = ctx->frame->mapping.image_rect_px;
+    ok = vkr_editor_content_place(
+        content, cmd_unquote(arg),
+        (Vec2){image.x + image.z * 0.5f, image.y + image.w * 0.5f});
+  } else {
+    const bool8_t list = cmd_equals(cmd_cstr("list"), first);
+    ok = list || cmd_equals(cmd_cstr("tiles"), first);
+    if (ok) {
+      vkr_editor_content_set_list(content, list);
+    }
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "%s %s", def->name,
+           ok ? "done" : "failed: check the folder, item and write access");
+  return ok;
+}
+
+/* The selected entity, or none with a message. */
+static bool8_t cmd_selection(CmdContext *ctx, VkrEntityId *out) {
+  const VkrEntityId entity = ctx->frame->selected_entity;
+  if (!vkr_scene_entity_alive(vkr_editor_entity_scene(ctx->frame, entity),
+                              entity)) {
+    snprintf(ctx->message, sizeof(ctx->message), "Nothing is selected");
+    return false_v;
+  }
+  *out = entity;
+  return true_v;
+}
+
+/* Creates an object in the selection's scene, the primary scene or the
+ * World, in front of the camera (ADR-076). */
+static bool8_t cmd_run_create(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  (void)def;
+  const String8 word = cmd_split(arg, NULL);
+  const int32_t kind = cmd_word_index(cmd_arg_words(CMD_ARG_OBJECT), word);
+  if (kind < 0) {
+    snprintf(ctx->message, sizeof(ctx->message), "Unknown object '%.*s'",
+             (int)word.length, word.str);
+    return false_v;
+  }
+  if (!vkr_editor_request_create(ctx->frame, (uint32_t)kind,
+                                 vkr_editor_create_container(ctx->frame),
+                                 NULL)) {
+    snprintf(ctx->message, sizeof(ctx->message), "No %s is loaded",
+             ctx->frame->scene || ctx->frame->world ? "World" : "scene");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Creating %s",
+           vkr_editor_object_kind_label((uint32_t)kind));
+  return true_v;
+}
+
+/* Deletes the named object, or the selection. */
+static bool8_t cmd_run_delete(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (name.length) {
+    entity = cmd_find_any(ctx->frame, name);
+  } else if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  const VkrScene *scene = vkr_editor_entity_scene(ctx->frame, entity);
+  const char *reason = "No such object";
+  if (!entity.u64 || !vkr_scene_edit_can_delete(scene, entity, &reason)) {
+    snprintf(ctx->message, sizeof(ctx->message), "%s", reason);
+    return false_v;
+  }
+  *ctx->frame->scene_edit =
+      (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_DELETE, .entity = entity};
+  const String8 label = vkr_scene_get_name(scene, entity);
+  snprintf(ctx->message, sizeof(ctx->message), "Deleting %.*s",
+           (int)label.length, label.str);
+  return true_v;
+}
+
+/* component.add and component.remove on the selection. */
+static bool8_t cmd_run_component(CmdContext *ctx, const CmdDef *def,
+                                 String8 arg) {
+  const bool8_t add = strcmp(def->name, "component.add") == 0;
+  const String8 word = cmd_split(arg, NULL);
+  const VkrTypeDesc *type = vkr_scene_world_type_named(word);
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  /* The physics body lives in the physics draft, not a world component. */
+  if (cmd_equals(word, cmd_cstr(vkr_scene_physics_body_type.name))) {
+    if (!cmd_selection(ctx, &entity)) {
+      return false_v;
+    }
+    if (!vkr_editor_request_physics_body(ctx->frame, entity, add)) {
+      snprintf(ctx->message, sizeof(ctx->message),
+               add ? "The selection already has a physics body"
+                   : "The selection has no physics body");
+      return false_v;
+    }
+    snprintf(ctx->message, sizeof(ctx->message), "%s physics body",
+             add ? "Adding" : "Removing");
+    return true_v;
+  }
+  if (!type || !vkr_scene_world_type_live(type)) {
+    snprintf(ctx->message, sizeof(ctx->message), "Unknown component '%.*s'",
+             (int)word.length, word.str);
+    return false_v;
+  }
+  if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  if (add && !vkr_scene_type_allowed(
+                 vkr_editor_entity_scene(ctx->frame, entity), type)) {
+    snprintf(ctx->message, sizeof(ctx->message), "%s belongs to the World",
+             type->label);
+    return false_v;
+  }
+  VkrSceneEditRequest request = {.action =
+                                     add ? VKR_SCENE_EDIT_ADD_COMPONENT
+                                         : VKR_SCENE_EDIT_REMOVE_COMPONENT,
+                                 .entity = entity};
+  request.values.component_type = type;
+  if (add) {
+    vkr_type_defaults(type, request.values.component);
+  }
+  *ctx->frame->scene_edit = request;
+  snprintf(ctx->message, sizeof(ctx->message), "%s %s",
+           add ? "Adding" : "Removing", type->label);
+  return true_v;
+}
+
+/* preset.save <type> saves the selection's component as a preset;
+   preset.apply <name> applies a preset to the selection's component of its
+   type (ADR-076). */
+static bool8_t cmd_run_preset(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  const String8 word = cmd_unquote(arg);
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  VkrEditorContent *content = ctx->editor->content;
+  _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+  if (!strcmp(def->name, "preset.save")) {
+    const VkrTypeDesc *type = vkr_editor_preset_type(word);
+    if (!type || !vkr_editor_component_read(ctx->frame, entity, type, value) ||
+        !vkr_editor_content_save_preset(content, type, value)) {
+      snprintf(ctx->message, sizeof(ctx->message),
+               "Cannot save a '%.*s' preset from the selection",
+               (int)word.length, word.str);
+      return false_v;
+    }
+    snprintf(ctx->message, sizeof(ctx->message), "Saved a %s preset",
+             type->label);
+    return true_v;
+  }
+  for (uint32_t i = 0; i < vkr_editor_content_preset_count(content); ++i) {
+    const VkrEditorPreset *preset = vkr_editor_content_preset(content, i);
+    if (cmd_equals(word, cmd_cstr(preset->name)) &&
+        vkr_editor_component_read(ctx->frame, entity, preset->type, value)) {
+      vkr_editor_request_component(ctx->frame, entity, preset->type,
+                                   preset->value);
+      snprintf(ctx->message, sizeof(ctx->message), "Applying preset %s",
+               preset->name);
+      return true_v;
+    }
+  }
+  snprintf(ctx->message, sizeof(ctx->message),
+           "No preset '%.*s' for a component of the selection",
+           (int)word.length, word.str);
+  return false_v;
+}
+
+/* Moves the selection under the named object, or to the root with `none`,
+ * keeping where it is in the world. */
+static bool8_t cmd_run_parent(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  VkrEntityId parent = VKR_ENTITY_ID_INVALID;
+  if (!cmd_equals(name, cmd_cstr("none"))) {
+    /* Parents come from the selection's own container. */
+    parent = cmd_find_entity(vkr_editor_entity_scene(ctx->frame, entity), name);
+    if (!parent.u64) {
+      snprintf(ctx->message, sizeof(ctx->message),
+               "No object named '%.*s' in the selection's scene",
+               (int)name.length, name.str);
+      return false_v;
+    }
+  }
+  *ctx->frame->scene_edit = (VkrSceneEditRequest){
+      .action = VKR_SCENE_EDIT_REPARENT, .entity = entity, .parent = parent};
+  snprintf(ctx->message, sizeof(ctx->message), "Parenting to %.*s",
+           (int)name.length, name.str);
   return true_v;
 }
 
@@ -525,6 +1078,9 @@ static const CmdDef cmd_defs[] = {
      CMD_COUNT, 0u},
     {"grid", CMD_ARG_SWITCH, "[on|off|toggle]", "Show or hide the world grid",
      cmd_run_view, CMD_COUNT, 0u},
+    {"grid.labels", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Show or hide the grid's cell numbers and letters", cmd_run_view,
+     CMD_COUNT, 2u},
     {"grid.spacing", CMD_ARG_NUMBER, "<units>",
      "Set the grid cell size and show the grid", cmd_run_view, CMD_COUNT, 1u},
     {"labels", CMD_ARG_SWITCH, "[on|off|toggle]", "Show or hide light icons",
@@ -539,6 +1095,76 @@ static const CmdDef cmd_defs[] = {
      "Scale the whole interface", cmd_run_zoom, CMD_COUNT, 0u},
     {"ui.reduce_motion", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Turn eased interface motion off or on", cmd_run_motion, CMD_COUNT, 0u},
+    {"scene.add", CMD_ARG_TEXT, "<name|path>",
+     "Load a project scene or scene file beside the active one",
+     cmd_run_scene_add, CMD_COUNT, 0u},
+    {"scene.remove", CMD_ARG_TEXT, "<slot|name> [discard]",
+     "Remove an added scene", cmd_run_scene_remove, CMD_COUNT, 0u},
+    {"scene.instantiate", CMD_ARG_TEXT, "<name>",
+     "Copy a project scene into the open one as a prefab instance",
+     cmd_run_scene_instantiate, CMD_COUNT, 0u},
+    {"scene.primary", CMD_ARG_TEXT, "<slot|name>",
+     "Make an added scene the primary scene", cmd_run_scene_primary, CMD_COUNT,
+     0u},
+    {"create", CMD_ARG_OBJECT, "<object>",
+     "Create an object in front of the camera", cmd_run_create, CMD_COUNT, 0u},
+    {"delete", CMD_ARG_TEXT, "[name]", "Delete the selection or a named object",
+     cmd_run_delete, CMD_COUNT, 0u},
+    {"component.add", CMD_ARG_COMPONENT, "<type>",
+     "Add a component to the selection", cmd_run_component, CMD_COUNT, 0u},
+    {"component.remove", CMD_ARG_COMPONENT, "<type>",
+     "Remove a component from the selection", cmd_run_component, CMD_COUNT, 0u},
+    {"parent", CMD_ARG_TEXT, "<name|none>",
+     "Move the selection under an object, keeping its place", cmd_run_parent,
+     CMD_COUNT, 0u},
+    {"tab.new", CMD_ARG_NONE, "", "Open a new document showing the World",
+     cmd_run_tab, CMD_COUNT, 0u},
+    {"tab.show", CMD_ARG_NUMBER, "<n>", "Switch to viewport document n",
+     cmd_run_tab, CMD_COUNT, 0u},
+    {"scene.open", CMD_ARG_TEXT, "<name>", "Open a project scene by name",
+     cmd_run_scene_open, CMD_COUNT, 0u},
+    {"scene.import", CMD_ARG_TEXT, "<path>",
+     "Open the Create window importing a scene JSON and inspect it",
+     cmd_run_scene_import, CMD_COUNT, 0u},
+    {"scene.create", CMD_ARG_TEXT, "<name>",
+     "Create an empty scene in the project and open it", cmd_run_scene_create,
+     CMD_COUNT, 0u},
+    {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Whether the open scene uses the World's objects where it has none",
+     cmd_run_scene_inherit, CMD_COUNT, 0u},
+    {"content.import", CMD_ARG_TEXT, "<path>",
+     "Import a file into the project's shared assets", cmd_run_content_import,
+     CMD_COUNT, 0u},
+    {"content.search", CMD_ARG_TEXT, "[text]",
+     "Search Content below the current folder by name, type, folder or tag",
+     cmd_run_content_search, CMD_COUNT, 0u},
+    {"content.command", CMD_ARG_TEXT, "<load|open|place|rename|delete> <item>",
+     "Run a Content context menu command on an item or folder",
+     cmd_run_content_folder, CMD_COUNT, 0u},
+    {"content.open", CMD_ARG_TEXT, "[folder]",
+     "Show a Content folder, such as Props/Bistro; empty shows the root",
+     cmd_run_content_folder, CMD_COUNT, 0u},
+    {"content.mkdir", CMD_ARG_TEXT, "<folder>",
+     "Create a Content folder and its parents", cmd_run_content_folder,
+     CMD_COUNT, 0u},
+    {"content.move", CMD_ARG_TEXT, "<item|folder> <folder>",
+     "Move an item or folder into a Content folder", cmd_run_content_folder,
+     CMD_COUNT, 0u},
+    {"preset.save", CMD_ARG_TEXT, "<component>",
+     "Save the selection's component, such as post_process, as a preset",
+     cmd_run_preset, CMD_COUNT, 0u},
+    {"preset.apply", CMD_ARG_TEXT, "<name>",
+     "Apply a preset to the selection's component of its type", cmd_run_preset,
+     CMD_COUNT, 0u},
+    {"content.drop", CMD_ARG_TEXT, "<path>",
+     "Drop a file on the current Content folder, opening the import window",
+     cmd_run_content_folder, CMD_COUNT, 0u},
+    {"content.place", CMD_ARG_TEXT, "<item>",
+     "Drop a Content item on the viewport centre: a mesh is placed there",
+     cmd_run_content_folder, CMD_COUNT, 0u},
+    {"content.view", CMD_ARG_TEXT, "<list|tiles>",
+     "Show Content as a list with columns or as tiles", cmd_run_content_folder,
+     CMD_COUNT, 0u},
     {"help", CMD_ARG_COMMAND, "[command]", "List commands or describe one",
      cmd_run_help, CMD_COUNT, 0u},
     {"echo", CMD_ARG_TEXT, "<text>", "Print text to the Console", cmd_run_echo,

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-09-27
 authority: adr
 ---
 
@@ -94,14 +94,32 @@ local rotation applied to `direction_local` points away from the sun. Its
 colour, tinted by an optional `temperature_kelvin` in `[1000, 40000]` through
 the blackbody helper below, times its intensity becomes the top-of-atmosphere
 irradiance. A diameter in `(0, 5]` degrees replaces the visible disc; zero, a
-hard-shadow light, keeps the authored disc. Without a flagged light the
-authored `sun_direction` and irradiance apply. The scene resolves its sun light
-once per frame, memoizing the temperature tint. While the atmosphere is
+hard-shadow light, keeps the authored disc.
+
+The renderer lights with that one directional light. Details marks any other
+enabled directional light "Inactive: <name> is the sun" (the scene records
+the resolved light and its container). Where setting its `atmosphere_sun`
+flag is enough to win, because the current sun is the World's fallback or
+there is none, Use as sun sets it as one undoable edit. Temperature edits
+as a slider over `[1000, 40000]` K whose zero reads Off; dragging below the
+range turns it off.
+
+Only a directional light is a sun, as in UE5. Without an enabled, visible
+flagged light the sky has no sun: zero irradiance, no disc and no direct
+sunlight. A scene with no sun light of its own uses the World's while it
+inherits the World ([ADR-076](076-project-object-model.md)). The Sky
+atmosphere component has no sun fields. A document's retired `sun_direction`
+or `solar_irradiance` values are skipped on load. The scene resolves its sun
+light once per frame, memoizing the temperature tint. While the atmosphere is
 enabled, lighting sync ignores every entity directional light and the frame's
 sun lights it. Before the first publication the scene has no sun.
 
-Authors may give the top-of-atmosphere sun as `solar_irradiance` or through
-`sun_temperature_kelvin` in `[1000, 40000]` and a scene-linear
+Legacy runtime scene files may still author the sun in the `atmosphere`
+block. When such a document has no enabled sun light, the loader creates an
+equivalent "Directional Light" entity, so its lighting is unchanged and the
+sun can be edited, disabled or hidden. The offline baker applies the same
+rule. The block gives the top-of-atmosphere sun as `solar_irradiance` or
+through `sun_temperature_kelvin` in `[1000, 40000]` and a scene-linear
 `sun_illuminance`. The loader and offline baker resolve those through one
 helper: Planck's law integrated against the Wyman-Sloan-Shirley fit of the CIE
 1931 colour matching functions, converted to linear Rec.709, gamut-clamped and

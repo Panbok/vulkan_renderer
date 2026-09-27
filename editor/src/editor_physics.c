@@ -208,16 +208,17 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
         for (uint32_t j = 0; j < body.collider_count; ++j) {
           const VkrSceneColliderConfig *c = &body.colliders[j];
           const bool8_t enabled =
-              body.enabled && c->enabled &&
+              body.body.enabled && c->enabled &&
               !vkr_scene_physics_is_disabled(frame->scene) &&
               !vkr_scene_physics_body_is_disabled(frame->scene, owner);
-          const Vec4 color =
-              !enabled                            ? (Vec4){0.5f, 0.5f, 0.5f, 1}
-              : body.sensor                       ? (Vec4){1, 0.55f, 0.95f, 1}
-              : body.motion == VKR_PHYSICS_STATIC ? (Vec4){0.3f, 0.9f, 0.45f, 1}
-              : body.motion == VKR_PHYSICS_KINEMATIC ? (Vec4){0.4f, 0.7f, 1, 1}
-              : pose.active                          ? (Vec4){1, 0.7f, 0.15f, 1}
-                            : (Vec4){0.5f, 0.7f, 0.7f, 1};
+          const Vec4 color = !enabled           ? (Vec4){0.5f, 0.5f, 0.5f, 1}
+                             : body.body.sensor ? (Vec4){1, 0.55f, 0.95f, 1}
+                             : body.body.motion == VKR_PHYSICS_STATIC
+                                 ? (Vec4){0.3f, 0.9f, 0.45f, 1}
+                             : body.body.motion == VKR_PHYSICS_KINEMATIC
+                                 ? (Vec4){0.4f, 0.7f, 1, 1}
+                             : pose.active ? (Vec4){1, 0.7f, 0.15f, 1}
+                                           : (Vec4){0.5f, 0.7f, 0.7f, 1};
           physics_shape(editor, frame,
                         vkr_scene_physics_collider_entity(frame->scene, owner,
                                                           c->authored_id),

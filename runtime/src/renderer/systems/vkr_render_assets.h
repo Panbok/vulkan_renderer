@@ -48,6 +48,13 @@ typedef struct VkrRenderAssets {
   VkrArenaPool mtsdf_font_arena_pool;
   VkrMetricEventProducer ibl_convolution_metrics;
   bool8_t texture_pressure_active;
+  /* Container world ids requested for scene paths (ADR-076); the scene loader
+     creates a requested path's scene with that id and picking range. Main
+     thread only. */
+  struct {
+    char path[1024];
+    uint16_t world_id;
+  } scene_container_requests[8];
 } VkrRenderAssets;
 
 /* On failure, partial ownership remains in assets for shutdown after the caller

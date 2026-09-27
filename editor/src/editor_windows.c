@@ -114,8 +114,8 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
                   EDITOR_SHORTCUT("\xe2\x87\xa7\xe2\x8c\x98Z", "Ctrl+Shift+Z"),
                   false_v},
     [CMD_FRAME] = {"Frame selected", VKR_UI_ICON_FRAME, NULL, false_v},
-    [CMD_HIERARCHY] = {"Hierarchy", VKR_UI_ICON_HIERARCHY, NULL, false_v},
-    [CMD_INSPECTOR] = {"Inspector", VKR_UI_ICON_INSPECTOR, NULL, false_v},
+    [CMD_HIERARCHY] = {"Outliner", VKR_UI_ICON_HIERARCHY, NULL, false_v},
+    [CMD_INSPECTOR] = {"Details", VKR_UI_ICON_INSPECTOR, NULL, false_v},
     [CMD_CONSOLE] = {"Console", VKR_UI_ICON_CONSOLE, NULL, false_v},
     [CMD_BAKERY] = {"Bakery", VKR_UI_ICON_BAKERY, NULL, false_v},
     [CMD_CONTENT] = {"Content browser", VKR_UI_ICON_CONTENT,
@@ -139,7 +139,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_RENDER_TOGGLE] = {"Live scene rendering", VKR_UI_ICON_MONITOR_PLAY,
                            NULL, true_v},
     [CMD_CAMERA] = {"Free camera", VKR_UI_ICON_CAMERA, "F3", false_v},
-    [CMD_GRAPHICS] = {"Graphics settings", VKR_UI_ICON_GRAPHICS, NULL, false_v},
+    [CMD_GRAPHICS] = {"Preferences", VKR_UI_ICON_SETTINGS, NULL, false_v},
     [CMD_DRAWS] = {"Draws and render graph", VKR_UI_ICON_DRAWS, NULL, false_v},
     [CMD_MEMORY] = {"Memory", VKR_UI_ICON_MEMORY, NULL, false_v},
     [CMD_LABELS] = {"Light icons", VKR_UI_ICON_LIGHT, NULL, false_v},
@@ -170,6 +170,34 @@ static bool8_t editor_panel_visible(const VkrSampleUiFrame *frame,
   return vkr_ui_dock_find_panel(frame->dock, kind, NULL, NULL);
 }
 
+static bool8_t editor_any_additive(const VkrSampleUiFrame *frame) {
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (frame->additive[i])
+      return true_v;
+  }
+  return false_v;
+}
+
+/* Undo and redo cover every container's journal (ADR-076). */
+static bool8_t editor_can_undo(const VkrSampleUiFrame *frame, bool8_t redo) {
+  const VkrSceneEditState *journals[VKR_SCENE_ADDITIVE_MAX + 2u];
+  uint32_t count = 0u;
+  if (frame->scene)
+    journals[count++] = frame->edits;
+  if (frame->world)
+    journals[count++] = frame->world_edits;
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (frame->additive[i])
+      journals[count++] = frame->additive_edits[i];
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (redo ? journals[i]->undo_cursor < journals[i]->undo_count
+             : journals[i]->undo_cursor > 0)
+      return true_v;
+  }
+  return false_v;
+}
+
 bool8_t vkr_editor_command_enabled(EditorCommand command,
                                    const VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame) {
@@ -178,16 +206,20 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
     return frame->scene == NULL && !frame->scene_loading;
   case CMD_RELOAD:
   case CMD_UNLOAD:
-  case CMD_SAVE:
   case CMD_SIM_RESET:
     return frame->scene != NULL;
+  /* Save, undo and redo cover the scene and the root World (ADR-076). */
+  case CMD_SAVE:
+    return frame->scene != NULL || frame->world != NULL ||
+           editor_any_additive(frame);
   case CMD_UNDO:
-    return frame->scene && frame->edits->undo_cursor > 0;
   case CMD_REDO:
-    return frame->scene && frame->edits->undo_cursor < frame->edits->undo_count;
-  case CMD_FRAME:
-    return frame->scene &&
-           vkr_scene_entity_alive(frame->scene, frame->selected_entity);
+    return editor_can_undo(frame, command == CMD_REDO);
+  case CMD_FRAME: {
+    const VkrScene *scene =
+        vkr_editor_entity_scene(frame, frame->selected_entity);
+    return scene && vkr_scene_entity_alive(scene, frame->selected_entity);
+  }
   case CMD_SIM_START:
     return !frame->simulation_running;
   case CMD_SIM_PAUSE:
@@ -1011,8 +1043,9 @@ static void editor_scene_stats_build(const VkrSampleUiFrame *frame) {
                            frame->simulation_running;
   /* The runtime formats performance as newline-separated lines. */
   String8 summary = frame->scene_rendering_stopped ? string8_lit("Frozen")
-                    : !frame->scene ? string8_lit("No scene loaded")
-                                    : frame->text.performance;
+                    : !frame->scene && !frame->world
+                        ? string8_lit("No scene loaded")
+                        : frame->text.performance;
   uint8_t *line =
       vkr_allocator_alloc(ui->frame_allocator, summary.length * 3u + 1u,
                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -1176,8 +1209,12 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Animation editor");
     title_icon = VKR_UI_ICON_ANIMATION;
     break;
+  case VKR_EDITOR_WINDOW_CREATE:
+    title_text = string8_lit("Create or import");
+    title_icon = VKR_UI_ICON_ADD;
+    break;
   case VKR_EDITOR_WINDOW_GRAPHICS:
-    title_text = string8_lit("Graphics settings");
+    title_text = string8_lit("Preferences");
     title_icon = VKR_UI_ICON_GRAPHICS;
     break;
   case VKR_EDITOR_WINDOW_DRAWS:
@@ -1321,7 +1358,11 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     drag.icon_color = theme->accent_hover;
     drag.cursor =
         window->dragging ? VKR_WINDOW_CURSOR_GRABBING : VKR_WINDOW_CURSOR_GRAB;
-    (void)vkr_ui_button(ui, string8_lit("drag"), title_text, &drag);
+    /* The handle draws nothing itself; the title label below carries the
+     * text and icon so they appear once. */
+    VkrUiWidgetConfig handle = drag;
+    handle.icon = VKR_UI_ICON_NONE;
+    (void)vkr_ui_button(ui, string8_lit("drag"), (String8){0}, &handle);
     /* Left-aligned title over the full-width drag handle. */
     VkrUiWidgetConfig title = drag;
     title.placement.justify = VKR_UI_ALIGN_START;
@@ -1351,10 +1392,45 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     (void)vkr_ui_panel_end(ui);
   }
 
-  if (kind == VKR_EDITOR_WINDOW_GRAPHICS)
-    vkr_editor_graphics_build(editor, frame);
-  else if (kind == VKR_EDITOR_WINDOW_ANIMATION) {
+  if (kind == VKR_EDITOR_WINDOW_GRAPHICS) {
+    VkrUiPanelConfig body = vkr_ui_panel_config_default();
+    body.placement.column = 0;
+    body.placement.row = 1;
+    body.style.padding_pt = (VkrUiEdges){0};
+    body.style.background_color = theme->panel;
+    body.style.corner_radius_pt =
+        (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
+    body.clip_children = true_v;
+    if (vkr_ui_panel_begin(ui, string8_lit("preferences.body"), &body)) {
+      const VkrUiRect bounds = {
+          window->position_pt.x * ui->content_scale,
+          (window->position_pt.y + 30.0f) * ui->content_scale,
+          window->size_pt.x * ui->content_scale,
+          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+      vkr_editor_graphics_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_ANIMATION) {
     vkr_editor_animation_build(editor, frame);
+  } else if (kind == VKR_EDITOR_WINDOW_CREATE) {
+    VkrUiPanelConfig body = vkr_ui_panel_config_default();
+    body.placement.column = 0;
+    body.placement.row = 1;
+    body.style.padding_pt = (VkrUiEdges){0};
+    body.style.background_color = theme->panel;
+    body.style.corner_radius_pt =
+        (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
+    body.clip_children = true_v;
+    if (vkr_ui_panel_begin(ui, string8_lit("create.body"), &body)) {
+      const VkrUiRect bounds = {
+          window->position_pt.x * ui->content_scale,
+          (window->position_pt.y + 30.0f) * ui->content_scale,
+          window->size_pt.x * ui->content_scale,
+          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+      vkr_editor_projects_build_create_window(editor->projects, editor, frame,
+                                              bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
   } else if (kind == VKR_EDITOR_WINDOW_PHYSICS) {
     VkrUiPanelConfig body = vkr_ui_panel_config_default();
     body.placement.column = 0;
@@ -1468,6 +1544,16 @@ typedef enum EditorContextAction {
   CONTEXT_TAB_LAYOUT,
   CONTEXT_CONSOLE_COPY,
   CONTEXT_CONSOLE_CLEAR,
+  CONTEXT_DETACH,
+  CONTEXT_DELETE,
+  CONTEXT_CREATE,
+  CONTEXT_IMPORT_MODEL,
+  CONTEXT_ADD_COMPONENT,
+  CONTEXT_ADD_PHYSICS,
+  CONTEXT_PRESET_SAVE,
+  CONTEXT_PRESET_APPLY,
+  /* A Content item's command; `value` is its VkrEditorContentCommand. */
+  CONTEXT_CONTENT_COMMAND,
 } EditorContextAction;
 
 typedef struct EditorContextItem {
@@ -1476,24 +1562,100 @@ typedef struct EditorContextItem {
   const char *shortcut;
   bool8_t disabled;
   EditorContextAction action;
+  /* Object kind or world type index for creation and component items. */
+  uint32_t value;
 } EditorContextItem;
 
-#define EDITOR_CONTEXT_ITEM_CAPACITY 3u
+#define EDITOR_CONTEXT_ITEM_CAPACITY 16u
 #define EDITOR_CONTEXT_WIDTH_PT 210.0f
 
+/* Object creation: every kind, then the project's model import flow. */
+static uint32_t editor_context_create_items(VkrEditorUi *editor,
+                                            const VkrSampleUiFrame *frame,
+                                            EditorContextItem *items) {
+  uint32_t count = 0u;
+  for (uint32_t kind = 0; kind < vkr_editor_object_kind_count() &&
+                          count + 1u < EDITOR_CONTEXT_ITEM_CAPACITY;
+       ++kind) {
+    items[count++] = (EditorContextItem){vkr_editor_object_kind_label(kind),
+                                         vkr_editor_object_kind_icon(kind),
+                                         NULL,
+                                         false_v,
+                                         CONTEXT_CREATE,
+                                         kind};
+  }
+  /* The project flow imports a model into the managed scene document. */
+  if (vkr_editor_projects_can_add_entity(editor->projects, editor, frame)) {
+    items[count++] = (EditorContextItem){"Model or light from project...",
+                                         VKR_UI_ICON_IMPORT, NULL, false_v,
+                                         CONTEXT_IMPORT_MODEL};
+  }
+  return count;
+}
+
+/* Live world component types the context entity's container may hold and the
+   entity does not carry yet, and a physics body when it has none. */
+static uint32_t editor_context_component_items(const VkrEditorUi *editor,
+                                               const VkrScene *scene,
+                                               EditorContextItem *items) {
+  uint32_t count = 0u;
+  VkrSceneEditValues values;
+  if (vkr_scene_edit_read(scene, editor->context_entity, &values) &&
+      !values.physics.present) {
+    items[count++] = (EditorContextItem){"Physics body", VKR_UI_ICON_PHYSICS,
+                                         NULL, false_v, CONTEXT_ADD_PHYSICS};
+  }
+  const VkrTypeDesc *type = NULL;
+  for (uint32_t i = 0;
+       (type = vkr_scene_world_type(i)) && count < EDITOR_CONTEXT_ITEM_CAPACITY;
+       ++i) {
+    if (vkr_scene_world_type_live(type) &&
+        vkr_scene_type_allowed(scene, type) &&
+        !vkr_scene_get_typed(scene, editor->context_entity, type)) {
+      items[count++] =
+          (EditorContextItem){type->label, VKR_UI_ICON_PUZZLE,    NULL,
+                              false_v,     CONTEXT_ADD_COMPONENT, i};
+    }
+  }
+  return count;
+}
+
+/* Save the context component as a preset, then apply any preset of its
+   type. */
+static uint32_t editor_context_preset_items(const VkrEditorUi *editor,
+                                            EditorContextItem *items) {
+  uint32_t count = 0u;
+  items[count++] = (EditorContextItem){"Save as preset", VKR_UI_ICON_SAVE, NULL,
+                                       !editor->content, CONTEXT_PRESET_SAVE};
+  const uint32_t total = vkr_editor_content_preset_count(editor->content);
+  for (uint32_t i = 0; i < total && count < EDITOR_CONTEXT_ITEM_CAPACITY; ++i) {
+    const VkrEditorPreset *preset =
+        vkr_editor_content_preset(editor->content, i);
+    if (preset->type == editor->context_type) {
+      items[count++] =
+          (EditorContextItem){preset->name, VKR_UI_ICON_SPARKLE,  NULL,
+                              false_v,      CONTEXT_PRESET_APPLY, i};
+    }
+  }
+  return count;
+}
+
 /* Items for the open menu's kind; zero when its target no longer exists. */
-static uint32_t editor_context_items(const VkrEditorUi *editor,
+static uint32_t editor_context_items(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      EditorContextItem *items, char *label,
                                      uint32_t label_capacity) {
   switch (editor->context_kind) {
   case VKR_EDITOR_CONTEXT_ENTITY: {
-    if (!frame || !frame->scene ||
-        !vkr_scene_entity_alive(frame->scene, editor->context_entity))
+    /* The entity's own container: primary, added or the World. */
+    const VkrScene *scene =
+        vkr_editor_entity_scene(frame, editor->context_entity);
+    if (!scene || !vkr_scene_entity_alive(scene, editor->context_entity))
       return 0u;
-    const SceneVisibility *visibility =
-        vkr_entity_get_component(frame->scene->world, editor->context_entity,
-                                 frame->scene->comp_visibility);
+    const SceneVisibility *visibility = vkr_entity_get_component(
+        scene->world, editor->context_entity, scene->comp_visibility);
+    const SceneTransform *transform = vkr_entity_get_component(
+        scene->world, editor->context_entity, scene->comp_transform);
     const bool8_t hidden = visibility && !visibility->visible;
     items[0] = (EditorContextItem){"Frame", VKR_UI_ICON_FRAME, "F", false_v,
                                    CONTEXT_FRAME};
@@ -1503,7 +1665,31 @@ static uint32_t editor_context_items(const VkrEditorUi *editor,
                             NULL, !visibility, CONTEXT_VISIBILITY};
     items[2] = (EditorContextItem){"Copy name", VKR_UI_ICON_COPY, NULL, false_v,
                                    CONTEXT_COPY_NAME};
-    return 3u;
+    items[3] = (EditorContextItem){"Detach from parent", VKR_UI_ICON_TREE, NULL,
+                                   !transform || !transform->parent.u64,
+                                   CONTEXT_DETACH};
+    items[4] = (EditorContextItem){
+        "Delete", VKR_UI_ICON_TRASH, EDITOR_SHORTCUT("\xe2\x8c\xab", "Del"),
+        !vkr_scene_edit_can_delete(scene, editor->context_entity, NULL),
+        CONTEXT_DELETE};
+    return 5u;
+  }
+  case VKR_EDITOR_CONTEXT_CREATE:
+    return editor_context_create_items(editor, frame, items);
+  case VKR_EDITOR_CONTEXT_ADD_COMPONENT: {
+    const VkrScene *scene =
+        vkr_editor_entity_scene(frame, editor->context_entity);
+    if (!scene || !vkr_scene_entity_alive(scene, editor->context_entity))
+      return 0u;
+    return editor_context_component_items(editor, scene, items);
+  }
+  case VKR_EDITOR_CONTEXT_PRESET: {
+    uint8_t value[VKR_TYPE_VALUE_MAX];
+    if (!editor->context_type ||
+        !vkr_editor_component_read(frame, editor->context_entity,
+                                   editor->context_type, value))
+      return 0u;
+    return editor_context_preset_items(editor, items);
   }
   case VKR_EDITOR_CONTEXT_DOCK_TAB: {
     const VkrUiDockPanelKind kind = (VkrUiDockPanelKind)editor->context_panel;
@@ -1517,6 +1703,30 @@ static uint32_t editor_context_items(const VkrEditorUi *editor,
     items[1] = (EditorContextItem){"Reset panel layout", VKR_UI_ICON_LAYOUT,
                                    NULL, false_v, CONTEXT_TAB_LAYOUT};
     return 2u;
+  }
+  case VKR_EDITOR_CONTEXT_CONTENT: {
+    static const VkrUiIcon icons[] = {VKR_UI_ICON_SCENE, VKR_UI_ICON_REVEAL,
+                                      VKR_UI_ICON_ADD, VKR_UI_ICON_RENAME,
+                                      VKR_UI_ICON_TRASH};
+    /* A command without a label, such as Load for a non-scene, is left
+       out. */
+    uint32_t count = 0u;
+    for (uint32_t i = 0; i < VKR_EDITOR_CONTENT_COMMAND_COUNT; ++i) {
+      const char *command = vkr_editor_content_menu_label(
+          editor->content, (VkrEditorContentCommand)i);
+      if (!command) {
+        continue;
+      }
+      items[count++] =
+          (EditorContextItem){command,
+                              icons[i],
+                              NULL,
+                              !vkr_editor_content_menu_available(
+                                  editor->content, (VkrEditorContentCommand)i),
+                              CONTEXT_CONTENT_COMMAND,
+                              i};
+    }
+    return count;
   }
   case VKR_EDITOR_CONTEXT_CONSOLE:
     items[0] = (EditorContextItem){"Copy selected", VKR_UI_ICON_COPY, NULL,
@@ -1532,10 +1742,7 @@ VkrUiRect vkr_editor_context_menu_rect(const VkrEditorUi *editor,
                                        const VkrUiSystem *ui) {
   if (!editor->context_open)
     return (VkrUiRect){0};
-  EditorContextItem items[EDITOR_CONTEXT_ITEM_CAPACITY];
-  char label[64];
-  const uint32_t count =
-      editor_context_items(editor, NULL, items, label, sizeof(label));
+  const uint32_t count = editor->context_count;
   const float32_t scale = ui->content_scale;
   const float32_t width = EDITOR_CONTEXT_WIDTH_PT;
   const float32_t height =
@@ -1551,8 +1758,8 @@ VkrUiRect vkr_editor_context_menu_rect(const VkrEditorUi *editor,
 
 static void editor_context_run(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame,
-                               EditorContextAction action) {
-  switch (action) {
+                               const EditorContextItem *item) {
+  switch (item->action) {
   case CONTEXT_FRAME:
     *frame->scene_edit = (VkrSceneEditRequest){
         .action = VKR_SCENE_EDIT_FRAME, .entity = editor->context_entity};
@@ -1561,10 +1768,56 @@ static void editor_context_run(VkrEditorUi *editor,
     vkr_editor_toggle_visibility(frame, editor->context_entity);
     break;
   case CONTEXT_COPY_NAME: {
-    const String8 name =
-        vkr_scene_get_name(frame->scene, editor->context_entity);
+    const VkrScene *scene =
+        vkr_editor_entity_scene(frame, editor->context_entity);
+    const String8 name = scene
+                             ? vkr_scene_get_name(scene, editor->context_entity)
+                             : (String8){0};
     if (name.length)
       (void)vkr_platform_clipboard_write_text(name.str, name.length);
+    break;
+  }
+  case CONTEXT_DETACH:
+    *frame->scene_edit = (VkrSceneEditRequest){
+        .action = VKR_SCENE_EDIT_REPARENT, .entity = editor->context_entity};
+    break;
+  case CONTEXT_DELETE:
+    *frame->scene_edit = (VkrSceneEditRequest){
+        .action = VKR_SCENE_EDIT_DELETE, .entity = editor->context_entity};
+    break;
+  case CONTEXT_CREATE:
+    vkr_editor_request_create(frame, item->value, editor->context_container,
+                              NULL);
+    break;
+  case CONTEXT_IMPORT_MODEL:
+    vkr_editor_projects_add_entity(editor->projects, editor, frame);
+    break;
+  case CONTEXT_ADD_COMPONENT: {
+    VkrSceneEditRequest request = {.action = VKR_SCENE_EDIT_ADD_COMPONENT,
+                                   .entity = editor->context_entity};
+    request.values.component_type = vkr_scene_world_type(item->value);
+    vkr_type_defaults(request.values.component_type, request.values.component);
+    *frame->scene_edit = request;
+    break;
+  }
+  case CONTEXT_ADD_PHYSICS:
+    (void)vkr_editor_request_physics_body(frame, editor->context_entity,
+                                          true_v);
+    break;
+  case CONTEXT_PRESET_SAVE: {
+    _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+    if (vkr_editor_component_read(frame, editor->context_entity,
+                                  editor->context_type, value))
+      (void)vkr_editor_content_save_preset(editor->content,
+                                           editor->context_type, value);
+    break;
+  }
+  case CONTEXT_PRESET_APPLY: {
+    const VkrEditorPreset *preset =
+        vkr_editor_content_preset(editor->content, item->value);
+    if (preset && preset->type == editor->context_type)
+      vkr_editor_request_component(frame, editor->context_entity, preset->type,
+                                   preset->value);
     break;
   }
   case CONTEXT_TAB_CLOSE:
@@ -1580,6 +1833,10 @@ static void editor_context_run(VkrEditorUi *editor,
   case CONTEXT_CONSOLE_CLEAR:
     vkr_editor_console_clear(&editor->console);
     break;
+  case CONTEXT_CONTENT_COMMAND:
+    vkr_editor_content_menu_command(editor->content,
+                                    (VkrEditorContentCommand)item->value);
+    break;
   }
 }
 
@@ -1592,6 +1849,7 @@ void vkr_editor_context_menu_build(VkrEditorUi *editor,
   char label[64];
   const uint32_t count =
       editor_context_items(editor, frame, items, label, sizeof(label));
+  editor->context_count = count;
   const VkrUiRect rect = vkr_editor_context_menu_rect(editor, ui);
   /* The press that opened a menu is a right click; any later press outside,
    * Escape, the Cmd bar or a menu-bar menu closes it. */
@@ -1691,7 +1949,7 @@ void vkr_editor_context_menu_build(VkrEditorUi *editor,
   if (chosen < 0)
     return;
   editor->context_open = false_v;
-  editor_context_run(editor, frame, items[chosen].action);
+  editor_context_run(editor, frame, &items[chosen]);
 }
 
 /* ---- Toast notifications ---- */
@@ -1727,7 +1985,10 @@ void vkr_editor_toasts_build(VkrEditorUi *editor,
     editor->toast_saved_known = true_v;
   }
   const bool8_t bakery_busy = vkr_editor_bakery_busy(editor->bakery);
-  if (editor->toast_bakery_busy && !bakery_busy)
+  /* A job's own warning outranks the generic completion notice. */
+  const bool8_t warning_shown = editor->toast_seconds > 0.0 &&
+                                editor->toast_icon == VKR_UI_ICON_LOG_WARNING;
+  if (editor->toast_bakery_busy && !bakery_busy && !warning_shown)
     vkr_editor_toast(editor, VKR_UI_ICON_BAKERY, theme->accent_hover,
                      "Bakery finished; see Jobs for results");
   editor->toast_bakery_busy = bakery_busy;

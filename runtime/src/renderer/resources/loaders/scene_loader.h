@@ -87,3 +87,11 @@ bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
                                            uint32_t scene_entity_index,
                                            VkrEntityId *out_nodes,
                                            VkrSceneError *out_error);
+
+/**
+ * @brief Create the next asynchronous load of `path` as an additive
+ * container: its scene gets `world_id` in entity ids and that container's
+ * picking range (ADR-076). Zero clears the request. Main thread only.
+ */
+bool8_t vkr_scene_loader_request_container(struct VkrRenderAssets *assets,
+                                           String8 path, uint16_t world_id);

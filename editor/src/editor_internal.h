@@ -87,6 +87,20 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
 void vkr_editor_viewport_build(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame);
 void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
+/* Add a document showing the World and switch to it; switch documents. */
+bool8_t vkr_editor_viewport_tab_new(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame);
+bool8_t vkr_editor_viewport_tab_show(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     uint32_t tab);
+/* Where a pixel of the viewport meets the ground plane, else a point 8 m
+   along its ray; false without a valid view. */
+bool8_t vkr_editor_viewport_drop_point(const VkrSampleUiFrame *frame,
+                                       Vec2 pixel, Vec3 *out);
+/* Viewport document tabs drawn in `strip`, the Scene tab bar's free space. */
+void vkr_editor_viewport_tabs_build(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    VkrUiRect strip);
 /* Clickable world-axis indicator in the Scene's lower-left corner. */
 void vkr_editor_orientation_gizmo_build(VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame);
@@ -101,6 +115,14 @@ void vkr_editor_windows_build_floating(VkrEditorUi *editor, VkrUiSystem *ui,
                                        const VkrSampleUiFrame *frame);
 void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
                                    const VkrSampleUiFrame *frame);
+
+/* Containers (ADR-076): the scene and journal that own `entity`, the root
+ * World for its id and the active scene otherwise; a frame view with them
+ * substituted lets single-scene panels edit either container. */
+const VkrScene *vkr_editor_entity_scene(const VkrSampleUiFrame *frame,
+                                        VkrEntityId entity);
+VkrSampleUiFrame vkr_editor_entity_frame(const VkrSampleUiFrame *frame,
+                                         VkrEntityId entity);
 
 /* Show a short notification; replaces any visible one. */
 void vkr_editor_toast(VkrEditorUi *editor, VkrUiIcon icon, Vec4 color,

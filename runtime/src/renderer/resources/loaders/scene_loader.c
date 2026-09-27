@@ -1,4 +1,5 @@
 #include "filesystem/vkr_asset_path.h"
+#include "renderer/systems/vkr_scene_types.h"
 /**
  * @file scene_loader.c
  * @brief Scene JSON loader implementation.
@@ -90,6 +91,9 @@ typedef struct SceneEnvironmentImport {
 typedef struct SceneAtmosphereImport {
   bool8_t has_block;
   bool8_t valid;
+  /** The block authors a sun: a legacy document without a sun light gets
+      one generated from it (ADR-058). */
+  bool8_t authored_sun;
   VkrAtmosphereSettings settings;
   /** The optional `clouds` block publishes with the atmosphere revision. */
   VkrCloudSettings clouds;
@@ -170,6 +174,12 @@ typedef struct SceneEntityImport {
   SceneRectangleLightImport rectangle_light;
   bool8_t has_directional_light;
   SceneDirectionalLightImport directional_light;
+  /** Borrowed `components` object: world components by type name. */
+  String8 components_json;
+  /** Document-stable id (ADR-076); a document gives every entity one or
+      none. */
+  VkrSceneDocumentId document_id;
+  bool8_t has_document_id;
 } SceneEntityImport;
 
 typedef struct SceneGltfLightRangeOverride {
@@ -192,6 +202,9 @@ typedef enum SceneAsyncFinalizeStage {
   SCENE_ASYNC_STAGE_SET_COMPONENTS,
   SCENE_ASYNC_STAGE_ATTACH_MESHES,
   SCENE_ASYNC_STAGE_WAIT_DEPENDENCIES,
+  /* World blocks become component entities after the document's entities,
+     keeping their directory order and source identities stable. */
+  SCENE_ASYNC_STAGE_WORLD_ENTITIES,
   SCENE_ASYNC_STAGE_COMPLETE
 } SceneAsyncFinalizeStage;
 
@@ -237,7 +250,6 @@ typedef struct VkrSceneLoaderAsyncPayload {
   SceneFroxelFogImport froxel_fog_import;
   bool8_t environment_applied;
   bool8_t atmosphere_applied;
-  bool8_t fog_applied;
   SceneDiffuseVolumeImport diffuse_volume_import;
   VkrTexturePreparedLoad diffuse_volume_prepared;
   VkrDiffuseVolumeBinding diffuse_volume_binding;
@@ -341,8 +353,9 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
     VkrSceneLoaderAsyncPayload *payload);
 vkr_internal void
 scene_loader_destroy_async_payload(VkrSceneLoaderAsyncPayload *payload);
-vkr_internal bool8_t scene_loader_ensure_scene_handle(
-    VkrSceneLoaderAsyncPayload *payload, VkrRendererError *out_error);
+vkr_internal bool8_t
+scene_loader_ensure_scene_handle(VkrSceneLoaderAsyncPayload *payload,
+                                 String8 name, VkrRendererError *out_error);
 vkr_internal bool8_t scene_loader_apply_component_for_entity(
     VkrSceneLoaderAsyncPayload *payload, uint32_t entity_index,
     VkrRendererError *out_error);
@@ -489,6 +502,62 @@ vkr_internal bool8_t scene_json_capture_composite(VkrJsonReader *reader,
     }
   }
   return false_v;
+}
+
+/* Position `reader` at the value of a member of the root object. Unlike
+   vkr_json_find_field this never matches a nested key, so world blocks are
+   not confused with the same names inside entity components. */
+vkr_internal bool8_t scene_json_find_root_field(VkrJsonReader *reader,
+                                                const char *name) {
+  VkrJsonReader cursor = *reader;
+  cursor.pos = 0u;
+  vkr_json_skip_whitespace(&cursor);
+  if (cursor.pos >= cursor.length || cursor.data[cursor.pos++] != '{') {
+    return false_v;
+  }
+  const uint64_t name_length = strlen(name);
+  for (;;) {
+    String8 key = {0};
+    if (!vkr_json_parse_string(&cursor, &key)) {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&cursor);
+    if (cursor.pos >= cursor.length || cursor.data[cursor.pos++] != ':') {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&cursor);
+    if (key.length == name_length &&
+        MemCompare(key.str, name, name_length) == 0) {
+      *reader = cursor;
+      return true_v;
+    }
+    if (cursor.pos >= cursor.length) {
+      return false_v;
+    }
+    const uint8_t c = cursor.data[cursor.pos];
+    String8 skipped = {0};
+    if (c == '{' || c == '[') {
+      if (!scene_json_capture_composite(&cursor, &skipped)) {
+        return false_v;
+      }
+    } else if (c == '"') {
+      if (!vkr_json_parse_string(&cursor, &skipped)) {
+        return false_v;
+      }
+    } else {
+      while (cursor.pos < cursor.length && cursor.data[cursor.pos] != ',' &&
+             cursor.data[cursor.pos] != '}') {
+        ++cursor.pos;
+      }
+    }
+    vkr_json_skip_whitespace(&cursor);
+    if (cursor.pos >= cursor.length || cursor.data[cursor.pos] == '}') {
+      return false_v;
+    }
+    if (cursor.data[cursor.pos++] != ',') {
+      return false_v;
+    }
+  }
 }
 
 vkr_internal bool8_t scene_json_parse_quat(VkrJsonReader *reader,
@@ -714,7 +783,7 @@ scene_loader_parse_environment_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader environment_reader = root;
-  if (!vkr_json_find_field(&environment_reader, "environment")) {
+  if (!scene_json_find_root_field(&environment_reader, "environment")) {
     return result;
   }
 
@@ -779,6 +848,33 @@ scene_loader_parse_environment_import(String8 json) {
   return result;
 }
 
+/* Whether an entity authors an enabled atmosphere in its components map. */
+vkr_internal bool8_t
+scene_loader_component_atmosphere(const VkrSceneLoaderAsyncPayload *payload) {
+  for (uint32_t i = 0; i < payload->entity_count; ++i) {
+    const String8 components = payload->imports[i].components_json;
+    if (!components.length) {
+      continue;
+    }
+    VkrJsonReader reader = vkr_json_reader_from_string(components);
+    VkrJsonReader atmosphere = {0};
+    if (!scene_json_find_root_field(&reader, "atmosphere") ||
+        !vkr_json_enter_object(&reader, &atmosphere)) {
+      continue;
+    }
+    bool8_t enabled = vkr_atmosphere_settings_defaults().enabled;
+    VkrJsonReader field = atmosphere;
+    if (vkr_json_find_field(&field, "enabled") &&
+        !vkr_json_parse_bool(&field, &enabled)) {
+      continue;
+    }
+    if (enabled) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 /* An enabled atmosphere supplies the global source, and every sky-light
    control applies to it. Otherwise only an authored constant can. */
 vkr_internal void
@@ -829,7 +925,7 @@ vkr_internal SceneAtmosphereImport scene_atmosphere_import_defaults(void) {
 vkr_internal bool8_t scene_loader_parse_cloud_import(String8 json,
                                                      VkrCloudSettings *out) {
   VkrJsonReader clouds_reader = vkr_json_reader_from_string(json);
-  if (!vkr_json_find_field(&clouds_reader, "clouds") ||
+  if (!scene_json_find_root_field(&clouds_reader, "clouds") ||
       scene_json_parse_null(&clouds_reader))
     return true_v;
 
@@ -885,7 +981,7 @@ scene_loader_parse_atmosphere_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader atmosphere_reader = root;
-  if (!vkr_json_find_field(&atmosphere_reader, "atmosphere"))
+  if (!scene_json_find_root_field(&atmosphere_reader, "atmosphere"))
     return result;
   result.has_block = true_v;
   if (scene_json_parse_null(&atmosphere_reader))
@@ -901,7 +997,9 @@ scene_loader_parse_atmosphere_import(String8 json) {
       !vkr_json_parse_bool(&field, &result.settings.enabled))
     goto invalid;
   field = atmosphere_object;
-  if (vkr_json_find_field(&field, "sun_direction") &&
+  const bool8_t has_sun_direction =
+      vkr_json_find_field(&field, "sun_direction");
+  if (has_sun_direction &&
       !scene_json_parse_vec3(&field, &result.settings.sun_direction))
     goto invalid;
   field = atmosphere_object;
@@ -976,6 +1074,8 @@ scene_loader_parse_atmosphere_import(String8 json) {
     result.valid = false_v;
     return result;
   }
+  result.authored_sun = has_sun_direction || has_solar_irradiance ||
+                        sun.has_temperature || sun.has_illuminance;
 
   VkrAtmosphereSettings validation = result.settings;
   validation.enabled = true_v;
@@ -1012,7 +1112,7 @@ vkr_internal SceneFogImport scene_loader_parse_fog_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader fog_reader = root;
-  if (!vkr_json_find_field(&fog_reader, "fog"))
+  if (!scene_json_find_root_field(&fog_reader, "fog"))
     return result;
 
   result.has_block = true_v;
@@ -1086,7 +1186,7 @@ scene_loader_parse_froxel_fog_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader fog_reader = root;
-  if (!vkr_json_find_field(&fog_reader, "volumetric_fog"))
+  if (!scene_json_find_root_field(&fog_reader, "volumetric_fog"))
     return result;
 
   if (scene_json_parse_null(&fog_reader))
@@ -1187,7 +1287,7 @@ scene_loader_parse_diffuse_volume_import(String8 json) {
   SceneDiffuseVolumeImport result = scene_diffuse_volume_import_defaults();
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader volume_reader = root;
-  if (!vkr_json_find_field(&volume_reader, "diffuse_volume"))
+  if (!scene_json_find_root_field(&volume_reader, "diffuse_volume"))
     return result;
 
   result.has_block = true_v;
@@ -1219,7 +1319,7 @@ scene_loader_parse_subsurface_import(String8 json) {
   SceneSubsurfaceImport result = scene_subsurface_import_defaults();
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader subsurface_reader = root;
-  if (!vkr_json_find_field(&subsurface_reader, "subsurface"))
+  if (!scene_json_find_root_field(&subsurface_reader, "subsurface"))
     return result;
 
   result.has_block = true_v;
@@ -1626,7 +1726,7 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader probes_reader = root;
-  if (!vkr_json_find_field(&probes_reader, "reflection_probes")) {
+  if (!scene_json_find_root_field(&probes_reader, "reflection_probes")) {
     return 0;
   }
 
@@ -2596,7 +2696,7 @@ scene_json_parse_point_light(const VkrJsonReader *entity_reader,
                              uint32_t entity_index,
                              SceneEntityImport *out_entity) {
   VkrJsonReader point_light_reader = *entity_reader;
-  if (!vkr_json_find_field(&point_light_reader, "point_light")) {
+  if (!scene_json_find_root_field(&point_light_reader, "point_light")) {
     return;
   }
 
@@ -2673,7 +2773,7 @@ vkr_internal bool8_t scene_json_parse_rectangle_light(
     const VkrJsonReader *entity_reader, uint32_t entity_index,
     SceneEntityImport *out_entity) {
   VkrJsonReader rectangle_reader = *entity_reader;
-  if (!vkr_json_find_field(&rectangle_reader, "rectangle_light"))
+  if (!scene_json_find_root_field(&rectangle_reader, "rectangle_light"))
     return true_v;
   if (scene_json_parse_null(&rectangle_reader))
     return true_v;
@@ -2723,7 +2823,7 @@ vkr_internal bool8_t scene_json_parse_directional_light(
     const VkrJsonReader *entity_reader, uint32_t entity_index,
     SceneEntityImport *out_entity) {
   VkrJsonReader dir_light_reader = *entity_reader;
-  if (!vkr_json_find_field(&dir_light_reader, "directional_light")) {
+  if (!scene_json_find_root_field(&dir_light_reader, "directional_light")) {
     return true_v;
   }
 
@@ -2805,6 +2905,134 @@ vkr_internal bool8_t scene_json_parse_directional_light(
   return true_v;
 }
 
+/* World component types whose runtime products the entity stage can derive
+   by resolution alone. Environment sources, probes, the diffuse volume and
+   subsurface profiles need load-time baked products and keep their top-level
+   blocks. */
+/* Walk `{"<type>": {...}, ...}`; `visit` receives each validated value. */
+typedef bool8_t (*SceneComponentVisit)(void *context, const VkrTypeDesc *type,
+                                       const void *value);
+
+/* Types a document's per-entity `components` map may carry (ADR-076): the
+   live world types, the three light types and visibility. Load-baked world
+   types keep their top-level blocks. */
+vkr_internal const VkrTypeDesc *scene_document_component(String8 name) {
+  const VkrTypeDesc *world = vkr_scene_world_type_named(name);
+  if (world) {
+    return vkr_scene_world_type_live(world) ? world : NULL;
+  }
+  const VkrTypeDesc *const others[] = {
+      &vkr_scene_point_light_type, &vkr_scene_directional_light_type,
+      &vkr_scene_rectangle_light_type, &vkr_scene_visibility_type};
+  for (uint32_t i = 0; i < ArrayCount(others); ++i) {
+    if (name.length == strlen(others[i]->name) &&
+        MemCompare(name.str, others[i]->name, name.length) == 0) {
+      return others[i];
+    }
+  }
+  return NULL;
+}
+
+vkr_internal bool8_t scene_json_each_component(String8 json,
+                                               uint32_t entity_index,
+                                               SceneComponentVisit visit,
+                                               void *context) {
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  const VkrTypeDesc *seen[VKR_SCENE_TYPE_MAX] = {0};
+  uint32_t seen_count = 0u;
+  vkr_json_skip_whitespace(&reader);
+  if (reader.pos >= reader.length || reader.data[reader.pos++] != '{') {
+    return false_v;
+  }
+  vkr_json_skip_whitespace(&reader);
+  if (reader.pos < reader.length && reader.data[reader.pos] == '}') {
+    return true_v;
+  }
+  for (;;) {
+    String8 key = {0};
+    if (!vkr_json_parse_string(&reader, &key)) {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&reader);
+    if (reader.pos >= reader.length || reader.data[reader.pos++] != ':') {
+      return false_v;
+    }
+    const VkrTypeDesc *type = scene_document_component(key);
+    if (!type) {
+      log_error("Scene loader: entity %u component '%.*s' is not supported "
+                "here; author sky light, probes, diffuse volume and "
+                "subsurface in their top-level blocks",
+                entity_index, (int)Min(key.length, 64u), key.str);
+      return false_v;
+    }
+    for (uint32_t i = 0; i < seen_count; ++i) {
+      if (seen[i] == type) {
+        log_error("Scene loader: entity %u repeats component '%s'",
+                  entity_index, type->name);
+        return false_v;
+      }
+    }
+    seen[seen_count++] = type;
+    _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+    char error[160] = {0};
+    vkr_type_defaults(type, value);
+    if (!vkr_type_read_json(&reader, type, value, NULL, error, sizeof(error))) {
+      log_error("Scene loader: entity %u %s: %s", entity_index, type->name,
+                error);
+      return false_v;
+    }
+    if (visit && !visit(context, type, value)) {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&reader);
+    if (reader.pos >= reader.length) {
+      return false_v;
+    }
+    const uint8_t c = reader.data[reader.pos++];
+    if (c == '}') {
+      return true_v;
+    }
+    if (c != ',' || seen_count == VKR_SCENE_TYPE_MAX) {
+      return false_v;
+    }
+  }
+}
+
+/* A light authored both as a block and as a component is ambiguous. */
+vkr_internal bool8_t scene_json_component_unique(void *context,
+                                                 const VkrTypeDesc *type,
+                                                 const void *value) {
+  (void)value;
+  const SceneEntityImport *entity = context;
+  if ((type == &vkr_scene_point_light_type && entity->has_point_light) ||
+      (type == &vkr_scene_directional_light_type &&
+       entity->has_directional_light) ||
+      (type == &vkr_scene_rectangle_light_type &&
+       entity->has_rectangle_light)) {
+    log_error("Scene loader: an entity authors %s both as a block and a "
+              "component",
+              type->name);
+    return false_v;
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t scene_json_parse_components(
+    const VkrJsonReader *entity_reader, uint32_t entity_index,
+    SceneEntityImport *out_entity) {
+  VkrJsonReader reader = *entity_reader;
+  if (!vkr_json_find_field(&reader, "components")) {
+    return true_v;
+  }
+  if (!scene_json_capture_composite(&reader, &out_entity->components_json) ||
+      !scene_json_each_component(out_entity->components_json, entity_index,
+                                 scene_json_component_unique, out_entity)) {
+    log_error("Scene loader: entity %u has invalid components", entity_index);
+    return false_v;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
                                              uint32_t entity_index,
                                              SceneEntityImport *out_entity) {
@@ -2817,6 +3045,16 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
   };
 
   scene_json_parse_name(entity_reader, out_entity);
+  VkrJsonReader id_reader = *entity_reader;
+  if (scene_json_find_root_field(&id_reader, "id")) {
+    String8 text = {0};
+    if (!vkr_json_parse_string(&id_reader, &text) ||
+        !vkr_scene_document_id_parse(text, &out_entity->document_id)) {
+      log_error("Scene loader: entity %u id must be a UUID", entity_index);
+      return false_v;
+    }
+    out_entity->has_document_id = true_v;
+  }
   scene_json_parse_parent(entity_reader, entity_index, out_entity);
   if (!scene_json_parse_transform(entity_reader, entity_index, out_entity)) {
     return false_v;
@@ -2839,8 +3077,54 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
   if (!scene_json_parse_rectangle_light(entity_reader, entity_index,
                                         out_entity))
     return false_v;
-  return scene_json_parse_directional_light(entity_reader, entity_index,
-                                            out_entity);
+  if (!scene_json_parse_directional_light(entity_reader, entity_index,
+                                          out_entity))
+    return false_v;
+  return scene_json_parse_components(entity_reader, entity_index, out_entity);
+}
+
+static int scene_loader_document_id_compare(const void *left,
+                                            const void *right) {
+  return MemCompare(left, right, sizeof(VkrSceneDocumentId));
+}
+
+/* Document ids are all-or-none and unique within the document. */
+vkr_internal bool8_t scene_loader_document_ids_valid(
+    const SceneEntityImport *imports, uint32_t count, VkrAllocator *allocator,
+    VkrMutex mutex) {
+  uint32_t with_id = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    with_id += imports[i].has_document_id;
+  }
+  if (!with_id) {
+    return true_v;
+  }
+  if (with_id != count) {
+    log_error("Scene loader: %u of %u entities have an id; a document gives "
+              "every entity one or none",
+              with_id, count);
+    return false_v;
+  }
+  const uint64_t bytes = (uint64_t)count * sizeof(VkrSceneDocumentId);
+  VkrSceneDocumentId *sorted = vkr_allocator_alloc_ts(
+      allocator, bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
+  if (!sorted) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    sorted[i] = imports[i].document_id;
+  }
+  qsort(sorted, count, sizeof(*sorted), scene_loader_document_id_compare);
+  bool8_t unique = true_v;
+  for (uint32_t i = 1; i < count && unique; ++i) {
+    unique = MemCompare(&sorted[i - 1u], &sorted[i], sizeof(*sorted)) != 0;
+  }
+  vkr_allocator_free_ts(allocator, sorted, bytes,
+                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
+  if (!unique) {
+    log_error("Scene loader: two entities share an id");
+  }
+  return unique;
 }
 
 vkr_internal bool8_t scene_loader_source_fingerprint(String8 json,
@@ -3157,7 +3441,8 @@ vkr_internal bool8_t scene_loader_parse_json_imports(
     parsed++;
   }
 
-  if (player_weapon_count && !player_count) {
+  if ((player_weapon_count && !player_count) ||
+      !scene_loader_document_ids_valid(imports, parsed, allocator, mutex)) {
     vkr_allocator_free_ts(allocator, imports, import_bytes,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
     if (out_error) {
@@ -3199,8 +3484,56 @@ vkr_internal void scene_loader_init_request_info(VkrResourceHandleInfo *info,
   info->request_id = 0;
 }
 
-vkr_internal bool8_t scene_loader_ensure_scene_handle(
-    VkrSceneLoaderAsyncPayload *payload, VkrRendererError *out_error) {
+bool8_t vkr_scene_loader_request_container(struct VkrRenderAssets *assets,
+                                           String8 path, uint16_t world_id) {
+  if (!assets || !path.length ||
+      path.length >= sizeof(assets->scene_container_requests[0].path)) {
+    return false_v;
+  }
+  uint32_t free_slot = UINT32_MAX;
+  for (uint32_t i = 0; i < ArrayCount(assets->scene_container_requests); ++i) {
+    char *entry = assets->scene_container_requests[i].path;
+    if (strlen(entry) == path.length &&
+        MemCompare(entry, path.str, path.length) == 0) {
+      if (!world_id) {
+        entry[0] = '\0';
+      }
+      assets->scene_container_requests[i].world_id = world_id;
+      return true_v;
+    }
+    if (!entry[0] && free_slot == UINT32_MAX) {
+      free_slot = i;
+    }
+  }
+  if (!world_id) {
+    return true_v;
+  }
+  if (free_slot == UINT32_MAX) {
+    return false_v;
+  }
+  MemCopy(assets->scene_container_requests[free_slot].path, path.str,
+          path.length);
+  assets->scene_container_requests[free_slot].path[path.length] = '\0';
+  assets->scene_container_requests[free_slot].world_id = world_id;
+  return true_v;
+}
+
+/* World id a load of `name` was requested with; zero is the primary scene. */
+vkr_internal uint16_t scene_loader_container_world(
+    const struct VkrRenderAssets *assets, String8 name) {
+  for (uint32_t i = 0; i < ArrayCount(assets->scene_container_requests); ++i) {
+    const char *entry = assets->scene_container_requests[i].path;
+    if (entry[0] && strlen(entry) == name.length &&
+        MemCompare(entry, name.str, name.length) == 0) {
+      return assets->scene_container_requests[i].world_id;
+    }
+  }
+  return 0u;
+}
+
+vkr_internal bool8_t
+scene_loader_ensure_scene_handle(VkrSceneLoaderAsyncPayload *payload,
+                                 String8 name, VkrRendererError *out_error) {
   if (!payload || !payload->assets || !out_error) {
     return false_v;
   }
@@ -3211,8 +3544,9 @@ vkr_internal bool8_t scene_loader_ensure_scene_handle(
   }
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
-  VkrSceneHandle handle = vkr_scene_handle_create(&payload->assets->allocator,
-                                                  0, 64, 256, &scene_error);
+  const uint16_t world_id = scene_loader_container_world(payload->assets, name);
+  VkrSceneHandle handle = vkr_scene_handle_create(
+      &payload->assets->allocator, world_id, 64, 256, &scene_error);
   if (!handle) {
     *out_error = scene_error_to_renderer_error(scene_error);
     return false_v;
@@ -3226,6 +3560,10 @@ vkr_internal bool8_t scene_loader_ensure_scene_handle(
   }
 
   scene->assets = payload->assets;
+  /* Additive containers own picking range `world_id` (ADR-076). */
+  if (world_id && world_id <= VKR_SCENE_ADDITIVE_MAX) {
+    scene->render_id_base = (uint32_t)world_id * VKR_SCENE_RENDER_ID_RANGE;
+  }
   payload->scene_handle = handle;
   payload->scene = scene;
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -3239,6 +3577,40 @@ scene_loader_sync_partial(VkrSceneLoaderAsyncPayload *payload) {
   }
 
   vkr_scene_handle_update_and_sync(payload->scene_handle, payload->assets, 0.0);
+}
+
+typedef struct SceneComponentTarget {
+  VkrScene *scene;
+  VkrEntityId entity;
+} SceneComponentTarget;
+
+vkr_internal bool8_t scene_loader_store_component(void *context,
+                                                  const VkrTypeDesc *type,
+                                                  const void *value) {
+  const SceneComponentTarget *target = context;
+  if (!vkr_scene_type_allowed(target->scene, type)) {
+    log_error("Scene loader: %s belongs to the project World, not a scene",
+              type->name);
+    return false_v;
+  }
+  /* Lights and visibility keep their owners' setters and side effects. */
+  if (type == &vkr_scene_point_light_type) {
+    return vkr_scene_set_point_light(target->scene, target->entity, value);
+  }
+  if (type == &vkr_scene_directional_light_type) {
+    return vkr_scene_set_directional_light(target->scene, target->entity,
+                                           value);
+  }
+  if (type == &vkr_scene_rectangle_light_type) {
+    return vkr_scene_set_rectangle_light(target->scene, target->entity, value);
+  }
+  if (type == &vkr_scene_visibility_type) {
+    const SceneVisibility *visibility = value;
+    vkr_scene_set_visibility(target->scene, target->entity, visibility->visible,
+                             visibility->inherit_parent);
+    return true_v;
+  }
+  return vkr_scene_set_typed(target->scene, target->entity, type, value);
 }
 
 vkr_internal bool8_t scene_loader_apply_component_for_entity(
@@ -3324,24 +3696,47 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
                 entity_index, (int)text_error);
     } else {
       payload->load_result.text3d_count++;
+      /* The authored values become the editable text component; applying it
+         keeps the slot's font and texture size. */
+      SceneTextSettings settings;
+      vkr_type_defaults(&vkr_scene_text_type, &settings);
+      string_format(settings.content, sizeof(settings.content), "%.*s",
+                    (int)Min(text_import->text.length,
+                             (uint64_t)sizeof(settings.content) - 1u),
+                    text_import->text.str);
+      settings.font_size = text_import->font_size;
+      settings.color = text_import->color;
+      if (!vkr_scene_set_typed(scene, entity, &vkr_scene_text_type,
+                               &settings)) {
+        log_warn("Scene loader: entity %u text is not editable", entity_index);
+      }
     }
   }
 
   if (entity_import->has_shape) {
-    VkrSceneShapeConfig shape_config = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
-    shape_config.type = entity_import->shape.type;
-    shape_config.dimensions = entity_import->shape.dimensions;
-    shape_config.color = entity_import->shape.color;
-    shape_config.material_name = entity_import->shape.material_name;
-    // The material request made while preparing supplies the material;
-    // finalize never loads one itself.
-    shape_config.material_path = (String8){0};
-
-    VkrSceneError shape_error = VKR_SCENE_ERROR_NONE;
-    if (!vkr_scene_set_shape(scene, payload->assets, entity, &shape_config,
-                             &shape_error)) {
-      log_error("Scene loader: failed to set shape for entity %u (err=%d)",
-                entity_index, (int)shape_error);
+    /* The authored shape is a typed component whose value builds the mesh
+       (ADR-076). The request made while preparing already loaded any named
+       material, so building acquires it by name without loading. */
+    const SceneShapeImport *shape = &entity_import->shape;
+    SceneShapeSettings settings;
+    vkr_type_defaults(&vkr_scene_shape_type, &settings);
+    settings.type = shape->type;
+    settings.dimensions = shape->dimensions;
+    settings.color = shape->color;
+    string_format(
+        settings.material_name, sizeof(settings.material_name), "%.*s",
+        (int)Min(shape->material_name.length,
+                 (uint64_t)sizeof(settings.material_name) - 1u),
+        shape->material_name.str ? (const char *)shape->material_name.str : "");
+    string_format(
+        settings.material_path, sizeof(settings.material_path), "%.*s",
+        (int)Min(shape->material_path.length,
+                 (uint64_t)sizeof(settings.material_path) - 1u),
+        shape->material_path.str ? (const char *)shape->material_path.str : "");
+    if (!vkr_scene_set_typed(scene, entity, &vkr_scene_shape_type, &settings) ||
+        !vkr_entity_has_component(scene->world, entity, scene->comp_shape)) {
+      log_error("Scene loader: failed to set shape for entity %u",
+                entity_index);
     } else {
       payload->load_result.shape_count++;
     }
@@ -3426,6 +3821,19 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
   }
 
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  /* After the scratch scope: adding a component can create an archetype
+     chunk, which must not live in memory the scope rewinds when the scene
+     and scratch allocators share an arena. Parsing already validated the map,
+     so storing can only fail on memory. */
+  if (entity_import->components_json.length) {
+    SceneComponentTarget target = {.scene = scene, .entity = entity};
+    if (!scene_json_each_component(entity_import->components_json, entity_index,
+                                   scene_loader_store_component, &target)) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
+  }
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
@@ -3859,9 +4267,12 @@ vkr_internal bool8_t scene_loader_prepare_payload(
   }
   payload->environment_import =
       scene_loader_parse_environment_import(json_copy);
+  /* A World authors its atmosphere as an entity component (ADR-076); the
+     sky light follows it like a block. */
   scene_loader_resolve_environment_source(
       &payload->environment_import,
-      payload->atmosphere_import.settings.enabled);
+      payload->atmosphere_import.settings.enabled ||
+          scene_loader_component_atmosphere(payload));
   payload->diffuse_volume_import =
       scene_loader_parse_diffuse_volume_import(json_copy);
   payload->reflection_probe_import_count =
@@ -4038,6 +4449,251 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   return true_v;
 }
 
+/* One synthesized world entity: a named root carrying one component, with a
+   source identity after the document's entities so overlays can bind it. */
+vkr_internal bool8_t scene_loader_world_entity(
+    VkrSceneLoaderAsyncPayload *payload, uint32_t *ordinal, const char *name,
+    const VkrTypeDesc *type, const void *value) {
+  VkrScene *scene = payload->scene;
+  char error[160] = {0};
+  if (!vkr_type_validate(type, value, error, sizeof(error))) {
+    /* The runtime products already applied or rejected this block; a value
+       the component cannot hold only loses its editable entity. */
+    log_warn("Scene loader: %s is not editable: %s", name, error);
+    return true_v;
+  }
+  const VkrEntityId entity = vkr_scene_create_typed_entity(
+      scene, string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+      type, value);
+  if (!entity.u64) {
+    log_error("Scene loader: could not create the %s entity", type->name);
+    return false_v;
+  }
+  const SceneSourceIdentity source_identity = {
+      .scene_entity_index = payload->entity_count + (*ordinal)++,
+      .gltf_node_index = UINT32_MAX,
+      .gltf_mesh_index = UINT32_MAX,
+      .gltf_camera_index = UINT32_MAX,
+      .gltf_skin_index = UINT32_MAX,
+      .gltf_light_index = UINT32_MAX,
+      .source_fingerprint = payload->scene_source_fingerprint};
+  return vkr_scene_set_source_identity(scene, entity, &source_identity);
+}
+
+/* Only a directional light is a sun (ADR-058). A legacy document that
+   authors its sun in the atmosphere block and has no enabled sun light gets
+   an equivalent directional light, so its lighting is unchanged and
+   editable. */
+vkr_internal bool8_t scene_loader_legacy_sun(
+    VkrSceneLoaderAsyncPayload *payload, uint32_t *ordinal) {
+  const SceneAtmosphereImport *atmosphere = &payload->atmosphere_import;
+  if (!atmosphere->settings.enabled || !atmosphere->authored_sun) {
+    return true_v;
+  }
+  /* Blocks and component maps have both been applied by now. */
+  VkrScene *scene = payload->scene;
+  const VkrWorld *world = scene->world;
+  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
+    const SceneDirectionalLight *existing =
+        world->dir.records[i].chunk
+            ? vkr_entity_get_component(world,
+                                       vkr_entity_id_from_index(world, i),
+                                       scene->comp_directional_light)
+            : NULL;
+    if (existing && existing->enabled && existing->atmosphere_sun) {
+      return true_v;
+    }
+  }
+  const VkrAtmosphereSettings *settings = &atmosphere->settings;
+  const Vec3 irradiance = settings->solar_irradiance;
+  const float32_t peak = Max(irradiance.x, Max(irradiance.y, irradiance.z));
+  SceneDirectionalLight light;
+  vkr_type_defaults(&vkr_scene_directional_light_type, &light);
+  light.color = peak > 0.0f ? vec3_scale(irradiance, 1.0f / peak)
+                            : vec3_new(1.0f, 1.0f, 1.0f);
+  light.intensity = peak > 0.0f ? peak : 0.0f;
+  light.direction_local = vec3_negate(vec3_normalize(settings->sun_direction));
+  light.sun_angular_diameter_degrees = settings->sun_angular_diameter_degrees;
+  light.temperature_kelvin = 0.0f;
+  light.enabled = true_v;
+  light.atmosphere_sun = true_v;
+
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  const VkrEntityId entity = vkr_scene_create_entity(scene, &error);
+  const SceneSourceIdentity source_identity = {
+      .scene_entity_index = payload->entity_count + (*ordinal)++,
+      .gltf_node_index = UINT32_MAX,
+      .gltf_mesh_index = UINT32_MAX,
+      .gltf_camera_index = UINT32_MAX,
+      .gltf_skin_index = UINT32_MAX,
+      .gltf_light_index = UINT32_MAX,
+      .source_fingerprint = payload->scene_source_fingerprint};
+  if (!entity.u64 ||
+      !vkr_scene_set_name(scene, entity, string8_lit("Directional Light")) ||
+      !vkr_scene_set_transform(scene, entity, vec3_zero(), vkr_quat_identity(),
+                               vec3_one()) ||
+      !vkr_scene_set_directional_light(scene, entity, &light) ||
+      !vkr_scene_set_source_identity(scene, entity, &source_identity)) {
+    log_error("Scene loader: could not create the atmosphere's sun light");
+    return false_v;
+  }
+  vkr_scene_set_visibility(scene, entity, true_v, true_v);
+  return true_v;
+}
+
+vkr_internal void scene_loader_copy_text(char *out, uint32_t capacity,
+                                         String8 text) {
+  const uint64_t length = Min(text.length, (uint64_t)capacity - 1u);
+  MemCopy(out, text.str, length);
+  out[length] = 0;
+}
+
+/* Legacy top-level world blocks load as component entities (ADR-076). Each
+   component carries the authored values; the runtime products the earlier
+   apply steps created stay scene-owned. */
+vkr_internal bool8_t
+scene_loader_create_world_entities(VkrSceneLoaderAsyncPayload *payload) {
+  VkrScene *scene = payload->scene;
+  uint32_t ordinal = 0u;
+
+  const SceneEnvironmentImport *environment = &payload->environment_import;
+  if (environment->has_block ||
+      environment->source_kind != VKR_SCENE_ENV_SOURCE_NONE) {
+    /* The component mirrors the runtime controls. An invalid block already
+       disabled the runtime environment and cleared its source; its invalid
+       radiance and controls fall back to defaults. */
+    SceneEnvironmentSettings settings = {
+        .enabled = scene->environment.enabled,
+        .source_kind = scene->environment.source_kind,
+        .constant_radiance = scene->environment.constant_radiance,
+        .intensity = scene->environment.intensity,
+        .diffuse_intensity = scene->environment.diffuse_intensity,
+        .specular_intensity = scene->environment.specular_intensity,
+        .sh_deringing = scene->environment.sh_deringing,
+    };
+    if (!environment->valid) {
+      settings.constant_radiance = (Vec3){0};
+    }
+    if (!vkr_type_validate(&vkr_scene_environment_type, &settings, NULL, 0u)) {
+      vkr_type_defaults(&vkr_scene_environment_type, &settings);
+      settings.enabled = false_v;
+    }
+    if (!scene_loader_world_entity(payload, &ordinal, "Sky Light",
+                                   &vkr_scene_environment_type, &settings)) {
+      return false_v;
+    }
+  }
+
+  const SceneAtmosphereImport *atmosphere = &payload->atmosphere_import;
+  if (atmosphere->has_block && atmosphere->valid) {
+    if (!scene_loader_world_entity(payload, &ordinal, "Sky Atmosphere",
+                                   &vkr_scene_atmosphere_type,
+                                   &atmosphere->settings)) {
+      return false_v;
+    }
+    if (!scene_loader_legacy_sun(payload, &ordinal)) {
+      return false_v;
+    }
+    if (atmosphere->clouds.enabled &&
+        !scene_loader_world_entity(payload, &ordinal, "Volumetric Clouds",
+                                   &vkr_scene_clouds_type,
+                                   &atmosphere->clouds)) {
+      return false_v;
+    }
+  }
+
+  const SceneFogImport *fog = &payload->fog_import;
+  if (fog->has_block) {
+    VkrFogSettings settings = vkr_fog_settings_defaults();
+    if (fog->valid) {
+      settings = fog->settings;
+    }
+    if (!scene_loader_world_entity(payload, &ordinal, "Height Fog",
+                                   &vkr_scene_fog_type, &settings)) {
+      return false_v;
+    }
+  }
+
+  const SceneFroxelFogImport *froxel = &payload->froxel_fog_import;
+  if (froxel->valid &&
+      (froxel->settings.enabled || froxel->settings.box_count > 0u)) {
+    VkrFroxelFogSettings settings = froxel->settings;
+    settings.box_count = 0u;
+    MemZero(settings.boxes, sizeof(settings.boxes));
+    if (!scene_loader_world_entity(payload, &ordinal, "Volumetric Fog",
+                                   &vkr_scene_froxel_fog_type, &settings)) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < froxel->settings.box_count; ++i) {
+      char name[48];
+      snprintf(name, sizeof(name), "Fog Density Box %u", i + 1u);
+      if (!scene_loader_world_entity(payload, &ordinal, name,
+                                     &vkr_scene_fog_box_type,
+                                     &froxel->settings.boxes[i])) {
+        return false_v;
+      }
+    }
+  }
+
+  for (uint32_t i = 0; i < payload->reflection_probe_import_count &&
+                       i < VKR_SCENE_REFLECTION_PROBE_MAX;
+       ++i) {
+    const SceneReflectionProbeImport *import =
+        &payload->reflection_probe_imports[i];
+    SceneReflectionProbeSettings probe;
+    vkr_type_defaults(&vkr_scene_reflection_probe_type, &probe);
+    probe.enabled = import->enabled;
+    probe.center = import->center;
+    probe.extents = import->extents;
+    probe.blend_distance = import->blend_distance;
+    probe.intensity = import->intensity;
+    probe.diffuse_intensity = import->diffuse_intensity;
+    probe.specular_intensity = import->specular_intensity;
+    probe.sh_deringing = import->sh_deringing;
+    probe.slot = i < scene->reflection_probe_count ? i : UINT32_MAX;
+    /* A probe whose source failed to load starts disabled, as at runtime. */
+    probe.enabled = probe.slot != UINT32_MAX &&
+                    scene->reflection_probes[probe.slot].enabled;
+    if (import->has_cubemap) {
+      scene_loader_copy_text(probe.cubemap, sizeof(probe.cubemap),
+                             import->cubemap_path.length
+                                 ? import->cubemap_path
+                                 : import->cubemap_base_path);
+    }
+    char name[48];
+    snprintf(name, sizeof(name), "Reflection Probe %u", i + 1u);
+    if (!scene_loader_world_entity(payload, &ordinal, name,
+                                   &vkr_scene_reflection_probe_type, &probe)) {
+      return false_v;
+    }
+  }
+
+  const SceneDiffuseVolumeImport *volume = &payload->diffuse_volume_import;
+  if (volume->has_block) {
+    SceneDiffuseVolumeSettings settings;
+    vkr_type_defaults(&vkr_scene_diffuse_volume_type, &settings);
+    settings.enabled = volume->valid;
+    scene_loader_copy_text(settings.path, sizeof(settings.path), volume->path);
+    if (!scene_loader_world_entity(payload, &ordinal, "Diffuse Volume",
+                                   &vkr_scene_diffuse_volume_type, &settings)) {
+      return false_v;
+    }
+  }
+
+  const SceneSubsurfaceImport *subsurface = &payload->subsurface_import;
+  if (subsurface->has_block) {
+    SceneSubsurfaceSettings settings = {
+        .enabled = subsurface->valid && subsurface->enabled,
+        .profile_count = scene->subsurface.profile_count,
+    };
+    if (!scene_loader_world_entity(payload, &ordinal, "Subsurface Profiles",
+                                   &vkr_scene_subsurface_type, &settings)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* Runs the next finalize stage chunk into `async_payload->scene`. True once
    every stage is complete. RESOURCE_NOT_LOADED means another call is needed:
    the stage advanced or a dependency is still loading. */
@@ -4047,12 +4703,6 @@ vkr_internal bool8_t scene_loader_finalize_step(
   if (!scene) {
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
-  }
-
-  if (!async_payload->fog_applied) {
-    scene->fog = async_payload->fog_import.settings;
-    scene->froxel_fog = async_payload->froxel_fog_import.settings;
-    async_payload->fog_applied = true_v;
   }
 
   if (!async_payload->environment_applied) {
@@ -4113,11 +4763,25 @@ vkr_internal bool8_t scene_loader_finalize_step(
     async_payload->reflection_probes_applied = true_v;
   }
 
-  if (async_payload->entity_count == 0) {
-    async_payload->stage = SCENE_ASYNC_STAGE_COMPLETE;
+  if (async_payload->entity_count == 0 &&
+      async_payload->stage < SCENE_ASYNC_STAGE_WORLD_ENTITIES) {
+    async_payload->stage = SCENE_ASYNC_STAGE_WORLD_ENTITIES;
   }
 
   if (async_payload->stage == SCENE_ASYNC_STAGE_CREATE_ENTITIES) {
+    /* Parsing proved the ids are all-or-none and unique. */
+    if (async_payload->stage_cursor == 0u &&
+        async_payload->imports[0].has_document_id) {
+      VkrSceneDocumentId *ids =
+          vkr_scene_document_ids_reserve(scene, async_payload->entity_count);
+      if (!ids) {
+        *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        return false_v;
+      }
+      for (uint32_t i = 0; i < async_payload->entity_count; ++i) {
+        ids[i] = async_payload->imports[i].document_id;
+      }
+    }
     uint32_t end = async_payload->stage_cursor + SCENE_ASYNC_ENTITY_CHUNK;
     if (end > async_payload->entity_count) {
       end = async_payload->entity_count;
@@ -4286,6 +4950,15 @@ vkr_internal bool8_t scene_loader_finalize_step(
     }
 
     scene_loader_sync_partial(async_payload);
+    async_payload->stage = SCENE_ASYNC_STAGE_WORLD_ENTITIES;
+  }
+
+  if (async_payload->stage == SCENE_ASYNC_STAGE_WORLD_ENTITIES) {
+    if (!scene_loader_create_world_entities(async_payload)) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
+    (void)vkr_scene_resolve_world(scene);
     async_payload->stage = SCENE_ASYNC_STAGE_COMPLETE;
   }
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -4304,7 +4977,7 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
   VkrSceneLoaderAsyncPayload *async_payload =
       (VkrSceneLoaderAsyncPayload *)payload;
 
-  if (!scene_loader_ensure_scene_handle(async_payload, out_error)) {
+  if (!scene_loader_ensure_scene_handle(async_payload, name, out_error)) {
     return false_v;
   }
 
