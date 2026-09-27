@@ -180,7 +180,8 @@ add_library(vkr_bake_core STATIC
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_dfg_lut.c"
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_sheen_lut.c"
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_anisotropy_lut.c"
-    "${CMAKE_SOURCE_DIR}/renderer/src/vkr_atmosphere.c")
+    "${CMAKE_SOURCE_DIR}/renderer/src/vkr_atmosphere.c"
+    "${CMAKE_SOURCE_DIR}/renderer/src/vkr_clouds.c")
 vkr_configure_cooker_target(vkr_bake_core)
 target_compile_features(vkr_bake_core PRIVATE cxx_std_17)
 target_include_directories(vkr_bake_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
