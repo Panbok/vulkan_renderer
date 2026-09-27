@@ -52,8 +52,82 @@ typedef struct VkrHarnessProfileV2 {
   uint32_t required_metric_count;
 } VkrHarnessProfileV2;
 
-/* Versions 2 and 3 embedded this case layout before GTAO became authored
- * harness state. Keep it byte-exact; stored summaries are an ABI.
+/* Version 2 exactly as its writer stored it (the summaries accepted on
+ * 2026-08-07): the case had no resize controls, the renderer carried only the
+ * fields below, and provenance had no world renderer. Its prefix differs from
+ * later cases, so the reader converts it field by field. */
+typedef struct VkrHarnessRendererConfigV2 {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  char render_mode[16];
+  uint32_t shadow_debug_mode;
+} VkrHarnessRendererConfigV2;
+
+typedef struct VkrHarnessCaseV2 {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV2 renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+} VkrHarnessCaseV2;
+
+typedef struct VkrHarnessProvenanceV2 {
+  char started_at[40];
+  char ended_at[40];
+  char git_sha[48];
+  bool8_t dirty;
+  char build_type[32];
+  char compiler[128];
+  char os[128];
+  char cpu[128];
+  char gpu[128];
+  uint32_t gpu_vendor_id;
+  uint32_t gpu_device_id;
+  char driver[128];
+  char power_mode[32];
+  char thermal_state_start[32];
+  char thermal_state_end[32];
+  int32_t process_priority;
+  char binary_sha256[VKR_HARNESS_DIGEST_MAX];
+  char color_format[32];
+  char depth_format[32];
+  char color_space[32];
+  VkrHarnessTarget actual_target;
+  VkrHarnessPresentMode actual_present;
+  uint32_t actual_target_image_count;
+  uint32_t actual_target_width;
+  uint32_t actual_target_height;
+} VkrHarnessProvenanceV2;
+
+/* Version 3 embedded this case layout before GTAO became authored harness
+ * state. Keep it byte-exact; stored summaries are an ABI.
  */
 typedef struct VkrHarnessRendererConfigV3 {
   bool8_t editor;
@@ -508,9 +582,9 @@ typedef struct VkrHarnessCaptureSummaryHeaderV2 {
   char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCaseV3 case_manifest;
+  VkrHarnessCaseV2 case_manifest;
   VkrHarnessProfileV2 profile;
-  VkrHarnessProvenance provenance;
+  VkrHarnessProvenanceV2 provenance;
 } VkrHarnessCaptureSummaryHeaderV2;
 
 typedef struct VkrHarnessCaptureSummaryHeaderV3 {
@@ -1420,7 +1494,11 @@ typedef struct VkrHarnessCaptureSummaryHeaderV15 {
               offsetof(VkrHarnessCaptureSummaryHeaderV2, case_manifest),       \
       #header " stored layout drift")
 
-VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV2, 77904u);
+VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV2, 77792u);
+/* Where the tracked version 2 summaries hold their captures. */
+_Static_assert(offsetof(VkrHarnessCaseV2, captures) == 22032u &&
+                   sizeof(VkrHarnessProvenanceV2) == 1100u,
+               "Version-2 case layout drift");
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV3, 78032u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV4, 78048u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV5, 78112u);

@@ -77,11 +77,14 @@ static void vkr_harness_profile_from_v2(const VkrHarnessProfileV2 *source,
 }
 
 /* Where one stored summary version keeps each field that later versions
- * moved. Every stored case keeps the current case prefix before `renderer`
- * and a byte prefix of the current renderer config; versions 2 and 3 also
- * stored `shadow_debug_mode` where GTAO now begins. The case fields after the
- * renderer moved whenever the renderer grew. Case offsets are relative to the
- * embedded case, which starts at the same header offset in every version. */
+ * moved. From version 3 on, every stored case keeps the current case prefix
+ * before `renderer` and a byte prefix of the current renderer config;
+ * version 3 also stored `shadow_debug_mode` where GTAO now begins. Version 2
+ * predates the resize controls and most renderer controls, so it is converted
+ * field by field. The case fields after the renderer moved whenever the
+ * renderer grew. Case offsets are relative to the embedded case, which starts
+ * at the same header offset in every version. Each version also records the
+ * sizes of the capture and artifact records that follow its header. */
 typedef struct VkrHarnessSummaryLayout {
   uint64_t header_size;
   uint64_t profile;
@@ -97,7 +100,16 @@ typedef struct VkrHarnessSummaryLayout {
   /** Zero when the version predates the field. */
   uint64_t content_scale;
   uint64_t asset_context;
+  /** Stored record sizes; a version whose records differ from the current
+   * structs needs a record converter before it can be read. */
+  uint64_t capture_record;
+  uint64_t artifact_record;
 } VkrHarnessSummaryLayout;
+
+/* Record sizes of versions 2 through 15. Growing a record freezes its old
+ * layout and bumps the version; the pin in the layout header enforces it. */
+#define VKR_HARNESS_CAPTURE_RECORD_V2 2072u
+#define VKR_HARNESS_ARTIFACT_RECORD_V2 512u
 
 #define VKR_HARNESS_SUMMARY_LAYOUT(header, case_type, renderer_bytes,          \
                                    content_scale_offset, asset_context_offset) \
@@ -114,13 +126,14 @@ typedef struct VkrHarnessSummaryLayout {
       .compare = offsetof(case_type, compare),                                 \
       .content_scale = (content_scale_offset),                                 \
       .asset_context = (asset_context_offset),                                 \
+      .capture_record = VKR_HARNESS_CAPTURE_RECORD_V2,                         \
+      .artifact_record = VKR_HARNESS_ARTIFACT_RECORD_V2,                       \
   }
 
 /* Indexed by stored version; unlisted versions are rejected. */
 static const VkrHarnessSummaryLayout s_summary_layouts[] = {
-    [2] = VKR_HARNESS_SUMMARY_LAYOUT(
-        VkrHarnessCaptureSummaryHeaderV2, VkrHarnessCaseV3,
-        offsetof(VkrHarnessRendererConfigV3, shadow_debug_mode), 0u, 0u),
+    [2] = VKR_HARNESS_SUMMARY_LAYOUT(VkrHarnessCaptureSummaryHeaderV2,
+                                     VkrHarnessCaseV2, 0u, 0u, 0u),
     [3] = VKR_HARNESS_SUMMARY_LAYOUT(
         VkrHarnessCaptureSummaryHeaderV3, VkrHarnessCaseV3,
         offsetof(VkrHarnessRendererConfigV3, shadow_debug_mode), 0u, 0u),
@@ -178,6 +191,65 @@ _Static_assert(ArrayCount(s_summary_layouts) ==
                    VKR_HARNESS_CAPTURE_SUMMARY_VERSION + 1u,
                "The current summary version must be the last layout");
 
+/* Version 2's case. Its controls take the manifest defaults, which stand in
+ * for the runtime defaults its workload used, before its stored fields. */
+static void vkr_harness_case_from_v2(const VkrHarnessCaseV2 *source,
+                                     VkrHarnessCase *destination) {
+  destination->schema_version = source->schema_version;
+  MemCopy(destination->manifest_path, source->manifest_path,
+          sizeof(destination->manifest_path));
+  MemCopy(destination->manifest_sha256, source->manifest_sha256,
+          sizeof(destination->manifest_sha256));
+  MemCopy(destination->id, source->id, sizeof(destination->id));
+  MemCopy(destination->suite, source->suite, sizeof(destination->suite));
+  MemCopy(destination->description, source->description,
+          sizeof(destination->description));
+  MemCopy(destination->scene, source->scene, sizeof(destination->scene));
+  destination->seed = source->seed;
+  destination->width = source->width;
+  destination->height = source->height;
+  destination->boot = source->boot;
+  destination->target = source->target;
+  destination->present = source->present;
+  destination->target_image_count = source->target_image_count;
+  destination->cache = source->cache;
+  destination->fixed_delta_seconds = source->fixed_delta_seconds;
+  destination->warmup_frames = source->warmup_frames;
+  destination->measure_frames = source->measure_frames;
+  destination->repetitions = source->repetitions;
+  destination->repetition_timeout_ms = source->repetition_timeout_ms;
+  destination->asset_ready_timeout_ms = source->asset_ready_timeout_ms;
+  VkrHarnessRendererConfig *renderer = &destination->renderer;
+  vkr_harness_renderer_set_defaults(renderer);
+  renderer->editor = source->renderer.editor;
+  renderer->skybox = source->renderer.skybox;
+  renderer->text_fixture = source->renderer.text_fixture;
+  string_format(renderer->backend, sizeof(renderer->backend), "%.*s",
+                (int)sizeof(source->renderer.backend),
+                source->renderer.backend);
+  string_format(renderer->shadow_preset, sizeof(renderer->shadow_preset),
+                "%.*s", (int)sizeof(source->renderer.shadow_preset),
+                source->renderer.shadow_preset);
+  renderer->shadow_cascades = source->renderer.shadow_cascades;
+  string_format(renderer->render_mode, sizeof(renderer->render_mode), "%.*s",
+                (int)sizeof(source->renderer.render_mode),
+                source->renderer.render_mode);
+  renderer->shadow_debug_mode = source->renderer.shadow_debug_mode;
+}
+
+/* Version 2 provenance has no world renderer; the fields around it keep
+ * their order. */
+static void vkr_harness_provenance_from_v2(const VkrHarnessProvenanceV2 *source,
+                                           VkrHarnessProvenance *destination) {
+  MemZero(destination, sizeof(*destination));
+  MemCopy(destination, source, offsetof(VkrHarnessProvenanceV2, actual_target));
+  destination->actual_target = source->actual_target;
+  destination->actual_present = source->actual_present;
+  destination->actual_target_image_count = source->actual_target_image_count;
+  destination->actual_target_width = source->actual_target_width;
+  destination->actual_target_height = source->actual_target_height;
+}
+
 /**
  * Reads the case a stored summary embeds into the current layout. Controls
  * the version predates take the values that reproduce its recorded workload
@@ -189,9 +261,13 @@ static void vkr_harness_case_from_stored(uint32_t version,
                                          const uint8_t *source,
                                          VkrHarnessCase *destination) {
   MemZero(destination, sizeof(*destination));
-  MemCopy(destination, source, offsetof(VkrHarnessCase, renderer));
-  MemCopy(&destination->renderer, source + offsetof(VkrHarnessCase, renderer),
-          layout->renderer_size);
+  if (version == 2u) {
+    vkr_harness_case_from_v2((const VkrHarnessCaseV2 *)source, destination);
+  } else {
+    MemCopy(destination, source, offsetof(VkrHarnessCase, renderer));
+    MemCopy(&destination->renderer, source + offsetof(VkrHarnessCase, renderer),
+            layout->renderer_size);
+  }
   MemCopy(&destination->camera, source + layout->camera,
           sizeof(destination->camera));
   MemCopy(destination->captures, source + layout->captures,
@@ -216,10 +292,12 @@ static void vkr_harness_case_from_stored(uint32_t version,
   }
 
   VkrHarnessRendererConfig *renderer = &destination->renderer;
-  if (version <= 3u) {
+  if (version == 3u) {
     MemCopy(&renderer->shadow_debug_mode,
             source + offsetof(VkrHarnessCaseV3, renderer.shadow_debug_mode),
             sizeof(renderer->shadow_debug_mode));
+  }
+  if (version <= 3u) {
     renderer->gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
     renderer->gtao_power = VKR_GTAO_DEFAULT_POWER;
   }
@@ -1086,10 +1164,15 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
   }
   const VkrHarnessSummaryLayout *layout = &s_summary_layouts[common->version];
   const uint64_t header_size = layout->header_size;
+  /* Records are read in place, so their stored layout must be current. */
+  if (layout->capture_record != sizeof(VkrHarnessCaptureResult) ||
+      layout->artifact_record != sizeof(VkrHarnessArtifact)) {
+    return false_v;
+  }
   const uint64_t capture_bytes =
-      (uint64_t)common->capture_count * sizeof(VkrHarnessCaptureResult);
+      (uint64_t)common->capture_count * layout->capture_record;
   const uint64_t artifact_bytes =
-      (uint64_t)common->artifact_count * sizeof(VkrHarnessArtifact);
+      (uint64_t)common->artifact_count * layout->artifact_record;
   if (size != header_size + capture_bytes + artifact_bytes) {
     return false_v;
   }
@@ -1130,8 +1213,14 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
     MemCopy(&out_summary->profile, bytes + layout->profile,
             sizeof(out_summary->profile));
   }
-  MemCopy(&out_summary->provenance, bytes + layout->provenance,
-          sizeof(out_summary->provenance));
+  if (common->version == 2u) {
+    vkr_harness_provenance_from_v2(
+        (const VkrHarnessProvenanceV2 *)(bytes + layout->provenance),
+        &out_summary->provenance);
+  } else {
+    MemCopy(&out_summary->provenance, bytes + layout->provenance,
+            sizeof(out_summary->provenance));
+  }
   out_summary->capture_count = common->capture_count;
   out_summary->artifacts =
       (const VkrHarnessArtifact *)(bytes + header_size + capture_bytes);

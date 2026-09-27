@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-24
+updated: 2026-09-27
 authority: proposal
 ---
 # Codebase audit remediation: remaining work
@@ -25,29 +25,23 @@ The [repository contract](../../AGENTS.md) applies to every item.
 | `vec2_equal` epsilon boundary | `588f6229`: the bound is inclusive, as in `vec3_equal` and `vec4_equal`. The Bistro re-cook is open below. |
 | Metal packet renderer translation unit (plan D11) | Kept as one unit. A whole rebuild takes 1.8-2.9 s, and Objective-C gets no ThinLTO, so a split would export about 128 helpers that could no longer be inlined. |
 | Ungated checks | `f6e7253c`: `build_test.sh` runs the 300-line function check and `tools/checks/check_metrics_disabled.py`. |
+| Versioned capture records | The summary layout table records each version's capture and artifact record sizes; a stored layout that differs from the current structs is rejected until it has a converter, and the record pin forces a version bump when a record grows. |
 
 ## Open
 
 ### Bistro Vulkan text baseline
 
-The tracked `smoke.bistro.vulkan.text.snapshot` baseline has the same
-unreadable summary as the old Metal one: accepted on 2026-08-07, it stores
-2,064-byte capture records. Since `7c34698f` its snapshot reports
-`missing_baseline` (exit 4, `baseline.unreadable`) instead of an incomplete
-run. On a Vulkan machine, run the snapshot, review the proposal from
-`baseline propose`, and accept it.
-
-### Capture summary records are not versioned
-
-`capture-summary.bin` versions its header (V2 through V15), but the capture
-and artifact records follow the header at today's
-`sizeof(VkrHarnessCaptureResult)` (2,072 bytes) and
-`sizeof(VkrHarnessArtifact)` (512 bytes). Growing either struct makes every
-tracked baseline written before the change unreadable; an 8-byte growth of
-the capture record is how the Bistro text baselines broke. Recommendation:
-record each stored version's record sizes in the summary layout table, bump
-the summary version whenever a record changes, and keep a reader for each
-stored record layout.
+The tracked `smoke.bistro.vulkan.text.snapshot` baseline, accepted on
+2026-08-07, is a version 2 summary. It was unreadable because the reader's
+version 2 layout was reconstructed from version 3: the real writer's case had
+no resize controls, a 76-byte renderer config and a provenance without
+`world_renderer`, so its header is 77,792 bytes, not 77,904. Its capture
+records are the current 2,072 bytes; the earlier "2,064-byte records"
+diagnosis divided the wrong header size. The reader now uses the exact
+version 2 layout, and a CPU test decodes this tracked file. Whether the old
+baseline still matches today's Vulkan output needs a Vulkan machine: run the
+snapshot there and, if the output changed, review and accept a new
+generation.
 
 ### Bistro re-cook after the `vec2_equal` change
 

@@ -814,6 +814,10 @@ bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,
                                    VkrSubsystemPlan *out_plan,
                                    VkrHarnessError *out_error);
 
+/** Sets the value every optional renderer field takes when a case omits it;
+ * stored summaries older than a control take the same value. */
+void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer);
+
 /** Resolves an optional case pin against the caller's environment request. */
 bool8_t
 vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,

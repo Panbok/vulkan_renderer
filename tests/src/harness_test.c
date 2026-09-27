@@ -1792,9 +1792,16 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   legacy_v2->profile_compatible = true_v;
   snprintf(legacy_v2->status, sizeof(legacy_v2->status), "pass");
   snprintf(legacy_v2->case_id, sizeof(legacy_v2->case_id), "smoke.legacy.v2");
-  legacy_v2->case_manifest = legacy->case_manifest;
   snprintf(legacy_v2->case_manifest.id, sizeof(legacy_v2->case_manifest.id),
            "smoke.legacy.v2");
+  legacy_v2->case_manifest.width = 801u;
+  legacy_v2->case_manifest.height = 601u;
+  legacy_v2->case_manifest.renderer.skybox = true_v;
+  snprintf(legacy_v2->case_manifest.renderer.backend,
+           sizeof(legacy_v2->case_manifest.renderer.backend), "vulkan");
+  legacy_v2->case_manifest.renderer.shadow_debug_mode = 2u;
+  legacy_v2->case_manifest.camera.far_plane = 321.0f;
+  legacy_v2->case_manifest.compare.max_pixel_delta = 0.125;
   snprintf(legacy_v2->profile.id, sizeof(legacy_v2->profile.id),
            "local.legacy.v2");
   assert(vkr_harness_atomic_write(legacy_v2_path, legacy_v2, sizeof(*legacy_v2),
@@ -1894,7 +1901,14 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.editor_stop_frame == UINT32_MAX);
   assert(summary.case_manifest.renderer.editor_resume_frame == UINT32_MAX);
   assert(strcmp(summary.case_manifest.id, "smoke.legacy.v2") == 0);
-  assert(summary.case_manifest.renderer.bloom_enabled);
+  /* Version 2 predates bloom and the resize controls: defaults apply. */
+  assert(summary.case_manifest.width == 801u &&
+         summary.case_manifest.height == 601u);
+  assert(!summary.case_manifest.renderer.bloom_enabled &&
+         !summary.case_manifest.resize_round_trip);
+  assert(summary.case_manifest.renderer.skybox &&
+         strcmp(summary.case_manifest.renderer.backend, "vulkan") == 0);
+  assert(summary.case_manifest.renderer.shadow_debug_mode == 2u);
   assert(!summary.case_manifest.renderer.gtao_enabled);
   assert(summary.case_manifest.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
   assert(summary.case_manifest.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
@@ -1905,6 +1919,25 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(strcmp(summary.profile.id, "local.legacy.v2") == 0);
   assert(strcmp(summary.profile.warmup_stability_metric, "cpu.render_submit") ==
          0);
+  /* The tracked Vulkan text baseline is a genuine version 2 summary, an oracle
+     independent of these layout definitions. */
+  assert(vkr_harness_capture_summary_read(
+      "tools/baselines/local.offscreen/smoke.bistro.vulkan.text.snapshot/"
+      "generations/"
+      "c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564/"
+      "capture-summary.bin",
+      arena, &summary));
+  assert(strcmp(summary.case_manifest.id,
+                "smoke.bistro.vulkan.text.snapshot") == 0);
+  assert(strcmp(summary.case_manifest.scene,
+                "assets/scenes/bistro.scene.json") == 0);
+  assert(strcmp(summary.case_manifest.renderer.backend, "vulkan") == 0 &&
+         summary.case_manifest.renderer.text_fixture);
+  assert(summary.capture_count == 14u && summary.artifact_count == 43u);
+  assert(strcmp(summary.captures[0].channel, "final_color") == 0);
+  assert(summary.case_manifest.capture_count > 0u &&
+         strcmp(summary.case_manifest.captures[0].channels[0], "final_color") ==
+             0);
   assert(vkr_harness_capture_summary_read(legacy_v4_path, arena, &summary));
   assert(summary.case_manifest.renderer.editor_stop_frame == UINT32_MAX);
   assert(summary.case_manifest.renderer.editor_resume_frame == UINT32_MAX);

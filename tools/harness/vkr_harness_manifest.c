@@ -536,9 +536,7 @@ typedef struct VkrHarnessRendererFields {
   int32_t motion_blur_entity_velocity_token;
 } VkrHarnessRendererFields;
 
-/** Sets the value every optional renderer field takes when a case omits it. */
-vkr_internal void
-vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
+void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   VKR_STRING_COPY_LITERAL(renderer->render_mode, "default");
   VKR_STRING_COPY_LITERAL(renderer->exposure_mode, "manual");
   VKR_STRING_COPY_LITERAL(renderer->display_transform, "agx");
