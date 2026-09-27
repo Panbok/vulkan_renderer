@@ -3,28 +3,41 @@
 #include "defines.h"
 
 vkr_internal VkrFreeListNode *vkr_freelist_get_node(VkrFreeList *freelist) {
-  for (uint32_t node_index = 0; node_index < freelist->max_count;
-       node_index++) {
-    if (freelist->nodes[node_index].offset == VKR_INVALID_ID) {
-      return &freelist->nodes[node_index];
-    }
+  VkrFreeListNode *node = freelist->spare;
+  if (node) {
+    freelist->spare = node->next;
+    node->next = NULL;
   }
-
-  return NULL;
+  return node;
 }
 
 vkr_internal void vkr_return_node(VkrFreeList *freelist,
                                   VkrFreeListNode *node) {
   node->size = VKR_INVALID_ID;
   node->offset = VKR_INVALID_ID;
-  node->next = NULL;
+  node->next = freelist->spare;
+  freelist->spare = node;
+}
+
+/* Nodes from `first` to the end of storage become the spare stack. */
+vkr_internal void vkr_freelist_link_spare(VkrFreeList *freelist,
+                                          uint32_t first) {
+  freelist->spare = NULL;
+  for (uint32_t i = freelist->max_count; i > first; --i) {
+    VkrFreeListNode *node = &freelist->nodes[i - 1u];
+    node->size = VKR_INVALID_ID;
+    node->offset = VKR_INVALID_ID;
+    node->next = freelist->spare;
+    freelist->spare = node;
+  }
 }
 
 uint64_t vkr_freelist_calculate_memory_requirement(uint64_t total_size) {
-  // Use a reasonable default: assume average block size of 4KB
+  /* A starting estimate of one free block per 4 KiB; owners grow the node
+     storage when fragmentation needs more (vkr_freelist_grow_nodes). */
   uint64_t max_count = (total_size / 4096) + 16;
-  if (max_count > 1024) {
-    max_count = 1024;
+  if (max_count > UINT32_MAX) {
+    max_count = UINT32_MAX;
   }
 
   uint64_t mem_size = (uint64_t)max_count * sizeof(VkrFreeListNode);
@@ -43,9 +56,8 @@ bool8_t vkr_freelist_create(void *memory, uint64_t memory_size,
     log_error("Memory block too small for freelist (need at least 2 nodes)");
     return false_v;
   }
-
-  if (max_count > 1024) {
-    max_count = 1024;
+  if (max_count > UINT32_MAX) {
+    max_count = UINT32_MAX;
   }
 
   out_freelist->memory = memory;
@@ -58,13 +70,68 @@ bool8_t vkr_freelist_create(void *memory, uint64_t memory_size,
   out_freelist->head->size = total_size;
   out_freelist->head->offset = 0;
   out_freelist->head->next = NULL;
+  vkr_freelist_link_spare(out_freelist, 1u);
 
-  for (uint32_t i = 1; i < max_count; i++) {
-    out_freelist->nodes[i].size = VKR_INVALID_ID;
-    out_freelist->nodes[i].offset = VKR_INVALID_ID;
-    out_freelist->nodes[i].next = NULL;
+  return true_v;
+}
+
+bool8_t vkr_freelist_out_of_nodes(const VkrFreeList *freelist) {
+  return freelist && !freelist->spare;
+}
+
+/* Copy the free blocks into `nodes` in list order; false when they do not
+   fit. */
+vkr_internal bool8_t vkr_freelist_copy_nodes(const VkrFreeList *freelist,
+                                             VkrFreeListNode *nodes,
+                                             uint32_t count, uint32_t *used,
+                                             VkrFreeListNode **head) {
+  uint32_t index = 0u;
+  VkrFreeListNode *previous = NULL;
+  *head = NULL;
+  for (const VkrFreeListNode *node = freelist->head; node; node = node->next) {
+    if (index == count) {
+      return false_v;
+    }
+    nodes[index] = (VkrFreeListNode){
+        .size = node->size, .offset = node->offset, .next = NULL};
+    if (previous) {
+      previous->next = &nodes[index];
+    } else {
+      *head = &nodes[index];
+    }
+    previous = &nodes[index++];
   }
+  *used = index;
+  return true_v;
+}
 
+bool8_t vkr_freelist_grow_nodes(VkrFreeList *freelist, void *new_memory,
+                                uint64_t new_memory_size,
+                                void **out_old_memory) {
+  assert_log(freelist != NULL, "Freelist must not be NULL");
+  assert_log(new_memory != NULL, "New node memory must not be NULL");
+  assert_log(out_old_memory != NULL, "Output old memory must not be NULL");
+  uint64_t new_count = new_memory_size / sizeof(VkrFreeListNode);
+  if (new_count > UINT32_MAX) {
+    new_count = UINT32_MAX;
+  }
+  if (new_count <= freelist->max_count) {
+    return false_v;
+  }
+  VkrFreeListNode *nodes = (VkrFreeListNode *)new_memory;
+  uint32_t used = 0u;
+  VkrFreeListNode *head = NULL;
+  if (!vkr_freelist_copy_nodes(freelist, nodes, (uint32_t)new_count, &used,
+                               &head)) {
+    return false_v;
+  }
+  *out_old_memory = freelist->memory;
+  freelist->memory = new_memory;
+  freelist->nodes = nodes;
+  freelist->nodes_allocated_size = new_memory_size;
+  freelist->max_count = (uint32_t)new_count;
+  freelist->head = head;
+  vkr_freelist_link_spare(freelist, used);
   return true_v;
 }
 
@@ -215,16 +282,11 @@ void vkr_freelist_clear(VkrFreeList *freelist) {
   assert_log(freelist != NULL, "Freelist must not be NULL");
   assert_log(freelist->memory != NULL, "Freelist memory must not be NULL");
 
-  for (uint32_t i = 1; i < freelist->max_count; i++) {
-    freelist->nodes[i].size = VKR_INVALID_ID;
-    freelist->nodes[i].offset = VKR_INVALID_ID;
-    freelist->nodes[i].next = NULL;
-  }
-
   freelist->head = &freelist->nodes[0];
   freelist->head->size = freelist->total_size;
   freelist->head->offset = 0;
   freelist->head->next = NULL;
+  vkr_freelist_link_spare(freelist, 1u);
 }
 
 uint64_t vkr_freelist_free_space(VkrFreeList *freelist) {
@@ -250,76 +312,39 @@ bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
   assert_log(new_total_size > freelist->total_size,
              "New total size must be greater than current size");
 
-  uint64_t old_total_size = freelist->total_size;
-  void *old_memory = freelist->memory;
-
   uint64_t required_mem_size =
       vkr_freelist_calculate_memory_requirement(new_total_size);
-  uint32_t new_max_count =
-      (uint32_t)(required_mem_size / sizeof(VkrFreeListNode));
+  uint64_t new_max_count = required_mem_size / sizeof(VkrFreeListNode);
+  if (new_max_count > UINT32_MAX) {
+    new_max_count = UINT32_MAX;
+  }
 
   VkrFreeListNode *new_nodes = (VkrFreeListNode *)new_memory;
-  for (uint32_t i = 0; i < new_max_count; i++) {
-    new_nodes[i].size = VKR_INVALID_ID;
-    new_nodes[i].offset = VKR_INVALID_ID;
-    new_nodes[i].next = NULL;
-  }
-
-  // Copy active nodes from old to new memory
-  // We need to track which nodes are active and rebuild the linked list
-  uint32_t new_node_idx = 0;
-  VkrFreeListNode *old_node = freelist->head;
+  uint32_t used = 0u;
   VkrFreeListNode *new_head = NULL;
-  VkrFreeListNode *new_prev = NULL;
-
-  while (old_node != NULL && new_node_idx < new_max_count) {
-    new_nodes[new_node_idx].size = old_node->size;
-    new_nodes[new_node_idx].offset = old_node->offset;
-    new_nodes[new_node_idx].next = NULL;
-
-    if (new_head == NULL) {
-      new_head = &new_nodes[new_node_idx];
-    }
-
-    if (new_prev != NULL) {
-      new_prev->next = &new_nodes[new_node_idx];
-    }
-
-    new_prev = &new_nodes[new_node_idx];
-    new_node_idx++;
-    old_node = old_node->next;
-  }
-
-  if (old_node != NULL) {
+  if (!vkr_freelist_copy_nodes(freelist, new_nodes, (uint32_t)new_max_count,
+                               &used, &new_head)) {
     log_error("Ran out of nodes while copying freelist (need more memory)");
     return false_v;
   }
 
-  VkrFreeListNode *old_nodes = freelist->nodes;
-  uint32_t old_max_count = freelist->max_count;
-  uint64_t old_nodes_allocated_size = freelist->nodes_allocated_size;
-  VkrFreeListNode *old_head = freelist->head;
-
+  const VkrFreeList previous = *freelist;
   freelist->memory = new_memory;
   freelist->nodes = new_nodes;
   freelist->nodes_allocated_size = required_mem_size;
-  freelist->max_count = new_max_count;
+  freelist->max_count = (uint32_t)new_max_count;
   freelist->head = new_head;
   freelist->total_size = new_total_size;
+  vkr_freelist_link_spare(freelist, used);
 
-  uint64_t growth_size = new_total_size - old_total_size;
-  if (!vkr_freelist_free(freelist, growth_size, old_total_size)) {
+  uint64_t growth_size = new_total_size - previous.total_size;
+  if (!vkr_freelist_free(freelist, growth_size, previous.total_size)) {
     log_error("Failed to add new space to freelist after resize");
-    freelist->memory = old_memory;
-    freelist->nodes = old_nodes;
-    freelist->nodes_allocated_size = old_nodes_allocated_size;
-    freelist->max_count = old_max_count;
-    freelist->head = old_head;
-    freelist->total_size = old_total_size;
+    *freelist = previous;
     return false_v;
   }
 
-  *out_old_memory = old_memory;
+  *out_old_memory = previous.memory;
 
   return true_v;
 }

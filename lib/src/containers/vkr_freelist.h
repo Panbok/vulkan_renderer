@@ -17,6 +17,9 @@ typedef struct VkrFreeList {
 
   VkrFreeListNode *head;
   VkrFreeListNode *nodes;
+  /* Unused nodes, linked through `next`; a free that splits the free space
+     takes one and fails only when none is left. */
+  VkrFreeListNode *spare;
 } VkrFreeList;
 
 /**
@@ -55,6 +58,24 @@ bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint64_t size,
  */
 bool8_t vkr_freelist_free(VkrFreeList *freelist, uint64_t size,
                           uint64_t offset);
+
+/**
+ * @brief Whether a free could fail for lack of a node to record a new free
+ * block; grow the node storage with vkr_freelist_grow_nodes and retry.
+ */
+bool8_t vkr_freelist_out_of_nodes(const VkrFreeList *freelist);
+
+/**
+ * @brief Moves node storage to a larger block, keeping the tracked space
+ * @param freelist The freelist whose nodes move
+ * @param new_memory Node storage larger than the current one
+ * @param new_memory_size Size of new_memory in bytes
+ * @param out_old_memory Output pointer to the old storage (caller frees)
+ * @return true if successful, false otherwise
+ */
+bool8_t vkr_freelist_grow_nodes(VkrFreeList *freelist, void *new_memory,
+                                uint64_t new_memory_size,
+                                void **out_old_memory);
 
 /**
  * @brief Clears the freelist, marking all space as free

@@ -90,7 +90,11 @@ bool8_t vkr_pool_create(uint64_t chunk_size, uint32_t chunk_count,
     return false_v;
   }
 
-  uint64_t freelist_size = vkr_freelist_calculate_memory_requirement(pool_size);
+  /* Free chunks between allocated ones are separate blocks: at most one per
+     two chunks, plus the tail. */
+  uint64_t freelist_size =
+      Max(vkr_freelist_calculate_memory_requirement(pool_size),
+          (chunk_count / 2u + 2u) * (uint64_t)sizeof(VkrFreeListNode));
   uint64_t freelist_reserve_size = 0;
   if (!vkr_align_pow2_safe(freelist_size, page_size, &freelist_reserve_size)) {
     vkr_platform_mem_release(memory, reserve_size);

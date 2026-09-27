@@ -100,6 +100,31 @@ vkr_internal INLINE uint64_t vkr_choose_page_size(uint64_t total_size) {
   return vkr_platform_get_page_size();
 }
 
+/* Move the free list's nodes into storage twice the size. */
+vkr_internal bool8_t vkr_dmemory_grow_nodes(VkrDMemory *dmemory) {
+  const uint64_t size =
+      vkr_align_to_page(dmemory->freelist_memory_size * 2u, dmemory->page_size);
+  void *memory = vkr_platform_mem_reserve(size);
+  if (memory == NULL) {
+    return false_v;
+  }
+  if (!vkr_platform_mem_commit(memory, size)) {
+    vkr_platform_mem_release(memory, size);
+    return false_v;
+  }
+  void *old_memory = NULL;
+  if (!vkr_freelist_grow_nodes(&dmemory->freelist, memory, size, &old_memory)) {
+    vkr_platform_mem_decommit(memory, size);
+    vkr_platform_mem_release(memory, size);
+    return false_v;
+  }
+  vkr_platform_mem_decommit(old_memory, dmemory->freelist_memory_size);
+  vkr_platform_mem_release(old_memory, dmemory->freelist_memory_size);
+  dmemory->freelist_memory = memory;
+  dmemory->freelist_memory_size = size;
+  return true_v;
+}
+
 bool8_t vkr_dmemory_create(uint64_t total_size, uint64_t max_reserve_size,
                            VkrDMemory *out_dmemory) {
   assert_log(out_dmemory != NULL, "Output dmemory must not be NULL");
@@ -340,6 +365,13 @@ vkr_dmemory_free_internal(VkrDMemory *dmemory, void *ptr,
              (uint64_t)provided_alignment, (uint64_t)header->alignment);
   }
 
+  /* A fragmented pool needs a node per free block; the node storage doubles
+     when a free finds none left. */
+  if (vkr_freelist_out_of_nodes(&dmemory->freelist) &&
+      !vkr_dmemory_grow_nodes(dmemory)) {
+    log_error("Failed to grow the free list for offset %llu", header->offset);
+    return false_v;
+  }
   if (!vkr_freelist_free(&dmemory->freelist, header->request_size,
                          header->offset)) {
     log_error("Failed to free memory at offset %llu", header->offset);

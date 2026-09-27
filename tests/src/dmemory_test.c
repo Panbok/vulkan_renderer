@@ -724,6 +724,36 @@ static void test_dmemory_page_rounding_overflow(void) {
   vkr_dmemory_destroy(&memory);
 }
 
+/* A pool fragmented into more free blocks than its first node storage
+   holds still records every free: the node storage grows. The oracle is the
+   free space before and after, and that freeing the rest coalesces it. */
+static void test_dmemory_fragmented_frees_grow_nodes(void) {
+  printf("  Running test_dmemory_fragmented_frees_grow_nodes...\n");
+  VkrDMemory dmemory;
+  assert(vkr_dmemory_create(MB(4), MB(4), &dmemory));
+  enum { BLOCKS = 6000 };
+  static void *blocks[BLOCKS];
+  for (uint32_t i = 0; i < BLOCKS; ++i) {
+    blocks[i] = vkr_dmemory_alloc(&dmemory, 64);
+    assert(blocks[i]);
+  }
+  const uint64_t full = vkr_dmemory_get_free_space(&dmemory);
+  uint64_t freed = 0u;
+  for (uint32_t i = 0; i < BLOCKS; i += 2u) {
+    const uint64_t before = vkr_dmemory_get_free_space(&dmemory);
+    assert(vkr_dmemory_free(&dmemory, blocks[i], 64));
+    freed += vkr_dmemory_get_free_space(&dmemory) - before;
+  }
+  assert(vkr_dmemory_get_free_space(&dmemory) == full + freed);
+  for (uint32_t i = 1; i < BLOCKS; i += 2u) {
+    assert(vkr_dmemory_free(&dmemory, blocks[i], 64));
+  }
+  assert(dmemory.freelist.head && !dmemory.freelist.head->next);
+  assert(vkr_dmemory_get_free_space(&dmemory) == dmemory.total_size);
+  vkr_dmemory_destroy(&dmemory);
+  printf("  test_dmemory_fragmented_frees_grow_nodes PASSED\n");
+}
+
 bool32_t run_dmemory_tests(void) {
   printf("--- Starting DMemory Tests ---\n");
 
@@ -744,6 +774,7 @@ bool32_t run_dmemory_tests(void) {
   test_dmemory_boundary_conditions();
   test_dmemory_realloc_preserves_data();
   test_dmemory_write_read_integrity();
+  test_dmemory_fragmented_frees_grow_nodes();
 
   // Resize tests
   test_dmemory_resize_empty();
