@@ -24,6 +24,7 @@ def fixture_job(root):
     job.bytes_copied = 0
     job.source_display_names = {}
     job.texture_seeds = {}
+    job.request = {}
     return job
 
 

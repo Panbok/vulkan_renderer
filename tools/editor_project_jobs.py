@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import uuid
+import zlib
 from urllib.parse import unquote, urlsplit, parse_qs
 
 VERSION = 1
@@ -34,7 +35,10 @@ MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_MANAGED_DOCUMENT_BYTES = 1024 * 1024
 # Scene v4 keeps its asset records in an immutable inventory revision, so the
 # scene manifest stays small while large imports keep every record.
-MANAGED_SCENE_VERSION = 4
+MANAGED_SCENE_VERSION = 5
+MANAGED_SCENE_VERSIONS = (3, 4, MANAGED_SCENE_VERSION)
+# Entity blocks a version 5 document keeps in the entity's components map.
+DOCUMENT_BLOCKS = ('transform', 'mesh', 'shape', 'text3d')
 MAX_INVENTORY_BYTES = 16 * 1024 * 1024
 MAX_IMPORT_BYTES = 8 * 1024 * 1024 * 1024
 MAX_IMPORT_FILES = 16384
@@ -48,8 +52,23 @@ UNREFERENCED_GRACE_SECONDS = 24 * 60 * 60
 ORPHAN_GRACE_SECONDS = 60 * 60
 JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60
 CLEANUP_OPERATIONS = ('create_project', 'create_scene', 'bake_scene', 'delete_scene', 'delete_project',
-                      'add_entities',
-                      'import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset')
+                      'add_entities', 'import_project_assets',
+                      'import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset', 'delete_asset')
+
+
+IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.bmp', '.tga')
+
+
+def placeholder_png():
+    """A 2x2 mid-gray RGBA PNG that stands in for a missing model image."""
+    rows = b''.join(b'\x00' + b'\x80\x80\x80\xff' * 2 for _ in range(2))
+
+    def chunk(kind, data):
+        return (struct.pack('>I', len(data)) + kind + data +
+                struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff))
+
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 2, 2, 8, 6, 0, 0, 0)) +
+            chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
 class JobError(Exception):
@@ -108,7 +127,7 @@ def validate_managed_document(value, limit=MAX_MANAGED_DOCUMENT_BYTES):
 
 def atomic_json(path, value):
     path = Path(path)
-    if path.name == 'scene.json' and value.get('version') in (3, MANAGED_SCENE_VERSION):
+    if path.name == 'scene.json' and value.get('version') in MANAGED_SCENE_VERSIONS:
         validate_managed_document(value)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp',
@@ -124,12 +143,112 @@ def atomic_json(path, value):
         Path(name).unlink(missing_ok=True)
 
 
+def document_entity_ids(entities):
+    """Index of each entity's document-stable UUID (ADR-076)."""
+    ids = {}
+    for index, entity in enumerate(entities):
+        value = entity.get('id') if isinstance(entity, dict) else None
+        try:
+            canonical = isinstance(value, str) and str(uuid.UUID(value)) == value
+        except ValueError:
+            canonical = False
+        if not canonical or value in ids:
+            raise JobError('Every entity needs a unique canonical UUID id')
+        ids[value] = index
+    return ids
+
+
+def document_to_internal(scene):
+    """Version 5 keeps entity blocks in `components` and names parents by
+    id. Jobs edit the internal form: blocks beside the components map and
+    parents by index."""
+    entities = scene.get('entities', [])
+    if not isinstance(entities, list):
+        raise JobError('Invalid entity array')
+    ids = document_entity_ids(entities)
+    for entity in entities:
+        components = entity.get('components')
+        if isinstance(components, dict):
+            for block in DOCUMENT_BLOCKS:
+                if block in components:
+                    if block in entity:
+                        raise JobError(f'An entity has both a {block} block and component')
+                    entity[block] = components.pop(block)
+            if not components:
+                entity.pop('components')
+        parent = entity.get('parent')
+        if parent is not None:
+            if parent not in ids:
+                raise JobError('An entity parent names a missing entity id')
+            entity['parent'] = ids[parent]
+    return scene
+
+
+def document_from_internal(document):
+    """The version 5 form of an internal document: every entity keeps or
+    gains a UUID, parents name ids and blocks move into components."""
+    entities = document.get('entities', [])
+    for entity in entities:
+        if not isinstance(entity.get('id'), str):
+            entity['id'] = str(uuid.uuid4())
+    ids = [entity['id'] for entity in entities]
+    document_entity_ids(entities)
+    for entity in entities:
+        parent = entity.get('parent')
+        if parent is not None:
+            if type(parent) is not int or not 0 <= parent < len(entities):
+                raise JobError('Invalid entity parent index')
+            entity['parent'] = ids[parent]
+        moved = {block: entity.pop(block) for block in DOCUMENT_BLOCKS if block in entity}
+        if moved:
+            components = entity.setdefault('components', {})
+            if set(moved) & set(components):
+                raise JobError('An entity has both a block and a component of one kind')
+            components.update(moved)
+    return document
+
+
+def remap_overlay_indices(overlay, entities):
+    """A version 5 overlay names document entities by saved index plus its
+    document_ids list; rebind those indices to the entities' current order,
+    or -1 for entities the document no longer has. Documents without ids
+    bind saved indices directly, as the runtime does."""
+    saved = overlay.get('document_ids')
+    if saved is None:
+        return overlay
+    if not isinstance(saved, list) or any(not isinstance(value, str) for value in saved):
+        raise JobError('Invalid authored override document ids')
+    try:
+        current = document_entity_ids(entities)
+    except JobError:
+        return overlay
+
+    def rebind(reference):
+        index = reference.get('scene_entity')
+        if type(index) is int:
+            reference['scene_entity'] = current.get(saved[index], -1) if 0 <= index < len(saved) else -1
+
+    for record in overlay['overrides'] + overlay.get('created', []):
+        if not isinstance(record, dict):
+            raise JobError('Invalid authored override record')
+        rebind(record)
+        if isinstance(record.get('parent'), dict):
+            rebind(record['parent'])
+        for reference, _, _ in Job.overlay_references(record):
+            if reference is not record:
+                rebind(reference)
+    overlay['document_ids'] = [entity['id'] for entity in entities]
+    return overlay
+
+
 def read_managed_scene(path):
-    """Loads a managed scene with its asset records inline, as jobs edit it.
-    Version 3 stores them in scene.json; version 4 names an inventory revision."""
+    """Loads a managed scene with its asset records inline, in the internal
+    form jobs edit. Version 3 stores assets in scene.json; later versions
+    name an inventory revision, and version 5 is converted from its document
+    form."""
     path = Path(path)
     scene = load_json(path, MAX_MANAGED_DOCUMENT_BYTES)
-    if scene.get('version') != MANAGED_SCENE_VERSION:
+    if scene.get('version') not in (4, MANAGED_SCENE_VERSION):
         return scene
     reference = scene.pop('inventory', None)
     if not isinstance(reference, str) or 'assets' in scene:
@@ -138,14 +257,17 @@ def read_managed_scene(path):
     if inventory.get('version') != 1 or not isinstance(inventory.get('assets'), list):
         raise JobError('Managed scene inventory is invalid')
     scene['assets'] = inventory['assets']
+    if scene['version'] == MANAGED_SCENE_VERSION:
+        document_to_internal(scene)
     return scene
 
 
 def validate_managed_scene(scene, reference='inventory/' + '0' * 36 + '.json'):
-    """Splits an in-memory scene into its v4 manifest and inventory revision,
-    checking each against its own durable limit."""
-    document = {key: value for key, value in scene.items() if key != 'assets'}
+    """Splits an in-memory scene into its version 5 manifest and inventory
+    revision, checking each against its own durable limit."""
+    document = copy.deepcopy({key: value for key, value in scene.items() if key != 'assets'})
     document.update(version=MANAGED_SCENE_VERSION, inventory=reference)
+    document_from_internal(document)
     inventory = {'version': 1, 'assets': scene.get('assets', [])}
     validate_managed_document(document)
     validate_managed_document(inventory, MAX_INVENTORY_BYTES)
@@ -461,7 +583,8 @@ class Job:
             raise JobError('Project must belong directly to the chosen workspace projects directory')
         identifier(self.project_root.name)
         self.scene_id = identifier(request['scene_id']) if request.get('scene_id') else None
-        if self.scene_id is None and request.get('operation') not in ('create_project', 'delete_project'):
+        if self.scene_id is None and request.get('operation') not in ('create_project', 'delete_project',
+                                                                      'import_project_assets', 'inspect_scene'):
             raise JobError('Scene operation requires a scene identifier')
         self.final = self.project_root / 'scenes' / (self.scene_id or 'unused')
         self.legacy_root = Path(request.get('legacy_root') or Path(__file__).resolve().parents[1]).resolve()
@@ -489,6 +612,9 @@ class Job:
         self.generated_root = self.workspace / 'cache' / 'generated'
         self.asset_display_names = {}
         self.source_display_names = {}
+        # Owner of newly imported records: the scene, or the project for a
+        # project import that every scene may reference (ADR-076).
+        self.asset_scope = 'scene'
 
     def ensure_bootstrap(self):
         bundle = self.workspace / 'editor' / 'bundles' / '1'
@@ -691,7 +817,7 @@ class Job:
                  'artifacts': [{'role': role or kind, 'path': managed_reference(path, self.stage),
                                 'version': 1}], 'fingerprint': 'sha256:' + digest(path), **metadata}
         self.assets.append(asset)
-        return {'scope': 'scene', 'id': asset_id, 'role': role or kind}
+        return {'scope': self.asset_scope, 'id': asset_id, 'role': role or kind}
 
     def snapshot_model(self, source, import_id):
         """Rewrite only copied inputs. Resolve every dependency at its source owner."""
@@ -708,6 +834,17 @@ class Job:
         def dependency(value, origin, texture=False):
             located = (gltf_texture_source(value, origin, self.legacy_root)
                        if texture else origin / value)
+            if (self.request.get('use_placeholders') is True and not located.is_file()
+                    and Path(value).suffix.lower() in IMAGE_SUFFIXES):
+                # The user accepted placeholders for missing images at import.
+                placeholder = directory / 'dependencies' / f'placeholder-{len(dependencies)}.png'
+                placeholder.parent.mkdir(parents=True, exist_ok=True)
+                placeholder.write_bytes(placeholder_png())
+                dependencies.append({'path': managed_reference(placeholder, directory),
+                                     'sha256': digest(placeholder), 'bytes': placeholder.stat().st_size,
+                                     'placeholder_for': str(value)})
+                self.warnings.append(f'Missing image {value} was replaced by a placeholder')
+                return placeholder
             resolved = source_file(located)
             copied = self.copy_blob(resolved, directory / 'dependencies')
             dependencies.append({'path': managed_reference(copied, directory),
@@ -847,7 +984,7 @@ class Job:
                 'artifacts': [], 'recipe': {'tool': 'mesh', 'version': 1},
                 'fingerprint': 'sha256:' + digest(snapshot)})
             atomic_json(self.stage / 'imports' / (import_id + '.json'), self.sources[import_id])
-            return {'scope': 'scene', 'id': asset_id, 'role': 'mesh'}
+            return {'scope': self.asset_scope, 'id': asset_id, 'role': 'mesh'}
         self.generated_root.mkdir(parents=True, exist_ok=True)
         self.run_tool('mesh', ['--input', snapshot, '--output', mesh,
                               '--bundle-root', bundle, '--import-id', import_id,
@@ -1044,7 +1181,7 @@ class Job:
                 'artifacts': [], 'recipe': {'tool': 'font', 'version': 1,
                     'config': managed_reference(config, self.stage)},
                 'fingerprint': 'sha256:' + digest(copied)})
-            return {'scope': 'scene', 'id': asset_id, 'role': 'font'}
+            return {'scope': self.asset_scope, 'id': asset_id, 'role': 'font'}
         self.run_tool('font', ['--config', config], 'Cooking scene font')
         if not (bundle / 'font.vkfa').is_file():
             raise JobError('Font cooker did not publish its artifact')
@@ -1105,7 +1242,7 @@ class Job:
     @staticmethod
     def checked_overlay(overlay):
         if (not isinstance(overlay, dict) or type(overlay.get('version')) is not int or
-                overlay['version'] not in (1, 2, 3) or not isinstance(overlay.get('overrides'), list)):
+                overlay['version'] not in (1, 2, 3, 4, 5) or not isinstance(overlay.get('overrides'), list)):
             raise JobError('Unsupported authored override journal')
         if any(not isinstance(record, dict) for record in overlay['overrides']):
             raise JobError('Invalid authored override record')
@@ -1211,7 +1348,7 @@ class Job:
         return source_file(contained(source_workspace, value))
 
     def remap_overlay(self, path, expected, scene, source_root=None, managed=False):
-        overlay = self.checked_overlay(load_json(path))
+        overlay = remap_overlay_indices(self.checked_overlay(load_json(path)), scene.get('entities', []))
         seen = set()
         for record in overlay['overrides']:
             key = (record.get('scene_entity'), record.get('gltf_node'))
@@ -1251,7 +1388,7 @@ class Job:
     def import_scene(self, source):
         source = source_file(source)
         scene = load_json(source)
-        if scene.get('version') in (3, MANAGED_SCENE_VERSION):
+        if scene.get('version') in MANAGED_SCENE_VERSIONS:
             return self.import_managed_scene(read_managed_scene(source), source.parent)
         if scene.get('version', 1) not in (1, 2):
             raise JobError('Unsupported scene JSON version')
@@ -1299,13 +1436,99 @@ class Job:
                 text['font'] = None
         # Authored overlay is imported separately only after native fingerprint validation.
         overlay = Path(str(source) + '.editor.json')
-        if overlay.is_file():
+        if overlay.is_file() and self.request.get('include_edits', True):
             copied = self.copy_file(overlay, self.stage / 'edits' / 'scene.editor.json')
             expected = source_fingerprint(scene['source_identity'].encode()) if scene.get('source_identity') else source_fingerprint(source.read_bytes())
             self.remap_overlay(copied, expected, scene, source.parent)
             scene['edit_overlay'] = managed_reference(copied, self.stage)
         scene.pop('source_identity', None)
         return scene
+
+    def inspect_scene(self):
+        """Read-only preflight of a scene to import: its version, entity and
+        dependency counts, dependencies that do not resolve against the source
+        folder or legacy root, saved edits and what the import will drop. The
+        workspace is never written."""
+        source = source_file(self.request['source_scene'])
+        scene = load_json(source)
+        version = scene.get('version', 1)
+        entities = scene.get('entities', [])
+        if not isinstance(entities, list):
+            raise JobError('Invalid entity array')
+        report = {'version': VERSION, 'status': 'complete', 'scene_version': version,
+                  'entities': len(entities), 'meshes': 0, 'materials': 0, 'probes': 0,
+                  'missing': [], 'missing_count': 0, 'missing_images': 0, 'warnings': [],
+                  'saved_edits': Path(str(source) + '.editor.json').is_file()}
+        if version in MANAGED_SCENE_VERSIONS:
+            # A managed scene bundle is its own closure; the import validates it.
+            report['meshes'] = sum(1 for asset in scene.get('assets', []) if asset.get('kind') == 'mesh')
+            report['materials'] = sum(1 for asset in scene.get('assets', []) if asset.get('kind') == 'material')
+            return report
+        if version not in (1, 2):
+            raise JobError('Unsupported scene JSON version')
+        missing = []
+
+        def check(value, origin):
+            try:
+                return legacy_source(value, origin, self.legacy_root)
+            except JobError:
+                missing.append(str(value))
+                return None
+
+        meshes, materials = set(), set()
+        for entity in entities:
+            mesh = entity.get('mesh') if isinstance(entity, dict) else None
+            if isinstance(mesh, dict) and mesh.get('path'):
+                meshes.add(mesh['path'])
+            material = (entity.get('shape') or {}).get('material') if isinstance(entity, dict) else None
+            if isinstance(material, dict) and material.get('path'):
+                materials.add(material['path'])
+            text = entity.get('text3d') if isinstance(entity, dict) else None
+            if isinstance(text, dict) and isinstance(text.get('font'), str) and \
+                    text['font'] not in ('UbuntuMono', 'UbuntuMono-cooked', 'default-scene-font'):
+                report['warnings'].append(f'Text font {text["font"]} needs its source located before import')
+        for value in sorted(meshes):
+            path = check(value, source.parent)
+            if path is not None and path.suffix.lower() == '.gltf':
+                self.inspect_gltf_dependencies(path, missing)
+        for value in sorted(materials):
+            check(value, source.parent)
+        for probe in scene.get('reflection_probes', []):
+            report['probes'] += 1 if isinstance(probe, dict) and probe.get('cubemap') else 0
+        volume = scene.get('diffuse_volume')
+        if isinstance(volume, dict) and volume.get('path'):
+            check(volume['path'], source.parent)
+        environment = scene.get('environment')
+        if isinstance(environment, dict):
+            for field in ('equirect', 'cubemap'):
+                if field in environment:
+                    report['warnings'].append(f'The removed environment {field} sky image will be dropped')
+        report['meshes'] = len(meshes)
+        report['materials'] = len(materials)
+        report['missing_count'] = len(missing)
+        report['missing_images'] = sum(1 for item in missing
+                                       if Path(item.split(': ')[-1]).suffix.lower() in IMAGE_SUFFIXES)
+        report['missing'] = missing[:16]
+        return report
+
+    def inspect_gltf_dependencies(self, path, missing):
+        """External buffers and images of a glTF file that do not resolve."""
+        document = load_json(path)
+        buffers = [(entry, False) for entry in document.get('buffers', [])]
+        images = [(entry, True) for entry in document.get('images', [])]
+        for entry, image in [*buffers, *images]:
+            uri = entry.get('uri') if isinstance(entry, dict) else None
+            if not isinstance(uri, str) or uri.startswith('data:'):
+                continue
+            try:
+                value = gltf_uri_path(uri)
+                located = (gltf_texture_source(value, path.parent, self.legacy_root)
+                           if image else path.parent / value)
+                found = located.is_file()
+            except (JobError, OSError, ValueError):
+                found = False
+            if not found:
+                missing.append(f'{path.name}: {unquote(uri)}')
 
     def import_managed_scene(self, scene, origin):
         scene = migrate_source_references(copy.deepcopy(scene), origin / 'scene.json')
@@ -1386,17 +1609,113 @@ class Job:
                 scene[key] = remap(scene[key])
         for entity in scene.get('entities', []):
             entity['id'] = str(uuid.uuid4())
+        # The copied overlay already binds by current index; name the copy's
+        # new ids so the runtime keeps that binding.
+        if scene.get('edit_overlay'):
+            overlay_path = contained(self.stage, scene['edit_overlay'], must_exist=False)
+            if overlay_path.is_file():
+                overlay = load_json(overlay_path)
+                if 'document_ids' in overlay:
+                    overlay['document_ids'] = [entity['id'] for entity in scene.get('entities', [])]
+                    atomic_json(overlay_path, overlay)
         return scene
+
+    def instantiate_prefab(self, scene, prefab):
+        """Copy another project scene's entities under one new root entity
+        (ADR-076). Instances keep no link to their source: each copy gets new
+        ids, its parents point inside the copy, scene assets it references are
+        copied into this scene, and project and editor references are shared."""
+        if not isinstance(prefab, dict):
+            raise JobError('A prefab needs a scene id')
+        prefab_id = identifier(prefab.get('scene_id'))
+        members = {item.get('id'): item for item in self.project_document().get('scenes', [])}
+        if prefab_id == self.scene_id or prefab_id not in members:
+            raise JobError('A prefab must be another scene of this project')
+        prefab_root = self.project_root / 'scenes' / prefab_id
+        source = migrate_source_references(read_managed_scene(prefab_root / 'scene.json'),
+                                           prefab_root / 'scene.json')
+        entities = source.get('entities', [])
+        if len(scene['entities']) + 1 + len(entities) > 65536:
+            raise JobError('Adding entities exceeds the scene entity limit')
+        copied = {}
+
+        def copy_asset(reference):
+            if isinstance(reference, list):
+                return [copy_asset(item) for item in reference]
+            if not isinstance(reference, dict):
+                return reference
+            if reference.get('scope') == 'scene' and 'id' in reference:
+                if reference['id'] not in copied:
+                    matches = [item for item in source.get('assets', []) if item.get('id') == reference['id']]
+                    if len(matches) != 1:
+                        raise JobError('The prefab references an unknown scene asset')
+                    record = copy.deepcopy(matches[0])
+                    new_id = str(uuid.uuid4())
+                    products = record.get('artifacts', [])
+                    if not products:
+                        raise JobError('A prefab asset has no artifact; rebuild it')
+                    # The bundle directory holds the artifact's dependencies.
+                    first = contained(prefab_root, products[0]['path'])
+                    bundle_root = first.parent.parent if first.parent.name == 'materials' else first.parent
+                    target = self.stage / 'builds' / new_id
+                    for path in bundle_root.rglob('*'):
+                        if path.is_symlink():
+                            raise JobError('A prefab asset contains a symlink')
+                        if path.is_file():
+                            self.copy_file(path, target / path.relative_to(bundle_root))
+                    for product in products:
+                        old_path = contained(prefab_root, product['path'])
+                        product['path'] = managed_reference(target / old_path.relative_to(bundle_root), self.stage)
+                    record.pop('closure', None)
+                    record.update(id=new_id, source=None)
+                    self.assets.append(record)
+                    copied[reference['id']] = new_id
+                return {**reference, 'id': copied[reference['id']]}
+            return {key: copy_asset(item) for key, item in reference.items()}
+
+        name = prefab.get('name') or members[prefab_id].get('name') or 'Prefab'
+        root = {'id': str(uuid.uuid4()), 'name': str(name)[:512], 'parent': None,
+                'transform': copy.deepcopy(prefab.get('transform') or
+                                           {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]})}
+        offset = len(scene['entities']) + 1
+        scene['entities'].append(root)
+        for entity in entities:
+            instance = copy_asset(copy.deepcopy(entity))
+            instance['id'] = str(uuid.uuid4())
+            parent = instance.get('parent')
+            instance['parent'] = offset - 1 if parent is None else offset + parent
+            scene['entities'].append(instance)
 
     def append_entities(self, scene):
         models = self.request.get('models', [])
         lights = self.request.get('lights', [])
-        if not isinstance(models, list) or not isinstance(lights, list):
-            raise JobError('Models and lights must be arrays')
+        prefabs = self.request.get('prefabs', [])
+        if not isinstance(models, list) or not isinstance(lights, list) or not isinstance(prefabs, list):
+            raise JobError('Models, lights and prefabs must be arrays')
         first = len(scene.setdefault('entities', []))
         if first + len(models) + len(lights) > 65536:
             raise JobError('Adding entities exceeds the scene entity limit')
+        for prefab in prefabs:
+            self.instantiate_prefab(scene, prefab)
         for model in models:
+            if isinstance(model, dict) and 'asset' in model:
+                # An existing mesh asset, as a Content drop places it; lowering
+                # verifies the reference names a built mesh.
+                asset = model['asset']
+                name = model.get('name')
+                if (not isinstance(asset, dict) or asset.get('scope') not in ('scene', 'project', 'editor')
+                        or not isinstance(asset.get('id'), str) or not asset['id']):
+                    raise JobError('A placed model needs an asset scope and id')
+                if not isinstance(name, str) or not name.strip() or len(name.encode('utf-8')) > 512:
+                    name = 'Mesh'
+                entity = {'id': str(uuid.uuid4()), 'name': name.strip(), 'parent': None,
+                          'transform': {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
+                          'mesh': {'asset': {'scope': asset['scope'], 'id': asset['id'], 'role': 'mesh'},
+                                   'pipeline_domain': 'world'}}
+                if model.get('transform'):
+                    entity['transform'] = copy.deepcopy(model['transform'])
+                scene['entities'].append(entity)
+                continue
             source = source_file(model['source'] if isinstance(model, dict) else model)
             if source.suffix.lower() == '.vkb':
                 reference = self.import_cooked_mesh(source)
@@ -1433,8 +1752,9 @@ class Job:
         if self.request.get('source_scene'):
             scene = self.import_scene(self.request['source_scene'])
         else:
-            scene = {'version': 3, 'entities': [], 'environment': {'enabled': False},
-                     'reflection_probes': []}
+            # A new scene authors no sky: the project World's sky light,
+            # atmosphere and sun apply until the scene adds its own (ADR-076).
+            scene = {'version': 3, 'entities': [], 'reflection_probes': []}
         self.append_entities(scene)
         # The physical sky supplies the sky, sun and global IBL; the environment
         # block keeps only its sky-light scales. An imported scene keeps its
@@ -1537,6 +1857,7 @@ class Job:
         journal = self.checked_overlay(load_json(contained(root, overlay)))
         runtime = load_json(result['runtime_path'])
         entities = runtime.get('entities', [])
+        remap_overlay_indices(journal, entities)
         wrapper_edits, node_edits = {}, {}
         for edit in journal['overrides']:
             for reference, field, required in self.overlay_references(edit):
@@ -1836,7 +2157,7 @@ class Job:
                 raise JobError('Managed fonts require a cooked MTSDF artifact')
 
     def lower(self, scene, root, publish_runtime=True):
-        if scene.get('version') not in (3, MANAGED_SCENE_VERSION) or scene.get('id') != self.scene_id:
+        if scene.get('version') not in MANAGED_SCENE_VERSIONS or scene.get('id') != self.scene_id:
             raise JobError('Managed scene version or ID mismatch')
         project = self.project_document()
         inventories = {'scene': (root, scene.get('assets', [])),
@@ -1938,8 +2259,16 @@ class Job:
                 raise JobError('Managed volume contains a legacy path')
             if 'asset' in volume:
                 volume['path'] = str(asset(volume.pop('asset'), 'volume')[0])
+        # Document ids reach the runtime, which binds overlays through them;
+        # a document missing any id binds by index (ADR-076).
+        try:
+            document_entity_ids(runtime.get('entities', []))
+            keep_ids = True
+        except JobError:
+            keep_ids = False
         for entity in runtime.get('entities', []):
-            entity.pop('id', None)
+            if not keep_ids:
+                entity.pop('id', None)
             for component, role in ((entity.get('mesh'), 'mesh'), (entity.get('animation'), 'animation'),
                                     (entity.get('shape', {}).get('material'), 'material')):
                 if not component:
@@ -2119,6 +2448,71 @@ class Job:
         write_managed_scene(path, scene)
         return result
 
+    def import_source(self, source):
+        """Imports one model, cooked mesh, font, material or texture into the
+        stage as records owned by self.asset_scope; returns the model or mesh
+        reference when there is one."""
+        suffix = source.suffix.lower()
+        if suffix in ('.obj', '.gltf', '.glb'):
+            return self.import_model(source)
+        if suffix == '.vkb':
+            return self.import_cooked_mesh(source)
+        if suffix in ('.ttf', '.otf'):
+            self.import_font(source)
+        elif suffix == '.mt':
+            import_id = str(uuid.uuid4())
+            material = self.import_material(source, self.stage / 'builds' / import_id, import_id, 0)
+            self.artifact('material', source.stem, material, import_id=import_id, source=material)
+        elif suffix in ('.png', '.jpg', '.jpeg', '.bmp', '.tga', '.vkt'):
+            imported = self.copy_blob(source, self.stage / 'builds' / str(uuid.uuid4()))
+            self.artifact('texture', source.stem, imported, source=imported)
+        else:
+            raise JobError(f'Unsupported asset format: {suffix}')
+        return None
+
+    def import_project_assets(self):
+        """Imports sources as project assets (ADR-076): every scene of the
+        project may reference them as {scope: project}. Builds publish under the
+        project; the C project store publishes the returned inventory, so a
+        failure leaves project.json unchanged and removes these builds."""
+        if self.read_only:
+            raise JobError('Cannot import into a read-only workspace')
+        sources = self.request.get('sources', [])
+        if not isinstance(sources, list) or not sources:
+            raise JobError('Select at least one asset to import')
+        staging = self.project_root / '.staging'
+        staging.mkdir(parents=True, exist_ok=True)
+        self.stage = Path(tempfile.mkdtemp(prefix='project-assets-', dir=staging))
+        self.assets = []
+        self.asset_scope = 'project'
+        for value in sources:
+            self.import_source(source_file(value['source'] if isinstance(value, dict) else value))
+        records = self.assets
+        for record in records:
+            closure = set()
+            for product in record['artifacts']:
+                self.validate_bundle_dependencies(self.stage, contained(self.stage, product['path']), closure)
+            record['closure'] = {managed_reference(path, self.stage): digest(path) for path in closure}
+        for folder in ('sources', 'builds', 'imports'):
+            incoming = self.stage / folder
+            if not incoming.exists():
+                continue
+            destination_root = self.project_root / folder
+            destination_root.mkdir(exist_ok=True)
+            for source in incoming.iterdir():
+                destination = destination_root / source.name
+                if destination.exists():
+                    raise JobError('Project asset revision already exists')
+                if source.is_dir():
+                    publish_directory(source, destination)
+                else:
+                    os.rename(source, destination)
+                self.project_builds.append(destination)
+        self.pending_project_assets = [*self.project_document().get('assets', []), *records]
+        validate_managed_document(self.project_document())
+        return {'version': VERSION, 'status': 'complete', 'fonts': [], 'warnings': self.warnings,
+                'imported_assets': [record['id'] for record in records]}
+
     def edit_assets(self):
         path = Path(self.request['scene_path']).resolve(strict=True)
         if path != (self.final / 'scene.json').resolve():
@@ -2135,8 +2529,8 @@ class Job:
         operation = self.request['operation']
         added_entity = None
         if operation == 'add_entities':
-            if not self.request.get('models') and not self.request.get('lights'):
-                raise JobError('Select a model or light to add')
+            if not any(self.request.get(key) for key in ('models', 'lights', 'prefabs')):
+                raise JobError('Select a model, light or scene to add')
             added_entity = self.append_entities(scene)
             self.validate_semantics(scene)
         elif operation == 'import_assets':
@@ -2145,32 +2539,40 @@ class Job:
                 raise JobError('Select at least one asset to import')
             for value in sources:
                 source = source_file(value['source'] if isinstance(value, dict) else value)
-                suffix = source.suffix.lower()
-                if suffix in ('.obj', '.gltf', '.glb'):
-                    reference = self.import_model(source)
-                    if self.request.get('add_instances', False):
-                        scene.setdefault('entities', []).append({'id': str(uuid.uuid4()),
-                            'name': source.stem, 'parent': None,
-                            'transform': {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
-                            'mesh': {'asset': reference, 'pipeline_domain': 'world'}})
-                elif suffix == '.vkb':
-                    self.import_cooked_mesh(source)
-                elif suffix in ('.ttf', '.otf'):
-                    self.import_font(source)
-                elif suffix == '.mt':
-                    import_id = str(uuid.uuid4())
-                    material = self.import_material(source, self.stage / 'builds' / import_id, import_id, 0)
-                    self.artifact('material', source.stem, material, import_id=import_id, source=material)
-                elif suffix in ('.png', '.jpg', '.jpeg', '.bmp', '.tga', '.vkt'):
-                    imported = self.copy_blob(source, self.stage / 'builds' / str(uuid.uuid4()))
-                    self.artifact('texture', source.stem, imported, source=imported)
-                else:
-                    raise JobError(f'Unsupported asset format: {suffix}')
+                reference = self.import_source(source)
+                if source.suffix.lower() in ('.obj', '.gltf', '.glb') and self.request.get('add_instances', False):
+                    scene.setdefault('entities', []).append({'id': str(uuid.uuid4()),
+                        'name': source.stem, 'parent': None,
+                        'transform': {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
+                        'mesh': {'asset': reference, 'pipeline_domain': 'world'}})
         else:
             matches = [record for record in self.assets if record.get('id') == self.request.get('asset_id')]
             if len(matches) != 1:
                 raise JobError('Select one scene-owned asset to rebuild or reimport')
             record = matches[0]
+            if operation == 'delete_asset':
+                # Deleting drops the record; unreferenced builds are collected
+                # by workspace cleanup. An asset the scene still uses stays.
+                def uses(value):
+                    if isinstance(value, list):
+                        return any(uses(item) for item in value)
+                    if isinstance(value, dict):
+                        if value.get('scope') == 'scene' and value.get('id') == record['id']:
+                            return True
+                        return any(uses(item) for item in value.values())
+                    return False
+                if uses({key: value for key, value in scene.items() if key != 'assets'}):
+                    raise JobError(f'{record.get("name", "The asset")} is used by the scene; remove its uses first')
+                others = [item for item in self.assets if item is not record]
+                if record['id'] in json.dumps(others):
+                    raise JobError(f'{record.get("name", "The asset")} is used by another asset; delete that first')
+                self.assets.remove(record)
+                scene['assets'] = self.assets
+                result = self.lower(scene, path.parent)
+                if digest(path) != fingerprint:
+                    raise JobError('Scene changed during delete; retry')
+                write_managed_scene(path, scene)
+                return result
             if operation == 'rename_asset':
                 name = self.request.get('name')
                 if not isinstance(name, str) or not name.strip() or len(name.strip().encode('utf-8')) > 512 or any(ord(c) < 32 or ord(c) == 127 for c in name):
@@ -2494,6 +2896,11 @@ class Job:
 
     def execute(self):
         try:
+            if self.request.get('operation') == 'inspect_scene':
+                atomic_json(self.result_path, self.inspect_scene())
+                atomic_json(self.progress_path, {'version': VERSION, 'status': 'complete',
+                                                'stage': 'Inspected', 'progress': 1.0})
+                return 0
             if self.request.get('operation') in ('delete_scene', 'delete_project'):
                 deleting_scene = self.request['operation'] == 'delete_scene'
                 result = self.delete_scene() if deleting_scene else self.delete_project()
@@ -2515,9 +2922,12 @@ class Job:
                 if path != (self.final / 'scene.json').resolve():
                     raise JobError('Bake scene does not match project membership')
                 result = self.prepare_unbuilt(path, migrate_source_references(read_managed_scene(path), path))
+            elif self.request.get('operation') == 'import_project_assets':
+                result = self.import_project_assets()
             elif self.request.get('operation') == 'prepare_scene':
                 result = self.prepare(self.request['scene_path'])
-            elif self.request.get('operation') in ('add_entities', 'import_assets', 'reimport_asset', 'rebuild_asset', 'rename_asset'):
+            elif self.request.get('operation') in ('add_entities', 'import_assets', 'reimport_asset', 'rebuild_asset',
+                                                   'rename_asset', 'delete_asset'):
                 result = self.edit_assets()
             else:
                 raise JobError('Unknown project job operation')

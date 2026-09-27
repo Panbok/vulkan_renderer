@@ -3,6 +3,7 @@
 import argparse
 import base64
 import importlib.util
+import copy
 import json
 from pathlib import Path
 import shutil
@@ -117,10 +118,27 @@ def main():
         scene_path = Path(result['scene_path'])
         managed = jobs.read_managed_scene(scene_path)
         runtime = jobs.load_json(result['runtime_path'])
-        assert managed['version'] == 4 and runtime['version'] == 2
-        # Scene v4 keeps records in an immutable inventory revision.
+        assert managed['version'] == 5 and runtime['version'] == 2
+        # Scene v4 and later keep records in an immutable inventory revision.
         stored = jobs.load_json(scene_path)
         assert 'assets' not in stored and (scene_path.parent / stored['inventory']).is_file()
+        # Version 5 keeps entity blocks in components; the runtime keeps each
+        # entity's document id, which overlays bind through (ADR-076).
+        assert 'mesh' not in stored['entities'][0] and 'mesh' in stored['entities'][0]['components']
+        assert [entity['id'] for entity in runtime['entities']] == [entity['id'] for entity in managed['entities']]
+        first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+        internal = [{'id': first_id, 'name': 'A', 'parent': None,
+                     'transform': {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]}},
+                    {'id': second_id, 'name': 'B', 'parent': 0, 'shape': {'type': 'cube'}}]
+        document = jobs.document_from_internal(copy.deepcopy({'entities': internal}))
+        assert document['entities'][1]['parent'] == first_id
+        assert document['entities'][1]['components'] == {'shape': {'type': 'cube'}}
+        assert jobs.document_to_internal(document)['entities'] == internal
+        overlay = {'version': 5, 'document_ids': [first_id, second_id],
+                   'overrides': [{'scene_entity': 1, 'gltf_node': -1}, {'scene_entity': 0, 'gltf_node': -1}]}
+        jobs.remap_overlay_indices(overlay, [internal[1], {'id': str(uuid.uuid4())}])
+        assert [record['scene_entity'] for record in overlay['overrides']] == [0, -1]
+        assert overlay['document_ids'][0] == second_id
         assert manifest.read_bytes() == original_manifest, 'Job published project membership'
         assert '.staging' not in json.dumps(managed)
         assert str(source) not in json.dumps(managed)
@@ -562,7 +580,173 @@ def main():
         jobs.write_managed_scene(relocated_scene, document)
         assert jobs.Job(prepare, result_path).execute() == 1
         assert jobs.load_json(result_path)['status'] == 'failed'
-        print('Project jobs: copied source closure, cooked-only remap, relocation, missing-input rollback and traversal rejection passed')
+        # Project assets (ADR-076): an import needs no scene, publishes its
+        # builds under the project and returns the inventory the C store
+        # publishes; any scene then resolves the model by {scope: project}.
+        shared_source = root / 'shared'
+        shared_source.mkdir()
+        shared_model = shared_source / 'shared.obj'
+        shared_model.write_text('mtllib shared.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n'
+                                'vt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\n'
+                                'usemtl shared\nf 1/1/1 2/2/1 3/3/1\n')
+        (shared_source / 'shared.mtl').write_text('newmtl shared\nKd 0 1 0\nmap_Kd pixel.png\n')
+        (shared_source / 'pixel.png').write_bytes((source / 'nested' / 'pixel.png').read_bytes())
+        project_import = {'version': 1, 'operation': 'import_project_assets',
+                          'workspace_root': str(workspace), 'project_path': str(manifest),
+                          'sources': [str(shared_model)], 'tools': request['tools']}
+        before_import = manifest.read_bytes()
+        assert jobs.Job(project_import, result_path).execute() == 0
+        imported = jobs.load_json(result_path)
+        assert manifest.read_bytes() == before_import, 'Job published project membership'
+        shared_mesh = next(item for item in imported['project_assets'] if item['kind'] == 'mesh')
+        assert (project / shared_mesh['artifacts'][0]['path']).is_file()
+        assert any(item['kind'] == 'texture' for item in imported['project_assets'])
+        assert set(imported['imported_assets']) <= {item['id'] for item in imported['project_assets']}
+        assert not list((project / '.staging').iterdir())
+        document = jobs.load_json(manifest)
+        document['assets'] = imported['project_assets']
+        manifest.write_text(json.dumps(document))
+        shared_request = dict(request, scene_id=str(uuid.uuid4()), models=[])
+        assert jobs.Job(shared_request, result_path).execute() == 0
+        shared_path = Path(jobs.load_json(result_path)['scene_path'])
+        shared_scene = jobs.read_managed_scene(shared_path)
+        shared_scene['entities'].append({'id': str(uuid.uuid4()), 'name': 'Shared', 'parent': None,
+            'transform': {'pos': [0, 0, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
+            'mesh': {'asset': {'scope': 'project', 'id': shared_mesh['id'], 'role': 'mesh'},
+                     'pipeline_domain': 'world'}})
+        jobs.write_managed_scene(shared_path, shared_scene)
+        shared_prepare = dict(shared_request, operation='prepare_scene', scene_path=str(shared_path))
+        assert jobs.Job(shared_prepare, result_path).execute() == 0
+        shared_runtime = jobs.load_json(jobs.load_json(result_path)['runtime_path'])
+        mesh_paths = [Path(entity['mesh']['path']) for entity in shared_runtime['entities'] if 'mesh' in entity]
+        assert mesh_paths and all(path.is_file() and
+                                  path.resolve().is_relative_to((project / 'builds').resolve())
+                                  for path in mesh_paths)
+        # A Content drop places the existing project mesh by reference at its
+        # drop point without copying it into the scene; a stale reference
+        # fails and leaves the scene untouched.
+        placed = dict(shared_request, operation='add_entities', scene_path=str(shared_path), lights=[],
+                      models=[{'asset': {'scope': 'project', 'id': shared_mesh['id']}, 'name': 'Placed',
+                               'transform': {'pos': [2, 0, -3], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]}}])
+        assets_before = len(jobs.read_managed_scene(shared_path).get('assets', []))
+        assert jobs.Job(placed, result_path).execute() == 0
+        placed_index = jobs.load_json(result_path)['added_scene_entity']
+        placed_scene = jobs.read_managed_scene(shared_path)
+        placed_entity = placed_scene['entities'][placed_index]
+        assert placed_entity['name'] == 'Placed' and placed_entity['transform']['pos'] == [2, 0, -3]
+        assert placed_entity['mesh']['asset'] == {'scope': 'project', 'id': shared_mesh['id'], 'role': 'mesh'}
+        assert len(placed_scene.get('assets', [])) == assets_before, 'Placement copied the project mesh'
+        stale = dict(placed, models=[{'asset': {'scope': 'project', 'id': str(uuid.uuid4())}, 'name': 'Gone'}])
+        before_stale = shared_path.read_bytes()
+        assert jobs.Job(stale, result_path).execute() == 1
+        assert shared_path.read_bytes() == before_stale, 'Failed placement changed the scene'
+        # A prefab instance copies another project scene's entities under one
+        # new root with new ids and parents inside the copy; project assets
+        # stay shared. A scene outside the project fails.
+        document = jobs.load_json(manifest)
+        document['scenes'] = [{'id': shared_request['scene_id'], 'name': 'Shared',
+                               'path': 'scenes/' + shared_request['scene_id'] + '/scene.json'}]
+        manifest.write_text(json.dumps(document))
+        prefab_source = jobs.read_managed_scene(shared_path)
+        target_request = dict(request, scene_id=str(uuid.uuid4()), models=[])
+        assert jobs.Job(target_request, result_path).execute() == 0
+        target_path = Path(jobs.load_json(result_path)['scene_path'])
+        instance = dict(target_request, operation='add_entities', scene_path=str(target_path), lights=[],
+                        prefabs=[{'scene_id': shared_request['scene_id'], 'name': 'Instance'}])
+        assert jobs.Job(instance, result_path).execute() == 0
+        root_index = jobs.load_json(result_path)['added_scene_entity']
+        instanced = jobs.read_managed_scene(target_path)['entities']
+        copies = instanced[root_index + 1:]
+        assert instanced[root_index]['name'] == 'Instance' and instanced[root_index]['parent'] is None
+        assert len(copies) == len(prefab_source['entities'])
+        assert all(copy_entity['parent'] == root_index for copy_entity, source_entity
+                   in zip(copies, prefab_source['entities']) if source_entity.get('parent') is None)
+        assert not {entity['id'] for entity in copies} & {entity['id'] for entity in prefab_source['entities']}
+        assert copies[-1]['mesh']['asset'] == {'scope': 'project', 'id': shared_mesh['id'], 'role': 'mesh'}
+        # A prefab's scene-scoped mesh is copied into the instancing scene.
+        document['scenes'].append({'id': request['scene_id'], 'name': 'Source',
+                                   'path': 'scenes/' + request['scene_id'] + '/scene.json'})
+        manifest.write_text(json.dumps(document))
+        scoped = dict(instance, prefabs=[{'scene_id': request['scene_id']}])
+        assert jobs.Job(scoped, result_path).execute() == 0
+        scoped_result = jobs.load_json(result_path)
+        scoped_scene = jobs.read_managed_scene(target_path)
+        scoped_mesh = scoped_scene['entities'][scoped_result['added_scene_entity'] + 1]['mesh']['asset']
+        assert scoped_mesh['scope'] == 'scene'
+        assert scoped_mesh['id'] not in {item['id'] for item in jobs.read_managed_scene(scene_path)['assets']}
+        copied_record = next(item for item in scoped_scene['assets'] if item['id'] == scoped_mesh['id'])
+        assert (target_path.parent / copied_record['artifacts'][0]['path']).is_file()
+        assert Path(jobs.load_json(scoped_result['runtime_path'])['entities'][-1]['mesh']['path']).is_file()
+        # Deleting a scene asset the scene uses fails; once unused it goes.
+        in_use = dict(scoped, operation='delete_asset', asset_id=scoped_mesh['id'], prefabs=[])
+        assert jobs.Job(in_use, result_path).execute() == 1
+        assert any(item['id'] == scoped_mesh['id'] for item in jobs.read_managed_scene(target_path)['assets'])
+        unused_scene = jobs.read_managed_scene(target_path)
+        unused_scene['entities'] = [entity for entity in unused_scene['entities']
+                                    if entity.get('mesh', {}).get('asset', {}).get('id') != scoped_mesh['id']]
+        jobs.write_managed_scene(target_path, unused_scene)
+        assert jobs.Job(in_use, result_path).execute() == 0
+        assert not any(item['id'] == scoped_mesh['id'] for item in jobs.read_managed_scene(target_path)['assets'])
+        outside = dict(instance, prefabs=[{'scene_id': str(uuid.uuid4())}])
+        before_outside = target_path.read_bytes()
+        assert jobs.Job(outside, result_path).execute() == 1
+        assert target_path.read_bytes() == before_outside, 'Failed instancing changed the scene'
+        # Import preflight: counts and unresolved dependencies without writing
+        # the workspace; a located legacy root resolves the missing mesh.
+        legacy = root / 'legacy'
+        (legacy / 'models').mkdir(parents=True)
+        (legacy / 'models' / 'present.png').write_bytes((source / 'nested' / 'pixel.png').read_bytes())
+        (legacy / 'models' / 'kit.gltf').write_text(json.dumps({
+            'asset': {'version': '2.0'},
+            'buffers': [{'uri': 'kit%20data.bin', 'byteLength': 4}],
+            'images': [{'uri': 'present.png'}, {'uri': 'gone.png'}]}))
+        located_root = root / 'located'
+        (located_root / 'models').mkdir(parents=True)
+        (located_root / 'models' / 'crate.vkb').write_bytes(b'placeholder')
+        legacy_scene = legacy / 'street.scene.json'
+        legacy_scene.write_text(json.dumps({'version': 2, 'entities': [
+            {'name': 'Kit', 'mesh': {'path': 'models/kit.gltf'}},
+            {'name': 'Crate', 'mesh': {'path': 'models/crate.vkb'}}]}))
+        Path(str(legacy_scene) + '.editor.json').write_text('{}')
+
+        def tree_digest(directory):
+            return {str(path.relative_to(directory)): path.read_bytes()
+                    for path in sorted(directory.rglob('*')) if path.is_file()}
+
+        workspace_before = tree_digest(workspace)
+        inspect = {'version': 1, 'operation': 'inspect_scene', 'workspace_root': str(workspace),
+                   'project_path': str(manifest), 'source_scene': str(legacy_scene),
+                   'legacy_root': str(root / 'nowhere')}
+        assert jobs.Job(inspect, result_path).execute() == 0
+        report = jobs.load_json(result_path)
+        assert report['scene_version'] == 2 and report['entities'] == 2 and report['meshes'] == 2
+        assert report['saved_edits'] is True
+        assert report['missing_count'] == 3, report
+        assert 'kit.gltf: gone.png' in report['missing'] and 'kit.gltf: kit data.bin' in report['missing']
+        assert 'models/crate.vkb' in report['missing']
+        assert not any('present.png' in item for item in report['missing'])
+        assert jobs.Job(dict(inspect, legacy_root=str(located_root)), result_path).execute() == 0
+        assert jobs.load_json(result_path)['missing_count'] == 2
+        assert tree_digest(workspace) == workspace_before, 'Inspection wrote the workspace'
+        assert report['missing_images'] == 1
+        # A model whose only missing dependency is an image imports with a
+        # placeholder once the user accepts placeholders, and fails without.
+        gray = root / 'gray'
+        gray.mkdir()
+        gray_model = gray / 'gray.obj'
+        gray_model.write_text('mtllib gray.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n'
+                              'vt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\n'
+                              'usemtl gray\nf 1/1/1 2/2/1 3/3/1\n')
+        (gray / 'gray.mtl').write_text('newmtl gray\nKd 1 1 1\nmap_Kd absent.png\n')
+        placeholder_import = {'version': 1, 'operation': 'import_project_assets',
+                              'workspace_root': str(workspace), 'project_path': str(manifest),
+                              'sources': [str(gray_model)], 'tools': request['tools']}
+        assert jobs.Job(placeholder_import, result_path).execute() == 1
+        assert jobs.Job(dict(placeholder_import, use_placeholders=True), result_path).execute() == 0
+        placed = jobs.load_json(result_path)
+        assert any('absent.png was replaced by a placeholder' in item for item in placed['warnings'])
+        print('Project jobs: copied source closure, cooked-only remap, relocation, missing-input rollback, '
+              'traversal rejection, project-scoped import, placement by reference, prefab instances, asset deletion, import preflight and image placeholders passed')
 
 
 if __name__ == '__main__':
