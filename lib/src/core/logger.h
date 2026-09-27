@@ -52,7 +52,15 @@ void log_max_level_set(LogLevel level);
 LogLevel log_max_level_get(void);
 bool8_t log_level_enabled(LogLevel level);
 
+/** Before log_init: keep record history for an in-process viewer, such as
+ * the editor Console, and start at this threshold. */
+void log_capture_request(LogLevel threshold);
 VKR_MUST_USE bool8_t log_init(Arena *arena);
+/** Append the kept history, then every new record, to a UTF-8 path; each
+ * record is flushed as it is logged. Needs captured history; replaces an
+ * open file. */
+bool8_t log_file_open(const char *path);
+void log_file_close(void);
 // Call after logging threads join and before releasing the borrowed arena.
 void log_shutdown(void);
 void _log_message(LogLevel level, const char *file, uint32_t line,
@@ -105,7 +113,9 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
 #if LOG_LEVEL >= 2
 #define log_warn(fmt, ...)                                                     \
   do {                                                                         \
-    _log_message(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+    if (log_level_enabled(LOG_LEVEL_WARN)) {                                   \
+      _log_message(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__);    \
+    }                                                                          \
   } while (0)
 #else
 #define log_warn(fmt, ...) VKR_LOG_DISCARD(fmt, ##__VA_ARGS__)
@@ -114,7 +124,9 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
 #if LOG_LEVEL >= 3
 #define log_info(fmt, ...)                                                     \
   do {                                                                         \
-    _log_message(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+    if (log_level_enabled(LOG_LEVEL_INFO)) {                                   \
+      _log_message(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__);    \
+    }                                                                          \
   } while (0)
 #else
 #define log_info(fmt, ...) VKR_LOG_DISCARD(fmt, ##__VA_ARGS__)

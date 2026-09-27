@@ -2,15 +2,23 @@
 
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 #include <limits.h>
 
+/* Release compiles INFO and above in; a process that does not request
+   capture prints errors only, as Release printed before. */
 #if defined(VKR_EDITOR_LOGGING) && VKR_EDITOR_LOGGING
 #define VKR_DEFAULT_CAPTURE_LEVEL LOG_LEVEL_INFO
+#elif defined(VKR_LOG_DEFAULT_LEVEL)
+#define VKR_DEFAULT_CAPTURE_LEVEL ((LogLevel)VKR_LOG_DEFAULT_LEVEL)
 #else
 #define VKR_DEFAULT_CAPTURE_LEVEL LOG_LEVEL_TRACE
 #endif
 vkr_global VkrAtomicUint32 g_log_max_level = VKR_DEFAULT_CAPTURE_LEVEL;
+/* Set before log_init by a process that shows its logs, such as the editor. */
+vkr_global bool8_t g_log_capture_requested = false_v;
+vkr_global LogLevel g_log_capture_level = LOG_LEVEL_INFO;
 
 void log_max_level_set(LogLevel level) {
   if ((uint32_t)level > LOG_LEVEL_TRACE)
@@ -34,6 +42,9 @@ vkr_global VkrMutex g_log_mutex = NULL;
 vkr_global VkrLogRecord *g_log_history = NULL;
 vkr_global uint64_t g_log_sequence = 0u;
 vkr_global uint32_t g_log_history_count = 0u;
+/* The session log file: every record is appended and flushed as it is
+   logged, so the file survives a crash. */
+vkr_global FILE *g_log_file = NULL;
 
 vkr_global const char *LOG_LEVELS[6] = {
     "[FATAL]: ", "[ERROR]: ", "[WARN]: ", "[INFO]: ", "[DEBUG]: ", "[TRACE]: "};
@@ -50,12 +61,18 @@ vkr_internal INLINE void log_unlock(void) {
   }
 }
 
+void log_capture_request(LogLevel threshold) {
+  g_log_capture_requested = true_v;
+  g_log_capture_level = threshold;
+}
+
 bool8_t log_init(Arena *arena) {
   if (!arena) {
     vkr_platform_stderr_write("Log arena is NULL\n");
     return false_v;
   }
-  log_max_level_set(VKR_DEFAULT_CAPTURE_LEVEL);
+  log_max_level_set(g_log_capture_requested ? g_log_capture_level
+                                            : VKR_DEFAULT_CAPTURE_LEVEL);
   g_log_allocator = (VkrAllocator){.ctx = arena};
   if (!vkr_allocator_arena(&g_log_allocator) ||
       !vkr_mutex_create(&g_log_allocator, &g_log_mutex)) {
@@ -64,17 +81,20 @@ bool8_t log_init(Arena *arena) {
     return false_v;
   }
 #if defined(VKR_EDITOR_LOGGING) && VKR_EDITOR_LOGGING
-  g_log_history = vkr_allocator_alloc(&g_log_allocator,
-                                      (uint64_t)VKR_LOG_HISTORY_CAPACITY *
-                                          sizeof(*g_log_history),
-                                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!g_log_history) {
-    vkr_mutex_destroy(&g_log_allocator, &g_log_mutex);
-    vkr_allocator_release_global_accounting(&g_log_allocator);
-    g_log_allocator = (VkrAllocator){0};
-    return false_v;
-  }
+  g_log_capture_requested = true_v;
 #endif
+  if (g_log_capture_requested) {
+    g_log_history = vkr_allocator_alloc(&g_log_allocator,
+                                        (uint64_t)VKR_LOG_HISTORY_CAPACITY *
+                                            sizeof(*g_log_history),
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!g_log_history) {
+      vkr_mutex_destroy(&g_log_allocator, &g_log_mutex);
+      vkr_allocator_release_global_accounting(&g_log_allocator);
+      g_log_allocator = (VkrAllocator){0};
+      return false_v;
+    }
+  }
   g_log_sequence = 0u;
   g_log_history_count = 0u;
   g_log_arena = arena;
@@ -82,6 +102,7 @@ bool8_t log_init(Arena *arena) {
 }
 
 void log_shutdown(void) {
+  log_file_close();
   if (g_log_mutex)
     vkr_mutex_destroy(&g_log_allocator, &g_log_mutex);
   vkr_allocator_release_global_accounting(&g_log_allocator);
@@ -160,6 +181,51 @@ vkr_internal void log_history_append(LogLevel level, const char *file,
   g_log_history_count = Min(g_log_history_count + 1u, VKR_LOG_HISTORY_CAPACITY);
 }
 
+/* One line per record: UTC date and time, level, source and message. */
+vkr_internal void log_file_write(const VkrLogRecord *record) {
+  const uint32_t ms = record->utc_time_ms;
+  fprintf(g_log_file, "%04u-%02u-%02u %02u:%02u:%02u.%03u %s%.*s:%u %.*s%s\n",
+          record->utc_date / 10000u, record->utc_date / 100u % 100u,
+          record->utc_date % 100u, ms / 3600000u, ms / 60000u % 60u,
+          ms / 1000u % 60u, ms % 1000u, LOG_LEVELS[record->level],
+          (int)record->source_length, (const char *)record->source,
+          record->line, (int)record->message_length,
+          (const char *)record->message,
+          record->truncated ? " [truncated]" : "");
+  fflush(g_log_file);
+}
+
+bool8_t log_file_open(const char *path) {
+  if (!path || !path[0] || !g_log_history) {
+    return false_v;
+  }
+  FILE *stream = file_fopen(path, "ab");
+  if (!stream) {
+    return false_v;
+  }
+  log_lock();
+  if (g_log_file) {
+    fclose(g_log_file);
+  }
+  g_log_file = stream;
+  /* The records kept so far start the file, oldest first. */
+  const uint64_t first = g_log_sequence - g_log_history_count + 1u;
+  for (uint64_t sequence = first; sequence <= g_log_sequence; ++sequence) {
+    log_file_write(&g_log_history[(sequence - 1u) % VKR_LOG_HISTORY_CAPACITY]);
+  }
+  log_unlock();
+  return true_v;
+}
+
+void log_file_close(void) {
+  log_lock();
+  if (g_log_file) {
+    fclose(g_log_file);
+    g_log_file = NULL;
+  }
+  log_unlock();
+}
+
 void _log_message(LogLevel level, const char *file, uint32_t line,
                   const char *fmt, ...) {
   if (!log_level_enabled(level))
@@ -183,6 +249,10 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
     goto allocation_failed;
 
   log_history_append(level, file, line, message);
+  if (g_log_file && g_log_history) {
+    log_file_write(
+        &g_log_history[(g_log_sequence - 1u) % VKR_LOG_HISTORY_CAPACITY]);
+  }
 
   String8 formatted_message = string8_create_formatted(
       &g_log_allocator, "%s(%s:%d) %.*s\n", LOG_LEVELS[level], file, line,

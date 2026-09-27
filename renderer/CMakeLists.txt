@@ -440,7 +440,8 @@ target_compile_definitions(renderer_lib PRIVATE
 
 # Set compile definitions for logging based on build type
 target_compile_definitions(renderer_lib PRIVATE
-    $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=1>
+    $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=3>
+    $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:VKR_LOG_DEFAULT_LEVEL=1>
     $<$<BOOL:${VKR_EDITOR_LOGGING}>:LOG_LEVEL=5>
     $<$<BOOL:${VKR_EDITOR_LOGGING}>:VKR_EDITOR_LOGGING=1>
     $<$<CONFIG:Release>:ASSERT_LOG=0>

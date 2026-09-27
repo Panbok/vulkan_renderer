@@ -2,7 +2,8 @@
 function(vkr_configure_library target)
     vkr_require_declared_c_functions(${target})
     target_compile_definitions(${target} PRIVATE
-        $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=1>
+        $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=3>
+        $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:VKR_LOG_DEFAULT_LEVEL=1>
         $<$<BOOL:${VKR_EDITOR_LOGGING}>:LOG_LEVEL=5>
         $<$<BOOL:${VKR_EDITOR_LOGGING}>:VKR_EDITOR_LOGGING=1>
         $<$<CONFIG:Release>:ASSERT_LOG=0>

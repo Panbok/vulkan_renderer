@@ -14,7 +14,8 @@ function(vkr_configure_application_target target)
 
     target_link_libraries(${target} PRIVATE vkr_sample_runtime)
     target_compile_definitions(${target} PRIVATE
-        $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=1>
+        $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=3>
+        $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:VKR_LOG_DEFAULT_LEVEL=1>
         $<$<BOOL:${VKR_EDITOR_LOGGING}>:LOG_LEVEL=5>
         $<$<BOOL:${VKR_EDITOR_LOGGING}>:VKR_EDITOR_LOGGING=1>
         $<$<CONFIG:Release>:ASSERT_LOG=0>
