@@ -2092,11 +2092,11 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
          ++bucket) {
       opaque_indirect_calls +=
           observed->gpu_bucket_counts[bucket] > 0u ? 1u : 0u;
-      max_batch_size = MAX(max_batch_size, observed->gpu_bucket_counts[bucket]);
+      max_batch_size = Max(max_batch_size, observed->gpu_bucket_counts[bucket]);
       if (observed->transmission_gpu_bucket_counts[bucket] > 0u)
         transmission_indirect_calls += transmission_layers;
       max_batch_size =
-          MAX(max_batch_size, observed->transmission_gpu_bucket_counts[bucket]);
+          Max(max_batch_size, observed->transmission_gpu_bucket_counts[bucket]);
     }
     const uint32_t indirect_draws =
         observed->gpu_visible_count +

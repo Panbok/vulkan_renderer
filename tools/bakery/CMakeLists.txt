@@ -32,7 +32,8 @@ endif()
 if(NOT WIN32)
     target_link_libraries(vkr_bakery PRIVATE m)
 else()
-    target_link_libraries(vkr_bakery PRIVATE psapi)
+    # BCryptGenRandom seeds project identifiers.
+    target_link_libraries(vkr_bakery PRIVATE psapi bcrypt)
 endif()
 target_compile_definitions(vkr_bakery PRIVATE
     VKR_BAKERY_SLANGC_DEFAULT="${VKR_SLANGC_EXECUTABLE}")

@@ -281,10 +281,10 @@ void vkr_vk_mark_skinning_submitted(VkrVulkanRenderer *renderer,
   VkrVulkanGraphBufferInstance *output =
       vkr_vk_graph_buffer(renderer, renderer->skinning_output_handle);
   output->history_producer_submit_value = serial;
-  output->last_use_submit_value = MAX(output->last_use_submit_value, serial);
+  output->last_use_submit_value = Max(output->last_use_submit_value, serial);
   if (slot->previous_skinning_output) {
     slot->previous_skinning_output->last_use_submit_value =
-        MAX(slot->previous_skinning_output->last_use_submit_value, serial);
+        Max(slot->previous_skinning_output->last_use_submit_value, serial);
   }
 }
 
