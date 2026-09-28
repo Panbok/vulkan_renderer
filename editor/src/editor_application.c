@@ -169,6 +169,24 @@ static void editor_application_handle_input(void *state,
   (void)input;
 }
 
+/* The launcher's window-colored background alone, holding world input. */
+static void editor_application_build_backdrop(const VkrSampleUiFrame *frame) {
+  const VkrUiTrack one = {.unit = VKR_UI_TRACK_FR, .value = 1};
+  VkrUiPanelConfig backdrop = vkr_ui_panel_config_default();
+  backdrop.placement.column = 0;
+  backdrop.placement.row = 0;
+  backdrop.columns = &one;
+  backdrop.column_count = 1;
+  backdrop.rows = &one;
+  backdrop.row_count = 1;
+  backdrop.style.background_color = vkr_ui_theme()->window;
+  if (vkr_ui_panel_begin(frame->ui, string8_lit("editor.resize_backdrop"),
+                         &backdrop)) {
+    (void)vkr_ui_panel_end(frame->ui);
+  }
+  *frame->modal = true_v;
+}
+
 static VkrUiDockInputCapture
 editor_application_build(void *state, const VkrSampleUiFrame *frame) {
   VkrEditorApplication *editor = state;
@@ -200,12 +218,24 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
   const bool8_t launcher = editor->project_managed &&
                            vkr_editor_projects_launcher(editor->ui.projects);
   if (launcher != editor->window_launcher) {
-    /* One request per transition; a refused frame keeps the current size. */
     editor->window_launcher = launcher;
-    (void)vkr_window_resize_centered(
-        frame->window,
-        launcher ? EDITOR_LAUNCHER_WIDTH_PT : EDITOR_WINDOW_WIDTH_PT,
-        launcher ? EDITOR_LAUNCHER_HEIGHT_PT : EDITOR_WINDOW_HEIGHT_PT);
+    editor->window_resize_frames = 2u;
+  }
+  if (editor->window_resize_frames) {
+    /* A resized window shows its last presented frame scaled until a frame at
+     * the new size arrives, and that first frame is still laid out for the
+     * old size. Plain frames on both sides of the request keep the dialog or
+     * editor from being shown stretched or mislaid. One request per
+     * transition; a refused resize keeps the current size. */
+    if (editor->window_resize_frames == 1u) {
+      (void)vkr_window_resize_centered(
+          frame->window,
+          launcher ? EDITOR_LAUNCHER_WIDTH_PT : EDITOR_WINDOW_WIDTH_PT,
+          launcher ? EDITOR_LAUNCHER_HEIGHT_PT : EDITOR_WINDOW_HEIGHT_PT);
+    }
+    --editor->window_resize_frames;
+    editor_application_build_backdrop(frame);
+    return (VkrUiDockInputCapture){.mouse = true_v};
   }
   VkrSampleUiFrame editor_frame = *frame;
   editor_frame.scene_loading |=

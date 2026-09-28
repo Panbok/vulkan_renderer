@@ -15,6 +15,9 @@ typedef struct VkrEditorApplication {
   bool8_t headless;
   /** Window shape last requested: the compact launcher or the editor. */
   bool8_t window_launcher;
+  /** Plain frames left around a launcher/editor resize; the resize is
+   * requested on the last one. */
+  uint8_t window_resize_frames;
 } VkrEditorApplication;
 
 VkrSampleRuntimeConfig
