@@ -245,6 +245,12 @@ typedef struct VkrEditorUi {
      runtime consumes it (ADR-076). */
   char cmd_scene_path[1024];
   char cmd_scene_sidecar[1024];
+  /* Intervals between the last frames, in milliseconds, for the Cmd `stats`
+   * root; `frame_ms_next` wraps. */
+  float32_t frame_ms[120];
+  uint32_t frame_ms_count;
+  uint32_t frame_ms_next;
+  float64_t frame_last_time;
 
   VkrEditorWindowState windows[VKR_EDITOR_WINDOW_COUNT];
 } VkrEditorUi;

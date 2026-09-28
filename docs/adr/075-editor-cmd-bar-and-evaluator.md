@@ -135,6 +135,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `ui` | `zoom`, `reduce_motion` | all |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
+| `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures` | none |
 
 Scene writes read the entity with `vkr_scene_edit_read`, change one component,
 validate it and submit an `APPLY` edit, so they undo, save and reject invalid

@@ -5,6 +5,7 @@
 #include "editor_projects.h"
 
 #include "core/logger.h"
+#include "platform/vkr_platform.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -175,6 +176,16 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
    * normal scene UI, so no anchors may survive from the previous frame. */
   editor->ui.label_anchors = NULL;
   editor->ui.label_anchor_count = 0;
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (editor->ui.frame_last_time > 0.0) {
+    editor->ui.frame_ms[editor->ui.frame_ms_next] =
+        (float32_t)((now - editor->ui.frame_last_time) * 1000.0);
+    editor->ui.frame_ms_next =
+        (editor->ui.frame_ms_next + 1u) % ArrayCount(editor->ui.frame_ms);
+    editor->ui.frame_ms_count =
+        Min(editor->ui.frame_ms_count + 1u, ArrayCount(editor->ui.frame_ms));
+  }
+  editor->ui.frame_last_time = now;
   if (!editor->ui.content) {
     editor->ui.content = vkr_editor_content_create(
         &frame->ui->retained_allocator, frame->assets);

@@ -1,4 +1,6 @@
 #include "editor_internal.h"
+#include "editor_projects.h"
+#include "renderer/systems/vkr_render_assets.h"
 
 #include "math/vkr_quat.h"
 #include <math.h>
@@ -35,6 +37,7 @@ enum {
   EVAL_OBJECT_SIM,
   EVAL_OBJECT_SCENE,
   EVAL_OBJECT_WORLD,
+  EVAL_OBJECT_STATS,
 };
 
 typedef enum TokenKind {
@@ -96,11 +99,19 @@ static const char *const eval_sim_members[] = {"running", "time", NULL};
 static const char *const eval_scene_members[] = {"loaded", "entities", "added",
                                                  NULL};
 static const char *const eval_world_members[] = {"loaded", "entities", NULL};
+static const char *const eval_stats_members[] = {"frame_ms",
+                                                 "frame_ms_p95",
+                                                 "finalizing",
+                                                 "replaced_materials",
+                                                 "pending_replacements",
+                                                 "pending_textures",
+                                                 NULL};
 static const char *const eval_roots[] = {
-    "sel",       "view", "ui",    "sim",   "scene", "world", "entity", "vec3",
-    "len",       "sqrt", "sin",   "cos",   "tan",   "abs",   "min",    "max",
-    "clamp",     "lerp", "round", "floor", "ceil",  "pow",   "dot",    "cross",
-    "normalize", "deg",  "rad",   "str",   "pi",    "true",  "false",  NULL};
+    "sel",    "view", "ui",   "sim",   "scene",     "world", "stats",
+    "entity", "vec3", "len",  "sqrt",  "sin",       "cos",   "tan",
+    "abs",    "min",  "max",  "clamp", "lerp",      "round", "floor",
+    "ceil",   "pow",  "dot",  "cross", "normalize", "deg",   "rad",
+    "str",    "pi",   "true", "false", NULL};
 
 /* ---- Small helpers ---- */
 
@@ -668,6 +679,51 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         *out = eval_number(frame->simulation_time);
         return true_v;
       }
+    } else if (base->object == EVAL_OBJECT_STATS) {
+      const int32_t index = eval_word_index(eval_stats_members, name);
+      if (index == 0 || index == 1) {
+        /* Median or 95th percentile of the recent frame intervals. */
+        const VkrEditorUi *editor = eval->editor;
+        float32_t sorted[ArrayCount(editor->frame_ms)];
+        const uint32_t count = editor->frame_ms_count;
+        MemCopy(sorted, editor->frame_ms, sizeof(float32_t) * count);
+        for (uint32_t i = 1u; i < count; ++i) {
+          const float32_t key = sorted[i];
+          uint32_t j = i;
+          while (j > 0u && sorted[j - 1u] > key) {
+            sorted[j] = sorted[j - 1u];
+            --j;
+          }
+          sorted[j] = key;
+        }
+        const uint32_t rank =
+            count ? Min(count - 1u,
+                        (index == 0 ? count / 2u : (count * 95u) / 100u))
+                  : 0u;
+        *out = eval_number(count ? sorted[rank] : 0.0);
+        return true_v;
+      }
+      bool8_t running = false_v;
+      uint32_t applied = 0u;
+      vkr_editor_projects_finalize_stats(eval->editor->projects, &running,
+                                         &applied);
+      if (index == 2) {
+        *out = eval_bool(running);
+        return true_v;
+      }
+      if (index == 3) {
+        *out = eval_number(applied);
+        return true_v;
+      }
+      if (index == 4) {
+        *out = eval_number(vkr_material_system_pending_replacements(
+            &frame->assets->material_system));
+        return true_v;
+      }
+      if (index == 5) {
+        *out = eval_number(frame->texture_pending_count);
+        return true_v;
+      }
     } else if (base->object == EVAL_OBJECT_SCENE ||
                base->object == EVAL_OBJECT_WORLD) {
       /* The active scene, or the root World container (ADR-076). */
@@ -873,8 +929,8 @@ static bool8_t eval_ident(Eval *eval, String8 name, Value *out) {
                    .entity = eval->frame->selected_entity};
     return true_v;
   }
-  static const char *const objects[] = {"view",  "ui",    "sim",
-                                        "scene", "world", NULL};
+  static const char *const objects[] = {"view",  "ui",    "sim", "scene",
+                                        "world", "stats", NULL};
   const int32_t object = eval_word_index(objects, name);
   if (object >= 0) {
     *out = (Value){.kind = VKR_EDITOR_CMD_VALUE_OBJECT,
@@ -1388,11 +1444,11 @@ static uint32_t eval_format(const VkrEditorCmdValue *value, char *out,
                        value->entity.parts.index);
     break;
   case VKR_EDITOR_CMD_VALUE_OBJECT: {
-    static const char *const names[] = {"",    "view",  "ui",
-                                        "sim", "scene", "world"};
+    static const char *const names[] = {"",      "view",  "ui",   "sim",
+                                        "scene", "world", "stats"};
     written =
         snprintf(out, capacity, "%s (type %s. for members)",
-                 names[Min(value->object, 5u)], names[Min(value->object, 5u)]);
+                 names[Min(value->object, 6u)], names[Min(value->object, 6u)]);
     break;
   }
   default:
@@ -1519,6 +1575,7 @@ uint32_t vkr_editor_cmd_eval_complete(VkrEditorUi *editor,
             : base.object == EVAL_OBJECT_SIM   ? eval_sim_members
             : base.object == EVAL_OBJECT_SCENE ? eval_scene_members
             : base.object == EVAL_OBJECT_WORLD ? eval_world_members
+            : base.object == EVAL_OBJECT_STATS ? eval_stats_members
                                                : NULL;
     if (base.kind != VKR_EDITOR_CMD_VALUE_OBJECT &&
         base.kind != VKR_EDITOR_CMD_VALUE_VEC3 &&
