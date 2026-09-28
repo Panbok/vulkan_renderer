@@ -36,11 +36,20 @@ A command that starts a Bakery job or a scene load holds the queue until that
 work settles, so the next statement reads its result without a timed `wait`:
 `scene.load`, `scene.reload`, `scene.open`, `scene.add`, `scene.create`,
 `scene.import`, `scene.instantiate`, `scene.primary`, `tab.new`, `tab.show`,
-`content.import`, `content.command` and `content.place`. The hold ends when no
+`content.import`, `content.command` and `content.place`, and `scene.save`, so
+a headless run cannot quit during a save. The hold ends when no
 project job, activation or Set primary swap runs and neither the primary scene
 nor an added scene is loading, and prints `[cmd] Settled after <s> s`. After
 600 s it reports an error and drops the queue. An unsaved-edits prompt does not
 hold the queue: a script saves or discards first.
+
+`--headless` starts the editor without a window. Frames render into an
+offscreen present target (ADR-014) of the editor's 1680x1050 size in pixels at
+content scale 1, and the process takes no input or focus. The editor quits once
+its Cmd queue drains, discarding unsaved edits and saying so in a `[cmd]` line;
+`VKR_AUTOCLOSE_SECONDS` defaults to 600 s as a backstop. Without `--scene` or
+`--project <uuid>`, the project launcher shows and runs no Cmd statements, so
+only that backstop ends the run.
 
 Every result goes three ways: a `[cmd]` line on stdout, flushed per line
 (`[cmd] > <statement>`, then `[cmd] <result>` or `[cmd] error: <message>`); the
@@ -140,7 +149,8 @@ Typed and scripted editor control share one validated path with the panels.
 Statements apply one per frame, so a script's reads see the previous
 statement's result. The evaluator has no loops, user functions or file access,
 and it cannot create entities; `create` and `component.add` do. The field accepts at most
-255 bytes; the queue holds 4 KiB.
+255 bytes; the queue holds 4 KiB. A headless run proves scripted editor state,
+not window resize, DPI, input or presentation.
 
 ## Alternatives considered
 
@@ -158,11 +168,14 @@ channel richer than `[cmd]` lines.
 - [Cmd bar, commands, queue](../../editor/src/editor_cmd.c)
 - [Expression evaluator](../../editor/src/editor_cmd_eval.c)
 - [Shared editor commands](../../editor/src/editor_windows.c)
-- [Startup scripts](../../editor/src/editor_application.c)
+- [Startup scripts and `--headless`](../../editor/src/editor_application.c)
+- [Headless offscreen target](../../runtime/src/vkr_sample_runtime_config.c)
 - [Quit request consumer](../../runtime/src/vkr_sample_runtime.c)
 - [Agent procedure](../../.codex/skills/vkr-editor-cmd/SKILL.md)
 
 Verified on macOS Release with Bistro through `--exec` scripts and System Events
 typing: commands, completion, variables, entity/light/view/ui reads and writes,
-undo of evaluator edits, and error paths. Windows and native Vulkan are
+undo of evaluator edits, and error paths. Queue holds and `--headless` were
+verified on macOS Release (Metal) with Bistro through `scene.reload`; holds
+after project Bakery jobs and added-scene loads, Windows and native Vulkan are
 unverified.

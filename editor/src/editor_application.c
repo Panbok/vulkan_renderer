@@ -90,6 +90,7 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
       !editor->ui.physics_settings)
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
+  editor->ui.cmd_quit_when_done = editor->headless;
   const char *env_script = getenv("VKR_EDITOR_EXEC");
   if (env_script && env_script[0])
     (void)vkr_editor_cmd_enqueue(&editor->ui, env_script);
@@ -289,6 +290,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
     }
     if (strcmp(argv[i], "--exec") == 0 && i + 1 < argc)
       editor->exec_script = argv[i + 1];
+    if (strcmp(argv[i], "--headless") == 0)
+      editor->headless = true_v;
     if (strcmp(argv[i], "--scene-only") == 0)
       scene_only = true_v;
     else if (strcmp(argv[i], "--paneled") == 0)
@@ -301,14 +304,19 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
     editor->layout_path = NULL;
   }
   config.title = "VKR Editor";
+  /* A headless target cannot resize, so it takes the editor's size from the
+     start, launcher or not. */
   config.presentation = (VkrSamplePresentationConfig){
       .render_scale = editor_env_render_scale(),
       .paneled = true_v,
       .scene_only = scene_only,
-      .window_width_pt =
-          editor->project_managed ? EDITOR_LAUNCHER_WIDTH_PT : 0u,
-      .window_height_pt =
-          editor->project_managed ? EDITOR_LAUNCHER_HEIGHT_PT : 0u,
+      .window_width_pt = editor->headless          ? EDITOR_WINDOW_WIDTH_PT
+                         : editor->project_managed ? EDITOR_LAUNCHER_WIDTH_PT
+                                                   : 0u,
+      .window_height_pt = editor->headless          ? EDITOR_WINDOW_HEIGHT_PT
+                          : editor->project_managed ? EDITOR_LAUNCHER_HEIGHT_PT
+                                                    : 0u,
+      .headless = editor->headless,
   };
   editor->window_launcher = editor->project_managed;
   config.ui = (VkrSampleUiClient){

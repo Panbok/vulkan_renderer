@@ -17,9 +17,12 @@ writing a script; do not guess member names.
    or workspace: set `HOME`, `VKR_EDITOR_LAYOUT_PATH` and
    `VKR_GRAPHICS_SETTINGS_PATH` to paths under `.scratch/`, and unset
    `MTL_DEBUG_LAYER`, `MTL_SHADER_VALIDATION` and `VK_INSTANCE_LAYERS`.
-3. Start the script with `wait.scene` and end it with `quit discard`. Also set
-   `VKR_AUTOCLOSE_SECONDS` (for example `180`) as a backstop: a refused or
-   failed `quit` otherwise leaves the editor running.
+3. Pass `--headless` unless the task needs the visible window: the editor
+   then opens no window, takes no focus, and quits when the script ends,
+   discarding unsaved edits. Start the script with `wait.scene`. Set
+   `VKR_AUTOCLOSE_SECONDS` (for example `180`) as a tighter backstop than the
+   600 s headless default. A windowed run ends with `quit discard` and needs
+   `VKR_AUTOCLOSE_SECONDS`, because a refused `quit` leaves it running.
 
 ```sh
 env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
@@ -27,11 +30,17 @@ env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
   VKR_EDITOR_LAYOUT_PATH="$PWD/.scratch/cmd/layout.json" \
   VKR_GRAPHICS_SETTINGS_PATH="$PWD/.scratch/cmd/graphics.json" \
   VKR_AUTOCLOSE_SECONDS=180 \
-  ./build_release/editor/vkr_editor --scene assets/scenes/bistro.scene.json \
-  --exec 'wait.scene; select Sun; sel.light.intensity; quit discard' \
+  ./build_release/editor/vkr_editor --headless \
+  --scene assets/scenes/bistro.scene.json \
+  --exec 'wait.scene; select Sun; sel.light.intensity' \
   > .scratch/cmd/run.log 2>&1
 grep -o '\[cmd\][^[]*' .scratch/cmd/run.log
 ```
+
+A project run replaces `--scene` with `--project <uuid>`, plus
+`--workspace <dir>` and `--scene-id <uuid>` when needed; without `--scene` or
+`--project`, the project launcher shows and no statement runs. Headless output proves editor
+state, not window resize, DPI, input or presentation.
 
 Other process output can share a line with a result, so extract records with
 `grep -o` as above rather than anchoring at line start.

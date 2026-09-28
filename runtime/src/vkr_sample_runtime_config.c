@@ -259,19 +259,24 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
                        ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
                        : VKR_UPSCALE_MODE_FSR31;
   }
+  const uint32_t width = runtime_config->presentation.window_width_pt
+                             ? runtime_config->presentation.window_width_pt
+                         : paneled ? 1280
+                                   : 800;
+  const uint32_t height = runtime_config->presentation.window_height_pt
+                              ? runtime_config->presentation.window_height_pt
+                          : paneled ? 800
+                                    : 600;
+  /* Headless renders into an offscreen target of the window's size in
+     pixels; offscreen output is always SDR. */
+  const bool8_t headless = runtime_config->presentation.headless;
 
   return (VkrStandardSceneRuntimeConfig){
       .title = runtime_config->title,
       .x = 100,
       .y = 100,
-      .width = runtime_config->presentation.window_width_pt
-                   ? runtime_config->presentation.window_width_pt
-               : paneled ? 1280
-                         : 800,
-      .height = runtime_config->presentation.window_height_pt
-                    ? runtime_config->presentation.window_height_pt
-                : paneled ? 800
-                          : 600,
+      .width = width,
+      .height = height,
       .target_frame_rate = graphics->frame_limit,
       .unified_title_bar = paneled,
       .app_arena_size = MB(1),
@@ -294,9 +299,17 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
           },
       .disable_camera_controller = options->gameplay_enabled,
       .renderer_backend = options->renderer_backend,
+      /* A windowed target takes its extent and image count from WSI. */
+      .present_target =
+          headless
+              ? (VkrPresentTargetConfig){.kind = VKR_PRESENT_TARGET_OFFSCREEN,
+                                         .width = width,
+                                         .height = height,
+                                         .image_count = 2u}
+              : (VkrPresentTargetConfig){0},
       .requested_present_mode =
           graphics->vsync ? VKR_PRESENT_MODE_FIFO : VKR_PRESENT_MODE_IMMEDIATE,
-      .display_output_mode = graphics->hdr
+      .display_output_mode = graphics->hdr && !headless
                                  ? VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR
                                  : VKR_DISPLAY_OUTPUT_SDR,
       .render_scale = graphics->render_scale,

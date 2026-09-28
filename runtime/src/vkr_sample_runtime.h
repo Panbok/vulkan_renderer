@@ -280,6 +280,9 @@ typedef struct VkrSamplePresentationConfig {
    * runtime default size and position. */
   uint32_t window_width_pt;
   uint32_t window_height_pt;
+  /** No window: frames render into an offscreen target of the window size in
+   * pixels at content scale 1, with no input and no presentation. */
+  bool8_t headless;
 } VkrSamplePresentationConfig;
 
 typedef struct VkrSampleRuntimeConfig {

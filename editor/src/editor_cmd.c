@@ -1051,7 +1051,7 @@ static const CmdDef cmd_defs[] = {
     CMD_SIMPLE_HOLDS("scene.load", "Load the scene", CMD_LOAD),
     CMD_SIMPLE_HOLDS("scene.reload", "Reload the scene from disk", CMD_RELOAD),
     CMD_SIMPLE("scene.unload", "Unload the scene", CMD_UNLOAD),
-    CMD_SIMPLE("scene.save", "Save scene edits", CMD_SAVE),
+    CMD_SIMPLE_HOLDS("scene.save", "Save scene edits", CMD_SAVE),
     CMD_SIMPLE("undo", "Undo the last edit", CMD_UNDO),
     CMD_SIMPLE("redo", "Redo the last undone edit", CMD_REDO),
     {"select", CMD_ARG_ENTITY, "<name>",
@@ -1337,6 +1337,21 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     snprintf(text, sizeof(text), "Settled after %.2f s",
              editor->cmd_hold_seconds);
     cmd_report(true_v, text);
+  }
+  /* Nobody can close a headless editor, so the end of its script does. The
+   * quit request skips the unsaved-edits check that `quit` makes. */
+  if (editor->cmd_quit_when_done &&
+      editor->cmd_queue_offset >= editor->cmd_queue_length &&
+      frame->quit_request) {
+    const bool8_t unsaved =
+        frame->scene && frame->edits &&
+        frame->edits->revision != frame->edits->saved_revision;
+    cmd_report(true_v, unsaved ? "Script finished; quitting and discarding "
+                                 "unsaved scene edits"
+                               : "Script finished; quitting");
+    editor->cmd_quit_when_done = false_v;
+    *frame->quit_request = true_v;
+    return;
   }
   /* One non-empty command per frame keeps each runtime request slot single. */
   while (editor->cmd_queue_offset < editor->cmd_queue_length) {

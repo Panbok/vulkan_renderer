@@ -38,6 +38,8 @@
 #define VKR_MEMORY_UPDATE_INTERVAL 1.0
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
+/* Deadline for a headless run that sets no VKR_AUTOCLOSE_SECONDS. */
+#define VKR_SAMPLE_HEADLESS_AUTOCLOSE_SECONDS 600.0
 
 static VkrSampleRuntimePreferences
 sample_preferences_snapshot(VkrStandardSceneRuntime *application);
@@ -5061,8 +5063,17 @@ int vkr_sample_runtime_run(int argc, char **argv,
     return 1;
   }
   application.host.window.defer_close = runtime_config->project_managed;
-  if (runtime_config->presentation.window_width_pt &&
-      runtime_config->presentation.window_height_pt) {
+  if (runtime_config->presentation.headless) {
+    /* The UI lays out on the offscreen target at scale 1; no window events
+       resize it. */
+    vkr_ui_system_set_offscreen_content_scale(&application.ui_system, 1.0f);
+    vkr_ui_system_set_offscreen_size(&application.ui_system, true_v,
+                                     scene_runtime_config.width,
+                                     scene_runtime_config.height);
+    log_info("Headless: rendering offscreen at %ux%u",
+             scene_runtime_config.width, scene_runtime_config.height);
+  } else if (runtime_config->presentation.window_width_pt &&
+             runtime_config->presentation.window_height_pt) {
     (void)vkr_window_resize_centered(
         &application.host.window, runtime_config->presentation.window_width_pt,
         runtime_config->presentation.window_height_pt);
@@ -5101,7 +5112,15 @@ int vkr_sample_runtime_run(int argc, char **argv,
     state->auto_close_after_seconds = options.auto_close_seconds;
     log_info("Auto-close enabled via VKR_AUTOCLOSE_SECONDS=%.2f",
              options.auto_close_seconds);
-  } else if (options.auto_close_rejected) {
+  } else if (runtime_config->presentation.headless) {
+    /* Nobody can close a headless run, so it always has a deadline. */
+    state->auto_close_enabled = true_v;
+    state->auto_close_after_seconds = VKR_SAMPLE_HEADLESS_AUTOCLOSE_SECONDS;
+    log_info("Headless: auto-close after %.0f s; VKR_AUTOCLOSE_SECONDS "
+             "changes it",
+             VKR_SAMPLE_HEADLESS_AUTOCLOSE_SECONDS);
+  }
+  if (options.auto_close_rejected) {
     log_warn("Ignoring invalid VKR_AUTOCLOSE_SECONDS value '%s'",
              options.auto_close_rejected);
   }

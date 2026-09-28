@@ -11,6 +11,8 @@ typedef struct VkrEditorApplication {
   bool8_t project_managed;
   /** `--exec` Cmd script from argv; VKR_EDITOR_EXEC runs before it. */
   const char *exec_script;
+  /** `--headless`: no window; the editor quits when its Cmd script ends. */
+  bool8_t headless;
   /** Window shape last requested: the compact launcher or the editor. */
   bool8_t window_launcher;
 } VkrEditorApplication;

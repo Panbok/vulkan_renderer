@@ -34,6 +34,7 @@ ADR-043 owns output transfer.
 ## Consequences
 
 Harness output exercises production passes while bypassing window presentation.
+`vkr_editor --headless` (ADR-075) uses the same target for scripted editor runs.
 Offscreen execution does not validate window resize, DPI, compositor or WSI
 synchronization.
 
