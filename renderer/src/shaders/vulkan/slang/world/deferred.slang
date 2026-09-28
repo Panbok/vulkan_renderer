@@ -1488,6 +1488,7 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
         .SampleLevel(g_samplers[root.sky_sampler],
                      vkr_sky_view_uv(params, direction), 0.0f)
         .rgb;
+    float3 disc = float3(0.0f);
     if (!vkr_sky_view_hits_ground(params, direction.y))
     {
         float3 view_transmittance = g_textures[sky.transmittance_texture]
@@ -1497,20 +1498,22 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
                              direction.y),
                          0.0f)
             .rgb;
+        disc = vkr_atmosphere_sun_disc(params, direction, view_transmittance);
         radiance +=
-            vkr_atmosphere_sun_disc(params, direction, view_transmittance) +
             vkr_atmosphere_sun_glow(params, direction, view_transmittance);
     }
     // The cloud trace shares screen coordinates with this pass; clouds carry
-    // aerial perspective at their own depth.
+    // aerial perspective at their own depth. The disc follows the cloud's
+    // apparent opacity; see vkr_cloud_disc_visibility.
     if (sky.params.clouds.noise.w > 0.0f)
     {
         float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
-        radiance = vkr_cloud_composite(
-            radiance, g_textures[sky.cloud_radiance_texture].SampleLevel(
-                          g_samplers[sky.sampler], uv, 0.0f));
+        float4 cloud = g_textures[sky.cloud_radiance_texture].SampleLevel(
+            g_samplers[sky.sampler], uv, 0.0f);
+        radiance = vkr_cloud_composite(radiance, cloud);
+        disc *= vkr_cloud_disc_visibility(cloud.a);
     }
-    return radiance;
+    return radiance + disc;
 }
 
 float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,

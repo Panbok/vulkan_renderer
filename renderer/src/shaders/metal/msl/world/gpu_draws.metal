@@ -1190,6 +1190,7 @@ vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
           .sample(vkr_metal_packet_sky_sampler,
                   vkr_sky_view_uv(params, direction))
           .rgb;
+  float3 disc = float3(0.0);
   if (!vkr_sky_view_hits_ground(params, direction.y)) {
     float3 view_transmittance =
         sky.transmittance
@@ -1198,16 +1199,18 @@ vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
                         params, params.planet.x + params.planet.z,
                         direction.y))
             .rgb;
-    radiance += vkr_atmosphere_sun_disc(params, direction, view_transmittance) +
-                vkr_atmosphere_sun_glow(params, direction, view_transmittance);
+    disc = vkr_atmosphere_sun_disc(params, direction, view_transmittance);
+    radiance += vkr_atmosphere_sun_glow(params, direction, view_transmittance);
   }
-  // The cloud trace shares screen coordinates with this pass.
+  // The cloud trace shares screen coordinates with this pass. The disc
+  // follows the cloud's apparent opacity; see vkr_cloud_disc_visibility.
   if (sky.params.clouds.noise.w > 0.0f) {
     float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
-    radiance = vkr_cloud_composite(
-        radiance, sky.cloud_radiance.sample(vkr_metal_packet_sky_sampler, uv));
+    float4 cloud = sky.cloud_radiance.sample(vkr_metal_packet_sky_sampler, uv);
+    radiance = vkr_cloud_composite(radiance, cloud);
+    disc *= vkr_cloud_disc_visibility(cloud.a);
   }
-  return radiance;
+  return radiance + disc;
 }
 
 // Deferred lighting reads each shadowed light's visibility from the mask that

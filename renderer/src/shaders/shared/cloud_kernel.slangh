@@ -37,6 +37,10 @@
 #define VKR_CLOUD_OCTAVE_ECCENTRICITY 0.5f
 // A primary ray ends once the layer passes less light than this.
 #define VKR_CLOUD_TRANSMITTANCE_CUTOFF 0.01f
+// The sun disc is hidden behind cloud that passes less light than this. A
+// cloud that already reads as solid against the sky still passes a few
+// percent, and the disc's radiance is thousands of times the sky's.
+#define VKR_CLOUD_DISC_HIDDEN_TRANSMITTANCE 0.1f
 // Samples fade out over the last third of the march distance, so the layer
 // never ends on a hard line in the sky.
 #define VKR_CLOUD_DISTANCE_FADE_FRACTION 0.33333333f
@@ -548,6 +552,16 @@ float4 vkr_cloud_history_blend(float4 current, float4 history,
 float3 vkr_cloud_composite(float3 sky_radiance, float4 cloud)
 {
     return sky_radiance * saturate(cloud.a) + cloud.rgb;
+}
+
+// Scale of the sun disc behind a cloud of this transmittance: the disc
+// follows the cloud's apparent opacity rather than its transmittance, fading
+// in linearly above VKR_CLOUD_DISC_HIDDEN_TRANSMITTANCE. The untraced marker
+// (alpha 2) leaves the disc whole.
+float vkr_cloud_disc_visibility(float transmittance)
+{
+    return saturate((transmittance - VKR_CLOUD_DISC_HIDDEN_TRANSMITTANCE) /
+                    (1.0f - VKR_CLOUD_DISC_HIDDEN_TRANSMITTANCE));
 }
 
 #undef VKR_CLOUD_LERP

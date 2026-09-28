@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-26
+updated: 2026-09-28
 authority: adr
 ---
 
@@ -117,7 +117,12 @@ resets the wind clock with its other phase clocks, so bootstrap duration does
 not move the layer in captures.
 
 Deferred lighting composites sky pixels as `L_sky * T + S` from the current
-history instance. The sun term of deferred, forward and transmission shading
+history instance. `L_sky` holds the sky and the sun glow; the sun disc is added
+after it, scaled by `saturate((T - 0.1) / 0.9)`. A cloud that reads as solid
+against the sky still passes a few percent of light, and the disc's radiance is
+thousands of times the sky's, so the physical `T` would show it through that
+cloud as a white point; the disc instead follows the cloud's apparent opacity.
+The sun term of deferred, forward and transmission shading
 multiplies by the cloud map; froxel injection multiplies the sun's visibility;
 sky-lit analytic fog multiplies its sun irradiance by the map at the camera.
 Every pass that evaluates the sun declares a read of `cloud_shadow` at binding
