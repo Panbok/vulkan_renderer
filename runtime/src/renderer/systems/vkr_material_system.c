@@ -566,6 +566,259 @@ vkr_material_system_evict_to_fit(VkrMaterialSystem *system,
   return system->texture_stream_resident_bytes <= limit;
 }
 
+// =============================================================================
+// Grouped replacement
+// =============================================================================
+
+/* One texture of a replacement has been staged or has failed. */
+static void vkr_material_system_replacement_texture_done(
+    VkrMaterialSystem *system, const VkrMaterialTextureStream *stream) {
+  if (!stream->replacement || !system->replacements) {
+    return;
+  }
+  VkrMaterialReplacement *replacement =
+      &system->replacements[stream->replacement - 1u];
+  if (replacement->loading > 0u) {
+    replacement->loading--;
+  }
+}
+
+/* Ends one stream that is leaving the system: requests unload, staged
+   references are released, and the state counters follow. A resident
+   texture's reference stays with its binding, which the caller owns. */
+static void vkr_material_system_end_stream(VkrMaterialSystem *system,
+                                           VkrMaterialTextureStream *stream) {
+  String8 path = string8_create_from_cstr((const uint8_t *)stream->path,
+                                          string_length(stream->path));
+  switch (stream->state) {
+  case VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED:
+    system->texture_stream_queued_count--;
+    break;
+  case VKR_MATERIAL_TEXTURE_RESIDENCY_ACTIVE:
+    vkr_resource_system_unload(&stream->request, path);
+    system->texture_stream_active_count--;
+    break;
+  case VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT:
+    if (vkr_material_system_resident_texture_users(
+            system, stream->resident_texture) == 1u) {
+      system->texture_stream_resident_bytes -= stream->resident_bytes;
+    }
+    system->texture_stream_resident_count--;
+    break;
+  case VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED:
+    system->texture_stream_evicted_count--;
+    break;
+  case VKR_MATERIAL_TEXTURE_RESIDENCY_MEMORY_WAIT:
+    system->texture_stream_memory_wait_count--;
+    break;
+  case VKR_MATERIAL_TEXTURE_RESIDENCY_STAGED:
+    (void)vkr_texture_system_release_by_handle(system->texture_system,
+                                               stream->resident_texture);
+    break;
+  }
+}
+
+/* Ends every stream of replacement `index` and frees the entry. */
+static void vkr_material_system_cancel_replacement(VkrMaterialSystem *system,
+                                                   uint32_t index) {
+  for (uint32_t i = 0u; i < system->texture_stream_count;) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->replacement != index + 1u) {
+      ++i;
+      continue;
+    }
+    vkr_material_system_end_stream(system, stream);
+    vkr_material_system_remove_texture_stream(system, i);
+  }
+  MemZero(&system->replacements[index], sizeof(system->replacements[index]));
+  system->replacement_count--;
+}
+
+/* Binds replacement `index` in one republication. The material's earlier
+   streams end, and the textures they held resident are released once the new
+   row is published. A staged texture that does not fit the residency budget
+   leaves its slot at the default and waits, evicted, for demand, as an
+   ordinary stream would. A rejected definition restores the prior row. */
+static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
+                                                  uint32_t index) {
+  VkrMaterialReplacement *replacement = &system->replacements[index];
+  const VkrMaterialHandle handle = replacement->material;
+  VkrMaterial *material = vkr_material_system_get_by_handle(system, handle);
+  if (!material) {
+    vkr_material_system_cancel_replacement(system, index);
+    return;
+  }
+  const VkrMaterial prior = *material;
+
+  VkrTextureHandle released[VKR_TEXTURE_SLOT_COUNT];
+  uint32_t released_count = 0u;
+  for (uint32_t i = 0u; i < system->texture_stream_count;) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->material.id != handle.id ||
+        stream->material.generation != handle.generation ||
+        stream->replacement == index + 1u) {
+      ++i;
+      continue;
+    }
+    if (stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT &&
+        released_count < ArrayCount(released)) {
+      released[released_count++] = stream->resident_texture;
+    }
+    vkr_material_system_end_stream(system, stream);
+    vkr_material_system_remove_texture_stream(system, i);
+  }
+
+  const VkrMaterial *definition = &replacement->definition;
+  material->pipeline_id = definition->pipeline_id;
+  material->material_type = definition->material_type;
+  material->alpha_mode = definition->alpha_mode;
+  material->alpha_mode_explicit = definition->alpha_mode_explicit;
+  material->double_sided = definition->double_sided;
+  material->phong = definition->phong;
+  material->pbr = definition->pbr;
+  material->alpha_cutoff = definition->alpha_cutoff;
+  MemCopy(material->textures, definition->textures, sizeof(material->textures));
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->replacement != index + 1u) {
+      continue;
+    }
+    stream->replacement = 0u;
+    const VkrTextureHandle texture = stream->resident_texture;
+    const uint64_t incoming =
+        vkr_material_system_resident_texture_users(system, texture) > 0u
+            ? 0u
+            : stream->resident_bytes;
+    if (!vkr_material_system_evict_to_fit(system, incoming, texture)) {
+      (void)vkr_texture_system_release_by_handle(system->texture_system,
+                                                 texture);
+      stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED;
+      stream->resident_texture = VKR_TEXTURE_HANDLE_INVALID;
+      stream->resident_bytes = 0u;
+      system->texture_stream_evicted_count++;
+      system->texture_stream_pressure_stalls_total++;
+      continue;
+    }
+    material->textures[stream->slot] = (VkrMaterialTexture){
+        .handle = texture, .slot = stream->slot, .enabled = true_v};
+    stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+    system->texture_stream_resident_count++;
+    system->texture_stream_resident_bytes += incoming;
+    system->texture_stream_applied_total++;
+  }
+
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const bool8_t unpublished = vkr_material_system_unpublish(system, handle);
+  if (unpublished && vkr_material_system_publish(system, handle, &error)) {
+    for (uint32_t i = 0u; i < released_count; ++i) {
+      (void)vkr_texture_system_release_by_handle(system->texture_system,
+                                                 released[i]);
+    }
+    system->replacement_applied_total++;
+    MemZero(replacement, sizeof(*replacement));
+    system->replacement_count--;
+    return;
+  }
+
+  /* The new textures leave with their streams and the prior row returns. Its
+     textures stay bound without residency records and are released with
+     the material. */
+  log_warn("Material '%s': replacement rejected; keeping the previous "
+           "definition",
+           material->name ? material->name : "<unnamed>");
+  for (uint32_t i = 0u; i < system->texture_stream_count;) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->material.id != handle.id ||
+        stream->material.generation != handle.generation) {
+      ++i;
+      continue;
+    }
+    const bool8_t resident =
+        stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+    const VkrTextureHandle texture = stream->resident_texture;
+    vkr_material_system_end_stream(system, stream);
+    if (resident) {
+      (void)vkr_texture_system_release_by_handle(system->texture_system,
+                                                 texture);
+    }
+    vkr_material_system_remove_texture_stream(system, i);
+  }
+  *material = prior;
+  if (unpublished) {
+    (void)vkr_material_system_publish(system, handle, NULL);
+  }
+  MemZero(replacement, sizeof(*replacement));
+  system->replacement_count--;
+}
+
+bool8_t vkr_material_system_replace(
+    VkrMaterialSystem *system, VkrMaterialHandle material,
+    const VkrMaterial *definition,
+    const char *const texture_paths[VKR_TEXTURE_SLOT_COUNT]) {
+  if (!system || !system->replacements || !definition ||
+      !vkr_material_system_get_by_handle(system, material)) {
+    return false_v;
+  }
+  uint32_t texture_count = 0u;
+  for (uint32_t slot = 0u; texture_paths && slot < VKR_TEXTURE_SLOT_COUNT;
+       ++slot) {
+    const uint64_t length =
+        texture_paths[slot] ? string_length(texture_paths[slot]) : 0u;
+    if (length >= VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX) {
+      return false_v;
+    }
+    texture_count += length > 0u ? 1u : 0u;
+  }
+
+  /* A pending replacement of the same material is superseded in place. */
+  uint32_t index = VKR_MATERIAL_REPLACEMENT_CAPACITY;
+  for (uint32_t r = 0u; r < VKR_MATERIAL_REPLACEMENT_CAPACITY; ++r) {
+    const VkrMaterialHandle pending = system->replacements[r].material;
+    if (pending.id == material.id &&
+        pending.generation == material.generation) {
+      vkr_material_system_cancel_replacement(system, r);
+      index = r;
+      break;
+    }
+    if (pending.id == 0u && index == VKR_MATERIAL_REPLACEMENT_CAPACITY) {
+      index = r;
+    }
+  }
+  if (index == VKR_MATERIAL_REPLACEMENT_CAPACITY ||
+      system->texture_stream_count + texture_count >
+          system->texture_stream_capacity) {
+    return false_v;
+  }
+
+  VkrMaterialReplacement *replacement = &system->replacements[index];
+  *replacement = (VkrMaterialReplacement){
+      .material = material,
+      .definition = *definition,
+      .loading = texture_count,
+  };
+  for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    replacement->definition.textures[slot] =
+        vkr_material_system_get_default_texture(system, (VkrTextureSlot)slot);
+  }
+  system->replacement_count++;
+  for (uint32_t slot = 0u; texture_paths && slot < VKR_TEXTURE_SLOT_COUNT;
+       ++slot) {
+    if (!texture_paths[slot] || !texture_paths[slot][0]) {
+      continue;
+    }
+    (void)vkr_material_system_stream_texture(
+        system, material, (VkrTextureSlot)slot, texture_paths[slot]);
+    system->texture_streams[system->texture_stream_count - 1u].replacement =
+        index + 1u;
+  }
+  return true_v;
+}
+
+uint32_t
+vkr_material_system_pending_replacements(const VkrMaterialSystem *system) {
+  return system ? system->replacement_count : 0u;
+}
+
 bool8_t vkr_material_system_stream_texture(VkrMaterialSystem *system,
                                            VkrMaterialHandle material,
                                            VkrTextureSlot slot,
@@ -628,8 +881,22 @@ void vkr_material_system_cancel_texture_streams(VkrMaterialSystem *system,
     case VKR_MATERIAL_TEXTURE_RESIDENCY_MEMORY_WAIT:
       system->texture_stream_memory_wait_count--;
       break;
+    case VKR_MATERIAL_TEXTURE_RESIDENCY_STAGED:
+      (void)vkr_texture_system_release_by_handle(system->texture_system,
+                                                 stream->resident_texture);
+      break;
     }
     vkr_material_system_remove_texture_stream(system, i);
+  }
+  for (uint32_t r = 0u; r < VKR_MATERIAL_REPLACEMENT_CAPACITY &&
+                        system->replacement_count && system->replacements;
+       ++r) {
+    VkrMaterialReplacement *replacement = &system->replacements[r];
+    if (replacement->material.id == material.id &&
+        replacement->material.generation == material.generation) {
+      MemZero(replacement, sizeof(*replacement));
+      system->replacement_count--;
+    }
   }
   vkr_material_system_refresh_texture_stream_demand(system);
 }
@@ -811,6 +1078,7 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
       vkr_resource_system_unload(&stream->request, path);
       system->texture_stream_active_count--;
       system->texture_stream_failed_total++;
+      vkr_material_system_replacement_texture_done(system, stream);
       vkr_material_system_remove_texture_stream(system, i);
       updates++;
       continue;
@@ -818,6 +1086,22 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
 
     const VkrTextureHandle texture_handle = resolved.as.texture;
     const uint64_t texture_bytes = texture->resident_bytes;
+    if (stream->replacement) {
+      /* A replacement's texture waits, referenced, for the rest of its
+         group; residency and budget are settled when the group binds. */
+      vkr_texture_system_add_ref_by_handle(system->texture_system,
+                                           texture_handle);
+      vkr_resource_system_unload(&stream->request, path);
+      stream->request = (VkrResourceHandleInfo){0};
+      stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_STAGED;
+      stream->resident_texture = texture_handle;
+      stream->resident_bytes = texture_bytes;
+      system->texture_stream_active_count--;
+      vkr_material_system_replacement_texture_done(system, stream);
+      updates++;
+      ++i;
+      continue;
+    }
     const bool8_t already_resident =
         vkr_material_system_resident_texture_users(system, texture_handle) > 0u;
     const uint64_t incoming_bytes = already_resident ? 0u : texture_bytes;
@@ -911,6 +1195,14 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
     system->texture_stream_active_count++;
     updates++;
     ++i;
+  }
+  for (uint32_t r = 0u; r < VKR_MATERIAL_REPLACEMENT_CAPACITY &&
+                        system->replacement_count && system->replacements;
+       ++r) {
+    if (system->replacements[r].material.id != 0u &&
+        system->replacements[r].loading == 0u) {
+      vkr_material_system_apply_replacement(system, r);
+    }
   }
   vkr_material_system_refresh_texture_stream_demand(system);
 }
@@ -1020,18 +1312,26 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
       (uint64_t)config->max_material_count *
           sizeof(*system->texture_material_last_used_epochs),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->replacements =
+      vkr_allocator_alloc(&system->allocator,
+                          (uint64_t)VKR_MATERIAL_REPLACEMENT_CAPACITY *
+                              sizeof(*system->replacements),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   system->texture_stream_capacity = VKR_MATERIAL_TEXTURE_STREAM_CAPACITY;
   system->texture_streams =
       vkr_allocator_alloc(&system->async_allocator,
                           (uint64_t)system->texture_stream_capacity *
                               sizeof(VkrMaterialTextureStream),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!system->texture_streams || !system->texture_material_last_used_epochs) {
+  if (!system->texture_streams || !system->texture_material_last_used_epochs ||
+      !system->replacements) {
     vkr_material_system_shutdown(system);
     return false_v;
   }
   MemZero(system->texture_streams, (uint64_t)system->texture_stream_capacity *
                                        sizeof(VkrMaterialTextureStream));
+  MemZero(system->replacements, (uint64_t)VKR_MATERIAL_REPLACEMENT_CAPACITY *
+                                    sizeof(*system->replacements));
   MemZero(system->texture_material_last_used_epochs,
           (uint64_t)config->max_material_count *
               sizeof(*system->texture_material_last_used_epochs));
@@ -1078,6 +1378,9 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system) {
         system->texture_stream_resident_bytes -= stream->resident_bytes;
       }
       system->texture_stream_resident_count--;
+    } else if (stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_STAGED) {
+      (void)vkr_texture_system_release_by_handle(system->texture_system,
+                                                 stream->resident_texture);
     }
     system->texture_stream_count--;
   }

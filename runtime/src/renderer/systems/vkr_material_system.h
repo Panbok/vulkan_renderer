@@ -41,6 +41,7 @@ VkrHashTable(VkrMaterialEntry);
 #define VKR_MATERIAL_TEXTURE_STREAM_CAPACITY 4096u
 #define VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX 512u
 #define VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX 8u
+#define VKR_MATERIAL_REPLACEMENT_CAPACITY 512u
 
 typedef enum VkrMaterialTextureResidencyState {
   VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED = 0,
@@ -48,6 +49,8 @@ typedef enum VkrMaterialTextureResidencyState {
   VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT,
   VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED,
   VKR_MATERIAL_TEXTURE_RESIDENCY_MEMORY_WAIT,
+  /* Loaded and referenced for a replacement, not yet bound. */
+  VKR_MATERIAL_TEXTURE_RESIDENCY_STAGED,
 } VkrMaterialTextureResidencyState;
 
 typedef struct VkrMaterialTextureStream {
@@ -59,7 +62,19 @@ typedef struct VkrMaterialTextureStream {
   VkrTextureHandle resident_texture;
   uint64_t resident_bytes;
   uint64_t attempt_relief_generation;
+  /* 1-based index of the replacement this texture belongs to; 0 for a texture
+   * that binds on its own when it loads. */
+  uint32_t replacement;
 } VkrMaterialTextureStream;
+
+/* A live material's next definition. Its textures stream as a group, and the
+ * definition and every texture publish in one republication once all of them
+ * have loaded or failed, so no frame shows new factors with old textures. */
+typedef struct VkrMaterialReplacement {
+  VkrMaterialHandle material; /* id 0 marks a free entry. */
+  VkrMaterial definition;     /* Factors and state; textures are defaults. */
+  uint32_t loading;           /* Group textures neither staged nor failed. */
+} VkrMaterialReplacement;
 
 typedef struct VkrMaterialTextureStreamStats {
   uint32_t stream_count;
@@ -115,6 +130,10 @@ typedef struct VkrMaterialSystem {
   uint64_t texture_stream_evicted_total;
   uint64_t texture_stream_pressure_stalls_total;
 
+  VkrMaterialReplacement *replacements; /* VKR_MATERIAL_REPLACEMENT_CAPACITY */
+  uint32_t replacement_count;           /* Entries in use. */
+  uint64_t replacement_applied_total;
+
   /* High-water cursor for never-reserved slots. Released slots belong only to
    * free_ids; neither unload nor failed publication rewinds this cursor. */
   uint32_t next_free_index;
@@ -149,6 +168,25 @@ bool8_t vkr_material_system_stream_texture(VkrMaterialSystem *system,
                                            VkrMaterialHandle material,
                                            VkrTextureSlot slot,
                                            const char *path);
+
+/**
+ * Replaces a live material's factors, state and textures together. Each
+ * non-empty `texture_paths` entry (a resource path with its texture query, or
+ * NULL) streams through the bounded residency path; once every one has loaded
+ * or failed, the texture pump binds the definition and those textures in one
+ * republication, a failed texture keeping its slot's default. The name,
+ * shader and handle stay. A later call for the same material supersedes a
+ * pending one. Returns false when the material is not live or the queues are
+ * full.
+ */
+bool8_t vkr_material_system_replace(
+    VkrMaterialSystem *system, VkrMaterialHandle material,
+    const VkrMaterial *definition,
+    const char *const texture_paths[VKR_TEXTURE_SLOT_COUNT]);
+
+/** Replacements still waiting for their textures or their publication. */
+uint32_t
+vkr_material_system_pending_replacements(const VkrMaterialSystem *system);
 
 /** Applies up to max_updates ready streamed textures to live material rows. */
 void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,

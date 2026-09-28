@@ -1777,6 +1777,179 @@ vkr_internal void test_texture_capacity_retry_high_water(void) {
   printf("  test_texture_capacity_retry_high_water PASSED\n");
 }
 
+/* Marks the replacement stream of `slot` as loaded with `texture`, as the
+ * pump does once its request resolves. */
+vkr_internal void material_pbr_test_stage_replacement_texture(
+    MaterialPbrTestContext *ctx, VkrMaterialHandle material,
+    VkrTextureSlot slot, VkrTextureHandle texture, bool8_t from_memory_wait) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->material.id != material.id || stream->slot != slot ||
+        !stream->replacement) {
+      continue;
+    }
+    if (from_memory_wait) {
+      system->texture_stream_memory_wait_count--;
+    } else {
+      system->texture_stream_queued_count--;
+    }
+    vkr_texture_system_add_ref_by_handle(&ctx->texture_system, texture);
+    stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_STAGED;
+    stream->resident_texture = texture;
+    stream->resident_bytes = 64u;
+    system->replacements[stream->replacement - 1u].loading--;
+    return;
+  }
+  assert(false && "replacement stream not found");
+}
+
+/* A replacement changes factors and textures in one publication once every
+ * texture has loaded: a partly loaded group publishes nothing, and the
+ * texture it displaces is released only after the new row is published. */
+vkr_internal void
+test_material_replacement_publishes_as_one(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_replacement_publishes_as_one...\n");
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle material = vkr_material_system_create_colored(
+      system, "replacement_material", vec4_one(), &error);
+  assert(material.id != 0u);
+  const VkrTextureDescription description = {
+      .width = 8u,
+      .height = 8u,
+      .channels = 4u,
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .properties = {0},
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+  };
+  const char *names[] = {"replacement_old", "replacement_color",
+                         "replacement_normal"};
+  VkrTextureHandle textures[3] = {0};
+  for (uint32_t i = 0u; i < ArrayCount(names); ++i) {
+    assert(vkr_texture_system_create_writable(
+               &ctx->texture_system,
+               string8_create_from_cstr((const uint8_t *)names[i],
+                                        strlen(names[i])),
+               &description, &textures[i], &error) == true_v);
+    vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i])
+        ->resident_bytes = 64u;
+    vkr_hash_table_get_VkrTextureEntry(&ctx->texture_system.texture_map,
+                                       names[i])
+        ->auto_release = false_v;
+  }
+
+  /* The old diffuse texture is resident through an ordinary stream. */
+  VkrMaterial *live = vkr_material_system_get_by_handle(system, material);
+  vkr_texture_system_add_ref_by_handle(&ctx->texture_system, textures[0]);
+  live->textures[VKR_TEXTURE_SLOT_DIFFUSE] =
+      (VkrMaterialTexture){.handle = textures[0],
+                           .slot = VKR_TEXTURE_SLOT_DIFFUSE,
+                           .enabled = true_v};
+  assert(vkr_material_system_unpublish(system, material) == true_v);
+  assert(vkr_material_system_publish(system, material, &error) == true_v);
+  assert(vkr_material_system_stream_texture(system, material,
+                                            VKR_TEXTURE_SLOT_DIFFUSE,
+                                            "textures/old.vkt") == true_v);
+  VkrMaterialTextureStream *old_stream =
+      &system->texture_streams[system->texture_stream_count - 1u];
+  system->texture_stream_queued_count--;
+  system->texture_stream_resident_count++;
+  system->texture_stream_resident_bytes += 64u;
+  old_stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+  old_stream->resident_texture = textures[0];
+  old_stream->resident_bytes = 64u;
+  const uint32_t old_refs = vkr_texture_system_get_ref_count_by_handle(
+      &ctx->texture_system, textures[0]);
+
+  const String8 definition =
+      string8_lit("name=replacement_material\n"
+                  "type=pbr\n"
+                  "base_color=0.5,0.25,0.125,1\n"
+                  "roughness=0.3\n"
+                  "base_color_texture=/replacement/color.vkt\n"
+                  "normal_texture=/replacement/normal.vkt\n");
+  assert(vkr_material_loader_replace_live(
+             system, string8_lit("tests/tmp/material_pbr/replacement.mt"),
+             definition, &ctx->temp_allocator, &error) == true_v);
+  assert(vkr_material_system_pending_replacements(system) == 1u);
+  VkrRendererError missing = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_material_loader_replace_live(
+             system, string8_lit("tests/tmp/material_pbr/other.mt"),
+             string8_lit("name=replacement_not_live\n"), &ctx->temp_allocator,
+             &missing) == false_v);
+  assert(missing == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED);
+
+  /* One texture loaded, the other waiting: nothing publishes. */
+  material_pbr_test_stage_replacement_texture(
+      ctx, material, VKR_TEXTURE_SLOT_DIFFUSE, textures[1], false_v);
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->replacement && stream->slot == VKR_TEXTURE_SLOT_NORMAL) {
+      stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_MEMORY_WAIT;
+      system->texture_stream_queued_count--;
+      system->texture_stream_memory_wait_count++;
+    }
+  }
+  vkr_material_system_pump_texture_streams(system, 8u);
+  live = vkr_material_system_get_by_handle(system, material);
+  const uint32_t index = material.id - 1u;
+  assert(live->pbr.base_color.x == 1.0f);
+  assert(live->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle.id == textures[0].id);
+  assert(ctx->publisher_state.material_textures[index][VKR_TEXTURE_SLOT_DIFFUSE]
+             .id == textures[0].id);
+  assert(vkr_material_system_pending_replacements(system) == 1u);
+
+  /* The last texture loads: factors and both textures publish together, and
+   * only then is the displaced texture released. */
+  material_pbr_test_stage_replacement_texture(
+      ctx, material, VKR_TEXTURE_SLOT_NORMAL, textures[2], true_v);
+  vkr_material_system_pump_texture_streams(system, 8u);
+  live = vkr_material_system_get_by_handle(system, material);
+  assert(vkr_material_system_pending_replacements(system) == 0u);
+  assert(live->material_type == VKR_MATERIAL_TYPE_PBR);
+  assert(fabsf(live->pbr.base_color.x - 0.5f) < 1e-6f);
+  assert(fabsf(live->pbr.roughness - 0.3f) < 1e-6f);
+  assert(strcmp(live->name, "replacement_material") == 0);
+  assert(live->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle.id == textures[1].id);
+  assert(live->textures[VKR_TEXTURE_SLOT_NORMAL].handle.id == textures[2].id);
+  assert(ctx->publisher_state.material_textures[index][VKR_TEXTURE_SLOT_DIFFUSE]
+             .id == textures[1].id);
+  assert(ctx->publisher_state.material_textures[index][VKR_TEXTURE_SLOT_NORMAL]
+             .id == textures[2].id);
+  assert(vkr_texture_system_get_ref_count_by_handle(
+             &ctx->texture_system, textures[0]) == old_refs - 1u);
+  assert(system->texture_stream_resident_count == 2u);
+  assert(system->texture_stream_resident_bytes == 128u);
+
+  /* A newer replacement supersedes a pending one, and cancelling the
+   * material's streams releases what it had staged. */
+  assert(vkr_material_loader_replace_live(
+             system, string8_lit("tests/tmp/material_pbr/replacement.mt"),
+             definition, &ctx->temp_allocator, &error) == true_v);
+  material_pbr_test_stage_replacement_texture(
+      ctx, material, VKR_TEXTURE_SLOT_DIFFUSE, textures[1], false_v);
+  const uint32_t staged_refs = vkr_texture_system_get_ref_count_by_handle(
+      &ctx->texture_system, textures[1]);
+  assert(vkr_material_loader_replace_live(
+             system, string8_lit("tests/tmp/material_pbr/replacement.mt"),
+             definition, &ctx->temp_allocator, &error) == true_v);
+  assert(vkr_material_system_pending_replacements(system) == 1u);
+  assert(vkr_texture_system_get_ref_count_by_handle(
+             &ctx->texture_system, textures[1]) == staged_refs - 1u);
+  vkr_material_system_cancel_texture_streams(system, material);
+  assert(vkr_material_system_pending_replacements(system) == 0u);
+  assert(system->texture_stream_queued_count == 0u);
+  printf("  test_material_replacement_publishes_as_one PASSED\n");
+}
+
 bool32_t run_material_pbr_tests(void) {
   printf("--- Starting Material PBR Tests ---\n");
 
@@ -1802,6 +1975,7 @@ bool32_t run_material_pbr_tests(void) {
   test_texture_capacity_retry_high_water();
   test_shared_texture_eviction_tracks_unique_bytes(&context);
   test_shared_texture_eviction_republishes_all_materials(&context);
+  test_material_replacement_publishes_as_one(&context);
   test_compressed_texture_subresource_shapes(&context);
   test_texture_request_owns_pending_publication(&context);
   test_texture_publication_backpressure_is_retryable(&context);

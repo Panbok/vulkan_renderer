@@ -2153,36 +2153,11 @@ vkr_internal bool8_t vkr_material_loader_resolve_texture_paths(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_material_loader_parse_file(
-    VkrAllocator *allocator, String8 path, VkrParsedMaterialData *out_data) {
-  assert_log(allocator != NULL, "Allocator is NULL");
-  assert_log(path.str != NULL, "Path is NULL");
-  assert_log(out_data != NULL, "Out data is NULL");
-
-  vkr_material_loader_set_parse_defaults(out_data);
-
-  String8 material_name = {0};
-  vkr_get_stable_material_name(out_data->name, path, &material_name);
-
-  FilePath fp = vkr_asset_path_file(allocator, path);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  FileHandle fh = {0};
-  FileError fe = file_open(&fp, mode, &fh);
-  if (fe != FILE_ERROR_NONE) {
-    out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
-
-  String8 file_content = {0};
-  FileError read_err = file_read_string(&fh, allocator, &file_content);
-  file_close(&fh);
-
-  if (read_err != FILE_ERROR_NONE) {
-    out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
-
+/* Parses `.mt` text into `out_data`, whose defaults and file-stem name the
+   caller set; texture references resolve against `path`. */
+vkr_internal bool8_t vkr_material_loader_parse_text(
+    VkrAllocator *allocator, String8 path, String8 file_content,
+    VkrParsedMaterialData *out_data) {
   uint64_t offset = 0;
   while (offset < file_content.length) {
     uint64_t line_end = offset;
@@ -2223,6 +2198,118 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
     return false_v;
   }
   out_data->parse_success = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_material_loader_parse_file(
+    VkrAllocator *allocator, String8 path, VkrParsedMaterialData *out_data) {
+  assert_log(allocator != NULL, "Allocator is NULL");
+  assert_log(path.str != NULL, "Path is NULL");
+  assert_log(out_data != NULL, "Out data is NULL");
+
+  vkr_material_loader_set_parse_defaults(out_data);
+
+  String8 material_name = {0};
+  vkr_get_stable_material_name(out_data->name, path, &material_name);
+
+  FilePath fp = vkr_asset_path_file(allocator, path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle fh = {0};
+  FileError fe = file_open(&fp, mode, &fh);
+  if (fe != FILE_ERROR_NONE) {
+    out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  String8 file_content = {0};
+  FileError read_err = file_read_string(&fh, allocator, &file_content);
+  file_close(&fh);
+
+  if (read_err != FILE_ERROR_NONE) {
+    out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+  return vkr_material_loader_parse_text(allocator, path, file_content,
+                                        out_data);
+}
+
+bool8_t vkr_material_loader_replace_live(VkrMaterialSystem *system,
+                                         String8 path, String8 definition,
+                                         VkrAllocator *temp_alloc,
+                                         VkrRendererError *out_error) {
+  assert_log(system != NULL, "Material system is NULL");
+  assert_log(temp_alloc != NULL, "Temp allocator is NULL");
+  VkrRendererError ignored = VKR_RENDERER_ERROR_NONE;
+  out_error = out_error ? out_error : &ignored;
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  if (!path.str || !path.length || !definition.str) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  VkrParsedMaterialData *parsed = vkr_allocator_alloc(
+      temp_alloc, sizeof(*parsed), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!parsed) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  vkr_material_loader_set_parse_defaults(parsed);
+  String8 stem = {0};
+  vkr_get_stable_material_name(parsed->name, path, &stem);
+  if (!vkr_material_loader_parse_text(temp_alloc, path, definition, parsed)) {
+    *out_error = parsed->parse_error != VKR_RENDERER_ERROR_NONE
+                     ? parsed->parse_error
+                     : VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  const VkrMaterialEntry *entry = vkr_hash_table_get_VkrMaterialEntry(
+      &system->material_by_name, parsed->name);
+  const VkrMaterial *live = entry && entry->id < system->materials.length
+                                ? &system->materials.data[entry->id]
+                                : NULL;
+  if (!live || live->id == 0u) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return false_v;
+  }
+  const VkrMaterialHandle handle = {.id = live->id,
+                                    .generation = live->generation};
+
+  VkrMaterial replacement = {0};
+  vkr_material_loader_init_from_parsed(&replacement, parsed, system);
+  String8 material_name = string8_create_from_cstr(
+      (const uint8_t *)parsed->name, string_length(parsed->name));
+  char(*resolved)[VKR_MATERIAL_PATH_MAX] = vkr_allocator_alloc(
+      temp_alloc, sizeof(char[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX]),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!resolved) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  const char *texture_paths[VKR_TEXTURE_SLOT_COUNT] = {0};
+  for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    String8 raw =
+        vkr_material_make_string8_from_path_buffer(parsed->texture_paths[slot]);
+    if (!raw.str || raw.length == 0) {
+      continue;
+    }
+    String8 request = vkr_material_apply_texture_request_intent(
+        temp_alloc, raw, (VkrTextureSlot)slot, parsed->texture_colorspace[slot],
+        material_name, vkr_material_slot_name((VkrTextureSlot)slot));
+    if (!vkr_material_copy_string8_to_path_buffer(request, resolved[slot])) {
+      log_warn("Material '%s': %s path is too long and will use default "
+               "texture",
+               parsed->name, vkr_material_slot_name((VkrTextureSlot)slot));
+      continue;
+    }
+    texture_paths[slot] = resolved[slot];
+  }
+  if (!vkr_material_system_replace(system, handle, &replacement,
+                                   texture_paths)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   return true_v;
 }
 
